@@ -261,6 +261,7 @@ class CveScanSurveyor(BaseSurveyor):
                 # clean result here would let a repo whose manifests were never
                 # parsed read as one with nothing vulnerable in it.
                 out.append(ResourceMeasureAnnotation(
+                    check_name="cve_scan",
                     summary=("No dependencies are recorded for this resource, so nothing "
                              "could be checked — this is not a finding that it has none. "
                              "Run the dependency analysis first."),
@@ -283,6 +284,7 @@ class CveScanSurveyor(BaseSurveyor):
 
             if error:
                 out.append(ResourceMeasureAnnotation(
+                    check_name="cve_scan",
                     summary=f"Advisory lookup failed ({error}). Nothing was concluded.",
                     analysis_step=STEP,
                     json_properties={"error": error, "scanned": False,

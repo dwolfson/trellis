@@ -183,6 +183,7 @@ class SecretScanSurveyor(BaseSurveyor):
 
             results.append(
                 ClassificationAnnotation(
+                    check_name="scan_summary",
                     summary=summary_text,
                     analysis_step=STEP,
                     candidate_classifications=[outcome.outcome],
@@ -193,6 +194,7 @@ class SecretScanSurveyor(BaseSurveyor):
             )
             findings.append({
                 "check_name": "scan_summary", "label": outcome.outcome,
+                "confidence": 100 if outcome.is_conclusive else 0,
                 "summary": summary_text,
                 "detail": {**outcome.as_row(), **provider_row,
                            "files_scanned": files_scanned, "files_excluded": files_excluded,
@@ -210,11 +212,14 @@ class SecretScanSurveyor(BaseSurveyor):
                 }
                 findings.append({
                     "check_name": "secret_pattern", "label": m.rule_id,
+                    "confidence": 70,
                     "summary": f"{m.description} at {m.path}:{m.line}",
                     "detail": match_detail,
                 })
                 results.append(
                     RequestForActionAnnotation(
+                        check_name="secret_pattern",
+                        item_key=f"{m.path}:{m.line}:{m.rule_id}",
                         summary=f"Possible secret: {m.description}",
                         analysis_step=STEP,
                         action_requested=(
@@ -246,6 +251,7 @@ class SecretScanSurveyor(BaseSurveyor):
         status = result_status.skipped(reason, gate=gate)
         results.append(
             ClassificationAnnotation(
+                check_name="scan_summary",
                 summary=f"Secret scan skipped: {reason}",
                 analysis_step=STEP,
                 candidate_classifications=[result_status.SKIPPED_BY_DESIGN],
@@ -256,6 +262,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "ruleset_available", "label": result_status.SKIPPED_BY_DESIGN,
+            "confidence": 0,
             "summary": reason, "detail": status,
         })
 
@@ -263,6 +270,7 @@ class SecretScanSurveyor(BaseSurveyor):
         outcome = StepOutcome(UNVERIFIED, cause=cause)
         results.append(
             ClassificationAnnotation(
+                check_name="scan_summary",
                 summary=reason, analysis_step=STEP,
                 candidate_classifications=[],
                 confidence=0, explanation=reason,
@@ -271,6 +279,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "scan_summary", "label": outcome.outcome,
+            "confidence": 0,
             "summary": reason, "detail": outcome.as_row(),
         })
 
@@ -292,6 +301,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         results.append(
             ClassificationAnnotation(
+                check_name="ruleset_self_test",
                 summary="Secret scan self-test failed — result not trustworthy",
                 analysis_step=STEP,
                 candidate_classifications=[],
@@ -301,6 +311,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "scan_summary", "label": outcome.outcome,
+            "confidence": 0,
             "summary": reason, "detail": outcome.as_row(),
         })
 
@@ -319,6 +330,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         results.append(
             ClassificationAnnotation(
+                check_name="ruleset_freshness",
                 summary=summary_text, analysis_step=STEP,
                 candidate_classifications=[staleness.label] if staleness.label else [],
                 confidence=100 if known else 0,
@@ -332,6 +344,7 @@ class SecretScanSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "ruleset_freshness", "label": staleness.label,
+            "confidence": 100 if known else 0,
             "summary": summary_text,
             "detail": {
                 "known": known, "as_of_date": staleness.as_of_date,
@@ -350,7 +363,9 @@ class SecretScanSurveyor(BaseSurveyor):
                 self.project.slug, FINDING_KIND,
                 [
                     {"check_name": f["check_name"], "label": f["label"],
-                     "summary": f["summary"], "detail": f.get("detail")}
+                     "summary": f["summary"],
+                     "confidence": f.get("confidence", 100),
+                     "detail": f.get("detail")}
                     for f in findings
                 ],
                 surveyed_at=self._surveyed_at,

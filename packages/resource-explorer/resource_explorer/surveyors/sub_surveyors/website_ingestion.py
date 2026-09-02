@@ -125,6 +125,7 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                         self.project.slug, exc)
 
         return [ResourceMeasureAnnotation(
+            check_name="website_ingestion",
             summary=summary, analysis_step=STEP, confidence=confidence,
             explanation=explanation,
             resource_properties={**props, "surveyed_at": self._surveyed_at},

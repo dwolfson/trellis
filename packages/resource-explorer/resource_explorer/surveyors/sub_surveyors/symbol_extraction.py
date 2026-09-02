@@ -152,6 +152,7 @@ class SymbolExtractionSurveyor(BaseSurveyor):
                            "checkout, not the code")
                     ),
                     analysis_step=STEP,
+                    check_name="symbol_extraction",
                     confidence=100 if files_scanned else 0,
                     resource_properties={
                         "symbol_counts_by_language": counts_by_language,

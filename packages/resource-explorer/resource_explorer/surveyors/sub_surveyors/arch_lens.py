@@ -207,6 +207,7 @@ class ArchLensSurveyor(BaseSurveyor):
         self._persist_undetected(slug, lens)
 
         return [ClassificationAnnotation(
+            check_name="architecture_doc_lens",
             summary=(f"{len(lens.documented)} of {len(components)} component(s) named "
                      f"by the architecture document ({lens.outcome})"),
             analysis_step=self.step_name,
@@ -285,6 +286,7 @@ class ArchLensSurveyor(BaseSurveyor):
             return None
         shown = ", ".join(sites[:3]) + (f" (+{len(sites) - 3} more)" if len(sites) > 3 else "")
         return RequestForActionAnnotation(
+            check_name="docs_not_ingested",
             summary=f"{len(sites)} documentation site(s) located but not readable — "
                     f"ingesting would make them answerable",
             analysis_step=self.step_name,
@@ -442,6 +444,7 @@ class ArchLensSurveyor(BaseSurveyor):
         # an older row detectable as stale rather than current.
         self._record_run(self.project.slug, 0, outcome, evidence)
         return ClassificationAnnotation(
+            check_name="architecture_doc_lens",
             summary=f"Architecture document not consulted — {reason}",
             analysis_step=self.step_name,
             confidence=100,

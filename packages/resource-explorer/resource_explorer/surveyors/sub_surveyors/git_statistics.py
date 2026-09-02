@@ -91,6 +91,7 @@ class GitStatisticsSurveyor(BaseSurveyor):
         if not stats:
             return [
                 ResourceMeasureAnnotation(
+                    check_name="git_statistics",
                     summary="No git statistics available",
                     analysis_step=STEP,
                     confidence=0,
@@ -130,6 +131,7 @@ class GitStatisticsSurveyor(BaseSurveyor):
                                      detail={"refresh_error": error or ""}))
         return [
             ResourceMeasureAnnotation(
+                check_name="git_statistics",
                 summary=(
                     f"★ {headline['stars']} · {headline['forks']} fork(s) · "
                     f"{headline['contributors']} contributor(s)"

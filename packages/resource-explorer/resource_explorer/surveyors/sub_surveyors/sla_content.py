@@ -175,6 +175,7 @@ class SlaContentSurveyor(BaseSurveyor):
 
             results.append(
                 ClassificationAnnotation(
+                    check_name="sla_content",
                     summary=summary_text, analysis_step=STEP,
                     candidate_classifications=[outcome.outcome],
                     confidence=100 if outcome.is_conclusive else 0,
@@ -183,6 +184,7 @@ class SlaContentSurveyor(BaseSurveyor):
             )
             findings.append({
                 "check_name": "sla_content",
+                "confidence": 100 if outcome.is_conclusive else 0,
                 "label": "present" if sla_hits else "absent",
                 "summary": summary_text,
                 "detail": {**outcome.as_row(), "candidate_paths_checked": candidates},
@@ -211,6 +213,7 @@ class SlaContentSurveyor(BaseSurveyor):
         outcome = StepOutcome(UNVERIFIED, cause=cause)
         results.append(
             ClassificationAnnotation(
+                check_name="sla_content",
                 summary=reason, analysis_step=STEP,
                 candidate_classifications=[], confidence=0,
                 explanation=reason, json_properties=outcome.as_row(),
@@ -218,6 +221,7 @@ class SlaContentSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "scan_summary", "label": outcome.outcome,
+            "confidence": 0,
             "summary": reason, "detail": outcome.as_row(),
         })
 
@@ -227,7 +231,9 @@ class SlaContentSurveyor(BaseSurveyor):
                 self.project.slug, FINDING_KIND,
                 [
                     {"check_name": f["check_name"], "label": f["label"],
-                     "summary": f["summary"], "detail": f.get("detail")}
+                     "summary": f["summary"],
+                     "confidence": f.get("confidence", 100),
+                     "detail": f.get("detail")}
                     for f in findings
                 ],
                 surveyed_at=self._surveyed_at,

@@ -48,6 +48,7 @@ class FileStructureSurveyor(BaseSurveyor):
             # for a soak period.
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="repo_size",
                     summary=f"Repository contains ~{file_count:,} files, {size_kb:,} KB",
                     analysis_step=STEP,
                     resource_properties={
@@ -84,6 +85,7 @@ class FileStructureSurveyor(BaseSurveyor):
                 lang_breakdown = {r["language"]: r["file_count"] for r in rows}
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="language_breakdown",
                         summary=f"Indexed source files span {len(lang_breakdown)} language(s)",
                         analysis_step=STEP,
                         resource_properties={"by_language": lang_breakdown},
@@ -94,6 +96,7 @@ class FileStructureSurveyor(BaseSurveyor):
             else:
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="language_breakdown",
                         summary="Language breakdown unavailable — no code symbols extracted",
                         analysis_step=STEP,
                         explanation=(
@@ -123,6 +126,7 @@ class FileStructureSurveyor(BaseSurveyor):
 
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="directory_layout",
                         summary=f"Source files distributed across {len(top_dirs)} top-level directories",
                         analysis_step=STEP,
                         resource_properties={"top_level_dirs": dict(top_dirs.most_common(20))},
@@ -163,6 +167,7 @@ class FileStructureSurveyor(BaseSurveyor):
         if not by_language:
             return [
                 ResourceMeasureAnnotation(
+                    check_name="code_volume",
                     summary=("Code volume not established — no line census has been "
                              "recorded for this repository. It is written during "
                              "ingestion; a repo indexed another way has none."),
@@ -185,6 +190,7 @@ class FileStructureSurveyor(BaseSurveyor):
             note = (f" {', '.join(text_only)} are counted as text and excluded "
                     f"from the code total.")
         summary = ResourceMeasureAnnotation(
+            check_name="code_volume",
             summary=(f"{code:,} lines of code across {files:,} source file(s) "
                      f"in {len(counted)} language(s).{note}"),
             analysis_step=STEP,
@@ -201,6 +207,8 @@ class FileStructureSurveyor(BaseSurveyor):
             v = counted[language]
             out.append(
                 ResourceMeasureAnnotation(
+                    check_name="code_volume_by_language",
+                    item_key=language,
                     summary=(f"{language}: {v.get('code', 0):,} code, "
                              f"{v.get('comment', 0):,} comment, "
                              f"{v.get('docstring', 0):,} docstring, "

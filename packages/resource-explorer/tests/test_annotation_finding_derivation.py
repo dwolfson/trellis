@@ -14,6 +14,7 @@ check did not fire.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -147,3 +148,43 @@ class TestTheQualifiedNameIsNowStable:
                                     for i, a in enumerate(anns))
         assert names(first) == names(second)
         assert len(set(names(first))) == len(first), "names must not collide"
+
+
+class TestInconclusiveIsNotStoredAsCertain:
+    """The same drift as security_hygiene's, in its worst form.
+
+    Four surveyors emit their summary annotation at `100 if conclusive else 0`
+    and then stored a finding row that omitted confidence — so the table
+    defaulted it to 100. "We could not conclude" was recorded as certainty,
+    across 98,364 secret_scan rows among others. The persist step dropped the
+    field structurally, in a list comprehension, so setting it on the finding
+    dict would not have helped either.
+    """
+
+    FILES = ["secret_scan", "telemetry_scan", "contribution_provenance", "sla_content"]
+
+    @pytest.mark.parametrize("name", FILES)
+    def test_the_persist_step_carries_confidence(self, name):
+        """The comprehension that builds upsert_finding()'s rows must pass
+        confidence through — otherwise every per-finding value is discarded on
+        the way to the table and no amount of setting it upstream matters."""
+        src = (pathlib.Path(__file__).parent.parent / "resource_explorer" /
+               "surveyors" / "sub_surveyors" / f"{name}.py").read_text()
+        assert '"summary": f["summary"]' in src, "fixture assumption: the comprehension exists"
+        assert '"confidence": f.get("confidence"' in src, (
+            f"{name}.py's persist comprehension drops confidence, so a finding "
+            f"row reads 100 (the column default) whatever the surveyor decided")
+
+    @pytest.mark.parametrize("name", FILES)
+    def test_an_inconclusive_summary_is_not_stored_at_full_confidence(self, name):
+        """Every `scan_summary` finding must carry a confidence, since its
+        paired annotation is 0 whenever the step could not conclude."""
+        src = (pathlib.Path(__file__).parent.parent / "resource_explorer" /
+               "surveyors" / "sub_surveyors" / f"{name}.py").read_text()
+        lines = src.split("\n")
+        for i, line in enumerate(lines):
+            if '"check_name": "scan_summary"' in line:
+                window = "".join(lines[i:i + 4])
+                assert '"confidence"' in window, (
+                    f"{name}.py:{i+1} stores a scan_summary finding with no "
+                    f"confidence, so an inconclusive run reads as certain")

@@ -123,6 +123,7 @@ class FileInventorySurveyor(BaseSurveyor):
 
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="file_inventory",
                     summary=f"{file_count} file(s) inventoried",
                     analysis_step=STEP,
                     explanation=(
@@ -155,6 +156,7 @@ class FileInventorySurveyor(BaseSurveyor):
             log.warning("FileInventorySurveyor failed for %s: %s", self.project.slug, exc)
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="file_inventory",
                     summary="File inventory refresh failed",
                     analysis_step=STEP,
                     confidence=0,

@@ -103,6 +103,7 @@ class DependencySurveyor(BaseSurveyor):
                 "distinguished. Run repo_file_inventory (or a Profile refresh) first."
             )
         return ResourceMeasureAnnotation(
+            check_name="dependency_summary",
             summary=summary, analysis_step=STEP, confidence=100,
             explanation=explanation,
             resource_properties={"total": 0, "by_ecosystem": {}, "by_type": {}},
@@ -151,6 +152,8 @@ class DependencySurveyor(BaseSurveyor):
                 dep_types = list({d.get("dep_type") or "runtime" for d in items})
                 results.append(
                     DataClassAnnotation(
+                        check_name="dependencies_by_ecosystem",
+                        item_key=ecosystem,
                         summary=f"{len(names)} {ecosystem} dependency(s): {', '.join(names[:8])}"
                         + (" …" if len(names) > 8 else ""),
                         analysis_step=STEP,
@@ -177,6 +180,7 @@ class DependencySurveyor(BaseSurveyor):
 
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="dependency_total",
                     summary=f"{len(deps)} total dependencies across {len(by_ecosystem)} ecosystem(s)",
                     analysis_step=STEP,
                     resource_properties={

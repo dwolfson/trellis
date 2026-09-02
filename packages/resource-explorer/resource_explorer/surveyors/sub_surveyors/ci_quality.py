@@ -51,6 +51,7 @@ class CiQualitySurveyor(BaseSurveyor):
                 # has not run rather than that this repo has no conventions.
                 # Saying so is what makes the absence attributable.
                 return [ClassificationAnnotation(
+                    check_name="ci_quality",
                     summary=("No ci_quality findings are recorded for this resource — "
                              "run the dependency/manifest refresh first. This is not "
                              "a finding that the repo has none."),
@@ -64,6 +65,7 @@ class CiQualitySurveyor(BaseSurveyor):
             for f in findings:
                 results.append(
                     ClassificationAnnotation(
+                        check_name=f["check_name"],
                         summary=f.get("summary", ""),
                         analysis_step=STEP,
                         candidate_classifications=[f["label"]],

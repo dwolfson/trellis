@@ -139,6 +139,8 @@ def _component_annotation(component: dict[str, Any]) -> Annotation:
     proposed_by = component.get("proposed_by") or []
     ctype = component.get("type") or ""
     return ClassificationAnnotation(
+        check_name="proposed_component",
+        item_key=component['path'],
         summary=(
             f"Proposed component: {component.get('name') or component['path']}"
             + (f" — {ctype}" if ctype else " — type not determined")
@@ -186,6 +188,7 @@ def _structural_annotation(every: list[dict], full: dict) -> Annotation:
     ports, wires = _ports_and_wires(full)
     structural_count = sum(1 for h in hierarchy if h["structural"])
     return ResourceMeasureAnnotation(
+        check_name="proposed_hierarchy",
         summary=(
             f"Full proposed hierarchy: {len(hierarchy) - structural_count} component(s), "
             f"{structural_count} grouping node(s), {len(ports)} port(s), {len(wires)} wire(s)"
@@ -253,6 +256,7 @@ def _cluster_annotation(registry, slug: str) -> Annotation | None:
     if not scopes:
         return None
     return ResourceMeasureAnnotation(
+        check_name="blueprint_clusters",
         summary=f"{len(scopes)} candidate blueprint cluster(s) proposed",
         analysis_step=STEP,
         annotation_type_name=TYPE_CLUSTERS,
@@ -283,6 +287,7 @@ def _summary_annotation(
 
     truncated = max(0, len(named) - named_count)
     return ResourceMeasureAnnotation(
+        check_name="architecture_proposal",
         summary=(
             f"Architecture proposal: {named_count} component(s) named "
             f"individually of {len(every)} derived"

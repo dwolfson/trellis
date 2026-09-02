@@ -313,6 +313,7 @@ class CiiBadgeSurveyor(BaseSurveyor):
             out.append(ClassificationAnnotation(
                 summary=headline(findings),
                 analysis_step=STEP,
+                check_name="cii_badge",
                 candidate_classifications=[
                     f["label"] for f in findings if f["detail"]["known"] and f["label"]],
                 confidence=100 if (level and level["detail"]["known"]) else 0,
