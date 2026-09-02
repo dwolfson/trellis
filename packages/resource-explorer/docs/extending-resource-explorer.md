@@ -280,61 +280,64 @@ in a distant literal. That removes the two-places-to-edit problem entirely and
 is how this normally scales. It costs import-time discovery and makes the full
 list harder to read in one place.
 
-### 2. Step elements are duplicated per survey definition — and that may be right
+### 2. Step elements, and the implementation layer we do not model
 
-Measured 2026-09-02 across the ten committed definitions:
+**Unresolved — do not act on this section without checking Egeria first.** It
+is recorded because the question has to be answered before the database and
+filesystem step sets are authored, and because two confident answers have
+already been wrong.
+
+The measurement, 2026-09-02 across the ten committed definitions:
 
     109 distinct GovernanceActionProcessStep elements
      40 distinct step_keys
-    2.7x
 
-`repo_file_inventory` exists as **seven separate Egeria elements**, one per
-process that uses it, each with its own qualified name
-(`GovActionProcessStep::{Process}::{step_key}`).
+`repo_file_inventory` exists as **seven separate elements**, one per process,
+each qualified `GovActionProcessStep::{Process}::{step_key}`.
 
-An earlier draft of this section called that redundancy. Dan confirmed
-2026-09-02 that **one step CAN belong to multiple `GovernanceActionProcess`es**
-— so the duplication is our generator's choice, not a limit of the model. But
-looking at how the generator actually chains steps changes the conclusion
-rather than confirming it.
+**What we got wrong twice.** First reading: redundancy to be deduplicated.
+Second reading, after Dan said one step can belong to several processes: a
+deliberate trade, because `NextGovernanceActionProcessStep` chains step-to-step
+and a shared element would have ambiguous successors. Then Dan again:
 
-Ordering is expressed as `NextGovernanceActionProcessStep`, **step to step**:
+> "I may have conflated process step and its implementation GovernanceAction —
+> there is a shared implementation but maybe the step is unique per survey"
 
-    GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
-      -> GovActionProcessStep::RepoCoarseProfile::repo_manifest_parse
-      Guard: Any
+Which is a different model entirely, and a very ordinary one: the **step** is a
+position in a chain and is naturally unique per process; the **implementation**
+is shared and referenced by many steps.
 
-If `repo_file_inventory` were a single shared element, all seven processes'
-"next" relationships would hang off **that one element**. Traversing from it
-would show seven possible successors, and the only discriminator available on
-that relationship is the **Guard** — which is a runtime condition, not a
-structural one. Encoding "which process am I in" as a guard would conflate the
-two.
+**If that is the model, today's 109 step elements are correct** and the defect
+is elsewhere — we do not model the implementation layer at all:
 
-So the trade is:
+- Egeria has `GovernanceActionType`, and Dr.Egeria has a
+  `Create Governance Action Type` command.
+- **Zero** survey definitions use it. Confirmed by grep.
+- Instead each step names its implementation informally, as an
+  `additionalProperties` entry: `re_analysis_step: repo_file_inventory`.
+- The only place we use the command at all is
+  `docs/dr-egeria/re-delegated-step-probe.md`, the delegated-step experiment.
 
-| | membership | unambiguous linear chain |
-|---|---|---|
-| shared step elements | yes | no — successors ambiguous across processes |
-| per-process elements (today) | yes | yes |
+So the plausible target shape is **40 action types, one per step_key, each
+referenced by the process steps that use it** — descriptions living once
+instead of seven times, and the informal `re_analysis_step` property replaced
+by a real relationship to a real element.
 
-**The 2.7x is plausibly the price of unambiguous chaining rather than waste**,
-and the multiplier grows with bundles, not with resource types — adding
-database and filesystem steps adds elements linearly, not multiplicatively,
-because those steps appear in their own bundles.
+**What to check in Egeria before building any of it:**
 
-What is still worth fixing is narrower: the **description is copied into every
-duplicate**, so correcting one means correcting N. That is a generator
-concern, not a model one.
+1. Is the step→implementation link a first-class relationship
+   (`GovernanceActionProcessStep` → `GovernanceActionType` /
+   `GovernanceActionExecutor`), and what is it called?
+2. Does a `GovernanceActionType` carry the description, or does the step?
+   That decides whether the copied-description problem actually goes away.
+3. Can a `GovernanceActionProcessStep` legitimately belong to more than one
+   process, independent of the above? The two questions are separable and
+   conflating them is what produced the first two wrong answers here.
+4. Is `Guard` a runtime condition only, or can it carry structural identity?
 
-Two things to confirm with the Egeria side before treating any of this as
-settled, neither verified here:
-
-1. Is `NextGovernanceActionProcessStep` the only ordering mechanism, or does
-   the process-to-step link carry order independently? If the latter, shared
-   steps chain cleanly and the duplication really is avoidable.
-2. Is `Guard` intended to carry process identity? The reading above says no,
-   but that is inference from the type name, not from the specification.
+**What is NOT urgent, either way:** this does not block database or filesystem
+steps. The element count grows with **bundles**, not with resource types — new
+resource types bring their own bundles, so the growth is linear.
 
 ### 3. What is worth exposing, and what is not
 
