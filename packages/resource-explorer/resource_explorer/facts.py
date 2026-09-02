@@ -609,6 +609,39 @@ class FactLayer:
                      "action rather than findings.",
             )
 
+        # A live-read analysis does not depend on a survey step having run:
+        # its reader queries a table populated at ingestion. Gating it on run
+        # attribution reports "cannot be determined" about data sitting in
+        # the table — measured 2026-09-02, api_structure said not_established
+        # for a repo with 8,654 symbols. Read first, and only fall through to
+        # the run gate if there is genuinely nothing there.
+        # NOT `getattr(entry, "live_read")` — REPO_ANALYSIS_RESULTS_MAP is a
+        # DERIVED VIEW holding a (results_reader, trend_reader) tuple, not the
+        # AnalysisKindResults object. Reading the flag off `entry` silently
+        # returned False for everything, so the branch below never ran and the
+        # first version of this fix did nothing at all. Read it from the
+        # registry that actually carries it.
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS)
+
+        _kind = ANALYSIS_KINDS.get(analysis_id)
+        live = bool(getattr(getattr(_kind, "results", None), "live_read", False))
+        if live and not run.get("last_run_at"):
+            try:
+                value = self._read_results(slug, analysis_id, entry)
+            except Exception as exc:
+                log.debug("live read failed for %s/%s: %s", slug, analysis_id, exc)
+                value = {}
+            if _has_content(value):
+                return Fact(
+                    analysis_id=analysis_id, state=MEASURED, value=value,
+                    headline=self._headline_for(analysis_id, slug),
+                    provenance=self._provenance_for(value), can_run=can_run,
+                    note="Read live from data refreshed at ingestion, not from a "
+                         "recorded survey run — current regardless of when a survey "
+                         "last ran.",
+                )
+
         if not run.get("last_run_at"):
             # The three-state distinction from the Analyses cards, carried
             # through: a repo surveyed by runs too old to record their steps

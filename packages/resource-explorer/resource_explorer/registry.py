@@ -3855,6 +3855,113 @@ class ProjectRegistry:
             ).fetchall()
         return {r["status"]: int(r["n"]) for r in rows}
 
+    def preview_outbox_cancel(
+        self, run_id: str = "", entity_slug: str = "", element_kind: str = "",
+        created_before: str = "",
+    ) -> dict:
+        """What cancel_outbox_batch would affect, WITHOUT changing anything.
+
+        Exists because the first hand-written DELETE that cancelled a bad
+        batch on 2026-09-01 matched 39,603 of 48,113 rows — two buggy survey
+        runs were queued, not one. Printing the count first is the only
+        reason 8,510 bogus annotations were not left to publish on the next
+        restart. So the count is not an optional courtesy here; it is the
+        step that makes the operation safe, and it gets its own method so it
+        cannot be skipped by forgetting to run a query by hand.
+
+        Returns matched/total_cancellable/surviving plus a per-run
+        breakdown — because "matched" alone cannot tell you whether the
+        selection is the whole of the problem or part of it.
+        """
+        where, args = self._outbox_cancel_where(
+            run_id, entity_slug, element_kind, created_before)
+        with self._conn() as conn:
+            matched = conn.execute(
+                f"SELECT COUNT(*) AS n FROM egeria_outbox WHERE {where}",  # noqa: S608
+                args,
+            ).fetchone()["n"]
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox "
+                "WHERE status IN ('pending', 'failed')"
+            ).fetchone()["n"]
+            by_run = conn.execute(
+                f"SELECT run_id, COUNT(*) AS n FROM egeria_outbox WHERE {where} "  # noqa: S608
+                "GROUP BY run_id ORDER BY n DESC",
+                args,
+            ).fetchall()
+        return {
+            "matched": matched,
+            "total_cancellable": total,
+            "surviving": total - matched,
+            "by_run": {r["run_id"]: r["n"] for r in by_run},
+        }
+
+    def cancel_outbox_batch(
+        self, run_id: str = "", entity_slug: str = "", element_kind: str = "",
+        created_before: str = "", reason: str = "",
+    ) -> int:
+        """Cancel queued outbox work. Returns rows cancelled.
+
+        Queued work that turns out to be wrong is the normal consequence of
+        finding a bug in something that already ran, and until now there was
+        no supported way to stop it: purge_outbox_completed() handles 'done'
+        rows only, deliberately, so cancelling meant a hand-written DELETE
+        against live data.
+
+        Rows are marked **cancelled, not deleted** — the record of the
+        mistake is worth more than the disk it occupies, and a deleted row
+        cannot answer "why did 48,000 annotations never reach Egeria".
+        claim_due_outbox_elements() selects status IN ('pending','failed'),
+        so a cancelled row is inert without any change there.
+
+        At least one filter is required. A call with no arguments would
+        cancel every queued row in the system, which is never what anyone
+        means; it raises instead.
+        """
+        if not any((run_id, entity_slug, element_kind, created_before)):
+            raise ValueError(
+                "cancel_outbox_batch needs at least one filter — an unfiltered "
+                "call would cancel every queued row. Pass run_id, entity_slug, "
+                "element_kind or created_before."
+            )
+        where, args = self._outbox_cancel_where(
+            run_id, entity_slug, element_kind, created_before)
+        note = f"cancelled: {reason}" if reason else "cancelled"
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE egeria_outbox SET status = 'cancelled', "  # noqa: S608
+                f"last_error = ?, completed_at = ? WHERE {where}",
+                [note, now, *args],
+            )
+        return cur.rowcount or 0
+
+    @staticmethod
+    def _outbox_cancel_where(
+        run_id: str, entity_slug: str, element_kind: str, created_before: str,
+    ) -> tuple[str, list]:
+        """Shared predicate, so preview and cancel can never disagree.
+
+        Only 'pending' and 'failed' are cancellable: 'done' rows already
+        reached Egeria and cancelling one would misrepresent what happened,
+        and 'dead' rows are the ones a human is meant to look at.
+        """
+        where = ["status IN ('pending', 'failed')"]
+        args: list = []
+        if run_id:
+            where.append("run_id = ?")
+            args.append(run_id)
+        if entity_slug:
+            where.append("entity_slug = ?")
+            args.append(entity_slug)
+        if element_kind:
+            where.append("element_kind = ?")
+            args.append(element_kind)
+        if created_before:
+            where.append("created_at < ?")
+            args.append(created_before)
+        return " AND ".join(where), args
+
     def purge_outbox_completed(self, older_than_days: int = 14) -> int:
         """Drop 'done' rows past the retention window. Returns rows removed.
 

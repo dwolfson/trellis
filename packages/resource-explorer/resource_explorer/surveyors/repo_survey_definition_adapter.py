@@ -2969,6 +2969,17 @@ class AnalysisKindResults:
     # tile for a phase's "is it worth proceeding" summary row. Optional:
     # None for kinds with no results view at all (repository_health).
     headline_reader: Callable | None = None
+    #: True when the results reader does NOT depend on a survey step having
+    #: run — it reads a table populated elsewhere (ingestion) and is current
+    #: by construction.
+    #:
+    #: Without this, FactLayer.fact() gates on "was this analysis among the
+    #: recorded steps of a survey run", which for a live-read analysis asks
+    #: the wrong question. Measured 2026-09-02: api_structure reported
+    #: `not_established` ("cannot be determined") for egeria_python_git while
+    #: its reader returned 8,654 symbols from project_code_symbols — data
+    #: that was current, sitting in the table, and reported as unknowable.
+    live_read: bool = False
 
 
 @dataclass
@@ -3097,7 +3108,12 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "api_structure": AnalysisKind(
         "api_structure", ["repo_api_structure"],
         results=AnalysisKindResults(
-            _api_structure_results, _api_structure_trend, "custom", headline_reader=_api_structure_headline,
+            _api_structure_results, _api_structure_trend, "custom",
+            headline_reader=_api_structure_headline,
+            # project_code_symbols is repopulated at INGESTION, not survey
+            # time — this reader's own comment says so. Gating it on "was
+            # this step among a recorded survey run" asks the wrong question.
+            live_read=True,
         ),
     ),
     "sub_resource_survey": AnalysisKind(
