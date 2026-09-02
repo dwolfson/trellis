@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Sequence
 
 
 class AnnotationType(str, Enum):
@@ -41,6 +41,43 @@ class Annotation:
     source: str = "local"                   # 'local' | 'egeria' | 'pending'
     #: Index, within this same run()'s returned annotations list, of the
     #: annotation this one is evidence *for* — e.g. a per-file
+    #: A stable identity for the CHECK this annotation reports, within its
+    #: analysis. Optional only until every surveyor supplies one.
+    #:
+    #: Added 2026-09-02 because the published qualifiedName was
+    #: f"{prefix}::{i}" — the enumeration index within the run — and positions
+    #: are not stable across runs. Measured on egeria_git's two largest
+    #: published runs, over 115 overlapping indices, the same index meant the
+    #: same finding 0 times. So a check could not be followed through time
+    #: even though every value worth trending was already published.
+    #:
+    #: `check_name` matches the vocabulary project_analysis_findings already
+    #: uses, so an annotation and its finding row name the same thing.
+    check_name: str = ""
+    #: Discriminates one item within a LIST-SHAPED check — a check that emits
+    #: one finding per item rather than one per check.
+    #:
+    #: Required whenever a check emits more than one annotation in a run:
+    #: measured over 27,710 (slug, kind, run, check_name) groups, 15.1%
+    #: collide, all of them list-shaped (architecture_*, cve_scan,
+    #: secret_scan). Only the surveyor knows what identifies its item —
+    #: "path:line" for a secret, the term for a doc-lens finding, the package
+    #: for an advisory. scope_locator does not discriminate them, and hashing
+    #: the detail would produce an identity that changes when an unrelated
+    #: field does.
+    item_key: str = ""
+    #: The finding's VERDICT — "pass" / "gap" / "unverified" for a check,
+    #: a quality tier for a graded one. Distinct from `summary` (prose) and
+    #: from `confidence` (how sure we are of it).
+    #:
+    #: Added alongside check_name so the project_analysis_findings row can be
+    #: DERIVED from the annotation instead of hand-written beside it. The two
+    #: had already drifted: security_hygiene's SECURITY.md check published
+    #: confidence=90 on the annotation and stored a finding that omitted
+    #: confidence and so defaulted to 100 — same check, same run, two numbers.
+    #: Derivation makes that class of drift impossible rather than merely
+    #: avoided by care. See docs/annotation-finding-collapse-design.md.
+    label: str = ""
     #: SchemaAnalysisAnnotation's evidence_of points at the index of its
     #: sub-surveyor's aggregate ResourceMeasureAnnotation. `None` (default)
     #: means "not evidence of anything in this run" — every existing
@@ -298,3 +335,127 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
          "items": v["items"]}
         for (step, ann_type), v in list(by_step.items())[:limit]
     ]
+
+
+def assert_unique_qualified_names(prefix: str, annotations) -> None:
+    """Raise if two annotations in one run would publish the same identity.
+
+    This is the guard the whole scheme rests on. A colliding qualifiedName does
+    not fail loudly on its own: the second create is rejected by Egeria as a
+    duplicate, apply_element adopts the existing GUID, and the run reports
+    success having published ONE element where two were produced. Silent loss,
+    reported as a clean publish.
+
+    A collision means a list-shaped check emitted several annotations without
+    an `item_key`. Measured over 27,710 stored (slug, kind, run, check_name)
+    groups, 15.1% are list-shaped, so this is the common case for exactly the
+    analyses most likely to be extended: architecture_*, cve_scan, secret_scan.
+
+    Raised rather than logged, and raised BEFORE anything is written: a partial
+    publish is harder to reason about than a refused one.
+    """
+    seen: dict[str, int] = {}
+    for i, ann in enumerate(annotations):
+        qn = annotation_qualified_name(prefix, i, ann)
+        if qn in seen:
+            check = getattr(ann, "check_name", "") or "(none)"
+            raise ValueError(
+                f"Two annotations would publish the same qualifiedName {qn!r} "
+                f"(indices {seen[qn]} and {i}). check_name={check!r} emits more "
+                f"than one annotation per run, so it is list-shaped and each "
+                f"one needs a distinct `item_key` — the surveyor knows what "
+                f"identifies its item (a path and line, a term, a package)."
+            )
+        seen[qn] = i
+
+
+def finding_from_annotation(annotation) -> dict:
+    """Derive one project_analysis_findings row from the annotation that IS
+    the observation.
+
+    The point is not convenience. Before this, a surveyor wrote the annotation
+    and then wrote the finding again by hand, and the two drifted with nothing
+    to catch it — no exception, no failing test, two stores quietly disagreeing
+    about the same check in the same run. Deriving means a value can only be
+    wrong in both places at once, which is a discrepancy a reader can see.
+
+    `detail` is assembled from the fields that carry the annotation's specifics
+    (candidate_classifications, the RFA's action pair) plus json_properties, so
+    nothing the hand-written rows carried is dropped.
+    """
+    # json_properties is the free-form bag and goes in FIRST, so a key
+    # collision cannot be how a structured field silently disappears — the
+    # typed field is the annotation's own answer and wins.
+    detail: dict[str, Any] = dict(annotation.json_properties)
+    candidates = getattr(annotation, "candidate_classifications", None)
+    if candidates:
+        detail["candidate_classifications"] = list(candidates)
+    action_requested = getattr(annotation, "action_requested", "")
+    if action_requested:
+        detail["action_requested"] = action_requested
+    action_target = getattr(annotation, "action_target_name", "")
+    if action_target:
+        detail["action_target_name"] = action_target
+
+    # project_analysis_findings has no column for these two, so they ride in
+    # detail_json rather than being dropped — the explanation is exactly what
+    # the hand-written finding rows were missing.
+    if annotation.explanation:
+        detail.setdefault("explanation", annotation.explanation)
+    if annotation.item_key:
+        detail.setdefault("item_key", annotation.item_key)
+
+    return {
+        "check_name": annotation.check_name,
+        "item_key": annotation.item_key,
+        "label": annotation.label,
+        "summary": annotation.summary,
+        "confidence": annotation.confidence,
+        "detail": detail or None,
+    }
+
+
+def findings_from_annotations(annotations: Sequence) -> list[dict]:
+    """Derive finding rows for every annotation carrying a `label`.
+
+    An annotation without one is not a finding — it is a measure, a
+    relationship, or a warning — so it is skipped rather than stored with an
+    empty verdict.
+    """
+    return [finding_from_annotation(a) for a in annotations if a.label]
+
+
+def annotation_qualified_name(prefix: str, index: int, annotation) -> str:
+    """The published identity of one annotation.
+
+    ONE function, because there are two call sites — the outbox
+    (egeria_outbox.enqueue_annotations) and the direct path
+    (annotation_props.publish_annotations) — and a qualifiedName that differed
+    between them would make a retry create a second element instead of
+    converging on the one already written.
+
+    Shape:  {prefix}::{check_name}[::{item_key}]     when check_name is set
+            {prefix}::{index}                        otherwise (legacy)
+
+    The legacy form is the positional scheme this replaces: the enumeration
+    index within the run. Positions are not stable — measured on egeria_git's
+    two largest published runs, across 115 overlapping indices, the same index
+    meant the same finding 0 times — so a check could not be followed through
+    time. It remains the fallback only while surveyors are migrated, and it is
+    a fallback rather than a removal so that a surveyor which has not been
+    updated still publishes rather than failing.
+
+    Separators are escaped, not stripped: a check_name or item_key containing
+    "::" would otherwise silently change the shape of the name and could
+    collide with a different annotation's identity.
+    """
+    check = _sanitise_name_part(getattr(annotation, "check_name", "") or "")
+    if not check:
+        return f"{prefix}::{index}"
+    item = _sanitise_name_part(getattr(annotation, "item_key", "") or "")
+    return f"{prefix}::{check}::{item}" if item else f"{prefix}::{check}"
+
+
+def _sanitise_name_part(value: str) -> str:
+    """Make one qualifiedName segment safe to join with '::'."""
+    return value.replace("::", ":_:").strip()
