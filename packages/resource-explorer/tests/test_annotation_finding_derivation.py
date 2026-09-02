@@ -188,3 +188,55 @@ class TestInconclusiveIsNotStoredAsCertain:
                 assert '"confidence"' in window, (
                     f"{name}.py:{i+1} stores a scan_summary finding with no "
                     f"confidence, so an inconclusive run reads as certain")
+
+
+class TestTwoSecretsOnOneLine:
+    """The collision a real survey found and static analysis did not.
+
+    egeria_trellis has two `generic-api-key` matches at
+    packages/egeria-advisor/cache/doc_sections.json:24201 — one long JSON line,
+    two hits of the same rule. The first item_key was path:line:rule_id, which
+    assumed that triple identifies a match. It does not, and the two
+    annotations would have published the same qualifiedName: Egeria rejects the
+    duplicate, apply_element adopts the existing GUID, and the run reports
+    success having written one where two were produced.
+
+    The byte offset is what separates them, so it is now a field on SecretMatch
+    rather than something reconstructed later.
+    """
+
+    def _match(self, offset):
+        from resource_explorer.surveyors.sub_surveyors.secret_ruleset import SecretMatch
+        return SecretMatch(
+            rule_id="generic-api-key", description="Generic API Key",
+            path="packages/egeria-advisor/cache/doc_sections.json", line=24201,
+            excerpt="****", offset=offset)
+
+    def test_the_offset_distinguishes_two_hits_of_one_rule_on_one_line(self):
+        a, b = self._match(982_144), self._match(982_301)
+        keys = {f"{m.path}:{m.line}:{m.offset}:{m.rule_id}" for m in (a, b)}
+        assert len(keys) == 2, "two distinct matches must not share an item_key"
+
+    def test_without_the_offset_they_would_have_collided(self):
+        """Known-positive: the old key really does collapse them, so the test
+        above is checking something rather than passing by construction."""
+        a, b = self._match(982_144), self._match(982_301)
+        old = {f"{m.path}:{m.line}:{m.rule_id}" for m in (a, b)}
+        assert len(old) == 1
+
+    def test_the_scanner_records_a_real_offset(self):
+        """A defaulted -1 reaching a real scan would make every match on a line
+        collide again, silently."""
+        src = (pathlib.Path(__file__).parent.parent / "resource_explorer" / "surveyors"
+               / "sub_surveyors" / "secret_ruleset.py").read_text()
+        assert "offset=m.start()," in src
+
+    def test_two_such_annotations_do_not_collide_end_to_end(self):
+        from resource_explorer.surveyors.survey_report import (
+            RequestForActionAnnotation, assert_unique_qualified_names)
+        anns = [RequestForActionAnnotation(
+                    summary="Possible secret", analysis_step="repo_secret_scan",
+                    check_name="secret_pattern",
+                    item_key=f"{m.path}:{m.line}:{m.offset}:{m.rule_id}")
+                for m in (self._match(982_144), self._match(982_301))]
+        assert_unique_qualified_names("P", anns)     # raises on collision

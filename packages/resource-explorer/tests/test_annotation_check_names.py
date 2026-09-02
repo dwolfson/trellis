@@ -83,6 +83,31 @@ KNOWN_EXCLUSIVE = {
 }
 
 
+def _alias_names(tree):
+    """Names bound to an annotation class rather than called directly.
+
+    cve_scan picks its class at runtime —
+        annotation = RequestForActionAnnotation if findings else ResourceMeasure...
+        out.append(annotation(...))
+    — so a scan matching only literal constructor names reports it as absent.
+    That is exactly how this check first returned "118/118 named" while a real
+    survey found an unnamed annotation: the constructor reached the call
+    through a variable. Resolving the alias is the difference between the scan
+    checking the code and the scan checking the spelling.
+    """
+    aliases = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if not targets:
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Name) and sub.id in ANNOTATION_CTORS:
+                aliases.update(targets)
+    return aliases
+
+
 def _sites():
     """(relative path, lineno, ctor, keyword names) for every annotation built
     under surveyors/, excluding the deferred FS/DB path."""
@@ -90,9 +115,11 @@ def _sites():
         rel = str(f.relative_to(SURVEYORS))
         if rel in DEFERRED:
             continue
-        for node in ast.walk(ast.parse(f.read_text())):
+        tree = ast.parse(f.read_text())
+        callable_names = ANNOTATION_CTORS | _alias_names(tree)
+        for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id in ANNOTATION_CTORS):
+                    and node.func.id in callable_names):
                 yield rel, node.lineno, node.func.id, {k.arg for k in node.keywords}
 
 
@@ -159,3 +186,23 @@ def test_the_exclusivity_allowlist_has_no_stale_entries():
                     live[(rel, n.value)].append(node.lineno)
     stale = [k for k in KNOWN_EXCLUSIVE if len(live.get(k, [])) < 2]
     assert not stale, f"KNOWN_EXCLUSIVE entries that no longer share a name: {stale}"
+
+
+def test_the_scan_resolves_a_class_reached_through_a_variable():
+    """Known-positive for the scanner itself.
+
+    cve_scan.py:403 calls its annotation class through a variable bound one
+    line earlier. A scan matching only literal constructor names reports
+    "every annotation is named" while that one is not — which is what happened:
+    the static check said 118/118 and a real survey of `workshops` found an
+    unnamed RequestForActionAnnotation from CveScan.
+
+    If this site ever stops being seen, the whole file is checking spelling
+    rather than code, and every other test here weakens silently.
+    """
+    aliased = [(rel, line) for rel, line, ctor, _ in _sites()
+               if ctor not in ANNOTATION_CTORS]
+    assert aliased, (
+        "The scan no longer resolves any variable-bound annotation class. "
+        "Either the pattern was removed from the code (check cve_scan.py) or "
+        "_alias_names() stopped working — the second is the dangerous one.")

@@ -168,6 +168,13 @@ class SecretMatch:
     line: int
     #: Truncated/masked — see mask_excerpt(). Never the raw matched text.
     excerpt: str
+    #: Byte offset of the match within the file. The only field that separates
+    #: two hits of the SAME rule on the SAME line — which happens: egeria_trellis
+    #: has two `generic-api-key` matches at doc_sections.json:24201, on one long
+    #: JSON line. Without it their published qualifiedNames collide and one is
+    #: silently dropped on publish. Defaulted so existing constructions and
+    #: fixtures keep working; every real scan sets it.
+    offset: int = -1
 
 
 @dataclass
@@ -220,6 +227,7 @@ class SecretRuleset:
                 matches.append(SecretMatch(
                     rule_id=rule.rule_id, description=rule.description,
                     path=rel_path, line=line, excerpt=mask_excerpt(value),
+                    offset=m.start(),
                 ))
         return matches
 

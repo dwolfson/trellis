@@ -219,7 +219,7 @@ class SecretScanSurveyor(BaseSurveyor):
                 results.append(
                     RequestForActionAnnotation(
                         check_name="secret_pattern",
-                        item_key=f"{m.path}:{m.line}:{m.rule_id}",
+                        item_key=f"{m.path}:{m.line}:{m.offset}:{m.rule_id}",
                         summary=f"Possible secret: {m.description}",
                         analysis_step=STEP,
                         action_requested=(

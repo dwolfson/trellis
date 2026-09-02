@@ -402,6 +402,7 @@ class CveScanSurveyor(BaseSurveyor):
             annotation = (RequestForActionAnnotation if findings else ResourceMeasureAnnotation)
             out.append(annotation(
                 summary=summary, analysis_step=STEP,
+                check_name="cve_scan",
                 json_properties={**coverage, **outcome.as_row()},
             ))
         except Exception as exc:
