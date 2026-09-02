@@ -78,3 +78,80 @@ class TestApiStructureSurveyor:
         results = ApiStructureSurveyor(project, registry).run()
         measure = next(r for r in results if isinstance(r, ResourceMeasureAnnotation))
         assert measure.resource_properties["relationship_count"] == 0
+
+
+# ── D3: the complexity summary reaches the metric, per language ─────────────
+#
+# docs/code-volume-and-doc-coverage-design.md D3. This surveyor computed a
+# per-language complexity summary, put it in the SchemaAnalysisAnnotation, and
+# then persisted only symbol_count/relationship_count/by_language — so the
+# question layer could never read it. "How complex?" was a GAP for a number
+# that already existed at survey time.
+#
+# The guard matters as much as the feature, and was nearly missed. An earlier
+# draft of the design doc claimed complexity was populated for all four
+# languages "unlike docstrings", derived from
+# `COUNT(*) WHERE complexity IS NOT NULL` — which counts a stored 0 as
+# populated. The distribution says otherwise: go and javascript have exactly
+# ONE distinct complexity value across 62,403 and 35,764 functions, because
+# their extractors contain no `complexity=` assignment at all.
+#
+# Measured on milvus 2026-09-01:
+#
+#     naive average across all languages:  0.32   (n = 71,798)
+#     guarded (python only):               2.69   (n =  8,662)
+#
+# 0.32 would read as trivially simple code for a distributed vector database,
+# purely because 61,614 Go functions are recorded as zero.
+class TestComplexityIsPersistedPerLanguage:
+    def test_complexity_reaches_the_metric(self, registry, project):
+        registry.upsert_code_symbols("apiproj", [
+            _symbol(name="a", qualified_name="a", kind="function", complexity=5),
+            _symbol(name="b", qualified_name="b", kind="function", complexity=1),
+        ])
+        ApiStructureSurveyor(project, registry).run()
+
+        import json
+        detail = registry.query_metrics("apiproj", "api_structure").get("detail")
+        detail = json.loads(detail) if isinstance(detail, str) else (detail or {})
+        assert detail["complexity_by_language"]["python"]["max"] == 5
+        assert detail["complexity_by_language"]["python"]["avg"] == 3.0
+        assert detail["complexity_by_language"]["python"]["measured_over"] == 2
+
+    def test_a_language_that_never_computes_complexity_is_excluded_and_named(
+            self, registry, project):
+        """The known-negative. Drop _COMPLEXITY_CAPABLE_LANGUAGES and go's
+        zeros enter the summary, reporting max=0 avg=0 for real code."""
+        registry.upsert_code_symbols("apiproj", [
+            _symbol(name="g", qualified_name="g", kind="function",
+                    language="go", file_path="m.go", complexity=0),
+            _symbol(name="p", qualified_name="p", kind="function", complexity=7),
+        ])
+        ApiStructureSurveyor(project, registry).run()
+
+        import json
+        detail = registry.query_metrics("apiproj", "api_structure").get("detail")
+        detail = json.loads(detail) if isinstance(detail, str) else (detail or {})
+        assert "go" not in detail["complexity_by_language"], (
+            "go stores 0 for every symbol because its extractor never computes "
+            "complexity — including it reports 'trivially simple' for unmeasured code"
+        )
+        assert detail["complexity_languages_not_measured"] == ["go"], (
+            "an excluded language must be NAMED, not silently absent"
+        )
+        assert detail["complexity_by_language"]["python"]["max"] == 7
+
+    def test_no_aggregate_across_languages_is_published(self, registry, project):
+        """There must be no single repo-wide complexity number to misread.
+        Averaging java and python is defensible; averaging in go's zeros is
+        not, and one field invites the second."""
+        registry.upsert_code_symbols("apiproj", [
+            _symbol(name="p", qualified_name="p", kind="function", complexity=7),
+        ])
+        ApiStructureSurveyor(project, registry).run()
+
+        metrics = registry.query_metrics("apiproj", "api_structure")
+        assert "complexity" not in metrics, (
+            "complexity must be reported per language only, never as one "
+            f"repo-wide scalar: {metrics}"
+        )

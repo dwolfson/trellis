@@ -20,6 +20,26 @@ log = logging.getLogger(__name__)
 STEP = "ApiStructureAnalysis"
 
 # Symbol kinds treated as public API surface
+#: Languages whose symbol extractor actually computes cyclomatic complexity.
+#:
+#: go_symbol_extractor.py and js_symbol_extractor.py contain NO `complexity=`
+#: assignment at all, so every row they write defaults to 0. Measured over the
+#: live symbol table 2026-09-01, functions and methods only:
+#:
+#:     java        179,668  min 1  max 348  avg 1.59  55 distinct values
+#:     python       97,833  min 1  max 186  avg 2.64  84 distinct values
+#:     go           62,403  min 0  max   0  avg 0.00   1 distinct value
+#:     javascript   35,764  min 0  max   0  avg 0.00   1 distinct value
+#:
+#: A stored 0 here means "never measured", not "trivially simple", and the two
+#: are indistinguishable once averaged: an aggregate across all four languages
+#: is dragged toward zero by 98,167 symbols nobody computed. Same gap, same two
+#: languages, as _DOCSTRING_CAPABLE_LANGUAGES in documentation.py — and it was
+#: nearly missed here because `COUNT(*) WHERE complexity IS NOT NULL` counts a
+#: zero as populated.
+_COMPLEXITY_CAPABLE_LANGUAGES = frozenset({"python", "java"})
+
+
 _PUBLIC_KINDS = {"function", "class", "method"}
 
 
@@ -59,19 +79,32 @@ class ApiStructureSurveyor(BaseSurveyor):
         return STEP
 
     def _record(self, outcome: StepOutcome, *, symbol_count: int,
-                relationship_count: int, by_language: dict) -> None:
+                relationship_count: int, by_language: dict,
+                complexity_by_language: dict | None = None,
+                complexity_languages_not_measured: list | None = None) -> None:
         """Generic project_analysis_metrics row — symbol/relationship counts as
         the two trendable metrics, by_language as this run's detail blob.
 
         Written on every terminal path, including the zero. A trend that simply
         has no point for a run cannot be read: the gap means "no symbols",
         "step not selected" and "extraction never ran" all at once.
+
+        `complexity_by_language` carries the per-language summary this surveyor
+        already computed and previously dropped (D3). It is deliberately NOT
+        reduced to one number: see _COMPLEXITY_CAPABLE_LANGUAGES for why an
+        aggregate across all four languages is meaningless, and
+        `complexity_languages_not_measured` for the ones left out, which are
+        named rather than silently absent.
         """
         try:
             self.registry.upsert_metric(
                 self.project.slug, "api_structure",
                 {"symbol_count": symbol_count, "relationship_count": relationship_count},
-                detail={"by_language": by_language, **outcome.as_row()},
+                detail={"by_language": by_language,
+                        "complexity_by_language": complexity_by_language or {},
+                        "complexity_languages_not_measured":
+                            complexity_languages_not_measured or [],
+                        **outcome.as_row()},
                 surveyed_at=self._surveyed_at,
                 scope_locator=self._scope_locator,
             )
@@ -151,6 +184,7 @@ class ApiStructureSurveyor(BaseSurveyor):
                 by_lang[r["language"]].append(r)
                 kind_counts[r["kind"]] += 1
 
+            complexity_by_language: dict[str, dict] = {}
             for language, symbols in sorted(by_lang.items()):
                 public = [s for s in symbols if s["kind"] in _PUBLIC_KINDS]
                 module_files = list({s["file_path"] for s in symbols})
@@ -162,6 +196,10 @@ class ApiStructureSurveyor(BaseSurveyor):
                     "max": max(complexities) if complexities else 0,
                     "avg": round(sum(complexities) / len(complexities), 1) if complexities else 0,
                 }
+                if language in _COMPLEXITY_CAPABLE_LANGUAGES and complexities:
+                    complexity_by_language[language] = {
+                        **complexity_summary, "measured_over": len(complexities),
+                    }
                 lang_class_names = {s["qualified_name"] for s in symbols if s["kind"] == "class"}
                 lang_relationship_count = sum(
                     1 for r in relationships if r["source_name"] in lang_class_names
@@ -210,6 +248,20 @@ class ApiStructureSurveyor(BaseSurveyor):
                                     no_match_cause="no_symbols_in_scope"),
                 symbol_count=len(rows), relationship_count=len(relationships),
                 by_language={lang: len(syms) for lang, syms in by_lang.items()},
+                # D3 (docs/code-volume-and-doc-coverage-design.md): the
+                # complexity summary was computed per language above and then
+                # dropped on the floor — it reached the SchemaAnalysisAnnotation
+                # and never the metric, so the question layer could not read it.
+                #
+                # Per language, never aggregated across them: go and javascript
+                # store 0 for every symbol because their extractors never
+                # compute it, and a mean over all four would be dragged toward
+                # zero by 98,167 symbols nobody measured. The excluded
+                # languages are named rather than omitted.
+                complexity_by_language=complexity_by_language,
+                complexity_languages_not_measured=sorted(
+                    set(by_lang) - set(complexity_by_language)
+                ),
             )
 
         except Exception as exc:

@@ -897,14 +897,14 @@ repo_questions:
   - Assess
   - Maintain
   answering:
-    kind: gap
+    kind: partial
     analysis_ids:
     - api_structure
     checks: []
-    note: 'GAP: no code/comment line counts exist; ingestion_lines_of_code is all text lines, not code
-      (14% accurate on egeria-python). Complexity is computed by api_structure but never persisted as
-      a metric.'
-  answering_mechanism: Gap
+    note: 'PARTIAL: api_structure answers ''how complex'' (per-language max/mean, python and java only).
+      Lines of code remain a GAP — ingestion_lines_of_code is all text lines, not code (14% accurate on
+      egeria-python).'
+  answering_mechanism: Code Analysis
 - question: What are the public interfaces?
   stage: Discovery
   perspectives:
