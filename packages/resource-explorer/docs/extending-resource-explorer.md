@@ -280,64 +280,86 @@ in a distant literal. That removes the two-places-to-edit problem entirely and
 is how this normally scales. It costs import-time discovery and makes the full
 list harder to read in one place.
 
-### 2. Step elements, and the implementation layer we do not model
+### 2. How a step reaches its implementation — resolved
 
-**Unresolved — do not act on this section without checking Egeria first.** It
-is recorded because the question has to be answered before the database and
-filesystem step sets are authored, and because two confident answers have
-already been wrong.
+**Resolved 2026-09-02**, from Egeria's own type archive and handler source
+plus `docs/re-as-engine-host-plan.md`, which had already established most of
+it on 2026-08-17. Three earlier readings in this document were wrong; this
+one is verified and cites where.
 
-The measurement, 2026-09-02 across the ten committed definitions:
+**The dispatch chain.** A step does not point at a shared "action type"
+object. It names a **request type on an engine**, and the engine maps that to
+a service:
 
-    109 distinct GovernanceActionProcessStep elements
-     40 distinct step_keys
+    GovernanceActionProcessStep
+      -(GovernanceActionExecutor { requestType })-> GovernanceEngine
+      -(SupportedGovernanceService { requestType, serviceRequestType })-> GovernanceService
+      -(Connection/ConnectorType)-> the connector class that does the work
 
-`repo_file_inventory` exists as **seven separate elements**, one per process,
-each qualified `GovActionProcessStep::{Process}::{step_key}`.
+`GOVERNANCE_ACTION_EXECUTOR_RELATIONSHIP` and
+`SUPPORTED_GOVERNANCE_SERVICE_RELATIONSHIP` are both defined in
+`OpenMetadataTypesArchive2_6.java` (lines 594 and 367). **So the shared
+implementation is the `GovernanceService`, reached by `requestType` through an
+engine** — which is exactly the thing RE currently gestures at with an
+`additionalProperties` entry (`re_analysis_step: repo_file_inventory`) and no
+relationship at all.
 
-**What we got wrong twice.** First reading: redundancy to be deduplicated.
-Second reading, after Dan said one step can belong to several processes: a
-deliberate trade, because `NextGovernanceActionProcessStep` chains step-to-step
-and a shared element would have ambiguous successors. Then Dan again:
+**How work is dispatched at runtime.** An engine action is announced; engine
+hosts poll their engine's claimable actions and the first to claim it wins.
+`EngineActionHandler.claimEngineAction`'s entire gate, read from source:
 
-> "I may have conflated process step and its implementation GovernanceAction —
-> there is a shared implementation but maybe the step is unique per survey"
+    if ((status == ActivityStatus.APPROVED) && (processingEngineUserId == null))
 
-Which is a different model entirely, and a very ordinary one: the **step** is a
-position in a chain and is naturally unique per process; the **implementation**
-is shared and referenced by many steps.
+**Nothing verifies the claimer is a registered Engine Host, or a JVM.** Any
+caller that can reach the REST API and claim an APPROVED, unclaimed action
+gets it. Completion (`recordCompletionStatus`) requires only that the
+completing userId matches the claimer, and then calls
+`initiateNextEngineActions` server-side — which walks
+`NextGovernanceActionProcessStep`, evaluates guards, and queues the next step.
+**Process chaining is therefore free to whoever completes a step**, which is
+why a Python claimer is viable at all.
 
-**If that is the model, today's 109 step elements are correct** and the defect
-is elsewhere — we do not model the implementation layer at all:
+The five engine-facing endpoints are listed in
+`docs/re-as-engine-host-plan.md` under "Native mechanism recap".
 
-- Egeria has `GovernanceActionType`, and Dr.Egeria has a
-  `Create Governance Action Type` command.
-- **Zero** survey definitions use it. Confirmed by grep.
-- Instead each step names its implementation informally, as an
-  `additionalProperties` entry: `re_analysis_step: repo_file_inventory`.
-- The only place we use the command at all is
-  `docs/dr-egeria/re-delegated-step-probe.md`, the delegated-step experiment.
+**What this settles for the 109-vs-40 question:**
 
-So the plausible target shape is **40 action types, one per step_key, each
-referenced by the process steps that use it** — descriptions living once
-instead of seven times, and the informal `re_analysis_step` property replaced
-by a real relationship to a real element.
+- `GovernanceActionProcessStep` **is a subtype of** `GovernanceActionType`
+  (`OpenMetadataTypesArchive2_6.java:474`) — inheritance, not reference. So
+  adopting `Create Governance Action Type` as an intermediate layer would
+  **not** deduplicate anything.
+- `description` is inherited from `Referenceable` onto every step entity, so
+  the seven copies of `repo_file_inventory`'s description exist because there
+  are seven *entities*, and no type layer changes that.
+- A step **can** legitimately belong to several processes:
+  `GovernanceActionProcessFlow` has `ANY_NUMBER` on the process end and
+  `NextGovernanceActionProcessStep` is `multiLink` with `ANY_NUMBER` both
+  sides. **Reusing one step GUID across processes is the actual dedup lever**,
+  and it is a generator change, not a model change.
+- `Guard` is a runtime predicate only (`OpenMetadataProperty.GUARD`, example
+  value `x>4`). It carries no process identity.
 
-**What to check in Egeria before building any of it:**
+**Still open, and both are tooling rather than model:**
 
-1. Is the step→implementation link a first-class relationship
-   (`GovernanceActionProcessStep` → `GovernanceActionType` /
-   `GovernanceActionExecutor`), and what is it called?
-2. Does a `GovernanceActionType` carry the description, or does the step?
-   That decides whether the copied-description problem actually goes away.
-3. Can a `GovernanceActionProcessStep` legitimately belong to more than one
-   process, independent of the above? The two questions are separable and
-   conflating them is what produced the first two wrong answers here.
-4. Is `Guard` a runtime condition only, or can it carry structural identity?
+1. Whether Dr.Egeria's commands and the view-service handlers can attach an
+   **existing** step GUID as a `firstStep` or `NextGovernanceActionProcessStep`
+   target, or always create a new element. The type model permits reuse; the
+   authoring path may not. Check `GovernanceActionProcessStepHandler` and
+   `ActionAuthorRESTServices`.
+2. Registering a governance service against an engine is a **server-side
+   gap**: `registerGovernanceServiceWithEngine(...)` exists but is wired to no
+   REST endpoint (`GovernanceConfigurationResource` is read-only). Egeria does
+   it via content-pack archive writers. Recorded in
+   `docs/re-as-engine-host-plan.md`.
 
-**What is NOT urgent, either way:** this does not block database or filesystem
-steps. The element count grows with **bundles**, not with resource types — new
-resource types bring their own bundles, so the growth is linear.
+**What this means for RE.** Today every step carries
+`executes_at: resource-explorer` and RE dispatches locally. Making a step
+genuinely Egeria-dispatchable means giving it a real `GovernanceActionExecutor`
+relationship to an engine that supports a matching `requestType` — at which
+point `re_analysis_step` stops being an informal label and becomes the
+request type. That is the shape to aim at when the database and filesystem
+step sets are authored, and it is blocked today by ISSUE-79 rather than by
+anything in this design.
 
 ### 3. What is worth exposing, and what is not
 
