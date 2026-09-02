@@ -640,3 +640,83 @@ class TestDuplicateQualifiedName:
 
         assert not _is_duplicate_qualified_name(RuntimeError("gateway said 409"))
         assert _is_duplicate_qualified_name(RuntimeError(_DUPE))
+
+
+# ── The enqueue cap ─────────────────────────────────────────────────────────
+#
+# 2026-09-01: a pre-fix Committed Secrets run produced 48,583 findings and
+# queued one Egeria element per finding. Two runs left 48,113 rows pending and
+# 9,164 already written into the catalog before the drain was stopped by hand.
+# Nothing in the enqueue path knew how large a batch was.
+#
+# The cap is a safety net against a rule regression or a pathological
+# resource, sized from measured runs: largest legitimate 522 (data_prep_kit,
+# 357 per-file SchemaAnalysisAnnotations), pathological 8,980 and 48,583.
+class TestEnqueueCap:
+    def _anns(self, n):
+        from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+        return [ClassificationAnnotation(summary=f"a{i}", analysis_step="S")
+                for i in range(n)]
+
+    def test_a_normal_run_is_untouched(self, db):
+        from resource_explorer import egeria_outbox as ob
+        ids = ob.enqueue_annotations(db, "repo", "p", self._anns(522),
+                                     "rg", "QN::p::t", run_id="r")
+        assert len(ids) == 522, "a legitimate 522-annotation run must not be capped"
+
+    def test_an_oversized_run_is_capped(self, db, monkeypatch):
+        from resource_explorer import egeria_outbox as ob
+        monkeypatch.setattr(ob, "_MAX_ANNOTATIONS_PER_RUN", 10)
+        ids = ob.enqueue_annotations(db, "repo", "p", self._anns(50),
+                                     "rg", "QN::p::t", run_id="r")
+        assert len(ids) == 10
+
+    def test_the_cap_keeps_original_indices(self, db, monkeypatch):
+        """The known-negative that matters most. qualified_name is
+        f"{prefix}::{i}" and that string is the retry-convergence identity.
+        Renumbering after a cap would mint a different qualifiedName for the
+        same annotation on a re-run, so a replay would create a SECOND element
+        instead of converging on the one already written — the exact
+        duplication the prefix contract exists to prevent."""
+        from resource_explorer import egeria_outbox as ob
+        monkeypatch.setattr(ob, "_MAX_ANNOTATIONS_PER_RUN", 3)
+        ob.enqueue_annotations(db, "repo", "p", self._anns(10),
+                               "rg", "QN::p::t", run_id="r")
+        with db._conn() as conn:
+            names = [r["qualified_name"] for r in conn.execute(
+                "SELECT qualified_name FROM egeria_outbox ORDER BY id").fetchall()]
+        assert names == ["QN::p::t::0", "QN::p::t::1", "QN::p::t::2"]
+
+    def test_the_cap_keeps_the_head_so_summaries_survive(self, db, monkeypatch):
+        """Surveyors emit summary-then-detail — secret_scan's ruleset-freshness
+        and scan-summary annotations are indices 0 and 1, with per-match
+        findings after. A head cap keeps what describes the run."""
+        from resource_explorer import egeria_outbox as ob
+        from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+        anns = [ClassificationAnnotation(summary="SCAN SUMMARY", analysis_step="S")]
+        anns += [ClassificationAnnotation(summary=f"match {i}", analysis_step="S")
+                 for i in range(50)]
+        monkeypatch.setattr(ob, "_MAX_ANNOTATIONS_PER_RUN", 3)
+        ob.enqueue_annotations(db, "repo", "p", anns, "rg", "QN::p::t", run_id="r")
+        with db._conn() as conn:
+            first = conn.execute(
+                "SELECT payload_json FROM egeria_outbox ORDER BY id LIMIT 1"
+            ).fetchone()["payload_json"]
+        assert "SCAN SUMMARY" in first
+
+    def test_capping_is_logged_loudly(self, db, monkeypatch, caplog):
+        """A silently truncated publish looks exactly like a complete one."""
+        import logging
+        from resource_explorer import egeria_outbox as ob
+        monkeypatch.setattr(ob, "_MAX_ANNOTATIONS_PER_RUN", 2)
+        with caplog.at_level(logging.WARNING):
+            ob.enqueue_annotations(db, "repo", "p", self._anns(9),
+                                   "rg", "QN::p::t", run_id="r")
+        assert any("capped" in r.message.lower() and "NOT published" in r.message
+                   for r in caplog.records), caplog.text
+
+    def test_the_cap_is_above_every_legitimate_run_observed(self):
+        """Sized from data, not taste. If this is ever lowered below 522 it
+        would clip a run that really happened."""
+        from resource_explorer.egeria_outbox import _MAX_ANNOTATIONS_PER_RUN
+        assert _MAX_ANNOTATIONS_PER_RUN > 522
