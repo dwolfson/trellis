@@ -1,6 +1,7 @@
 """Orchestrates full ingestion for a project across all selected collection types."""
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,8 @@ from rich.progress import Progress
 from resource_explorer.configdata.collection_config import CollectionType
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -142,6 +145,7 @@ class IngestionPipeline:
                 progress.advance(task)
 
         file_count, loc = self._count_repo_stats(code_root)
+        self._record_line_census(resource_slug, code_root)
         self._store_file_inventory(resource_slug, code_root, repo=repo)
         self._parse_dependencies(resource_slug, code_root)
         self._profile_data_files(resource_slug, code_root)
@@ -264,6 +268,13 @@ class IngestionPipeline:
         with client.zipball_root(repo, subproject_path) as local_root:
             file_count = self._store_file_inventory(resource_slug, local_root, repo=repo, client=client)
             self._profile_data_files(resource_slug, local_root)
+            # The census belongs on the CHEAP path too. It needs the files on
+            # disk and nothing else, and refresh_profile already has them
+            # extracted — requiring a full RAG re-ingest (with re-embedding)
+            # to refresh a line count would price it out of ever being
+            # refreshed, which is how ingestion_lines_of_code came to be NULL
+            # for repos indexed any other way.
+            self._record_line_census(resource_slug, local_root)
             self._parse_ci_workflows(resource_slug, local_root)
             self._parse_supply_chain(resource_slug, local_root)
             self._parse_repo_conventions(resource_slug, local_root)
@@ -387,6 +398,51 @@ class IngestionPipeline:
         ".r", ".md", ".rst", ".txt", ".yaml", ".yml", ".json", ".toml",
         ".html", ".css", ".sh", ".bash", ".sql", ".xml",
     })
+
+    def _record_line_census(self, resource_slug: str, code_root: Path) -> None:
+        """Per-language code/comment/docstring/blank counts (design doc D1).
+
+        This is the honest replacement for `ingestion_lines_of_code`, which
+        counts every newline in every text-suffixed file and is named as
+        though it counted code — 1,118,195 against 156,297 real Python code
+        lines on egeria-python, 14%.
+
+        Written here rather than in a surveyor because this is the only place
+        with the files on disk. Persisted as a `code_volume` metric so the
+        surveyor and the question layer can read it without a second
+        download, the same arrangement `api_structure` already has with
+        `project_code_symbols`.
+
+        Best-effort: a census failure must not fail an ingestion that
+        otherwise succeeded.
+        """
+        try:
+            from resource_explorer.ingestion.line_census import census_tree, code_line_total
+
+            census = census_tree(code_root)
+            if not census:
+                return
+            by_language = {lang: c.as_dict() for lang, c in census.items()}
+            code_total = code_line_total(census)
+            self.registry.upsert_metric(
+                resource_slug, "code_volume",
+                {
+                    "code_lines": code_total,
+                    "comment_lines": sum(c.comment for c in census.values()),
+                    "docstring_lines": sum(c.docstring for c in census.values()),
+                    "blank_lines": sum(c.blank for c in census.values() if not c.text_only),
+                },
+                detail={
+                    "by_language": by_language,
+                    # Named explicitly: their lines are counted but never
+                    # categorised, and their `code: 0` must not be read as
+                    # "no code" -- nothing was categorised at all.
+                    "text_only_languages": sorted(
+                        lang for lang, c in census.items() if c.text_only),
+                },
+            )
+        except Exception as exc:
+            log.warning("Line census failed for %s: %s", resource_slug, exc)
 
     def _count_repo_stats(self, local_root: Path) -> tuple[int, int]:
         """Return (file_count, line_count) by walking the extracted repo directory."""

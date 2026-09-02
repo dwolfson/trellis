@@ -55,7 +55,15 @@ async def get_stats(slug: str) -> dict:
             "primary_language": row.get("primary_language"),
             "language_breakdown": lang,
             "file_count": row.get("ingestion_file_count") or row.get("file_count"),
-            "lines_of_code": row.get("ingestion_lines_of_code") or row.get("lines_of_code"),
+            # Renamed on the wire (design doc D1): this counts every newline in
+            # every text-suffixed file, so it is text lines and not code —
+            # 1,118,195 vs 156,902 real Python code lines on egeria-python.
+            # Real code volume is the `code_volume` metric, decomposed per
+            # language. The old key is kept alongside for one release so a
+            # reader is not broken silently, and is marked in its own name.
+            "text_lines_all_files": row.get("ingestion_lines_of_code") or row.get("lines_of_code"),
+            "lines_of_code_deprecated_counts_all_text": (
+                row.get("ingestion_lines_of_code") or row.get("lines_of_code")),
             "file_count_exact": row.get("ingestion_file_count") is not None,
         },
     }
