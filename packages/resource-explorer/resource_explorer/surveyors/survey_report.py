@@ -219,6 +219,9 @@ ANNOTATION_TYPES_REGISTRY = [
 ]
 
 
+_MAX_GROUP_ITEMS = 25
+
+
 def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
     """Group a run's annotations for the activity log, by (step, type).
 
@@ -244,7 +247,7 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
 
     by_step: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"count": 0, "summary": "", "explanation": "",
-                 "action_requested": "", "action_target_name": ""})
+                 "action_requested": "", "action_target_name": "", "items": []})
     for a in annotations:
         # Skip anything that is not shaped like an annotation rather than
         # raising. This function builds a DISPLAY summary; letting it throw
@@ -258,6 +261,29 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
         step = getattr(a, "analysis_step", None) or value
         group = by_step[(step, value)]
         group["count"] += 1
+        # Every member kept, not just the first (2026-09-02).
+        #
+        # The group is a compact preview for the activity log, and that is
+        # what it was built for. But GET /api/activity/rfas uses it as the
+        # ACTIONABLE list, and a request for action that was summarised away
+        # cannot be acted on. Measured on `workshops`: SecurityHygieneCheck
+        # emits three RequestForActions — no SECURITY.md, no CI config, no
+        # licence — which share a step and a type, so the group carried
+        # count=3 and the text of the first. The drawer rendered
+        # "SecurityHygieneCheck 3 / No SECURITY.md found", which is exactly
+        # Dan's original report: "they all seem to be SecurityHygieneCheck 3
+        # - there is little description". The other two were not hidden.
+        # They were never written.
+        #
+        # Capped: a group is a preview, and an unbounded list here would put
+        # a whole survey's annotations into every activity row.
+        if len(group["items"]) < _MAX_GROUP_ITEMS:
+            group["items"].append({
+                "summary": (getattr(a, "summary", "") or "")[:200],
+                "explanation": getattr(a, "explanation", "") or "",
+                "action_requested": getattr(a, "action_requested", "") or "",
+                "action_target_name": getattr(a, "action_target_name", "") or "",
+            })
         if not group["summary"]:
             group["summary"] = (getattr(a, "summary", "") or "")[:200]
             group["explanation"] = getattr(a, "explanation", "") or ""
@@ -268,6 +294,7 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
          "count": v["count"], "status": "local", "summary": v["summary"],
          "explanation": v["explanation"],
          "action_requested": v["action_requested"],
-         "action_target_name": v["action_target_name"]}
+         "action_target_name": v["action_target_name"],
+         "items": v["items"]}
         for (step, ann_type), v in list(by_step.items())[:limit]
     ]

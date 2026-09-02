@@ -897,13 +897,12 @@ repo_questions:
   - Assess
   - Maintain
   answering:
-    kind: partial
+    kind: analysis
     analysis_ids:
+    - language_file_classification
     - api_structure
     checks: []
-    note: 'PARTIAL: api_structure answers ''how complex'' (per-language max/mean, python and java only).
-      Lines of code remain a GAP — ingestion_lines_of_code is all text lines, not code (14% accurate on
-      egeria-python).'
+    note: language_file_classification + api_structure
   answering_mechanism: Code Analysis
 - question: What are the public interfaces?
   stage: Discovery

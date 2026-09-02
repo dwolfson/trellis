@@ -1137,9 +1137,48 @@ def _file_classification_results(registry, slug: str) -> dict:
     # the gap where classification data was refreshed but never shown.
     rows = registry.query_file_type_counts(slug)
     surveyed_at = rows[0]["surveyed_at"] if rows else ""
+    # Code volume, from the census written at ingestion / profile refresh
+    # (design doc D1, pipeline.py::_record_line_census).
+    #
+    # D1 emitted the decomposition as ANNOTATIONS and stopped there — the
+    # same mistake D3 made with complexity, made twice in one session.
+    # Questions are answered through THIS reader, so "How much code is
+    # there?" could not see a single line count no matter how many surveys
+    # ran. Verifying the annotation was not verifying the answer.
+    #
+    # An absent census contributes no keys at all, never zeros: a repo
+    # indexed before this existed has not been counted, which is not the
+    # same as having no code.
+    import json as _json
+
+    volume = registry.query_metrics(slug, "code_volume") or {}
+    detail = volume.get("detail")
+    if isinstance(detail, str):
+        detail = _json.loads(detail or "{}")
+    by_language = (detail or {}).get("by_language") or {}
+    counted = {k: v for k, v in by_language.items() if not v.get("text_only")}
+
+    volume_fields = {}
+    if counted:
+        volume_fields = {
+            "code_lines": sum(v.get("code", 0) for v in counted.values()),
+            "comment_lines": sum(v.get("comment", 0) for v in counted.values()),
+            "docstring_lines": sum(v.get("docstring", 0) for v in counted.values()),
+            "blank_lines": sum(v.get("blank", 0) for v in counted.values()),
+            "source_files": sum(v.get("files", 0) for v in counted.values()),
+            "lines_by_language": {
+                lang: {"code": v.get("code", 0), "comment": v.get("comment", 0),
+                       "docstring": v.get("docstring", 0), "blank": v.get("blank", 0)}
+                for lang, v in counted.items()
+            },
+            "text_only_languages": sorted(
+                k for k, v in by_language.items() if v.get("text_only")),
+        }
+
     return {
         "by_type": [{"type_label": r["type_label"], "file_count": r["file_count"]} for r in rows],
         "total_files": sum(r["file_count"] for r in rows),
+        **volume_fields,
         "surveyed_at": surveyed_at,
     }
 
@@ -2895,7 +2934,15 @@ def _file_classification_headline(registry, slug: str) -> dict | None:
     result = _file_classification_results(registry, slug)
     if not result.get("total_files"):
         return None
-    return {"label": f"{result['total_files']} {_plural('file', result['total_files'])} classified", "status": "info"}
+    total = result["total_files"]
+    code = result.get("code_lines")
+    if code:
+        src = result.get("source_files", 0)
+        return {"label": f"{code:,} lines of code across {src:,} source "
+                         f"{_plural('file', src)}, {total:,} "
+                         f"{_plural('file', total)} in total",
+                "status": "info"}
+    return {"label": f"{total:,} {_plural('file', total)} classified", "status": "info"}
 
 
 def _sub_resource_survey_headline(registry, slug: str) -> dict | None:
