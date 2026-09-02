@@ -115,6 +115,122 @@ analysis ids, `KNOWN_ANALYSIS_IDS` at the top of
 `scripts/csv_to_question_catalog_yaml.py` needs a matching update or new
 ids won't be recognized here.
 
+## From a row to an answer
+
+Adding a row makes a question *appear*. Making it *answer* is a separate
+thing, and the column that does it is `Answering Analysis`. A row with that
+column blank generates `kind: unknown, analysis_ids: []` — the question
+shows in the checklist and never answers anything.
+
+The full chain, and where each link lives:
+
+| # | Link | Where |
+|---|---|---|
+| 1 | The row | `docs/dr-egeria/resource_questions.csv` |
+| 2 | `Answering Analysis` → `kind` + `analysis_ids` + `checks` | `scripts/csv_to_question_catalog_yaml.py` |
+| 3 | Generated catalog | `resource_explorer/configdata/question_catalog.yaml` |
+| 4 | Each `analysis_id` → a value | `FactLayer.fact()` via `REPO_ANALYSIS_RESULTS_MAP` |
+| 5 | Value → the visible answer | `_renderEnvelopeMarkdown` in `index.html` |
+
+**Regenerate the Survey Definitions too.** `scripts/generate_repo_survey_definition.py`
+derives each definition's Question scope-links from `question_catalog.yaml`, so a
+new question makes the committed markdown under `docs/dr-egeria/survey-definitions/`
+stale. `tests/test_survey_definition_generator_guard.py::test_a_clean_tree_regenerates_to_nothing`
+fails until you run it — which is how this step was found, after being left out of
+the first draft of this section:
+
+```bash
+uv run python scripts/generate_repo_survey_definition.py
+```
+
+Commit the regenerated `.md` files and `.generated.json` alongside the CSV and the
+question catalog. Three artifacts move together; leaving one behind is a silent
+drift the guard catches only on the next full test run.
+
+**Restart the web server after regenerating.** The catalog loader is
+`@functools.lru_cache(maxsize=1)` (`surveyors/question_catalog_reader.py`),
+so a running server keeps serving the old catalog and your new question
+simply will not appear. This costs more debugging time than it should; check
+it first.
+
+### Two ways a question becomes answerable
+
+**Path A — CSV only, no Python.** Name an analysis that already has a
+results reader in `REPO_ANALYSIS_RESULTS_MAP`, and the fact layer resolves
+it. This is the normal path and needs no code at all.
+
+**Path B — a Python resolver.** `RESOURCE_STATE_SOURCES` in `facts.py` maps
+*exact question text* to a resolver function, for questions answered from
+registry state rather than from an analysis — description, disposition,
+licence, feedback, "has this been catalogued". Adding one of these means
+writing a `_r_*` function. Note the key is the question string verbatim, so
+Path B questions are the ones where editing the wording silently breaks the
+answer.
+
+### Choosing the `kind` honestly
+
+The conventions table above says what each prefix *produces*. What it does
+not say is how to choose, and the choice is the part that matters, because
+`analysis` is a claim that the question is answered.
+
+**Check what the data actually contains before writing a bare analysis id.**
+Not what the analysis is named, not what its description says — what its
+results reader returns for a real resource. Two ways this goes wrong, both
+found on 2026-09-01 while wiring two new rows:
+
+- *The analysis computes it but does not persist it.* `api_structure`'s
+  surveyor derives a complexity summary from
+  `project_code_symbols.complexity` and then stores only `symbol_count`,
+  `relationship_count` and `by_language`. The number exists at survey time
+  and never reaches the question layer. Naming `api_structure` for a
+  complexity question would have produced a question that looks wired and
+  answers nothing.
+- *The field's name is a claim its contents do not support.*
+  `project_stats.ingestion_lines_of_code` sounds like the answer to "how
+  much code is there". It counts every newline in every text-suffixed file
+  (`pipeline.py::_count_repo_stats`). Measured on egeria-python: it reports
+  **1,118,195**; actual Python code lines are **156,297** — 14%. The rest is
+  JSON (40.7% of all lines), Markdown (28.2%), docstrings and blanks. It is
+  also written only by full ingestion, so it is NULL for repos indexed
+  another way.
+
+`GAP:` is the right answer more often than it feels like it is. A question
+marked `gap` renders a clear "No mechanism exists for this yet" and offers
+no Run button (`can_run` is empty, verified) — which is strictly better than
+a question wired to a number that does not mean what its name says.
+
+**Mentioning an analysis id anywhere in the note links it**, including
+inside a `GAP:` or `PARTIAL:` note, because the generator regex-scans the
+whole column. That is usually what you want (it records what was
+considered), and `kind` still governs answerability — a `gap` row with a
+populated `analysis_ids` is still unanswerable. Just do not be surprised to
+see the id in the generated YAML.
+
+### Worked example: the two rows added 2026-09-01
+
+**"What are the public interfaces?"** (Discovery) → `interface_surface`,
+`kind: analysis`. Answers immediately, no code. Note it has a near-neighbour
+already in the CSV — "What APIs and code symbols does it expose to callers?"
+(Analysis, `api_structure + interface_surface`). They are not duplicates:
+Discovery asks *is a contract published*, Analysis asks *what symbols
+exist*, and `interface_surface` is itself a Discovery analysis.
+
+**"How much code is there? How complex?"** (Assessment) → `GAP:`. Both
+halves are gaps, for different reasons (the two failure modes above). File
+and symbol counts do exist, but "how many files" is not "how much code", and
+answering with them would be answering a different question.
+
+### What the process caught by itself
+
+Worth knowing, because these are the guards working rather than obstacles:
+
+- `Purposes: "Asses; Maintain"` failed the generator outright — *"unknown
+  Purpose(s) ['Asses']"*. A typo in a controlled vocabulary stops the build
+  instead of creating a phantom purpose. (Whitespace after `;` is fine; it
+  is stripped.)
+- Both new rows parsed to 19 fields cleanly, so a mis-aligned row would have
+  shown up immediately as a column-count mismatch.
+
 ## Notes and gotchas
 
 - **Don't add a perspective column without creating the Perspective in

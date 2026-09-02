@@ -138,7 +138,13 @@ class StatsAgent(BaseExplorerAgent):
             "",
             "── Code ────────────────────────────────",
             f"  Files:              {self._indexed_file_count(resource_slug, registry)}",
-            f"  Lines of code:      {_loc_fmt(d.get('ingestion_lines_of_code'), exact=True) if d.get('ingestion_lines_of_code') is not None else _loc_fmt(d.get('lines_of_code'))}",
+            # Relabelled, not renamed away (design doc D1): this number counts
+            # every newline in every text-suffixed file — JSON and Markdown
+            # included — and calling it "lines of code" overstated
+            # egeria-python by 7x. The honest figure is the code_volume
+            # metric; until this agent reads it, the label must match what
+            # the number is.
+            f"  Text lines (all files): {_loc_fmt(d.get('ingestion_lines_of_code'), exact=True) if d.get('ingestion_lines_of_code') is not None else _loc_fmt(d.get('lines_of_code'))}",
             f"  Language breakdown: {_val('language_breakdown')}",
             "",
             "── Community ───────────────────────────",

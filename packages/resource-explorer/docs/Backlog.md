@@ -3488,3 +3488,63 @@ a spreadsheet; JSONL when they need everything.
 post-fix yields 5 rows on egeria-python and makes no case by itself; `dependency_analysis`
 produces ~880 rows on amundsen and feeds license/SBOM review, which does. If that is the
 trigger, it argues for the generic build from the start rather than a one-off.
+
+---
+
+## Outbox: unbounded enqueue, and no way to cancel queued work
+
+**Both found 2026-09-01**, when a pre-fix Committed Secrets run queued ~48,500
+Egeria writes and the console filled with 409s. The 409 itself is fixed (a
+duplicate `qualifiedName` now means "already created", not "failed" — see
+`egeria_outbox.apply_element`). These two are not.
+
+### 1. One Egeria element per finding, with no cap
+
+`enqueue_annotations` writes one outbox row — and therefore one catalog
+element — per annotation. The secret scan produced **48,583 findings in a
+single run**, so 48,583 elements were queued for one repo. Two runs of it left
+**48,113 rows pending**, and **9,164 had already been written into Egeria**
+before the drain was stopped.
+
+The ruleset fix takes egeria-python from 48,581 matches to 7, so this does not
+bite today. It is still unbounded: a genuinely noisy repository, or a rule
+regression like the one that caused this, floods the catalog with no limit and
+no warning. Nothing in the enqueue path knows how large a batch is.
+
+Worth considering together, not separately:
+
+- **A cap with a stated remainder**, the same discipline `_FINDING_LINE_CAP`
+  already uses: publish N, and say plainly that M were not published. A
+  silently truncated catalog is worse than a capped one.
+- **Summary-plus-evidence rather than one element per match.** The
+  `AnnotationExtension` linking shipped in Phase 2 is exactly this shape — one
+  aggregate annotation with per-item evidence beneath it — and a scan whose
+  output is inherently list-shaped is its natural second consumer.
+- **A size check before enqueue, not after.** By the time 48,000 rows exist,
+  the decision has already been made.
+
+### 2. No purge path for queued work
+
+`registry.purge_outbox_completed()` deletes `done` rows past a retention
+window, and deliberately nothing else: *"'dead' rows are the ones a human still
+has to look at, and failed/pending rows are live work."* That reasoning holds
+for one stuck row and fails for a batch queued in error.
+
+Cancelling the 48,113 rows needed a hand-written `DELETE` against
+`egeria_outbox`, reviewed statement-by-statement, with the count printed first
+— and that mattered: the first statement matched **39,603 of 48,113**, because
+two buggy runs were queued rather than one. Printing the count is the only
+reason 8,510 bogus annotations were not left to publish on the next restart.
+
+What is missing is a supported way to say "cancel this batch": a
+`cancel_outbox_batch(run_id=...)` or `(entity_slug, before=...)`, which
+reports what it matched before doing anything, and marks rows `cancelled`
+rather than deleting them so the record of the mistake survives. `run_id`
+already exists on the table and is already used by `claim_due_outbox_elements`
+— the identifier for "this batch" is there and unused for this purpose.
+
+**Why this is worth building rather than repeating by hand.** Queued work that
+turns out to be wrong is not exotic: it is the normal consequence of finding a
+bug in something that already ran. Twice in one day (this, and the 48,581-row
+render) the answer to unbounded output was a hand-written statement against
+live data. That is the part to fix.

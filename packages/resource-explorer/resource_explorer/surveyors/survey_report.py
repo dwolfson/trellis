@@ -217,3 +217,84 @@ ANNOTATION_TYPES_REGISTRY = [
         "python_class": "RequestForActionAnnotation",
     }
 ]
+
+
+_MAX_GROUP_ITEMS = 25
+
+
+def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
+    """Group a run's annotations for the activity log, by (step, type).
+
+    Extracted 2026-09-02 so there is ONE grouping rule rather than two. It
+    lived inline in SurveyOrchestrator.run(); the Analyses-card path
+    (projects.py::run_single_analysis) needed the same shape, and copying it
+    is how the original defect would have been reintroduced in a second
+    place.
+
+    Keying on (step, annotation_type) rather than step alone: a sub-surveyor
+    emitting several annotation kinds in one run — a passing
+    ClassificationAnnotation beside a failing RequestForActionAnnotation —
+    used to collapse into one dict where `summary` kept the FIRST seen and
+    `annotation_type` kept overwriting to the LAST, so a passing check's
+    words wore a RequestForAction label in the drawer.
+
+    `explanation`/`action_requested`/`action_target_name` are taken from the
+    SAME annotation that donated the summary, never a different member of the
+    group — two independent first/last-wins fields on one group is precisely
+    the shape that broke this once.
+    """
+    from collections import defaultdict
+
+    by_step: dict[tuple[str, str], dict] = defaultdict(
+        lambda: {"count": 0, "summary": "", "explanation": "",
+                 "action_requested": "", "action_target_name": "", "items": []})
+    for a in annotations:
+        # Skip anything that is not shaped like an annotation rather than
+        # raising. This function builds a DISPLAY summary; letting it throw
+        # took down the whole analysis run — the background thread crashed
+        # and a survey whose findings were computed and stored reported
+        # "crashed" to the user, because a summary of it could not be built.
+        ann_type = getattr(a, "annotation_type", None)
+        value = getattr(ann_type, "value", None)
+        if not value:
+            continue
+        step = getattr(a, "analysis_step", None) or value
+        group = by_step[(step, value)]
+        group["count"] += 1
+        # Every member kept, not just the first (2026-09-02).
+        #
+        # The group is a compact preview for the activity log, and that is
+        # what it was built for. But GET /api/activity/rfas uses it as the
+        # ACTIONABLE list, and a request for action that was summarised away
+        # cannot be acted on. Measured on `workshops`: SecurityHygieneCheck
+        # emits three RequestForActions — no SECURITY.md, no CI config, no
+        # licence — which share a step and a type, so the group carried
+        # count=3 and the text of the first. The drawer rendered
+        # "SecurityHygieneCheck 3 / No SECURITY.md found", which is exactly
+        # Dan's original report: "they all seem to be SecurityHygieneCheck 3
+        # - there is little description". The other two were not hidden.
+        # They were never written.
+        #
+        # Capped: a group is a preview, and an unbounded list here would put
+        # a whole survey's annotations into every activity row.
+        if len(group["items"]) < _MAX_GROUP_ITEMS:
+            group["items"].append({
+                "summary": (getattr(a, "summary", "") or "")[:200],
+                "explanation": getattr(a, "explanation", "") or "",
+                "action_requested": getattr(a, "action_requested", "") or "",
+                "action_target_name": getattr(a, "action_target_name", "") or "",
+            })
+        if not group["summary"]:
+            group["summary"] = (getattr(a, "summary", "") or "")[:200]
+            group["explanation"] = getattr(a, "explanation", "") or ""
+            group["action_requested"] = getattr(a, "action_requested", "") or ""
+            group["action_target_name"] = getattr(a, "action_target_name", "") or ""
+    return [
+        {"analysis_name": step, "annotation_type": ann_type,
+         "count": v["count"], "status": "local", "summary": v["summary"],
+         "explanation": v["explanation"],
+         "action_requested": v["action_requested"],
+         "action_target_name": v["action_target_name"],
+         "items": v["items"]}
+        for (step, ann_type), v in list(by_step.items())[:limit]
+    ]

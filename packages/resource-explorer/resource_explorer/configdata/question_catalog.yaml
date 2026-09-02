@@ -886,3 +886,41 @@ repo_questions:
     checks: []
     note: chaoss_metrics
   answering_mechanism: Git Statistics
+- question: How much code is there? How complex?
+  stage: Assessment
+  perspectives:
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Maintain
+  answering:
+    kind: analysis
+    analysis_ids:
+    - language_file_classification
+    - api_structure
+    checks: []
+    note: language_file_classification + api_structure
+  answering_mechanism: Code Analysis
+- question: What are the public interfaces?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Privacy
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  - Explore
+  - Learn
+  answering:
+    kind: analysis
+    analysis_ids:
+    - interface_surface
+    checks: []
+    note: interface_surface
+  answering_mechanism: Code Analysis

@@ -78,6 +78,21 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
+#: Egeria's signature for "this qualifiedName is already taken".
+#:
+#: Matched on the message rather than a status code because the client
+#: surfaces it as a SERVER_ERROR_500 wrapping a relatedHTTPCode of 409 — the
+#: outer code says nothing useful, and the inner one is only in the text.
+#: Both the error id and the phrase are required, so a message that merely
+#: mentions a 409 in passing does not qualify.
+_DUPLICATE_NAME_MARKERS = ("OMAG-COMMON-409-001", "is not available for use")
+
+
+def _is_duplicate_qualified_name(exc: Exception) -> bool:
+    text = str(exc)
+    return all(m in text for m in _DUPLICATE_NAME_MARKERS)
+
+
 def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str]) -> str:
     """Write one outbox row to Egeria and return the element's GUID.
 
@@ -126,7 +141,38 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
             f"No creator registered for element_kind {kind!r}. "
             f"Known kinds: {sorted(_CREATORS)}"
         )
-    return creator(clients, payload) or ""
+    try:
+        return creator(clients, payload) or ""
+    except Exception as exc:
+        if not _is_duplicate_qualified_name(exc):
+            raise
+        # Egeria says this qualifiedName is taken, which is proof the element
+        # exists — so the create is not a failure, it is a late discovery
+        # that step 2 should have made. Treating it as a failure is what
+        # produced an exception storm on 2026-09-01: rows retrying a write
+        # that had already succeeded, forever, because a 409 counted the same
+        # as a network error.
+        #
+        # Look again rather than assuming: the first lookup missed it, and
+        # the honest question is whether it can be found at all.
+        try:
+            found = find_element_guid(qualified_name)
+        except Exception:
+            found = ""
+        if found:
+            log.info("Outbox row %s: %s already existed (GUID %s) — adopted after a "
+                     "duplicate-name rejection the pre-create lookup missed",
+                     row.get("id"), qualified_name, found)
+            return found
+        # Egeria will not create it and we cannot find it. That is a real
+        # inconsistency and must not be silently marked done: the row would
+        # claim success with no GUID to show for it. Raised with its own
+        # wording so it is distinguishable from an ordinary write failure.
+        raise OutboxApplyError(
+            f"Egeria rejected {qualified_name!r} as a duplicate qualifiedName but "
+            f"the element cannot be found by that name — it exists to Egeria and "
+            f"is invisible to our lookup, so no GUID can be recorded."
+        ) from exc
 
 
 def _create_annotation(clients: "OutboxClients", payload: dict) -> str:

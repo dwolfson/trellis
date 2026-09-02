@@ -342,5 +342,14 @@ ___
 Scouting Survey
 
 ### Scope Reference
+How much code is there? How complex?
+
+___
+
+## Link Element To Scope
+### Target Element
+Scouting Survey
+
+### Scope Reference
 What data files does it ship, and what shape are they?
 

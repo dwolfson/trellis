@@ -582,22 +582,29 @@ class TestRfaReconciliation:
         # confirming both steps run and a failure in one doesn't skip the
         # other (each already wrapped in its own try/except).
         calls = []
+        # _drain_egeria_outbox is patched too, and must be: the loop calls
+        # THREE things and this test patched two. The third makes a real
+        # Egeria call, so with a non-empty outbox the test blocks on the
+        # network — a unit test about call ordering, hanging the suite.
+        # Invisible until an outbox had rows in it, which is why it survived.
         with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
              patch("resource_explorer.scheduler._run_due", side_effect=lambda: calls.append("run_due")), \
+             patch("resource_explorer.scheduler._drain_egeria_outbox", side_effect=lambda: calls.append("drain")), \
              patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
             try:
                 scheduler._scheduler_loop()
             except KeyboardInterrupt:
                 pass
-        assert calls == ["run_due", "reconcile"]
+        assert calls == ["run_due", "reconcile", "drain"]
 
     def test_run_due_failure_does_not_prevent_reconciliation(self):
         calls = []
         with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
              patch("resource_explorer.scheduler._run_due", side_effect=RuntimeError("boom")), \
+             patch("resource_explorer.scheduler._drain_egeria_outbox", side_effect=lambda: calls.append("drain")), \
              patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
             try:
                 scheduler._scheduler_loop()
             except KeyboardInterrupt:
                 pass
-        assert calls == ["reconcile"]
+        assert calls == ["reconcile", "drain"]

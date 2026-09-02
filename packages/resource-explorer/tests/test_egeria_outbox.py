@@ -567,3 +567,76 @@ class TestResourceListIsQueued:
         rows = db.list_outbox_elements(run_id="rl")
         assert rows[0]["status"] == "failed"
         assert "no permission" in rows[0]["last_error"]
+
+
+# ── A duplicate-name 409 means "already created", not "failed" ──────────────
+#
+# Live, 2026-09-01. The pre-fix secret scan enqueued ~48,500 annotations per
+# run; some were written to Egeria, then retried. Egeria answered:
+#
+#   OMAG-COMMON-409-001 ... parameter name qualifiedName is defined as a
+#   unique property and value Annotation::egeria_python_git::... is not
+#   available for use
+#
+# which is proof the element EXISTS. It was counted as a write failure, so
+# those rows retried a write that had already succeeded — an exception storm
+# on the console and rows that could never complete.
+#
+# apply_element already looks up before creating. The 409 means that lookup
+# MISSED something Egeria can see, so the fix is not to skip the lookup but
+# to repeat it on rejection and adopt the GUID.
+_DUPE = (
+    "SERVER_ERROR_500 ... relatedHTTPCode= `409` ... OMAG-COMMON-409-001 Method "
+    "createMetadataElementInStore ... parameter name qualifiedName is defined as "
+    "a unique property and value Annotation::x::y::1 is not available for use"
+)
+
+
+class TestDuplicateQualifiedName:
+    def _row(self):
+        return {"id": 1, "egeria_guid": "", "qualified_name": "Annotation::x::y::1",
+                "payload_json": "{}", "element_kind": "annotation"}
+
+    def test_a_rejected_duplicate_is_adopted_when_it_can_be_found(self, monkeypatch):
+        """Known-negative: remove the 409 branch and this raises instead of
+        returning the GUID — which is the retry-forever behaviour."""
+        from resource_explorer import egeria_outbox as ob
+
+        monkeypatch.setitem(ob._CREATORS, "annotation",
+                            lambda clients, payload: (_ for _ in ()).throw(RuntimeError(_DUPE)))
+        lookups = []
+
+        def _find(qn):
+            lookups.append(qn)
+            return "" if len(lookups) == 1 else "guid-from-second-lookup"
+
+        assert ob.apply_element(self._row(), None, _find) == "guid-from-second-lookup"
+        assert len(lookups) == 2, "the lookup must be REPEATED after the rejection"
+
+    def test_an_unfindable_duplicate_is_an_error_not_a_silent_success(self, monkeypatch):
+        """Egeria will not create it and we cannot find it. Marking the row
+        done would claim success with no GUID to show for it."""
+        from resource_explorer import egeria_outbox as ob
+
+        monkeypatch.setitem(ob._CREATORS, "annotation",
+                            lambda clients, payload: (_ for _ in ()).throw(RuntimeError(_DUPE)))
+        with pytest.raises(ob.OutboxApplyError, match="invisible to our lookup"):
+            ob.apply_element(self._row(), None, lambda qn: "")
+
+    def test_an_ordinary_failure_still_fails(self, monkeypatch):
+        """The guard must not swallow real write errors — a message that is
+        not the duplicate signature propagates untouched."""
+        from resource_explorer import egeria_outbox as ob
+
+        monkeypatch.setitem(ob._CREATORS, "annotation",
+                            lambda clients, payload: (_ for _ in ()).throw(RuntimeError("connection refused")))
+        with pytest.raises(RuntimeError, match="connection refused"):
+            ob.apply_element(self._row(), None, lambda qn: "")
+
+    def test_a_passing_mention_of_409_is_not_enough(self):
+        """Both markers are required, so an unrelated error that happens to
+        contain '409' is not mistaken for an already-created element."""
+        from resource_explorer.egeria_outbox import _is_duplicate_qualified_name
+
+        assert not _is_duplicate_qualified_name(RuntimeError("gateway said 409"))
+        assert _is_duplicate_qualified_name(RuntimeError(_DUPE))

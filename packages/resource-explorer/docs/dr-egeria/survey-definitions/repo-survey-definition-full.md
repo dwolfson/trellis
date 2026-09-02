@@ -1267,6 +1267,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+How much code is there? How complex?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 Is this repository actively maintained?
 
 ___
@@ -1376,6 +1385,15 @@ Full Survey (all steps)
 
 ### Scope Reference
 What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What are the public interfaces?
 
 ___
 

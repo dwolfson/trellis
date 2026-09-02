@@ -10292,9 +10292,28 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
     // hand-written cases, and the 25th analysis joins the answerless
     // majority). Scalars lead because they are what was measured; the
     // prose follows as the reason.
-    const answerText = [summary, proseAnswer].filter(Boolean).join(' — ');
+    // Sentence first, facts under it (2026-09-02). The order is deliberate:
+    // a surveyor's own prose beats the analysis's generic headline, and both
+    // beat a field dump. `f.headline` is written per analysis by whoever
+    // knows what its fields mean — all 33 define one, and nothing called any
+    // of them until now, so the chat rendered "relationship_count: 437"
+    // while "8654 symbol(s) across 2 language(s)" sat one function away.
+    const answerText = proseAnswer || f.headline || '';
+    const valueLines = _factValueLines(f.value);
     if (answerText) {
       lines.push(`- ${st.icon} ${heading}: ${_esc(answerText)}${caveats}`);
+      // The measured fields, one per line. Kept even when the sentence
+      // already mentions some of them: the sentence is the answer, these are
+      // what it was computed from, and hiding them is how the Evidence
+      // toggle came to hide answers.
+      valueLines.forEach(l => lines.push(`  - ${_esc(l)}`));
+      lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
+        (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : '') + `</span>`);
+    } else if (valueLines.length) {
+      // No sentence anywhere, but real measured values — state them rather
+      // than falling through to a bare state word.
+      lines.push(`- ${st.icon} ${heading}${caveats}`);
+      valueLines.forEach(l => lines.push(`  - ${_esc(l)}`));
       lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
         (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : '') + `</span>`);
     } else {
@@ -10439,6 +10458,31 @@ function _summariseFactValue(value) {
         parts.push(`${k}: ${v.length}${preview}`);
       }
     }
+    else if (v && typeof v === 'object') {
+      // Nested objects were dropped ENTIRELY: this chain handled arrays,
+      // numbers, booleans and strings, and a plain object matched none of
+      // them, so it fell through to nothing. Found 2026-09-02 when "How much
+      // code is there? How complex?" answered `relationship_count: 437` --
+      // the one scalar in the value -- while `by_language` and
+      // `complexity_by_language`, the fields that actually answer it, were
+      // silently skipped. A value the renderer cannot shape is not the same
+      // as a value that is not there.
+      const inner = Object.entries(v).slice(0, 3).map(([ik, iv]) => {
+        if (iv && typeof iv === 'object') {
+          // One level deeper: {python: {max, avg}} renders its own scalars
+          // rather than collapsing to "[object Object]".
+          const bits = Object.entries(iv)
+            .filter(([, x]) => typeof x === 'number' || typeof x === 'string')
+            .slice(0, 3).map(([bk, bv]) => `${bk} ${bv}`).join(', ');
+          return bits ? `${ik} (${bits})` : ik;
+        }
+        return `${ik}: ${iv}`;
+      });
+      if (inner.length) {
+        const more = Object.keys(v).length > inner.length ? ', …' : '';
+        parts.push(`${k}: ${inner.join('; ')}${more}`);
+      }
+    }
     else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
     // No length cutoff here any more -- the 60-char cap used to be the other
     // half of the bug (it silently ate `detail`/`*_detail` strings, which are
@@ -10450,6 +10494,19 @@ function _summariseFactValue(value) {
     if (parts.length >= 6) break;
   }
   return parts.join(' · ');
+}
+
+//: The same extraction as _summariseFactValue, as a LIST rather than one
+//: joined line — so the renderer can put each measured field on its own
+//: bullet under the answer sentence.
+//:
+//: Dan, 2026-09-02, on seeing the joined form:
+//: "that is not a good answer - should be a summary sentence and maybe some
+//: bullet points with the facts." One extraction, two presentations; the
+//: alternative is a second parser that drifts from this one.
+function _factValueLines(value) {
+  const joined = _summariseFactValue(value);
+  return joined ? joined.split(' · ') : [];
 }
 
 function _setQuestionsPhase(phase) {

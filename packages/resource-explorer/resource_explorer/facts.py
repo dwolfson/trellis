@@ -80,6 +80,18 @@ class Fact:
     can_run: list = field(default_factory=list)
     #: Why the state is what it is, in words, when there is something to say.
     note: str = ""
+    #: The analysis's OWN one-sentence summary, from its headline_reader.
+    #:
+    #: All 33 analyses with a results reader define one, and until 2026-09-02
+    #: nothing on this path called any of them — so the chat answered a
+    #: question with a `·`-joined dump of field names while a written sentence
+    #: sat one function away. Dan: "should be a summary sentence and maybe
+    #: some bullet points with the facts."
+    #:
+    #: Not invented here: it is written per analysis by the same people who
+    #: know what the fields mean, which is the reason it is allowed to be
+    #: prose at all.
+    headline: str = ""
     #: True when this informs a judgement rather than making one. Whether a
     #: resource REPLACES something you already have is a decision about intent;
     #: no query settles it, so the related-resources fact is offered as
@@ -98,6 +110,7 @@ class Fact:
     def as_dict(self) -> dict:
         return {
             "analysis_id": self.analysis_id, "state": self.state,
+            "headline": self.headline,
             "value": self.value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "can_run": self.can_run,
             "note": self.note, "is_known": self.is_known,
@@ -624,10 +637,31 @@ class FactLayer:
         state = self._state_for(value, run)
         return Fact(
             analysis_id=analysis_id, state=state, value=value,
+            headline=self._headline_for(analysis_id, slug),
             provenance=self._provenance_for(value),
             last_run_at=run.get("last_run_at", ""), can_run=can_run,
             note=self._note_for(state, value, run),
         )
+
+    def _headline_for(self, analysis_id: str, slug: str) -> str:
+        """The analysis's own summary sentence, or "".
+
+        Best-effort by design: this layer must never fail to report a fact
+        because the sentence describing it could not be built.
+        """
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS)
+
+        kind = ANALYSIS_KINDS.get(analysis_id)
+        reader = getattr(getattr(kind, "results", None), "headline_reader", None)
+        if reader is None:
+            return ""
+        try:
+            head = reader(self._registry, slug) or {}
+        except Exception as exc:
+            log.debug("headline read failed for %s/%s: %s", slug, analysis_id, exc)
+            return ""
+        return str(head.get("label") or "")
 
     def _read_results(self, slug: str, analysis_id: str, entry) -> dict:
         reader = entry[0] if isinstance(entry, (tuple, list)) else entry

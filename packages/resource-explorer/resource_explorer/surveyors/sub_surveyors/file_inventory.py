@@ -103,6 +103,24 @@ class FileInventorySurveyor(BaseSurveyor):
                 shim, self.project.slug, local_root
             )
 
+            # The line census rides the same walk, for the same reason and via
+            # the same shim (design doc D1).
+            #
+            # It was first placed on IngestionPipeline.run() and then on
+            # refresh_profile(), and neither is reachable from the UI:
+            # refresh_profile's HTTP route was retired 2026-08-20 as having no
+            # caller, leaving it to the scheduler and the CLI. This step IS
+            # reachable — it is what the "Coarse Profile Survey" runs — so
+            # putting the census here is what makes the decomposition
+            # refreshable by the person looking at it, rather than only by a
+            # full RAG re-ingest.
+            #
+            # Idempotent and cheap relative to the walk already happening:
+            # census_tree re-reads the same files _store_file_inventory just
+            # stat-ed. Best-effort, because a census failure must not fail an
+            # inventory that succeeded.
+            IngestionPipeline._record_line_census(shim, self.project.slug, local_root)
+
             results.append(
                 ResourceMeasureAnnotation(
                     summary=f"{file_count} file(s) inventoried",
