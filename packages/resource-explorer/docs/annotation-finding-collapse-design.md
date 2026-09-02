@@ -141,6 +141,14 @@ principle.
   generic types while Egeria defines specific ones
   (`docs/fs-db-design-inputs.md`). Orthogonal, and worth settling in the same
   pass since both change what a surveyor emits.
+- **Whether derived stores sit downstream of the annotations.** Dan's point,
+  and it changes the disposal question rather than the design: *"as long as we
+  preserve the original data we can always do more with it later."* Annotations
+  are the record; flattening selected ones — from selected resources — into a
+  local operational data store for trend charts or cross-repo comparison is a
+  post-processing step, not a competing store. That is an argument for
+  preserving annotation fidelity above all, and it removes the pressure to
+  decide the shape of every downstream view now.
 - **Whether `project_analysis_findings` survives long-term.** If annotations
   carry everything and are queryable in Egeria, the local table is a cache and
   a trend index rather than a source of truth. Not decided here; the proposal
@@ -155,3 +163,17 @@ principle.
 3. Derive the finding row from the annotation in one surveyor, prove the
    drift is gone, then do the remaining 19.
 4. Republish the corpus under the new scheme.
+
+**Steps 1–3 are done** (2026-09-02, `re/annotation-finding-derivation`).
+`security_hygiene` was the surveyor, and the drift it exposed is worth
+recording because it was invisible from either side: all 162 stored
+`security_policy` gap rows in the live registry say `confidence=100`, while
+the annotations Egeria received for those same runs said 90. Neither store
+was internally inconsistent; only comparing them showed it. A fresh run on
+`workshops` (real gaps in all three checks) now stores 90/85/90, matching its
+annotations exactly.
+
+19 surveyors remain. Nothing changes on publish for them until they set
+`check_name` — an annotation without one still falls back to the positional
+name, deliberately, so the migration can proceed one surveyor at a time
+rather than as a flag day.

@@ -74,7 +74,29 @@ carries the original `surveyed_at`, which it can.
 |---|---|---|---|
 | **Move forward** | nothing historical | none | Egeria loses 26 days of trend. RE keeps it, so RE's charts still work and the catalog's do not. |
 | **Re-survey** (built) | today's findings, one point per repo | full survey × 60 repos; `repo_secret_scan` alone measured 277s, so minutes each | Still no history. Findings may legitimately differ from what was there — several analyses changed on 2026-09-01/02, so this is not a restoration. |
-| **Replay history** (not built) | up to 1,452 runs across 60 repos | not built; see below | Restores the trend. Needs a decision about what timestamp a replayed report carries. |
+| **Replay history** (not built) | up to 1,452 runs across 60 repos | ~26h for the 5 Egeria repos alone — see below | Restores the trend. Needs a decision about what timestamp a replayed report carries. |
+
+**Replay and re-survey are costly in different currencies, and replay is the
+expensive one.** Re-survey is dominated by *survey time* — fetching and
+computing, minutes per repo. Replay computes nothing; it is dominated by
+*element count*, because every stored finding becomes an Egeria write. At the
+measured drain rate of 0.67s per element (docling: 137 elements in 92s):
+
+| repo | runs | finding rows | replay |
+|---|---|---|---|
+| egeria_docs | 30 | 972 | 0.2h |
+| egeria_git | 83 | 21,990 | 4.1h |
+| egeria_trellis | 8 | 682 | 0.1h |
+| egeria_workspaces_git | 75 | 15,254 | 2.8h |
+| egeria_python_git | 62 | 99,915 | **18.6h** |
+| **total** | | **138,813** | **~26h** |
+
+Five repos out of sixty. This is the number that makes Dan's selective-replay
+point structural rather than a convenience: a blanket replay is not viable,
+and `egeria_python_git` alone — much of it secret-scan runs from before the
+loader gates cut 48,581 matches to 5 — is history nobody wants restored. The
+per-repo spread (0.1h to 18.6h) is what makes "replay this one, not that one"
+an answerable question rather than a vague preference.
 
 There is also a **cheap registration tier** already built and worth knowing
 about independently: `catalog_assets` publishes `repo_health` only
