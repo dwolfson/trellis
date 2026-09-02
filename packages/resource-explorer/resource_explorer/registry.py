@@ -3688,8 +3688,34 @@ class ProjectRegistry:
         the caller believing it had published when it had in fact drained
         someone else's queue.
 
-        Reads only — the drain marks each row in flight as it takes it, so this
-        stays a plain query and the caller decides its own concurrency.
+        **Reads only, and despite the name it does not claim.** There is no
+        locking, no status transition, and no in-flight marking: `drain_outbox`
+        marks a row `done` only AFTER its create succeeds. Two drainers running
+        at once therefore select the same rows and both call `apply_element` on
+        them.
+
+        This docstring used to say "the drain marks each row in flight as it
+        takes it". It does not, and believing it is how you conclude that
+        concurrent drains are safe. They are not uniformly safe:
+
+        - Annotations survive it. The second create is rejected as a duplicate
+          qualifiedName and `apply_element` adopts the existing GUID, so the
+          outcome is one element and two rows marked done.
+        - Annotation LINKS do not. They go through a multi-link attach that
+          duplicates silently rather than upserting, and no reconciler exists
+          for annotation-level duplicates the way one does for survey-definition
+          step links.
+
+        So a second drainer is a real hazard, and the usual second drainer is
+        not another operator — it is `scheduler.py`'s own loop inside a running
+        `resource-explorer web`, firing every _CHECK_INTERVAL_SECONDS whether
+        anyone is at the keyboard or not. Stop the web server before a batch
+        republish, or accept that any duplicated link is permanent and silent.
+
+        Serialising this properly (SELECT ... FOR UPDATE SKIP LOCKED, or a
+        status='running' transition in the same transaction as the select)
+        would remove the hazard rather than documenting it, and is the right
+        fix when this stops being a single-operator dev environment.
         """
         now = now or datetime.utcnow().isoformat()
         sql = (

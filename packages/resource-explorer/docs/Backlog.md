@@ -55,6 +55,47 @@ rather than its behaviour.
 
 Grouped by area. Within a group, the most actionable entries come first.
 
+### The outbox drain does not serialise, and its docstring says it does
+
+**Filed 2026-09-02, while a batch republish had the web server deliberately
+stopped — deliberately filed BEFORE restarting it, because restarting hides
+the symptom and the bug goes back to being invisible until two drainers
+happen to overlap again.**
+
+`ProjectRegistry.claim_due_outbox_elements()` does not claim. It is a plain
+`SELECT` — no `FOR UPDATE`, no `SKIP LOCKED`, no status transition — and
+`drain_outbox()` marks a row `done` only *after* its create succeeds. Two
+drainers therefore select the same rows and both call `apply_element`.
+
+Its docstring asserted the opposite ("the drain marks each row in flight as it
+takes it"). That is corrected in place now, but the correction is a note, not
+a fix. **A function named `claim_` that performs no claim, documented as doing
+the locking it does not do, is worse than an undocumented race: the next
+reader checks, finds the claim described, and concludes it is handled.**
+
+The hazard is asymmetric, which is what makes it worth fixing rather than
+noting:
+
+- **Annotations survive it.** The second create is rejected as a duplicate
+  qualifiedName, `apply_element` adopts the existing GUID, one element exists
+  and two rows are marked done.
+- **Annotation links do not.** They go through a multi-link `attach()` that
+  duplicates silently instead of upserting, and there is no reconciler for
+  annotation-level duplicates the way `scripts/reconcile_survey_definition_links.py`
+  exists for step links. A duplicate link is permanent and invisible.
+
+**The usual second drainer is not a person.** It is `scheduler.py`'s loop
+inside any running `resource-explorer web`, firing every
+`_CHECK_INTERVAL_SECONDS` (900) whether anyone is at the keyboard or not. So
+"do not run two republishes at once" is not sufficient guidance — a single
+operator with the app open is already two drainers.
+
+**Fix:** serialise the claim — `SELECT ... FOR UPDATE SKIP LOCKED`, or a
+`status='running'` transition in the same transaction as the select — so the
+property holds by construction instead of by remembering to stop the server.
+Until then, stopping the web server is the mitigation, and it is a mitigation
+for one run rather than a fix.
+
 ### Survey execution
 
 > **STATUS 2026-09-01, later the same day: the precondition half of this is BUILT and this entry is
