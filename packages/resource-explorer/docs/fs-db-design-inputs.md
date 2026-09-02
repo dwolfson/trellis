@@ -27,28 +27,38 @@ vocabulary than RE currently uses.
 whole shape of RE's repo work — 40 steps, its own surveyors, its own
 persistence — and it does not carry over.
 
-So the first design question for FS and DB is not "what steps do we write" but:
+So the first design question for FS and DB is not "what steps do we write"
+but **which surveys does each side orchestrate** — and Dan's correction,
+2026-09-02, is that this is not a choice between two answers:
 
-> **Is RE the surveyor, or the orchestrator and consumer of Egeria's?**
+> "Egeria may be orchestrating its own surveys for some of them — and others
+> may be orchestrated by RE. Egeria does not have all the Survey Types we will
+> want for FS/DB."
 
-`docs/re-as-engine-host-plan.md` already frames this as four cases. Two are
-live options here:
+So the target is a **mixed model**, and the design work is drawing the line,
+not picking a side:
 
-- **Case 3 (RE surveys locally)** — what repos do. Full control, no Egeria
-  dependency, duplicates what Egeria already implements for these two types.
-- **Case 1/2 (trigger, or claim and run, Egeria-native surveys)** — reuses
-  `PostgresDatabaseSurveyActionService` and friends rather than reimplementing
-  them.
+- **Egeria-orchestrated**, where a native service already does the job —
+  `FolderSurveyService`, `PostgresDatabaseSurveyActionService` and friends.
+  RE triggers or consumes; it does not reimplement.
+- **RE-orchestrated**, for the survey types Egeria does not have. That set is
+  not yet enumerated, and enumerating it is the first concrete task: what do
+  we want to know about a filesystem or a database that no native service
+  produces?
+- **Both, over one resource.** A database asset can carry findings from a
+  native Postgres survey *and* from an RE-only survey. Which means the two
+  must produce output that sits together coherently — same asset, same
+  `SurveyReport` conventions, compatible annotation types. That is a
+  requirement on RE's side, not a nice-to-have, and it is what makes §2 below
+  load-bearing rather than tidy-up.
+
+`docs/re-as-engine-host-plan.md` already frames the mechanics as four cases;
+the mixed model uses several of them at once rather than selecting one.
 
 **Blocked today either way by ISSUE-79**, not by design: a native survey
 against a template-created asset fails server-side (`assetConnector` null).
 That plan is ON HOLD for exactly this reason. See
 `docs/egeria-blocker-review-2026-09-02.md`.
-
-A likely honest answer is a split: let Egeria's services do the file/table/column
-mechanics they already do well, and keep RE's own layer for the things it
-adds that Egeria has no equivalent for (disposition, questions, RFA triage,
-curation, the investigation model).
 
 ---
 
@@ -97,6 +107,24 @@ as generic measures when `DataFieldAnnotation` exists, and physical file state
 as measures when `ResourcePhysicalStatusAnnotation` exists — with the added
 cost that Egeria's *own* FS/DB survey services presumably emit the specific
 types, so RE's output would not sit alongside theirs.
+
+### Rectifying this is a task, not an observation
+
+Dan, 2026-09-02, on the type mismatch: **"we may need to rectify this."**
+
+Two pieces, and the second is the one with a deadline attached:
+
+1. **Retroactive, for repos.** `CodeAnalysisAnnotation` and
+   `ContributorAnalysisAnnotation` are the clear cases. Needs the migration
+   question answered rather than assumed: what happens to annotations already
+   published under the generic types? Re-publishing under a new type without
+   retracting the old one leaves both in the catalog.
+2. **Before FS/DB steps are written.** This is the one that gets harder with
+   time. Under the mixed model above, RE's output has to sit alongside output
+   from Egeria's own services on the same asset — and those services
+   presumably emit the specific types. Choosing generic types for RE's FS/DB
+   findings would produce a catalog where two surveys of one database
+   disagree about how to describe the same kind of finding.
 
 ### The check to run before designing FS/DB steps
 
