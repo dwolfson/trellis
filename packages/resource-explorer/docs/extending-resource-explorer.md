@@ -20,6 +20,50 @@ and named similarly. Getting this straight first saves the most time:
 | `repo_survey_types.csv` | 70 rows / 10 bundles | **survey kind + display name** | which steps make up a named Survey Definition |
 | `question_catalog.yaml` | 51 | **question text** | what a user can ask, and what answers it |
 
+### Where things live
+
+Config and code are not symmetrical, and knowing which is which saves the most
+time:
+
+| what | defined in | kind | how it reaches Egeria |
+|---|---|---|---|
+| **Step** | `surveyors/repo_survey_definition_adapter.py:288` (`STEP_REGISTRY`) + a `BaseSurveyor` subclass in `sub_surveyors/` | **code** | as a `GovernanceActionProcessStep` per survey definition |
+| **Analysis** | same file (`ANALYSIS_KINDS`) + `configdata/analysis_catalog.yaml` | code + config | not directly — it is RE's own unit of "runnable" |
+| **Annotation type** | `surveyors/survey_report.py` (`ANNOTATION_TYPES_REGISTRY`) | **code** | mapped to a real Egeria `...AnnotationProperties` type |
+| **Survey type** | `docs/dr-egeria/repo_survey_types.csv` | **config** | as a `GovernanceActionProcess` + chained steps, via Dr.Egeria |
+| **Question** | `docs/dr-egeria/resource_questions.csv` | **config** | as a `Question` GlossaryTerm, via Dr.Egeria |
+| **Check ref** | `configdata/check_registry.yaml` | config | not published |
+
+**Steps and annotation types are code; survey types and questions are config.**
+A step *is* executable behaviour, so it cannot be config — but note the
+consequence: adding a step means editing a 3,760-line Python file, while
+adding a survey type means adding rows to a CSV.
+
+There is also `_RE_ANALYSIS_STEP_INFO` (line 1117, same file) — an older
+UI-facing descriptions dict. It is not a second source of truth; do not add to
+it.
+
+### What a step exposes to Egeria
+
+Per step, per survey definition:
+
+    Display Name     Coarse Profile Survey — Repo File Inventory
+    Qualified Name   GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+    Description      (the StepInfo description, verbatim)
+    Additional Properties
+      executes_at                resource-explorer
+      supported_technology_type  Git Repository
+      re_analysis_step           repo_file_inventory
+
+**The `step_key` is the contract, not the Python class name.** Nothing in
+Egeria names `FileInventorySurveyor`, and it should stay that way — a class
+name is refactorable and a published qualified name is not.
+
+`executes_at` is the dispatch discriminator: `resource-explorer` means RE runs
+it locally; the alternative is delegating the step to a real Egeria governance
+engine (`surveyors/egeria_delegated_step.py`, case 4 of
+`docs/re-as-engine-host-plan.md`).
+
 **`STEP_REGISTRY` is execution order. `ANALYSIS_KINDS` is not.** This has
 already caused one wrong bug report: a step's position was read from
 `ANALYSIS_KINDS` (position 24) and reported as an ordering bug, when
@@ -206,6 +250,80 @@ clickable. When adding a bundle, check whether the name collides with an
 existing *action*.
 
 ---
+
+## Scaling past repos
+
+Everything above describes **one resource type**. `STEP_REGISTRY` exists once,
+in the repo adapter, with 40 entries; databases and filesystems have surveyors
+but no equivalent registry. Adding them — and then whatever comes after —
+runs into three things that are fine at 40 and are not fine at several
+hundred.
+
+### 1. One flat dict in one 3,760-line file
+
+The registry is a module-level literal, and its **insertion order is the
+execution order**. That is a lot of load for one dict: identity, ordering,
+cost, preconditions, and the surveyor binding.
+
+The obvious split is per-resource-type modules exporting the same shape
+(`repo/steps.py`, `database/steps.py`, `filesystem/steps.py`), merged at
+import. Step keys are already namespaced by prefix (`repo_*`), so the
+collision problem is solved; what is not solved is that ordering is
+positional, and merging two ordered dicts does not give you a meaningful
+combined order. **Ordering probably has to become explicit** (a `after=` or a
+per-bundle order, which `repo_survey_types.csv` already carries as
+`step_order`) before the registry can be split at all.
+
+A second option worth weighing: **declare the step on the surveyor itself**, via
+a decorator, so the definition lives next to the code it describes rather than
+in a distant literal. That removes the two-places-to-edit problem entirely and
+is how this normally scales. It costs import-time discovery and makes the full
+list harder to read in one place.
+
+### 2. Step elements are duplicated per survey definition in Egeria
+
+Measured 2026-09-02 across the ten committed definitions:
+
+    109 distinct GovernanceActionProcessStep elements
+     40 distinct step_keys
+    2.7x duplication
+
+`repo_file_inventory` exists as **seven separate Egeria elements**, one per
+process that uses it, each with its own qualified name
+(`GovActionProcessStep::{Process}::{step_key}`).
+
+At 40 steps and 10 bundles that is untidy. At several hundred steps across
+several resource types it is a catalog-scale problem: every step's description
+is stored N times, and correcting one means correcting N.
+
+**The open question is whether Egeria's model supports it** — can a single
+`GovernanceActionProcessStep` belong to more than one
+`GovernanceActionProcess`, or is the per-process element intrinsic to how
+chaining works? That is a question for the Egeria type model and has not been
+verified here. It should be answered *before* the database and filesystem step
+sets are authored, because the answer determines whether the current shape is
+a mild redundancy or a multiplier.
+
+### 3. What is worth exposing, and what is not
+
+Today a step publishes `executes_at`, `supported_technology_type` and
+`re_analysis_step`. That is a deliberately small surface and the restraint is
+right — the Python class name is *not* published, so surveyors can be renamed
+freely.
+
+Candidates for exposing later, each only if something would consume it:
+
+- **`annotation_types`** — already on `StepInfo`. Lets a consumer know what a
+  step can produce without running it.
+- **`fetch_cost` / `compute_cost`** — lets a planner reason about scheduling
+  and cost before dispatch. These are **independent axes**; publishing a single
+  blended "cost" would destroy the distinction that makes them useful.
+- **`requires_context`** — declared preconditions, which is what a remote
+  orchestrator would need to sequence steps it did not author.
+
+The thing *not* to expose is anything that is an implementation detail RE may
+want to change: class names, module paths, function names. The step_key is
+the contract precisely because it is meaningless to Python.
 
 ## The failure mode to design against
 
