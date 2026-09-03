@@ -38,40 +38,21 @@ instances in one day, one closed with a superset guard (finding 118); the sweep 
 sites is unowned. The action that matters: check each allowlist against its **current** source
 shape, not the shape it had when written — none of the three was wrong when written.
 
-**4. Split `architecture-recovery.md`** — 2,720 lines, flagged by CLAUDE.md's "Writing project
-docs" rule (roughly 1,500–2,000 lines is the point to split). Measured section sizes: §5
-*Extraction design* (detectors, distillation, the IR, evidence/confidence, the six validation
-subsections 5.5–5.5f, tooling, wrapping as survey steps) is lines 730–1642, **913 lines — a third
-of the whole document** and the one section large enough on its own to justify the move. Every
-other section is materially smaller (§3 *Grounding* 272 lines, §4 *Architecture of the solution*
-365 lines, §8 *Churn and versioning* 248 lines; nothing else exceeds ~220).
-
-Proposed split: pull §5 out verbatim into a new `architecture-recovery-extraction-design.md`,
-renumbering its subsections to their own top-level structure. Conceptually clean — later sections
-(§6 component-scoped analytics, §7 curation, §8 churn) consume *what* extraction produces (the
-IR, confidence, components), not its internal mechanics — but **not mechanically clean**: already
-measured, not assumed. Within `architecture-recovery.md` itself, ~40 lines carry a `§5.x`
-subsection reference — most from §5's own front-matter summary (lines 26–45, listing what's
-coming) and internal cross-references within §5, but three (lines 1761/1766/1767, inside §6
-itself) point *into* specific §5 subsections (`§5.2`, `§5.5d`, `§5.5e`) from the section that's
-staying behind — those three need rewriting as inter-document links, not just renumbering.
-`Backlog.md` separately carries ~19 more `§5.x` references (mostly `§5.5a`–`§5.5f`, the
-validation-signals subsections), and four other RE docs
-(`consolidation-2026-08-24.md`, `investigation-framing-design.md`, `feedback-and-curation.md`,
-`question-answering-and-context.md`) each reference §5 generically. All of these need to resolve
-to the new file's own numbering, not just get a pointer slapped on the old one — this is real
-work, not a formality pass. Leave §§1–4 and §§6–20 in the main document (~1,807 lines after the
-cut — inside the CLAUDE.md guidance, and keeps the framing/grounding/architecture front matter
-together with the payoff/curation/versioning/plan/assessment back matter as one coherent read).
-Add a two-way cross-link (`architecture-recovery.md` §5 becomes a pointer + one-paragraph
-summary; the new doc opens with "part of the architecture-recovery design — see
-`architecture-recovery.md` for the model this extracts into").
-
-Verification: after the split, re-run the `§5\.[0-9a-z]*` grep across `docs/` (this package) and
-confirm zero hits remain that point at content no longer in `architecture-recovery.md` — every
-surviving reference should either target the new file's own numbering or be a §5.x reference to a
-subsection that stayed in place (none do, per the measurement above, but confirm rather than
-assume post-edit). No code change; pure doc reorganization.
+**4. Split `architecture-recovery.md` — DONE, 2026-09-03.** §5 *Extraction design* (913 of 2,720
+lines) moved verbatim to `architecture-recovery-extraction-design.md`, keeping its original §5.x
+numbering (not renumbered — every existing cross-reference still names the same subsection it
+always did). `architecture-recovery.md` shrank to 1,832 lines and now carries a pointer stub
+where §5 was. Every cross-reference that would otherwise have gone stale was found and
+requalified with the new filename, not just the ones this entry originally predicted: 16 lines in
+`architecture-recovery.md` itself (some hand-written, not the mechanical first-token pass, where
+a line mixed a moving §5.x reference with a staying §6.x one), 17 in `Backlog.md`, and one
+verbatim-quoted title in `consolidation-2026-08-24.md`. The four other RE docs flagged as
+candidates (`investigation-framing-design.md`, `feedback-and-curation.md`,
+`question-answering-and-context.md`, plus `consolidation-2026-08-24.md`'s own non-quoted `§5`s)
+turned out to reference their **own** local §5 heading, not architecture-recovery's — checked
+each doc's own heading list before touching anything, left all four alone. Dr.Egeria
+survey-definition/outbox files and `archive/` were out of scope by the existing exclusion
+convention.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
@@ -432,7 +413,8 @@ Prefect's teardown logging.
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
 
-*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery.md (§18)` §5.)*
+*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery.md` §18 and
+`architecture-recovery-extraction-design.md` §5.)*
 
 The decision trace is now persisted as findings, and that doc argues it should **not** go to
 MLflow, Phoenix or OTEL: decision provenance is read months later by resource and must be durable
@@ -1209,7 +1191,7 @@ max elsewhere in one repo        3
 ```
 
 **A boolean "does this repo document its architecture?" would answer *no* for 43 artifacts
-that exist and were found.** §5.5b's location-valued design (`in-repo` / `sibling-repo` /
+that exist and were found.** `architecture-recovery-extraction-design.md` §5.5b's location-valued design (`in-repo` / `sibling-repo` /
 `doc-site` / `not-found`, only the last an absence) is therefore paying for itself on a corpus
 nobody selected to flatter it — the point being that the spread is unglamorous and even
 (polaris 1, docling_eval 1, docling_java 3, docling_mcp 1) rather than concentrated in the
@@ -1268,7 +1250,7 @@ Two things worth someone's attention:
 
 #### Repo classification — what the repo *represents*, before what its architecture is
 
-**Maintainer direction, 2026-08-22; design §5.5b.** Classify a repo (or each member of a repo family)
+**Maintainer direction, 2026-08-22; design `architecture-recovery-extraction-design.md` §5.5b.** Classify a repo (or each member of a repo family)
 as library / application / middleware / tutorial / samples / documentation / tooling, **because the
 classification decides which analyses and which questions are relevant.** Recovering a blueprint from
 a tutorial repo is not a weak result — it is the wrong question, and spike finding 58's `workshops`
@@ -1308,12 +1290,12 @@ put documentation in a sibling repo** — `milvus-docs`, `kubernetes/website`, `
 should have, then find it. **Each expected artifact resolves to `in-repo` / `sibling repo` /
 `doc site` / `not found`, not to a boolean** — finding 68 is the cautionary tale, since "where are
 the docs" answered naively against `kubernetes/kubernetes` returns "nothing, stale 1400 days" when
-the truth is "in `kubernetes/website`, updated today". **Requires §5.5a(a)'s outward hop as a hard
+the truth is "in `kubernetes/website`, updated today". **Requires `architecture-recovery-extraction-design.md` §5.5a(a)'s outward hop as a hard
 prerequisite.**
 
 Absence cuts both ways and must not be conflated: no deployment artifacts in an *application* is a
 maturity finding; in a *library* it is confirmation of the classification (`trellis.md` records
-exactly this). Same guardrail as §5.5a(c): report locations as dated evidence, **do not rank on the
+exactly this). Same guardrail as `architecture-recovery-extraction-design.md` §5.5a(c): report locations as dated evidence, **do not rank on the
 count** — a small stable library documents lightly on purpose.
 
 **Offer to widen the scope to sibling repos** (maintainer, same session). When the expected artifacts
@@ -1345,7 +1327,7 @@ neither. Deliberately unfixed — dropping bare `website` would break the Kubern
 exists for. **The evidence already discriminates**: `odpi/website` was last pushed **2019-11-07**
 while `kubernetes/website`, `prometheus/docs` and `odpi/egeria-docs` were all pushed within two days
 (verified 2026-08-23). A consumer reading the date can discount it without the module deciding —
-suppressing it here would *be* the ranking judgement §5.5a(c) forbids. And §5.5b asks before
+suppressing it here would *be* the ranking judgement `architecture-recovery-extraction-design.md` §5.5a(c) forbids. And §5.5b asks before
 including a sibling, so an extra dated candidate is a checkbox, not a wrong answer.
 
 **Role classifier built** (`resource_explorer/github/repo_role.py`, 46 hermetic tests). Seven roles,
@@ -1353,14 +1335,14 @@ multi-valued with a primary, every role carrying the evidence that produced it. 
 `kubernetes/website` and `odpi/egeria-docs` → `documentation`; `milvus-io/milvus` and
 `prometheus/prometheus` → `application`; `odpi/egeria-workspaces` → `tutorial`+`application`+`library`.
 
-**Gate correction (design §5.5b).** `egeria-workspaces` ranks `tutorial` primary and is *also* target
+**Gate correction (design `architecture-recovery-extraction-design.md` §5.5b).** `egeria-workspaces` ranks `tutorial` primary and is *also* target
 T1, from which architecture recovery scored 18/27. A gate keyed on the primary role would skip it.
 **Trigger the skip on containment, not primacy:** skip when a tutorial/samples/documentation role is
 present AND no deployment/structural artifacts were found. Primacy still drives the expectation set.
 
 **Known limitation, evidenced not tuned:** the README-intent matcher requires an *is-a* phrasing
 (`X is a tutorial`) and misses *purpose* phrasing — `egeria-workspaces`'s "designed for learning" is
-an explicit statement of intent that §5.2 step 0 says should outrank inference, and it does not fire.
+an explicit statement of intent that `architecture-recovery-extraction-design.md` §5.2 step 0 says should outrank inference, and it does not fire.
 The role was recovered from notebook presence instead. Broadening the pattern should be validated
 against a repo not yet looked at, not tuned on this one.
 
@@ -1393,12 +1375,12 @@ matter; conflating them would be a mistake.
 
 ---
 
-#### Documentation as source, as dated source, and as signal (design §5.5a)
+#### Documentation as source, as dated source, and as signal (design `architecture-recovery-extraction-design.md` §5.5a)
 
 Three implementable items came out of the Milvus ground-truth exercise (spike README findings 65–67).
 All three are Discovery-tier by rule 17's test — cheap, and they gate the expensive tiers.
 
-**1. Step 0 needs an outward hop to the project's doc site.** §5.2 step 0 reads in-repo docs only, and
+**1. Step 0 needs an outward hop to the project's doc site.** `architecture-recovery-extraction-design.md` §5.2 step 0 reads in-repo docs only, and
 Milvus proves that insufficient: the authoritative logical architecture is at `milvus.io`, while
 `milvus-io/milvus`'s own `docs/` has a README, `design-docs/`, `agent_guides/` and `archive/` but not
 the front-door architecture page. Resolve the doc site from README links, repository metadata, or the
@@ -1411,7 +1393,7 @@ page without hand-curation — a per-project hint in the fixture is fine to star
 effectively its removal date. Vintage is bounded above by the newest dead path a description cites;
 blind spot is bounded below by the churn of live paths it omits. Verified on Milvus — four calls
 dated a stale description at ~17 months old without reading any Go. Should run on **any** prose
-architecture we consume *and on our own recovered blueprints*, with the dates carried in §5.4
+architecture we consume *and on our own recovered blueprints*, with the dates carried in `architecture-recovery-extraction-design.md` §5.4
 evidence. Cheap to build; the only real design choice is where unresolvable paths surface, and the
 answer is probably "as their own outcome", never silently as detector misses.
 
@@ -1448,10 +1430,10 @@ the pending 8–10 repo measurement re-check:
 
 ---
 
-#### Learning from user feedback (design §5.5c)
+#### Learning from user feedback (design `architecture-recovery-extraction-design.md` §5.5c)
 
 Maintainer direction: continuously take user feedback to refine weights, scoring and algorithms,
-possibly dynamically. Necessary — every §5.5b table is provisional. Sequenced deliberately:
+possibly dynamically. Necessary — every `architecture-recovery-extraction-design.md` §5.5b table is provisional. Sequenced deliberately:
 
 1. **Capture feedback as labelled examples**, with author, date and repo — not as weight deltas. RE
    already has the surfaces (`curate.py`'s `resource_feedback`/`resource_curator_notes`, RFA, the
@@ -2269,7 +2251,7 @@ components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 bot
   fixtures is 11/11 (Prometheus), 3/5 plus two at 99.8% (Milvus) and 6/6 (Kubernetes). Against that,
   the proposer emits **173, 608 and 3270 components** for **11, 5 and 6** declared ones — the
   coupling proposer contributing 146, 409 and 2482 untyped entries. Detection is solved; **nothing
-  about "3270 components" is usable by a human.** Distillation (§5.2, Phase 5) is the only remaining
+  about "3270 components" is usable by a human.** Distillation (`architecture-recovery-extraction-design.md` §5.2, Phase 5) is the only remaining
   obstacle to an answer. Scale is *not* the problem: Kubernetes' 31300 files and 93046 imports run in
   ~16s end to end.
 * **Go type inference.** `has_main` types `promql`, `util` and `documentation` as `Console Command`
@@ -3142,7 +3124,7 @@ The drawer reads them via `GET /api/activity/rfas`; see `web/routes/activity.py`
 `ports:`/`expose:`/`depends_on:` and OpenAPI documents. `propose()` is called from the product path
 (`sub_surveyors/arch_recovery_detect.py`), `arch_recovery/persist.py` writes both as findings with
 wires attributed to the **source** component, and `_renderDeploymentInterfaces()` renders them.
-Egeria's `SolutionPortDirection`/`SolutionLinkingWire` vocabulary was checked first, as design §5.5f
+Egeria's `SolutionPortDirection`/`SolutionLinkingWire` vocabulary was checked first, as design `architecture-recovery-extraction-design.md` §5.5f
 asked — the third time that check was the right first move.
 
 `ir.py`'s fields carried a `# not in this slice` comment for three weeks after that stopped being
@@ -3160,7 +3142,7 @@ architecture-recovery entry below. Ports and wires exist for the 16 repos recove
 been run on, of the 46 the gate approves.
 
 > Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
-> §5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
+> `architecture-recovery-extraction-design.md` §5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
 > written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
 > internal shape rather than exposed surface.
 >
@@ -3366,7 +3348,7 @@ external resource (a zipball, a clone) across steps in one run, which is what `t
   real answer.
 - **Check the Egeria model before inventing a local one.** This entry exists because that check was
   skipped once here, having paid off three times and produced one useful negative (`ResourceUse`,
-  §5.5d-i) the same day. The pattern of the miss is worth more than the miss: the vocabulary check
+  `architecture-recovery-extraction-design.md` §5.5d-i) the same day. The pattern of the miss is worth more than the miss: the vocabulary check
   was performed for the *port count* an hour earlier and not for *step composition*, because the
   answer there had already been assumed to be local.
 

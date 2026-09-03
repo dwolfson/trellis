@@ -297,7 +297,8 @@ problem to fix, but it is the one artifact in this document with no copy anywher
 
 Checked against today's work. These read as open and are not:
 
-- **`HIGH — populate IR.ports and IR.wires (§5.5f)`** — done. Persistence wired
+- **`HIGH — populate IR.ports and IR.wires (§5.5f)`** (§5.5f is now
+  `architecture-recovery-extraction-design.md`) — done. Persistence wired
   (`architecture_interfaces` findings), reader and deployment-topology view built, verified on
   egeria-workspaces (68 ports, 38 wires across 18 topologies).
 - **`Repo classification — what the repo represents`** — done. Step, catalog entry, Egeria
