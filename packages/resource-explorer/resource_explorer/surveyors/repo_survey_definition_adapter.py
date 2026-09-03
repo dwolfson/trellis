@@ -1207,13 +1207,23 @@ def _dependency_trend(registry, slug: str) -> list[dict]:
 
 def _data_profile_results(registry, slug: str) -> dict:
     profiles = registry.get_data_profiles(slug)
+    metric_detail = (registry.query_metrics(slug, "data_profile") or {}).get("detail") or {}
     # The status rides along from the metric row DataProfilerSurveyor writes on
     # every terminal path, including its zeros. Without it a repo that was
     # scanned and provably has no data files renders identically to one that was
     # never scanned — 36 of them, measured 2026-08-24.
+    #
+    # `formats` (2026-09-03, Backlog item 3's sweep): the per-format
+    # breakdown (count/total_size/directories) is computed over EVERY
+    # detected data file, including ones later skipped as too-large-to-
+    # profile — those rows never appear in `profiles` (get_data_profiles
+    # only returns files that were actually profiled), so `formats` is the
+    # only place a too-large-to-profile file is counted by format/location
+    # at all. It was persisted and silently unreachable through this reader.
     return attach_status(
-        {"profiles": profiles, "total": len(profiles)},
-        (registry.query_metrics(slug, "data_profile") or {}).get("detail"),
+        {"profiles": profiles, "total": len(profiles),
+         "formats": metric_detail.get("formats", {})},
+        metric_detail,
     )
 
 
@@ -1458,20 +1468,32 @@ def _security_features_trend(registry, slug: str) -> list[dict]:
 
 
 def _ci_quality_results(registry, slug: str) -> dict:
-    # Same uniform finding shape as _security_results/_license_results.
+    # Same uniform finding shape as _security_results/_license_results, plus
+    # `detail` (2026-09-03, Backlog item 3's sweep): the summary text
+    # truncates matched_keywords to the first 3 and never names
+    # workflow_files at all, so which config file(s) actually produced a
+    # verdict — and any keyword past the third — was unreachable without it.
     rows = registry.query_findings(slug, "ci_quality")
     findings = [
-        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]
     return {"findings": findings}
 
 
 def _interface_surface_results(registry, slug: str) -> dict:
+    # `detail` added 2026-09-03 (Backlog item 3's sweep): this module's own
+    # docstring says evidence strength is "the entire point of the
+    # analysis", yet the summary text truncates `files`/`dependencies` to
+    # the first 3 and never states `file_count` — so the exact count and the
+    # full list past 3 were unreachable through this reader for every
+    # 'specified'/'implied' finding.
     rows = registry.query_findings(slug, "interface_surface")
     return {"findings": [
         {"check_name": r["check_name"], "label": r["label"],
-         "summary": r["summary"], "confidence": r["confidence"]}
+         "summary": r["summary"], "confidence": r["confidence"],
+         "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]}
 
@@ -1537,10 +1559,17 @@ def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
 
 
 def _cii_badge_results(registry, slug: str) -> dict:
+    # `detail` added 2026-09-03 (Backlog item 3's sweep): the summary text
+    # for `badge_level` never states `url`/`project_id` — the only way to
+    # click through and verify the actual badge record, exactly the
+    # "location without evidence" failure this module's own sibling readers
+    # warn against — and `criteria_coverage`'s summary states only the
+    # *count* of unmet criteria, never `unmet_criteria` itself (which ones).
     rows = registry.query_findings(slug, "cii_badge")
     return {"findings": [
         {"check_name": r["check_name"], "label": r["label"],
-         "summary": r["summary"], "confidence": r["confidence"]}
+         "summary": r["summary"], "confidence": r["confidence"],
+         "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]}
 
@@ -1813,9 +1842,18 @@ def _maturity_results(registry, slug: str) -> dict:
 
 
 def _repo_conventions_results(registry, slug: str) -> dict:
+    # `detail` added 2026-09-03 (Backlog item 3's sweep): `security_policy_
+    # content`'s summary names only the file's basename, not its directory
+    # (root vs .github/ vs docs/ — a real distinction, since e.g. GitHub only
+    # recognises .github/SECURITY.md as the canonical location), and
+    # truncates matched keywords to the first 2; `automated_build`/
+    # `deployment_docker`'s summaries truncate their file lists to the
+    # first 3. Every one of those is a genuine information loss, not
+    # redundant scaffolding — the full data existed only in `detail`.
     rows = registry.query_findings(slug, "repo_conventions")
     findings = [
-        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]
     return {"findings": findings}
@@ -2001,9 +2039,24 @@ def _manifest_parse_results(registry, slug: str) -> dict:
     # build.gradle the parser cannot read) has no honest single summary.
     def _sub(metrics: dict, count_key: str) -> dict:
         out = {"count": int(metrics.get("count", 0) or 0)}
-        st = result_status_from_detail(metrics.get("detail"))
+        detail = metrics.get("detail") or {}
+        st = result_status_from_detail(detail)
         if st:
             out["status"] = st
+        # `manifests`/`error` (2026-09-03, Backlog item 3's sweep): manifest_
+        # parse.py nests its per-sub-parse detail under StepOutcome.as_row()'s
+        # own "outcome_detail" key — result_status_from_detail only reads the
+        # flat outcome/outcome_cause/outcome_known_positive fields alongside
+        # it, never opens outcome_detail, so the manifest basenames a "no
+        # dependencies parsed despite N manifest(s) present" summary already
+        # names, and the raw exception text on a parse failure, were
+        # persisted and unreachable through this reader.
+        outcome_detail = detail.get("outcome_detail")
+        if isinstance(outcome_detail, dict):
+            if "manifests" in outcome_detail:
+                out["manifests"] = outcome_detail["manifests"]
+            if "error" in outcome_detail:
+                out["error"] = outcome_detail["error"]
         return out
 
     return {
@@ -2098,6 +2151,19 @@ def _website_ingestion_results(registry, slug: str) -> dict:
         "collection": detail.get("collection", ""),
         "reason": detail.get("reason", ""),
         "discovery": detail.get("discovery", ""),
+        # ingested_by/ingested_at (2026-09-03, Backlog item 3's sweep): the
+        # already-ingested explanation text names who ingested it and when
+        # ("...was ingested as {collection} by '{owner}' at {when}") — the
+        # writer treats that as part of the answer, not incidental, and this
+        # reader dropped both a second time even though the exact same field
+        # (ingested_by) had already been the subject of one silent-drop fix
+        # at the writer's own _note() allowlist (website_ingestion.py's
+        # _DETAIL_FIELDS). error is the literal exception text on a
+        # discovery failure — only the generic outcome_cause category
+        # otherwise survives via attach_status below.
+        "ingested_by": detail.get("ingested_by", ""),
+        "ingested_at": detail.get("ingested_at", ""),
+        "error": detail.get("error", ""),
         "surveyed_at": m.get("surveyed_at", ""),
     }
     # The "metrics" render mode lays every key out as a labelled row, so an
@@ -2172,10 +2238,20 @@ def _architecture_interfaces_results(registry, slug: str) -> dict:
         if d.get("kind") == "port":
             comp = d.get("component", "")
             dep["components"].setdefault(comp, {"name": comp, "ports": []})
+            # operation_count (2026-09-03, Backlog item 3's sweep):
+            # persist.py's own neighboring comment names this exact class of
+            # bug ("exactly what happened to operationCount between finding
+            # 100 and this line") — it recurred one layer up. Computed per
+            # port, actively used elsewhere (arch_summary.py's "N
+            # operation(s)" line, mermaid.py's diagram annotations), but
+            # never surfaced here, so this Interfaces card could show a port
+            # with no indication of its declared operation count even
+            # though the same number appears elsewhere in the UI.
             dep["components"][comp]["ports"].append({
                 "port": d.get("port", ""), "direction": d.get("direction", ""),
                 "protocol": d.get("protocol", ""), "summary": r.get("summary", ""),
                 "path": path, "line": (d.get("evidence") or {}).get("line"),
+                "operation_count": (d.get("additionalProperties") or {}).get("operationCount"),
             })
         elif d.get("kind") == "wire":
             src, tgt = d.get("source", ""), d.get("target", "")
@@ -2464,6 +2540,23 @@ def _architecture_recovery_results(
             # available reading, same as a root-attached node.
             "depth": detail.get("depth", 0),
             "parent_slug": detail.get("parent_slug", ""),
+            # identity/blueprint (2026-09-03, Backlog item 3's sweep), both
+            # persisted by persist.py and never read back anywhere before
+            # this fix (confirmed by grep):
+            #  - identity: which rung of §8.2's precedence chain identified
+            #    this component (deployment-unit/package-name/module-path) —
+            #    ir.py's own docstring calls this "materially" different
+            #    from the numeric confidence, a claim-strength qualifier
+            #    with nowhere to surface.
+            #  - blueprint: which candidate cluster this component was
+            #    assigned to. persist.py deliberately runs clustering BEFORE
+            #    writing component rows specifically so this could be
+            #    attached — and it's the only surviving path to blueprint
+            #    membership here, since the sibling "architecture_blueprints"
+            #    finding kind (the full cluster definitions) has no reader
+            #    anywhere in this file.
+            "identity": detail.get("identity"),
+            "blueprint": detail.get("blueprint"),
             "verdict": _verdict_view(verdicts.get(scope)),
             "materialized": _materialized_view(materialized.get(scope)),
             "evidence": [
