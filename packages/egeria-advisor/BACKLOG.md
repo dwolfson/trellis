@@ -5,6 +5,35 @@ Status: `open` · `in-progress` · `done` · `deferred`
 
 ---
 
+## Performance measurement
+
+### PM-1 — the embedding and RAG benchmarks exist and have never been reported
+
+**Status:** `open` · consolidated here 2026-09-03 from the cluster-4 documentation
+review and from `REMAINING_TODOS.md` (dated 2026-03-07, since archived out-of-repo
+— the name is given for git-history search, not as a live link).
+
+Two separate benchmark gaps, both with the same shape — the harness exists, the
+number does not:
+
+- **ONNX vs PyTorch embeddings.** `scripts/benchmark_onnx.py` exists, both
+  exported models are on disk (`models/all-MiniLM-L6-v2.onnx` and
+  `.optimized.onnx`), and the migration plan set explicit targets of 2x+ on CPU
+  and 3x+ on GPU. **No result is recorded anywhere**, and `backend: pytorch`
+  remains the active setting. So the ONNX path is either an unrealised speedup or
+  a measured disappointment, and nothing on disk distinguishes those. Running the
+  existing script answers it.
+- **Async vs sync RAG under concurrent load.** Carried from the 2026-03-07 TODO
+  list, where it was already marked low priority. Still unmeasured.
+
+Cheap to close and worth closing, because the first one gates a decision that is
+currently being deferred by default: whether to switch the embedding backend or
+delete the unused path.
+
+See `docs/design/RUNTIME_AND_HARDWARE.md` §4a.
+
+---
+
 ## Test debt
 
 ### TD-1 — `test_report_spec_planner.py`: 6 failures, never passed in this repo

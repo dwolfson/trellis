@@ -1,8 +1,12 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` and `design/` clusters 1–5 are DONE (2026-09-03).
-Cluster 6 was reviewed and **deliberately not merged** — see below. Cluster 7
-remains a proposal awaiting approval.
+**Status: COMPLETE (2026-09-03).** `history/` cleared and all seven `design/`
+clusters resolved — five merged, cluster 6 reviewed and **deliberately not
+merged**, cluster 7 folded into the existing `BACKLOG.md` rather than becoming a
+new document. `design/` went from **32 files to 14**.
+
+Two clusters were *not* consolidations, and that is the useful result: a plan
+that assumed seven merges got five. See clusters 6 and 7 below for why.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -171,14 +175,36 @@ such references anywhere in EA's live documentation.
 subject or several before merging it.** A cluster defined by what is left over is
 not a cluster.
 
-### 7. Open work — 4 files, ~3,750 words
+### 7. Open work — **DONE 2026-09-03**
 
-`REMAINING_TODOS` · `TODO_IMPLEMENTATION_SUMMARY` · `egeria-wishlist` ·
-`SPRINT_2026_03_07_SUMMARY`
+Not a merge: **no fifth tracker was created.** EA already has a live `BACKLOG.md`
+(4,894 words, eight sections), so the question was what of these four is still
+open and where it belongs.
 
-These are trackers, not designs. The other three likely collapse into one
-backlog, the way RE keeps a single `Backlog.md`. The sprint summary is dated —
-and `history/` no longer exists, so it needs a status line rather than a move.
+**Three were one day's snapshots.** `REMAINING_TODOS`,
+`TODO_IMPLEMENTATION_SUMMARY` and `SPRINT_2026_03_07_SUMMARY` are all dated
+2026-03-07 — a sprint and its TODO captures. Their contents were checked item by
+item rather than assumed stale:
+
+- most entries were already ✅, and the list's own conclusion was *"NONE — all
+  critical functionality is working"*;
+- **"Re-enable singleton pattern, `advisor/vector_store.py` line 455"** is
+  obsolete. That file is now **42 lines** — rewritten during the pgvector
+  migration — and the caching it asked for already exists one level up, where
+  `MultiCollectionStore` is a singleton holding a single store;
+- **"Performance benchmarking"** was the one live item. It is now **PM-1** in
+  `BACKLOG.md`, merged with the ONNX finding from cluster 4, because they are the
+  same gap twice: a benchmark harness that exists and a number that was never
+  recorded.
+
+Archived out-of-repo and deleted.
+
+**`egeria-wishlist` is not a tracker of EA's work at all** and stays. It lists
+feature gaps in **Egeria and pyegeria themselves**, which makes it complementary
+to `egeria-python`'s `PYEGERIA_ISSUES.md` — that is the canonical tracker for
+*bugs*, this is the place for "the API could do X" rather than "the API does X
+wrong". It now says so at the top, because filing it under `design/` alongside
+EA's own designs is exactly what made it look like a fourth backlog.
 
 ### Left standing
 
