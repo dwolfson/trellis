@@ -18,8 +18,17 @@ on:
     # feature branch, and a workflow that only triggers on main is untested
     # YAML until the day it is merged — which is the worst moment to discover
     # that a service container does not come up.
+    #
+    # No separate `pull_request:` trigger, deliberately (removed 2026-09-03):
+    # every commit on an open PR from this repo already matches one of the
+    # branches above, so `pull_request:` alongside `push:` fired TWO
+    # independent runs per commit — confirmed directly, same sha producing
+    # both an `event: push` and an `event: pull_request` run, neither aware
+    # of the other. That doubled CI minutes and showed as duplicate/confusing
+    # checks on the PR merge box. This repo has no forks to cover, so `push:`
+    # alone loses no coverage. If forked PRs are ever accepted, `pull_request:`
+    # needs to come back — for a fork, `push:` never fires at all.
     branches: [main, "re/**"]
-  pull_request:
   workflow_dispatch:
 
 defaults:
