@@ -1294,11 +1294,26 @@ def _gap_analysis_results(registry, slug: str, kind: str) -> dict:
     ran and matched nothing. Reading status from there rather than inferring it
     from an empty list is the point: "no individual findings" and "did not run"
     are different statements.
+
+    `detail` is passed through wholesale (2026-09-03, Backlog item 3's
+    31-reader sweep) rather than dropped: secret_scan's per-match `excerpt` —
+    the actual matched text a reviewer needs to triage without re-opening
+    path:line — was computed, persisted, and unreachable through this reader
+    for every one of the four kinds it serves, since it stripped every
+    finding down to check_name/label/summary/confidence. Every other
+    per-finding `detail` field checked in this sweep (telemetry_scan,
+    contribution_provenance, sla_content) was confirmed redundant with what
+    `summary`/`label` already say, so passing it through costs nothing for
+    those — but a reader deciding in advance what a future writer's `detail`
+    will or won't contain is exactly the failure mode this sweep exists to
+    close, matching `_refresh_plan_results`/`_security_summary_results`'s
+    existing full-passthrough shape rather than re-inventing a narrower one.
     """
     rows = registry.query_findings(slug, kind)
     findings = [
         {"check_name": r["check_name"], "label": r["label"],
-         "summary": r["summary"], "confidence": r["confidence"]}
+         "summary": r["summary"], "confidence": r["confidence"],
+         "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]
     summary = next((r for r in rows if r["check_name"] == "scan_summary"), None)
