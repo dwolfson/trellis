@@ -6,7 +6,7 @@ RE Delegated Step Probe — Write Audit Log
 GovActionType::REDelegatedStepProbe::WriteAuditLog
 
 ### Description
-Case-4 live-verification probe for docs/re-as-engine-host-plan.md — a
+Case-4 live-verification probe for docs/survey-execution.md (§7) — a
 harmless, side-effect-limited target (writes one message to the audit
 log) to prove Resource Explorer's initiate_action_type_and_wait() /
 EgeriaDelegatedStepSurveyor(action_type_qualified_name=...) trigger path

@@ -504,9 +504,10 @@ repo_questions:
     analysis_ids:
     - repository_health
     - documentation_coverage
+    - sla_content
     checks: []
-    note: 'MIXED: repository_health (community responsiveness) + documentation_coverage; GAP: formal support-docs
-      RAG read'
+    note: 'MIXED: repository_health (community responsiveness) + documentation_coverage + sla_content
+      (published support commitments)'
   answering_mechanism: Git Statistics + Code Analysis
 - question: Is there a current, published, security analysis?
   stage: Analysis
@@ -570,16 +571,21 @@ repo_questions:
 - question: Is intellectual property (IP) provenance managed via CLA or DCO?
   stage: Analysis
   perspectives:
+  - Financial
+  - Governance
+  - Steward
+  - Data Owner
   - Security
   purposes:
   - Select
   - Certify
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - contribution_provenance
     checks: []
-    note: 'GAP: RAG content read (CONTRIBUTING.md/CLA-bot config detection)'
-  answering_mechanism: RAG Queries
+    note: contribution_provenance
+  answering_mechanism: Code Analysis
 - question: Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
   stage: Analysis
   perspectives:
@@ -591,11 +597,12 @@ repo_questions:
   - Assess
   - Certify
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - telemetry_scan
     checks: []
-    note: 'GAP: code-content telemetry/phone-home scan'
-  answering_mechanism: Gap
+    note: telemetry_scan
+  answering_mechanism: Code Analysis
 - question: For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
   stage: Analysis
   perspectives:
@@ -622,11 +629,12 @@ repo_questions:
   - Assess
   - Certify
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - secret_scan
     checks: []
-    note: 'GAP: secret-scanning (OSPO/DevSecOps tool category)'
-  answering_mechanism: Gap
+    note: secret_scan
+  answering_mechanism: Code Analysis
 - question: Does the repository publish a clear process for reporting security vulnerabilities?
   stage: Analysis
   perspectives:
@@ -635,12 +643,13 @@ repo_questions:
   purposes:
   - Certify
   answering:
-    kind: unknown
+    kind: analysis
     analysis_ids:
+    - security_scan
     - repo_conventions
     checks:
     - repo_conventions:security_policy_content
-    note: 'repo_conventions - RAG read? [checks: repo_conventions:security_policy_content]'
+    note: 'repo_conventions + security_scan [checks: repo_conventions:security_policy_content]'
   answering_mechanism: Code Analysis
 - question: Does the repository have automated build tooling in place?
   stage: Analysis
@@ -651,12 +660,13 @@ repo_questions:
   - Certify
   - Deploy
   answering:
-    kind: unknown
+    kind: analysis
     analysis_ids:
+    - ci_quality
     - repo_conventions
     checks:
     - repo_conventions:automated_build
-    note: 'repo_conventions - RAG read? [checks: repo_conventions:automated_build]'
+    note: 'repo_conventions + ci_quality [checks: repo_conventions:automated_build]'
   answering_mechanism: Code Analysis
 - question: Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
   stage: Assessment
@@ -667,12 +677,12 @@ repo_questions:
   purposes:
   - Share
   answering:
-    kind: unknown
+    kind: analysis
     analysis_ids:
     - repo_conventions
     checks:
     - repo_conventions:catalog_info
-    note: 'repo_conventions - RAG read? [checks: repo_conventions:catalog_info]'
+    note: 'repo_conventions [checks: repo_conventions:catalog_info]'
   answering_mechanism: Code Analysis
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery

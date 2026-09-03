@@ -236,6 +236,7 @@ class ArchCouplingSurveyor(BaseSurveyor):
                 )
 
             results.append(ResourceMeasureAnnotation(
+                check_name="coupling_summary",
                 summary=summary,
                 analysis_step=STEP,
                 resource_properties={

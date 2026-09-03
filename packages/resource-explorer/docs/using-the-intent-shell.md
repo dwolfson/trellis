@@ -1,6 +1,6 @@
 # Using the Intent Shell
 
-This is an end-user guide to Resource Explorer's web UI — what each part of the screen is for and how to use it. If you're extending or modifying the UI itself, see `CLAUDE.md`'s "Seven User Intents" section and `docs/survey-activity-design.md` instead; this document won't be kept in sync with internal implementation detail, only with what you see on screen.
+This is an end-user guide to Resource Explorer's web UI — what each part of the screen is for and how to use it. If you're extending or modifying the UI itself, see `CLAUDE.md`'s "Seven User Intents" section and `docs/survey-model.md` instead; this document won't be kept in sync with internal implementation detail, only with what you see on screen.
 
 ## The shell, at a glance
 

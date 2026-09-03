@@ -62,7 +62,7 @@ name is refactorable and a published qualified name is not.
 `executes_at` is the dispatch discriminator: `resource-explorer` means RE runs
 it locally; the alternative is delegating the step to a real Egeria governance
 engine (`surveyors/egeria_delegated_step.py`, case 4 of
-`docs/re-as-engine-host-plan.md`).
+`docs/survey-execution.md (§7)`).
 
 **`STEP_REGISTRY` is execution order. `ANALYSIS_KINDS` is not.** This has
 already caused one wrong bug report: a step's position was read from
@@ -283,7 +283,7 @@ list harder to read in one place.
 ### 2. How a step reaches its implementation — resolved
 
 **Resolved 2026-09-02**, from Egeria's own type archive and handler source
-plus `docs/re-as-engine-host-plan.md`, which had already established most of
+plus `docs/survey-execution.md (§7)`, which had already established most of
 it on 2026-08-17. Three earlier readings in this document were wrong; this
 one is verified and cites where.
 
@@ -320,7 +320,7 @@ completing userId matches the claimer, and then calls
 why a Python claimer is viable at all.
 
 The five engine-facing endpoints are listed in
-`docs/re-as-engine-host-plan.md` under "Native mechanism recap".
+`docs/survey-execution.md (§7)` under "Native mechanism recap".
 
 **What this settles for the 109-vs-40 question:**
 
@@ -350,7 +350,7 @@ The five engine-facing endpoints are listed in
    gap**: `registerGovernanceServiceWithEngine(...)` exists but is wired to no
    REST endpoint (`GovernanceConfigurationResource` is read-only). Egeria does
    it via content-pack archive writers. Recorded in
-   `docs/re-as-engine-host-plan.md`.
+   `docs/survey-execution.md (§7)`.
 
 **What this means for RE.** Today every step carries
 `executes_at: resource-explorer` and RE dispatches locally. Making a step
@@ -405,4 +405,4 @@ the metric, the annotation and the log row are all intermediate.
 - `docs/dr-egeria/foundations/foundations.md` — Perspectives and Funnel Stages
 - `docs/code-volume-and-doc-coverage-design.md` — a worked example of adding
   measures, including what was got wrong
-- `docs/recovery-and-resync-manual.md` — when Egeria and RE disagree
+- `docs/egeria-operations.md` — when Egeria and RE disagree

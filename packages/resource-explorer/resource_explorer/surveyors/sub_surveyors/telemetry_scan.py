@@ -193,6 +193,7 @@ class TelemetryScanSurveyor(BaseSurveyor):
 
             results.append(
                 ClassificationAnnotation(
+                    check_name="telemetry_scan",
                     summary=summary_text, analysis_step=STEP,
                     candidate_classifications=[outcome.outcome],
                     confidence=100 if outcome.is_conclusive else 0,
@@ -202,6 +203,7 @@ class TelemetryScanSurveyor(BaseSurveyor):
             )
             findings.append({
                 "check_name": "scan_summary", "label": outcome.outcome,
+                "confidence": 100 if outcome.is_conclusive else 0,
                 "summary": summary_text,
                 "detail": {**outcome.as_row(), "source_files_considered": files_scanned,
                            "disclosure_document_present": disclosure_present},
@@ -220,6 +222,7 @@ class TelemetryScanSurveyor(BaseSurveyor):
             if matches and not disclosure_present:
                 results.append(
                     RequestForActionAnnotation(
+                        check_name="disclosure_document",
                         summary="Telemetry-shaped call sites found with no disclosure document",
                         analysis_step=STEP,
                         action_requested=(
@@ -272,6 +275,7 @@ class TelemetryScanSurveyor(BaseSurveyor):
         outcome = StepOutcome(UNVERIFIED, cause=cause)
         results.append(
             ClassificationAnnotation(
+                check_name="telemetry_scan",
                 summary=reason, analysis_step=STEP,
                 candidate_classifications=[], confidence=0,
                 explanation=reason, json_properties=outcome.as_row(),
@@ -279,6 +283,7 @@ class TelemetryScanSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "scan_summary", "label": outcome.outcome,
+            "confidence": 0,
             "summary": reason, "detail": outcome.as_row(),
         })
 
@@ -288,7 +293,9 @@ class TelemetryScanSurveyor(BaseSurveyor):
                 self.project.slug, FINDING_KIND,
                 [
                     {"check_name": f["check_name"], "label": f["label"],
-                     "summary": f["summary"], "detail": f.get("detail")}
+                     "summary": f["summary"],
+                     "confidence": f.get("confidence", 100),
+                     "detail": f.get("detail")}
                     for f in findings
                 ],
                 surveyed_at=self._surveyed_at,

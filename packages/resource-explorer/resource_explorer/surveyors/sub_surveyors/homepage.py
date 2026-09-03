@@ -306,6 +306,7 @@ class HomepageSurveyor(BaseSurveyor):
         if not homepage:
             return [
                 ClassificationAnnotation(
+                    check_name="homepage",
                     summary="No external site found",
                     analysis_step=STEP,
                     confidence=100,
@@ -336,6 +337,7 @@ class HomepageSurveyor(BaseSurveyor):
         label = "Project page (repo)" if fell_back_to_repo else "External site"
         return [
             ClassificationAnnotation(
+                check_name="homepage",
                 summary=f"{label}: {homepage}",
                 analysis_step=STEP,
                 confidence=confidence,

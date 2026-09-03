@@ -186,6 +186,7 @@ class FileClassifierSurveyor(BaseSurveyor):
                 # an error sends the reader to debug the classifier.
                 results.append(
                     ClassificationAnnotation(
+                        check_name="file_classification",
                         summary=(
                             f"No files matched the scope '{self._scope_locator}'"
                             if self._scope_locator and available
@@ -218,6 +219,8 @@ class FileClassifierSurveyor(BaseSurveyor):
             for label, paths in sorted(type_groups.items()):
                 results.append(
                     ClassificationAnnotation(
+                        check_name="file_type",
+                        item_key=label,
                         summary=f"{len(paths)} file(s) classified as '{label}'",
                         analysis_step=self.STEP,
                         candidate_classifications=[label],
@@ -233,6 +236,7 @@ class FileClassifierSurveyor(BaseSurveyor):
             if other_paths:
                 results.append(
                     ClassificationAnnotation(
+                        check_name="unrecognized_file_types",
                         summary=f"{len(other_paths)} file(s) with unrecognized type",
                         analysis_step=self.STEP,
                         candidate_classifications=["Other"],
@@ -249,6 +253,7 @@ class FileClassifierSurveyor(BaseSurveyor):
             # One ResourceMeasureAnnotation with full extension breakdown
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="extension_breakdown",
                     summary=(
                         f"File extension breakdown across {len(file_paths)} indexed files"
                         + ("" if complete else " (partial — file inventory was empty, "

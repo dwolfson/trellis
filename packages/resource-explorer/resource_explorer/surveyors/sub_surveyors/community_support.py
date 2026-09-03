@@ -202,6 +202,7 @@ class CommunitySupportSurveyor(BaseSurveyor):
                     surveyed_at=self._surveyed_at,
                 )
                 out.append(ClassificationAnnotation(
+                    check_name="community_support",
                     summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
@@ -215,6 +216,7 @@ class CommunitySupportSurveyor(BaseSurveyor):
             self.registry.upsert_finding(slug, "community_support", dimensions,
                                          surveyed_at=self._surveyed_at)
             out.append(ClassificationAnnotation(
+                check_name="community_support",
                 summary=headline(dimensions),
                 analysis_step=STEP,
                 candidate_classifications=[

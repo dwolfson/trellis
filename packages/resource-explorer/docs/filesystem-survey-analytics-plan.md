@@ -2,7 +2,7 @@
 
 **Status:** Design agreed (2026-07-13). §4 items 1-3, 5, 6 implemented (2026-07-13) — Technology Type string fixed, `classify_file_paths()` extracted and generalized, `LocalFileSystemSurveyor` split into a structure phase + profiling phase (kept as **one** Survey Definition step per 2026-07-13 follow-up direction — see the note in §3 below), `publish_step_annotations` rebuilt to emit the full Egeria-parity annotation set, `IGNORE_DIRS` tightened. §4 item 4 (register as a separate `re_analysis_steps` entry) superseded by that same one-step decision. Not yet done: within-step progress streaming (§5), and the new RFAs are still purely descriptive annotations, not real assignable Egeria actions — see the new "RFAs should become real Egeria actions" backlog item.
 **Motivating problems:** (1) `docs/Backlog.md` "HIGH — Filesystem local survey hangs" — one monolithic blocking call with no progress feedback and errors visible only in the server console; (2) no comparable-content parity with what Egeria's own native filesystem survey produces, and no Survey Definition step granularity to speak of.
-**Companion docs:** `docs/survey-definitions.md` (how `re_analysis_steps` are declared/dispatched), `docs/egeria-collaboration-and-survey-model.md` §6.1 (analysis-step inventory/registration — the longer-term "make this catalogable" item this plan is a concrete instance of).
+**Companion docs:** `docs/survey-definitions.md` (how `re_analysis_steps` are declared/dispatched), `docs/egeria-integration.md` §6.1 (analysis-step inventory/registration — the longer-term "make this catalogable" item this plan is a concrete instance of).
 
 ---
 

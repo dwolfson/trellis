@@ -42,6 +42,8 @@ class BaseSurveyor(ABC):
         )
         results.append(
             RequestForActionAnnotation(
+                check_name="step_error",
+                item_key=self.step_name,
                 summary=f"Survey error in {self.step_name}",
                 analysis_step=self.step_name,
                 action_requested="Review survey configuration or data",

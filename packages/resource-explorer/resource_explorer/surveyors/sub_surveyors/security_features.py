@@ -81,6 +81,7 @@ class SecurityFeaturesSurveyor(BaseSurveyor):
                 # for the card). A run asks "is my zero provable?"; a reader
                 # asks "what should I do about it?".
                 return [ClassificationAnnotation(
+                    check_name="security_features",
                     summary=("Security feature settings are not visible for this "
                              "repository — GitHub returns them only to repository "
                              "admins. Not a finding that they are disabled."),
@@ -108,6 +109,7 @@ class SecurityFeaturesSurveyor(BaseSurveyor):
                 summary = f"{name.replace('_', ' ')}: {status}"
                 results.append(
                     ClassificationAnnotation(
+                        check_name=name,
                         summary=summary,
                         analysis_step=STEP,
                         candidate_classifications=[label],

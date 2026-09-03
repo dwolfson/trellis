@@ -3,7 +3,7 @@
 **Status:** design note, for review.
 **Date:** 2026-08-20
 **Origin:** an observation made after the architecture-recovery Phase 0 result
-(`architecture-recovery-phase0-findings.md`), which needed a *bag* of approaches rather than one.
+(`architecture-recovery.md (§13.1)`), which needed a *bag* of approaches rather than one.
 **Scope:** written from architecture recovery, but **not specific to it** — it applies to any RE
 analysis where more than one method could produce the answer.
 
@@ -185,7 +185,7 @@ size, first-party ratio. Those are exactly the axes that predicted the Phase 0 o
 > circular and one is disconfirmed:
 >
 > - The *"markers ~35%"* figure matches trellis's measured 4/11 = 36% — but this note was written
->   **after** `architecture-recovery-phase0-findings.md` (commits `973e6d0` then `726b338`), so
+>   **after** `architecture-recovery.md (§13.1)` (commits `973e6d0` then `726b338`), so
 >   that is Phase 0's own result reflected back, not independent confirmation. The coupling half
 >   of the same example (*"~80%"*) is nearer 62% in isolation.
 > - The *"compose-rich → deployment ~100%"* example is **disconfirmed**. `egeria-workspaces`

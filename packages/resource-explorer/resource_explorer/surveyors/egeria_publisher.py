@@ -172,6 +172,17 @@ class EgeriaPublisher:
         # from `_create_annotations` above regardless of failure — this is
         # additive to the summary text, never gating it (the survey report
         # and every annotation are already durable by this point).
+        # The cap is a safety net, and a net nobody is told about is a hole.
+        # enqueue_annotations logs a warning; this is the half a person sees.
+        cap_warning = ""
+        produced = link_counts.get("annotations_produced")
+        queued = link_counts.get("annotations_queued")
+        if produced is not None and queued is not None and queued < produced:
+            cap_warning = (
+                f" (⚠ CAPPED: {produced - queued} of {produced} annotation(s) NOT "
+                f"published — see the outbox enqueue cap)"
+            )
+
         link_warning = ""
         failed_or_skipped = link_counts.get("links_failed", 0) + link_counts.get("links_skipped", 0)
         if failed_or_skipped:
@@ -197,9 +208,14 @@ class EgeriaPublisher:
                     entity_location=result.github_url,
                     status="ok",
                     summary=(
-                        f"Published to Egeria: {len(result.annotations)} annotations"
+                        # The QUEUED count when there is one, not the produced
+                        # count — a capped run must not report the number it
+                        # made as the number it published.
+                        f"Published to Egeria: "
+                        f"{link_counts.get('annotations_queued', len(result.annotations))}"
+                        f" annotations"
                         f" → {(report_guid or 'no-guid')[:12]}…"
-                        f"{annotation_types_warning}{link_warning}"
+                        f"{annotation_types_warning}{link_warning}{cap_warning}"
                     ),
                     items=[
                         {
@@ -633,9 +649,17 @@ class EgeriaPublisher:
             self._registry, OutboxClients(discovery=self._discovery), self._find_element_guid,
             limit=max(len(result.annotations), 1), run_id=qualified_name_prefix,
         )
-        return self._link_evidence_outbox(
+        counts = self._link_evidence_outbox(
             result, row_ids, link_pairs, qualified_name_prefix,
         )
+        # What was actually QUEUED, which is not len(result.annotations) once
+        # the outbox cap bites. Reported so the Activity summary can state a
+        # published count rather than a produced one — counting what a
+        # surveyor made and calling it what was published is the same
+        # correct-number-wrong-label defect this codebase keeps paying for.
+        counts["annotations_queued"] = len(row_ids)
+        counts["annotations_produced"] = len(result.annotations)
+        return counts
 
     # ── evidence linking (annotation-linking-plan Phase 2, Tier 1) ─────────────
 

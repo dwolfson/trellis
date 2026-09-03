@@ -94,6 +94,7 @@ class ArchDetectSurveyor(BaseSurveyor):
             # components found" would say the analysis looked and saw nothing,
             # when it did not look.
             return [ResourceMeasureAnnotation(
+                check_name="architecture_recovery",
                 summary=f"Architecture recovery skipped — {gate.get('summary', 'gated')}",
                 analysis_step=STEP,
                 resource_properties={
@@ -273,6 +274,7 @@ class ArchDetectSurveyor(BaseSurveyor):
             else:
                 summary = "No components detected from manifests, deployment units, or code markers"
             results.append(ResourceMeasureAnnotation(
+                check_name="architecture_recovery",
                 summary=summary, analysis_step=STEP,
                 resource_properties={
                     "component_count": len(components),
@@ -288,6 +290,7 @@ class ArchDetectSurveyor(BaseSurveyor):
                 # corpus loud rather than letting it pass silently: most of
                 # what build_components() saw may be vendor noise.
                 results.append(RequestForActionAnnotation(
+                    check_name="non_first_party_exclusion",
                     summary="Most tracked files were excluded as non-first-party",
                     analysis_step=STEP,
                     action_requested="Review vendor-exclusion rules for this repo",

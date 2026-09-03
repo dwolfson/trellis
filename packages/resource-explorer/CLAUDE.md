@@ -16,7 +16,7 @@ It is the successor to [Project Explorer](https://github.com/LF-AI/project-explo
 
 **Target users:** Data engineers, data stewards, DBAs, AI engineers, and security practitioners who need to understand and catalog information resources. Egeria is required for the core survey/catalog workflow; RAG-based querying works without it.
 
-**Design reference:** `docs/survey-activity-design.md` — read this before making architectural changes.
+**Design reference:** `docs/survey-model.md` — read this before making architectural changes.
 
 ## Package name
 
@@ -94,7 +94,7 @@ Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the i
 
 **Scheduling vs. monitoring schedules are two different surfaces on purpose.** Setting/changing a cadence for a specific analysis is per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery. The global, read-mostly Schedules overview (`GET /api/schedules/`) — what's scheduled, whether the last run succeeded, drill into errors, remove stale schedules — moved from Admin into **Automate's own "⏱ Schedules" sub-tab** (2026-08-13, alongside its "🔔 Subscriptions" sub-tab) rather than staying a separate Admin page, since a subscription's only real prerequisite is an active schedule for the same `analysis_id` — the two views living together is the point. It is still not a duplicate editor; both it and the per-card action hit the same `schedules.py`/`resource_schedules` backend. The scheduler (`scheduler.py`) writes a real `ActivityEntry` for every run it executes, success or failure, and records the outcome on the schedule row itself (`last_run_status`/`last_run_activity_id`) — this was a real gap before (only logged to Python's own logger, invisible from the UI, violating rule 16 below), not a deliberate omission. Automate's subscriptions ride on top of this same scheduler — a subscription with no active schedule for its `analysis_id` never fires, since detection only runs off scheduled completions (see rule 17).
 
-RFA (RequestForAction) is **not** one of the eight intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself, and `docs/rfa-egeria-todo-followup.md` for the confirmed (not assumed) design of what that integration would take. Automate's own notifications are delivered as RFAs (a new `rfa_operation`-less `log_rfa()` call from `scheduler.py`), reusing this same drawer rather than inventing a separate notification UI.
+RFA (RequestForAction) is **not** one of the eight intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself, and `docs/egeria-integration.md (§11)` for the confirmed (not assumed) design of what that integration would take. Automate's own notifications are delivered as RFAs (a new `rfa_operation`-less `log_rfa()` call from `scheduler.py`), reusing this same drawer rather than inventing a separate notification UI.
 
 ## Architecture
 

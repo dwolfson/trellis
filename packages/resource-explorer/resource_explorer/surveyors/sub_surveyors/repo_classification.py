@@ -125,6 +125,7 @@ class RepoClassificationSurveyor(BaseSurveyor):
         annotation = ClassificationAnnotation(
             summary=summary,
             analysis_step=STEP,
+            check_name="repo_role",
             candidate_classifications=roles,
             # 60 rather than a computed number: the roles carry their own
             # evidence, and §5.5b forbids turning that evidence into a grade.

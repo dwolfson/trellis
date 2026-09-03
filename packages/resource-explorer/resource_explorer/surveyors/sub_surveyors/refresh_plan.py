@@ -175,6 +175,7 @@ class RefreshPlanSurveyor(BaseSurveyor):
             out.append(ClassificationAnnotation(
                 summary=overall["summary"],
                 analysis_step=STEP,
+                check_name="refresh_plan",
                 candidate_classifications=[f["label"] for f in findings if f["label"]],
                 confidence=overall["confidence"],
                 json_properties={f["check_name"]: f["label"] for f in findings},

@@ -156,6 +156,7 @@ class SubResourceSurveyor(BaseSurveyor):
                     no_match_cause="nothing_worthy")
                 results.append(
                     ClassificationAnnotation(
+                        check_name="sub_resource_survey",
                         summary="Sub-resources not surveyed — the file inventory is empty",
                         analysis_step=STEP,
                         candidate_classifications=[],
@@ -206,6 +207,7 @@ class SubResourceSurveyor(BaseSurveyor):
 
             results.append(
                 ClassificationAnnotation(
+                    check_name="sub_resource_survey",
                     summary=(
                         f"Sub-resource survey: {len(findings)} considered, "
                         f"{len(worthy)} recommended for cataloging"

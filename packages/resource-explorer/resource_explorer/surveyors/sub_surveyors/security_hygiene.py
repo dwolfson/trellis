@@ -11,6 +11,7 @@ from resource_explorer.surveyors.survey_report import (
     Annotation,
     ClassificationAnnotation,
     RequestForActionAnnotation,
+    findings_from_annotations,
 )
 
 log = logging.getLogger(__name__)
@@ -68,7 +69,6 @@ class SecurityHygieneSurveyor(BaseSurveyor):
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
-        findings: list[dict] = []
         try:
             # project_file_inventory — every file in the repo — NOT
             # project_code_symbols, which is what this read until 2026-08-22.
@@ -109,6 +109,8 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                     ClassificationAnnotation(
                         summary="Security hygiene not checked — the file inventory is empty",
                         analysis_step=STEP,
+                        check_name="inventory_available",
+                        label="unverified",
                         candidate_classifications=[],
                         confidence=100,
                         explanation=(
@@ -120,12 +122,7 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                         json_properties=outcome.as_row(),
                     )
                 )
-                findings.append({
-                    "check_name": "inventory_available", "status": "unverified",
-                    "summary": "File inventory empty — hygiene checks not run",
-                    "detail": outcome.as_row(),
-                })
-                self._persist(findings)
+                self._persist(results)
                 return results
 
             # ── Security policy ───────────────────────────────────────────────
@@ -138,34 +135,25 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                     ClassificationAnnotation(
                         summary="Security policy file present",
                         analysis_step=STEP,
+                        check_name="security_policy",
+                        label="pass",
                         candidate_classifications=["HasSecurityPolicy"],
                         confidence=100,
                     )
                 )
-                findings.append({
-                    "check_name": "security_policy", "status": "pass",
-                    "summary": "Security policy file present",
-                    "detail": {"candidate_classifications": ["HasSecurityPolicy"]},
-                })
             else:
                 results.append(
                     RequestForActionAnnotation(
                         summary="No SECURITY.md found",
                         analysis_step=STEP,
+                        check_name="security_policy",
+                        label="gap",
                         action_requested="Add a SECURITY.md file describing the vulnerability disclosure process",
                         action_target_name="SECURITY.md",
                         explanation="A security policy helps users report vulnerabilities responsibly.",
                         confidence=90,
                     )
                 )
-                findings.append({
-                    "check_name": "security_policy", "status": "gap",
-                    "summary": "No SECURITY.md found",
-                    "detail": {
-                        "action_requested": "Add a SECURITY.md file describing the vulnerability disclosure process",
-                        "action_target_name": "SECURITY.md",
-                    },
-                })
 
             # ── CI configuration ──────────────────────────────────────────────
             has_ci = any(
@@ -183,34 +171,25 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                     ClassificationAnnotation(
                         summary=f"CI configuration present: {', '.join(ci_found)}",
                         analysis_step=STEP,
+                        check_name="ci_config",
+                        label="pass",
                         candidate_classifications=ci_found,
                         confidence=95,
                     )
                 )
-                findings.append({
-                    "check_name": "ci_config", "status": "pass",
-                    "summary": f"CI configuration present: {', '.join(ci_found)}",
-                    "detail": {"candidate_classifications": ci_found},
-                })
             else:
                 results.append(
                     RequestForActionAnnotation(
                         summary="No CI configuration detected",
                         analysis_step=STEP,
+                        check_name="ci_config",
+                        label="gap",
                         action_requested="Add a CI configuration (e.g. GitHub Actions workflow)",
                         action_target_name=".github/workflows/",
                         explanation="Automated testing improves code quality and contributor confidence.",
                         confidence=85,
                     )
                 )
-                findings.append({
-                    "check_name": "ci_config", "status": "gap",
-                    "summary": "No CI configuration detected",
-                    "detail": {
-                        "action_requested": "Add a CI configuration (e.g. GitHub Actions workflow)",
-                        "action_target_name": ".github/workflows/",
-                    },
-                })
 
             # ── License ───────────────────────────────────────────────────────
             has_license = bool(license_from_stats) or bool(filenames & _LICENSE_FILES)
@@ -220,36 +199,27 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                     ClassificationAnnotation(
                         summary=f"License: {license_label}",
                         analysis_step=STEP,
+                        check_name="license",
+                        label="pass",
                         candidate_classifications=[license_label],
                         confidence=100,
                     )
                 )
-                findings.append({
-                    "check_name": "license", "status": "pass",
-                    "summary": f"License: {license_label}",
-                    "detail": {"candidate_classifications": [license_label]},
-                })
             else:
                 results.append(
                     RequestForActionAnnotation(
                         summary="No license file detected",
                         analysis_step=STEP,
+                        check_name="license",
+                        label="gap",
                         action_requested="Add a LICENSE file to clarify terms of use",
                         action_target_name="LICENSE",
                         explanation="Projects without a license are legally all-rights-reserved by default.",
                         confidence=90,
                     )
                 )
-                findings.append({
-                    "check_name": "license", "status": "gap",
-                    "summary": "No license file detected",
-                    "detail": {
-                        "action_requested": "Add a LICENSE file to clarify terms of use",
-                        "action_target_name": "LICENSE",
-                    },
-                })
 
-            self._persist(findings)
+            self._persist(results)
 
         except Exception as exc:
             log.exception("SecurityHygieneSurveyor failed for %s", self.project.slug)
@@ -257,22 +227,27 @@ class SecurityHygieneSurveyor(BaseSurveyor):
 
         return results
 
-    def _persist(self, findings: list[dict]) -> None:
-        """Write this run's findings. Extracted so the unverified early return
-        persists through exactly the same path as a completed run — otherwise
-        "we could not check" would be the one outcome that left no row."""
+    def _persist(self, annotations: list) -> None:
+        """Write this run's findings, DERIVED from the annotations above.
+
+        Derived rather than hand-written beside them: the two records had
+        drifted with nothing to catch it — the SECURITY.md check emitted
+        confidence=90 on the annotation and stored a finding that omitted
+        confidence, so the table defaulted it to 100. Same check, same run,
+        two numbers, no error anywhere. Deriving makes that impossible by
+        construction rather than avoided by care.
+
+        Also extracted so the unverified early return persists through exactly
+        the same path as a completed run — otherwise "we could not check" would
+        be the one outcome that left no row.
+        """
         try:
-            # Generic findings table (analysis-kind extensibility
-            # redesign) — "status" (pass/gap/unverified) here becomes "label"
-            # in the generic schema, since other finding kinds (e.g.
-            # documentation) use "label" for a different kind of value.
+            # "label" here is the pass/gap/unverified verdict; other finding
+            # kinds (e.g. documentation) use the same column for a different
+            # kind of value, which is why the generic schema names it `label`.
             self.registry.upsert_finding(
                 self.project.slug, "security_hygiene",
-                [
-                    {"check_name": f["check_name"], "label": f["status"],
-                     "summary": f["summary"], "detail": f.get("detail")}
-                    for f in findings
-                ],
+                findings_from_annotations(annotations),
                 surveyed_at=self._surveyed_at,
             )
         except Exception as exc:

@@ -79,6 +79,7 @@ class LanguageSurveyor(BaseSurveyor):
                 )
             results.append(
                 ClassificationAnnotation(
+                    check_name="primary_language",
                     summary=f"Primary language: {primary}",
                     analysis_step=STEP,
                     candidate_classifications=[primary] if known else [],
@@ -97,6 +98,7 @@ class LanguageSurveyor(BaseSurveyor):
                 if secondary:
                     results.append(
                         ClassificationAnnotation(
+                            check_name="secondary_languages",
                             summary=f"Secondary language(s): {', '.join(secondary)}",
                             analysis_step=STEP,
                             candidate_classifications=secondary,
@@ -109,6 +111,7 @@ class LanguageSurveyor(BaseSurveyor):
             project_type = self._infer_project_type(primary, topics)
             results.append(
                 ClassificationAnnotation(
+                    check_name="project_type",
                     summary=f"Inferred project type: {project_type}",
                     analysis_step=STEP,
                     candidate_classifications=[project_type],

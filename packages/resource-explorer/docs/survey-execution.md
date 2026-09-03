@@ -1,11 +1,15 @@
-# Survey model: granularity, annotation types, and RE as an engine host
+# Survey execution — dispatch, engine hosts, and orchestration
 
-**Status: design note. §1 hazards, §3 and §4.5 (Prefect) all done 2026-08-26.**
-**Remaining: §2's granularity collapse, and §4.1's engine-host participation.**
-**Date:** 2026-08-26
-**Supersedes in part:** `analysis-step-egeria-registration-plan.md` (D1/D3 shipped differently; D2 shipped; D4 still open)
-**Prompted by:** the question of whether RE should manage two granularities — individual
-analyses and survey types — or one.
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** how a survey *runs* — who decides, who claims the work, and what
+happens when the orchestrator is unavailable. For what a survey *is*, see
+`survey-model.md`.
+
+> **This document consolidates six.** Part I is the engine-host design (live
+> hazards, the granularity question, the annotation-type defect, the target
+> model). Part II merges the unified execution model's decisions, the
+> orchestration-tool evaluation, the four execution permutations, and Egeria
+> registration. Part III is the settled register.
 
 ---
 
@@ -337,7 +341,7 @@ never depended on delivery.
 
 **Correction 2026-08-27 — there is no per-engine claimable listing to poll.** §4.1 listed
 `GET /governance-engines/{guid}/active-engine-actions` as the discovery primitive, following
-`re-as-engine-host-plan.md`. Verified in Egeria's Java source: that route's handler is named
+`survey-execution.md (§7)`. Verified in Egeria's Java source: that route's handler is named
 `getActiveClaimedEngineActions` and its Javadoc says "claimed by this caller's userId ... used
 when the caller restarts" — the same restart-recovery operation as `.../active-claimed`, under a
 URL that reads otherwise. It also 404s on the View Service. Enumerating every per-engine route in
@@ -500,9 +504,117 @@ decision at all.
 * **Who authors?** `repo_survey_types.csv` and its generator live in RE, which sits awkwardly
   with "EA is the authoring environment for Dr.Egeria documents, RE is not." Making survey types
   the sole granularity puts ~30 definitions on that path and forces the question. Unresolved;
-  `analysis-step-egeria-registration-plan.md` D4 deferred it and it is still deferred.
+  `survey-execution.md (§10)` D4 deferred it and it is still deferred.
 * **Do single-step survey types need Egeria to exist to be schedulable?** Under §4 yes, which is
   a new hard dependency for something RE does locally today.
 * **Is `analysisStep` the step key or the display name?** RE writes `ann.analysis_step`, which is
   the surveyor's `STEP` constant (`ChaossMetrics`), not the registry key (`repo_chaoss_metrics`).
   Harmless today; ambiguous the moment anything joins on it.
+
+---
+
+# Part II — Execution permutations, orchestration, and registration
+
+*Merged 2026-09-02 from five notes.*
+
+## 7. The four execution permutations
+
+*(from `re-as-engine-host-plan.md` — status: ON HOLD, design complete, case 4 built)*
+
+Who *initiates*, who *orchestrates* (owns process state), and where *steps
+execute* are three independent choices. They yield four permutations, and the
+value of the table is that it collapses them to two real ones.
+
+| # | Initiates | Orchestrates | Steps execute | Net new work |
+|---|---|---|---|---|
+| **1** | RE | Egeria (native) | Egeria (native, all) | **None** — `initiate_gov_action_process()` already exists; RE needs a route and a read-back |
+| **2** | RE | Egeria (native) | Mixed — some native, some RE | RE becomes a claiming engine: poll/claim/complete plus engine and service registration |
+| **3** | RE | RE | RE | **Today's architecture, unchanged** |
+| **4** | RE | RE | Mixed — some RE, some Egeria | Thin step-runner over the existing `initiate_engine_action`, plus a completion poll |
+
+**Case 1 is real but has no current target.** It needs *every* step to have a
+working Java connector already. None of RE's own analyses do, and porting them to
+Java would cost strictly more than case 2 for the same steps while delivering the
+identical native orchestration. Case 1 applies only where Egeria already ships
+full native coverage — Postgres and filesystem surveys — and there RE has no
+execution work at all, just trigger and read back.
+
+**Case 2 is the real capability to build.** It is not "case 1 minus some steps".
+Every RE-specific survey needs case 2's investment, or stays case 3, because RE's
+bespoke logic — GitHub API calls, tree-sitter extraction, license classification —
+has no Java equivalent and building one would be duplicated effort with no benefit
+over letting RE claim the step itself.
+
+**Case 4 is nearly free and is built.** **Case 3 stays the permanent default**,
+not a stepping stone to be phased out.
+
+## 8. The unified execution model
+
+*(from `unified-survey-execution-model-plan.md` — planned, not built except D7a's first slice)*
+
+Its load-bearing decisions, in the numbering other documents cite:
+
+- **D1** — one survey concept: a named, ordered bundle of analytic steps.
+- **D2** — two separable kinds of "publish", with a real precondition between them.
+- **D3** — for pure-RE surveys, publish-results defaults to **on**, reversing the
+  earlier default.
+- **D4** — sniff-test-ability is *derived* from a survey's execution tier, not
+  declared separately.
+- **D5** — file profiling is an under-recognised survey, not a peer category.
+- **D6** — dependency and sequencing between steps. The refinement that matters:
+  **model shared *resources*, not step-to-step data dependencies** (D6.1). A
+  `ResourceProvider` registry plus `requires_resources` on `StepInfo` (D6.2–6.3)
+  lets the orchestrator resolve each resource **once, before the run** (D6.4),
+  instead of threading outputs between steps. That is what makes a microflow
+  self-contained and independently runnable.
+- **D8 (A2A) deferred** 2026-08-15 — not rejected.
+
+## 9. Choosing an orchestrator
+
+*(from `distributed-survey-orchestration.md`, `distributed-survey-best-practices.md`)*
+
+Prefect was selected after comparing flow tools, and the integration is
+deliberately narrow: it orchestrates **locally-run survey steps**, giving them
+real flow-run state, per-task logs, and cancellation — none of which the plain
+thread-based path has. It gives no additional visibility into `executes_at: egeria`
+steps, which Egeria coordinates itself.
+
+**The fallback is not a degraded mode, it is a requirement.** With no Prefect
+server reachable, the step runs locally in-process. `PREFECT_ENABLED=true` with no
+server running is safe, costing only a connection attempt per step.
+
+The comparative research behind the choice — how DataHub, OpenMetadata and Egeria
+differ in orchestration model, plus enterprise ingestion and human-in-the-loop
+case studies — lives in the archive rather than here; it informed the decision and
+is not itself design. The conclusions that survived: orchestration state belongs
+to *one* owner per run, and human curation is a stage in the pipeline rather than
+an interrupt to it.
+
+## 10. Registering an analysis step with Egeria
+
+*(from `analysis-step-egeria-registration-plan.md` — investigation complete, not built)*
+
+`re_analysis_step` currently travels as an `additionalProperties` string. The
+target is a real **request type**, registered via
+`AssetMaker.link_supported_governance_service()`, which writes
+`SupportedGovernanceServiceProperties` with `requestType`, `serviceRequestType`
+and `requestParameters`. That relationship is MULTI_LINK — one engine, many
+request types — which is exactly the shape needed.
+
+The mechanism was confirmed present in pyegeria on 2026-08-26. **Nothing here
+requires a Java engine host or a change to Egeria.**
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Should RE's steps be ported to Java connectors? | **No** | Case 1 costs strictly more than case 2 for the same steps, with identical benefit |
+| Is local orchestration (case 3) a stepping stone? | **No** — permanent default | It must keep working indefinitely; Prefect is an addition, not a replacement |
+| Model step-to-step data dependencies? | **No** — model shared resources | D6.1; resources resolve once before the run, which is what keeps a microflow self-contained |
+| Use Dr.Egeria as the runtime invocation path? | **No** — A2A | Markdown through MCP is the wrong shape for a machine-to-machine governance call; Dr.Egeria keeps *authoring* |
+| Does Prefect give visibility into Egeria-side steps? | **No** | It orchestrates locally-run steps only |
+| Is `PREFECT_ENABLED=true` with no server unsafe? | **No** | Falls back to in-process; costs a connection attempt |
+| Does engine-host registration need Egeria changes? | **No** | Confirmed in pyegeria 2026-08-26 — the mechanism already exists |
+| Should `analysis_id` carry both bundling and results meaning? | **No** | It sits across two rows of the granularity table and belongs in neither |

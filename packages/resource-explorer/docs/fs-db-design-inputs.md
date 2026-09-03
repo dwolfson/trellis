@@ -52,13 +52,13 @@ not picking a side:
   requirement on RE's side, not a nice-to-have, and it is what makes §2 below
   load-bearing rather than tidy-up.
 
-`docs/re-as-engine-host-plan.md` already frames the mechanics as four cases;
+`docs/survey-execution.md (§7)` already frames the mechanics as four cases;
 the mixed model uses several of them at once rather than selecting one.
 
 **Blocked today either way by ISSUE-79**, not by design: a native survey
 against a template-created asset fails server-side (`assetConnector` null).
 That plan is ON HOLD for exactly this reason. See
-`docs/egeria-blocker-review-2026-09-02.md`.
+`docs/egeria-integration.md (§12)`.
 
 ---
 
@@ -149,7 +149,7 @@ generic type) answered rather than assumed.
 - **Whether RE can author every relevant annotation type over REST.**
   `create_annotation` exists in pyegeria's `data_discovery.py`; whether a
   `SurveyReport` can be authored over REST at all is flagged as unverified in
-  `re-as-engine-host-plan.md`.
+  `survey-execution.md (§7)`.
 - **Property shapes.** Each unused type has its own `…Properties` class; none
   were read here. Adopting one means matching its properties, not just its
   name.

@@ -115,6 +115,7 @@ class MaturitySurveyor(BaseSurveyor):
                 ClassificationAnnotation(
                     summary=summary,
                     analysis_step=STEP,
+                    check_name="project_maturity",
                     # "unknown" is not a maturity tier and must not be offered
                     # as a candidate classification alongside real ones.
                     candidate_classifications=[tier] if age_days is not None else [],

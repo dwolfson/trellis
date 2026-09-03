@@ -308,3 +308,102 @@ class TestEveryAnsweringAnalysisCanProduceAFinding:
             f"above pass trivially on an empty set, so this asserts the join "
             f"still produces something"
         )
+
+
+class TestNoStaleGaps:
+    """A question must not claim nothing produces its answer when something
+    does.
+
+    Found 2026-09-02 by hand, seven rows late. The four GAP analyses
+    commissioned on 2026-09-01 shipped that day and ran; not one question
+    pointed at them, because each row still said `GAP:` — accurate when
+    written, never revisited once the gap was filled. Three more rows were
+    wired correctly and phrased `repo_conventions - RAG read?`, which the
+    generator could not classify, so they parsed as `unknown` and were
+    equally unanswerable.
+
+    Both kinds render "No mechanism exists for this yet — no analysis
+    produces it", which is a claim about the catalog, and it was false for
+    six of the nine.
+
+    This is the same shape as `lines_of_code` and the `PARTIAL:` that
+    outlived its reason: a record that was true when written and is not
+    revisited when the world changes. The guard is cheap because staleness
+    is mechanically detectable — a `gap` row that names a real, readable
+    analysis is a contradiction in terms.
+    """
+
+    def _rows(self):
+        import csv
+        from pathlib import Path
+        p = (Path(__file__).resolve().parents[1]
+             / "docs" / "dr-egeria" / "resource_questions.csv")
+        return list(csv.DictReader(p.open()))
+
+    def _readable_analyses(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS)
+        return {k for k, v in ANALYSIS_KINDS.items()
+                if v.results and v.results.results_reader}
+
+    def test_no_gap_row_names_a_readable_analysis(self):
+        """The exact defect. A row saying GAP: while naming an analysis that
+        has a results reader is claiming the mechanism does not exist while
+        pointing at it."""
+        readable = self._readable_analyses()
+        offenders = []
+        for r in self._rows():
+            note = (r.get("Answering Analysis") or "").strip()
+            if not note.upper().startswith("GAP:"):
+                continue
+            named = sorted(a for a in readable if a in note)
+            if named:
+                offenders.append((r["Question"][:60], named))
+        assert offenders == [], (
+            "these rows say GAP: while naming an analysis that can be read "
+            f"from — rewire them or correct the note: {offenders}"
+        )
+
+    def test_every_row_parses_into_a_known_kind(self):
+        """`unknown` is never a decision, only a wording accident. Three rows
+        read `repo_conventions - RAG read?` and were unanswerable for it,
+        with a working analysis behind them the whole time."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from csv_to_question_catalog_yaml import _load_known_checks, _parse_answering
+
+        # The generator passes the known-check set; without it a valid
+        # `[checks: ...]` ref raises and this test would fail on correct rows.
+        known_checks = _load_known_checks()
+        unknown = []
+        for r in self._rows():
+            note = (r.get("Answering Analysis") or "").strip()
+            if not note:
+                continue  # a blank column is a different (also real) problem
+            if _parse_answering(note, known_checks)["kind"] == "unknown":
+                unknown.append((r["Question"][:56], note[:56]))
+        assert unknown == [], (
+            "these notes match none of the generator's conventions, so the "
+            "questions are unanswerable regardless of what they are wired to. "
+            f"See resource_questions_guide.md's conventions table: {unknown}"
+        )
+
+    def test_a_gap_row_is_genuinely_unbacked(self):
+        """The other half — a gap must have NO readable analysis at all, so
+        the guard cannot be satisfied by rewording the note to hide an id."""
+        readable = self._readable_analyses()
+        import yaml
+        from pathlib import Path
+        cat = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "resource_explorer"
+             / "configdata" / "question_catalog.yaml").open())["repo_questions"]
+        bad = [
+            q["question"][:60] for q in cat
+            if q["answering"]["kind"] == "gap"
+            and set(q["answering"]["analysis_ids"]) & readable
+        ]
+        assert bad == [], (
+            "these questions are kind=gap but resolve to a readable analysis "
+            f"in the generated catalog: {bad}"
+        )

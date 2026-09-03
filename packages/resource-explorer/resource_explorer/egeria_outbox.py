@@ -31,6 +31,9 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from resource_explorer.surveyors.survey_report import (
+    annotation_qualified_name, assert_unique_qualified_names)
+
 log = logging.getLogger(__name__)
 
 
@@ -306,6 +309,10 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             # pending work is not failed work, and burning an attempt on
             # "Egeria was down" is how a transient outage dead-letters a
             # perfectly good write.
+            # Hand the claims back. These rows are claimed at this point, and
+            # an outage must leave them exactly as they were — not parked in
+            # 'running' until the lease expires.
+            registry.release_outbox_claim([r["id"] for r in rows])
             log.warning("Outbox drain: no Egeria client available, leaving %d rows pending",
                         len(rows))
             summary["skipped"] = len(rows)
@@ -347,6 +354,25 @@ def _default_clients():
     )
 
 
+#: Most annotations one publish will queue. Beyond this the run is capped and
+#: the remainder is REPORTED, never silently dropped.
+#:
+#: Chosen from measured runs, 2026-09-02:
+#:
+#:     largest legitimate run     522  (data_prep_kit — 357 per-file
+#:                                      SchemaAnalysisAnnotations plus
+#:                                      classifications and measures)
+#:     next legitimate            184, 134, 129, 127, 115 ...
+#:     pathological             8,980  (pre-fix Committed Secrets, egeria_python_git)
+#:                             48,583  (the same scan, full finding count)
+#:
+#: 2000 sits roughly 4x above anything legitimate that has been observed and
+#: an order of magnitude below the failure it exists for. It is a safety net
+#: against a rule regression or a pathological repo, NOT a policy about how
+#: many annotations an analysis should emit — a surveyor whose normal output
+#: approaches this should be emitting a summary with linked evidence instead.
+_MAX_ANNOTATIONS_PER_RUN = 2000
+
 def enqueue_annotations(
     registry, entity_type: str, entity_slug: str, annotations: list,
     report_guid: str, qualified_name_prefix: str, *, run_id: str = "",
@@ -372,9 +398,42 @@ def enqueue_annotations(
     """
     from resource_explorer.surveyors.annotation_props import build_annotation_body
 
+    assert_unique_qualified_names(qualified_name_prefix, annotations)
+
+    total = len(annotations)
+    capped = annotations[:_MAX_ANNOTATIONS_PER_RUN]
+    if total > _MAX_ANNOTATIONS_PER_RUN:
+        # Loud, and at warning level: a silently truncated publish looks
+        # exactly like a complete one. The caller reports the shortfall to
+        # the user by comparing len(row_ids) against len(annotations) — see
+        # egeria_publisher.publish()'s cap_warning.
+        log.warning(
+            "Outbox enqueue capped for %s/%s: %d annotations produced, %d queued, "
+            "%d NOT published. This is a safety net against a rule regression or "
+            "a pathological resource; if it is legitimate output, the analysis "
+            "should emit a summary with linked evidence instead of one annotation "
+            "per finding.",
+            entity_type, entity_slug, total, _MAX_ANNOTATIONS_PER_RUN,
+            total - _MAX_ANNOTATIONS_PER_RUN,
+        )
+
     row_ids: list[int] = []
-    for i, ann in enumerate(annotations):
-        qualified_name = f"{qualified_name_prefix}::{i}"
+    # enumerate over the CAPPED list but keep each annotation's ORIGINAL
+    # index: qualified_name is f"{prefix}::{i}" and that string is the
+    # retry-convergence identity. Renumbering after a cap would mint a
+    # different qualifiedName for the same annotation on a re-run, so a
+    # replay would create a second element instead of converging on the one
+    # already written — the exact duplication the prefix contract exists to
+    # prevent.
+    #
+    # Taking the FIRST n also matters: surveyors emit summary-then-detail
+    # (secret_scan's ruleset-freshness and scan-summary annotations are
+    # indices 0 and 1, with per-match findings after), so a head cap keeps
+    # the annotations that describe the run and drops repetitive detail. A
+    # surveyor emitting detail first would lose its summary — which is why
+    # the cap is logged at warning rather than quietly applied.
+    for i, ann in enumerate(capped):
+        qualified_name = annotation_qualified_name(qualified_name_prefix, i, ann)
         body = build_annotation_body(ann, qualified_name, report_guid)
         row_ids.append(registry.enqueue_outbox_element(
             entity_type, entity_slug, "annotation", qualified_name, body, run_id=run_id,

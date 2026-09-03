@@ -364,7 +364,25 @@ ___
 Assessment Survey
 
 ### Scope Reference
+Does the repository publish a clear process for reporting security vulnerabilities?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
 Is there a validation / deployment test for it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Does the repository have automated build tooling in place?
 
 ___
 

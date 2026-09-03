@@ -207,6 +207,7 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
                     surveyed_at=self._surveyed_at,
                 )
                 out.append(ClassificationAnnotation(
+check_name="interface_surface",
 summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
@@ -256,6 +257,7 @@ summary=_NOTHING_TO_ASSESS,
                     files_read=len(paths), dependencies_read=len(deps),
                 )
             out.append(ClassificationAnnotation(
+                check_name="interface_surface",
                 summary=summary, analysis_step=STEP,
                 candidate_classifications=specified + implied,
                 confidence=80,

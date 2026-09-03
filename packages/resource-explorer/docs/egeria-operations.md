@@ -1,15 +1,12 @@
-# Recovery and resync: which flavour, and what actually proves it worked
+# Egeria operations — recovery, resync, and republishing
 
-**Status:** written 2026-08-31/09-01, from the recovery it describes rather than from
-theory. Every number below was measured during that recovery, and every trap named is one
-that cost time on the night.
+**Status:** consolidated runbook. Current as of 2026-09-02.
+**This is the operational manual.** For how Resource Explorer integrates with
+Egeria by design, see `egeria-integration.md`.
 
-This is the **routing document**. It does not repeat the procedures in
-[`egeria-reset-recovery.md`](egeria-reset-recovery.md) or
-[`egeria-publishing-a-changed-definition.md`](egeria-publishing-a-changed-definition.md) —
-it tells you which of them you are in, what the Alignment panel now does for you
-automatically, and — the part that has repeatedly been got wrong — **what counts as
-evidence that a recovery succeeded.**
+> **This document consolidates five runbooks:** recovery and resync (the spine),
+> platform-reset recovery, republishing a changed survey definition, authoring a
+> database survey definition, and invoking lineage capture.
 
 ---
 
@@ -40,7 +37,7 @@ The flavours are distinguished by **what was lost**, not by what you did.
 | # | Flavour | Symptom | What was lost | Go to |
 |---|---|---|---|---|
 | 1 | **Platform reset / redeploy** | Everything in Egeria is gone; RE looks fine | All Egeria elements. **Nothing of RE's.** | §2 |
-| 2 | **Changed definition** | A survey gained/lost a step | Nothing — this is a deliberate edit | [publishing-a-changed-definition](egeria-publishing-a-changed-definition.md) |
+| 2 | **Changed definition** | A survey gained/lost a step | Nothing — this is a deliberate edit | [publishing-a-changed-definition](egeria-operations.md (§9)) |
 | 3 | **Drift without a reset** | "I published it but cannot find it" | One asset, or one link | §3 |
 | 4 | **Half-finished recovery** | Some repos catalogued, some not | Nothing new — but see §4, this flavour has its own trap | §4 |
 | 5 | **RE registry lost** | RE is empty; Egeria is fine | RE's own tables | §5 |
@@ -174,7 +171,7 @@ unbound resource should join, and a guess written into the catalog reads exactly
 decision.
 
 For the single-asset case, see
-[`egeria-reset-recovery.md` §3](egeria-reset-recovery.md) — unchanged and still correct.
+[`egeria-operations.md (§8)` §3](egeria-operations.md (§8)) — unchanged and still correct.
 
 ---
 
@@ -244,7 +241,86 @@ equivalent: it re-derives current state, and loses the history that
 
 ## Related
 
-- [`egeria-reset-recovery.md`](egeria-reset-recovery.md) — the step-by-step for flavour 1
-- [`egeria-publishing-a-changed-definition.md`](egeria-publishing-a-changed-definition.md) — flavour 2
+- [`egeria-operations.md (§8)`](egeria-operations.md (§8)) — the step-by-step for flavour 1
+- [`egeria-operations.md (§9)`](egeria-operations.md (§9)) — flavour 2
 - [`open-stack-checklist.md`](open-stack-checklist.md) §7 — redeploy order and live checks
-- [`outbox-publishing-design.md`](outbox-publishing-design.md) — **the outbox restores nothing**; see reset-recovery §3a
+- [`egeria-integration.md (§7)`](egeria-integration.md (§7)) — **the outbox restores nothing**; see reset-recovery §3a
+
+---
+
+# Part II — Republishing, authoring, and platform reset
+
+*Merged 2026-09-02 from four runbooks.*
+
+## 8. After a platform reset
+
+*(from `egeria-reset-recovery.md`, written from an actual reset)*
+
+1. **Let the bootstrap heal the definitions, then verify it.** `bootstrap.check_and_heal()`
+   re-runs any batch whose canary is missing, every 10 minutes while the web server is up. On a
+   wiped platform it heals unattended — let it, and verify the result rather than hand-running
+   documents on top of it.
+2. **Deal with the stale asset GUIDs.** `scripts/sweep_stale_egeria_guids.py` clears them.
+3. **Do not expect the outbox to restore anything.**
+
+> ### The outbox does NOT restore anything
+>
+> This is the most confidently wrong state in the registry after a reset. A row is marked `done`
+> with the GUID it created, `apply_element` short-circuits on a recorded GUID and returns without
+> writing, and a `done` row is never claimed again. Those rows **assert a completed publish, point
+> at an element that is gone, and the retry machinery deliberately will not touch them.**
+>
+> **Recovery is re-running the surveys, not draining the queue.** *"The outbox guarantees delivery"*
+> is the natural assumption and it is wrong across a wipe: the queue guarantees delivery of work it
+> still considers *pending*, and a reset does not make completed work pending again.
+
+The sweep keys on the resource having no asset GUID rather than looking each row up: an annotation
+hangs off a SurveyReport which hangs off the asset, so if the asset is gone, everything published
+beneath it is gone.
+
+## 9. Republishing a changed survey definition
+
+*(from `egeria-publishing-a-changed-definition.md`, written from an actual publish)*
+
+Author in dependency order, do not reconcile in the middle, reconcile once at the end, then **prove
+the deletes happened** — and verify against the definitions rather than against the output.
+
+Four traps, each of which cost real time:
+
+- **A step's position in `STEP_REGISTRY` is its position in the Full Survey chain.** "Repo Full
+  Survey" is generated from the `*` sentinel — every registry step *in that dict's own order*. A
+  new step added beside related ones lands wherever they are: a reducer written next to the other
+  security steps landed at index 21 of 34, **ahead of two of its own inputs**. Read the generated
+  chain before publishing it.
+- **"Runs last" and "runs after its inputs" are different requirements.** Moving that reducer to the
+  end fixed Full Survey and broke `test_rag_ingestion_runs_last` — `repo_rag_ingestion` is the most
+  expensive step and nothing reads it, so it stays terminal. Two steps wanted the same slot; only
+  one needed it. **Assert the property you actually need.**
+- **Authored is not published.** Regenerating a document changes only the file. Both problems that
+  day were this same state: a definition regenerated and never run, and a questions document
+  regenerated months earlier and never re-run, leaving 8 of 49 terms absent. A live smoke test
+  catches the first. **Nothing catches the second** — a batch's canary proves the batch *ran*, not
+  that every element in it exists.
+- **A blocked Egeria write is not something to work around.** If the operation is refused, it makes
+  permanent changes to someone's platform. Hand it to the person who owns it.
+
+## 10. Authoring a database survey definition
+
+*(from `egeria-database-survey-definition.md`)*
+
+A validated Dr.Egeria recipe for defining a database survey: create the process steps, create the
+governance action process, link the first step, chain the rest. This is the template to copy for any
+new survey definition, database or otherwise — the mechanics do not vary by resource type.
+
+## 11. Invoking lineage capture
+
+*(from `egeria-lineage-invocation.md`)*
+
+The `sql_analysis` step parses view definitions with `sqlglot` and produces two kinds of lineage:
+
+- **Design lineage** — column-to-column. Physical columns in base tables mapped to derived columns
+  in the view, as `LineageMapping` relationships between `DatabaseColumn` entities.
+- **Process lineage** — the transformation itself. A `Process` entity for the view, linked to source
+  tables via `DataFlow` input relationships and to its output attributes via `DataFlow` outputs.
+
+Invoked through a Dr.Egeria plan in the same shape as §10.

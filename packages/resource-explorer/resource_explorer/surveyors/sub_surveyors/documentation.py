@@ -104,6 +104,8 @@ class DocumentationSurveyor(BaseSurveyor):
                     present_doc_types.append(label)
                     results.append(
                         ClassificationAnnotation(
+                            check_name="doc_collection",
+                            item_key=col_type,
                             summary=f"Collection present: {label}",
                             analysis_step=STEP,
                             candidate_classifications=[col_type],
@@ -141,6 +143,7 @@ class DocumentationSurveyor(BaseSurveyor):
             if found_hygiene:
                 results.append(
                     ClassificationAnnotation(
+                        check_name="hygiene_files",
                         summary=f"Hygiene files found: {', '.join(found_hygiene)}",
                         analysis_step=STEP,
                         candidate_classifications=found_hygiene,
@@ -187,6 +190,7 @@ class DocumentationSurveyor(BaseSurveyor):
                             f"so absence there says nothing about the code.")
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="api_docstring_coverage",
                         summary=(f"{documented:,} of {pub:,} public symbols carry a "
                                  f"docstring ({pct:.1f}%), measured over {langs}."
                                  f"{note}"),
@@ -229,6 +233,7 @@ class DocumentationSurveyor(BaseSurveyor):
                 # This is the Go/JS case and it must never render as 0%.
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="api_docstring_coverage",
                         summary=(f"API docstring coverage not established for "
                                  f"{', '.join(sorted(per_language))} — this survey's "
                                  f"symbol extractors do not capture documentation for "
@@ -283,6 +288,7 @@ class DocumentationSurveyor(BaseSurveyor):
 
             results.append(
                 ClassificationAnnotation(
+                    check_name="documentation_quality",
                     summary=summary,
                     analysis_step=STEP,
                     candidate_classifications=[] if unverified else [quality],

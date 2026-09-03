@@ -179,7 +179,7 @@ Automate
 Funnel-stage intent: subscribe to an analysis; get notified (via RFA) when
 it changes on a future scheduled run. Added 2026-08-15 — this term was
 missed when the original 7-intent set was authored and only caught when
-the Questions restoration (see docs/survey-question-context-plan.md) tried
+the Questions restoration (see docs/survey-model.md (§4)) tried
 to ScopedBy a Question against it and got "Referenced element 'Automate'
 ... not found." Automate itself became the 8th canonical intent on
 2026-08-13 (CLAUDE.md rule 17); this term should have existed since then.
@@ -235,7 +235,7 @@ ___
 > `Perspective::` prefix (not the auto-generated `Coco Pharmaceuticals::
 > Perspective::...`) keeps this portable across Egeria instances rather
 > than baking in this instance's default local qualifier/org name. See
-> `docs/survey-question-context-plan.md` for the full incident writeup.
+> `docs/survey-model.md (§4)` for the full incident writeup.
 
 ## Create Perspective
 

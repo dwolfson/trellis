@@ -167,6 +167,7 @@ class ManifestParseSurveyor(BaseSurveyor):
                 summary = "No dependency manifest found in the extracted tree"
             self._record_snapshot("manifest_parse_dependencies", len(deps), outcome)
             return ResourceMeasureAnnotation(
+                check_name="dependency_manifest",
                 summary=summary, analysis_step=STEP,
                 confidence=100 if outcome.is_conclusive else 50,
                 explanation=(
@@ -183,6 +184,7 @@ class ManifestParseSurveyor(BaseSurveyor):
             outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
             self._record_snapshot("manifest_parse_dependencies", 0, outcome)
             return ResourceMeasureAnnotation(
+                check_name="dependency_manifest",
                 summary="Dependency parse failed", analysis_step=STEP, confidence=0,
                 explanation=f"Could not parse dependency manifests: {exc}",
                 resource_properties={"dependency_count": 0, "error": str(exc)},
@@ -213,6 +215,7 @@ class ManifestParseSurveyor(BaseSurveyor):
                 summary = "No .github/workflows content to evaluate"
             self._record_snapshot("manifest_parse_ci_quality", len(findings), outcome)
             return ResourceMeasureAnnotation(
+                check_name="ci_workflow_manifest",
                 summary=summary, analysis_step=STEP,
                 confidence=100 if outcome.is_conclusive else 50,
                 explanation=(
@@ -228,6 +231,7 @@ class ManifestParseSurveyor(BaseSurveyor):
             outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
             self._record_snapshot("manifest_parse_ci_quality", 0, outcome)
             return ResourceMeasureAnnotation(
+                check_name="ci_workflow_manifest",
                 summary="CI workflow parse failed", analysis_step=STEP, confidence=0,
                 explanation=f"Could not parse CI workflow content: {exc}",
                 resource_properties={"finding_count": 0, "error": str(exc)},
@@ -263,6 +267,7 @@ class ManifestParseSurveyor(BaseSurveyor):
                 summary = "No workflow YAML to evaluate for supply-chain signals"
             self._record_snapshot("manifest_parse_supply_chain", len(findings), outcome)
             return ResourceMeasureAnnotation(
+                check_name="supply_chain_manifest",
                 summary=summary, analysis_step=STEP,
                 confidence=100 if outcome.is_conclusive else 50,
                 explanation=(
@@ -278,6 +283,7 @@ class ManifestParseSurveyor(BaseSurveyor):
             outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
             self._record_snapshot("manifest_parse_supply_chain", 0, outcome)
             return ResourceMeasureAnnotation(
+                check_name="supply_chain_manifest",
                 summary="Supply-chain parse failed", analysis_step=STEP, confidence=0,
                 explanation=f"Could not parse supply-chain signals: {exc}",
                 resource_properties={"finding_count": 0, "error": str(exc)},
@@ -307,6 +313,7 @@ class ManifestParseSurveyor(BaseSurveyor):
                 summary = "No repo convention signals produced"
             self._record_snapshot("manifest_parse_conventions", len(findings), outcome)
             return ResourceMeasureAnnotation(
+                check_name="repo_conventions_manifest",
                 summary=summary, analysis_step=STEP,
                 confidence=100 if outcome.is_conclusive else 50,
                 explanation=(
@@ -322,6 +329,7 @@ class ManifestParseSurveyor(BaseSurveyor):
             outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
             self._record_snapshot("manifest_parse_conventions", 0, outcome)
             return ResourceMeasureAnnotation(
+                check_name="repo_conventions_manifest",
                 summary="Repo conventions parse failed", analysis_step=STEP, confidence=0,
                 explanation=f"Could not parse repo convention signals: {exc}",
                 resource_properties={"finding_count": 0, "error": str(exc)},

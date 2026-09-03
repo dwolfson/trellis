@@ -105,7 +105,7 @@ ambient environment alone. Shared `ephemeral_prefect` fixture in `tests/conftest
 **Correction 2026-08-27.** This section previously said "unblocked, not
 started". That was wrong on both halves.
 
-**A complete design already exists:** `docs/re-as-engine-host-plan.md`
+**A complete design already exists:** `docs/survey-execution.md (§7)`
 (2026-08-17), grounded in a direct read of Egeria's Java source — the four
 execution permutations, the reachability dimension, and case 2 ("RE as a
 claiming engine") as the real investment. It is marked **ON HOLD**. Anything
@@ -124,7 +124,7 @@ platform:**
 2. **No way to list claimable work — and it is NOT a wrapper gap.**
    *Corrected 2026-08-27 after `egeria-python-07` checked the Java source and
    pushed back.* I had recorded this as "only a wrapper gap; the route exists",
-   taking `re-as-engine-host-plan.md` at its word that
+   taking `survey-execution.md (§7)` at its word that
    `.../active-engine-actions` was "the per-engine claimable-actions listing,
    distinct from the requester-side general listing". It is not distinct.
 
@@ -232,7 +232,7 @@ neither. So the registered set is a **per-deployment choice**, not a fixed list,
 and the registration code should take the set as input rather than enumerating
 STEP_REGISTRY.
 
-Design: `docs/survey-model-and-engine-host-design.md` §4.
+Design: `docs/survey-execution.md` §4.
 
 ## 4a. Full Survey should live only in Automate — blocked on a surface
 
@@ -277,7 +277,7 @@ is about the model being right, not about data.
 - [ ] Decide the §6 open question: should an analysis stay independently
       runnable once surveys are schedulable, or become view-only?
 
-Design: `docs/survey-model-and-engine-host-design.md` §2.
+Design: `docs/survey-execution.md` §2.
 
 ## 5. Smaller / opportunistic
 
@@ -379,7 +379,7 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
 ## 6. Raised 2026-08-31 — the security/survey thread
 
 Everything below came out of one session. Design reasoning lives in
-`survey-composition-and-topic-summary-design.md` (98608f1); this is the do-list.
+`survey-model.md (§1)` (98608f1); this is the do-list.
 
 ### Done, do not redo
 - [x] `security_scan` renamed **Security Hygiene** with an honest description (98608f1). Id unchanged.
@@ -443,7 +443,7 @@ Everything below came out of one session. Design reasoning lives in
 
 Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
 a refresh is needed and whether delta or full is cheaper — not a button. Design in
-`survey-composition-and-topic-summary-design.md` §2b (planner step).
+`survey-model.md (§1)` §2b (planner step).
 
 Already built, and this is mostly assembly:
 - Four refresh steps, all `queued` and independently schedulable: `repo_profile_refresh`
