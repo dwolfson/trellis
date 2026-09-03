@@ -529,6 +529,41 @@ def enqueue_collection_members(
     return row_ids
 
 
+def enqueue_blueprint_members(
+    registry, entity_type: str, entity_slug: str, blueprint_guid: str,
+    member_guids: list[str], *, run_id: str = "",
+) -> list[int]:
+    """One row per member (a `SolutionComponent` or a child `SolutionBlueprint`
+    — both are ordinary `CollectionMembership` attachments to the blueprint's
+    Collection) attached to a blueprint. docs/blueprint-materialization-plan.md
+    Decision 5/Phase B.
+
+    Reuses `element_kind="collection_membership"` unchanged — same creator,
+    same idempotency basis as `enqueue_collection_members` above
+    (`CollectionMembership` measured uni-link 2026-08-25; `add_to_collection`
+    is a safe upsert regardless of which kind of Collection the blueprint
+    is). Parallel in shape to `enqueue_collection_members`, not a call to it,
+    because that function hardcodes `entity_type="investigation"` and this
+    caller's entity is a repo (or whatever `entity_type` the blueprint's own
+    resource is) — the member's own identity fields that function also
+    records don't apply here, since a blueprint member is always this same
+    resource's own component/child-blueprint, not a cross-resource reference.
+
+    No `depends_on_id`: unlike annotation links, the blueprint GUID and every
+    member GUID passed in are already resolved synchronously before this is
+    called (Decision 5) — nothing here is still in flight.
+    """
+    row_ids: list[int] = []
+    for member_guid in member_guids:
+        qualified_name = f"CollectionMembership::{blueprint_guid}::{member_guid}"
+        row_ids.append(registry.enqueue_outbox_element(
+            entity_type, entity_slug, "collection_membership", qualified_name,
+            {"collection_guid": blueprint_guid, "member_guid": member_guid},
+            run_id=run_id,
+        ))
+    return row_ids
+
+
 def record_drain_outcome(
     registry, summary: dict, entity_type: str = "", entity_slug: str = "",
     troubled_runs: dict[str, str] | None = None,

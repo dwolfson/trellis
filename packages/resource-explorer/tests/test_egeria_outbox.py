@@ -411,6 +411,35 @@ class TestCollectionMemberships:
         assert {json.loads(r["payload_json"])["member_entity_slug"] for r in rows} == {"p", "q"}
 
 
+class TestEnqueueBlueprintMembers:
+    """docs/blueprint-materialization-plan.md Phase B. Parallel to
+    enqueue_collection_members above but for a repo's own blueprint (not an
+    investigation) — reuses element_kind='collection_membership' unchanged,
+    since CollectionMembership doesn't distinguish which kind of Collection
+    it's attaching to."""
+
+    def test_enqueues_one_row_per_member_reusing_collection_membership(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_blueprint_members
+
+        ids = enqueue_blueprint_members(
+            db, "repo", project, "bp-guid-1", ["comp-guid-a", "comp-guid-b"], run_id="r2",
+        )
+        assert len(ids) == 2
+        rows = db.list_outbox_elements(run_id="r2")
+        assert {r["element_kind"] for r in rows} == {"collection_membership"}
+        assert {r["entity_type"] for r in rows} == {"repo"}
+        assert {r["entity_slug"] for r in rows} == {project}
+        payloads = [json.loads(r["payload_json"]) for r in rows]
+        assert {p["collection_guid"] for p in payloads} == {"bp-guid-1"}
+        assert {p["member_guid"] for p in payloads} == {"comp-guid-a", "comp-guid-b"}
+
+    def test_empty_member_list_enqueues_nothing(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_blueprint_members
+
+        ids = enqueue_blueprint_members(db, "repo", project, "bp-guid-1", [])
+        assert ids == []
+
+
 class TestNothingWrittenIsNotOneState:
     """Three different outcomes all look like "no elements were written".
 
