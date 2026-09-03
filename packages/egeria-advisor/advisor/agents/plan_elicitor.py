@@ -1744,8 +1744,8 @@ class PlanElicitor:
             action = cmd["action"]
             # DELIBERATELY still basic-tier, even in advanced mode — this is the
             # half of PC-1 that is a product decision, not a bug fix, and it is
-            # Dan's call (BACKLOG.md PC-1, "elicitation half"). Loading the
-            # advanced template here would make advanced mode ask about every
+            # the project owner's call (BACKLOG.md PC-1, "elicitation half"). Loading
+            # the advanced template here would make advanced mode ask about every
             # advanced-only field: measured 2026-08-28 across all 325 commands,
             # a mean of 27.4 optional questions per command instead of today's
             # 8.4 — roughly 137 questions on a five-command plan, versus ~42.
