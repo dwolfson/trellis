@@ -155,6 +155,7 @@ class LicenseClassifierSurveyor(BaseSurveyor):
                 ClassificationAnnotation(
                     summary=summary,
                     analysis_step=STEP,
+                    check_name="license_risk_tier",
                     candidate_classifications=[tier],
                     confidence=confidence,
                     json_properties={

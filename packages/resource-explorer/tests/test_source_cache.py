@@ -191,7 +191,14 @@ class TestLocalClone:
         subprocess.run(["git", "-C", str(src), "config", "user.name", "t"], check=True)
         (src / "f.txt").write_text("hello")
         subprocess.run(["git", "-C", str(src), "add", "f.txt"], check=True)
-        subprocess.run(["git", "-C", str(src), "commit", "-qm", "first"], check=True)
+        subprocess.run(
+            # The signing config is global, so a scratch repo in a tmpdir
+            # inherits it — and these two tests failed for real on
+            # 2026-09-02 because the password manager holding the key had
+            # locked. A unit test must not depend on that. Same reason and
+            # same fix as test_arch_recovery_surveyors.py.
+            ["git", "-C", str(src), "-c", "commit.gpgsign=false",
+             "commit", "-qm", "first"], check=True)
 
         dest = local_clone(src, tmp_path / "dest")
         assert (dest / ".git").exists()
@@ -210,7 +217,14 @@ class TestLocalClone:
         subprocess.run(["git", "-C", str(src), "config", "user.name", "t"], check=True)
         (src / "f.txt").write_text("x")
         subprocess.run(["git", "-C", str(src), "add", "f.txt"], check=True)
-        subprocess.run(["git", "-C", str(src), "commit", "-qm", "c"], check=True)
+        subprocess.run(
+            # The signing config is global, so a scratch repo in a tmpdir
+            # inherits it — and these two tests failed for real on
+            # 2026-09-02 because the password manager holding the key had
+            # locked. A unit test must not depend on that. Same reason and
+            # same fix as test_arch_recovery_surveyors.py.
+            ["git", "-C", str(src), "-c", "commit.gpgsign=false",
+             "commit", "-qm", "c"], check=True)
 
         dest = local_clone(src, tmp_path / "dest")
         assert not (dest / ".git" / "objects" / "info" / "alternates").exists()

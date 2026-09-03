@@ -328,6 +328,7 @@ class ChaossMetricsSurveyor(BaseSurveyor):
                     surveyed_at=self._surveyed_at,
                 )
                 out.append(ClassificationAnnotation(
+                    check_name="chaoss_metrics",
                     summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
@@ -353,6 +354,7 @@ class ChaossMetricsSurveyor(BaseSurveyor):
                     detail=ef["detail"], surveyed_at=self._surveyed_at)
 
             out.append(ClassificationAnnotation(
+                check_name="chaoss_metrics",
                 summary=headline(metrics),
                 analysis_step=STEP,
                 candidate_classifications=[

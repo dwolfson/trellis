@@ -31,6 +31,9 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from resource_explorer.surveyors.survey_report import (
+    annotation_qualified_name, assert_unique_qualified_names)
+
 log = logging.getLogger(__name__)
 
 
@@ -306,6 +309,10 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             # pending work is not failed work, and burning an attempt on
             # "Egeria was down" is how a transient outage dead-letters a
             # perfectly good write.
+            # Hand the claims back. These rows are claimed at this point, and
+            # an outage must leave them exactly as they were — not parked in
+            # 'running' until the lease expires.
+            registry.release_outbox_claim([r["id"] for r in rows])
             log.warning("Outbox drain: no Egeria client available, leaving %d rows pending",
                         len(rows))
             summary["skipped"] = len(rows)
@@ -391,6 +398,8 @@ def enqueue_annotations(
     """
     from resource_explorer.surveyors.annotation_props import build_annotation_body
 
+    assert_unique_qualified_names(qualified_name_prefix, annotations)
+
     total = len(annotations)
     capped = annotations[:_MAX_ANNOTATIONS_PER_RUN]
     if total > _MAX_ANNOTATIONS_PER_RUN:
@@ -424,7 +433,7 @@ def enqueue_annotations(
     # surveyor emitting detail first would lose its summary — which is why
     # the cap is logged at warning rather than quietly applied.
     for i, ann in enumerate(capped):
-        qualified_name = f"{qualified_name_prefix}::{i}"
+        qualified_name = annotation_qualified_name(qualified_name_prefix, i, ann)
         body = build_annotation_body(ann, qualified_name, report_guid)
         row_ids.append(registry.enqueue_outbox_element(
             entity_type, entity_slug, "annotation", qualified_name, body, run_id=run_id,

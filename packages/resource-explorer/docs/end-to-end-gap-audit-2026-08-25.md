@@ -106,7 +106,7 @@ have **zero call sites**.
 - `egeria_delegated_step.py` exists, is live-verified, and is **wired nowhere** —
   no `STEP_REGISTRY` entry uses it.
 
-**For Egeria-coordinated surveys** (`re-as-engine-host-plan.md`, ON HOLD): five
+**For Egeria-coordinated surveys** (`survey-execution.md (§7)`, ON HOLD): five
 pyegeria client methods are absent (`claim_engine_action`,
 `record_completion_status`, and three others), the server has no wired
 registration endpoint, and it is blocked upstream on ISSUE-51.

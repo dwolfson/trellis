@@ -403,6 +403,7 @@ class FossScorecardSurveyor(BaseSurveyor):
                     if agg["checks_unknown"] else ""
                 ),
                 analysis_step=STEP,
+                check_name="foss_scorecard",
                 # Only the real score. `checks_evaluated`/`checks_unknown` are
                 # counts, not quality dimensions, and putting them here would
                 # make them read as scores in every consumer of this dict.

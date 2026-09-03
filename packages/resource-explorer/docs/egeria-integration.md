@@ -1,12 +1,15 @@
-# Resource Explorer as an Egeria Ecosystem Member — Collaboration Model, Survey/Analysis Conformance, and Selective Cataloging
+# Egeria integration — RE's role, publishing, and annotation identity
 
-**Status:** Discussion captured; §6.6 (RE's local Survey Definition executor) is implemented, unit-tested, and validated end-to-end against a live Egeria server for both a single-step and a two-step chained PostgreSQL Survey Definition — see `docs/survey-definitions.md` for usage. Still outstanding: repo/filesystem Technology Type strings, and branching (guard-based) Survey Definitions.
-**Authors:** Dan Wolfson, Claude
-**Date:** 2026-07-07
-**Scope:** RE's relationship to Egeria as a peer specialized server; RE↔Egeria bidirectional triggering (A2A); conformance of RE's survey/analysis model to Egeria's Area 6 framework; a coherent selective-cataloging model; authoring Survey Definitions as Dr.Egeria plans
-**Relationship to other docs:** Extends `docs/survey-activity-design.md` (which established the intent model, activity log schema, and local-cache/Egeria-catalog-of-record split). This document assumes that one as background and focuses on three follow-on questions it left open or under-specified: how RE and Egeria call each other, whether RE's survey mechanics actually match Egeria's own model, and how selective cataloging should work. Backlog pointers for all deferred items live in `docs/Backlog.md`.
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** how Resource Explorer works with Egeria — what it publishes, under what
+identity, through what delivery mechanism, and in which direction. For the
+operational runbooks (recovery, resync, republishing), see `egeria-operations.md`.
 
----
+> **This document consolidates eight.** Part I is the collaboration model — RE's
+> role in the ecosystem, Area 6 conformance, and selective cataloguing. Part II
+> merges outbox publishing, annotation identity and linking, the
+> finding/annotation relationship, survey history and replay, the RFA-to-ToDo
+> integration, and the current upstream blockers. Part III is the settled register.
 
 ## 1. Why this document exists
 
@@ -37,12 +40,12 @@ Correction to an earlier framing in this conversation: RE is **not** a prototypi
 
 Decision: extend RE's existing A2A surface (`resource_explorer/agentstack_server.py`, currently `stats`/`code`/`docs`/`health`/`compare`/`integration` agents, each its own `Server` instance per the one-agent-per-server rule) rather than inventing a bespoke REST contract for Egeria to call. Reasoning discussed:
 
-- **The async-survey problem RE already has gets solved for free in both directions.** A2A's task-state model (`TaskState.input_required`, streaming generators, polling) is a real protocol for "this may take a while, here's how to check back" — which is exactly the shape of the problem `HybridDatabaseSurveyor` currently works around manually (trigger Egeria's async native survey, then separately run and publish a synchronous local survey because Egeria's result isn't available yet, see `docs/survey-activity-design.md` D5). If Egeria calls RE via A2A and RE calls Egeria's own surveys asynchronously, the same polling/task-state machinery could serve both directions instead of two separate ad hoc mechanisms.
+- **The async-survey problem RE already has gets solved for free in both directions.** A2A's task-state model (`TaskState.input_required`, streaming generators, polling) is a real protocol for "this may take a while, here's how to check back" — which is exactly the shape of the problem `HybridDatabaseSurveyor` currently works around manually (trigger Egeria's async native survey, then separately run and publish a synchronous local survey because Egeria's result isn't available yet, see `docs/survey-model.md` D5). If Egeria calls RE via A2A and RE calls Egeria's own surveys asynchronously, the same polling/task-state machinery could serve both directions instead of two separate ad hoc mechanisms.
 - **Other tools benefit for free.** Any A2A-aware orchestrator — not just Egeria — can call RE the same way. Airflow, another agent, a different governance tool.
 - **Structural gaps to close before this is real, not blockers to the approach:**
   1. The existing agents are conversational (`_text(message)` pulls a plain string, `_project_scope` regexes a `project:<slug>` prefix). A survey-trigger call is a structured invocation (asset GUID, resource type, which surveyor/analysis, options) with a structured result, not a question. A2A's `Part` supports `DataPart` for this — it means a new agent (own port) built around structured payloads, not a rework of the framework.
   2. No caller authentication exists today (`agentstack_server.py` has none). Fine for an internal chat agent; not acceptable for a surface Egeria's automation is meant to trust to trigger surveys or cataloging actions. Needs whatever Egeria's own service-to-service credential pattern is — defer to Egeria's existing conventions rather than inventing an RE-specific scheme.
-  3. Result rendezvous should reuse the existing `activity_log`/RFA schema (`docs/survey-activity-design.md` D3/D8) rather than a new reporting path — an Egeria-triggered run is just another activity-log entry with a different origin, though the rendezvous mechanism itself needn't be limited to that one schema (see the note at the end of this section).
+  3. Result rendezvous should reuse the existing `activity_log`/RFA schema (`docs/survey-model.md` D3/D8) rather than a new reporting path — an Egeria-triggered run is just another activity-log entry with a different origin, though the rendezvous mechanism itself needn't be limited to that one schema (see the note at the end of this section).
 
 **Dr.Egeria was considered as a second inbound path and ruled out for that role — but not for authoring.** The original idea was that Dr.Egeria (RE's markdown DSL for driving Egeria, already exposed via MCP and used inside Egeria Advisor) could be extended with survey/analysis commands as an alternative to A2A for Egeria-triggered runs. On reflection, using MCP/Dr.Egeria commands as the actual *runtime* invocation path — Egeria's automation parsing/emitting markdown commands through MCP to trigger an RE survey — is likely inefficient for what is fundamentally a machine-to-machine governance-orchestration call: A2A's structured, typed request/response and native task-state polling (§2.3 above) fit that job better than round-tripping through a markdown command language and MCP tool-call layer. **A2A remains the answer for triggering.** Where Dr.Egeria clearly does earn its place is *authoring* — see §3.3, where Dr.Egeria is proposed as the format for defining Survey Definitions (design-time specs), which is a genuinely different job from runtime invocation and one Dr.Egeria is already well-suited to.
 
@@ -78,7 +81,7 @@ Also worth documenting now as a real design point, even though it's explicitly *
 
 **Annotation taxonomy — corrected and expanded vs. what RE's `survey_report.py` currently models.** The real property classes (`open-metadata-framework/.../properties/surveyreports/`) are: `SchemaAnalysisAnnotationProperties`, `ClassificationAnnotationProperties`, `DataClassAnnotationProperties`, `QualityAnnotationProperties` (not `QualityScoreAnnotation`), `ResourceMeasureAnnotationProperties`, `RelationshipAdviceAnnotationProperties` (not `RelationshipAnnotation`), `RequestForActionProperties` (confirmed, matches RE's existing correction in `egeria_push_pull_design.md`) — plus several RE does not yet model at all: `DataFieldAnnotationProperties`, `DataGrainAnnotationProperties`, `FingerprintAnnotationProperties`, `ResourcePhysicalStatusAnnotationProperties`, `ResourceProfileAnnotationProperties`, `ResourceProfileLogAnnotationProperties` (used pervasively for CSV inventory/log-file annotations), `SemanticAnnotationProperties`. `SurveyReport` itself is not survey-specific at all — it's `SurveyReportProperties extends ReportProperties`, distinguished only by `analysisParameters` (the request parameters used) and `analysisStep` (current/last step).
 
-**No first-class periodic/cron scheduling framework exists for survey/governance-action services — but Egeria does fake recurring execution today via Java code, not just the integration-connector refresh interval.** The only *declarative, framework-level* interval mechanism found is `IntegrationConnectorProvider.refreshTimeInterval` (default 60 min), which belongs to the Open Integration Framework (continuously-running integration connectors) and is architecturally unrelated to survey action services (one-shot engine actions with at most a single deferred `requestedStartDate`). However: per Dan, Egeria does achieve recurring/scheduled-feeling execution in practice by faking it with Java functions (e.g. a watchdog or governance action re-triggering itself, or an engine written to loop internally) rather than through a declared scheduling primitive — a concrete example to be tracked down separately. So the more precise finding is: there's no *clean, declarative* scheduling concept in the survey/governance-action frameworks to conform to, but there is existing precedent for achieving the effect procedurally, and it's a real gap worth formalizing (in Egeria core, or via a scheduling connector, per the direction already agreed in §4.3) rather than something entirely unprecedented. This still matches D9 in `docs/survey-activity-design.md` (medium/long-term: background thread → Airflow) as RE's own near-term stopgap.
+**No first-class periodic/cron scheduling framework exists for survey/governance-action services — but Egeria does fake recurring execution today via Java code, not just the integration-connector refresh interval.** The only *declarative, framework-level* interval mechanism found is `IntegrationConnectorProvider.refreshTimeInterval` (default 60 min), which belongs to the Open Integration Framework (continuously-running integration connectors) and is architecturally unrelated to survey action services (one-shot engine actions with at most a single deferred `requestedStartDate`). However: per Dan, Egeria does achieve recurring/scheduled-feeling execution in practice by faking it with Java functions (e.g. a watchdog or governance action re-triggering itself, or an engine written to loop internally) rather than through a declared scheduling primitive — a concrete example to be tracked down separately. So the more precise finding is: there's no *clean, declarative* scheduling concept in the survey/governance-action frameworks to conform to, but there is existing precedent for achieving the effect procedurally, and it's a real gap worth formalizing (in Egeria core, or via a scheduling connector, per the direction already agreed in §4.3) rather than something entirely unprecedented. This still matches D9 in `docs/survey-model.md` (medium/long-term: background thread → Airflow) as RE's own near-term stopgap.
 ### 3.3 Direction for RE (not yet designed in detail — for discussion)
 
 Given the above, a plausible shape (to validate, not a final design):
@@ -88,7 +91,7 @@ Given the above, a plausible shape (to validate, not a final design):
 - **Many analysis steps are likely generic across resource shapes, not resource *types*.** Column profiling, for instance, is probably the same operation whether the underlying data is a CSV, a relational table, or a Parquet file — the shared structure is "tabular data," not "database" vs. "filesystem." A Survey Definition should be able to sequence these shared, reusable steps (with gates between them, echoing Egeria's `finalAnalysisStep`/guard-based stopping points) rather than each resource type reimplementing its own version of the same profiling logic.
 - **Open requirements question, leaning toward "not needed": does authoring Survey Definitions in Dr.Egeria actually need conditional execution?** Dr.Egeria today has no construct for conditional/branching execution. Gated steps (the point above) or guard-based branching (mirroring Egeria's `SurveyActionGuard`/`GovernanceActionProcess` model, e.g. "if this annotation type/value is found, run this next step; otherwise skip to that one") are the kind of thing that *would* need it — but Dan's current sense is this doesn't seem needed at this point, and §6.4's finding (branching between steps already works today via `Link Next Process Step`'s `Guard`/`Mandatory Guard` attributes, no new syntax required) may already be sufficient for real cases. Still worth a requirements pass — concrete example Survey Definitions that would or wouldn't need conditional logic *within* a single step, not just branching between steps — before fully closing this out, but the working assumption going forward is that it's not a near-term requirement. Tracked in `docs/Backlog.md`.
 - **Add scope-limiting request parameters (e.g. recency) as a new, RE-idiomatic parameter**, following the declarative-enum pattern Egeria uses (`SurveyRequestParameter`, `FolderRequestParameter`) rather than inventing an ad hoc kwarg per surveyor — this is confirmed new territory, not something to reconcile against an existing Egeria mechanism.
-- **Persona-based presentation is UI/menu layer, not survey-mechanics layer** — this already has a home in `docs/survey-activity-design.md` D4/D6 (analysis catalog with persona/intent filters); the finding here is that Egeria's framework has no persona concept to conform to at all, so RE is free to define this without an Egeria precedent to track.
+- **Persona-based presentation is UI/menu layer, not survey-mechanics layer** — this already has a home in `docs/survey-model.md` D4/D6 (analysis catalog with persona/intent filters); the finding here is that Egeria's framework has no persona concept to conform to at all, so RE is free to define this without an Egeria precedent to track.
 
 A broader framing volunteered in discussion, worth keeping in mind throughout this section: most of the underlying concepts should end up the same between RE and Egeria, since both are being designed together by the same people around shared principles. Where terminology or class names differ between RE's model and Egeria's actual code (as several do — see the annotation-taxonomy correction below), treat that as **drift from parallel evolution, not a mistake to hunt down and fix** — RE and Egeria will keep evolving somewhat independently, and periodic reconciliation passes like this one are the mechanism for catching drift, not a sign the two were ever meant to be byte-for-byte identical.
 
@@ -115,7 +118,7 @@ Cataloging and surveying are already architecturally separate in Egeria, but in 
 A plausible shape, following the concern's own phrasing (Discover → Survey → Analyze/Select → Deep-Survey/Catalog):
 
 - **Discover**: a broad, shallow sweep across an as-yet-uncataloged space (a Hadoop cluster, a file share, a set of endpoints) producing lightweight inventory annotations (`ResourceMeasureAnnotation`/`ResourceProfileLogAnnotation`-shaped, per §3) without creating Egeria assets for every item found — analogous to how `FolderSurveyService` writes CSV inventories rather than cataloging every file.
-- **Analyze / Question / Select**: the human-curiosity-driven step from Dan's original motivation (§2.1, point 2) — a UI over the Discover output that lets a user filter/select a subset (file type + recency, size thresholds, naming patterns, whatever the resource type supports) rather than the current all-or-nothing repo checkboxes. This step also includes analysis *over time* — comparing results across multiple prior survey runs (schema drift, row-count trends, newly-appeared vs. disappeared resources), not just filtering a single snapshot. This is the same temporal concern as D9 in `docs/survey-activity-design.md`; Select criteria should be able to reference "changed since last run" alongside static properties like file type or size.
+- **Analyze / Question / Select**: the human-curiosity-driven step from Dan's original motivation (§2.1, point 2) — a UI over the Discover output that lets a user filter/select a subset (file type + recency, size thresholds, naming patterns, whatever the resource type supports) rather than the current all-or-nothing repo checkboxes. This step also includes analysis *over time* — comparing results across multiple prior survey runs (schema drift, row-count trends, newly-appeared vs. disappeared resources), not just filtering a single snapshot. This is the same temporal concern as D9 in `docs/survey-model.md`; Select criteria should be able to reference "changed since last run" alongside static properties like file type or size.
 - **Survey (deep) on the selection**: the selected subset gets a focused, deeper survey (per §3's "deep survey kind"), and cataloging becomes an explicit side effect of that step (or a distinct follow-on action) rather than bundled into the broad sweep.
 - **Expressed in Egeria terms**: the Discover step's output should be modeled as `RequestForAction`-flagged candidates with a completion guard (e.g. a new RE-defined guard analogous to `DATA_NOT_CERTIFIED`, something like "candidates ready for review"), so that if this pattern is later driven by Egeria automation (via the A2A path in §2) rather than a human in the RE UI, it composes with `GovernanceActionProcess` chaining the same way a human-driven select-then-catalog flow would.
 - **Triggering**: all of Discover/Survey/deep-Survey/Catalog should be triggerable by a human (today's primary path), on a schedule, or by Egeria automation once the A2A inbound path (§2) exists — the same operations, three different initiators, landing in the same `activity_log` schema either way. On scheduling specifically: RE already has a rudimentary scheduler today (`resource_explorer/scheduler.py` — a daemon thread polling the `resource_schedules` table every 15 minutes, driving repo/database surveys), but the expectation going forward is that recurring scheduling lands in Egeria core, or is reached via a connector to a dedicated scheduling service, rather than becoming permanent RE-native infrastructure — RE's existing scheduler is a stopgap to revisit once that exists, not the long-term home (see also §3.2's note on Egeria having no native cron mechanism today). Completion notifications should likewise go through Egeria's own notification mechanism rather than a bespoke RE notification path, consistent with the broader point in §2.3 about result rendezvous not being limited to RE's own activity log.
@@ -137,7 +140,7 @@ Its own properties are minimal: `waitTime`, `producedGuards` (confirmed directly
 **Conclusion: no new Dr.Egeria commands are needed to author a Survey Definition's composition.** A Survey Definition = one `Create Governance Action Process` (the survey as a whole) + one `Create Governance Action Process Step` per analysis step + `Link First Process Step`/`Link Next Process Step` to sequence them. This reuses the existing "Action Author" family exactly as-is. (`Create Governance Action Type` is the base command for a standalone action template that's never chained into a process — not what a Survey Definition's steps need, since every step here participates in the `Link First/Next Process Step` chain; those link commands' "Governance Action Process Step" reference is typed specifically to `GovernanceActionProcessStep` elements, confirmed against the real compact command spec.)
 
 **Not yet solved by any of the above: an inventory of analysis steps to compose from.** Being able to *author* a chain of `GovernanceActionType`/`GovernanceActionProcessStep` elements says nothing about knowing which steps already exist to chain together. Two distinct halves to this, both real gaps:
-- **Finding Egeria's existing analysis steps** — discoverable in principle via the same technology-type/governance-definition search already referenced in `docs/survey-activity-design.md` D4/D6 (`find_technology_types`/`get_tech_type_detail`, or a direct `GovernanceActionType` search), but not yet exercised for this purpose.
+- **Finding Egeria's existing analysis steps** — discoverable in principle via the same technology-type/governance-definition search already referenced in `docs/survey-model.md` D4/D6 (`find_technology_types`/`get_tech_type_detail`, or a direct `GovernanceActionType` search), but not yet exercised for this purpose.
 - **Publishing RE's own analysis steps (sub-surveyors) as catalogable elements** — RE's sub-surveyors (`FileStructureSurveyor`, `HealthSurveyor`, etc.) don't exist as `GovernanceActionType` elements in Egeria at all today; nothing publishes them. Before an author can reference `re_analysis_step: schema_inventory` in a Survey Definition (§6.2), something has to have created a catalogable element for `schema_inventory` in the first place — and a mechanism for registering a *new* RE analysis step (when someone adds a new sub-surveyor) so it becomes discoverable the same way, not just usable if you already know its name.
 
 Practically, this likely means: a one-time (or per-addition) publish step — plausibly an extension of `EgeriaPublisher`, or its own small Dr.Egeria plan — that creates a `GovernanceActionType` per RE analysis step with `executes_at: resource-explorer` and the right `re_analysis_step`/`supported_technology_type` tags, plus some local inventory (a registry, possibly just RE's existing sub-surveyor registration, extended with these Egeria-facing identifiers) so RE itself always knows the mapping. Not designed in detail yet — flagged here as a real prerequisite to §6.3 actually working, not an afterthought. Tracked in `docs/Backlog.md`.
@@ -289,3 +292,131 @@ Deliberately scoped down for a first cut, not full generality: **execute for a r
 | A12 | How does RE discover/register analysis steps as catalogable Egeria elements — both finding Egeria's existing ones and publishing RE's own sub-surveyors the first time they're used? | §6.1 | Still open. §6.6's local executor now has a concrete, real dispatch point (each adapter's `re_analysis_steps` dict) that this future work would extend or replace — today it's a small hardcoded Python mapping per resource type, not a catalogable/extensible registry. |
 
 See `docs/Backlog.md` for tracked, not-yet-scheduled work items derived from this document.
+---
+
+# Part II — Publishing, identity, and the two directions
+
+*Merged 2026-09-02 from seven notes. Each section names its source.*
+
+## 7. Outbox publishing — why "fire-and-forget" was the wrong diagnosis
+
+*(from `outbox-publishing-design.md`; steps 1–4 built for the repo path)*
+
+**Dispatch was never the problem.** Every publish call is awaited synchronously by its caller —
+thread-offloaded, but the handler or scheduler tick blocks on the result. **The problem was entirely
+in error handling**, and at three levels: per element (each failure swallowed individually inside
+the annotation loop), per run, and per batch.
+
+The fix is an outbox: each element is queued, attempted, retried with backoff, and dead-lettered
+visibly on permanent failure. Ordering constraints are explicit through a dependency between rows,
+so a run that cannot finish leaves a **coherent prefix rather than orphans** — a half-published
+blueprint reads as a complete one, which is worse than none.
+
+Publishing is **idempotent by identity**: an element that already exists is adopted rather than
+duplicated, which is what makes a retry safe.
+
+> **The claim function does not claim.** `claim_due_outbox_elements` was, until 2026-09-02, a plain
+> SELECT with no locking and no status transition, while its docstring asserted the opposite. Two
+> drainers took the same rows — and the usual second drainer is not a person, it is the scheduler
+> inside any running web server. Now an atomic claim with a lease. Full account in `Backlog.md`.
+
+## 8. Annotation identity, and why it is the precondition for everything else
+
+*(from `annotation-finding-collapse-design.md`)*
+
+An annotation's published `qualifiedName` was its **position in the run**. Measured across two large
+runs of one repository, over 115 overlapping indices, the same index meant the same finding **zero
+times** — so nothing published could be followed through time, though every value worth trending was
+already there.
+
+Annotations now carry `check_name` (what was checked), `item_key` (which item, for checks reporting
+on many), and `label` (the verdict), and the qualifiedName is built from them. A guard refuses to
+publish a run whose names collide, because a collision does not fail loudly on its own: Egeria
+rejects the duplicate, the existing GUID is adopted, and the run **reports success having written
+one element where two were produced.**
+
+**The finding row is derived from the annotation rather than typed beside it.** The two had drifted:
+one check emitted `confidence=90` on the annotation and stored a finding with no confidence, which
+the column defaults to 100. Same check, same run, two stores, two numbers, no error anywhere.
+Derivation makes that class of drift impossible by construction rather than avoided by care.
+
+## 9. Linking annotations to each other
+
+*(from `annotation-linking-plan.md`, `annotation-linking-audit.md`)*
+
+Egeria model 0610 defines **`AnnotationExtension`** — *"additional information to augment an
+annotation"* — a relationship from one annotation to another; and adjacent, **`AnnotationReview`**,
+linking an annotation to a steward's review of it. Verified against the Java source, which is
+authoritative where its wording differs from the documentation page.
+
+RE used neither. The value is evidence structure: a per-file measurement becoming *evidence for* an
+aggregate rather than a sibling of it, so a reader can see what a summary rests on.
+
+**The constraint that shapes the design: summaries stay independently readable.** A linked annotation
+must still make sense to a consumer that does not follow the link, because most will not.
+
+`AnnotationExtension` is UNI_LINK — measured — which means `attach()` upserts rather than
+duplicating. `evidence_of` is create-blind by design; the reasoning is in the linking plan's own
+docstring.
+
+## 10. Survey history and replay
+
+*(from `survey-history-and-egeria-replay.md`)*
+
+After a platform reset, three options exist, and the costs are in different currencies:
+
+| | restores | cost |
+|---|---|---|
+| **Move forward** | nothing historical | none — Egeria loses the trend, RE keeps it |
+| **Re-survey** (built) | today's findings, one point per repo | dominated by *survey time* — minutes per repo |
+| **Replay history** (not built) | up to 1,452 runs across 60 repos | dominated by *element count* — ~26h for five repos alone |
+
+Replay is **not** the cheap option. At the measured drain rate, `egeria_python_git` alone is 18.6h.
+The per-repo spread (0.1h to 18.6h) is what makes *selective* replay answerable rather than a vague
+preference — and history is a choice with costs to expose, not a policy to impose.
+
+There is also a **cheap registration tier**: publishing `repo_health` only, with no download,
+re-catalogues a corpus in seconds with every asset present.
+
+## 11. RFAs and Egeria ToDos
+
+*(from `rfa-egeria-todo-followup.md`; implemented and live-verified 2026-08-16)*
+
+RE's RequestForAction drawer is local. Egeria offers a real `ToDo` with assignment and lifecycle, and
+the sync mechanics were decided and built: RFAs project to ToDos, and status flows back.
+
+The broader idea recorded alongside it, deliberately not scoped to RFAs: **any RE-side item needing
+a human decision is a candidate for the same projection**, and building it RFA-shaped would have to
+be undone.
+
+## 12. Current upstream blockers
+
+*(from `egeria-blocker-review-2026-09-02.md`)*
+
+> **The canonical tracker is `PYEGERIA_ISSUES.md` in `egeria-python`** — 77 issues under unified
+> `ISSUE-#` numbering. RE's own copy was superseded and has been removed; log new entries there.
+
+Open items touching this integration:
+
+- **ISSUE-79** — a native survey against a template-created `FileFolder` fails server-side
+  (`assetConnector` null in `BasicFolderConnector.getFile()`). Blocks the filesystem native path.
+- **ISSUE-38** — `count_relationships_between_elements` disagrees with
+  `ClassificationExplorer.get_relationships` by one. A counting discrepancy, and the kind that
+  quietly invalidates a verification built on the wrong one of the two.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Is RE a prototyping ground that graduates into Egeria? | **No** — peer collaboration | RE extends the platform's reach and is a human interface to it; capabilities may move either way |
+| Were RE's publishers "fire-and-forget"? | **No** — dispatch was fine | Every call is awaited; the failure was in error handling at three levels |
+| Can the outbox restore state after a platform reset? | **No** | `done` rows assert a completed publish, point at a deleted element, and are never re-claimed |
+| Is replaying history the cheap way to restore Egeria? | **No** | ~26h for five repos; re-survey is 1–3h. Different currency, and replay is worse |
+| Is a position-based annotation identity workable? | **No** | Over 115 overlapping indices, the same index meant the same finding zero times |
+| Should the finding row be written by hand beside the annotation? | **No** — derive it | The two drifted: confidence 90 on one, defaulted 100 on the other, same check, same run |
+| Does a colliding qualifiedName fail loudly? | **No** | The duplicate is rejected, the existing GUID adopted, and both runs report success |
+| Should Dr.Egeria be the runtime invocation path? | **No** — A2A | Markdown through MCP is the wrong shape for a machine-to-machine governance call; Dr.Egeria keeps authoring |
+| Should a linked annotation depend on its link to be readable? | **No** | Summaries stay independently readable; most consumers will not follow the link |
+| Should RE keep its own pyegeria issue tracker? | **No** | Superseded by `egeria-python`'s canonical list |

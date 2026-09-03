@@ -393,6 +393,8 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
         if status in _SUCCESS_STATUSES:
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="delegated_action",
+                    item_key=self.step_name,
                     summary=f"Delegated Egeria action ({target}) completed: {status}",
                     analysis_step=self.step_name,
                     source="egeria",
@@ -406,6 +408,8 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
         else:
             results.append(
                 RequestForActionAnnotation(
+                    check_name="delegated_action",
+                    item_key=self.step_name,
                     summary=(
                         f"Delegated Egeria action ({target}) did not "
                         f"complete successfully: {status}"

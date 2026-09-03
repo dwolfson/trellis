@@ -232,6 +232,8 @@ class SurveyOrchestrator:
                         log.info("Skipping %s for %s — %s",
                                  surveyor.step_name, project.slug, why)
                         result.add(ClassificationAnnotation(
+                            check_name="step_skipped",
+                            item_key=surveyor.step_name,
                             summary=f"Skipped: {why}",
                             analysis_step=surveyor.step_name,
                             candidate_classifications=[result_status.SKIPPED_BY_DESIGN],

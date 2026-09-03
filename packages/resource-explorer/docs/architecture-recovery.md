@@ -1,18 +1,26 @@
 # Architecture Recovery — Deriving Solution Blueprints from Repositories
 
-**Status:** design + plan. Review comments incorporated. All open questions resolved except **Q6**
-(deliberately out of scope) and **Q13** (correctly deferred to after Phase 0). **Ready to plan.**
-**Date:** 2026-08-19 (revised same day after review)
-**Context:** extends the Scouting → Discovery → Analysis funnel with a new analysis class that
-produces *design* metadata (Egeria Area 7) rather than measurements. See
-`docs/survey-and-analysis-current-state-2026-08-19.md` for what RE does today.
+**Status:** consolidated design and reference. Phase 0 and Phase 1 measurement complete; the
+Phase 1 port into Resource Explorer is partly done and Phase 2 (Egeria projection of blueprints)
+is unbuilt. Current as of 2026-09-02.
+**Context:** extends the Scouting → Discovery → Analysis funnel with an analysis class that
+produces *design* metadata (Egeria Area 7) rather than measurements.
+
+> **This document consolidates twelve.** §§1–12 are the original design (2026-08-19, revised
+> through 2026-08-31). §§13–19 merge what were separate notes on measurement, clustering,
+> documentation as a source, withdrawal, presentation, the decision trace, and the gap list.
+> §20 is the register of settled questions — the part to read before reopening anything.
+>
+> For a standalone account aimed at readers outside this project, see
+> `architecture-recovery-in-practice.md`; it explains the same system in terms of the decision a
+> user is trying to make rather than the mechanism.
 
 
 > **Note on source tree.** The Egeria-side grounding in §3 (types, enums, pyegeria client methods) was
 > verified against `/Users/dwolfson/localGit/egeria-v6/egeria` and `egeria-python` and is unaffected by
 > the repo migration. **RE-side references — gap numbers, file paths, line numbers — were derived from
 > the pre-migration standalone `resource-explorer` repo and inherit the staleness documented in
-> `survey-and-analysis-current-state-2026-08-19.md`.** Re-verify anything RE-specific against
+> `survey-model.md`.** Re-verify anything RE-specific against
 > `trellis/packages/resource-explorer` before acting on it.
 >
 > **Revision note.** The RE-side claims added in the post-review revision — §5.5, §5.6, §5.7, §6.0,
@@ -152,7 +160,7 @@ within blueprints, and components within components — and they answer differen
 **A repo is a storage boundary, not a solution boundary.** A monorepo can legitimately hold several
 blueprints over different clusters of components, and the natural shape for one is a repo-level
 blueprint whose members are sub-blueprints, each a coherent solution in its own right. What proposes
-those clusters is undesigned work — see `architecture-recovery-report-then-curate.md` §2b.
+those clusters is undesigned work — see `architecture-recovery.md (§17)` §2b.
 
 The Collection nature also gives — independently of nesting — **membership of a component in more
 than one blueprint.** Cross-repo composition therefore works by wiring components across blueprints
@@ -911,7 +919,7 @@ signals the detectors structurally cannot see:
 
 **This gives Phase 0 a sharper exit criterion** than "recognisable to you": run all three — detector
 partition, import coupling, co-change coupling — and ask whether they agree with each other and with a
-**pre-registered** hand-written partition. See `docs/architecture-recovery-phase0-plan.md`, which makes
+**pre-registered** hand-written partition. See `docs/architecture-recovery.md (§13.1)`, which makes
 the criterion falsifiable by requiring the expected answer to be written down before the detectors run. Three independent signals converging is evidence the premise holds. Two agreeing
 and one dissenting is a finding. All three disagreeing means §5.1 needs rethinking before anything is
 built.
@@ -1036,7 +1044,7 @@ Decision (Dan, 2026-08-29): **a documentation-derived component may exist withou
 `scope_locator`** — docs become a source, bridged to code by `ImplementedBy` (§3.6, §4.1). The
 consequences, the gate this needs (the existing `undetected_is_meaningful` licenses *reading*, not
 *proposing*, and its denominator is circular), and why §5.5a(b)'s dating becomes a precondition
-rather than an enhancement are in **`architecture-recovery-docs-as-source.md`**.
+rather than an enhancement are in **`architecture-recovery.md (§15)`**.
 
 ### 5.5b What the repo *is* — classification before analysis
 
@@ -2167,7 +2175,7 @@ harder to see, because everything expected is present and merely repeated; a *cr
 of all, because the right number of results are there, each well-formed, with only their content
 attached to the wrong thing.
 
-Design in `docs/outbox-publishing-design.md` (D2, §4 and top of §6's sequencing).
+Design in `docs/egeria-integration.md (§7)` (D2, §4 and top of §6's sequencing).
 
 **The outbox/retry work is a prerequisite, not a nice-to-have** — a
 half-published blueprint is worse than none.
@@ -2196,7 +2204,7 @@ Revised after the §5.5–5.7 tooling pass and §6.0's simplification. Two prere
 Phase 4 got substantially cheaper.
 
 ### Phase 0 — Spike (dogfood)
-**Planned in detail: `docs/architecture-recovery-phase0-plan.md`.**
+**Planned in detail: `docs/architecture-recovery.md (§13.1)`.**
 
 Run detectors against three targets chosen to test different things — `egeria-workspaces` (via the
 current `-fs` checkout) as the richest case, covering code-versus-deployment reconciliation, polyglot
@@ -2395,3 +2403,318 @@ Q13 is correctly deferred to after Phase 0, since it is a question Phase 0 exist
 `Confidence` classification, `ContentStatus`, and base `AnnotationProperties` cover the model as
 designed, with the typed `CodeAnalysis` annotation being a swap rather than a blocker (§6.4).
 **This is plannable.**
+
+---
+
+# Part II — Measurement, operation, and settled questions
+
+*Merged 2026-09-02 from eleven separate notes. Each section names the note it came from, so a
+git-history search still finds the original.*
+
+## 13. What was measured
+
+*(from `architecture-recovery-phase0-findings.md`, `architecture-recovery-phase1-plan.md`,
+`architecture-recovery-phase1-findings.md`)*
+
+### 13.1 Phase 0 — can deterministic detectors find real component boundaries?
+
+The answer was the middle outcome the plan pre-defined, and **pre-defining it mattered**: the
+result was genuinely ambiguous and could have been read as success or failure depending on which
+number was quoted.
+
+> **Where the detectors fire, they get the boundary right. They fired on 4 of 11 components.**
+
+| T2 `trellis`, logical perspective | value |
+|---|---|
+| file-partition ARI | 0.56 |
+| file-partition NMI | 0.77 |
+| components proposed | 4 of 11 |
+| files scored | 38 of 182 ground-truth-assigned |
+
+The four were exactly the subtrees using a *framework* — FastAPI, Typer, Textual, Prefect. The
+other seven have no marker and **no rule that could be written would find them**: `Agents`,
+`Core`, `RAG ingestion`, `Observability`, `Surveyors`, `Utility scripts` are conventional
+boundaries, not declared ones.
+
+**The finding that shaped everything after it:**
+
+> **Deployment architecture is *declared*, so it is recoverable. Logical architecture is largely
+> *conventional*, so it is not.**
+
+T1 `egeria-workspaces` scored 16/16 on the maintainer's named runtime components once the detector
+read `container_name` rather than the compose service key. That asymmetry is not a tooling defect
+to be engineered away; it is a property of the material, and the design accommodates it by keeping
+the perspectives separate (§4.1) rather than seeking one recovery that serves both.
+
+### 13.2 Phase 1 — coverage, and the matcher problem
+
+All five exit criteria met, several by a wide margin.
+
+| criterion | Phase 0 | target | actual |
+|---|---|---|---|
+| components proposed (T2, logical) | 4 of 11 | ≥ 9 of 11 | **13 of 13** *(see note)* |
+| file coverage (T2, in scope) | 21% | ≥ 70% | **97%** (184 of 190) |
+| partition accuracy (ARI) | 0.56 | ≥ 0.5 held | **0.969** (NMI 0.977) |
+| T1 deployment recall | 18 of 27 | ≥ 18 of 27 held | 18 of 27 |
+| runtime per repo | < 3s | < 10s | **5.3s** |
+
+> **A component count is meaningless without its matcher.** "13 of 13" is max file-overlap F1 at a
+> 0.5 threshold. Under **strict containment** the same data gives **10 of 13**. `score.py`'s own
+> component-set measure gives **0 of 13**, because it matches on exact names and detectors emit
+> directory basenames (`surveyors`) where the fixture has human names (`Surveyors`).
+>
+> Three matchers, three answers, identical data. A later session was right to report the headline
+> could not be reproduced. **Quote the method with the number.** ARI and NMI are unaffected, being
+> partition-level measures that need no matcher.
+
+**What got it there.** Coupling was inverted from a *scorer* into a *proposer* — the phase's one
+genuinely novel piece — and produced two findings, one against its own plan:
+
+- **Newman modularity failed as a threshold.** Proposed specifically to remove a hand-set cohesion
+  bar; measured, `Q > 0` holds for 15 of 16 candidates, because in a sparse import graph almost any
+  subtree beats chance. Q survives as a *ranking*, not a bar. Recorded as a plan-level miss rather
+  than quietly substituted.
+- **Directional dispersion is what discriminates.** A cohesion bar rejects any *connective*
+  component: `Core` has 27 internal import edges against 238 fan-in — cohesion 0.09, obviously a
+  real component, unreachable by any threshold on that ratio. Its fan-in is spread evenly across 14
+  neighbours, and that is measurable as normalised entropy. Three shapes result: **cohesive**,
+  **connective** (library by fan-in, orchestrator by fan-out), and **merge-candidate** (externals
+  concentrated on one neighbour it belongs to). Only the third is genuinely not a component.
+
+**The residue rule:** a component owns everything beneath it that nothing else claims. This is a
+**trade, not a clean win** — it took `Utility scripts` to exact and `Core` from exact to 0.51,
+because the two ground-truth entries disagree about residue ownership deliberately. Kept and
+recorded rather than special-cased, since special-casing is tuning to the fixture.
+
+**Two bugs found by measurement, not by reasoning:**
+
+- **Per-file import resolution.** `imports.py` resolved every absolute import against one global
+  source-root list. `egeria-workspaces` ships `PyegeriaWebHandler` twice, both are source roots, so
+  a sibling import in a *quickstart* handler resolved into the *freshstart* copy — 156 of 170
+  quickstart edges were wrong. Fixed; trellis barely moved (1165 → 1185 edges), which is exactly
+  why it hid.
+- **Two retractions.** Phase 0's finding 32 (zero cross-copy import edges, offered as independent
+  corroboration) and finding 36 (flat repos as a *layout* problem) were both artifacts of that one
+  bug, and are withdrawn.
+
+### 13.3 Confidence in these numbers
+
+**High for what they measure; narrow in what they establish.** Two repositories, both ours, both
+Python, thresholds set by inspection on one of them. T2's ground truth is not a clean
+pre-registration — the component count was known before the fixture was written, contamination that
+runs the safe way, since the fixture contradicts the detector rather than echoing it.
+
+`Backlog.md` carries a standing item to re-run the evaluation at **8–10 surveyed repositories of
+varied shape**, or the first time a real user disagrees with a published partition. Re-running is
+hours; the real cost is writing pre-registered ground truth for new targets, which is what makes
+the re-check worth doing rather than a re-confirmation.
+
+## 14. Clustering, hierarchy, and the human question
+
+*(from `architecture-recovery-clustering.md`)*
+
+**There is no single right clustering, and the design already proved it.** The same repository
+yields different, equally valid partitions depending on the perspective asked for — which is why
+perspectives are enforced below the model (§4.1b) rather than being a display filter.
+
+> ⚠ **Two different things are called "perspective" — do not conflate them.** The *architecture*
+> perspectives (Logical, Deployment, …) partition components. The *user* Perspective (Security,
+> Admin, …) describes whose concerns are in play, and was measured unable to route work at all.
+> They share a word and nothing else.
+
+**Hierarchies are the abstraction mechanism, and the machinery is built.** A blueprint is a
+Collection and blueprints nest (§3.3a), so reducing 999 candidates to a readable number is a
+question of *grouping*, not of raising a threshold until few enough survive.
+
+**A cluster is a Collection, not a parent component.** A parent component asserts that the group is
+itself a component — a claim the analysis has not earned. A Collection asserts only that these
+things are being considered together, which is exactly what is true.
+
+**Asking a human is the designed outcome, not the fallback.** Residue ownership and orphan
+assignment are cheap for a maintainer to answer and impossible to derive; the pipeline is built to
+surface them as questions rather than to guess.
+
+## 15. Documentation as a source of components
+
+*(from `architecture-recovery-docs-as-source.md`)*
+
+> **A documentation-derived component may exist without a `scope_locator`.**
+
+This is what makes documentation a *source* rather than a labeller. If a component must name a
+path, the pipeline can only recover structure the file tree already spells out — precisely the
+structure that produced 999 unreadable candidates. If it need not, then `Common Services`, `OMAS`
+and `OMVS` can exist as logical-perspective components proposed by the document, bridged to code by
+`ImplementedBy` when — and only when — something maps them.
+
+`ImplementedBy` is already §4.1's designated bridge between Logical and the other perspectives, and
+§3.6 resolved its write path. This decision does not invent a mechanism; it supplies the mechanism
+with the thing it lacked.
+
+**The gate is the hard part and the existing one does not transfer.** Three candidate tests for
+"is this document describing this system's architecture" were run on 2026-08-31 and **none of them
+work**. Recorded as a negative result rather than shipped with a threshold chosen to make the
+sample pass. **Staleness is not optional here**: a document describes the system as of its own
+writing, and a component proposed from it inherits that date.
+
+## 16. Withdrawal — how a component stops being proposed
+
+*(from `architecture-recovery-scope-tombstoning.md`)*
+
+> **A withdrawal is a durable, scope-keyed statement that as of time `T`, step `S` no longer
+> proposes this scope. It supersedes for reads. It deletes nothing.**
+
+Writing a better row does not fix the underlying defect, because the stale row is still the most
+recent thing anyone wrote about that scope. Four properties follow:
+
+- **Scope-keyed** — it lives on the vacated scope, or no query that finds the stale rows finds it.
+- **Step-attributed** — unattributed withdrawal is unsafe (R2).
+- **Supersedes** `query_findings` and `query_finding_scopes` — the two reads that answer *what is
+  the architecture now*.
+- **Invisible to** `query_findings_all_runs`, which keeps answering *who proposed what, ever*.
+  Nothing here removes evidence; the current answer changing must not cost the history.
+
+**The rules:**
+
+| | rule |
+|---|---|
+| **R1** | Only a COMPLETE run may withdraw. Withdrawal is inferred from *absence*, and absence only means something if the run could have seen everything — so a run with a non-empty `run_scope`, or a `PARTIAL` outcome, may withdraw nothing. |
+| **R2** | A step may only withdraw scopes it wrote itself. |
+| **R3** | Withdrawal records a cause, and the default cause is **not** "gone". |
+| **R4** | The query is the choke point, and the mechanism should be generic rather than recovery-shaped. |
+
+## 17. Publication: report first, curate second
+
+*(from `architecture-recovery-report-then-curate.md`)*
+
+**Recovery reports through `SurveyReport` + Annotations like every other analysis, and materialises
+structural elements only on a curator's acceptance.**
+
+It is conservative and defensible: asserting a blueprint claims a confidence the analysis does not
+have, while an annotation saying *"this analysis proposes these components, at this confidence,
+from this evidence"* claims exactly what is true. Egeria's vocabulary already separates these — an
+Annotation is an observation from a dated act of analysis; a `SolutionComponent` is an assertion
+about the world.
+
+**The design never argued the other way.** `SurveyReport` appeared twice in 2,100 lines, both
+incidental. Architecture recovery went straight to structural elements while every other analysis
+reports through a survey report, and the design did not say why it had earned that.
+
+**The decisive reason drives the tooling:** a curator may decline to materialise. That is only
+meaningful if declining is the default state rather than a retraction.
+
+**Curation generalises — do not build it repo-shaped.** The review surface is "accept or reject a
+proposed element with its evidence", which is not specific to repositories or to architecture.
+
+## 17a. Presentation — what a curator actually sees
+
+*(from `architecture-recovery-presentation-findings.md`, measured 2026-08-30 against a store
+refreshed to current code)*
+
+The recovery is better than its presentation, and the gap is large enough to invalidate the answer
+a curator takes away.
+
+| | `egeria_git` | `egeria_workspaces_git` |
+|---|---|---|
+| components recovered (raw) | 1035 | 175 |
+| after depth projection | 451 | 107 |
+| **actually shown** | **20** | **20** |
+| untyped rows | 321 (71%) | 35 |
+| structural (grouping, not components) | 75 | 15 |
+| **stale rows, rendered as current** | **69** | **7** |
+| perspectives mixed in one list | logical 341, deployment 35, none 75 | deployment 71, logical 20, physical 1, none 15 |
+
+> **A curator asking "what is Egeria's architecture?" sees 20 rows chosen alphabetically out of
+> 1035.**
+
+Four findings, in the order they should be fixed:
+
+- **(a) The `structural` flag is computed and ignored.** Grouping nodes are marked explicitly,
+  precisely so a consumer can render them as grouping rather than as recovered components — and no
+  consumer reads it. A structural node renders as `untyped · 0%`, visually identical to a component
+  we recovered and know nothing about, which is the opposite of what it is. Worse, rows sort by
+  `path` and `.` sorts first, so **the top row of Egeria's architecture is a grouping placeholder
+  for the repository root, presented as a 0%-confidence component.** The writer is careful about the
+  distinction, the reader preserves it, and the last hop drops it.
+- **(b) Ordering is alphabetical, so the cap shows an arbitrary slice.** Nothing prefers high
+  confidence, typed components, or a perspective. The consequence is specific: a clean
+  **8-component deployment reading of Egeria** — one platform, five servers, Kafka, PostgreSQL —
+  exists in the payload and is invisible, because 341 logical rows outrank nothing and sorting is
+  by string.
+- **(c) Perspective is in the payload, neither shown nor filtered on.** §4.1 is emphatic that the
+  perspectives are not interchangeable and a component is only comparable within its own; the UI
+  renders all four in one flat unlabelled list. **Recommended fix: perspective tabs defaulting to
+  the smallest non-empty perspective** — the only option that makes the 8-component reading the
+  default answer rather than something to dig for, and "smallest non-empty" needs no tuning because
+  it is a comparison rather than a threshold.
+- **(d) Stale components render identically to live ones.** 69 of Egeria's 451 rows were written by
+  no current run. This is the defect §16's withdrawal mechanism exists to fix.
+
+## 18. The decision trace
+
+*(from `architecture-recovery-decision-trace.md`)*
+
+Survey steps record *why* they proposed what they proposed, in their `notes`, in a form that can be
+read back. This is **not** MLflow, Phoenix, or OTEL: those record that a run happened and what it
+cost. The decision trace records the reasoning a specific proposal rests on, so a curator rejecting
+a component can see what would have to change for it to be proposed differently.
+
+The first measurement exposed that several steps recorded outcomes without the evidence that
+produced them — accurate, and not answerable.
+
+## 19. Scenarios and the gap list
+
+*(from `architecture-recovery-scenarios-and-gaps.md`)*
+
+Three scenarios frame the remaining work: **A** *"I found a repo. Should I care?"* — largely served.
+**B** *"Recover this repo's architecture and put it in the catalogue"* — blocked on distillation.
+**C** *"We already use X. Is it still OK?"* — blocked on a usage corpus.
+
+**Gaps, ordered by what they unblock:**
+
+1. **Distillation (§5.2, Phase 5)** — blocks Scenario B entirely and every catalogue-facing
+   outcome. Detection is solved; this is not. Largest single remaining piece.
+2. **Outcome vocabulary for a deliberate skip** — small, completes Scenario A's reporting.
+3. **Wire `interfaces.py` into `detect.py` and the IR, with unit tests** — small, and the input
+   both distillation and any "does it fit our infrastructure" question need.
+4. **Disposition (§5.5d)** — check `ResourceUse` before inventing. Turns findings into an answer.
+5. **Motivation (§5.5d) and the derived lens (§5.5e)** — selects question sets; the lens is nearly
+   free once motivation exists.
+6. **Egeria projection (Phase 2)** — gated on outbox/retry publishing, which now exists.
+7. **A usage corpus** — unblocks Scenario C; genuinely new input, not a refinement.
+
+**Known defects, none blocking.** `find_artifact("readme")` prefers a nested README over the root
+one. The gate over-runs on documentation repositories carrying their own build tooling — safe
+direction, since a false RUN wastes a tier while a false SKIP loses work. trellis `Web backend`
+misses exactly one file. Go package-level import cohesion is structurally ~0 without recursive
+rollup. The `cmd/X` + `pkg/X` merge is unsolved and the name-based rule was deliberately not
+shipped.
+
+**Deferred by decision, not oversight:** the exposure/consumption model (what kind of thing is
+being exposed — library, service, container, dataset), and user intent.
+
+## 20. Settled — do not reopen without re-measuring
+
+Each of these was decided against a measurement or a direct maintainer decision. Reopening one is
+legitimate; reopening it *without repeating the measurement that settled it* is not.
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Can detectors recover logical architecture generally? | **No** — only where declared | Phase 0: 4 of 11, and the seven misses have nothing to match |
+| Is deployment architecture recoverable? | **Yes** | Phase 0 T1: 16/16 once reading `container_name` |
+| Use Newman modularity as the cohesion threshold? | **No** — ranking only | `Q > 0` for 15 of 16 candidates; it does not discriminate |
+| Reject low-cohesion candidates? | **No** | `Core`: cohesion 0.09 and unambiguously a real component |
+| Is a component count a sufficient result? | **No** | Three matchers give 13, 10 and 0 on identical data |
+| Special-case the residue rule to fix `Core`? | **No** | That is tuning to the fixture |
+| Should recovery write structural elements directly? | **No** — report, then curate | It claims a confidence the analysis lacks; every other analysis reports through a survey report |
+| One blueprint per repository? | **No** — blueprints nest | `SolutionBlueprint` is a Collection (§3.3a) |
+| Must a component name a path? | **No** | Otherwise documentation can only relabel what the tree already spells out |
+| Is there a working gate for "is this doc about this system"? | **No** — three tests failed | Measured 2026-08-31; recorded rather than shipped with a fitted threshold |
+| May a partial run withdraw a scope? | **No** | Absence only means something if the run could see everything (R1) |
+| Is a cluster a parent component? | **No** — a Collection | A parent asserts the group is a component; the analysis has not earned that |
+| Does the user-facing Perspective route analyses? | **No** | No analysis is reachable from one perspective and not another |
+| Is architecture recovery a Discovery-tier analysis? | **No** — Analysis tier | Direct maintainer decision, 2026-08-30, on grounds other than cost |
+| May it run inline, being fast to compute? | **No** | 5.9s compute, but it downloads two artifacts first; availability is declared, not derived |
+| Is the LLM adjudicator worth building? | **No** | The doc lens reaches the same components more cheaply where documentation exists |
+| Milvus site ingestion? | **No** | 302-loops for every user agent, including a browser one |
+| Doc-kind chunking selection? | **No** | 0 of 20 collections are API-reference shaped |
+| Java `src` naming, and the `cmd/X`+`pkg/X` merge? | **No** | Both downgraded by measurement (spike finding 97) |

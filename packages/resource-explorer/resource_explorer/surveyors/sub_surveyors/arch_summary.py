@@ -289,6 +289,7 @@ class ArchSummarySurveyor(BaseSurveyor):
                 missing.append("the interface findings")
             summary += f" — INCOMPLETE, could not read {' and '.join(missing)}"
         return [ResourceMeasureAnnotation(
+            check_name="architecture_summary",
             summary=summary,
             analysis_step=self.step_name,
             explanation=(
@@ -435,6 +436,7 @@ class ArchSummarySurveyor(BaseSurveyor):
 
     def _nothing_to_summarise(self, reason: str) -> Annotation:
         return ResourceMeasureAnnotation(
+            check_name="architecture_summary",
             summary=f"No architecture summary — {reason}",
             analysis_step=self.step_name,
             explanation=reason,

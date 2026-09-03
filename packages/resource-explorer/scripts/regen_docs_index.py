@@ -98,6 +98,12 @@ def main() -> int:
     readme = DOCS / "README.md"
     existing = readme.read_text() if readme.exists() else ""
     header = existing.split("\n## ", 1)[0] if "\n## " in existing else existing
+    # The header is carried over verbatim, so a hand-written count in it goes
+    # stale silently — which is the exact failure this script exists to prevent,
+    # and it had: the header claimed 69 while the directory held 82. Substitute
+    # the real number rather than trusting prose.
+    n_docs = len([p for p in DOCS.glob("*.md") if p.name != "README.md"])
+    header = re.sub(r"^\d+ documents,", f"{n_docs} documents,", header, flags=re.M)
     updated = header.rstrip("\n") + "\n" + _body()
 
     if args.check:

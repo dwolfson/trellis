@@ -22,7 +22,10 @@ router = APIRouter()
 #: Statuses a caller may filter by. Rejecting anything else keeps a typo from
 #: silently returning the unfiltered table, which would read as "nothing is
 #: stuck" exactly when something is.
-_VALID_STATUSES = ("pending", "failed", "dead", "done")
+_VALID_STATUSES = ("pending", "running", "failed", "dead", "done")
+#: "running" means a drainer holds a claim on the row. It is a real,
+#: queryable state rather than an internal flag: a row stuck in it past
+#: CLAIM_LEASE_SECONDS is the signature of a drainer that died mid-batch.
 
 
 class OutboxListResponse(BaseModel):

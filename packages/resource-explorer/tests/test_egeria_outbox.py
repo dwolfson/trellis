@@ -43,7 +43,9 @@ class TestEnqueue:
         row_id = _enqueue(db, project)
         due = db.claim_due_outbox_elements()
         assert [r["id"] for r in due] == [row_id]
-        assert due[0]["status"] == "pending"
+        # A claim MARKS the row; "pending" is what it was before being taken.
+        # Read that with peek, which is the non-mutating view.
+        assert due[0]["status"] == "running", "claiming marks the row as held"
         assert due[0]["attempts"] == 0
         assert json.loads(due[0]["payload_json"]) == {"class": "X"}
 
@@ -242,15 +244,17 @@ class TestRunScoping:
         old = db.enqueue_outbox_element("repo", project, "annotation", "Old::0", {}, run_id="run-old")
         mine = db.enqueue_outbox_element("repo", project, "annotation", "Mine::0", {}, run_id="run-mine")
 
-        claimed = db.claim_due_outbox_elements(run_id="run-mine")
-        assert [r["id"] for r in claimed] == [mine], "the older row must not be claimed"
+        # peek, not claim: claiming here would take the row the drain below is
+        # supposed to take, and the drain would then correctly find nothing.
+        visible = db.peek_due_outbox_elements(run_id="run-mine")
+        assert [r["id"] for r in visible] == [mine], "the older row must not be in scope"
 
         discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
         drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "", run_id="run-mine")
 
         counts = db.outbox_counts()
         assert counts == {"done": 1, "pending": 1}
-        assert [r["id"] for r in db.claim_due_outbox_elements()] == [old]
+        assert [r["id"] for r in db.peek_due_outbox_elements()] == [old]
 
     def test_an_unscoped_drain_still_sees_everything(self, db, project):
         db.enqueue_outbox_element("repo", project, "annotation", "A::0", {}, run_id="r1")
@@ -720,3 +724,130 @@ class TestEnqueueCap:
         would clip a run that really happened."""
         from resource_explorer.egeria_outbox import _MAX_ANNOTATIONS_PER_RUN
         assert _MAX_ANNOTATIONS_PER_RUN > 522
+
+
+class TestTheClaimActuallyClaims:
+    """The defect this was written for, 2026-09-02.
+
+    `claim_due_outbox_elements` was a plain SELECT with no locking and no
+    status transition, and `drain_outbox` marked a row done only AFTER its
+    create succeeded. Two drainers therefore took the same rows. Its docstring
+    asserted the opposite ("the drain marks each row in flight as it takes
+    it"), which is worse than silence: the next reader checks, finds the claim
+    described, and concludes it is handled.
+
+    The usual second drainer is not a person — it is scheduler.py's loop inside
+    any running `resource-explorer web`, firing every 900s whether anyone is at
+    the keyboard or not.
+    """
+
+    def test_two_claimers_never_get_the_same_row(self, db, project):
+        ids = [db.enqueue_outbox_element("repo", project, "annotation", f"A::{i}", {})
+               for i in range(6)]
+        first = db.claim_due_outbox_elements()
+        second = db.claim_due_outbox_elements()
+        assert {r["id"] for r in first} == set(ids)
+        assert second == [], "a second claimer must not re-take held rows"
+
+    def test_a_claim_is_visible_as_running(self, db, project):
+        db.enqueue_outbox_element("repo", project, "annotation", "A::0", {})
+        db.claim_due_outbox_elements()
+        assert db.outbox_counts() == {"running": 1}
+
+    def test_peek_does_not_claim(self, db, project):
+        """Otherwise looking at the queue empties it for the real drainer."""
+        db.enqueue_outbox_element("repo", project, "annotation", "A::0", {})
+        db.peek_due_outbox_elements()
+        db.peek_due_outbox_elements()
+        assert db.outbox_counts() == {"pending": 1}
+        assert len(db.claim_due_outbox_elements()) == 1
+
+    def test_a_killed_drainer_does_not_strand_its_rows_forever(self, db, project):
+        """Exactly what happened on 2026-09-02: a batch was pkill'd mid-run.
+        Without a lease those rows sit in 'running' and no retry ever sees
+        them again — a quieter version of dead-lettering."""
+        from datetime import datetime, timedelta
+        from resource_explorer.registry import CLAIM_LEASE_SECONDS
+
+        # Deliberately NOT derived from CLAIM_LEASE_SECONDS. A first version
+        # computed this offset from the constant, so inflating the constant
+        # moved both sides of the comparison equally and the test passed with
+        # the lease effectively infinite. The claim here is a bounded one — a
+        # stranded row is reclaimable within the hour — and it has to be
+        # written down independently to mean anything.
+        assert CLAIM_LEASE_SECONDS <= 3600, "the lease must stay within the hour this pins"
+
+        db.enqueue_outbox_element("repo", project, "annotation", "A::0", {})
+        db.claim_due_outbox_elements()                     # claimer then "dies"
+        assert db.claim_due_outbox_elements() == [], "still held inside the lease"
+        an_hour_on = (datetime.utcnow() + timedelta(hours=1, minutes=1)).isoformat()
+        assert len(db.claim_due_outbox_elements(now=an_hour_on)) == 1, \
+            "a row held by a dead drainer must be reclaimable within the hour"
+
+    def test_an_outage_hands_the_claim_back_rather_than_holding_it(self, db, project, monkeypatch):
+        """A claim taken and then not even attempted must not park the row for
+        the whole lease — that is the slow version of burning an attempt on
+        'Egeria was down', which drain_outbox explicitly refuses to do.
+
+        _default_clients is patched to raise, exactly as the sibling test does.
+        Passing (None, None) does NOT reach the no-client branch: it falls
+        through to the real resolver and makes a live platform call, which is
+        how the first version of this test hit Egeria for real.
+        """
+        db.enqueue_outbox_element("repo", project, "annotation", "A::0", {})
+        monkeypatch.setattr(
+            "resource_explorer.egeria_outbox._default_clients",
+            lambda: (_ for _ in ()).throw(RuntimeError("no platform")),
+        )
+        summary = drain_outbox(db)
+        assert summary["skipped"] == 1
+        assert db.outbox_counts() == {"pending": 1}, "released, not left running"
+
+
+class TestTheClaimSqlIsValidOnPostgres:
+    """The SQLite tier cannot see this class of bug, so pin it directly.
+
+    The first version of the atomic claim kept the dependency check as a
+    LEFT JOIN and appended FOR UPDATE SKIP LOCKED. Every test in this file
+    passed — they run on SQLite, which ignores both. Against the real backend
+    it raised `FeatureNotSupported: FOR UPDATE cannot be applied to the
+    nullable side of an outer join`, and the only reason it surfaced was three
+    unrelated Postgres-backed route tests failing in the full suite.
+    """
+
+    def _claim_sql(self):
+        """The claim's source with COMMENTS STRIPPED, lifted rather than
+        transcribed — a hand-copied query would pass while the real one was
+        broken.
+
+        Comments are removed because the first version of this test failed on
+        the word "LEFT JOIN" inside the comment explaining why there is no
+        LEFT JOIN. A check that matches prose is not checking the code.
+        """
+        import inspect
+        from resource_explorer.registry import ProjectRegistry
+        src = inspect.getsource(ProjectRegistry.claim_due_outbox_elements)
+        return "\n".join(l for l in src.split("\n") if not l.strip().startswith("#"))
+
+    def test_the_claim_does_not_combine_for_update_with_an_outer_join(self):
+        src = self._claim_sql()
+        assert "FOR UPDATE" in src, "fixture assumption: the claim locks rows"
+        assert "LEFT JOIN" not in src and "RIGHT JOIN" not in src, (
+            "Postgres rejects FOR UPDATE on the nullable side of an outer join. "
+            "Express the dependency check as a correlated EXISTS instead.")
+
+    def test_the_dependency_gate_still_exists_in_some_form(self):
+        """Removing the join must not quietly remove the rule it enforced:
+        an annotation may not be attempted before the report it hangs off."""
+        src = self._claim_sql()
+        assert "depends_on_id" in src and "EXISTS" in src
+
+    def test_a_row_whose_dependency_is_unfinished_is_not_claimed(self, db, project):
+        """The behaviour itself, not just the SQL shape."""
+        parent = db.enqueue_outbox_element("repo", project, "report", "R::0", {})
+        child = db.enqueue_outbox_element("repo", project, "annotation", "A::0", {},
+                                          depends_on_id=parent)
+        claimed = {r["id"] for r in db.claim_due_outbox_elements()}
+        assert parent in claimed and child not in claimed
+        db.mark_outbox_done(parent, "guid-1")
+        assert child in {r["id"] for r in db.claim_due_outbox_elements()}

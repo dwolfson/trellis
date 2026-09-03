@@ -139,7 +139,7 @@ Coarse Profile Survey
 GovActionProcess::RepoCoarseProfile
 
 ### Description
-Download the repo's zipball once and profile what's actually in it — file types, sizes, language shape, and any data-file schemas. Replaces the old bespoke 'Refresh coarse profile' button/route (docs/survey-tab-unification-plan.md D2/D3) — this is now an ordinary Survey Definition candidate like every other survey type, dispatched through the same batched executor path (D1) that downloads the zipball once for the whole group instead of once per step.
+Download the repo's zipball once and profile what's actually in it — file types, sizes, language shape, and any data-file schemas. Replaces the old bespoke 'Refresh coarse profile' button/route (docs/survey-model.md (§6) D2/D3) — this is now an ordinary Survey Definition candidate like every other survey type, dispatched through the same batched executor path (D1) that downloads the zipball once for the whole group instead of once per step.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

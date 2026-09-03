@@ -187,6 +187,7 @@ class DataProfilerSurveyor(BaseSurveyor):
                 if outcome.outcome == UNVERIFIED:
                     results.append(
                         RequestForActionAnnotation(
+                            check_name="data_profiling",
                             summary="No file inventory found — data profiling skipped",
                             analysis_step=STEP,
                             confidence=100,
@@ -206,6 +207,7 @@ class DataProfilerSurveyor(BaseSurveyor):
                     # which reads as "never run".
                     results.append(
                         ResourceMeasureAnnotation(
+                            check_name="data_profiling",
                             summary=f"No data files among {len(rows):,} inventoried files",
                             analysis_step=STEP,
                             confidence=100,
@@ -247,6 +249,7 @@ class DataProfilerSurveyor(BaseSurveyor):
                 if profilable:
                     results.append(
                         RequestForActionAnnotation(
+                            check_name="profiles_not_captured",
                             summary=(
                                 f"{len(profilable)} data file(s) could be profiled — "
                                 "re-ingest to capture column schemas"
@@ -305,6 +308,7 @@ class DataProfilerSurveyor(BaseSurveyor):
 
         results.append(
             ResourceMeasureAnnotation(
+                check_name="data_file_summary",
                 summary=(
                     f"{len(data_files)} data file(s) across "
                     f"{len(count_by_fmt)} format(s), "
@@ -344,6 +348,8 @@ class DataProfilerSurveyor(BaseSurveyor):
 
             results.append(
                 SchemaAnalysisAnnotation(
+                    check_name="data_file_schema",
+                    item_key=p["file_path"],
                     summary=(
                         f"{p['file_path']}: "
                         f"{p['row_count']:,} rows × {p['col_count']} columns"
@@ -399,6 +405,8 @@ class DataProfilerSurveyor(BaseSurveyor):
             if f["_ext"] not in _SCHEMA_ONLY and f["file_size_bytes"] > limit_bytes:
                 results.append(
                     RequestForActionAnnotation(
+                        check_name="data_file_too_large",
+                        item_key=f["file_path"],
                         summary=f"Data file too large to profile: {f['file_path']} ({_fmt_size(f['file_size_bytes'])})",
                         analysis_step=STEP,
                         confidence=90,
@@ -417,6 +425,8 @@ class DataProfilerSurveyor(BaseSurveyor):
                 if profile:
                     results.append(
                         SchemaAnalysisAnnotation(
+                            check_name="data_file_profile",
+                            item_key=f["file_path"],
                             summary=f"{f['file_path']}: {profile['row_count']:,} rows × {profile['col_count']} columns",
                             analysis_step=STEP,
                             confidence=95,

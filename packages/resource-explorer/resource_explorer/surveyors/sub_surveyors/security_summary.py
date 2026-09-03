@@ -272,6 +272,7 @@ class SecuritySummarySurveyor(BaseSurveyor):
             out.append(ClassificationAnnotation(
                 summary=summary["summary"],
                 analysis_step=STEP,
+                check_name="security_posture",
                 candidate_classifications=[summary["label"]] if summary["label"] else [],
                 confidence=100 if summary["known"] else 0,
                 json_properties={

@@ -208,7 +208,7 @@ changing perspective changes how much you see but never what gets run.
 ### Other things the catalog says that this design assumed wrongly
 
 - **`Asked At` / `Answered At` no longer exist as separate fields.** They were collapsed into
-  a single `stage` on 2026-08-14 (`docs/survey-question-context-plan.md`), which may carry a
+  a single `stage` on 2026-08-14 (`docs/survey-model.md (§4)`), which may carry a
   slash-combined value (`Analysis/Enrichment`) for the Analysis-first/Enrichment-fallback
   pattern in `docs/confidence-gated-validation-plan.md`, treated as a literal string until
   that plan is built. Any dispatch keyed on the two-scope-category model is keyed on
@@ -355,7 +355,7 @@ and unbuilt. Compliance recurs in a way exploration does not.
 ## 5. Scores: the GovernanceMetric gate
 
 RE has a stated design principle against scoring, in five places —
-`docs/architecture-recovery-design.md:1085-1088` and echoes in `github/repo_role.py:28-29`,
+`docs/architecture-recovery.md:1085-1088` and echoes in `github/repo_role.py:28-29`,
 `github/expectations.py:33-38`, `github/doc_locations.py:18`,
 `surveyors/sub_surveyors/repo_classification.py:23-28`:
 

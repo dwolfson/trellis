@@ -159,10 +159,12 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
                 local_root, contributing_path)
             findings.append({
                 "check_name": "cla_dco_stated", "label": stated_outcome.outcome,
+                "confidence": 100 if stated_outcome.is_conclusive else 0,
                 "summary": stated_text, "detail": {**stated_outcome.as_row(), **stated_detail},
             })
             results.append(
                 ClassificationAnnotation(
+                    check_name="cla_dco_stated",
                     summary=stated_text, analysis_step=STEP,
                     candidate_classifications=[stated_outcome.outcome],
                     confidence=100 if stated_outcome.is_conclusive else 0,
@@ -174,10 +176,12 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
                 workflow_path, bot_config_path)
             findings.append({
                 "check_name": "cla_dco_enforced", "label": enforced_label,
+                "confidence": 100 if enforced_label in {"pass", "gap"} else 0,
                 "summary": enforced_text, "detail": enforced_detail,
             })
             results.append(
                 ClassificationAnnotation(
+                    check_name="cla_dco_enforced",
                     summary=enforced_text, analysis_step=STEP,
                     candidate_classifications=[enforced_label] if enforced_label else [],
                     confidence=100 if enforced_label in {"pass", "gap"} else 0,
@@ -208,6 +212,7 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
                 })
                 results.append(
                     ClassificationAnnotation(
+                        check_name="cla_dco_provenance",
                         summary=combined_text, analysis_step=STEP,
                         candidate_classifications=["no_signal"], confidence=100,
                         explanation=combined_text,
@@ -234,6 +239,7 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
             if has_stated and enforced_label == "gap":
                 results.append(
                     RequestForActionAnnotation(
+                        check_name="cla_dco_enforcement_gap",
                         summary="DCO/CLA policy is stated but no enforcement was found",
                         analysis_step=STEP,
                         action_requested=(
@@ -334,6 +340,7 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
         outcome = StepOutcome(UNVERIFIED, cause=cause)
         results.append(
             ClassificationAnnotation(
+                check_name="scan_summary",
                 summary=reason, analysis_step=STEP,
                 candidate_classifications=[], confidence=0,
                 explanation=reason, json_properties=outcome.as_row(),
@@ -341,6 +348,7 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
         )
         findings.append({
             "check_name": "scan_summary", "label": outcome.outcome,
+            "confidence": 0,
             "summary": reason, "detail": outcome.as_row(),
         })
 
@@ -350,7 +358,9 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
                 self.project.slug, FINDING_KIND,
                 [
                     {"check_name": f["check_name"], "label": f["label"],
-                     "summary": f["summary"], "detail": f.get("detail")}
+                     "summary": f["summary"],
+                     "confidence": f.get("confidence", 100),
+                     "detail": f.get("detail")}
                     for f in findings
                 ],
                 surveyed_at=self._surveyed_at,

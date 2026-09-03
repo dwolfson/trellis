@@ -103,6 +103,7 @@ class FileSizeSurveyor(BaseSurveyor):
                 "its files fall under this scope locator."
             )
         return ResourceMeasureAnnotation(
+            check_name="file_size_summary",
             summary=summary, analysis_step=STEP, confidence=100,
             explanation=explanation,
             resource_properties={"total_files": 0, "total_size_bytes": 0},
@@ -166,6 +167,7 @@ class FileSizeSurveyor(BaseSurveyor):
 
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="disk_footprint",
                     summary=(
                         f"Repository disk footprint: {_fmt_size(total_bytes)} "
                         f"across {total_files:,} files (avg {_fmt_size(avg_bytes)}/file)"
@@ -191,6 +193,7 @@ class FileSizeSurveyor(BaseSurveyor):
             if top10:
                 results.append(
                     ResourceMeasureAnnotation(
+                        check_name="largest_file",
                         summary=f"Largest file: {_fmt_size(top10[0]['file_size_bytes'])} ({top10[0]['file_path']})",
                         analysis_step=STEP,
                         confidence=100,
@@ -210,6 +213,8 @@ class FileSizeSurveyor(BaseSurveyor):
                 severity = "very large" if mb >= _VERY_LARGE_FILE_THRESHOLD_MB else "large"
                 results.append(
                     RequestForActionAnnotation(
+                        check_name="oversized_file",
+                        item_key=r["file_path"],
                         summary=f"{severity.title()} file: {r['file_path']} ({_fmt_size(r['file_size_bytes'])})",
                         analysis_step=STEP,
                         confidence=100,

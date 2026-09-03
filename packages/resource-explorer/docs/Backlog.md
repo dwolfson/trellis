@@ -4,9 +4,9 @@
 
 This is a list, not a design doc — keep entries short. Link to a full design doc/section when one exists.
 
-**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-pyegeria-issues.md` is superseded and frozen at 6 entries; it is kept for history only.
+**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-python's PYEGERIA_ISSUES.md` is superseded and frozen at 6 entries; it is kept for history only.
 
-**Current-state map (2026-08-19):** `docs/survey-and-analysis-current-state-2026-08-19.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery-design.md` (deriving Solution Blueprints from repos).
+**Current-state map (2026-08-19):** `docs/survey-model.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery.md` (deriving Solution Blueprints from repos).
 
 ---
 
@@ -54,6 +54,47 @@ rather than its behaviour.
 ## Open items
 
 Grouped by area. Within a group, the most actionable entries come first.
+
+### The outbox drain does not serialise, and its docstring says it does
+
+**Filed 2026-09-02, while a batch republish had the web server deliberately
+stopped — deliberately filed BEFORE restarting it, because restarting hides
+the symptom and the bug goes back to being invisible until two drainers
+happen to overlap again.**
+
+`ProjectRegistry.claim_due_outbox_elements()` does not claim. It is a plain
+`SELECT` — no `FOR UPDATE`, no `SKIP LOCKED`, no status transition — and
+`drain_outbox()` marks a row `done` only *after* its create succeeds. Two
+drainers therefore select the same rows and both call `apply_element`.
+
+Its docstring asserted the opposite ("the drain marks each row in flight as it
+takes it"). That is corrected in place now, but the correction is a note, not
+a fix. **A function named `claim_` that performs no claim, documented as doing
+the locking it does not do, is worse than an undocumented race: the next
+reader checks, finds the claim described, and concludes it is handled.**
+
+The hazard is asymmetric, which is what makes it worth fixing rather than
+noting:
+
+- **Annotations survive it.** The second create is rejected as a duplicate
+  qualifiedName, `apply_element` adopts the existing GUID, one element exists
+  and two rows are marked done.
+- **Annotation links do not.** They go through a multi-link `attach()` that
+  duplicates silently instead of upserting, and there is no reconciler for
+  annotation-level duplicates the way `scripts/reconcile_survey_definition_links.py`
+  exists for step links. A duplicate link is permanent and invisible.
+
+**The usual second drainer is not a person.** It is `scheduler.py`'s loop
+inside any running `resource-explorer web`, firing every
+`_CHECK_INTERVAL_SECONDS` (900) whether anyone is at the keyboard or not. So
+"do not run two republishes at once" is not sufficient guidance — a single
+operator with the app open is already two drainers.
+
+**Fix:** serialise the claim — `SELECT ... FOR UPDATE SKIP LOCKED`, or a
+`status='running'` transition in the same transaction as the select — so the
+property holds by construction instead of by remembering to stop the server.
+Until then, stopping the web server is the mitigation, and it is a mitigation
+for one run rather than a fix.
 
 ### Survey execution
 
@@ -356,7 +397,7 @@ Prefect's teardown logging.
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
 
-*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery-decision-trace.md` §5.)*
+*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery.md (§18)` §5.)*
 
 The decision trace is now persisted as findings, and that doc argues it should **not** go to
 MLflow, Phoenix or OTEL: decision provenance is read months later by resource and must be durable
@@ -443,7 +484,7 @@ implementation, not the catalog.)*
 | `zipball_root` + `git_clone_root` acquisition | 15.7s |
 | **the same two steps via `SurveyOrchestrator`** | **110.5s** |
 
-`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
+`architecture-recovery.md (§13.2)` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
 cites to justify Discovery placement — is **correct and still holds**. Nothing regressed. The cost
 is entirely in *how the route acquires the repo*.
 
@@ -718,7 +759,7 @@ that into a clickable link is UI work in `index.html`, not `trellis_context`.
 #### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
 
 *(Opened 2026-08-30. Evidence and three costed options in
-`architecture-recovery-presentation-findings.md` — findings only, no design chosen.)*
+`architecture-recovery.md (§17a)` — findings only, no design chosen.)*
 
 `egeria_git`: 1035 components recovered, 451 after depth projection, **20 rendered**, chosen
 alphabetically by `path`. Four findings, in the order they are worth fixing:
@@ -743,7 +784,7 @@ treats a symptom when the problem is that they are the wrong 20.
 
 #### MEDIUM — tombstoning step 4: backfill the orphans no run can ever withdraw
 
-*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery-scope-tombstoning.md`.)*
+*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery.md (§16)`.)*
 
 R2 forbids withdrawing rows that no step is recorded as having written, and **every existing orphan
 predates `run_label`** — measured, `_scopes_last_written_by` returns 0 scopes for `egeria_git`
@@ -802,7 +843,7 @@ with high confidence and still not be interesting at the current threshold (a le
 a low-confidence guess can be exactly what a curator needs to see because it's the one thing
 standing between them and understanding a subsystem that matters.
 
-The 1035→451→20 collapse (`architecture-recovery-presentation-findings.md`) is already implicitly
+The 1035→451→20 collapse (`architecture-recovery.md (§17a)`) is already implicitly
 answering this question by discarding most of the graph — but as a fixed row cap, which is the
 wrong shape for a threshold that needs to slide from "show everything" to "publish nothing found."
 Worth designing as an explicit, adjustable utility score — a field separate from Confidence, not
@@ -859,7 +900,7 @@ lineage graph queries."* **Memento elements are excluded from normal queries and
 the caller passes `forLineage`.**
 
 That is this project's tombstoning design, already built, natively, in the platform it is
-Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery-scope-tombstoning.md`)
+Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery.md (§16)`)
 reimplements the same shape locally: mark-not-delete, retained for history, hidden from normal
 reads. Two things worth checking before step 4 (the backfill, above) goes further:
 
@@ -1010,7 +1051,7 @@ on the full corpus. Cost is bounded and known: detect averages ~28s/repo with no
 #### Architecture recovery — the PORTED implementation has never been scored
 
 Phase 1's declared numbers (13 of 13 components, 97% coverage, ARI 0.969 —
-`docs/architecture-recovery-phase1-findings.md`) were measured on the **throwaway spike** in
+`docs/architecture-recovery.md (§13.2)`) were measured on the **throwaway spike** in
 `scripts/arch-spike/`. What shipped into `resource_explorer/surveyors/arch_recovery/` is a *port*,
 and it has at least one known behavioural difference: the spike merged agreeing proposals at IR
 level and boosted confidence on agreement, while the port discovers agreement at read time by
@@ -1032,7 +1073,7 @@ output to the scorer is new.
 #### Architecture recovery — re-check the Phase 1 measurements once there are more samples
 
 **Not a doubt about the current numbers; a limit on what two repos can establish.** Phase 1's
-measurement goals were declared met on 2026-08-20 (`docs/architecture-recovery-phase1-findings.md`)
+measurement goals were declared met on 2026-08-20 (`docs/architecture-recovery.md (§13.2)`)
 — 13 of 13 components, 97% file coverage, ARI 0.969 on trellis, T1 recall held at 18/27, 5.3s per
 repo. Every criterion in the plan's §5 was cleared, several by a wide margin.
 
@@ -1634,7 +1675,7 @@ read by nothing. It becomes meaningful the moment projection has real input.
 #### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
 
 Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
-and `architecture-recovery-design.md` were checked: nothing ties depth or completeness to
+and `architecture-recovery.md` were checked: nothing ties depth or completeness to
 purpose. §3 of the framing design says the opposite for the neighbouring axis — *"changing
 perspective changes how much you see but never what gets run."*
 
@@ -1657,7 +1698,7 @@ wrong *for a purpose nobody declared*.
 
 * **Completeness is already expressible.** Egeria's base annotation type carries
   `sampleSize` / `samplePercent` / `samplingMethod` — *"how much did we look at"*
-  (`architecture-recovery-design.md` §6.1, which says to reuse them and populate them
+  (`architecture-recovery.md` §6.1, which says to reuse them and populate them
   honestly when a component is only partially analysed). The vocabulary for *reporting*
   depth exists; nothing *decides* the depth required.
 * **The one measured selection mechanism is a gate, not a weighting.**
@@ -1953,9 +1994,9 @@ Direction agreed: RE should expose itself as an **A2A-callable surface** (extend
 **Known open design points once picked up:**
 - New per-capability A2A agent (own port, per the one-agent-per-`Server` rule) using structured `DataPart` payloads (asset GUID, resource type, surveyor/analysis name, options) rather than the natural-language `TextPart` pattern the existing chat agents use.
 - Auth: `agentstack_server.py` currently has no caller authentication — fine for an internal chat agent, not sufficient for a surface Egeria automation is meant to trust. **Resolved:** use Egeria's existing bearer-token approach and security services directly; no separate RE auth namespace/scheme needed.
-- Rendezvous for results: the existing `activity_log`/RFA schema (see `docs/survey-activity-design.md` D3, D8) is RE's own operational record, but it's not the only channel results should flow through — Egeria's notification mechanism, journaling discoveries as blog-style entries visible to particular communities, comments, and formal reports are all candidates depending on audience, and these aren't mutually exclusive with the activity log.
+- Rendezvous for results: the existing `activity_log`/RFA schema (see `docs/survey-model.md` D3, D8) is RE's own operational record, but it's not the only channel results should flow through — Egeria's notification mechanism, journaling discoveries as blog-style entries visible to particular communities, comments, and formal reports are all candidates depending on audience, and these aren't mutually exclusive with the activity log.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 2.
+Full context: `docs/egeria-integration.md`, section 2.
 
 ---
 
@@ -1963,7 +2004,7 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 2.
 
 RE's survey model (fixed pipeline of sub-surveyors, one `SurveyResult` per run) doesn't yet reflect Egeria's actual Area 6 mechanics — composable `AnalysisStep` phases within a survey, embeddable survey-pipeline connectors, declarative annotation-type catalogs, standard completion guards, and (critically) no existing built-in notion of different survey "kinds" (shallow sweep vs. deep focused, persona-tailored presentation). RE will likely need to grow more variety of survey/analysis "kinds" faster than Egeria's own connector catalog does — that's fine as long as Egeria stays the system of record — but RE's internal model should still speak Egeria's vocabulary where a precedent exists.
 
-Full context, grounded in the actual Egeria Java source: `docs/egeria-collaboration-and-survey-model.md`, section 3.
+Full context, grounded in the actual Egeria Java source: `docs/egeria-integration.md`, section 3.
 
 ---
 
@@ -1973,7 +2014,7 @@ No coherent model today for *what* to catalog and how to catalog things in group
 
 Egeria has no direct precedent for "survey broadly across not-yet-cataloged resources, then selectively catalog a subset" — current Area 6 surveys always run against an asset that's already cataloged. This is genuinely new territory for RE to define, composed from existing Egeria primitives (`RequestForAction` annotations + completion guards + `GovernanceActionProcess` chaining), and possibly worth proposing back into Egeria core once proven.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 4.
+Full context: `docs/egeria-integration.md`, section 4.
 
 ---
 
@@ -1989,7 +2030,7 @@ Direction agreed and now grounded: Dr.Egeria (RE's markdown DSL, already used vi
 
 **Not yet solved:** an `executes_at: resource-explorer` tag on a step is just catalogable metadata — nothing makes Egeria's engine host dispatch to RE *without RE itself initiating the run*. That specific case depends on the A2A item landing first. RE executing its own steps on its own initiative does not have this dependency — see the "RE locally executing Survey Definitions" item above, now implemented.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and open questions A6–A9, A12.
+Full context: `docs/egeria-integration.md`, section 6, and open questions A6–A9, A12.
 
 ---
 
@@ -2001,7 +2042,7 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and op
 the companion entry below on stage/intent mismatches, found in the same pass.)*
 
 `SURVEY_RESULT_DASHBOARDS` (`repo_survey_definition_adapter.py`) is 6 hand-authored dashboards,
-unchanged since `docs/survey-results-dashboard-plan.md` introduced it — which says so itself:
+unchanged since `docs/survey-model.md (§6)` introduced it — which says so itself:
 *"Framework is the point of this pass — six real dashboards prove it end-to-end; more are a
 one-entry addition afterward, not a new mechanism."* That follow-through never happened. The
 catalog it was written against had 15 analyses; it now has 29, and the dashboard count never
@@ -2137,11 +2178,11 @@ We can extend our SQL View static analyzer (`sql_analyzer.py`) with further adva
 
 #### Analysis-step inventory and registration
 
-Authoring a Survey Definition (item above, and the Dr.Egeria item below) requires knowing which analysis steps already exist to compose from — a real, unsolved gap with two halves: (1) finding Egeria's existing analysis steps (discoverable via the same technology-type/governance-definition search referenced in `docs/survey-activity-design.md` D4/D6, not yet exercised for this purpose), and (2) publishing RE's own sub-surveyors as catalogable `GovernanceActionType` elements — nothing does this today, so an author can't reference `re_analysis_step: schema_inventory` until something has created that catalogable element in the first place. Likely shape: a one-time/per-addition publish step (an extension of `EgeriaPublisher`, or its own Dr.Egeria plan) plus a local inventory RE itself can consult.
+Authoring a Survey Definition (item above, and the Dr.Egeria item below) requires knowing which analysis steps already exist to compose from — a real, unsolved gap with two halves: (1) finding Egeria's existing analysis steps (discoverable via the same technology-type/governance-definition search referenced in `docs/survey-model.md` D4/D6, not yet exercised for this purpose), and (2) publishing RE's own sub-surveyors as catalogable `GovernanceActionType` elements — nothing does this today, so an author can't reference `re_analysis_step: schema_inventory` until something has created that catalogable element in the first place. Likely shape: a one-time/per-addition publish step (an extension of `EgeriaPublisher`, or its own Dr.Egeria plan) plus a local inventory RE itself can consult.
 
 The local-executor item above is now implemented and gives this a concrete, real dispatch point to extend or replace: each resource type's adapter module (`*/survey_definition_adapter.py`) has a `re_analysis_steps` dict — today a small hardcoded Python mapping, not yet a catalogable/extensible registry. This item is about making that mapping itself discoverable/extensible in Egeria terms, rather than requiring a code change to add a recognized step.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6.1 and open question A12.
+Full context: `docs/egeria-integration.md`, section 6.1 and open question A12.
 
 ---
 
@@ -2578,7 +2619,7 @@ resolved server-side from its executor link.
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.
 
-**Design notes (2026-07-14):** `docs/distributed-survey-orchestration.md` proposes Prefect (over Dagster/Airflow — see its §3 comparison table) as a task runner slotted in via the existing `executes_at` routing convention already used by Survey Definitions (`executes_at: prefect`, alongside today's `egeria`/`resource-explorer`), so this is additive to the local-executor work above, not a replacement. `docs/distributed-survey-best-practices.md` grounds this against how DataHub/OpenMetadata handle distributed estate-wide ingestion, and proposes a broader progressive intake funnel (Scouting → Staging Registry → Enrichment Gate/ToDo → Deep Assessment → Egeria Certified Catalog) that reframes "coherent selective-cataloging model" (item below) in terms of Prefect-driven phases.
+**Design notes (2026-07-14):** `docs/survey-execution.md (§9)` proposes Prefect (over Dagster/Airflow — see its §3 comparison table) as a task runner slotted in via the existing `executes_at` routing convention already used by Survey Definitions (`executes_at: prefect`, alongside today's `egeria`/`resource-explorer`), so this is additive to the local-executor work above, not a replacement. `docs/survey-execution.md (§9)` grounds this against how DataHub/OpenMetadata handle distributed estate-wide ingestion, and proposes a broader progressive intake funnel (Scouting → Staging Registry → Enrichment Gate/ToDo → Deep Assessment → Egeria Certified Catalog) that reframes "coherent selective-cataloging model" (item below) in terms of Prefect-driven phases.
 
 **Shipped so far (uncommitted, prototype-stage):** `resource_explorer/prefect/flows.py` (`@flow`/`@task` wrappers) and `resource_explorer/surveyors/prefect_adapter.py` (dispatches a step to the Prefect REST API or runs it locally via `nest_asyncio`), plus `tests/test_prefect_integration.py`. `prefect` added to `pyproject.toml` dependencies. **CRITICAL FINDING 2026-08-20 — the Prefect API path had never executed.**
 `run_prefect_step` opened with `asyncio.get_running_loop()`, while a redundant
@@ -2712,7 +2753,7 @@ Prefect work above.
 
 #### Periodic / triggered survey scheduling
 
-Egeria has no native cron/interval scheduling for survey action services (the only interval-based mechanism found anywhere in the framework, `IntegrationConnectorProvider.refreshTimeInterval`, belongs to a different framework — integration connectors, not surveys). RE already has rudimentary scheduling of its own (`resource_explorer/scheduler.py` — a daemon thread polling the `resource_schedules` table every 15 minutes, per D9 in `docs/survey-activity-design.md`), so this is easily fixed short-term if a gap shows up. The longer-term expectation, though, is that recurring scheduling lands in Egeria core, or is reached via a connector to a dedicated scheduling service, rather than RE's daemon-thread approach becoming permanent infrastructure. Revisit once the selective-cataloging flow above has a shape, since "survey on a schedule" and "survey a previously-selected subset again" are closely related.
+Egeria has no native cron/interval scheduling for survey action services (the only interval-based mechanism found anywhere in the framework, `IntegrationConnectorProvider.refreshTimeInterval`, belongs to a different framework — integration connectors, not surveys). RE already has rudimentary scheduling of its own (`resource_explorer/scheduler.py` — a daemon thread polling the `resource_schedules` table every 15 minutes, per D9 in `docs/survey-model.md`), so this is easily fixed short-term if a gap shows up. The longer-term expectation, though, is that recurring scheduling lands in Egeria core, or is reached via a connector to a dedicated scheduling service, rather than RE's daemon-thread approach becoming permanent infrastructure. Revisit once the selective-cataloging flow above has a shape, since "survey on a schedule" and "survey a previously-selected subset again" are closely related.
 
 ---
 
@@ -2722,20 +2763,20 @@ Two uncoordinated ways to start a survey on the same resource exist side by side
 1. The new Survey Definitions panel (`docs/Backlog.md`'s "RE locally executing Survey Definitions" item below) — Egeria-authored, browses real candidates with step detail.
 2. Old per-resource-type buttons still in `resource_explorer/web/static/index.html` (e.g. the database detail panel's "📊 Re-survey" → `showSurveyDbModal()` and "☁ Re-survey in Egeria" → `showPublishDbModal()`, ~~around index.html:3641-3675~~ **now `index.html:7351` / `:7377` / `:7389`, verified against this tree**) that predate the Survey Definitions work and don't go through it at all.
 
-**CORRECTED 2026-08-19 — this is not just a UI unification.** The two paths diverge on five axes: step selection (editing a Survey Definition in Egeria has *zero* effect on the legacy path), Egeria target (the legacy modals collect per-call URL/server/user overrides, so the two paths can write to *different Egeria servers in one session*), publish shape (narrow `publish_step_annotations` vs. full `EgeriaPublisher.publish` with cataloging side effects), result storage (only the legacy path writes history rows and drives the charts), and scheduling (`scheduler.py` calls the orchestrators directly — Survey Definitions are unreachable from a schedule). Retiring the legacy path means porting history storage and scheduling first. Detail, and a third option (legacy becomes a thin caller of the new path), in `docs/survey-and-analysis-current-state-2026-08-19.md` §1.2 and §5.1 — **but re-verify the specifics against this tree; `run_batch` postdates that analysis and likely bears on it.**
+**CORRECTED 2026-08-19 — this is not just a UI unification.** The two paths diverge on five axes: step selection (editing a Survey Definition in Egeria has *zero* effect on the legacy path), Egeria target (the legacy modals collect per-call URL/server/user overrides, so the two paths can write to *different Egeria servers in one session*), publish shape (narrow `publish_step_annotations` vs. full `EgeriaPublisher.publish` with cataloging side effects), result storage (only the legacy path writes history rows and drives the charts), and scheduling (`scheduler.py` calls the orchestrators directly — Survey Definitions are unreachable from a schedule). Retiring the legacy path means porting history storage and scheduling first. Detail, and a third option (legacy becomes a thin caller of the new path), in `docs/survey-model.md` §1.2 and §5.1 — **but re-verify the specifics against this tree; `run_batch` postdates that analysis and likely bears on it.**
 
 Neither the old buttons nor the Survey Definitions panel is quite right as the long-term answer — Survey Definitions is Egeria-authored/candidate-driven, which is correct for "what can run here," but launching a survey is a cross-cutting action needed from multiple places (resource detail panel, discovery results, scheduled/recurring runs), not just one tab. Likely direction: a generic survey-launcher component/modal that any view can invoke (given entity_type + slug), backed by the Survey Definitions candidates API, replacing the old per-type modals rather than living alongside them.
 
 Related, not yet built: polling Egeria for survey results so completed native (`executes_at: egeria`) runs surface somewhere unified instead of only showing an engine-action GUID with "check Egeria's Asset Catalog" (see `resource_explorer/web/routes/survey_definitions.py` run endpoint and its frontend handling in index.html around line 2881). Today there is no unified "survey results dashboard" — results are scattered across the Survey Definitions run modal, the database/filesystem detail panels' own survey history, and Egeria's own catalog for anything async. A poller (or the A2A rendezvous from the item below) is the likely fix, feeding one dashboard view regardless of which launcher/engine started the run.
 
-Full context for the Survey Definitions side: `docs/egeria-collaboration-and-survey-model.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
+Full context for the Survey Definitions side: `docs/egeria-integration.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
 
 **RE-VERIFIED 2026-08-30 against this tree — the picture above is stale, and better than it says.**
 Significant unification already shipped without this entry being updated:
 - **Repo's legacy run path is gone.** `runSurveyFromSidebar`, `runScoutingScan`,
   `publishScoutingRegistration`, `runProfileScan`, `publishProfileFindings` are all deleted
   (confirmed by grep — zero hits). The Survey Definitions candidate panel is the only way to
-  launch a repo survey now (`docs/survey-tab-unification-plan.md` D1–D5, landed since the
+  launch a repo survey now (`docs/survey-model.md (§6)` D1–D5, landed since the
   2026-08-19 doc was written, despite that doc calling itself "not yet committed").
 - **Publish is unified for repo** — one route (`POST /api/egeria/{slug}/publish`), used by both
   the Survey Definitions panel's generic `☁ Publish` (D4) and the repo detail page's own
@@ -2807,7 +2848,7 @@ The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-downloa
 
 #### Clustering: propose candidate blueprints, starting with the deployment perspective
 
-Design: `docs/architecture-recovery-clustering.md` (2026-08-29). Promoted from "parallel workstream"
+Design: `docs/architecture-recovery.md (§14)` (2026-08-29). Promoted from "parallel workstream"
 to **prerequisite for the curator review surface**, because rendering the corpus showed more than a
 quarter of repos produce a proposal no curator could read and depth alone does not fix it.
 
@@ -3037,7 +3078,7 @@ is what stops the next one.
 
 #### ~~HIGH — filesystem annotations never reach Egeria~~ — FIXED 2026-08-20
 
-Suspected in `docs/survey-and-analysis-current-state-2026-08-19.md`, confirmed and closed.
+Suspected in `docs/survey-model.md`, confirmed and closed.
 
 ---
 

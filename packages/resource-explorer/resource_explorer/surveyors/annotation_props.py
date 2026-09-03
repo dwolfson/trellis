@@ -49,7 +49,7 @@ import json
 import logging
 from typing import Any
 
-from resource_explorer.surveyors.survey_report import AnnotationType
+from resource_explorer.surveyors.survey_report import annotation_qualified_name, assert_unique_qualified_names, AnnotationType
 
 log = logging.getLogger(__name__)
 
@@ -257,9 +257,11 @@ def publish_annotations(
     creating one annotation is logged and the loop continues rather than
     aborting the run.
     """
+    assert_unique_qualified_names(qualified_name_prefix, annotations)
+
     guids: list[str | None] = []
     for i, ann in enumerate(annotations):
-        qualified_name = f"{qualified_name_prefix}::{i}"
+        qualified_name = annotation_qualified_name(qualified_name_prefix, i, ann)
 
         try:
             existing_guid = find_element_guid(qualified_name)

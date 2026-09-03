@@ -130,6 +130,7 @@ class RagIngestionSurveyor(BaseSurveyor):
         if not ingested and not counts:
             return [
                 ResourceMeasureAnnotation(
+                    check_name="rag_ingestion",
                     summary="Nothing indexed for chat",
                     analysis_step=STEP,
                     confidence=0,
@@ -147,6 +148,7 @@ class RagIngestionSurveyor(BaseSurveyor):
 
         return [
             ResourceMeasureAnnotation(
+                check_name="rag_ingestion",
                 summary=(
                     f"{total_chunks} chunk(s) across {len(collections)} collection(s)"
                     + ("" if ingested else " (from the previous ingestion — refresh failed)")

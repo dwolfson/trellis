@@ -174,6 +174,7 @@ class HealthSurveyor(BaseSurveyor):
                         f"releases={release_score}, freshness={freshness_score})"
                     ),
                     analysis_step=STEP,
+                    check_name="repository_health",
                     quality_scores=quality_scores,
                     confidence=80,
                     json_properties={

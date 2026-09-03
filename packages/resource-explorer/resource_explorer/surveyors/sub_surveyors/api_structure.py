@@ -129,6 +129,7 @@ class ApiStructureSurveyor(BaseSurveyor):
                 "under this scope locator."
             )
         return ResourceMeasureAnnotation(
+            check_name="api_structure_summary",
             summary=summary, analysis_step=STEP, confidence=100,
             explanation=explanation,
             resource_properties={"symbol_counts_by_kind": {}, "relationship_count": 0},
@@ -207,6 +208,8 @@ class ApiStructureSurveyor(BaseSurveyor):
 
                 results.append(
                     SchemaAnalysisAnnotation(
+                        check_name="api_surface_by_language",
+                        item_key=language,
                         summary=(
                             f"{language}: {len(public)} public symbol(s) across "
                             f"{len(module_files)} file(s)"
@@ -230,6 +233,7 @@ class ApiStructureSurveyor(BaseSurveyor):
 
             results.append(
                 ResourceMeasureAnnotation(
+                    check_name="indexed_symbol_total",
                     summary=(
                         f"Total indexed symbols: {len(rows)} across {len(by_lang)} language(s), "
                         f"{len(relationships)} inheritance relationship(s)"
