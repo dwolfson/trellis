@@ -503,7 +503,7 @@ generation:
 ## 📚 Related Documentation
 
 - `MLFLOW_ENHANCED_TRACKING.md` - Complete tracking guide
-- `PHASE8_TESTING_PLAN.md` - Testing strategy
+- `PHASE8_TESTING_PLAN.md` — testing strategy (archived out-of-repo 2026-09-03; `docs/history/` was gitignored and never in the repository)
 - `RAG_TUNING_GUIDE.md` - RAG optimization tips
 - `tests/unit/test_query_processor.py` - Test cases showing issues
 

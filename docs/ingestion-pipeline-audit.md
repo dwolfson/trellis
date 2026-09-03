@@ -53,7 +53,7 @@ package.
 
 | | RE | EA |
 |---|---|---|
-| Module | `ingestion/code_symbol_extractor.py` (Python via stdlib `ast`, per `docs/code-intelligence-approach.md`) | `data_prep/code_parser.py` — `CodeParser`/`CodeElement` (357 lines; docstring, signature, decorators, params, return type, complexity, `is_async`, `is_private`, `bases`) |
+| Module | `ingestion/code_symbol_extractor.py` (Python via stdlib `ast`, per `docs/question-answering-and-context.md (§10)`) | `data_prep/code_parser.py` — `CodeParser`/`CodeElement` (357 lines; docstring, signature, decorators, params, return type, complexity, `is_async`, `is_private`, `bases`) |
 | Storage | `project_code_symbols` (SQLite/Postgres registry) | `code_symbols` table via `CodeSymbolStore` |
 | Status | Live, Phase 1–2 complete | **Still EA's own** — actively imported by `data_prep/pipeline.py`, not touched by the ownership-transfer plan |
 

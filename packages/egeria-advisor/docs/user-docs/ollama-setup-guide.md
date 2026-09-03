@@ -56,7 +56,7 @@ connection errors, confirm Ollama is running and reachable at the `base_url` con
 ## GPU acceleration
 
 Ollama automatically uses GPU acceleration (CUDA, ROCm, or Apple Metal) when available. See
-`docs/design/AMD_OPTIMIZATION.md` for AMD-specific tuning notes. No configuration is needed
+`docs/design/RUNTIME_AND_HARDWARE.md` for AMD-specific tuning notes. No configuration is needed
 for NVIDIA/CUDA setups beyond having the drivers installed — Ollama detects and uses the GPU
 automatically.
 

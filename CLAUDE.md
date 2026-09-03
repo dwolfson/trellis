@@ -138,8 +138,8 @@ checkout** (`/Users/dwolfson/localGit/egeria-v6/trellis` — `resource-explorer 
 8810), not from yours. Pushing to `origin/main` does not move it. Nothing pulls it.
 
 Found the hard way on 2026-08-31: a session built six user-visible changes in a worktree, pushed
-each to `origin/main`, and reported each as shipped. Dan restarted the server, hard-refreshed, and
-saw none of them — this checkout was three commits behind, so he was looking at an earlier version
+each to `origin/main`, and reported each as shipped. The project owner restarted the server, hard-refreshed, and
+saw none of them — this checkout was three commits behind, so they were looking at an earlier version
 of the same feature and reasonably concluded the fix had not worked. The work was fine; the
 delivery was not.
 
@@ -205,3 +205,36 @@ venv in a state the next session can use.
 
 All commits require sign-off: `git commit -s`, or an explicit `Signed-off-by:` trailer. This repo
 feeds work toward odpi/Egeria, which enforces DCO.
+
+## Writing project docs
+
+A 2026-09 sweep of RE and EA's docs found 77 first-name references ("Dan says...", "Raised by
+Dan") across 15 files, plus one more in EA's own source. That volume is a sign the habit was
+default, not exceptional — the following rules exist so it doesn't recur.
+
+**Attribute decisions by role, not by first name, from the moment they're written.** "The project
+owner decided/ruled X, `<date>`" — not "Dan says X." A doc read months later, or by someone
+outside the session that wrote it, should read as a project record, not as private
+correspondence. This applies in prose, in code comments, and in commit messages alike — the EA
+instance found in the sweep was a `# Dan's call` comment, not a doc.
+
+**Before a doc-wide rename or terminology substitution, check for a collision with existing
+domain vocabulary.** `grep -ci '<candidate term>'` across the target files before and after the
+pass — if the count grows by more than the substitutions you intended, the term already meant
+something else in this codebase and your pass just introduced ambiguity. Found live in this
+sweep: a first attempt at the rule above used "the maintainer," which collided with RE's own
+established sense of "maintainer" (the maintainer of a *surveyed* repository, used 21 times in
+`architecture-recovery.md` alone) — caught only by diffing occurrence counts, not by reading.
+
+**Give project-owner decisions their own greppable, consistently-formatted callout** —
+`**Decision (project owner, <date>):** "..."` — rather than folding a ruling into flowing
+narrative prose. `Backlog.md` already drifts toward this in places; make it the convention
+everywhere a decision is recorded, so a later reader (or session) can find every ruling with one
+`grep -n "^\*\*Decision"` instead of a close read.
+
+**Watch document size as a doc absorbs more content, independent of file-count metrics.**
+Consolidating many small docs into fewer broad ones can still leave individual documents too
+large to onboard from — `architecture-recovery.md` reached 2,720 lines in the same sweep that
+took RE's doc count from 92 files to 35. Fewer files is not the same success criterion as
+readable files; if a single document crosses roughly 1,500–2,000 lines, split out a
+clearly-scoped sub-document rather than continuing to append.

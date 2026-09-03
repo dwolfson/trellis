@@ -1049,7 +1049,7 @@ Before deploying MCP integration:
 ## References
 
 - **MCP Protocol**: https://modelcontextprotocol.io/
-- **Phase 10 Design**: PHASE10_MCP_INTEGRATION.md
+- **Phase 10 Design**: `PHASE10_MCP_INTEGRATION.md` (archived out-of-repo 2026-09-03; `docs/history/` was gitignored and never in the repository). This guide supersedes it.
 - **PyEgeria**: https://github.com/odpi/egeria-python
 - **OpenAI Function Calling**: https://platform.openai.com/docs/guides/function-calling
 

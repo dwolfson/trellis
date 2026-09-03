@@ -284,12 +284,12 @@ embeddings:
 1. `docs/design/ONNX_MIGRATION_AND_PRO_TRACK_PLAN.md` - 12-week roadmap
 2. `docs/design/COLLECTION_SPECIFIC_PARAMETERS.md` - Parameter design
 3. `docs/design/MONITORING_IMPLEMENTATION_STATUS.md` - Monitoring status
-4. `docs/design/RAG_QUALITY_IMPROVEMENTS.md` - Quality improvements
+4. `docs/design/QUERY_HANDLING_AND_QUALITY.md` - Quality improvements
 
 ### Technical Documents
 1. `docs/design/SYSTEM_ARCHITECTURE.md` - System overview
-2. `docs/design/PERFORMANCE_AND_QUALITY_ANALYSIS.md` - Analysis
-3. `docs/design/HALLUCINATION_ANALYSIS_AND_FIXES.md` - Hallucination fixes
+2. `docs/design/QUERY_HANDLING_AND_QUALITY.md` - Analysis
+3. `docs/design/QUERY_HANDLING_AND_QUALITY.md` - Hallucination fixes
 
 ---
 

@@ -38,7 +38,7 @@ These are sequential. Each blocks the next.
    not a nicety.**
 
 2. **~~Reconcile `.../trellis`~~ — done, and it exposed the real problem.** `6c0cb2a` (54 EA
-   Curation templates) is now on origin: Dan instructed a merge that left the commit alone,
+   Curation templates) is now on origin: the project owner instructed a merge that left the commit alone,
    and it rode along. **Its author still has not chosen to publish it, and it is published.**
    That is the second commit from the same writer to reach the remote by someone else's push
    (`c370fa8` was the first).
@@ -46,7 +46,7 @@ These are sequential. Each blocks the next.
    **Nobody knows who that writer is, and one confident guess was already wrong.** It was
    attributed to `egeria-advisor-7a` — including in the first version of this document —
    because the commit touches `packages/egeria-advisor/`. They checked and it is not theirs.
-   Every session commits under Dan's identity and signs with his key, so **nothing in commit
+   Every session commits under the project owner's identity and signs with their key, so **nothing in commit
    metadata distinguishes sessions**, and topic-to-session mapping is a guess wearing the
    clothes of identification. The reflog narrows it only to "an EA-template writer committing
    directly into the shared checkout at 13:50:32 and 13:55:31" — concurrent and active, not a
@@ -65,7 +65,7 @@ These are sequential. Each blocks the next.
    definitions, architecture recovery, the presentation layer and CI is not one reviewable
    change. Options, in increasing order of effort: one squash per theme; several stacked PRs
    off `main`; or merge as-is with the history intact and accept it is an integration branch,
-   not a reviewed change. **This is a judgement call for Dan, not for a session.**
+   not a reviewed change. **This is a judgement call for the project owner, not for a session.**
 
 ---
 
@@ -83,7 +83,7 @@ metadata distinguishes them.
 | `fix/dr-egeria-template-sync-clean` | 2 | question-catalog session | pushed, deliberately split off |
 
 The shared checkout `.../trellis` is now clean (`341d2f5`) apart from `.claude/launch.json`,
-left visible deliberately as shareable dev-server config — Dan's call whether it belongs in
+left visible deliberately as shareable dev-server config — the project owner's call whether it belongs in
 the repo.
 
 **Question-catalog work has two owners, not one.** The data layer (CSV, `question_catalog.yaml`,
@@ -146,7 +146,7 @@ the repo is what reaches people.)*
 
 ## 2d. Pre-shutdown sweep: what sessions were holding
 
-Dan began closing sessions to reduce complexity. Every reachable session was asked whether it
+The project owner began closing sessions to reduce complexity. Every reachable session was asked whether it
 held anything not in the repo — uncommitted work, undocumented decisions, claims now known
 wrong, or anything a successor would otherwise repeat. Asked rather than inferred: session
 ownership was guessed wrongly three times today.
@@ -168,7 +168,7 @@ checkout. Nothing else was outstanding anywhere: three worktrees clean, four bra
 WIP on `985d485` ("Prometheus scores 0/11"), 13 lines in `scripts/arch-spike/score.py`, created
 2026-08-22. **Four sessions have confirmed it is not theirs.** Its parent commit is
 architecture-recovery work, so the likeliest owner is a session that has already ended. Safe to
-drop, but that is Dan's call — nobody left can judge whether those 13 lines were superseded.
+drop, but that is the project owner's call — nobody left can judge whether those 13 lines were superseded.
 
 ### `.claude/launch.json` is a decision, not an oversight
 
@@ -297,7 +297,8 @@ problem to fix, but it is the one artifact in this document with no copy anywher
 
 Checked against today's work. These read as open and are not:
 
-- **`HIGH — populate IR.ports and IR.wires (§5.5f)`** — done. Persistence wired
+- **`HIGH — populate IR.ports and IR.wires (§5.5f)`** (§5.5f is now
+  `architecture-recovery-extraction-design.md`) — done. Persistence wired
   (`architecture_interfaces` findings), reader and deployment-topology view built, verified on
   egeria-workspaces (68 ports, 38 wires across 18 topologies).
 - **`Repo classification — what the repo represents`** — done. Step, catalog entry, Egeria
