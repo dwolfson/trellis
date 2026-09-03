@@ -173,6 +173,16 @@ each doc's own heading list before touching anything, left all four alone. Dr.Eg
 survey-definition/outbox files and `archive/` were out of scope by the existing exclusion
 convention.
 
+**5. `AnnotationReview` is an unmeasured relationship type queued for the outbox's create-blind
+path — raised by a peer session, 2026-09-03, reviewing the Phase A.5 `SolutionLinkingWire`
+measurement.** `egeria_outbox.py`'s own `_create_annotation_link` docstring already names it:
+`AnnotationExtension` was measured live 2026-09-01 as UNI_LINK (safe to create-blind); the same
+docstring says to re-measure before relying on that for *any other* relationship type, and names
+`AnnotationReview` (Phase 3, not built) as one that has never been measured. Not fixed here —
+nothing currently calls it, so there's no live bug — but it's the next candidate for exactly the
+`scripts/arch-spike/measure_wire_multi_link.py` treatment (the return-value test, one call)
+**before** anything in Phase 3 adds it to the outbox, not after.
+
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
