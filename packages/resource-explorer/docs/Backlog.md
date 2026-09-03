@@ -56,6 +56,24 @@ reconciliation changes one concrete thing in the inside-out plan's Phase C (fron
 moves from Analysis to a new Curate tab) — read both before implementing, not just one, or ask
 whoever picks this up next to re-derive current state rather than trust this paragraph's own age.
 
+**Progress, 2026-09-03: Phases A, A.5, B, and now C are done.** Registry + `BlueprintMaterializer`
+(`6a76e4b`); the live wire-safety measurement, confirmed `SolutionLinkingWire` is multi-link
+(`86c214a`), with the project owner directly deciding to defer wire enqueueing to its own
+follow-up rather than ship it with the confirmed risk (`7381782`); the blueprint verdict route
+and member/child attachment via the outbox, scoped accordingly (`bce70ca`). **Phase C (frontend)
+shipped at the reconciled placement** — a new `🏛 Architecture Verdicts` sub-tab in Curate
+(`_curateSubnavHtml`, mirroring `_automateSubnavHtml`), not Analysis's panel: candidate-blueprint
+accept/reject with oversized-cluster and unmaterialized-member warnings, plus the existing
+per-component verdict controls relocated there from Analysis, which is now genuinely read-only
+(new `_archInteractiveMode` module flag gates the accept/reject/change affordances). Backend gap
+closed alongside it: `_architecture_recovery_results` now carries `data.blueprints` via a new
+`_candidate_blueprints_results` reader (10 unit tests). Live-verified against `sqlglot` through
+the actual UI, not just the API — see item 6 below for a real, pre-existing materialization bug
+found doing that verification. Full suite: 3652 passed, 92 skipped, 0 failed. **What's left: the
+deferred wire-enqueueing follow-up**, whenever that's picked up. Backlog item 5 (below) tracks the
+related `AnnotationReview` measurement gap a peer session surfaced reviewing Phase A.5, also not
+yet done.
+
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
 even opened: `a059e01` (2026-08-31, surveyor — emits a confidence-0 `skipped_by_design` annotation
@@ -172,6 +190,76 @@ turned out to reference their **own** local §5 heading, not architecture-recove
 each doc's own heading list before touching anything, left all four alone. Dr.Egeria
 survey-definition/outbox files and `archive/` were out of scope by the existing exclusion
 convention.
+
+**5. `AnnotationReview` is an unmeasured relationship type queued for the outbox's create-blind
+path — raised by a peer session, 2026-09-03, reviewing the Phase A.5 `SolutionLinkingWire`
+measurement.** `egeria_outbox.py`'s own `_create_annotation_link` docstring already names it:
+`AnnotationExtension` was measured live 2026-09-01 as UNI_LINK (safe to create-blind); the same
+docstring says to re-measure before relying on that for *any other* relationship type, and names
+`AnnotationReview` (Phase 3, not built) as one that has never been measured. Not fixed here —
+nothing currently calls it, so there's no live bug — but it's the next candidate for exactly the
+`scripts/arch-spike/measure_wire_multi_link.py` treatment (the return-value test, one call)
+**before** anything in Phase 3 adds it to the outbox, not after.
+
+**6. `BlueprintMaterializer.materialize_blueprint_element` failed Egeria's request-body
+validation on a real accept — found 2026-09-03 live-verifying Phase C above against `sqlglot`
+through the actual UI. FIXED same day — root cause was a pyegeria gap, not an Egeria-side
+rejection.** The `VALIDATION_ERROR_1` ("Request body failed validation") never reached the
+network: `SolutionArchitect.create_solution_blueprint`'s own docstring documents a
+`NewSolutionElementRequestBody` body (with `initialStatus: "DRAFT"`) for Draft-status creation,
+but that class doesn't exist as a real pydantic model in pyegeria — confirmed by direct
+inspection of both the installed version here (5.3.4.23) and the canonical egeria-python
+checkout (6.1.9-dev; `create_solution_component` carries the identical, separately-confirmed
+gap). The client validates every create-blueprint body against a bare
+`TypeAdapter(NewElementRequestBody)`, whose `class` field is `Literal["NewElementRequestBody"]`
+— any other value is a local pydantic `ValidationError` before any HTTP call, which
+`BlueprintMaterializationError`'s message wording made read like a server-side rejection.
+Logged as egeria-python's `PYEGERIA_ISSUES.md` ISSUE-84 (not patched there directly, per this
+repo's policy — [[feedback_pyegeria_gaps_tracking]]); `egeria-python-65` messaged to review.
+Fixed here by matching `ComponentMaterializer`'s existing, working body shape — `class:
+"NewElementRequestBody"`, no `initialStatus` — so materialized blueprints are ACTIVE, not Draft,
+same pre-existing gap `ComponentMaterializer` already has (its own follow-up, not new). Two new
+regression tests added, including one that runs the actual body through pyegeria's real
+`TypeAdapter(NewElementRequestBody)` rather than only asserting the mock-call shape — the kind
+of test that would have caught this before it reached a live accept.
+
+**Follow-up, same day: full live materialization confirmed, and Draft-status achieved for real.**
+The TLS-handshake timeout blocking live confirmation turned out to be `qs-metadata-store`'s
+Postgres connection pool genuinely exhausted (`jdbcMaximumPoolSize` defaulting to 10, HikariPool
+timeouts in the container logs) — not transient, and not caused by this work; fixed by
+`egeria-workspaces-fs-14` bumping the pool to 50 and restarting `quickstart-egeria-main`
+(coordinated first — see the session transcript for the cross-session exchange, including a
+correction: an earlier "misattribution" claim about an unrelated wire-test coordination request
+was wrong and retracted, the request was real but predated this session's own visible context
+after a compaction). Once the platform came back: accepting the `.github` candidate blueprint
+against `sqlglot` through the actual Curate UI's API materialized a real `SolutionBlueprint`
+(`status: "partial"` — its two members correctly unmaterialized, per Decision 2's governance
+boundary). Separately, `egeria-python-65` reviewed ISSUE-84 and found the real mechanism:
+`contentStatus` is a plain field on `ReferenceableProperties`, settable inside `properties` on
+the existing `NewElementRequestBody` — no separate request-body class was ever needed
+(odpi/egeria-python#337). Confirmed live, twice, each independently read back by guid (not just
+trusted from the create call's own return): a standalone probe (guid `1c6550a9-77cd-49ac-a791-
+ffb9fa56f3fc`, superseded by a second probe `8755a5ac-7941-4880-a735-72010d779a73` to also check
+the properties-block shape, both deleted after) confirmed `properties.contentStatus == "DRAFT"`
+via `get_solution_blueprint_by_guid`; then a real accept through the actual Curate UI's own API
+endpoint (`POST /api/curate/blueprint-verdicts/repo/sqlglot`, not a direct library call)
+materialized guid `809025b5-cca9-4e9a-a2f7-3a5104138f67`, independently re-queried and confirmed
+the same. Both checks: `properties.contentStatus` round-trips as `"DRAFT"` correctly;
+`elementHeader.status` stays `"ACTIVE"` (a different, unrelated instance-status axis).
+`BlueprintMaterializer` now sends `contentStatus: "DRAFT"` — architecture-recovery.md §10 Phase
+2's "All at ContentStatus = Draft" is achieved for blueprints. `ComponentMaterializer`'s
+identical gap (still `NewElementRequestBody` with no `contentStatus`) is NOT fixed — separate,
+still-open follow-up. One new regression test (`test_content_status_draft`), 21/21 passing in
+`test_blueprint_materializer.py`.
+
+**Also found and fixed in the same window, unrelated to Egeria**: a genuinely stale
+`resource-explorer web` process (pid 74923/74921, running 20+ hours, holding no listening port —
+invisible to `lsof -i :8810`/curl checks since only the current process had the port) — flagged
+by a peer (`dwolfson-be`), confirmed via `ps`, force-killed after a plain `kill` failed to take.
+Its background scheduler thread does start independently of the HTTP bind (confirmed by reading
+`web/app.py`'s `_lifespan`), so this was briefly a real second outbox drainer — no damage found,
+since every kind currently enqueued is convergent under double-processing and wires (the one
+non-convergent kind) are deferred out of the outbox entirely.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where

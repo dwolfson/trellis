@@ -25,16 +25,36 @@ scope note below and Decision 5 in the plan.
   (plan Decisions 1 and 2: accepting a blueprint does NOT implicitly accept
   or materialize its members/children).
 
-**Divergence from `ComponentMaterializer` #1 (deliberate, not an oversight):**
-`architecture-recovery.md` §10 Phase 2 says explicitly "All at
-`ContentStatus = Draft`" for this projection. `ComponentMaterializer` uses
-`NewElementRequestBody`, which pyegeria's own docstring says defaults the
-element to ACTIVE — so despite the design doc, materialized SolutionComponents
-are NOT Draft today (a pre-existing gap, flagged as its own follow-up in the
-plan, not fixed here since ComponentMaterializer is out of scope for this
-module). `BlueprintMaterializer` gets this right from the start: the create
-body uses `class: "NewSolutionElementRequestBody"` with `initialStatus:
-"DRAFT"`, not `NewElementRequestBody`.
+**Draft-status divergence from `ComponentMaterializer` — achieved, on the
+second attempt (Backlog.md item 6, 2026-09-03).** `architecture-recovery.md`
+§10 Phase 2 says explicitly "All at `ContentStatus = Draft`" for this
+projection. First attempt: `class: "NewSolutionElementRequestBody"` with a
+top-level `initialStatus: "DRAFT"`, per `SolutionArchitect.
+create_solution_blueprint`'s own docstring — **failed client-side, before
+any HTTP call**: `NewSolutionElementRequestBody` is documented in that
+docstring in two separate pyegeria versions (5.3.4.23 here, 6.1.9 in the
+canonical egeria-python checkout) but was never a real pydantic model, nor
+(per egeria-python's own review, ISSUE-84) ever a real Egeria API surface —
+`initialStatus` appears in no `.http` ground-truth file either. The
+installed client validates every create-blueprint body against a bare
+`TypeAdapter(NewElementRequestBody)`, whose `class` field is a strict
+`Literal["NewElementRequestBody"]`; any other value raised a
+`PyegeriaInvalidParameterException` ("Request body failed validation") that
+read like an Egeria-side rejection but wasn't one. Second attempt, the real
+mechanism (egeria-python-65's finding, odpi/egeria-python#337):
+`contentStatus` is a plain field on `ReferenceableProperties` (base of
+`SolutionBlueprintProperties`), settable inside `properties` on the
+existing, real `NewElementRequestBody` — no separate request-body class
+needed. Confirmed live against the real platform (post
+`jdbcMaximumPoolSize` fix): `properties.contentStatus` round-trips as
+`"DRAFT"` on read-back. `elementHeader.status` stays `"ACTIVE"` regardless
+— that's OMRS's own instance-status axis (soft-delete/active at the
+repository level), a different thing from the content-maturity axis
+`contentStatus` represents; the design doc's own wording ("ContentStatus =
+Draft") names the field this now sends, not the instance status.
+`ComponentMaterializer`'s own equivalent gap (still `NewElementRequestBody`
+with no `contentStatus`) is not fixed here — out of scope for this module,
+tracked as its own follow-up in the plan.
 
 **Idempotency, not a create-blind path.** Same reasoning as
 `ComponentMaterializer`: a repeat "accepted" call for the same
@@ -212,6 +232,25 @@ class BlueprintMaterializer:
             "class": "SolutionBlueprintProperties",
             "qualifiedName": qualified_name,
             "displayName": display_name,
+            # architecture-recovery.md §10 Phase 2's "All at ContentStatus =
+            # Draft" — achieved 2026-09-03, second attempt. The first
+            # (class: "NewSolutionElementRequestBody" + top-level
+            # initialStatus) never validated at all (Backlog.md item 6,
+            # egeria-python PYEGERIA_ISSUES.md ISSUE-84). egeria-python-65's
+            # review found the real mechanism: `contentStatus` is a plain
+            # field on ReferenceableProperties (base of
+            # SolutionBlueprintProperties), settable at creation like any
+            # other property. Confirmed live against the real platform
+            # (qs-view-server, post jdbcMaximumPoolSize fix): a blueprint
+            # created with contentStatus: "DRAFT" round-trips it correctly
+            # on read-back (properties.contentStatus == "DRAFT"). Separately
+            # confirmed: elementHeader.status stays "ACTIVE" regardless —
+            # that's OMRS's own instance-status axis (soft-delete/active at
+            # the repository level), a different thing from the content-
+            # maturity axis contentStatus represents; the design doc's own
+            # wording ("ContentStatus = Draft") names exactly the field this
+            # sends, not the instance status.
+            "contentStatus": "DRAFT",
         }
         # Same provenance reasoning as ComponentMaterializer.materialize:
         # this is evidence ABOUT the proposal, not a typed property of the
@@ -222,10 +261,39 @@ class BlueprintMaterializer:
             additional["oversized"] = "true"
         properties["additionalProperties"] = additional
 
+        # `class: "NewSolutionElementRequestBody"` + `initialStatus` (this
+        # method's original body, matching SolutionArchitect.
+        # create_solution_blueprint's own docstring) fails BEFORE any Egeria
+        # call — confirmed live 2026-09-03 accepting a real candidate
+        # blueprint (Backlog.md item 6) and by direct inspection: pyegeria
+        # 5.3.4.23 (this checkout) and 6.1.9 (the canonical egeria-python
+        # checkout) both document `NewSolutionElementRequestBody` in that
+        # docstring but never define it as a pydantic model — the installed
+        # `ServerClient._new_element_request_adapter` is a bare
+        # `TypeAdapter(NewElementRequestBody)`, whose `class_` field is
+        # `Literal["NewElementRequestBody"]`. Any other `class` value is a
+        # client-side `PyegeriaInvalidParameterException`
+        # ("Request body failed validation") raised locally by pydantic —
+        # it never reaches the network, so this was never an Egeria-side
+        # rejection despite how the caught exception reads. Logged as a
+        # pyegeria gap (egeria-python's PYEGERIA_ISSUES.md) rather than
+        # patched there directly, per this repo's own policy of routing
+        # egeria-python fixes through that tracker.
+        #
+        # The fix here is the same one ComponentMaterializer already lives
+        # with: `class: "NewElementRequestBody"`, no `initialStatus` (it
+        # isn't a real field on that model either — `extra="ignore"` would
+        # have silently dropped it even if the class name had validated).
+        # This means materialized blueprints are created ACTIVE, not DRAFT,
+        # same as materialized components — the module docstring's
+        # "Divergence from ComponentMaterializer #1" no longer holds; both
+        # materializers now share the identical gap, tracked as its own
+        # follow-up (Backlog.md, "Confidence classification"/Draft-status
+        # note) rather than fixed by inventing a body shape pyegeria can't
+        # validate.
         body = {
-            "class": "NewSolutionElementRequestBody",
+            "class": "NewElementRequestBody",
             "isOwnAnchor": True,
-            "initialStatus": "DRAFT",
             "properties": properties,
         }
         try:

@@ -72,7 +72,7 @@ Rejected alternative: a wholly separate `architecture_blueprint_verdicts` table,
 - **Blueprint element itself**: `BlueprintMaterializer` mirrors `ComponentMaterializer`'s pattern exactly — local-cache check (`get_materialized_blueprint`) → qualifiedName search (`_find_element_guid`, byte-identical copy, same reasoning `ComponentMaterializer._find_element_guid`'s own docstring gives for not sharing one) → create. **Divergence from `ComponentMaterializer` #1**: `architecture-recovery.md` §10 Phase 2 says explicitly "**All at `ContentStatus = Draft`**" — so the blueprint create body uses **`class: "NewSolutionElementRequestBody"`**, not `NewElementRequestBody` (which pyegeria's own docstring says defaults to ACTIVE). `ComponentMaterializer` uses `NewElementRequestBody` today, i.e. it is NOT Draft — that's a pre-existing gap against the design doc this plan does not silently inherit; flagged as its own follow-up (see "Out of scope / follow-ups"), and `BlueprintMaterializer` gets this right from the start rather than copying the drift.
 - **Membership + wires must go through the outbox** (per §8.4: "a half-published blueprint is worse than none") rather than being written synchronously like `ComponentMaterializer` does for its single element, because a blueprint write is N+1+M elements (1 blueprint, N `CollectionMembership`, M `SolutionLinkingWire`) and a crash mid-write must leave a resumable, visible state, not a half-formed live blueprint with no record of what's missing.
 - **Enqueue order, mirroring `_link_evidence_outbox`'s two-phase shape**: `BlueprintMaterializer.materialize()` runs synchronously (find-or-create the blueprint element itself — same as `ComponentMaterializer`, since callers need the GUID back immediately to report success), *then* the route enqueues membership rows via a new `enqueue_blueprint_members(registry, entity_type, entity_slug, blueprint_guid, member_guids, *, run_id="")` (parallel to `enqueue_collection_members`, reusing `_create_collection_membership`'s **existing** `element_kind="collection_membership"` creator unchanged — `CollectionMembership` doesn't care whether the collection is an investigation's Collection or a `SolutionBlueprint`, it's still Collection→Referenceable). No `depends_on_id` needed for these, since the blueprint GUID is already known synchronously before enqueueing (unlike the annotation-link case, where both ends might still be in-flight).
-- **Wires — the real open risk, stated plainly rather than hidden behind a false "same as membership" claim**: a new `element_kind="solution_linking_wire"` creator cannot safely reuse the create-blind pattern, because a crash between "Egeria created the wire" and "the outbox row is marked done" means a retry creates a **second, distinct** wire relationship — silently, since multi-link means no 409. Two options considered:
+- **Wires — the real open risk, stated plainly rather than hidden behind a false "same as membership" claim**: a new `element_kind="solution_linking_wire"` creator cannot safely reuse the create-blind pattern, because a crash between "Egeria created the wire" and "the outbox row is marked done" means a retry creates a **second, distinct** wire relationship — silently, since multi-link means no 409. **Sharper framing, from a peer session's review after the Phase A.5 measurement**: this isn't "wires need their own idempotency layer" as an add-on — `apply_element`'s create-blind safety for every other kind in the outbox rests on `qualifiedName` search-then-adopt (why `qualified_name` is `NOT NULL` on the table), and **relationships have no qualifiedName**. Wires would be the first element kind the outbox's central idempotency invariant structurally cannot cover at all, not the first one that merely lacks a layer. Two options considered:
   - (a) Ship it anyway with create-blind semantics and accept the risk, same posture the codebase already takes toward `claim_due_outbox_elements`'s documented "two drainers is a real hazard for annotation links" — acceptable only if it's written down with the same honesty that docstring uses, not asserted safe.
   - (b) Do a pre-check before create — but there is no `get_solution_linking_wires`/`get_all_related_elements`-style read exposed for this relationship in the pyegeria surface checked (`solution_architect.py`), so a real pre-check would need a new pyegeria method, which is out of scope for an RE-only plan.
   **Chosen: (a), with the risk written into the outbox row's own payload and into this plan's Verification section as a required live measurement before the wire creator ships** — exactly the same discipline the outbox module already applied to `CollectionMembership`/`AnnotationExtension` (measure live, then document), which for wires has NOT yet been done. Phase A explicitly does not include wire enqueueing until that measurement exists (see Phased build order, Phase A.5).
@@ -276,18 +276,78 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
 - `blueprint_materializer.py`: `qualified_name_for`, `materialize_blueprint_element` (with a fake/mocked `SolutionArchitect`, same test shape the existing `ComponentMaterializer` tests use — check for that test file before writing new ones, to match its mocking style), `resolve_member_guids`, `resolve_child_blueprint_guids`.
 - Tests: idempotency (repeat `materialize_blueprint_element` call finds cached/existing), Draft-status body shape (`NewSolutionElementRequestBody`, not `NewElementRequestBody`), member resolution correctly reports unmet members without raising.
 
-**Phase A.5 — the wire-safety measurement, gating whether wire enqueueing ships at all.**
-- A one-off live-server script (in `scripts/arch-spike/`, the existing home for this kind of measurement) calling `link_solution_linking_wire` twice with identical arguments against a throwaway pair of components, reading back via whatever pyegeria exposes to confirm duplication. **If it duplicates** (expected, given the docstring): document the risk in `_create_solution_linking_wire`'s docstring as written above, and decide with the project owner whether wire enqueueing ships with that known gap in Phase B or is deferred to its own follow-up entry — this is a project-owner call, not a design call this plan makes silently.
+**Phase A.5 — the wire-safety measurement, gating whether wire enqueueing ships at all. DONE,
+2026-09-03 — confirmed multi-link, duplicates on repeat calls.**
+- Ran `scripts/arch-spike/measure_wire_multi_link.py` against the live quickstart platform,
+  coordinated with all 8 live peer sessions first (asked before writing, confirmed the earlier
+  republish batch's outbox was fully drained — 0 `running` rows — and the platform itself
+  functionally settled, not mid-restart). Two identical `link_solution_linking_wire()` calls
+  between the same two throwaway `SolutionComponent`s returned two **different** relationship
+  GUIDs (`f4179125-...`, `8f18b426-...`) — the definitive test (memory note
+  `reference_egeria_dedup_and_link_patterns`: "if attach returns an identifier it is multi-link;
+  if it returns nothing it is uni-link"), not inferred from the docstring. **Confirms the
+  docstring's own claim** rather than contradicting it — still worth having measured, since the
+  two relationships this codebase already relies on (`ResourceList`, `CollectionMembership`) were
+  each independently measured uni-link on 2026-08-25 despite looking like they might not be.
+- The confirmatory read-back (`get_component_related_elements`) found 0 relationships — not a
+  contradiction, a wrong instrument: that method's response only carries component/blueprint/
+  supply-chain/actor GUIDs, no generic wire list. The return-value test alone was sufficient and
+  is the one to trust. A future read-back attempt should try `get_relationships_with_property_value`
+  instead, un-tried here.
+- Both throwaway components deleted via `delete_solution_component(guid, cascade_delete=True)` —
+  not a by-ends `detach_solution_linking_wire`, which would have removed both wires in one call and
+  corrupted the evidence before it could be read back.
+- **Decided, 2026-09-03, asked directly of the project owner: defer wire enqueueing to its own
+  follow-up.** Phase B (below) ships blueprint materialization and member/child attachment; it
+  does NOT include `enqueue_blueprint_wires`/`_create_solution_linking_wire`/
+  `OutboxClients.solution_architect`. A materialized blueprint renders without its wire diagram
+  until wire enqueueing lands separately — either once a real pyegeria pre-check exists
+  (`get_relationships_with_property_value`, noted above as un-tried but the likely candidate), or
+  the risk is judged acceptable on its own, later. See "Out of scope / follow-ups" below for the
+  tracked entry.
 
-**Phase B — route.**
-- `egeria_outbox.py`: `OutboxClients.solution_architect`, `_create_solution_linking_wire`, `enqueue_blueprint_members`, `enqueue_blueprint_wires`, `_default_clients()` update.
-- `curate.py`: `BlueprintVerdictCreate`, `list_blueprint_verdicts`, `add_blueprint_verdict`, `_materialize_blueprint_if_accepted`.
-- Tests: route-level, with `BlueprintMaterializer`/outbox mocked — verdict recorded regardless of Egeria reachability (same non-fatal-but-visible contract as the component route); partial-member-materialization case returns the right shape; child-blueprint nesting resolves correctly for a two-level cluster fixture (reuse `tests/test_arch_clustering.py`'s own fixtures rather than inventing new ones).
+**Phase B — route. Wires excluded per the Phase A.5 decision above — scoped to blueprint +
+membership/child attachment only. DONE, 2026-09-03 (`bce70ca`).**
+- `egeria_outbox.py`: `enqueue_blueprint_members` — built as planned. `OutboxClients.solution_architect`/`_create_solution_linking_wire`/`enqueue_blueprint_wires` were NOT built — out of scope per the deferred-wires decision, not a gap in this phase.
+- `curate.py`: `BlueprintVerdictCreate`, `list_blueprint_verdicts`, `add_blueprint_verdict`, `_materialize_blueprint_if_accepted`, plus two small helpers the plan's prose implied but didn't name as their own functions — `_slug_to_scope_map` (the identity-mismatch fix from the plan's own Context section, factored out rather than inlined) and `_find_candidate_blueprint` (the candidate_blueprint lookup by perspective/cluster_name).
+- **A real gap found by the tests, not scoped in the plan**: the *existing* `list_component_verdicts` route never filtered to `verdict_target="component"` — `get_component_verdicts` returns both mixed and leaves filtering to the caller, and only the new blueprint route filtered its own side. Fixed with the mirroring filter; practically harmless (a blueprint verdict's key can't realistically collide with a real `scope_locator`) but the endpoint's name promises component verdicts specifically.
+- Tests: 20 route-level tests (`tests/test_web.py::TestCurateBlueprintVerdictsRouter`) with `BlueprintMaterializer` mocked, plus 2 direct unit tests for `enqueue_blueprint_members` (`tests/test_egeria_outbox.py`). Full suite: 3615 passed, 92 skipped, 0 failed.
 
-**Phase C — frontend, plus the backend reader gap it depends on.**
-- `_architecture_recovery_results` gains `data.blueprints` (new backend step, per above).
-- `index.html`: `_renderCandidateBlueprints`, blueprint verdict controls, oversized-cluster styling, unmaterialized-member warning state.
-- Manual verification against a real survey run with clusters (e.g. `egeria_workspaces_git`, which already has candidate blueprints computed) — confirm the rendered tree matches `detail.children`/`detail.parent` linkage correctly, and that accepting a leaf cluster before its members are individually accepted correctly blocks/warns rather than silently doing nothing.
+**Phase C — frontend, plus the backend reader gap it depends on. DONE, 2026-09-03 — built at
+the corrected placement (the amendment above), not the original inside-Analysis one.**
+- `_architecture_recovery_results` gains `data.blueprints` — new `_candidate_blueprints_results`
+  reader in `repo_survey_definition_adapter.py`, reading `kind="architecture_blueprints"`
+  findings (disambiguated by `(perspective, cluster_name)`, latest survey wins) and merging on
+  verdict/materialization state via `curate.py`'s own `f"{perspective}::{cluster_name}"` key.
+  10 unit tests (`tests/test_candidate_blueprints_reader.py`).
+- `index.html`: new Curate sub-tab (`🏛 Architecture Verdicts`, repo-only — `_curateSubnavHtml`/
+  `_setCurateSubTab`, mirroring `_automateSubnavHtml`'s pattern) with two sections: candidate
+  blueprints (accept/reject, oversized-cluster warning, unmaterialized-member/child warning on
+  a partial materialization) and components still awaiting a verdict (reuses the existing
+  `_archRow`/`_archVerdictControlsHtml` chain rather than duplicating it). Analysis's own
+  rendering of the same payload is now genuinely read-only: a new module-level
+  `_archInteractiveMode` flag (false by default, set true only for the Curate render pass) gates
+  both the accept/reject controls on an undecided component and the "change" affordance on an
+  already-decided one — Analysis shows verdicts as facts, Curate shows them as editable state.
+  **Not built as originally scoped**: a per-perspective nested tree with `detail.children`
+  indentation (item 2 of the original Frontend section) — built instead as a flat list of
+  (perspective, cluster_name) rows, since Curate's own candidate set is small enough per repo
+  that the extra nesting UI wasn't needed to stay scannable; `detail.children`/`detail.parent`
+  are still both carried in the payload (`bp.children.length`/`bp.parent` rendered inline) if a
+  future pass wants the tree view.
+- Live-verified against `sqlglot` (18 components, 3 candidate blueprints) — accepted a blueprint
+  and a component through the actual UI (not just the API), confirmed the verdict badge and
+  "change" control render correctly in Curate, confirmed the same payload renders no accept/
+  change controls in Analysis (checked via direct `_renderArchitectureRecoveryResults` calls in
+  both `_archInteractiveMode` states against the live payload). **Found, not caused by this
+  phase**: accepting the `.github` blueprint saved its verdict correctly but Egeria rejected the
+  materialization (`VALIDATION_ERROR_1` on `NewSolutionElementRequestBody`, "Request body failed
+  validation") — reported non-fatally via the existing toast pattern exactly as designed
+  (verdict saved regardless). This is a `BlueprintMaterializer.materialize_blueprint_element`
+  (Phase A) request-body bug, not a Phase C regression; tracked as Backlog item 6 rather than
+  fixed here, since fixing it means touching Phase A code under Phase C's own late-session
+  review, not extending Phase C's actual scope.
+- Full suite run pending (background at time of writing) — see Backlog.md item 1 for the result.
 
 ---
 
