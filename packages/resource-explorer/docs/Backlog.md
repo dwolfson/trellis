@@ -4,7 +4,7 @@
 
 This is a list, not a design doc — keep entries short. Link to a full design doc/section when one exists.
 
-**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-pyegeria-issues.md` is superseded and frozen at 6 entries; it is kept for history only.
+**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-python's PYEGERIA_ISSUES.md` is superseded and frozen at 6 entries; it is kept for history only.
 
 **Current-state map (2026-08-19):** `docs/survey-model.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery.md` (deriving Solution Blueprints from repos).
 
@@ -1996,7 +1996,7 @@ Direction agreed: RE should expose itself as an **A2A-callable surface** (extend
 - Auth: `agentstack_server.py` currently has no caller authentication — fine for an internal chat agent, not sufficient for a surface Egeria automation is meant to trust. **Resolved:** use Egeria's existing bearer-token approach and security services directly; no separate RE auth namespace/scheme needed.
 - Rendezvous for results: the existing `activity_log`/RFA schema (see `docs/survey-model.md` D3, D8) is RE's own operational record, but it's not the only channel results should flow through — Egeria's notification mechanism, journaling discoveries as blog-style entries visible to particular communities, comments, and formal reports are all candidates depending on audience, and these aren't mutually exclusive with the activity log.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 2.
+Full context: `docs/egeria-integration.md`, section 2.
 
 ---
 
@@ -2004,7 +2004,7 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 2.
 
 RE's survey model (fixed pipeline of sub-surveyors, one `SurveyResult` per run) doesn't yet reflect Egeria's actual Area 6 mechanics — composable `AnalysisStep` phases within a survey, embeddable survey-pipeline connectors, declarative annotation-type catalogs, standard completion guards, and (critically) no existing built-in notion of different survey "kinds" (shallow sweep vs. deep focused, persona-tailored presentation). RE will likely need to grow more variety of survey/analysis "kinds" faster than Egeria's own connector catalog does — that's fine as long as Egeria stays the system of record — but RE's internal model should still speak Egeria's vocabulary where a precedent exists.
 
-Full context, grounded in the actual Egeria Java source: `docs/egeria-collaboration-and-survey-model.md`, section 3.
+Full context, grounded in the actual Egeria Java source: `docs/egeria-integration.md`, section 3.
 
 ---
 
@@ -2014,7 +2014,7 @@ No coherent model today for *what* to catalog and how to catalog things in group
 
 Egeria has no direct precedent for "survey broadly across not-yet-cataloged resources, then selectively catalog a subset" — current Area 6 surveys always run against an asset that's already cataloged. This is genuinely new territory for RE to define, composed from existing Egeria primitives (`RequestForAction` annotations + completion guards + `GovernanceActionProcess` chaining), and possibly worth proposing back into Egeria core once proven.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 4.
+Full context: `docs/egeria-integration.md`, section 4.
 
 ---
 
@@ -2030,7 +2030,7 @@ Direction agreed and now grounded: Dr.Egeria (RE's markdown DSL, already used vi
 
 **Not yet solved:** an `executes_at: resource-explorer` tag on a step is just catalogable metadata — nothing makes Egeria's engine host dispatch to RE *without RE itself initiating the run*. That specific case depends on the A2A item landing first. RE executing its own steps on its own initiative does not have this dependency — see the "RE locally executing Survey Definitions" item above, now implemented.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and open questions A6–A9, A12.
+Full context: `docs/egeria-integration.md`, section 6, and open questions A6–A9, A12.
 
 ---
 
@@ -2182,7 +2182,7 @@ Authoring a Survey Definition (item above, and the Dr.Egeria item below) require
 
 The local-executor item above is now implemented and gives this a concrete, real dispatch point to extend or replace: each resource type's adapter module (`*/survey_definition_adapter.py`) has a `re_analysis_steps` dict — today a small hardcoded Python mapping, not yet a catalogable/extensible registry. This item is about making that mapping itself discoverable/extensible in Egeria terms, rather than requiring a code change to add a recognized step.
 
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6.1 and open question A12.
+Full context: `docs/egeria-integration.md`, section 6.1 and open question A12.
 
 ---
 
@@ -2769,7 +2769,7 @@ Neither the old buttons nor the Survey Definitions panel is quite right as the l
 
 Related, not yet built: polling Egeria for survey results so completed native (`executes_at: egeria`) runs surface somewhere unified instead of only showing an engine-action GUID with "check Egeria's Asset Catalog" (see `resource_explorer/web/routes/survey_definitions.py` run endpoint and its frontend handling in index.html around line 2881). Today there is no unified "survey results dashboard" — results are scattered across the Survey Definitions run modal, the database/filesystem detail panels' own survey history, and Egeria's own catalog for anything async. A poller (or the A2A rendezvous from the item below) is the likely fix, feeding one dashboard view regardless of which launcher/engine started the run.
 
-Full context for the Survey Definitions side: `docs/egeria-collaboration-and-survey-model.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
+Full context for the Survey Definitions side: `docs/egeria-integration.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
 
 **RE-VERIFIED 2026-08-30 against this tree — the picture above is stale, and better than it says.**
 Significant unification already shipped without this entry being updated:

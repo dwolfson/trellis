@@ -1,7 +1,7 @@
 # Survey Definitions — Usage Guide
 
 **Status:** Implemented and validated end-to-end against a live Egeria server (2026-07-07/08) — both a single-step and a two-step chained PostgreSQL Survey Definition were authored, fetched, executed, and their `SurveyReport`s confirmed visible in Egeria, including a step correctly skipped (`executes_at: egeria`). See Current Limitations below for what's still unconfirmed (repo/filesystem Technology Type strings, branching).
-**Design record:** `docs/egeria-collaboration-and-survey-model.md`, section 6 — read that first for the *why* behind every design choice referenced here (no new Dr.Egeria commands, narrowest-action publishing, Technology-Type-driven discovery). This document is the *how to use it* companion — it doesn't re-derive those decisions, just points back to them.
+**Design record:** `docs/egeria-integration.md`, section 6 — read that first for the *why* behind every design choice referenced here (no new Dr.Egeria commands, narrowest-action publishing, Technology-Type-driven discovery). This document is the *how to use it* companion — it doesn't re-derive those decisions, just points back to them.
 
 ---
 

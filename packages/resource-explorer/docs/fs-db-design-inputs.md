@@ -58,7 +58,7 @@ the mixed model uses several of them at once rather than selecting one.
 **Blocked today either way by ISSUE-79**, not by design: a native survey
 against a template-created asset fails server-side (`assetConnector` null).
 That plan is ON HOLD for exactly this reason. See
-`docs/egeria-blocker-review-2026-09-02.md`.
+`docs/egeria-integration.md (§12)`.
 
 ---
 

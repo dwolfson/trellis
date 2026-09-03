@@ -2175,7 +2175,7 @@ harder to see, because everything expected is present and merely repeated; a *cr
 of all, because the right number of results are there, each well-formed, with only their content
 attached to the wrong thing.
 
-Design in `docs/outbox-publishing-design.md` (D2, §4 and top of §6's sequencing).
+Design in `docs/egeria-integration.md (§7)` (D2, §4 and top of §6's sequencing).
 
 **The outbox/retry work is a prerequisite, not a nice-to-have** — a
 half-published blueprint is worse than none.

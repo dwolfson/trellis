@@ -405,4 +405,4 @@ the metric, the annotation and the log row are all intermediate.
 - `docs/dr-egeria/foundations/foundations.md` — Perspectives and Funnel Stages
 - `docs/code-volume-and-doc-coverage-design.md` — a worked example of adding
   measures, including what was got wrong
-- `docs/recovery-and-resync-manual.md` — when Egeria and RE disagree
+- `docs/egeria-operations.md` — when Egeria and RE disagree

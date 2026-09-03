@@ -1,12 +1,15 @@
-# Resource Explorer as an Egeria Ecosystem Member — Collaboration Model, Survey/Analysis Conformance, and Selective Cataloging
+# Egeria integration — RE's role, publishing, and annotation identity
 
-**Status:** Discussion captured; §6.6 (RE's local Survey Definition executor) is implemented, unit-tested, and validated end-to-end against a live Egeria server for both a single-step and a two-step chained PostgreSQL Survey Definition — see `docs/survey-definitions.md` for usage. Still outstanding: repo/filesystem Technology Type strings, and branching (guard-based) Survey Definitions.
-**Authors:** Dan Wolfson, Claude
-**Date:** 2026-07-07
-**Scope:** RE's relationship to Egeria as a peer specialized server; RE↔Egeria bidirectional triggering (A2A); conformance of RE's survey/analysis model to Egeria's Area 6 framework; a coherent selective-cataloging model; authoring Survey Definitions as Dr.Egeria plans
-**Relationship to other docs:** Extends `docs/survey-model.md` (which established the intent model, activity log schema, and local-cache/Egeria-catalog-of-record split). This document assumes that one as background and focuses on three follow-on questions it left open or under-specified: how RE and Egeria call each other, whether RE's survey mechanics actually match Egeria's own model, and how selective cataloging should work. Backlog pointers for all deferred items live in `docs/Backlog.md`.
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** how Resource Explorer works with Egeria — what it publishes, under what
+identity, through what delivery mechanism, and in which direction. For the
+operational runbooks (recovery, resync, republishing), see `egeria-operations.md`.
 
----
+> **This document consolidates eight.** Part I is the collaboration model — RE's
+> role in the ecosystem, Area 6 conformance, and selective cataloguing. Part II
+> merges outbox publishing, annotation identity and linking, the
+> finding/annotation relationship, survey history and replay, the RFA-to-ToDo
+> integration, and the current upstream blockers. Part III is the settled register.
 
 ## 1. Why this document exists
 
@@ -289,3 +292,131 @@ Deliberately scoped down for a first cut, not full generality: **execute for a r
 | A12 | How does RE discover/register analysis steps as catalogable Egeria elements — both finding Egeria's existing ones and publishing RE's own sub-surveyors the first time they're used? | §6.1 | Still open. §6.6's local executor now has a concrete, real dispatch point (each adapter's `re_analysis_steps` dict) that this future work would extend or replace — today it's a small hardcoded Python mapping per resource type, not a catalogable/extensible registry. |
 
 See `docs/Backlog.md` for tracked, not-yet-scheduled work items derived from this document.
+---
+
+# Part II — Publishing, identity, and the two directions
+
+*Merged 2026-09-02 from seven notes. Each section names its source.*
+
+## 7. Outbox publishing — why "fire-and-forget" was the wrong diagnosis
+
+*(from `outbox-publishing-design.md`; steps 1–4 built for the repo path)*
+
+**Dispatch was never the problem.** Every publish call is awaited synchronously by its caller —
+thread-offloaded, but the handler or scheduler tick blocks on the result. **The problem was entirely
+in error handling**, and at three levels: per element (each failure swallowed individually inside
+the annotation loop), per run, and per batch.
+
+The fix is an outbox: each element is queued, attempted, retried with backoff, and dead-lettered
+visibly on permanent failure. Ordering constraints are explicit through a dependency between rows,
+so a run that cannot finish leaves a **coherent prefix rather than orphans** — a half-published
+blueprint reads as a complete one, which is worse than none.
+
+Publishing is **idempotent by identity**: an element that already exists is adopted rather than
+duplicated, which is what makes a retry safe.
+
+> **The claim function does not claim.** `claim_due_outbox_elements` was, until 2026-09-02, a plain
+> SELECT with no locking and no status transition, while its docstring asserted the opposite. Two
+> drainers took the same rows — and the usual second drainer is not a person, it is the scheduler
+> inside any running web server. Now an atomic claim with a lease. Full account in `Backlog.md`.
+
+## 8. Annotation identity, and why it is the precondition for everything else
+
+*(from `annotation-finding-collapse-design.md`)*
+
+An annotation's published `qualifiedName` was its **position in the run**. Measured across two large
+runs of one repository, over 115 overlapping indices, the same index meant the same finding **zero
+times** — so nothing published could be followed through time, though every value worth trending was
+already there.
+
+Annotations now carry `check_name` (what was checked), `item_key` (which item, for checks reporting
+on many), and `label` (the verdict), and the qualifiedName is built from them. A guard refuses to
+publish a run whose names collide, because a collision does not fail loudly on its own: Egeria
+rejects the duplicate, the existing GUID is adopted, and the run **reports success having written
+one element where two were produced.**
+
+**The finding row is derived from the annotation rather than typed beside it.** The two had drifted:
+one check emitted `confidence=90` on the annotation and stored a finding with no confidence, which
+the column defaults to 100. Same check, same run, two stores, two numbers, no error anywhere.
+Derivation makes that class of drift impossible by construction rather than avoided by care.
+
+## 9. Linking annotations to each other
+
+*(from `annotation-linking-plan.md`, `annotation-linking-audit.md`)*
+
+Egeria model 0610 defines **`AnnotationExtension`** — *"additional information to augment an
+annotation"* — a relationship from one annotation to another; and adjacent, **`AnnotationReview`**,
+linking an annotation to a steward's review of it. Verified against the Java source, which is
+authoritative where its wording differs from the documentation page.
+
+RE used neither. The value is evidence structure: a per-file measurement becoming *evidence for* an
+aggregate rather than a sibling of it, so a reader can see what a summary rests on.
+
+**The constraint that shapes the design: summaries stay independently readable.** A linked annotation
+must still make sense to a consumer that does not follow the link, because most will not.
+
+`AnnotationExtension` is UNI_LINK — measured — which means `attach()` upserts rather than
+duplicating. `evidence_of` is create-blind by design; the reasoning is in the linking plan's own
+docstring.
+
+## 10. Survey history and replay
+
+*(from `survey-history-and-egeria-replay.md`)*
+
+After a platform reset, three options exist, and the costs are in different currencies:
+
+| | restores | cost |
+|---|---|---|
+| **Move forward** | nothing historical | none — Egeria loses the trend, RE keeps it |
+| **Re-survey** (built) | today's findings, one point per repo | dominated by *survey time* — minutes per repo |
+| **Replay history** (not built) | up to 1,452 runs across 60 repos | dominated by *element count* — ~26h for five repos alone |
+
+Replay is **not** the cheap option. At the measured drain rate, `egeria_python_git` alone is 18.6h.
+The per-repo spread (0.1h to 18.6h) is what makes *selective* replay answerable rather than a vague
+preference — and history is a choice with costs to expose, not a policy to impose.
+
+There is also a **cheap registration tier**: publishing `repo_health` only, with no download,
+re-catalogues a corpus in seconds with every asset present.
+
+## 11. RFAs and Egeria ToDos
+
+*(from `rfa-egeria-todo-followup.md`; implemented and live-verified 2026-08-16)*
+
+RE's RequestForAction drawer is local. Egeria offers a real `ToDo` with assignment and lifecycle, and
+the sync mechanics were decided and built: RFAs project to ToDos, and status flows back.
+
+The broader idea recorded alongside it, deliberately not scoped to RFAs: **any RE-side item needing
+a human decision is a candidate for the same projection**, and building it RFA-shaped would have to
+be undone.
+
+## 12. Current upstream blockers
+
+*(from `egeria-blocker-review-2026-09-02.md`)*
+
+> **The canonical tracker is `PYEGERIA_ISSUES.md` in `egeria-python`** — 77 issues under unified
+> `ISSUE-#` numbering. RE's own copy was superseded and has been removed; log new entries there.
+
+Open items touching this integration:
+
+- **ISSUE-79** — a native survey against a template-created `FileFolder` fails server-side
+  (`assetConnector` null in `BasicFolderConnector.getFile()`). Blocks the filesystem native path.
+- **ISSUE-38** — `count_relationships_between_elements` disagrees with
+  `ClassificationExplorer.get_relationships` by one. A counting discrepancy, and the kind that
+  quietly invalidates a verification built on the wrong one of the two.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Is RE a prototyping ground that graduates into Egeria? | **No** — peer collaboration | RE extends the platform's reach and is a human interface to it; capabilities may move either way |
+| Were RE's publishers "fire-and-forget"? | **No** — dispatch was fine | Every call is awaited; the failure was in error handling at three levels |
+| Can the outbox restore state after a platform reset? | **No** | `done` rows assert a completed publish, point at a deleted element, and are never re-claimed |
+| Is replaying history the cheap way to restore Egeria? | **No** | ~26h for five repos; re-survey is 1–3h. Different currency, and replay is worse |
+| Is a position-based annotation identity workable? | **No** | Over 115 overlapping indices, the same index meant the same finding zero times |
+| Should the finding row be written by hand beside the annotation? | **No** — derive it | The two drifted: confidence 90 on one, defaulted 100 on the other, same check, same run |
+| Does a colliding qualifiedName fail loudly? | **No** | The duplicate is rejected, the existing GUID adopted, and both runs report success |
+| Should Dr.Egeria be the runtime invocation path? | **No** — A2A | Markdown through MCP is the wrong shape for a machine-to-machine governance call; Dr.Egeria keeps authoring |
+| Should a linked annotation depend on its link to be readable? | **No** | Summaries stay independently readable; most consumers will not follow the link |
+| Should RE keep its own pyegeria issue tracker? | **No** | Superseded by `egeria-python`'s canonical list |
