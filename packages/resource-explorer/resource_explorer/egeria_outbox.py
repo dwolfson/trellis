@@ -309,6 +309,10 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             # pending work is not failed work, and burning an attempt on
             # "Egeria was down" is how a transient outage dead-letters a
             # perfectly good write.
+            # Hand the claims back. These rows are claimed at this point, and
+            # an outage must leave them exactly as they were — not parked in
+            # 'running' until the lease expires.
+            registry.release_outbox_claim([r["id"] for r in rows])
             log.warning("Outbox drain: no Egeria client available, leaving %d rows pending",
                         len(rows))
             summary["skipped"] = len(rows)

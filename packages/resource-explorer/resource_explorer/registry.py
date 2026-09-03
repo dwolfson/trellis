@@ -201,6 +201,16 @@ class RowWrapper:
         return repr(self._dict)
 
 
+#: How long a claimed outbox row stays claimed before another drainer may take
+#: it. A drainer that is killed mid-row — which is exactly what happened on
+#: 2026-09-02, when a batch republish was pkill'd after stalling the Egeria
+#: platform — would otherwise strand its rows in 'running' forever, and the
+#: retry machinery would never see them again. Long enough that a slow-but-live
+#: create is not stolen from underneath its owner: the slowest single element
+#: observed is well under a minute, and a whole 200-row batch under ten.
+CLAIM_LEASE_SECONDS = 1800
+
+
 class ConnectionWrapper:
     def __init__(self, raw_conn, is_postgres: bool):
         self.raw_conn = raw_conn
@@ -1456,6 +1466,13 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_entity "
                 "ON egeria_outbox(entity_type, entity_slug)"
             )
+            # When a drainer took this row. Set with status='running' in the
+            # same transaction as the select, so a second drainer cannot take
+            # it. Nullable because every pre-existing row predates claiming.
+            existing_outbox = self._get_table_columns(conn, "egeria_outbox")
+            for col, defn in [("claimed_at", "TEXT DEFAULT ''")]:
+                if col not in existing_outbox:
+                    conn.execute(f"ALTER TABLE egeria_outbox ADD COLUMN {col} {defn}")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rfa_actions (
                     id                TEXT PRIMARY KEY,
@@ -3718,22 +3735,105 @@ class ProjectRegistry:
         fix when this stops being a single-operator dev environment.
         """
         now = now or datetime.utcnow().isoformat()
+        lease_cutoff = (
+            datetime.fromisoformat(now) - timedelta(seconds=CLAIM_LEASE_SECONDS)
+        ).isoformat()
+        sql = (
+            "SELECT o.id FROM egeria_outbox o "
+            # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
+            # "FOR UPDATE ... nullable side of an outer join" outright, and the
+            # SQLite unit tests cannot see that — they were green while this
+            # raised FeatureNotSupported against the real backend.
+            "WHERE (o.status IN ('pending', 'failed') "
+            "       OR (o.status = 'running' AND o.claimed_at <= ?)) "
+            "  AND o.next_attempt_at <= ? "
+            "  AND (o.depends_on_id IS NULL OR EXISTS ("
+            "        SELECT 1 FROM egeria_outbox dep "
+            "        WHERE dep.id = o.depends_on_id AND dep.status = 'done')) "
+        )
+        params: list = [lease_cutoff, now]
+        if run_id is not None:
+            sql += "  AND o.run_id = ? "
+            params.append(run_id)
+        sql += "ORDER BY o.id ASC LIMIT ?"
+        params.append(limit)
+
+        # Select and mark in ONE transaction, so two drainers cannot both take
+        # the same row. On Postgres the FOR UPDATE SKIP LOCKED makes the losing
+        # claimer skip the locked rows outright instead of blocking on them;
+        # SQLite serialises writers itself, so the same transaction suffices.
+        with self._conn() as conn:
+            if conn.is_postgres:
+                sql += " FOR UPDATE SKIP LOCKED"
+            ids = [r["id"] for r in conn.execute(sql, tuple(params)).fetchall()]
+            if not ids:
+                return []
+            marks = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE egeria_outbox SET status='running', claimed_at=? "  # noqa: S608
+                f"WHERE id IN ({marks})",
+                tuple([now, *ids]),
+            )
+            rows = conn.execute(
+                f"SELECT * FROM egeria_outbox WHERE id IN ({marks}) ORDER BY id ASC",  # noqa: S608
+                tuple(ids),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def peek_due_outbox_elements(self, *, limit: int = 200, run_id: str | None = None,
+                                 now: str | None = None) -> list[dict]:
+        """Which rows a drain WOULD take, without taking them.
+
+        `claim_due_outbox_elements` is a real claim now: calling it marks rows
+        'running'. Anything that wants to look — a test asserting another run's
+        rows were left alone, a status panel, a person asking what is queued —
+        needs this instead, or the act of looking becomes the act of taking.
+        """
+        now = now or datetime.utcnow().isoformat()
+        lease_cutoff = (
+            datetime.fromisoformat(now) - timedelta(seconds=CLAIM_LEASE_SECONDS)
+        ).isoformat()
         sql = (
             "SELECT o.* FROM egeria_outbox o "
-            "LEFT JOIN egeria_outbox dep ON dep.id = o.depends_on_id "
-            "WHERE o.status IN ('pending', 'failed') "
+            # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
+            # "FOR UPDATE ... nullable side of an outer join" outright, and the
+            # SQLite unit tests cannot see that — they were green while this
+            # raised FeatureNotSupported against the real backend.
+            "WHERE (o.status IN ('pending', 'failed') "
+            "       OR (o.status = 'running' AND o.claimed_at <= ?)) "
             "  AND o.next_attempt_at <= ? "
-            "  AND (o.depends_on_id IS NULL OR dep.status = 'done') "
+            "  AND (o.depends_on_id IS NULL OR EXISTS ("
+            "        SELECT 1 FROM egeria_outbox dep "
+            "        WHERE dep.id = o.depends_on_id AND dep.status = 'done')) "
         )
-        params: list = [now]
+        params: list = [lease_cutoff, now]
         if run_id is not None:
             sql += "  AND o.run_id = ? "
             params.append(run_id)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
-            rows = conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def release_outbox_claim(self, row_ids: "list[int]") -> None:
+        """Hand claimed rows back, unchanged, as if they had never been taken.
+
+        Status returns to 'pending', attempts and next_attempt_at untouched.
+        The caller claimed the rows and then found it could not even try —
+        no Egeria client, an aborted batch — and that is not a failed attempt.
+        Without this, an outage would strand rows in 'running' for the whole
+        CLAIM_LEASE_SECONDS, which is a slower, quieter version of exactly the
+        thing the no-burn rule in drain_outbox exists to prevent.
+        """
+        if not row_ids:
+            return
+        marks = ",".join("?" * len(row_ids))
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE egeria_outbox SET status='pending', claimed_at='' "  # noqa: S608
+                f"WHERE id IN ({marks}) AND status='running'",
+                tuple(row_ids),
+            )
 
     def mark_outbox_done(self, row_id: int, egeria_guid: str = "") -> None:
         """Record the element as written, with the GUID it resolved to.
@@ -3745,7 +3845,7 @@ class ProjectRegistry:
         """
         with self._conn() as conn:
             conn.execute(
-                "UPDATE egeria_outbox SET status='done', egeria_guid=?, "
+                "UPDATE egeria_outbox SET status='done', claimed_at='', egeria_guid=?, "
                 "completed_at=?, last_error='' WHERE id=?",
                 (egeria_guid, datetime.utcnow().isoformat(), row_id),
             )
@@ -3806,7 +3906,7 @@ class ProjectRegistry:
                 status = "failed"
                 next_at = (now + timedelta(seconds=delay)).isoformat()
             conn.execute(
-                "UPDATE egeria_outbox SET status=?, attempts=?, next_attempt_at=?, "
+                "UPDATE egeria_outbox SET status=?, claimed_at='', attempts=?, next_attempt_at=?, "
                 "last_error=? WHERE id=?",
                 (status, attempts, next_at, error[:2000], row_id),
             )
@@ -3866,7 +3966,7 @@ class ProjectRegistry:
         """
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE egeria_outbox SET status='pending', attempts=0, "
+                "UPDATE egeria_outbox SET status='pending', claimed_at='', attempts=0, "
                 "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
                 (datetime.utcnow().isoformat(), row_id),
             )
