@@ -198,6 +198,14 @@ class ComponentMaterializer:
             "class": "SolutionComponentProperties",
             "qualifiedName": qualified_name,
             "displayName": name,
+            # Backlog.md item 6 / blueprint_materializer.py's own docstring
+            # (2026-09-03): the same Draft-status gap BlueprintMaterializer
+            # had, fixed the same way — contentStatus is a plain field on
+            # ReferenceableProperties, settable inside properties on the
+            # existing NewElementRequestBody. architecture-recovery.md §10
+            # Phase 2's "All at ContentStatus = Draft" now holds for
+            # components too, not just blueprints.
+            "contentStatus": "DRAFT",
         }
         # Confidence and perspective are evidence ABOUT the proposal, not
         # properties of the real element a curator just decided is real —

@@ -56,6 +56,17 @@ class TestFreshMaterialization:
         assert props["additionalProperties"]["originalConfidence"] == "85"
         assert props["additionalProperties"]["recoveredBy"] == "architecture_recovery"
 
+    def test_content_status_draft(self):
+        """architecture-recovery.md §10 Phase 2's "All at ContentStatus =
+        Draft" (Backlog.md item 6, 2026-09-03) — the same fix
+        BlueprintMaterializer already has, via the real mechanism
+        (contentStatus on ReferenceableProperties, egeria-python's ISSUE-84
+        finding), not the fictional NewSolutionElementRequestBody shape."""
+        m = _materializer(registry=MagicMock(get_materialized_component=MagicMock(return_value=None)))
+        m.materialize("repo", "myproj", "src/svc", name="svc")
+        props = m._solution_architect.create_solution_component.call_args[0][0]["properties"]
+        assert props["contentStatus"] == "DRAFT"
+
     def test_records_into_the_registry(self):
         registry = MagicMock(get_materialized_component=MagicMock(return_value=None))
         m = _materializer(registry=registry)

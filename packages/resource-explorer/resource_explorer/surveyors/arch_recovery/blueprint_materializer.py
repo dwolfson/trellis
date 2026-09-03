@@ -52,9 +52,9 @@ needed. Confirmed live against the real platform (post
 repository level), a different thing from the content-maturity axis
 `contentStatus` represents; the design doc's own wording ("ContentStatus =
 Draft") names the field this now sends, not the instance status.
-`ComponentMaterializer`'s own equivalent gap (still `NewElementRequestBody`
-with no `contentStatus`) is not fixed here — out of scope for this module,
-tracked as its own follow-up in the plan.
+`ComponentMaterializer` carried the identical gap (`NewElementRequestBody` with
+no `contentStatus`) — fixed the same day, same fix, in that module directly
+(`materializer.py`) rather than here, since it's out of scope for this module.
 
 **Idempotency, not a create-blind path.** Same reasoning as
 `ComponentMaterializer`: a repeat "accepted" call for the same

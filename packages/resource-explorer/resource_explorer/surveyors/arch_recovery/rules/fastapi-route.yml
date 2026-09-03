@@ -15,6 +15,18 @@
 # real registrations and no dict lookups. The lesson generalises: a code
 # marker must match the syntactic form the framework actually uses, and
 # "over-matching is acceptable" is a claim to measure, never to assume.
+#
+# Second-order version of the same lesson, found 2026-09-03 against sqlglot
+# (a repo this codebase's own measurement above never ran against):
+# `@$APP.patch($$$ARGS)` matches `@mock.patch(...)`/`@mocker.patch(...)` —
+# unittest.mock's/pytest-mock's decorator, one of the most common test-suite
+# idioms in Python, completely unrelated to an HTTP PATCH route. Verified
+# directly: sqlglot's test suite (no FastAPI dependency at all) tripped
+# "Software Service" at 70% confidence on `tests`/`tests/dialects` purely
+# from `@mock.patch("sqlglot.parser.logger")`-style decorators. `.get`/
+# `.post`/`.put`/`.delete`/`.websocket` don't share this collision (no
+# equally common stdlib/pytest method by those exact names on an object
+# named `mock`/`mocker`) — only `.patch` needed the constraint.
 id: fastapi-route-registration
 language: Python
 rule:
@@ -25,3 +37,7 @@ rule:
     - pattern: "@$APP.delete($$$ARGS)"
     - pattern: "@$APP.patch($$$ARGS)"
     - pattern: "@$APP.websocket($$$ARGS)"
+constraints:
+  APP:
+    not:
+      regex: "^(mock|mocker|unittest\\.mock)$"

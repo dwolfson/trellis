@@ -247,10 +247,17 @@ materialized guid `809025b5-cca9-4e9a-a2f7-3a5104138f67`, independently re-queri
 the same. Both checks: `properties.contentStatus` round-trips as `"DRAFT"` correctly;
 `elementHeader.status` stays `"ACTIVE"` (a different, unrelated instance-status axis).
 `BlueprintMaterializer` now sends `contentStatus: "DRAFT"` — architecture-recovery.md §10 Phase
-2's "All at ContentStatus = Draft" is achieved for blueprints. `ComponentMaterializer`'s
-identical gap (still `NewElementRequestBody` with no `contentStatus`) is NOT fixed — separate,
-still-open follow-up. One new regression test (`test_content_status_draft`), 21/21 passing in
-`test_blueprint_materializer.py`.
+2's "All at ContentStatus = Draft" is achieved for blueprints. One new regression test
+(`test_content_status_draft`), 21/21 passing in `test_blueprint_materializer.py`.
+
+**`ComponentMaterializer`'s identical gap fixed the same day, same fix.** `materializer.py`'s
+`materialize()` now sends `contentStatus: "DRAFT"` too — same field, same mechanism, no separate
+investigation needed since the pyegeria fix (odpi/egeria-python#337) already covers both element
+kinds. Live-verified through the real Curate UI accept endpoint (`POST
+/api/curate/component-verdicts/repo/sqlglot`, `scope_locator: "sqlglotc"`), materialized guid
+`08a5ab3d-7862-43a8-a6bc-b5edbc768215`, independently re-queried and confirmed
+`properties.contentStatus == "DRAFT"`. One new regression test (`test_content_status_draft`),
+`test_component_materializer.py`.
 
 **Also found and fixed in the same window, unrelated to Egeria**: a genuinely stale
 `resource-explorer web` process (pid 74923/74921, running 20+ hours, holding no listening port —
@@ -261,7 +268,16 @@ Its background scheduler thread does start independently of the HTTP bind (confi
 since every kind currently enqueued is convergent under double-processing and wires (the one
 non-convergent kind) are deferred out of the outbox entirely.
 
-**Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
+**7. `benchmarks`-style directories are proposed as unclassified components — no naming-
+convention type/exclusion pass exists — found 2026-09-03, reviewing Phase C's Curate UI against
+`sqlglot`, deferred by explicit project-owner choice ("neither now").** `benchmarks` has only
+coupling evidence (`connective-orchestrator`, 60%, dispersed fan-out) — no code marker fires, so
+it's genuinely unclassified, not mistyped. Nothing in `code_markers.py`/the coupling classifier
+maps a directory literally named `benchmarks`/`tests`/`examples`/`scripts` to a distinct type or
+excludes it from being proposed as an architecture component at all — a real, reasonable gap,
+larger than a quick fix (touches detector design: is a benchmark harness a component that
+happens to be untyped, or a different KIND of thing that shouldn't be proposed as one?). Not
+scoped further here.
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
 browser one); doc-kind chunking selection (0 of 20 collections are API-reference shaped);
