@@ -1,126 +1,17 @@
-# ONNX Migration & Egeria-Advisor-Pro Implementation Plan
+# Egeria-Advisor-Pro — a specialist-agent product track
 
-**Created**: 2026-03-03  
-**Status**: Planning Phase  
-**Timeline**: 12 weeks total (3 weeks ONNX + 9 weeks Pro Track)
+**Status: UNBUILT.** Split out of `RUNTIME_AND_HARDWARE.md` on
+2026-09-03 and moved to `future/`, because none of it exists: `advisor/tools/`
+holds different files entirely, and `advisor/agents/pro/` was never created.
 
-## Executive Summary
+Checked 2026-09-03 — every artefact this plan names is absent:
+`code_generation_tool.py`, `test_generation_tool.py`, `refactoring_tool.py`,
+`dependency_tool.py`, `base_specialist.py`, `orchestrator.py`.
 
-This document outlines a two-track implementation plan:
-1. **Track A**: Migrate embeddings to ONNX Runtime (3 weeks)
-2. **Track B**: Build experimental egeria-advisor-pro with BeeAI + AgentStack (9 weeks)
-
-Both tracks can proceed in parallel with minimal dependencies.
-
----
-
-## Track A: ONNX Migration (3 weeks)
-
-### Objectives
-- Migrate sentence-transformers embeddings to ONNX Runtime
-- Achieve 2-3x inference speedup
-- Reduce memory footprint by ~50%
-- Improve cross-platform acceleration (AMD ROCm, Apple Silicon)
-- Maintain backward compatibility
-
-### Week 1: Model Conversion & Testing
-
-**Tasks**:
-1. Export sentence-transformers model to ONNX format
-2. Set up ONNX Runtime with execution providers
-3. Create benchmark suite comparing PyTorch vs ONNX
-4. Validate embedding quality (cosine similarity tests)
-
-**Deliverables**:
-- `models/all-MiniLM-L6-v2.onnx` (converted model)
-- `scripts/convert_to_onnx.py` (conversion script)
-- `scripts/benchmark_onnx.py` (performance comparison)
-- Benchmark report showing speedup and memory savings
-
-**Success Criteria**:
-- ✓ ONNX model produces embeddings within 0.001 cosine similarity of PyTorch
-- ✓ 2x+ speedup on CPU
-- ✓ 3x+ speedup on GPU (NVIDIA/AMD/Apple)
-- ✓ 50%+ memory reduction
-
-### Week 2: Integration & Backward Compatibility
-
-**Tasks**:
-1. Create `ONNXEmbeddingGenerator` class
-2. Implement automatic execution provider selection
-3. Add fallback to PyTorch if ONNX fails
-4. Update configuration to support both backends
-5. Add unit tests for ONNX embeddings
-
-**Files to Modify**:
-- `advisor/embeddings.py` - Add ONNX support
-- `advisor/config.py` - Add `embedding_backend` setting
-- `config/advisor.yaml` - Add ONNX configuration
-- `pyproject.toml` - Add ONNX dependencies
-
-**New Files**:
-- `advisor/embeddings_onnx.py` - ONNX implementation
-- `tests/unit/test_onnx_embeddings.py` - Unit tests
-
-**Configuration Example**:
-```yaml
-embeddings:
-  backend: "onnx"  # or "pytorch" for fallback
-  model: "all-MiniLM-L6-v2"
-  onnx_model_path: "models/all-MiniLM-L6-v2.onnx"
-  execution_providers:
-    - "TensorrtExecutionProvider"  # NVIDIA
-    - "MIGraphXExecutionProvider"  # AMD
-    - "CoreMLExecutionProvider"    # Apple
-    - "CPUExecutionProvider"       # Fallback
-```
-
-**Success Criteria**:
-- ✓ ONNX backend works on all platforms (NVIDIA, AMD, Apple, CPU)
-- ✓ Automatic fallback to PyTorch if ONNX fails
-- ✓ All existing tests pass with ONNX backend
-- ✓ Configuration allows easy switching between backends
-
-### Week 3: Production Deployment & Validation
-
-**Tasks**:
-1. Re-generate embeddings for all collections using ONNX
-2. Validate search quality (no degradation)
-3. Monitor performance in production
-4. Update documentation
-5. Create migration guide for users
-
-**Deliverables**:
-- `docs/user-docs/ONNX_MIGRATION_GUIDE.md`
-- `scripts/migrate_to_onnx.py` (re-embed all collections)
-- Performance monitoring dashboard updates
-- Updated README with ONNX benefits
-
-**Validation Tests**:
-- Run 100 test queries, compare results with PyTorch baseline
-- Measure hallucination rate (must stay ≤4%)
-- Measure average query latency (should improve)
-- Test on AMD GPU, Apple Silicon, NVIDIA GPU, CPU
-
-**Success Criteria**:
-- ✓ Search quality unchanged (hallucination rate ≤4%)
-- ✓ 2-3x speedup in production
-- ✓ Memory usage reduced by 50%
-- ✓ All platforms working correctly
-
-**Dependencies to Add**:
-```toml
-[project]
-dependencies = [
-    # ... existing ...
-    "onnxruntime>=1.16.0",        # CPU version
-]
-
-[project.optional-dependencies]
-gpu = [
-    "onnxruntime-gpu>=1.16.0",    # NVIDIA GPU
-]
-```
+It shared a document with the ONNX migration, which *was* built. Keeping the two
+together meant a 9-week unstarted product plan sat under the same heading as
+completed infrastructure work, and the document's own status line could only be
+right about one of them.
 
 ---
 
@@ -466,7 +357,7 @@ egeria-advisor/
 │   └── migrate_to_onnx.py        # NEW
 ├── docs/
 │   ├── design/
-│   │   └── ONNX_MIGRATION_AND_PRO_TRACK_PLAN.md  # This file
+│   │   └── RUNTIME_AND_HARDWARE.md  # This file
 │   └── user-docs/
 │       ├── ONNX_MIGRATION_GUIDE.md               # NEW
 │       └── PRO_MODE_GUIDE.md                     # NEW

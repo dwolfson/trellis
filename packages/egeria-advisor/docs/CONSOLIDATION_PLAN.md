@@ -1,7 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` and `design/` clusters 1–3 are DONE (2026-09-03).
-Clusters 4–7 remain a proposal awaiting approval.
+**Status:** `history/` and `design/` clusters 1–4 are DONE (2026-09-03).
+Clusters 5–7 remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -98,13 +98,24 @@ status/next-steps pair meant one superseded the other. It was worse than that:
   `collection_health` table is the part that reaches Postgres unconditionally —
   the two are easy to conflate and only one survives MLflow being down.
 
-### 4. Runtime and hardware — 2 files, ~3,700 words
+### 4. Runtime and hardware — **DONE 2026-09-03**
 
-`ONNX_MIGRATION_AND_PRO_TRACK_PLAN` · `AMD_OPTIMIZATION`
+3 files → `RUNTIME_AND_HARDWARE.md`, plus a split. The ROCm Python-version note
+rescued from `history/` joined this cluster; `user-docs/ONNX_MIGRATION_GUIDE.md`
+stays where it is as operator instructions.
 
-Cross-check against `user-docs/ONNX_MIGRATION_GUIDE.md` — a design document and a
-migration guide for the same change should not disagree, and if the migration is
-complete both may be history.
+**The ONNX migration is complete and switched off.** Implementation, both
+exported model files, the export script and the benchmark suite are all present;
+`backend: pytorch`. And **no benchmark result is recorded anywhere** — the plan
+sets 2-3x targets and builds a suite to measure them, so the question "is ONNX
+faster here" has a script and no answer. That is worth resolving before either
+flipping the switch or deleting the path.
+
+**Track B was never started.** The source document was 600 lines, of which 474
+were a 9-week "Egeria-Advisor-Pro" product plan whose every named artefact is
+absent. It is now `future/EGERIA_ADVISOR_PRO.md`. Keeping it with completed
+infrastructure meant the document's own status line could only be right about
+half of itself.
 
 ### 5. Agents, routing, and code analysis — 4 files, ~3,800 words
 
@@ -154,7 +165,7 @@ not history**, and one was a real defect:
 | `PHASE6_CLI_GUIDE` → `user-docs/CLI_GUIDE.md` | **live user documentation** | the CLI exists (`egeria-advisor = advisor.cli.main:cli`) and `--interactive` is still its entry point; `CLI_COMMAND_AGENT_GUIDE` is a different feature and never mentions it |
 | `PHASE5_LESSONS_LEARNED` → `design/BEEAI_INTEGRATION_LESSONS.md` | **still relevant** | `beeai-framework` is still a dependency, so the difficulties it records are a live caution |
 | `FRAMEWORK_COMPARISON` → `design/` | **reference** | informed a framework choice still in force |
-| `PYTHON_VERSION_SOLUTION` → `design/PYTHON_VERSION_FOR_ROCM.md` | **possibly operative** | ROCm is still referenced by `embeddings_onnx.py`, `embeddings.py`, `advisor.yaml` |
+| `PYTHON_VERSION_SOLUTION` → `design/RUNTIME_AND_HARDWARE.md` | **possibly operative** | ROCm is still referenced by `embeddings_onnx.py`, `embeddings.py`, `advisor.yaml` |
 | `PHASE9_USE_CASE_EXAMPLES` → `future/USE_CASE_EXAMPLES.md` | **unbuilt** | declares itself "Design Phase, Priority: High" — open work, not a completion record |
 
 **A user guide for a shipping CLI was invisible to anyone cloning the
