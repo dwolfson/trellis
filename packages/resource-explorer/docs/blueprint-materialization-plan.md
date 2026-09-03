@@ -7,6 +7,24 @@ Referenced from `docs/Backlog.md`'s item 1. Read that entry first for how this p
 prerequisites (outbox/retry, candidate-cluster proposal) were confirmed already built before
 this plan was written.
 
+**2026-09-03 amendment — Phase C's frontend placement, per the outside-in reconciliation.** This
+plan was written inside-out (from the data/backend outward). A companion outside-in pass —
+`docs/curate-evidence-based-decisions-plan.md` — asked the complementary question, "how does a
+curator actually reach this, and where," and found one real placement error in Phase C below:
+bolting `_renderCandidateBlueprints` and the verdict controls onto Analysis's
+architecture-recovery results panel is the wrong home. Blueprint *review* (evidence, a human
+judges, an action fires on accept) is a Curate-shaped activity, not an Analysis one — Analysis is
+"structural/quantitative, not scored" (CLAUDE.md), Curate is where judgment happens. Phase C below
+is kept as originally written for the historical record of what was designed first; **the
+corrected placement is in `curate-evidence-based-decisions-plan.md` §D, item 10** — read that
+before implementing Phase C. Summary of what changes: `_renderCandidateBlueprints` itself is
+unchanged code, but is called from a new Curate sub-tab (`🧩 Blueprints / Components`), not from
+`_renderArchitectureRecoveryResults`; the backend `data.blueprints` prerequisite is unchanged;
+verdict controls (both the new blueprint ones and the *existing* single-component ones, currently
+in Analysis) relocate to that Curate tab, so Analysis's panel becomes read-only evidence display.
+Everything in §§A–B of this plan (registry, `BlueprintMaterializer`, outbox, route) is unaffected
+and still holds exactly as designed — only Phase C's UI placement changes.
+
 ---
 
 ## Context (verified by reading, 2026-09-03)

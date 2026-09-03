@@ -47,8 +47,14 @@ member components, wire relationships — through the outbox, since a blueprint 
 elements per run than anything published today), a route, and frontend UI that doesn't exist
 yet. Scoped as its own plan rather than attempted improvised, given the size and that it writes
 many-element structures to the shared live Egeria instance — see
-`docs/blueprint-materialization-plan.md` once written, or ask whoever picks this up next to
-re-derive current state the same way rather than trust this paragraph's own age.
+`docs/blueprint-materialization-plan.md` (inside-out: registry/materializer/outbox/route) and
+`docs/curate-evidence-based-decisions-plan.md` (outside-in: where a curator actually reaches this,
+and the general "evidence + human judgment" shape blueprints are the first instance of — repos
+also want Information Supply Chains and organization-certification tabs eventually, databases want
+schema/class-determination; only blueprints/components are real today). The two plans' §D
+reconciliation changes one concrete thing in the inside-out plan's Phase C (frontend placement
+moves from Analysis to a new Curate tab) — read both before implementing, not just one, or ask
+whoever picks this up next to re-derive current state rather than trust this paragraph's own age.
 
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
