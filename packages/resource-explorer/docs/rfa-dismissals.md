@@ -2,7 +2,7 @@
 
 ## Where this came from
 
-Looking at the live RFA drawer on 2026-08-31, Dan reported ten items he could
+Looking at the live RFA drawer on 2026-08-31, the project owner reported ten items they could
 neither understand nor act on:
 
 > "On the screen, I now see 10 RFAs - and I don't know what they mean or what
@@ -25,7 +25,7 @@ Four distinct problems, and only the fourth is this document:
    an "N earlier occurrence(s)" toggle.
 4. **No way to say "this doesn't apply here"** — this document.
 
-On how it should behave, Dan was specific:
+On how it should behave, the project owner was specific:
 
 > "suppress with visibility - do both - there may be a future admin setting
 > that allows you to reset or clear some of these decisions in the future
@@ -56,7 +56,7 @@ have been the smaller diff. It is wrong for two independent reasons:
 
 **Not a delete.** Nothing is removed. Clearing a dismissal is an `UPDATE`
 that stamps `cleared_at`/`cleared_by`, so "we decided this was not
-applicable, then changed our mind" stays readable. That is what makes Dan's
+applicable, then changed our mind" stays readable. That is what makes the project owner's
 future-maintainer case a one-line state change rather than an undelete of
 something that was thrown away.
 

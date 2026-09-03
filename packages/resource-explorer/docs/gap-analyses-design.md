@@ -143,7 +143,7 @@ in the future should not be able to make the `foss_scorecard` mistake by pattern
 
 ## 0b. One provider concept, not a secrets-only one — and IN SCOPE for three existing analyses
 
-Dan's review reframed §1's vendoring decision, and the reframing is the more important design
+The project owner's review reframed §1's vendoring decision, and the reframing is the more important design
 input than the decision itself: *"vendored analyses have provenance and reputation — if we rolled
 our own, who would believe us?"* For this whole class of analysis, **the standing of the answer is
 part of the deliverable, not a footnote to its accuracy.** A user does not just want "clean" or
@@ -316,7 +316,7 @@ and resolved against lower-stakes code before it is applied to the analysis that
 
 ## 0c. Evidence shape: summary annotations linked to evidence via `AnnotationExtension`
 
-Dan pointed at Egeria's Annotations model (https://egeria-project.org/types/6/0610-Annotations/).
+The project owner pointed at Egeria's Annotations model (https://egeria-project.org/types/6/0610-Annotations/).
 The coordinating session verified against the Java rather than the page: `OpenMetadataType.
 java:6010` defines the **`AnnotationExtension`** relationship, GUID
 `605aaa6d-682e-405c-964b-ca6aaa94be1b`, model 0610, *"Additional information to augment an
@@ -397,7 +397,7 @@ per-match rows regardless of Egeria publication) — it is specifically the Eger
 of "one summary, many linked evidence annotations" that waits on this plumbing. Flagged as a
 sequencing dependency in the Sequencing section below.
 
-**Why this also protects the deferred third reporting level, without building it.** Dan named three
+**Why this also protects the deferred third reporting level, without building it.** the project owner named three
 reporting levels — overall finding/score, evidence, and improvement suggestions keyed off whether
 the reader maintains or consumes the artifact — and confirmed level 3 is out of scope here,
 already backlogged (`docs/Backlog.md` "Reporting levels", written up in detail there; not repeated
@@ -412,7 +412,7 @@ the summary-plus-linked-evidence shape rather than a single flattened finding.
 
 ## 1. Secret handling (`repo_secret_scan`)
 
-**RESOLVED (2026-09-01, Dan): the secret-scanning ruleset is vendored, not hand-rolled.** *"use a
+**RESOLVED (2026-09-01, the project owner): the secret-scanning ruleset is vendored, not hand-rolled.** *"use a
 standard approach - so perhaps vendored?"* — the honest-limits section of the previous draft
 flagged the choice between a vendored ruleset (e.g. gitleaks-shaped) and a small hand-maintained
 pattern list as undetermined and materially affecting both compute cost and false-positive rate.

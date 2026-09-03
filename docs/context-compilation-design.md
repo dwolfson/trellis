@@ -644,7 +644,7 @@ competing with it, and it is consistent with the standing decision that shared a
 **Implementation finding (2026-08-27), reversed (2026-08-30).** Two corrections from building this,
 one of which held only until a counterexample this section didn't have:
 
-- ~~**`availability` is derived, not tagged.**~~ **REVERSED, Dan's ruling, 2026-08-30.** The
+- ~~**`availability` is derived, not tagged.**~~ **REVERSED, the project owner's ruling, 2026-08-30.** The
   argument above was right while `run_time` and "may a compiler run this inline" always agreed —
   `architecture_recovery` is the case where they came apart. Its *compute* is 5.9s, so
   `run_time: fast` is honest; but a compile running it inline also pays *acquisition* (14.4s warm,
@@ -839,7 +839,7 @@ ingest for an Egeria-sourced artifact, and `feedback` carries no `manifest_id`.)
    earlier note here predicted.** The vocabulary moved twice: this item's own
    `materialized | schedulable` was never built; a 2026-08-27 finding then said `availability`
    should be *derived* from `run_time` rather than tagged at all (superseding this item); and
-   Dan's 2026-08-30 ruling reversed that (§20) once `architecture_recovery` showed `run_time` and
+   the project owner's 2026-08-30 ruling reversed that (§20) once `architecture_recovery` showed `run_time` and
    "safe to run inline" coming apart. **Current state:** `availability: inline | queued` **is now
    a declared field** on `AnalysisCatalogEntry`, defaulting to `queued`, with 20 entries declaring
    `inline` and 9 declaring `queued` — see §20 for why the derived version stopped being safe. So

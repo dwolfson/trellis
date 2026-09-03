@@ -1040,7 +1040,7 @@ The diagnosis is a §4.1 violation this document did not anticipate: `coupling.p
 filed under the same word and the lens joins on it. The only genuinely logical source in the
 pipeline is the one input forbidden from proposing anything.
 
-Decision (Dan, 2026-08-29): **a documentation-derived component may exist without a
+Decision (project owner, 2026-08-29): **a documentation-derived component may exist without a
 `scope_locator`** — docs become a source, bridged to code by `ImplementedBy` (§3.6, §4.1). The
 consequences, the gate this needs (the existing `undetected_is_meaningful` licenses *reading*, not
 *proposing*, and its denominator is circular), and why §5.5a(b)'s dating becomes a precondition

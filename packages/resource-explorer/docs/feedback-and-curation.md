@@ -271,7 +271,7 @@ Satisfaction breakdown (§1.3) already mixes vote-derived stats with star-rating
 (`avg_star_rating`, `feedback_collector.py:234-235`) in the same `stats` dict without a typed
 union — `star_rating: None` for a pure-vote entry and `star_rating: None` for "nobody asked for
 a star rating on this UI" are already indistinguishable there. Not this doc's problem to fix in
-EA, but worth naming since Dan asked about leveraging EA's model, not just its data.
+EA, but worth naming since the project owner asked about leveraging EA's model, not just its data.
 
 ## 5. What's shared vs. per-app
 

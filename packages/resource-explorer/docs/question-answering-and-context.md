@@ -36,7 +36,7 @@ Two things are true about it at once:
    built, for the single-resource case.
 
 2. **The tool layer underneath it is reading a stale, empty datastore for
-   exactly the questions in Dan's example.** `resource_explorer/agents/tools.py`
+   exactly the questions in the project owner's example.** `resource_explorer/agents/tools.py`
    and `stats_agent.py`/`health_agent.py` open `sqlite3.connect(registry.db_path)`
    directly (8 call sites in `tools.py` alone) — bypassing the
    `ProjectRegistry` engine entirely. Since the 2026-08-07 SQLite→Postgres
@@ -49,7 +49,7 @@ Two things are true about it at once:
        Error reading symbol table: no such table: project_code_symbols
 
    `query_code_symbols` is the tool that answers "how many classes" and
-   "list the classes/methods" — i.e. two of Dan's four examples, directly.
+   "list the classes/methods" — i.e. two of the project owner's four examples, directly.
    It fails today, and the failure is an unrouted Python exception string
    handed back to the LLM to narrate, not a `FactLayer`-shaped refusal.
    Compare `FactLayer().fact('egeria_git', 'code_symbol_extraction')`, which
@@ -393,7 +393,7 @@ anything to compare.
 ## 9. Recommended first slice
 
 Not a complete system. The smallest thing that answers one real question of
-Dan's end to end, honestly:
+The project owner's end to end, honestly:
 
 **Fix `query_code_symbols`/`_query_code_symbols_raw` to read through
 `ProjectRegistry`'s engine instead of a dead `sqlite3.connect(registry.db_path)`,
@@ -402,7 +402,7 @@ and route its empty/error paths through `FactLayer`-shaped refusal (reusing
 
 This is deliberately narrow and deliberately not a new subsystem:
 
-- It answers two of Dan's four literal examples — "how many classes" and
+- It answers two of the project owner's four literal examples — "how many classes" and
   "list the APIs" (in the code-inventory sense) — with real, already-correct
   data one query away, per §3's measurement.
 - It fixes a bug that is live today, not hypothetical — every ad-hoc

@@ -168,7 +168,7 @@ imposed from outside, but read off the commits themselves.
 
 **Tests green for the wrong reason.**
 - `f44a5e1`: the first known-negative test for the secret-scan fix used
-  Dan's real leaked-looking line — but *both* new gates (entropy and
+  the project owner's real leaked-looking line — but *both* new gates (entropy and
   allowlist) independently caught it, so deleting either gate alone still
   passed, and the suite would have shipped with half the fix silently
   missing. Replaced with two cases, each isolating one gate.

@@ -118,7 +118,7 @@ for one run rather than a fix.
 > what is outstanding.
 
 **No conditional execution of survey steps — every selected step runs, whether or not it can say
-anything.** Raised by Dan 2026-09-01. `SurveyOrchestrator.run()` iterates
+anything.** Raised by the project owner, 2026-09-01. `SurveyOrchestrator.run()` iterates
 `list(all_surveyors.items())` and runs each in turn. The only filters are the cost ceilings
 (`max_fetch_cost`/`max_compute_cost`) and an explicit `steps=` list. There is **no way for a step to
 declare a precondition on the state a previous step produced**, and no way to skip one whose input
@@ -179,7 +179,7 @@ dependency it already relies on rather than adding a second implicit mechanism b
 
 ### Admin surface: Option B (separate pages), and possible Trellis-wide centralisation
 
-**Deferred by decision 2026-09-01, not dropped.** Dan: *"agree in general — do the fix recommended
+**Deferred by decision 2026-09-01, not dropped.** Project owner: *"agree in general — do the fix recommended
 and put option B in backlog to be revisited. Its quite possible that we may need to centralize admin
 across trellis at some point — so lets not lose this in the day to day."*
 
@@ -200,7 +200,7 @@ conflicts**, and the distinction was made honestly rather than used to argue for
 - **The open-demo deployment** (see the entry below). That changes the calculus: EA's separate
   `/admin` was discounted as weak precedent partly *because* it is unauthenticated, which stops being
   a reason to dismiss the split and becomes a reason the split needs auth.
-- **Trellis-wide admin centralisation** — Dan's own flag, and the largest version of this. RE, EA and
+- **Trellis-wide admin centralisation** — the project owner's own flag, and the largest version of this. RE, EA and
   Workspaces Portal each have their own admin surface with their own auth posture and their own
   triage vocabulary; the surveys in `docs/feedback-and-curation.md` and
   `docs/feedback-and-curation.md (§7)` are already evidence of three implementations converging
@@ -214,7 +214,7 @@ session to get right and a loose re-implementation would silently lose them.
 
 ### Feedback as a signal of where the system is weak, not just of what a user disliked
 
-**Raised by Dan 2026-09-01**, and it is a different axis from triage status:
+**Raised by the project owner, 2026-09-01**, and it is a different axis from triage status:
 
 > *"there is another status or point — that what is being reported indicates a gap in either training
 > data, rules, routing, or agent behavior — we would want to periodically sweep through this (and the
@@ -225,7 +225,7 @@ missing*, and the two are independent: a report can be `not_an_issue` for the re
 the clearest evidence available that routing is wrong.
 
 Proposed as a **second, orthogonal classification** — not more values on `triage_status`, which would
-conflate a disposition with a diagnosis. Candidate categories, from Dan's own list: **training data ·
+conflate a disposition with a diagnosis. Candidate categories, from the project owner's own list: **training data ·
 rules · routing · agent behaviour**, plus an explicit *not-a-system-gap* and an *unclassified* that
 is distinct from "reviewed and found to be none of these". Absence must not read as a decision — the
 same rule as everywhere else here.
@@ -248,7 +248,7 @@ entries.
 
 ### Auth posture when RE and EA reach the open demo environment
 
-**Dan, 2026-09-01: "RE and EA will at some point also be in the open demo environment."** Recorded
+**Project-owner decision, 2026-09-01: "RE and EA will at some point also be in the open demo environment."** Recorded
 because it puts an expiry date on reasoning committed the same day, and that reasoning is now in a
 docstring that would otherwise be read as timeless.
 
@@ -274,7 +274,7 @@ same distinction, and should adopt that pattern rather than reinvent one.
   today) and any future admin write must not inherit an ungated sibling.
 - **The feedback store holds real submissions with `wants_response` and `consent_to_contact`.**
   Consent given to a local tool is not consent given to a public deployment. Whether existing rows
-  may be carried into a demo environment at all is a question for Dan, not a default.
+  may be carried into a demo environment at all is a question for the project owner, not a default.
 - **`docs/admin-surface-options.md` recommended staying inline**, partly because EA's separate
   `/admin` is unauthenticated and therefore weak precedent. In an open demo that stops being a
   reason to dismiss the split and becomes a reason the split needs auth — the recommendation should
@@ -285,7 +285,7 @@ read-only, and what happens to the admin token that exists today.
 
 ### Reporting levels
 
-**Improvement suggestions as a third reporting level, keyed off who is asking.** Raised by Dan
+**Improvement suggestions as a third reporting level, keyed off who is asking.** Raised by the project owner
 2026-09-01 while reviewing `docs/gap-analyses-design.md`. Deliberately deferred; recorded so the
 GAP analyses are built without precluding it.
 
@@ -299,7 +299,7 @@ An analysis can report at three levels, and today only two exist:
 
 **The hook already exists and nothing reads it.** Investigations carry `purposes`, validated against
 `ProjectCharter.purposes` (`registry.py:4265-4275`): *Assess, Certify, Deploy, Explore, Learn,
-Maintain, Select, Share*. Dan's point is that a suggestion depends on whether the asker MAINTAINS
+Maintain, Select, Share*. The project owner's point is that a suggestion depends on whether the asker MAINTAINS
 the artifact or CONSUMES it — `Maintain` versus `Select`/`Deploy` — and that distinction is already
 modelled, validated on write, and consumed by nothing.
 
@@ -404,7 +404,7 @@ MLflow, Phoenix or OTEL: decision provenance is read months later by resource an
 and queryable, while telemetry is sampled, retention-limited and keyed by trace id. **That part
 stands.** Two things around it do not, and want revisiting.
 
-**1. "Surveying is deterministic Python" is false as a general claim** (Dan, 2026-08-30). It is
+**1. "Surveying is deterministic Python" is false as a general claim** (project owner, 2026-08-30). It is
 true of `repo_arch_detect` and `repo_arch_coupling`, which is all the original reasoning had in
 front of it. **A survey step can perform LLM-based analysis**, and where it does:
 
@@ -434,8 +434,8 @@ disagree, and the span copy is the one that expires.
 #### ~~HIGH — take architecture results into Curate~~ — DECIDED AND BUILT 2026-08-30
 
 *(Opened 2026-08-30 listing four candidate shapes and saying "none of this is designed yet".
-Dan chose the first and S1 built it the same day. This entry was left stale for several hours and
-was still being reported as an open design question when it was neither — corrected on Dan
+The project owner chose the first and S1 built it the same day. This entry was left stale for several hours and
+was still being reported as an open design question when it was neither — corrected on the project owner
 noticing. Then corrected AGAIN by S2, who had built the backend and pointed at the differing
 `Claude-Session` trailers on `6f3afeb` and `2a22c99` to prove it. Verified before accepting. Two
 attribution errors on one row, both from reading a summary instead of the commits — which is exactly
@@ -473,7 +473,7 @@ for the verdict axis, and worth reading before the next slice invents its own.
 #### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
 
 *(Opened 2026-08-30 as a tier question; **reframed the same day by profiling**, which killed three of
-the four options it originally listed. Dan's steer: the work likely goes into the analysis
+the four options it originally listed. The project owner's steer: the work likely goes into the analysis
 implementation, not the catalog.)*
 
 **The analysis was never slow.** Profiled on `egeria_python_git`:
@@ -538,7 +538,7 @@ is about the whole experience and the tier question comes back.
 Open, unresolved: whether `architecture_recovery` belongs in the **Analysis** intent rather than
 Discovery on other grounds — that is a separate judgement from cost, and cost no longer forces it.
 
-**Resolved the same day, separately, by S1 in a different session:** Dan ruled directly —
+**Resolved the same day, separately, by S1 in a different session:** the project owner ruled directly —
 "architecture recovery is an analysis step and belongs there." `intent: analysis` now, `run_time:
 fast` unchanged (this entry's reasoning above stands; the ruling was on tiering grounds, not cost).
 Recorded together in `analysis_catalog.yaml`'s entry so neither change reads as having overridden
@@ -564,7 +564,7 @@ fix above is now the more clearly load-bearing of the two remaining candidates, 
 network chattiness this fix closed was the bigger of the two costs the earlier profiling found.
 
 **Cache the acquired roots — DONE 2026-08-30.** Built by dwolfson-59 (not S1 — a three-way crossed
-assignment: Dan gave it to S1 directly, S2 separately told dwolfson-59 to take it after dwolfson-59
+assignment: the project owner gave it to S1 directly, S2 separately told dwolfson-59 to take it after dwolfson-59
 flagged it as provider-shaped. Sorted between the three sessions before either duplicate build
 started: dwolfson-59 finished it, S1 reviewed rather than rebuilding.
 
@@ -709,7 +709,7 @@ toast tweak.
 
 #### MEDIUM — a compiled answer should be able to POINT at a view, not only describe it
 
-*(Opened 2026-08-30. Dan: "there is no reason why, in some cases, it can't provide a link to an
+*(Opened 2026-08-30. Project owner: "there is no reason why, in some cases, it can't provide a link to an
 architecture view elsewhere as well as providing a textual description.")*
 
 Not a UI affordance — a change to **what a `Section` can resolve to**. Today every section resolves
@@ -830,7 +830,7 @@ borrow.
 
 #### MEDIUM — separate "correct" from "useful right now": confidence and utility are different axes
 
-*(Opened 2026-08-30. Dan: "the goal isn't just architecture recovery — its recovery and
+*(Opened 2026-08-30. Project owner: "the goal isn't just architecture recovery — its recovery and
 understanding of useful artifacts... the threshold for useful isn't static — so at one end of the
 scale it might be everything, at the other it might be that we don't publish any of the artifacts
 we discover.")*
@@ -852,7 +852,7 @@ names the row-cap symptom; this names what the missing control actually is.
 
 #### MEDIUM — the replayability guarantee is only as strong as the resolver behind it
 
-*(Opened 2026-08-30. Dan, re: RAGdeterm's structured-retrieval determinism: "isn't it also
+*(Opened 2026-08-30. The project owner, re: RAGdeterm's structured-retrieval determinism: "isn't it also
 dependent on mechanism too?")*
 
 Yes — and this sharpens `context-compilation-design.md` §9's untested claim rather than settling
@@ -887,7 +887,7 @@ pages.
 
 #### HIGH — Egeria already has this: `Memento` is architecture recovery's tombstone, native
 
-*(Opened 2026-08-30. Dan: "Egeria itself also implements tombstones (called mementos) in order to
+*(Opened 2026-08-30. Project owner: "Egeria itself also implements tombstones (called mementos) in order to
 preserve lineage graphs over time. But sounds like there is more to learn here.")*
 
 Confirmed against the local Egeria checkout
@@ -920,7 +920,7 @@ up.
 
 #### Note — is the eight-intent/curation model more complex than anything proven to need it?
 
-*(Opened 2026-08-30. Dan: "I wonder if our model is too complex and unnatural — something to keep
+*(Opened 2026-08-30. Project owner: "I wonder if our model is too complex and unnatural — something to keep
 in mind.")*
 
 Not a task — a caution worth keeping attached to future design work rather than resolving. Two data
@@ -1674,7 +1674,7 @@ read by nothing. It becomes meaningful the moment projection has real input.
 
 #### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
 
-Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
+Raised by the project owner, 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
 and `architecture-recovery.md` were checked: nothing ties depth or completeness to
 purpose. §3 of the framing design says the opposite for the neighbouring axis — *"changing
 perspective changes how much you see but never what gets run."*
@@ -2791,7 +2791,7 @@ one were somehow created. Database's legacy `showSurveyDbModal`/`showPublishDbMo
 exist alongside the Survey Definitions panel — not yet confirmed whether they're now a safe
 duplicate (like repo's were) or still do something the panel can't.
 
-**Direction from Dan (2026-08-30): database and filesystem should route through Egeria's own
+**Direction from the project owner (2026-08-30): database and filesystem should route through Egeria's own
 EXISTING native surveys, not through newly-authored RE-side Dr.Egeria Survey Definitions.**
 This changes what "closing this item" means for those two resource types — it is not "author a
 `database-survey-definition-*.md` / `filesystem-survey-definition-*.md` the way repo's eight
@@ -2802,7 +2802,7 @@ tagged `executes_at="egeria"` actively triggers Egeria's own native survey rathe
 skipped. The gap is not "build the trigger," it's "prove the trigger, end to end, and get its
 results back."
 
-**Testing gap, explicitly called out as open work (2026-08-30, Dan) — keep on the backlog:**
+**Testing gap, explicitly called out as open work (2026-08-30, the project owner) — keep on the backlog:**
 `filesystem/survey_definition_adapter.py`'s own module docstring already says the native-trigger
 path is "not yet exercised end-to-end, since this environment has no cataloged filesystem to
 test against." Database's equivalent (`_trigger_egeria_native_survey` in
@@ -2947,7 +2947,7 @@ Broader arch/clustering/interfaces/mermaid suite: 507 passed, 9 skipped.
 
 #### RE has no login at all, and its identity is inconsistent across 26 sites
 
-Dan, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
+Project-owner decision, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
 (ultimately) to support multi-user."*
 
 `/api/egeria/whoami` returns `get_config().egeria.user_id` and the comment above it says it is
@@ -3151,7 +3151,7 @@ been run on, of the 46 the gate approves.
 
 ### HIGH — interface extraction answers "does it expose something", not "can I use it"
 
-**The driving question, from Dan 2026-08-24:** *"if we want to see if a repo is something we can
+**The driving question, from the project owner, 2026-08-24:** *"if we want to see if a repo is something we can
 use during runtime, we need to know how to interface to it — what kind of API it has, maybe
 language bindings, the number of commands. We don't need the names of every request and their
 payloads/signatures — until we want to actually try to use it."*
@@ -3165,7 +3165,7 @@ alongside OpenAPI (`_PROTO_EXT`/`_GRAPHQL_EXTS`/`_THRIFT_EXT`), and `operation_c
 `paths` × methods, `.proto` `service`/`rpc` counts) rides in each port's `additionalProperties`.
 Milvus's gRPC surface — the case that motivated this — is no longer invisible.
 
-**What genuinely remains open, sharpened by Dan 2026-08-30:**
+**What genuinely remains open, sharpened by the project owner, 2026-08-30:**
 
 **A. OpenAPI/REST/Swagger detection needs a second path — DONE for FastAPI, 2026-08-30, same
 session.** `_OPENAPI_NAMES` only ever saw a *committed* spec file (`openapi.json`, `swagger.yaml`,
@@ -3200,16 +3200,16 @@ skip, the zero-count skip, and backward compatibility with no `code_marker_opera
 is absent rather than zero). 214 passed across the directly affected files; 503 passed across the
 broader arch/interface/marker test surface.
 
-**B. Language bindings — Dan's steer narrows this from the original proposal, doesn't confirm it.**
+**B. Language bindings — the project owner's steer narrows this from the original proposal, doesn't confirm it.**
 The entry as written proposed conventional directories (`clients/<lang>`, `sdk/<lang>`,
-`bindings/`) as the signal, and called it "weakest evidence of the three; do it last." Dan, 2026-08-30:
+`bindings/`) as the signal, and called it "weakest evidence of the three; do it last." Project-owner decision, 2026-08-30:
 *"Not sure about language bindings unless they are exported as a specific library — eg. pyegeria."*
 That rules the directory-convention approach out rather than deferring it — a folder named
 `clients/python` is not evidence a real, usable client library exists at that path, and the
 codebase's own `_deployment_context_of`-style principle (read a declared boundary, don't infer
 intent from a name) argues the same way here.
 
-What Dan's example asks for instead: recognise a **named, published package that IS a client
+What the project owner's example asks for instead: recognise a **named, published package that IS a client
 library for this project** — `pyegeria` is a real PyPI package, with its own name and description,
 that exists specifically to bind to Egeria. That is verifiable evidence a directory name is not.
 
@@ -3233,7 +3233,7 @@ description, or with an entry point (a CLI, not installable-as-a-library), gets 
 at all — nothing invented to fill the gap.
 
 **Directory-convention detection (`clients/<lang>`, `sdk/<lang>`, `bindings/`) was NOT built**, per
-Dan's steer ruling it out rather than deferring it.
+The project owner's steer ruling it out rather than deferring it.
 
 **Real scope limits, stated rather than discovered later:**
 - **Java (Maven/Gradle) and Go are not covered.** `python_manifests`/`node_manifests` are the two
@@ -3268,7 +3268,7 @@ owns summarising up*. Every microflow emits at its own natural granularity and n
 to the depth the question asked for. Milvus yields 154 components where its own authors say eight,
 and 296 rpcs where the number a reader wants is `proxy.proto`'s 18.
 
-Dan's framing: *"we can certainly create microflows that aggregate, summarize and transform
+The project owner's framing: *"we can certainly create microflows that aggregate, summarize and transform
 information collected from established results — and include them where needed, or standalone."*
 
 **The correction that matters, and it is the whole point of this entry.** The first version of this
@@ -3339,7 +3339,7 @@ external resource (a zipball, a clone) across steps in one run, which is what `t
 
 ### Doc-site located but unreadable → offer to ingest it, and ask while a human is there
 
-**Dan, 2026-08-25:** *"there is an opportunity to ask the user if they want to ingest the
+**Project-owner decision, 2026-08-25:** *"there is an opportunity to ask the user if they want to ingest the
 documentation web site (or portions of it) into the vector store to support deeper analysis — this
 would likely fall into the understanding stage and might surface as a RECOMMENDATION for future
 analysis... Remember that we have the chat interface to design with, and that supports us asking
@@ -3409,7 +3409,7 @@ Both must be true of the same step. The shape that satisfies both:
 
 That distinction is worth stating in the design docs independently of this feature, since every
 future step that would benefit from a human answer meets it. **Understanding is the right stage**
-(Dan's read): the ingested site serves Chat and cross-resource questions, which is what Understanding
+(the project owner's read): the ingested site serves Chat and cross-resource questions, which is what Understanding
 is for — not Discovery, where it would look like another survey step.
 
 **Not started.** Sized as small-but-not-trivial: item 1 is a link between two existing subsystems,
@@ -3419,7 +3419,7 @@ item 2 needs a measurement first, item 3 is a live-verification pass on a step n
 
 ### Stage and profile a documentation site before deciding how to ingest it
 
-**Dan, 2026-08-25:** *"what are your assumptions as you make an ingestion? Do we need to do some
+**Project-owner decision, 2026-08-25:** *"what are your assumptions as you make an ingestion? Do we need to do some
 pre-analysis first, and perhaps internally stage the content and then profile it before we decide
 how to ingest it?"*
 
@@ -3483,7 +3483,7 @@ no gate at all.
 ## Export findings/metrics for use outside RE
 
 **Raised 2026-09-01**, after a Committed Secrets run reported 48,581 matches and the drawer took
-minutes to render an incomplete list. Dan: *"there should probably be a separate report that is
+minutes to render an incomplete list. Project owner: *"there should probably be a separate report that is
 downloadable - maybe a csv that contains all these details. They aren't useable in the raw in
 Results."* Agreed as worth doing, deliberately **not** built the same day, because fixing the
 scan's own defect (`docs/` — the ruleset's per-rule entropy/allowlist/stopword gates were never
