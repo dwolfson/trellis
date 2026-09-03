@@ -56,6 +56,16 @@ reconciliation changes one concrete thing in the inside-out plan's Phase C (fron
 moves from Analysis to a new Curate tab) — read both before implementing, not just one, or ask
 whoever picks this up next to re-derive current state rather than trust this paragraph's own age.
 
+**Progress, 2026-09-03: Phases A, A.5, and B are done.** Registry + `BlueprintMaterializer`
+(`6a76e4b`); the live wire-safety measurement, confirmed `SolutionLinkingWire` is multi-link
+(`86c214a`), with the project owner directly deciding to defer wire enqueueing to its own
+follow-up rather than ship it with the confirmed risk (`7381782`); the blueprint verdict route
+and member/child attachment via the outbox, scoped accordingly (`bce70ca`). **What's left: Phase
+C (frontend) — per the reconciliation above, in Curate's own tab, not Analysis's panel — and the
+deferred wire-enqueueing follow-up itself**, whenever that's picked up. Backlog item 5 (below)
+tracks the related `AnnotationReview` measurement gap a peer session surfaced reviewing Phase A.5,
+also not yet done.
+
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
 even opened: `a059e01` (2026-08-31, surveyor — emits a confidence-0 `skipped_by_design` annotation

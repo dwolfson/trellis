@@ -307,10 +307,11 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
   tracked entry.
 
 **Phase B — route. Wires excluded per the Phase A.5 decision above — scoped to blueprint +
-membership/child attachment only.**
-- `egeria_outbox.py`: `OutboxClients.solution_architect`, `_create_solution_linking_wire`, `enqueue_blueprint_members`, `enqueue_blueprint_wires`, `_default_clients()` update.
-- `curate.py`: `BlueprintVerdictCreate`, `list_blueprint_verdicts`, `add_blueprint_verdict`, `_materialize_blueprint_if_accepted`.
-- Tests: route-level, with `BlueprintMaterializer`/outbox mocked — verdict recorded regardless of Egeria reachability (same non-fatal-but-visible contract as the component route); partial-member-materialization case returns the right shape; child-blueprint nesting resolves correctly for a two-level cluster fixture (reuse `tests/test_arch_clustering.py`'s own fixtures rather than inventing new ones).
+membership/child attachment only. DONE, 2026-09-03 (`bce70ca`).**
+- `egeria_outbox.py`: `enqueue_blueprint_members` — built as planned. `OutboxClients.solution_architect`/`_create_solution_linking_wire`/`enqueue_blueprint_wires` were NOT built — out of scope per the deferred-wires decision, not a gap in this phase.
+- `curate.py`: `BlueprintVerdictCreate`, `list_blueprint_verdicts`, `add_blueprint_verdict`, `_materialize_blueprint_if_accepted`, plus two small helpers the plan's prose implied but didn't name as their own functions — `_slug_to_scope_map` (the identity-mismatch fix from the plan's own Context section, factored out rather than inlined) and `_find_candidate_blueprint` (the candidate_blueprint lookup by perspective/cluster_name).
+- **A real gap found by the tests, not scoped in the plan**: the *existing* `list_component_verdicts` route never filtered to `verdict_target="component"` — `get_component_verdicts` returns both mixed and leaves filtering to the caller, and only the new blueprint route filtered its own side. Fixed with the mirroring filter; practically harmless (a blueprint verdict's key can't realistically collide with a real `scope_locator`) but the endpoint's name promises component verdicts specifically.
+- Tests: 20 route-level tests (`tests/test_web.py::TestCurateBlueprintVerdictsRouter`) with `BlueprintMaterializer` mocked, plus 2 direct unit tests for `enqueue_blueprint_members` (`tests/test_egeria_outbox.py`). Full suite: 3615 passed, 92 skipped, 0 failed.
 
 **Phase C — frontend, plus the backend reader gap it depends on.**
 - `_architecture_recovery_results` gains `data.blueprints` (new backend step, per above).
