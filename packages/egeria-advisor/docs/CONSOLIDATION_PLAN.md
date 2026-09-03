@@ -1,7 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` and `design/` clusters 1–2 are DONE (2026-09-03).
-Clusters 3–7 remain a proposal awaiting approval.
+**Status:** `history/` and `design/` clusters 1–3 are DONE (2026-09-03).
+Clusters 4–7 remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -83,13 +83,20 @@ the pass and is recorded in the new document's §6:
 - `egeria_docs` still carries 22 live routing keywords. Verified inert — the
   router guards on `.enabled` — so dead config rather than a misroute.
 
-### 3. Monitoring and analytics — 3 files, ~5,400 words
+### 3. Monitoring and analytics — **DONE 2026-09-03**
 
-`MONITORING_NEXT_STEPS` · `MONITORING_IMPLEMENTATION_STATUS` ·
-`DATASET_TRACKING_AND_ANALYTICS_ENHANCEMENT`
+3 files, 5,416 words → `MONITORING_AND_ANALYTICS.md`. This plan predicted the
+status/next-steps pair meant one superseded the other. It was worse than that:
 
-Two of these are a status/next-steps pair, which usually means one supersedes the
-other.
+- **two of the four "completed" next steps did not happen in the files they
+  name.** Monitoring integrates from `rag_system.py`, not `rag_retrieval.py`, and
+  the router never imports the classifier — `route_query()` takes `intent` and is
+  handed the classification. Both are integrated; the checklist points at two
+  files containing none of it;
+- **per-collection retrieval metrics are durable only when MLflow is running.**
+  `collection_metrics.py` has exactly one consumer, `mlflow_tracking.py`. The
+  `collection_health` table is the part that reaches Postgres unconditionally —
+  the two are easy to conflate and only one survives MLflow being down.
 
 ### 4. Runtime and hardware — 2 files, ~3,700 words
 
