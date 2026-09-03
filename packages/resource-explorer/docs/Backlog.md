@@ -16,17 +16,39 @@ Marked at the end of the architecture-recovery thread. Findings 96–119 in
 `scripts/arch-spike/README.md` are that thread's record; this is what is left and
 what is deliberately not.
 
-**1. Phase 2 — Egeria projection of recovered architecture.** Still the largest unbuilt piece,
-but **"nothing from architecture recovery reaches Egeria" stopped being true on 2026-08-30** —
+**1. Phase 2 — Egeria projection of recovered architecture — re-scoped 2026-09-03, still the
+largest unbuilt piece, but not for the reason previously written here.** "Nothing from
+architecture recovery reaches Egeria" stopped being true on 2026-08-30 —
 `arch_recovery/materializer.py`'s `ComponentMaterializer` writes a real `SolutionComponent` when
 a curator accepts a proposed component. That path is deliberately narrow: accepted verdicts
 only, a bare component with no blueprint or relationships, and no retraction if a verdict is
 later reversed. So the *blueprint* projection is unbuilt; a single-component projection is not.
 
-Its one remaining prerequisite is **outbox/retry publishing** (design §8.4, still design-only) —
-a blueprint writes far more elements per run than anything currently published, and the design
-is blunt that *"a half-published blueprint is worse than none."* Its other prerequisite is done:
-projection has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
+**Both stated prerequisites turned out to already be done — checked, not assumed.**
+Outbox/retry publishing (was "design §8.4, still design-only") is real, built, and already
+live: `egeria_outbox` table with claim/lease/release semantics, `egeria_outbox.py` (613 lines)
+draining it, wired into `EgeriaPublisher._create_annotations` and evidence-link publishing today
+— not a future dependency. Hierarchy-to-collapse (finding 117) was already correctly marked done
+here. **A third thing this entry never listed is also done**: candidate-cluster proposal —
+`arch_recovery/clustering.py` (740 lines, tested, wired into `persist.py`) already computes and
+persists candidate blueprints as `"candidate_blueprint"` findings, one per cluster per
+perspective, with the members/children/hierarchy structure. `ComponentMaterializer`'s own
+docstring calls this "unbuilt" (line 19-20 of that file) — that comment is stale; the code it
+describes exists.
+
+**What's genuinely still missing, confirmed by reading, not by the stale comment**: nothing turns
+an accepted `candidate_blueprint` finding into a real Egeria `SolutionBlueprint`.
+`curate.py`'s `add_component_verdict` hardcodes single-component materialization only — no
+blueprint-level verdict route exists. **The frontend does not render `candidate_blueprint`
+findings at all** (zero occurrences in `index.html`) — a curator cannot see these proposals
+today, let alone accept one. The real gap spans four layers: registry (blueprint verdict +
+materialized-blueprint tracking), a `BlueprintMaterializer` (create `SolutionBlueprint`, attach
+member components, wire relationships — through the outbox, since a blueprint writes far more
+elements per run than anything published today), a route, and frontend UI that doesn't exist
+yet. Scoped as its own plan rather than attempted improvised, given the size and that it writes
+many-element structures to the shared live Egeria instance — see
+`docs/blueprint-materialization-plan.md` once written, or ask whoever picks this up next to
+re-derive current state the same way rather than trust this paragraph's own age.
 
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
