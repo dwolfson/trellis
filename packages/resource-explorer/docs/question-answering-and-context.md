@@ -1,11 +1,15 @@
-# Ad-hoc question answering — scope
+# Question answering and context — retrieval, compilation, and routing
 
-Dan, verbatim: "We also need to be able to answer ad-hoc questions about what
-are the APIs for xxx (or list the APIs), how many APIs?, how many classes,
-what is the difference between repo x and repo y, do repo x and repo y
-integrate, etc."
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** how a free-text question becomes an answer — what is retrieved, how
+evidence is compiled into a bounded context, how a question is routed to the
+right tool, and what code intelligence supplies. For the fixed question
+catalogue and how surveys answer it, see `survey-model.md`.
 
-This is a scoping note, not a build. No production code changed.
+> **This document consolidates five.** Part I is the ad-hoc question-answering
+> review (what exists, the four question classes, coverage, intent recognition).
+> Part II merges the context compiler, tool routing, code intelligence, and RAG
+> ingestion as an analysis step. Part III is the settled register.
 
 ## 0. The headline finding: this isn't greenfield, and half of it is broken
 
@@ -418,3 +422,123 @@ Everything past this slice — comparison, integration, the hybrid router,
 coverage denominators — should be built once this narrowest case is live
 and has actually been asked a few real ad-hoc questions, not designed
 further in advance of that.
+
+---
+
+# Part II — Compilation, routing, and the substrate
+
+*Merged 2026-09-02 from four notes. Each section names its source.*
+
+## 8. The context compiler
+
+*(from `context-compiler-across-trellis.md`)*
+
+A compile is **three inputs and one rule**, and the rule is the important part:
+**nothing is run.** Resolvers read stored results only, and an analysis that has
+not run produces a **gap**, not a silent absence.
+
+| element | what it is |
+|---|---|
+| `ContextSpec` | the recipe — sections with roles, weights and floors, pinned to a target model and an `as_of` time |
+| `Candidate` | one section's content at several **rungs**: `FULL → SUMMARY → IDENTIFIERS` |
+| `pack(spec, candidates, budget)` | fits candidates to the budget using weights and floors |
+| the manifest | what was included, what was cut, and **why each section is there** |
+
+Three things in that picture are load-bearing and easy to miss:
+
+- **The derivation travels with the answer.** *"This section is here because your
+  Purpose is Certify, which ranked Q17, which dispatches security_scan."* It is
+  what makes the manifest an explanation rather than a list of sizes.
+- **The reader fallback is about evidence, not precedence.** The findings table
+  holds results for a *minority* of analyses. An earlier version fell back only
+  when findings were empty, so any whole-resource row — however slight —
+  suppressed the reader entirely, and a single diagram row replaced an analysis's
+  real results with a picture. It now consults both when findings are thin and
+  keeps whichever says more.
+- **A gap is judged, not merely reported.** The packer knows only that a section
+  had no candidate. The fact layer knows whether that is a *measured zero* or a
+  *never-run*, and those are opposite answers to the same question.
+
+**Rungs matter because degrading beats dropping.** Under budget pressure a
+section loses detail rather than disappearing: losing detail is recoverable,
+losing the fact that something exists is not.
+
+## 9. Context as declared facts, not inferences
+
+*(from `repo-context-and-tool-routing.md`)*
+
+The context vocabulary should be small, cheap, and **observable** — properties an
+analysis can precondition on without anyone guessing.
+
+| context fact | observable from | available? |
+|---|---|---|
+| holds first-party code | the exclusion census, `first_party_ratio` | yes |
+| is deployable | Dockerfile / compose / k8s manifests | yes |
+| has embedded documentation | in-repo doc paths | yes |
+| has a documentation site | sibling repo / homepage / ingested site | yes |
+| has tests | test-directory conventions | partially |
+| declares a package | npm / pypi / gradle / cargo manifests | yes |
+| repo role | `repo_classification` | yes |
+
+> **Every row is already produced by something.** What is missing is that they are
+> **findings scattered across kinds**, rather than one context record an analysis
+> can precondition on. This is an assembly problem, not a detection problem — which
+> makes it much cheaper than it looks.
+
+**Interest is a signal to surface, not a threshold to enforce.** Routing should
+show the user what it thinks is relevant and let them override, rather than
+silently filtering on a score.
+
+**When a question is ambiguous, name both interpretations rather than silently
+picking one.** *"How many APIs"* can mean published external contracts (~102
+registry-wide) or public methods and classes exposed by the codebase (hundreds of
+thousands). Different tables, different orders of magnitude — and a router that
+picks one without surfacing the choice answers a question the asker did not ask.
+
+## 10. Code intelligence — the structured substrate
+
+*(from `code-intelligence-approach.md`)*
+
+Symbol extraction populates the tables that make counting and listing questions
+answerable from structured data rather than retrieval: symbols by language and
+kind, and inheritance relationships. Retrieval answers *"what does this do"*;
+these tables answer *"how many"* and *"which"* — and conflating the two is how a
+count gets estimated from prose.
+
+The coverage caveat from `repo-analysis-funnel.md` §13 applies directly here: an
+extractor that does not read a language's doc comments reports zero for it, and
+zero is not a property of the code.
+
+## 11. RAG ingestion as a survey step
+
+*(from `rag-ingestion-as-analysis-step-plan.md`)*
+
+- **D1 — the step wraps the *incremental* indexer, not full ingestion.** The
+  incremental path is a **no-op when the commit SHA is unchanged**, which is what
+  makes it cheap enough to include in a survey that runs often. Full ingestion
+  stays at registration: a survey step must never be the thing that decides to
+  embed a repository from scratch for the first time.
+- **D2 — it declares no shared zipball resource**, deliberately diverging from the
+  other steps. The incremental indexer downloads *conditionally*, only when files
+  changed; declaring the resource would force a download on every run including
+  the no-op case, making the cheap path expensive.
+
+That second decision is the clearest case in the codebase of a shared-resource
+declaration being *wrong* even though it is consistent — consistency would have
+cost the property that makes the step usable.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Is ad-hoc question answering greenfield? | **No** | A live chat path already exists and is bridged to the evidence layer |
+| Should retrieval answer counting questions? | **No** | Counts come from the symbol tables; retrieval estimates them from prose |
+| Should an ambiguous question be routed to one interpretation? | **No** — name both | "How many APIs" spans two tables and three orders of magnitude |
+| Is interest a threshold to filter on? | **No** — a signal to surface | Filtering silently removes what the user might have wanted |
+| Does the compiler run analyses to fill a gap? | **No** | Resolvers read stored results only; a gap is a result |
+| Should a section be dropped when over budget? | **No** — degraded | Losing detail is recoverable; losing existence is not |
+| Is an empty section an absence? | **No** — it is judged | The fact layer decides measured-zero versus never-run |
+| Should the RAG step reuse the shared zipball? | **No** | It downloads conditionally; declaring the resource would force a download on every no-op run |
+| Should a survey step perform first-time ingestion? | **No** | Full ingestion belongs at registration |

@@ -436,4 +436,4 @@ Phases 1 and 2 are independent and can be developed in parallel. Phase 3 depends
 
 ### Dependency: Code Intelligence
 
-Phase 4's "API surface diff" comparison (comparing public classes and methods between projects) depends on the `project_code_symbols` table described in [code-intelligence-approach.md](code-intelligence-approach.md). That work can proceed independently and unlocks the structural comparison view.
+Phase 4's "API surface diff" comparison (comparing public classes and methods between projects) depends on the `project_code_symbols` table described in [question-answering-and-context.md (§10)](question-answering-and-context.md (§10)). That work can proceed independently and unlocks the structural comparison view.

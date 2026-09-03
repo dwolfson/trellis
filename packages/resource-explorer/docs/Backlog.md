@@ -109,7 +109,7 @@ for one run rather than a fix.
 > state and would have rebuilt the orchestrator plumbing. Verified against the source before this
 > note was written. **What remains open is the vocabulary, not the mechanism** — richer context
 > facts (`first_party_code`, `is_deployable`, `has_documentation_site`) per
-> `docs/repo-context-and-tool-routing.md` §4, and guard evaluation in the EXECUTOR, which is
+> `docs/question-answering-and-context.md (§9)` §4, and guard evaluation in the EXECUTOR, which is
 > separate and still unbuilt.
 >
 > The entry is kept rather than deleted because the reasoning below is what the built feature
@@ -136,7 +136,7 @@ The consequences are already visible, and they are not crashes:
   middle one — *skipped, with a stated reason* — never silence. A step that vanishes from a report
   is indistinguishable from one that ran and found nothing, which is the failure this codebase keeps
   removing. `repo_classification`'s `architecture_recovery_gate` is the worked example of doing it
-  right (`docs/repo-context-and-tool-routing.md` §3): it reports `skipped_by_design`, the reason
+  right (`docs/question-answering-and-context.md (§9)` §3): it reports `skipped_by_design`, the reason
   travels with the skip, and `respect_gate=False` still runs it — the gate changes the default, not
   the permission.
 
@@ -145,7 +145,7 @@ The consequences are already visible, and they are not crashes:
 `project_dependencies`" or "this step is pointless on a repo with no first-party code". The design
 note already proposes the shape — `requires_context` alongside `requires_resources`, checked before
 dispatch, producing a `skipped_by_design` with a reason when unmet
-(`docs/repo-context-and-tool-routing.md` §4) — but nothing is built beyond the one hand-wired gate.
+(`docs/question-answering-and-context.md (§9)` §4) — but nothing is built beyond the one hand-wired gate.
 
 **Egeria already has the branching half of this, and it is worth not reinventing.** Reported
 2026-09-01 by a concurrent session that read `EngineActionHandler.initiateNextEngineActions`

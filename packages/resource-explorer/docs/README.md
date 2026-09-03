@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-45 documents, grouped by what they *are* rather than what they are about — the
+42 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -11,31 +11,30 @@ someone adds a file. Regenerate after adding or reclassifying:
 python scripts/regen_docs_index.py
 ```
 
-## Open — planned or on hold
-
-Live plans. The work is not done; the doc is the specification.
-
-- **[rag-ingestion-as-analysis-step-plan.md](rag-ingestion-as-analysis-step-plan.md)** — 2026-08-20  
-  planned, not started. Written 2026-08-20 for execution in a separate session
-
 ## Design and framing
 
 Decisions and models. Cited from source where a comment cannot restate them.
 
 - **[architecture-recovery-in-practice.md](architecture-recovery-in-practice.md)** — 2026-09-02  
   reference, current as of 2026-09-02
-- **[context-compiler-across-trellis.md](context-compiler-across-trellis.md)** — 2026-08-30  
-  review, 2026-08-30. Requested as "how the context compiler notion can be leveraged
 - **[egeria-integration.md](egeria-integration.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[egeria-operations.md](egeria-operations.md)** — 2026-09-02  
   consolidated runbook. Current as of 2026-09-02
-- **[repo-analysis-funnel.md](repo-analysis-funnel.md)** —   
+- **[egeria.md](egeria.md)** — 2026-09-02  
+  hand-authored reference outline. Sparse by nature — the headings are
+- **[question-answering-and-context.md](question-answering-and-context.md)** —   
+  consolidated design. Current as of 2026-09-02
+- **[repo-analysis-funnel.md](repo-analysis-funnel.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[survey-execution.md](survey-execution.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[survey-model.md](survey-model.md)** — 2026-09-02  
   consolidated design and reference. Current as of 2026-09-02
+- **[trellis.md](trellis.md)** — 2026-09-02  
+  hand-authored reference outline describing runtime and deployment
+- **[workspaces.md](workspaces.md)** — 2026-09-02  
+  hand-authored reference outline describing runtime and deployment
 
 ## Findings and audits
 
@@ -58,8 +57,6 @@ The work is done and these are NOT archive candidates: source comments point her
   Design agreed (2026-07-13). §4 items 1-3, 5, 6 implemented (2026-07-13) — Technology Type string
 - **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-09-02  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
-- **[repo-context-and-tool-routing.md](repo-context-and-tool-routing.md)** — 2026-09-02  
-  design note. Nothing here is built beyond the one worked example named in §3
 - **[survey-definitions.md](survey-definitions.md)** — 2026-09-02  
   Implemented and validated end-to-end against a live Egeria server (2026-07-07/08) — both a singl
 
@@ -67,12 +64,10 @@ The work is done and these are NOT archive candidates: source comments point her
 
 Includes the user-facing guides. Anything here without a Status line is a candidate for gaining one.
 
-- **[ad-hoc-question-answering.md](ad-hoc-question-answering.md)** — 2026-09-01
 - **[admin-guide.md](admin-guide.md)** — 2026-08-21
 - **[admin-surface-options.md](admin-surface-options.md)** — 2026-09-01
 - **[Architecture.md](Architecture.md)** — 2026-08-30
 - **[Backlog.md](Backlog.md)** — 2026-09-02
-- **[code-intelligence-approach.md](code-intelligence-approach.md)** — 2026-08-07
 - **[comparison-integration-approach.md](comparison-integration-approach.md)** — 2026-08-07
 - **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-08-24
 - **[curate-followups.md](curate-followups.md)** — 2026-08-07
@@ -90,9 +85,7 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[repair-operations-design.md](repair-operations-design.md)** — 2026-08-28
 - **[rfa-dismissals.md](rfa-dismissals.md)** — 2026-09-01
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-08-07
-- **[trellis.md](trellis.md)** — 2026-08-20
 - **[tutorial.md](tutorial.md)** — 2026-08-06
 - **[user-guide.md](user-guide.md)** — 2026-08-21
 - **[using-the-intent-shell.md](using-the-intent-shell.md)** — 2026-09-02
 - **[work-timeline-2026-08-31-to-09-02.md](work-timeline-2026-08-31-to-09-02.md)** — 2026-09-02
-- **[workspaces.md](workspaces.md)** — 2026-08-20
