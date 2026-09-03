@@ -221,11 +221,45 @@ Fixed here by matching `ComponentMaterializer`'s existing, working body shape �
 same pre-existing gap `ComponentMaterializer` already has (its own follow-up, not new). Two new
 regression tests added, including one that runs the actual body through pyegeria's real
 `TypeAdapter(NewElementRequestBody)` rather than only asserting the mock-call shape — the kind
-of test that would have caught this before it reached a live accept. Re-verified live against
-`sqlglot`: the client-side validation failure is gone (the POST now reaches an actual network
-call); a separate TLS-handshake timeout to `https://localhost:9443` in this environment blocked
-confirming a full live materialization end-to-end — an unrelated, apparently-transient platform
-connectivity issue at the time of this fix, not chased further here.
+of test that would have caught this before it reached a live accept.
+
+**Follow-up, same day: full live materialization confirmed, and Draft-status achieved for real.**
+The TLS-handshake timeout blocking live confirmation turned out to be `qs-metadata-store`'s
+Postgres connection pool genuinely exhausted (`jdbcMaximumPoolSize` defaulting to 10, HikariPool
+timeouts in the container logs) — not transient, and not caused by this work; fixed by
+`egeria-workspaces-fs-14` bumping the pool to 50 and restarting `quickstart-egeria-main`
+(coordinated first — see the session transcript for the cross-session exchange, including a
+correction: an earlier "misattribution" claim about an unrelated wire-test coordination request
+was wrong and retracted, the request was real but predated this session's own visible context
+after a compaction). Once the platform came back: accepting the `.github` candidate blueprint
+against `sqlglot` through the actual Curate UI's API materialized a real `SolutionBlueprint`
+(`status: "partial"` — its two members correctly unmaterialized, per Decision 2's governance
+boundary). Separately, `egeria-python-65` reviewed ISSUE-84 and found the real mechanism:
+`contentStatus` is a plain field on `ReferenceableProperties`, settable inside `properties` on
+the existing `NewElementRequestBody` — no separate request-body class was ever needed
+(odpi/egeria-python#337). Confirmed live, twice, each independently read back by guid (not just
+trusted from the create call's own return): a standalone probe (guid `1c6550a9-77cd-49ac-a791-
+ffb9fa56f3fc`, superseded by a second probe `8755a5ac-7941-4880-a735-72010d779a73` to also check
+the properties-block shape, both deleted after) confirmed `properties.contentStatus == "DRAFT"`
+via `get_solution_blueprint_by_guid`; then a real accept through the actual Curate UI's own API
+endpoint (`POST /api/curate/blueprint-verdicts/repo/sqlglot`, not a direct library call)
+materialized guid `809025b5-cca9-4e9a-a2f7-3a5104138f67`, independently re-queried and confirmed
+the same. Both checks: `properties.contentStatus` round-trips as `"DRAFT"` correctly;
+`elementHeader.status` stays `"ACTIVE"` (a different, unrelated instance-status axis).
+`BlueprintMaterializer` now sends `contentStatus: "DRAFT"` — architecture-recovery.md §10 Phase
+2's "All at ContentStatus = Draft" is achieved for blueprints. `ComponentMaterializer`'s
+identical gap (still `NewElementRequestBody` with no `contentStatus`) is NOT fixed — separate,
+still-open follow-up. One new regression test (`test_content_status_draft`), 21/21 passing in
+`test_blueprint_materializer.py`.
+
+**Also found and fixed in the same window, unrelated to Egeria**: a genuinely stale
+`resource-explorer web` process (pid 74923/74921, running 20+ hours, holding no listening port —
+invisible to `lsof -i :8810`/curl checks since only the current process had the port) — flagged
+by a peer (`dwolfson-be`), confirmed via `ps`, force-killed after a plain `kill` failed to take.
+Its background scheduler thread does start independently of the HTTP bind (confirmed by reading
+`web/app.py`'s `_lifespan`), so this was briefly a real second outbox drainer — no damage found,
+since every kind currently enqueued is convergent under double-processing and wires (the one
+non-convergent kind) are deferred out of the outbox entirely.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where

@@ -52,6 +52,21 @@ class TestFreshMaterialization:
         assert props["displayName"] == "svc cluster"
         assert props["additionalProperties"]["recoveredBy"] == "architecture_recovery"
 
+    def test_content_status_draft(self):
+        """architecture-recovery.md §10 Phase 2's "All at ContentStatus =
+        Draft" — achieved via the real mechanism (contentStatus on
+        ReferenceableProperties, egeria-python-65's ISSUE-84 finding), not
+        the fictional NewSolutionElementRequestBody/initialStatus shape.
+        Confirmed live 2026-09-03: contentStatus round-trips correctly on
+        a real blueprint (elementHeader.status stays ACTIVE regardless —
+        a different, unrelated axis)."""
+        m = _materializer(registry=MagicMock(get_materialized_blueprint=MagicMock(return_value=None)))
+        m.materialize_blueprint_element(
+            "repo", "myproj", "deployment", "svc-cluster", display_name="svc cluster",
+        )
+        props = m._solution_architect.create_solution_blueprint.call_args[0][0]["properties"]
+        assert props["contentStatus"] == "DRAFT"
+
     def test_body_shape_matches_what_pyegeria_actually_validates(self):
         """Corrected 2026-09-03 (Backlog.md item 6): the originally-planned
         Draft-status divergence from ComponentMaterializer — class:
