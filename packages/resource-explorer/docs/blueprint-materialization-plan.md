@@ -276,8 +276,32 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
 - `blueprint_materializer.py`: `qualified_name_for`, `materialize_blueprint_element` (with a fake/mocked `SolutionArchitect`, same test shape the existing `ComponentMaterializer` tests use — check for that test file before writing new ones, to match its mocking style), `resolve_member_guids`, `resolve_child_blueprint_guids`.
 - Tests: idempotency (repeat `materialize_blueprint_element` call finds cached/existing), Draft-status body shape (`NewSolutionElementRequestBody`, not `NewElementRequestBody`), member resolution correctly reports unmet members without raising.
 
-**Phase A.5 — the wire-safety measurement, gating whether wire enqueueing ships at all.**
-- A one-off live-server script (in `scripts/arch-spike/`, the existing home for this kind of measurement) calling `link_solution_linking_wire` twice with identical arguments against a throwaway pair of components, reading back via whatever pyegeria exposes to confirm duplication. **If it duplicates** (expected, given the docstring): document the risk in `_create_solution_linking_wire`'s docstring as written above, and decide with the project owner whether wire enqueueing ships with that known gap in Phase B or is deferred to its own follow-up entry — this is a project-owner call, not a design call this plan makes silently.
+**Phase A.5 — the wire-safety measurement, gating whether wire enqueueing ships at all. DONE,
+2026-09-03 — confirmed multi-link, duplicates on repeat calls.**
+- Ran `scripts/arch-spike/measure_wire_multi_link.py` against the live quickstart platform,
+  coordinated with all 8 live peer sessions first (asked before writing, confirmed the earlier
+  republish batch's outbox was fully drained — 0 `running` rows — and the platform itself
+  functionally settled, not mid-restart). Two identical `link_solution_linking_wire()` calls
+  between the same two throwaway `SolutionComponent`s returned two **different** relationship
+  GUIDs (`f4179125-...`, `8f18b426-...`) — the definitive test (memory note
+  `reference_egeria_dedup_and_link_patterns`: "if attach returns an identifier it is multi-link;
+  if it returns nothing it is uni-link"), not inferred from the docstring. **Confirms the
+  docstring's own claim** rather than contradicting it — still worth having measured, since the
+  two relationships this codebase already relies on (`ResourceList`, `CollectionMembership`) were
+  each independently measured uni-link on 2026-08-25 despite looking like they might not be.
+- The confirmatory read-back (`get_component_related_elements`) found 0 relationships — not a
+  contradiction, a wrong instrument: that method's response only carries component/blueprint/
+  supply-chain/actor GUIDs, no generic wire list. The return-value test alone was sufficient and
+  is the one to trust. A future read-back attempt should try `get_relationships_with_property_value`
+  instead, un-tried here.
+- Both throwaway components deleted via `delete_solution_component(guid, cascade_delete=True)` —
+  not a by-ends `detach_solution_linking_wire`, which would have removed both wires in one call and
+  corrupted the evidence before it could be read back.
+- **The measurement is done; the ship/defer decision is not yet made.** The gate this phase exists
+  for — "decide with the project owner whether wire enqueueing ships with that known gap in Phase
+  B or is deferred to its own follow-up entry" — is still open. The risk is now confirmed rather
+  than hypothetical, which is what changed; it does not by itself pick between Decision 5's two
+  options. Asked directly, not assumed — see Backlog.md/session record for the answer once given.
 
 **Phase B — route.**
 - `egeria_outbox.py`: `OutboxClients.solution_architect`, `_create_solution_linking_wire`, `enqueue_blueprint_members`, `enqueue_blueprint_wires`, `_default_clients()` update.
