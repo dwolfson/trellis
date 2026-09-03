@@ -3695,6 +3695,15 @@ function _archDefaultPerspective(groups) {
   return best;
 }
 let _archUidSeq = 0;
+// Read-only by default (Analysis's own call site never sets this) —
+// per docs/curate-evidence-based-decisions-plan.md §D item 10, Analysis stays a
+// read-only evidence display; only Curate's own rendering pass (below) turns
+// this on so accept/reject/retype controls appear. A module flag rather than
+// threading a param through every nested render function in this chain
+// (_archPanesHtml/_archRow/_archVerdictBadgeHtml) — same reasoning _archUidSeq
+// above already uses for render-scoped state.
+let _archInteractiveMode = false;
+
 function _archShowPerspective(uid, persp) {
   document.querySelectorAll('[data-arch-pane="' + uid + '"]').forEach(el => {
     el.classList.toggle('hidden', el.dataset.archPersp !== persp);
@@ -3765,7 +3774,10 @@ function _archRow(c, slug, rowUid) {
   // renders no verdict UI rather than wiring buttons to a broken URL.
   const verdictArea = !slug ? '' : (c.verdict
     ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict, c.materialized)
-    : _archVerdictControlsHtml(rowUid, slug, c.path));
+    // No verdict yet, read-only context (Analysis): render nothing rather
+    // than an inert-looking control set — the "Accept"/"Reject" affordance
+    // only exists in Curate.
+    : (_archInteractiveMode ? _archVerdictControlsHtml(rowUid, slug, c.path) : ''));
   return `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">
@@ -3827,11 +3839,16 @@ function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
   const egeriaBadge = (materialized && materialized.guid)
     ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
     : '';
+  // "change" re-opens the accept/reject controls — a Curate-only action;
+  // Analysis's read-only pass shows the verdict as a fact, not an editor.
+  const changeBtn = _archInteractiveMode
+    ? `<button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>`
+    : '';
   return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
     <span class="text-[10px] ${color}">${label}</span>
     <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
     ${egeriaBadge}
-    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>
+    ${changeBtn}
   </div>`;
 }
 
@@ -8361,6 +8378,29 @@ async function saveContextForm(slug, entityType) {
 
 let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each load
 
+// Curate sub-tabs (Phase C, blueprint-materialization-plan.md /
+// curate-evidence-based-decisions-plan.md §D) — 'general' is the pre-existing
+// tags/feedback/notes content; 'architecture' is the new candidate-blueprint
+// and component-verdict review surface, repo-only (architecture_recovery is a
+// repo analysis). Mirrors _automateSubTab's module-level-state pattern.
+let _curateSubTab = 'general';  // 'general' | 'architecture'
+
+function _curateSubnavHtml(active, entityType) {
+  const tabs = [{ tab: 'general', label: '🗂 General' }];
+  if (entityType === 'repo') tabs.push({ tab: 'architecture', label: '🏛 Architecture Verdicts' });
+  if (tabs.length < 2) return '';  // nothing to switch between for db/filesystem entities
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_setCurateSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${t.label}</button>`).join('')}
+  </div>`;
+}
+
+function _setCurateSubTab(tab) {
+  _curateSubTab = tab;
+  loadCuratePanel();
+}
+
+
 // ── Automate (8th intent, Part 4) — local-first notification subscriptions
 // + (moved here 2026-08-13 from Admin) the global Schedules monitoring
 // overview. Two sub-tabs: 🔔 Subscriptions (what's being watched for
@@ -8750,7 +8790,16 @@ async function _deleteAutomateSchedule(entityType, slug, analysisId) {
   }
 }
 
-async function loadCuratePanel() {
+// Dispatcher — every existing mutation handler below (addCurateTag,
+// saveCurateGroup, ...) already calls loadCuratePanel() to refresh after a
+// write; keeping that name as the dispatcher means none of those call sites
+// needed to change when the architecture sub-tab was added.
+function loadCuratePanel() {
+  if (_curateSubTab === 'architecture') return loadCurateArchitecturePanel();
+  return loadCurateGeneralPanel();
+}
+
+async function loadCurateGeneralPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
   const view = document.getElementById('curate-view');
   if (!entityType || !slug) return;  // showCuratePane() already gates this; defensive only
@@ -8767,9 +8816,9 @@ async function loadCuratePanel() {
     ]);
     _curateAllTagsCache = allTags;
     const currentGroupSlug = _curateCurrentGroupSlug(entityType, slug);
-    renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroupSlug);
+    renderCurateGeneralPanel(entityType, slug, tags, feedback, notes, currentGroupSlug);
   } catch(e) {
-    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+    view.innerHTML = _curateSubnavHtml('general', entityType) + `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
 
@@ -8786,7 +8835,7 @@ function _curateCurrentGroupSlug(entityType, slug) {
   return '';
 }
 
-function renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroupSlug) {
+function renderCurateGeneralPanel(entityType, slug, tags, feedback, notes, currentGroupSlug) {
   const view = document.getElementById('curate-view');
   const icon = { repo: '📁', database: '🗄', filesystem: '💾' }[entityType] || '•';
 
@@ -8821,6 +8870,7 @@ function renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroup
       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — ${icon} ${_esc(slug)}</span>
     </div>
     <div class="p-4 space-y-6 max-w-2xl">
+      ${_curateSubnavHtml('general', entityType)}
 
       <div>
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🗂 Project Group</div>
@@ -8886,6 +8936,164 @@ function renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroup
 
       <div class="text-xs text-slate-700 border-t border-slate-800 pt-3">
         Not here yet: digital-product evaluation, sample dataset creation, and a dedicated quality-remediation workflow — each needs its own design pass. See <code>docs/curate-followups.md</code>.
+      </div>
+    </div>`;
+}
+
+// ── Curate → Architecture Verdicts ──────────────────────────────────────────
+// docs/curate-evidence-based-decisions-plan.md §D item 10 / blueprint-
+// materialization-plan.md Phase C: verdict controls for BOTH candidate
+// blueprints and individual proposed components move here, out of
+// Analysis, which stays a read-only evidence display (_archInteractiveMode,
+// set true only for the render pass below). Reuses the exact payload
+// Analysis already fetches (GET .../analyses/architecture_recovery/results)
+// rather than a second endpoint — `data.blueprints` (repo_survey_definition_
+// adapter.py's _candidate_blueprints_results) is new; `data.components` is
+// the same list Analysis renders, just rendered here with controls live.
+async function loadCurateArchitecturePanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('curate-view');
+  if (!entityType || !slug) return;
+  view.innerHTML = _curateSubnavHtml('architecture', entityType) + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const data = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/architecture_recovery/results`).then(r => r.json());
+    renderCurateArchitecturePanel(entityType, slug, data);
+  } catch (e) {
+    view.innerHTML = _curateSubnavHtml('architecture', entityType) + `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _curateBlueprintRow(bp, slug) {
+  const rowUid = 'bp' + (++_archUidSeq);
+  const sizeLabel = `${bp.size} component(s)${bp.children.length ? ` across ${bp.children.length} nested blueprint(s)` : ''}`;
+  const oversizedNote = bp.oversized
+    ? `<div class="text-[11px] text-amber-400/80 mt-0.5">⚠ Over the target cluster size (~${bp.target_size ?? '?'}) with no further declared structure — review before accepting.</div>`
+    : '';
+  const verdictArea = bp.verdict
+    ? _archBlueprintVerdictBadgeHtml(rowUid, slug, bp.perspective, bp.cluster_name, bp.verdict, bp.materialized)
+    : _archBlueprintVerdictControlsHtml(rowUid, slug, bp.perspective, bp.cluster_name);
+  return `
+    <div class="rpt-section text-xs text-slate-300" style="margin-bottom:.5rem;">
+      <div class="flex justify-between gap-2">
+        <span class="font-medium text-cyan-400">${_esc(bp.cluster_name)}</span>
+        <span class="text-slate-500 shrink-0">${_esc(bp.perspective)}</span>
+      </div>
+      <div class="text-slate-500">${_esc(sizeLabel)}${bp.parent ? ` · nested under ${_esc(bp.parent)}` : ''}</div>
+      ${oversizedNote}
+      ${verdictArea}
+    </div>`;
+}
+
+function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterName) {
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+      onclick="_archSubmitBlueprintVerdict('${rowUid}','accepted')">✓ Accept</button>
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
+      onclick="_archSubmitBlueprintVerdict('${rowUid}','rejected')">✗ Reject</button>
+  </div>`;
+}
+
+function _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, v, materialized) {
+  const label = v.verdict === 'accepted' ? '✓ Accepted' : '✗ Rejected';
+  const color = v.verdict === 'accepted' ? 'text-emerald-400' : 'text-red-400';
+  const egeriaBadge = (materialized && materialized.guid)
+    ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
+    : '';
+  const unmatBadge = (materialized && (materialized.unmaterialized_members || materialized.unmaterialized_children))
+    ? `<span class="text-[10px] text-amber-400/80" title="Some members aren't materialized in Egeria yet — accept them individually first, then re-accept this blueprint.">⚠ partial</span>`
+    : '';
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
+    <span class="text-[10px] ${color}">${label}</span>
+    <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+    ${egeriaBadge}${unmatBadge}
+    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertBlueprintVerdictUi('${rowUid}')">change</button>
+  </div>`;
+}
+
+function _archRevertBlueprintVerdictUi(rowUid) {
+  const el = document.querySelector(`[data-arch-bp-verdict="${rowUid}"]`);
+  if (!el) return;
+  el.outerHTML = _archBlueprintVerdictControlsHtml(rowUid, el.dataset.archBpSlug, el.dataset.archBpPersp, el.dataset.archBpName);
+}
+
+async function _archSubmitBlueprintVerdict(rowUid, verdict) {
+  const el = document.querySelector(`[data-arch-bp-verdict="${rowUid}"]`);
+  if (!el) return;
+  const slug = el.dataset.archBpSlug, perspective = el.dataset.archBpPersp, clusterName = el.dataset.archBpName;
+  try {
+    const resp = await fetch(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ perspective, cluster_name: clusterName, verdict }),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
+      throw new Error(detail);
+    }
+    const saved = await resp.json();
+    const m = saved.materialization;
+    el.outerHTML = _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, {
+      verdict: saved.verdict, decided_at: saved.created_at,
+    }, m && m.status !== 'error' ? m : null);
+    if (m && m.status === 'error') {
+      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
+    } else if (m && (m.status === 'materialized' || m.status === 'partial')) {
+      showToast(m.status === 'partial' ? 'error' : 'success',
+        m.status === 'partial'
+          ? `Accepted — blueprint created, but some members aren't materialized in Egeria yet`
+          : `Accepted — created as a real SolutionBlueprint in Egeria`);
+    } else if (m && m.status === 'already_materialized') {
+      showToast('success', `Accepted — already exists in Egeria`);
+    } else {
+      showToast('success', `Marked ${verdict}`);
+    }
+  } catch (e) {
+    showToast('error', `Could not save verdict: ${_esc(e.message)}`);
+  }
+}
+
+function renderCurateArchitecturePanel(entityType, slug, data) {
+  const view = document.getElementById('curate-view');
+  const blueprints = data.blueprints || [];
+  const components = (data.components || []).filter(c => !c.structural);
+
+  const blueprintsHtml = blueprints.length
+    ? blueprints.map(bp => _curateBlueprintRow(bp, slug)).join('')
+    : '<div class="text-slate-600 text-xs text-center py-4">No candidate blueprints proposed yet — run Analysis → Architecture Recovery.</div>';
+
+  // Components already decided don't need attention here — surface only
+  // what's still awaiting a verdict, capped the same way Analysis caps its
+  // own per-perspective panes, so a large repo's card stays scannable.
+  const undecided = components.filter(c => !c.verdict);
+  const decidedCount = components.length - undecided.length;
+  _archInteractiveMode = true;
+  let componentsHtml;
+  try {
+    componentsHtml = undecided.length
+      ? undecided.slice(0, _ARCH_ROW_CAP).map((c, i) => _archRow(c, slug, `curate-comp-${i}`)).join('')
+      : '<div class="text-slate-600 text-xs text-center py-4">No components awaiting a verdict.</div>';
+  } finally {
+    _archInteractiveMode = false;
+  }
+
+  view.innerHTML = `
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — 📁 ${_esc(slug)}</span>
+    </div>
+    <div class="p-4 space-y-6 max-w-2xl">
+      ${_curateSubnavHtml('architecture', entityType)}
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏛 Candidate Blueprints</div>
+        <div class="text-xs text-slate-700 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
+        ${blueprintsHtml}
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🧩 Components awaiting a verdict</div>
+        <div class="text-xs text-slate-700 mb-2">${decidedCount ? `${decidedCount} already decided — see Analysis → Architecture Recovery for the full read-only view. ` : ''}Accept, reject, or retype what architecture recovery proposed.</div>
+        ${componentsHtml}
       </div>
     </div>`;
 }

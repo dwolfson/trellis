@@ -2709,6 +2709,12 @@ def _architecture_recovery_results(
         # form. Offering there would re-open a decision the system made
         # correctly.
         "documentation": _doc_ingestion_state(registry, slug),
+        # Phase C (blueprint-materialization-plan.md) — candidate blueprints
+        # proposed by clustering.py, each with its own accept/reject verdict
+        # and materialization state. Read once here so the frontend's Curate
+        # tab doesn't need a second route; Analysis's read-only rendering of
+        # this same payload simply doesn't render this key.
+        "blueprints": _candidate_blueprints_results(registry, slug),
         "raw_component_count": sum(1 for c in all_components if not c.get("structural")),
         "structural_node_count": sum(1 for c in all_components if c.get("structural")),
         "run_outcomes": run_outcomes,
@@ -2736,6 +2742,71 @@ def _json_or_empty(raw) -> dict:
         return json.loads(raw)
     except (TypeError, ValueError):
         return {}
+
+
+def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
+    """The `data.blueprints` key for `_architecture_recovery_results` —
+    Phase C's frontend-facing read of clustering.py's proposals (Backlog.md
+    item 1 / blueprint-materialization-plan.md), so Curate can offer an
+    accept/reject control on a candidate blueprint the same way component
+    verdicts already work.
+
+    Deliberately its own reader rather than folded into the component loop
+    above: candidate_blueprint findings share scope_locator="" (persist.py's
+    `_persist_blueprints`) and are disambiguated by (perspective, label)
+    within that one scope, not by scope_locator the way components are — a
+    genuinely different join key, so merging the two loops would mean
+    threading a second identity scheme through code that already has one.
+
+    One row per (perspective, cluster_name), latest survey wins — same
+    "latest row for this identity" rule every other reader here uses.
+    Verdict/materialized state merged on via curate.py's own key shape
+    (`f"{perspective}::{cluster_name}"`) so the frontend never has to
+    recompute that join.
+    """
+    from resource_explorer.surveyors.arch_recovery.persist import BLUEPRINT_KIND
+
+    rows = [r for r in registry.query_findings(slug, BLUEPRINT_KIND, "")
+            if r["check_name"] == "candidate_blueprint"]
+    by_key: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        detail = _json_or_empty(r.get("detail_json"))
+        perspective = detail.get("perspective", "")
+        name = detail.get("name", "")
+        if not perspective or not name:
+            continue
+        key = (perspective, name)
+        existing = by_key.get(key)
+        if existing is None or r["surveyed_at"] >= existing["row"]["surveyed_at"]:
+            by_key[key] = {"row": r, "detail": detail}
+
+    verdicts = registry.get_component_verdicts("repo", slug)
+    materialized = registry.get_materialized_blueprints("repo", slug)
+
+    blueprints = []
+    for (perspective, name), entry in sorted(by_key.items()):
+        r, detail = entry["row"], entry["detail"]
+        vkey = f"{perspective}::{name}"
+        blueprints.append({
+            "perspective": perspective,
+            "cluster_name": name,
+            "summary": r.get("summary", ""),
+            "signal": detail.get("signal"),
+            "carrier": detail.get("carrier"),
+            "composed_into": detail.get("composed_into"),
+            "size": detail.get("size", 0),
+            "members": detail.get("members") or [],
+            "children": detail.get("children") or [],
+            "parent": detail.get("parent", ""),
+            "oversized": bool(detail.get("oversized")),
+            "target_size": detail.get("target_size"),
+            "run_scope": detail.get("run_scope", ""),
+            "surveyed_at": r.get("surveyed_at", ""),
+            "verdict": _verdict_view(verdicts.get(vkey)),
+            "materialized": _materialized_view(materialized.get(vkey)),
+        })
+    return blueprints
+
 
 
 def _architecture_recovery_trend(registry, slug: str) -> list[dict]:

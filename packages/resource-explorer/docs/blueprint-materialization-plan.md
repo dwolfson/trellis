@@ -313,10 +313,41 @@ membership/child attachment only. DONE, 2026-09-03 (`bce70ca`).**
 - **A real gap found by the tests, not scoped in the plan**: the *existing* `list_component_verdicts` route never filtered to `verdict_target="component"` — `get_component_verdicts` returns both mixed and leaves filtering to the caller, and only the new blueprint route filtered its own side. Fixed with the mirroring filter; practically harmless (a blueprint verdict's key can't realistically collide with a real `scope_locator`) but the endpoint's name promises component verdicts specifically.
 - Tests: 20 route-level tests (`tests/test_web.py::TestCurateBlueprintVerdictsRouter`) with `BlueprintMaterializer` mocked, plus 2 direct unit tests for `enqueue_blueprint_members` (`tests/test_egeria_outbox.py`). Full suite: 3615 passed, 92 skipped, 0 failed.
 
-**Phase C — frontend, plus the backend reader gap it depends on.**
-- `_architecture_recovery_results` gains `data.blueprints` (new backend step, per above).
-- `index.html`: `_renderCandidateBlueprints`, blueprint verdict controls, oversized-cluster styling, unmaterialized-member warning state.
-- Manual verification against a real survey run with clusters (e.g. `egeria_workspaces_git`, which already has candidate blueprints computed) — confirm the rendered tree matches `detail.children`/`detail.parent` linkage correctly, and that accepting a leaf cluster before its members are individually accepted correctly blocks/warns rather than silently doing nothing.
+**Phase C — frontend, plus the backend reader gap it depends on. DONE, 2026-09-03 — built at
+the corrected placement (the amendment above), not the original inside-Analysis one.**
+- `_architecture_recovery_results` gains `data.blueprints` — new `_candidate_blueprints_results`
+  reader in `repo_survey_definition_adapter.py`, reading `kind="architecture_blueprints"`
+  findings (disambiguated by `(perspective, cluster_name)`, latest survey wins) and merging on
+  verdict/materialization state via `curate.py`'s own `f"{perspective}::{cluster_name}"` key.
+  10 unit tests (`tests/test_candidate_blueprints_reader.py`).
+- `index.html`: new Curate sub-tab (`🏛 Architecture Verdicts`, repo-only — `_curateSubnavHtml`/
+  `_setCurateSubTab`, mirroring `_automateSubnavHtml`'s pattern) with two sections: candidate
+  blueprints (accept/reject, oversized-cluster warning, unmaterialized-member/child warning on
+  a partial materialization) and components still awaiting a verdict (reuses the existing
+  `_archRow`/`_archVerdictControlsHtml` chain rather than duplicating it). Analysis's own
+  rendering of the same payload is now genuinely read-only: a new module-level
+  `_archInteractiveMode` flag (false by default, set true only for the Curate render pass) gates
+  both the accept/reject controls on an undecided component and the "change" affordance on an
+  already-decided one — Analysis shows verdicts as facts, Curate shows them as editable state.
+  **Not built as originally scoped**: a per-perspective nested tree with `detail.children`
+  indentation (item 2 of the original Frontend section) — built instead as a flat list of
+  (perspective, cluster_name) rows, since Curate's own candidate set is small enough per repo
+  that the extra nesting UI wasn't needed to stay scannable; `detail.children`/`detail.parent`
+  are still both carried in the payload (`bp.children.length`/`bp.parent` rendered inline) if a
+  future pass wants the tree view.
+- Live-verified against `sqlglot` (18 components, 3 candidate blueprints) — accepted a blueprint
+  and a component through the actual UI (not just the API), confirmed the verdict badge and
+  "change" control render correctly in Curate, confirmed the same payload renders no accept/
+  change controls in Analysis (checked via direct `_renderArchitectureRecoveryResults` calls in
+  both `_archInteractiveMode` states against the live payload). **Found, not caused by this
+  phase**: accepting the `.github` blueprint saved its verdict correctly but Egeria rejected the
+  materialization (`VALIDATION_ERROR_1` on `NewSolutionElementRequestBody`, "Request body failed
+  validation") — reported non-fatally via the existing toast pattern exactly as designed
+  (verdict saved regardless). This is a `BlueprintMaterializer.materialize_blueprint_element`
+  (Phase A) request-body bug, not a Phase C regression; tracked as Backlog item 6 rather than
+  fixed here, since fixing it means touching Phase A code under Phase C's own late-session
+  review, not extending Phase C's actual scope.
+- Full suite run pending (background at time of writing) — see Backlog.md item 1 for the result.
 
 ---
 

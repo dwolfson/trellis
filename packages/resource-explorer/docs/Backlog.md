@@ -56,15 +56,23 @@ reconciliation changes one concrete thing in the inside-out plan's Phase C (fron
 moves from Analysis to a new Curate tab) — read both before implementing, not just one, or ask
 whoever picks this up next to re-derive current state rather than trust this paragraph's own age.
 
-**Progress, 2026-09-03: Phases A, A.5, and B are done.** Registry + `BlueprintMaterializer`
+**Progress, 2026-09-03: Phases A, A.5, B, and now C are done.** Registry + `BlueprintMaterializer`
 (`6a76e4b`); the live wire-safety measurement, confirmed `SolutionLinkingWire` is multi-link
 (`86c214a`), with the project owner directly deciding to defer wire enqueueing to its own
 follow-up rather than ship it with the confirmed risk (`7381782`); the blueprint verdict route
-and member/child attachment via the outbox, scoped accordingly (`bce70ca`). **What's left: Phase
-C (frontend) — per the reconciliation above, in Curate's own tab, not Analysis's panel — and the
-deferred wire-enqueueing follow-up itself**, whenever that's picked up. Backlog item 5 (below)
-tracks the related `AnnotationReview` measurement gap a peer session surfaced reviewing Phase A.5,
-also not yet done.
+and member/child attachment via the outbox, scoped accordingly (`bce70ca`). **Phase C (frontend)
+shipped at the reconciled placement** — a new `🏛 Architecture Verdicts` sub-tab in Curate
+(`_curateSubnavHtml`, mirroring `_automateSubnavHtml`), not Analysis's panel: candidate-blueprint
+accept/reject with oversized-cluster and unmaterialized-member warnings, plus the existing
+per-component verdict controls relocated there from Analysis, which is now genuinely read-only
+(new `_archInteractiveMode` module flag gates the accept/reject/change affordances). Backend gap
+closed alongside it: `_architecture_recovery_results` now carries `data.blueprints` via a new
+`_candidate_blueprints_results` reader (10 unit tests). Live-verified against `sqlglot` through
+the actual UI, not just the API — see item 6 below for a real, pre-existing materialization bug
+found doing that verification. Full suite: 3652 passed, 92 skipped, 0 failed. **What's left: the
+deferred wire-enqueueing follow-up**, whenever that's picked up. Backlog item 5 (below) tracks the
+related `AnnotationReview` measurement gap a peer session surfaced reviewing Phase A.5, also not
+yet done.
 
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
@@ -192,6 +200,19 @@ docstring says to re-measure before relying on that for *any other* relationship
 nothing currently calls it, so there's no live bug — but it's the next candidate for exactly the
 `scripts/arch-spike/measure_wire_multi_link.py` treatment (the return-value test, one call)
 **before** anything in Phase 3 adds it to the outbox, not after.
+
+**6. `BlueprintMaterializer.materialize_blueprint_element` fails Egeria's request-body
+validation on a real accept — found 2026-09-03, live-verifying Phase C above against `sqlglot`
+through the actual UI, not fixed here.** Accepting the `.github` candidate blueprint saved the
+verdict correctly (the report-then-curate split held — a materialization failure is reported,
+not fatal to the verdict), but the `NewSolutionElementRequestBody` POST came back
+`VALIDATION_ERROR_1`, "Request body failed validation," from the live Egeria instance. Pre-dates
+Phase C — this is Phase A code (`6a76e4b`), a request-body shape bug in `blueprint_materializer.py`
+itself, not a frontend regression. Not diagnosed further here (scope discipline: found while
+verifying a different phase, and fixing it means reading Egeria's actual validation error detail
+against `NewSolutionElementRequestBody`'s schema, which is its own task). Component materialization
+(`ComponentMaterializer`, `NewElementRequestBody`) was live-verified working back in Phase A/B —
+this is specific to the blueprint element's body shape, not a systemic outbox/materializer issue.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
