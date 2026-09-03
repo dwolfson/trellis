@@ -59,6 +59,12 @@ KNOWN_EXCLUSIVE = {
     ("sub_surveyors/arch_summary.py", "architecture_summary"),
     ("sub_surveyors/chaoss_metrics.py", "chaoss_metrics"),
     ("sub_surveyors/community_support.py", "community_support"),
+    # Added 2026-09-03 alongside the fix that gave the normal (success) path
+    # its own scan_summary annotation for the first time — the empty-
+    # inventory _unverified() early-return `return`s immediately, so its
+    # own scan_summary can never coexist with the one on line ~283 in one
+    # run. Same shape secret_scan.py already has below.
+    ("sub_surveyors/contribution_provenance.py", "scan_summary"),
     ("sub_surveyors/cve_scan.py", "cve_scan"),
     ("sub_surveyors/data_profiler.py", "data_profiling"),
     ("sub_surveyors/documentation.py", "api_docstring_coverage"),
