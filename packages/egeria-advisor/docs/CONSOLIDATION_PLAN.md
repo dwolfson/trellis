@@ -1,7 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` and `design/` cluster 1 are DONE (2026-09-03). Clusters
-2–7 remain a proposal awaiting approval.
+**Status:** `history/` and `design/` clusters 1–2 are DONE (2026-09-03).
+Clusters 3–7 remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -66,11 +66,22 @@ the pass and is recorded in the new document's §6:
   exclusion pattern, caught before it reached the document;
 - it is missing from `CLAUDE.md`'s agent table.
 
-### 2. Indexing and collections — 6 files, ~7,400 words
+### 2. Indexing and collections — **DONE 2026-09-03**
 
-`MULTI_COLLECTION_DESIGN` · `COLLECTION_SPECIFIC_PARAMETERS` ·
-`STRUCTURED_METADATA_INDEXING` · `METADATA_FILTERING_ENHANCEMENT` ·
-`INCREMENTAL_INDEXING_DESIGN` · `EGERIA_DOCS_SPLIT_STRATEGY`
+6 files, 7,371 words → `INDEXING_AND_COLLECTIONS.md`.
+
+**Four claims checked against the code changed what the document says:**
+
+- the `egeria_docs` split shipped — nine collections enabled, `egeria_docs`
+  `enabled=False`, so that strategy doc was a completed plan;
+- the per-collection schema is no longer EA-local. It moved into the shared
+  `trellis-vectorstore` package, and Resource Explorer imports the same one, so
+  a schema change now affects two applications;
+- incremental indexing state moved from SQLite to Postgres. The design still
+  specified `data/index_state.db`, and `FileTracker.__init__` still accepts a
+  `db_path` its own docstring says is ignored, while the caller computes it;
+- `egeria_docs` still carries 22 live routing keywords. Verified inert — the
+  router guards on `.enabled` — so dead config rather than a misroute.
 
 ### 3. Monitoring and analytics — 3 files, ~5,400 words
 

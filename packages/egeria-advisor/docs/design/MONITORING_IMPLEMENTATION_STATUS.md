@@ -527,8 +527,8 @@ print("Baseline captured!")
 **Estimated Time**: 16 hours
 
 See separate design documents:
-- `docs/design/COLLECTION_SPECIFIC_PARAMETERS.md`
-- `docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md`
+- `docs/design/INDEXING_AND_COLLECTIONS.md`
+- `docs/design/INDEXING_AND_COLLECTIONS.md`
 
 ---
 
@@ -539,7 +539,7 @@ See separate design documents:
 2. ✅ `advisor/collection_metrics.py` (401 lines)
 3. ✅ `advisor/assembly_metrics.py` (429 lines)
 4. ✅ `docs/design/QUERY_HANDLING_AND_QUALITY.md` (723 lines)
-5. ✅ `docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md` (523 lines)
+5. ✅ `docs/design/INDEXING_AND_COLLECTIONS.md` (523 lines)
 
 ### Modified (1 file, ~200 lines added)
 1. ✅ `advisor/mlflow_tracking.py` (+200 lines)
