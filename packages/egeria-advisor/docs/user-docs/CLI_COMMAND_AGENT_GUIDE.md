@@ -369,7 +369,7 @@ For issues or questions:
 1. Check this guide
 2. Review command examples
 3. Try the test scripts
-4. Check the design document: `docs/design/CLI_COMMAND_AGENT_DESIGN.md`
+4. Check the design document: `docs/design/AGENTS_AND_CODE_ANALYSIS.md` (§1)
 
 ## Version History
 

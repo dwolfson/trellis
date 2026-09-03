@@ -1,7 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` and `design/` clusters 1–4 are DONE (2026-09-03).
-Clusters 5–7 remain a proposal awaiting approval.
+**Status:** `history/` and `design/` clusters 1–5 are DONE (2026-09-03).
+Clusters 6–7 remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -117,13 +117,27 @@ absent. It is now `future/EGERIA_ADVISOR_PRO.md`. Keeping it with completed
 infrastructure meant the document's own status line could only be right about
 half of itself.
 
-### 5. Agents, routing, and code analysis — 4 files, ~3,800 words
+### 5. Agents, routing, and code analysis — **DONE 2026-09-03**
 
-`CLI_COMMAND_AGENT_DESIGN` · `AGENT_ERROR_AND_ROUTING_FIX` ·
-`CODE_ANALYSIS_TOOLS_RESEARCH` · `CODE_ANALYSIS_UPDATE_GUIDE`
+4 files, 3,778 words → `AGENTS_AND_CODE_ANALYSIS.md`.
 
-Cross-check against RE: code analysis moved *from* EA *to* RE, so some of this may
-describe a capability that no longer lives here.
+**This plan's cross-check was half right, and the wrong half mattered more.**
+"Code analysis" names two unrelated capabilities in this codebase, described in
+separate documents using the same phrase:
+
+- **Symbol extraction did transfer**, and completely. EA reads
+  `resource_explorer.project_code_symbols` through a shim that mirrors the old
+  method names so call sites did not change; the write path was removed from
+  `ingest_file()`. `code_symbol_store.py` and its tables are kept unwritten as a
+  **deliberate rollback net (decision D8)** — a considered state, not drift, and
+  worth knowing before someone tidies away tables that look unused.
+- **Repository metrics did not.** Radon/Pygount and their scripts are still EA's,
+  so `CODE_ANALYSIS_UPDATE_GUIDE`'s instructions are live. Reading the two
+  documents as one subject would have retired working instructions — which is
+  exactly what this plan's own cross-check invited.
+
+Also found: the cache those metrics write to (`data/cache/enhanced_metrics.json`)
+is absent, so anything consuming them is reading nothing.
 
 ### 6. Session, state, and artifacts — 4 files, ~5,600 words
 

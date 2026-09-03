@@ -484,7 +484,7 @@ were hard to find rather than out of date:
   [troubleshooting notes](docs/design/QUERY_HANDLING_AND_QUALITY.md)
 - [Exhaustive Query Detection](docs/design/QUERY_HANDLING_AND_QUALITY.md)
 - [Metadata Filtering](docs/design/INDEXING_AND_COLLECTIONS.md) — `advisor/metadata_filters.py`
-- [Code Analysis Update Guide](docs/design/CODE_ANALYSIS_UPDATE_GUIDE.md)
+- [Agents, routing and code analysis](docs/design/AGENTS_AND_CODE_ANALYSIS.md) — includes the code-analysis update instructions (§4b)
 - [Egeria & pyegeria wish list](docs/design/egeria-wishlist.md) — gaps found while integrating
 
 Finished and abandoned work is in [docs/archive/](docs/archive/README.md), which explains what
