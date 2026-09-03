@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-42 documents, grouped by what they *are* rather than what they are about — the
+38 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -23,7 +23,9 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated runbook. Current as of 2026-09-02
 - **[egeria.md](egeria.md)** — 2026-09-02  
   hand-authored reference outline. Sparse by nature — the headings are
-- **[question-answering-and-context.md](question-answering-and-context.md)** —   
+- **[filesystem-and-database-surveying.md](filesystem-and-database-surveying.md)** —   
+  consolidated design and reference. Current as of 2026-09-02
+- **[question-answering-and-context.md](question-answering-and-context.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[repo-analysis-funnel.md](repo-analysis-funnel.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
@@ -53,8 +55,6 @@ The work is done and these are NOT archive candidates: source comments point her
   all 5 parts built and live-verified (2026-08-13). Part 1 (Discovery
 - **[feedback-signals-shared.md](feedback-signals-shared.md)** — 2026-09-01  
   survey + proposal, nothing built. Dan's ask: RE has a thumbs up/down signal in
-- **[filesystem-survey-analytics-plan.md](filesystem-survey-analytics-plan.md)** — 2026-09-02  
-  Design agreed (2026-07-13). §4 items 1-3, 5, 6 implemented (2026-07-13) — Technology Type string
 - **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-09-02  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
 - **[survey-definitions.md](survey-definitions.md)** — 2026-09-02  
@@ -68,16 +68,12 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[admin-surface-options.md](admin-surface-options.md)** — 2026-09-01
 - **[Architecture.md](Architecture.md)** — 2026-08-30
 - **[Backlog.md](Backlog.md)** — 2026-09-02
-- **[comparison-integration-approach.md](comparison-integration-approach.md)** — 2026-08-07
+- **[comparison-integration-approach.md](comparison-integration-approach.md)** — 2026-09-02
 - **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-08-24
 - **[curate-followups.md](curate-followups.md)** — 2026-08-07
-- **[database-surveyor-design.md](database-surveyor-design.md)** — 2026-08-06
-- **[database-surveyor-quickstart.md](database-surveyor-quickstart.md)** — 2026-08-28
-- **[egeria-postgresql-exploration.md](egeria-postgresql-exploration.md)** — 2026-08-06
 - **[end-to-end-gap-audit-2026-08-25.md](end-to-end-gap-audit-2026-08-25.md)** — 2026-09-02
 - **[extending-resource-explorer.md](extending-resource-explorer.md)** — 2026-09-02
 - **[feedback-triage-from-workspaces.md](feedback-triage-from-workspaces.md)** — 2026-09-01
-- **[fs-db-design-inputs.md](fs-db-design-inputs.md)** — 2026-09-02
 - **[gap-analyses-design.md](gap-analyses-design.md)** — 2026-09-02
 - **[kroki-diagram-rendering.md](kroki-diagram-rendering.md)** — 2026-08-15
 - **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-09-02
