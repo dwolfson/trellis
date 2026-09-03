@@ -201,6 +201,35 @@ class RepoClassificationSurveyor(BaseSurveyor):
                 "confidence": 60,
                 "detail": {"kind": item.kind, "evidence": item.evidence, "date": item.date},
             })
+        # confirmations/unexpected were computed and sent to Egeria's
+        # additionalProperties (above) but never turned into findings here —
+        # a silent-field-allowlist bug one layer upstream of the usual shape:
+        # not a reader dropping a persisted field, but this loop never
+        # persisting them at all. Named directly in this module's own
+        # docstring as one of only three things it reports ("located
+        # artifacts, absent ones, and *confirmations*"), so a curator reading
+        # local findings could see two of the three. `unexpected` never had a
+        # comparable "this is one of the things we report" sentence, but it
+        # is symmetric with `confirmations` in the same ExpectationReport and
+        # equally silent otherwise.
+        for item in report.confirmations:
+            findings.append({
+                "check_name": f"confirmed_{item.kind}",
+                "label": "confirms",
+                "summary": f"{item.kind}: absent, as expected for a {report.primary_role} "
+                           f"— supports the role rather than counting against it",
+                "confidence": 60,
+                "detail": {"kind": item.kind},
+            })
+        for item in report.unexpected:
+            findings.append({
+                "check_name": f"unexpected_{item.kind}",
+                "label": item.outcome,
+                "summary": f"{item.kind}: {item.outcome} — present though not expected "
+                           f"for a {report.primary_role}",
+                "confidence": 60,
+                "detail": {"kind": item.kind, "outcome": item.outcome},
+            })
 
         # Deliberately NOT wrapped in try/except: a write failure here is the
         # exact class of bug the FK work found — an unregistered slug, or a
