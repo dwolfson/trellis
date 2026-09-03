@@ -20,7 +20,7 @@ produces *design* metadata (Egeria Area 7) rather than measurements.
 > verified against `/Users/dwolfson/localGit/egeria-v6/egeria` and `egeria-python` and is unaffected by
 > the repo migration. **RE-side references — gap numbers, file paths, line numbers — were derived from
 > the pre-migration standalone `resource-explorer` repo and inherit the staleness documented in
-> `survey-and-analysis-current-state-2026-08-19.md`.** Re-verify anything RE-specific against
+> `survey-model.md`.** Re-verify anything RE-specific against
 > `trellis/packages/resource-explorer` before acting on it.
 >
 > **Revision note.** The RE-side claims added in the post-review revision — §5.5, §5.6, §5.7, §6.0,

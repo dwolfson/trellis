@@ -42,11 +42,11 @@ baseline) — none of which is something to run from here (no live-platform
 testing per the task).
 
 **Does it affect RE, and where?** Yes, directly — this is the blocker cited
-by `docs/re-as-engine-host-plan.md` (still "ON HOLD" at the top, citing a
+by `docs/survey-execution.md (§7)` (still "ON HOLD" at the top, citing a
 stale `ISSUE-51` number — not corrected to point at ISSUE-79; see
 `docs/open-stack-checklist.md:150-175`, which already flagged the
 renumbering mismatch on 2026-08-27/28) and by
-`docs/repo-survey-catalog-completion-plan.md:7` and
+`docs/survey-model.md (§5):7` and
 `docs/end-to-end-gap-audit-2026-08-25.md:112,143`. Blocks cases 1/2/4 of the
 engine-host design (anything needing a native Egeria survey to *complete*,
 not just start) — case 3 (RE-local surveying) and case 4's already-verified
@@ -64,7 +64,7 @@ failure"). This is a case where the entry's own status is genuinely
 in-between "still reproducing" and "fixed" — don't round it either way.
 
 **Blocking severity:** **Blocks** — the direct, named holdup for
-`docs/re-as-engine-host-plan.md` and the native-survey path of
+`docs/survey-execution.md (§7)` and the native-survey path of
 `resource_explorer/surveyors/egeria_delegated_step.py` (its delegated-step
 mechanics are built and live-verified independently of this bug, but a real
 delegated survey against a template-created folder/file asset is still
@@ -149,7 +149,7 @@ answer these directly (another agent is doing that).
 `GovernanceActionExecutor`), and what is it called?**
 
 Partial evidence exists, but for a different edge than the question asks
-about. `docs/re-as-engine-host-plan.md:44` records a source-verified chain:
+about. `docs/survey-execution.md (§7):44` records a source-verified chain:
 `GovernanceActionProcessStep` → (`GovernanceActionExecutor{requestType}`) →
 `GovernanceEngine` — i.e., a step links directly to an *engine*, not to a
 `GovernanceActionType`. Separately, `Link Action to Action Executor`
@@ -191,7 +191,7 @@ processes. This looks like a genuine gap — nothing already known here.
 identity?**
 
 Tracker evidence bears on this and suggests it's both, in different roles.
-`re-as-engine-host-plan.md:44`'s confirmed chain shows guards used as a
+`survey-execution.md (§7):44`'s confirmed chain shows guards used as a
 **runtime routing condition** on `NextGovernanceActionProcessStep`
 ("guard-gated" chaining). Separately, **ISSUE-71** shows `Produced Guards`
 is a **declared, structural vocabulary** attribute on the

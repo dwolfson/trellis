@@ -3,7 +3,7 @@
 **Status: design pass complete. Nothing built. Recommends a smaller change than
 the one it set out to design.**
 **Date:** 2026-08-28
-**Follows:** `survey-model-and-engine-host-design.md` §2, which framed the
+**Follows:** `survey-execution.md` §2, which framed the
 question, and `open-stack-checklist.md` §2, which parked it.
 
 ---
@@ -116,7 +116,7 @@ can watch a survey rather than only an analysis.
 
 The obvious worry: survey types live in Egeria, so keying schedules to them
 makes scheduling depend on Egeria being reachable — breaking the local-first
-guarantee that `docs/survey-model-and-engine-host-design.md` §4.6 insists on.
+guarantee that `docs/survey-execution.md` §4.6 insists on.
 
 It does not, because of something that landed on 2026-08-27 for a different
 reason. `surveyors/survey_definition_docs.py` parses the authored Dr.Egeria

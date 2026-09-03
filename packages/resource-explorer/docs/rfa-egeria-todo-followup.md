@@ -29,7 +29,7 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
 
 - **`ToDo`** is a real `PersonAction` type — a general-purpose human work item,
   separate from `RequestForAction` (which is an `Annotation` subtype, already
-  how RE's own surveyors create RFAs — see `docs/survey-activity-design.md`).
+  how RE's own surveyors create RFAs — see `docs/survey-model.md`).
   Fields include `activityStatus` (`REQUESTED`/`WAITING`/`IN_PROGRESS`/
   `COMPLETE`/etc.), `priority`, `dueTime`, `startTime`, `requestedTime`,
   `completionTime`.

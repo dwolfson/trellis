@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-81 documents, grouped by what they *are* rather than what they are about — the
+66 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -22,16 +22,12 @@ Live plans. The work is not done; the doc is the specification.
 
 Decisions and models. Cited from source where a comment cannot restate them.
 
-- **[approach-portfolio-model.md](approach-portfolio-model.md)** — 2026-08-22  
+- **[approach-portfolio-model.md](approach-portfolio-model.md)** — 2026-09-02  
   design note, for review
 - **[architecture-recovery-in-practice.md](architecture-recovery-in-practice.md)** — 2026-09-02  
   reference, current as of 2026-09-02
 - **[context-compiler-across-trellis.md](context-compiler-across-trellis.md)** — 2026-08-30  
   review, 2026-08-30. Requested as "how the context compiler notion can be leveraged
-- **[distributed-survey-best-practices.md](distributed-survey-best-practices.md)** — 2026-08-06  
-  Architecture Design Note
-- **[distributed-survey-orchestration.md](distributed-survey-orchestration.md)** — 2026-08-07  
-  Proposal / Design Options
 - **[egeria-blocker-review-2026-09-02.md](egeria-blocker-review-2026-09-02.md)** — 2026-09-02  
   per tracker: open, Egeria Server. Last touched 2026-08-30 (Egeria
 - **[egeria-publishing-a-changed-definition.md](egeria-publishing-a-changed-definition.md)** — 2026-08-31  
@@ -40,28 +36,24 @@ Decisions and models. Cited from source where a comment cannot restate them.
   Open, unresolved. No workaround exists in RE — this fails the operation outright; RE catches the
 - **[egeria-reset-recovery.md](egeria-reset-recovery.md)** — 2026-08-31  
   written 2026-08-21, from an actual reset rather than from theory. Every
-- **[microflow-survey-funnel-model.md](microflow-survey-funnel-model.md)** — 2026-08-16  
-  framing doc, capturing a real unification confirmed 2026-08-15 —
 - **[recovery-and-resync-manual.md](recovery-and-resync-manual.md)** — 2026-08-31  
   written 2026-08-31/09-01, from the recovery it describes rather than from
-- **[survey-activity-design.md](survey-activity-design.md)** — 2026-08-08  
-  In revision — second round of comments incorporated
+- **[survey-execution.md](survey-execution.md)** —   
+  consolidated design. Current as of 2026-09-02
+- **[survey-model.md](survey-model.md)** —   
+  consolidated design and reference. Current as of 2026-09-02
 
 ## Findings and audits
 
 Evidence. What was measured, when, and against what.
 
-- **[architecture-recovery.md](architecture-recovery.md)** —   
+- **[architecture-recovery.md](architecture-recovery.md)** — 2026-09-02  
   consolidated design and reference. Phase 0 and Phase 1 measurement complete; the
-- **[survey-and-analysis-current-state-2026-08-19.md](survey-and-analysis-current-state-2026-08-19.md)** — 2026-08-20  
-  findings document, not a work plan. Everything below is observed in the code as of
 
 ## Shipped — kept because the code cites them
 
 The work is done and these are NOT archive candidates: source comments point here for the reasoning behind decisions.
 
-- **[analysis-step-egeria-registration-plan.md](analysis-step-egeria-registration-plan.md)** — 2026-08-13  
-  investigation complete, plan drafted, not yet built
 - **[assessment-expansion-plan.md](assessment-expansion-plan.md)** — 2026-08-15  
   built. Corrected 2026-08-15 — this header was stale; direct
 - **[assessment-sub-resource-cataloging.md](assessment-sub-resource-cataloging.md)** — 2026-08-15  
@@ -84,38 +76,18 @@ The work is done and these are NOT archive candidates: source comments point her
   draft, first pass — for discussion, not yet decided or implemented
 - **[granularity-pass.md](granularity-pass.md)** — 2026-08-28  
   design pass complete. Nothing built. Recommends a smaller change than
-- **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-08-24  
+- **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-09-02  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
-- **[microflow-embedded-process-plan.md](microflow-embedded-process-plan.md)** — 2026-08-17  
-  design pass complete (2026-08-16), not yet built. Four independent, loosely-coupled threads — se
-- **[outbox-publishing-design.md](outbox-publishing-design.md)** — 2026-08-31  
+- **[outbox-publishing-design.md](outbox-publishing-design.md)** — 2026-09-02  
   steps 1-4 are BUILT for the repo path — which is all Phase 2 needs (§6 step 4's
-- **[re-as-engine-host-plan.md](re-as-engine-host-plan.md)** — 2026-08-17  
-  ON HOLD (2026-08-17). Design complete; case 4 built and live-verified at the code/routing level 
-- **[repo-context-and-tool-routing.md](repo-context-and-tool-routing.md)** — 2026-08-31  
+- **[repo-context-and-tool-routing.md](repo-context-and-tool-routing.md)** — 2026-09-02  
   design note. Nothing here is built beyond the one worked example named in §3
 - **[repo-scope-narrowing-funnel.md](repo-scope-narrowing-funnel.md)** — 2026-08-11  
   Phase 1 AND Phase 2 both implemented, tested (916 tests total), and live-verified
-- **[repo-survey-catalog-completion-plan.md](repo-survey-catalog-completion-plan.md)** — 2026-08-17  
-  design pass complete (2026-08-17), not yet built
 - **[rfa-egeria-todo-followup.md](rfa-egeria-todo-followup.md)** — 2026-08-16  
   (2026-08-16): implemented, unit-tested (44 tests), AND live-verified
-- **[step-cost-tiers-plan.md](step-cost-tiers-plan.md)** — 2026-08-20  
-  implemented 2026-08-20
-- **[survey-composition-and-topic-summary-design.md](survey-composition-and-topic-summary-design.md)** — 2026-08-31  
-  design note, nothing built. Written 2026-08-31 (UTC)
 - **[survey-definitions.md](survey-definitions.md)** — 2026-08-06  
   Implemented and validated end-to-end against a live Egeria server (2026-07-07/08) — both a singl
-- **[survey-model-and-engine-host-design.md](survey-model-and-engine-host-design.md)** — 2026-08-27  
-  design note. §1 hazards, §3 and §4.5 (Prefect) all done 2026-08-26
-- **[survey-question-context-plan.md](survey-question-context-plan.md)** — 2026-08-15  
-  D1/D2/D3 built, unit-tested (2026-08-13, 1100 tests green), and
-- **[survey-results-dashboard-plan.md](survey-results-dashboard-plan.md)** — 2026-08-17  
-  planned, not yet built
-- **[survey-tab-unification-plan.md](survey-tab-unification-plan.md)** — 2026-08-18  
-  implemented, tested, and live-verified this session (D1-D5 all shipped). Not yet committed
-- **[unified-survey-execution-model-plan.md](unified-survey-execution-model-plan.md)** — 2026-08-16  
-  planned, not yet built, except D7a's first slice (shipped
 
 ## Guides, references and unmarked
 
@@ -150,7 +122,6 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[repair-operations-design.md](repair-operations-design.md)** — 2026-08-28
 - **[repo-phase-visibility-model.md](repo-phase-visibility-model.md)** — 2026-08-26
 - **[rfa-dismissals.md](rfa-dismissals.md)** — 2026-09-01
-- **[survey-guard-evaluation-design.md](survey-guard-evaluation-design.md)** — 2026-09-01
 - **[survey-history-and-egeria-replay.md](survey-history-and-egeria-replay.md)** — 2026-09-02
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-08-07
 - **[trellis.md](trellis.md)** — 2026-08-20

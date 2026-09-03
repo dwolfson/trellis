@@ -4,7 +4,7 @@ Design only — no code in this note. Scopes four `STEP_REGISTRY` / `ANALYSIS_KI
 do not exist today, tracked as open items in `docs/open-stack-checklist.md` ("From the design
 note — nothing built": *"Four GAP questions with no analysis at all: secret handling,
 telemetry/phone-home detection, CLA/DCO provenance, SLA/availability content"*) and named in
-`docs/survey-composition-and-topic-summary-design.md:65,98` as the steps `Security_Assessment`
+`docs/survey-model.md (§1):65,98` as the steps `Security_Assessment`
 wants once they exist. They also correspond to four `GAP` rows in
 `docs/dr-egeria/resource_questions.csv:31-34` and `resource_explorer/configdata/question_catalog.yaml:581,597,613,628`.
 
@@ -253,7 +253,7 @@ than "computed"; a reader cannot tell a score computed under today's `CHECKS` fr
 after a future rebalancing of the weights without reading commit history. Naming and versioning the
 scheme makes that visible in the data itself, the same win `license_classification` gets for its
 risk table — and this surveyor is the more consequential one to fix, since it is the analysis
-`docs/survey-composition-and-topic-summary-design.md` names as the aggregate security-family score.
+`docs/survey-model.md (§1)` names as the aggregate security-family score.
 
 **Migration risk: low-to-moderate, and this is the right moment to also lock in what §0 found
 today.** `foss_scorecard` is the reducer that had the live `security_scan`/`security_hygiene`
@@ -621,7 +621,7 @@ in non-test, non-vendored code. Also `project_file_inventory` (already covered b
 `has_file_inventory`) for the disclosure-document check (README/PRIVACY/DISCLOSURE content
 presence — presence only at this tier; a RAG-tier follow-on could grade the disclosure's
 *quality*, out of scope here per the same Discovery/Assessment boundary
-`docs/survey-composition-and-topic-summary-design.md` draws for `cve_scan`).
+`docs/survey-model.md (§1)` draws for `cve_scan`).
 
 **`requires_resources`:** `{"zipball_root": "local_path"}` / `{"zipball_root": VIEW_SOURCE}`.
 
@@ -934,7 +934,7 @@ merge conflicts or, worse, a silent last-write-wins that drops one analysis's re
 `contribution_provenance.py`, `sla_content.py`), each self-contained, each importable and unit-
 testable in isolation against a fake `Project`/`ProjectRegistry`/local directory, with zero shared
 state between them. Four agents can write and test these four files fully in parallel with no
-coordination — the same reasoning `docs/survey-composition-and-topic-summary-design.md` gives for
+coordination — the same reasoning `docs/survey-model.md (§1)` gives for
 why sub-surveyors are "already composed of independent units" for repo surveys specifically
 (this module's own docstring, `repo_survey_definition_adapter.py:30-33`: "repo surveys are already
 composed of independent sub-surveyor units").
@@ -966,7 +966,7 @@ composed of independent sub-surveyor units").
    `STEP_REGISTRY`/`ANALYSIS_KINDS` at all, so it can ride along with step 3 without adding a
    second serialised pass over the shared Python file.
 5. **Same or a following session updates `security_overview` / `Security_Assessment`-shaped
-   dashboard bundles** (`docs/survey-composition-and-topic-summary-design.md`'s proposed
+   dashboard bundles** (`docs/survey-model.md (§1)`'s proposed
    `Security_Assessment` survey names these four explicitly as its missing steps) and the
    `question_catalog.yaml` GAP notes at the four cited line numbers, replacing `GAP: ...` with the
    real analysis id now that one exists — closing the loop the design docs already point at.

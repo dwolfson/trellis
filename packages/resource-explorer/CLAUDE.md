@@ -16,7 +16,7 @@ It is the successor to [Project Explorer](https://github.com/LF-AI/project-explo
 
 **Target users:** Data engineers, data stewards, DBAs, AI engineers, and security practitioners who need to understand and catalog information resources. Egeria is required for the core survey/catalog workflow; RAG-based querying works without it.
 
-**Design reference:** `docs/survey-activity-design.md` — read this before making architectural changes.
+**Design reference:** `docs/survey-model.md` — read this before making architectural changes.
 
 ## Package name
 

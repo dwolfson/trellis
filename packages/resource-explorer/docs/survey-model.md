@@ -1,9 +1,41 @@
-# Survey, Activity, and Annotation Architecture — Design Document
+# The survey model — microflows, surveys, funnel phases, and what a result is
 
-**Status:** In revision — second round of comments incorporated  
-**Authors:** Dan Wolfson, Claude  
-**Date:** 2026-06-09  
-**Scope:** Unified activity log, survey source clarity, tiered annotation framework, Egeria technology-type integration, project scope and naming
+**Status:** consolidated design and reference. Current as of 2026-09-02.
+**Read this before making architectural changes to how surveys are defined,
+composed, or presented.** For how a survey is *executed and dispatched*, see
+`survey-execution.md`. For authoring a definition in Egeria, see
+`survey-definitions.md`. For the catalogue of individual surveyors, see
+`surveyor-reference.md`.
+
+> **This document consolidates ten.** Part I is the original activity design
+> (D1–D12), which several other documents cite by decision number, so the
+> numbering is preserved. Part II merges the unifying microflow/funnel model,
+> composition, guard evaluation, question context, cost tiers, catalogue
+> completion, and the results surfaces. Part III is the settled register.
+
+---
+
+## The model in four words
+
+Everything below is one shape, and naming it removed several apparent
+disagreements between documents that turned out to be the same idea at
+different altitudes.
+
+- **Microflow** — the atomic unit of work. Self-contained: it acquires whatever
+  shared resource it needs, performs whatever writes or refreshes make its data
+  current, reads what it just ensured, and emits annotations. One `StepInfo`,
+  one Egeria-visible step (an `EmbeddedProcess` from Egeria's point of view).
+- **Survey** — a named, *ordered composition* of microflows. The same microflow
+  may appear in more than one survey. A user picks the survey that matches the
+  need — *"just re-check git statistics"* versus *"complete refresh"* — rather
+  than a fixed one-size bundle.
+- **Funnel phase** — Scouting, Discovery, Analysis, Assessment, Enrichment,
+  Understanding, Curate, Automate. A phase offers the surveys whose annotations
+  answer that phase's questions. **The phase does not hardcode which surveys
+  belong to it; the `ScopedBy` question graph does**, so the mapping is
+  configuration rather than code.
+- **Result** — what a person looks at, which is *not* the same as the step that
+  produced it (see Part II §3).
 
 ---
 
@@ -453,3 +485,134 @@ D12's disposition lifecycle deliberately left "a future recommendation step, sco
 ---
 
 *Last revised: 2026-06-09. Update status field when moving from design to implementation.*
+
+---
+
+# Part II — Composition, guards, cost, and results
+
+*Merged 2026-09-02 from nine notes. Each section names its source so a
+git-history search still finds the original.*
+
+## 1. Three names that keep collapsing into one
+
+*(from `survey-composition-and-topic-summary-design.md`)*
+
+| Concept | What it is | Where it lives |
+|---|---|---|
+| **Survey Definition** | a named, ordered graph of steps | Egeria, as a `GovernanceActionProcess` |
+| **Step** (microflow) | one unit of work | `surveyors/sub_surveyors/` |
+| **Analysis** | a catalogue entry describing a result a person looks at | `configdata/analysis_catalog.yaml` |
+
+The distinction is written down and still collapses in practice, because
+**almost every analysis maps to exactly one step, and every step is surfaced as
+its own analysis card.** `AnalysisKind` accepts a *list* of steps and the
+convention says an analysis "occasionally maps to several" — but **0 of 27
+currently do.** When a 1:1:1 mapping is the only mapping anyone has seen, three
+words start to feel like one thing with three names.
+
+**That collapse produced a wrong recommendation on 2026-08-31.** Reviewing
+security, a pass found `security_scan`'s three checks were each a weaker
+duplicate of a check another analysis performs, and concluded the *step* should
+be retired. Wrong layer: the step is cheap — fast, inline, reads stored data,
+fetches nothing — and its output is consumed by `foss_scorecard`. What was wrong
+is that it was *also* a top-level analysis card competing with better answers to
+the same question.
+
+> **The duplication was in presentation, not computation, and the fix for
+> duplicated presentation is composition rather than deletion.**
+
+This is the single most useful thing in this document for anyone about to delete
+a surveyor: check whether the redundancy is in what is *computed* or in what is
+*shown*.
+
+## 2. Guard evaluation
+
+*(from `survey-guard-evaluation-design.md`)*
+
+Egeria's guard semantics — including the mandatory-guard join — were **verified
+against the Java source**, not inferred. Guard evaluation exists for the Prefect
+whole-definition path. Two gaps remain, and both are about the fallback rather
+than the mechanism:
+
+1. **The local fallback loop ignores the step graph.** `SurveyDefinitionExecutor.run()`
+   — the path that must keep working whenever Prefect is off or unreachable —
+   walks the flat step list rather than the graph, so guards have no effect there.
+2. **No RE step runner emits a guard.** Every adapter returns
+   `{"annotations": [...]}` with no `"guard"` key, so even the built Prefect
+   guard-checker has nothing to evaluate for any step that exists today.
+
+The second is the load-bearing one: a guard mechanism with no producers is
+indistinguishable from no guard mechanism, and looks built.
+
+## 3. Cost tiers
+
+*(from `step-cost-tiers-plan.md`, implemented 2026-08-20)*
+
+Surveys are composed **by budget rather than by enumeration**. Each step declares
+what it costs to *acquire* its material and what it costs to *compute* over it,
+on two independent axes, so a caller can ask for "everything under this fetch
+budget" instead of naming steps.
+
+Across 40 steps: `fetch_cost` is `none` for 21, `download` for 13, `api`/`api_heavy`
+for 6; `compute_cost` is `low` for 34, `medium` for 3, `high` for 3.
+
+**The axes must stay independent** — they come apart. An analysis can be cheap to
+compute and still require a download, which is why *availability* (may this run
+inline?) is declared rather than derived from *run time*. Declared costs are also
+**observed**: a step claiming `fetch_cost: none` that opens a connection is
+flagged, because an under-declared step silently breaks the guarantee that a
+cheap tier is cheap.
+
+## 4. Questions as the composition key
+
+*(from `survey-question-context-plan.md`, D1–D3 built)*
+
+A funnel phase does not hold a list of surveys. It holds a set of **questions**,
+and the surveys reachable from those questions are what it offers. The binding is
+the `ScopedBy` graph in Egeria, so changing which surveys a phase offers is
+configuration, not a code change.
+
+This is what makes the phase boundaries defensible: a survey belongs to Discovery
+because it answers a Discovery question, not because someone filed it there.
+
+## 5. Catalogue completion and how new surveys get authored
+
+*(from `repo-survey-catalog-completion-plan.md`, `microflow-embedded-process-plan.md`)*
+
+- **Steps are reused across surveys** — the same microflow appears in several
+  survey types, and single-step survey types are a legitimate degenerate case
+  rather than a workaround.
+- **Survey types are generated from a CSV** rather than hand-authored one by one,
+  with ad-hoc authoring available through Egeria Advisor.
+- **Creating a new step or analysis is developer work**, and that is an explicit
+  non-goal to make user-facing for now.
+- **Resource type is a many-to-many dimension on `AnalysisKind`**, not a
+  partition — the same analysis can apply to repositories and file systems.
+
+## 6. Results surfaces
+
+*(from `survey-results-dashboard-plan.md`, `survey-tab-unification-plan.md`)*
+
+The per-phase sub-tab shape converged independently on: one tab to select and run
+surveys, one to visualise results, one for questions, one for disposition — with
+Scouting additionally carrying Search, because candidates are not registered
+resources yet and nothing else needs it.
+
+Tab unification is built and live-verified. The results dashboard is designed and
+not built.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Is an analysis the same thing as a step? | **No** | 0 of 27 analyses map to more than one step, which is why they *feel* identical — the model allows many |
+| Retire a step whose checks duplicate another analysis? | **No** | The duplication was in presentation; the step is cheap and its output feeds `foss_scorecard` |
+| Does a funnel phase own a list of surveys? | **No** | It owns questions; the `ScopedBy` graph resolves surveys |
+| Compose surveys by enumerating steps? | **No** — by budget | Cost tiers, implemented 2026-08-20 |
+| Derive "may run inline" from "is fast"? | **No** | They come apart; availability is declared separately |
+| Trust a step's declared cost? | **No** — observe it | An under-declared step silently breaks the cheap-tier guarantee |
+| Is guard evaluation built? | **Partly** — and not usefully | Prefect path only, and no step emits a guard, so there is nothing to evaluate |
+| Should users author new steps or analyses? | **No** — developer work | Explicit non-goal for now |
+| Is resource type a partition on analyses? | **No** — many-to-many | The same analysis serves several resource types |
