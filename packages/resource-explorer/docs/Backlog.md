@@ -28,10 +28,19 @@ a blueprint writes far more elements per run than anything currently published, 
 is blunt that *"a half-published blueprint is worse than none."* Its other prerequisite is done:
 projection has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
 
-**2. `security_features` should report `skipped_by_design`.** GitHub returns
-`security_and_analysis` only to repository admins, so the analysis is **structurally impossible
-for third-party repos** — 2 of 60 populated. That is a fact about the world, not a failed run,
-and it is the strongest case for that state anyone has found. Presentation session's finding.
+**2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
+2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
+even opened: `a059e01` (2026-08-31, surveyor — emits a confidence-0 `skipped_by_design` annotation
+with `gate="github_admin_only"` instead of nothing when GitHub withholds
+`security_and_analysis`) and `f958f3d` (identity work, same surveyor). The results reader
+(`_security_features_results` in `repo_survey_definition_adapter.py`) distinguishes all three real
+causes of an empty card — `never_run` (no stats fetched), `skipped_by_design` with the reason (stats
+exist, feature settings not visible), and a genuine empty findings list (visible, nothing enabled)
+— and `index.html`'s `_renderEmptyResultState` renders `skipped_by_design` with neutral styling and
+the stated reason, not as a failure. `tests/test_security_features_visibility.py` covers all three
+causes but is `pytest.mark.corpus`-gated (one of its 7 tests touches the real shared registry) —
+not re-run live this session per the coordinate-shared-writes convention; the code was read and
+independently confirmed correct rather than re-verified against the shared corpus.
 
 **3. The silent field-allowlist pattern**, filed under *Corpus, signals & testing*. Three
 instances in one day, one closed with a superset guard (finding 118); the sweep across other
