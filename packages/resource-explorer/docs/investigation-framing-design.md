@@ -210,7 +210,7 @@ changing perspective changes how much you see but never what gets run.
 - **`Asked At` / `Answered At` no longer exist as separate fields.** They were collapsed into
   a single `stage` on 2026-08-14 (`docs/survey-model.md (§4)`), which may carry a
   slash-combined value (`Analysis/Enrichment`) for the Analysis-first/Enrichment-fallback
-  pattern in `docs/confidence-gated-validation-plan.md`, treated as a literal string until
+  pattern in `docs/repo-analysis-funnel.md (§14)`, treated as a literal string until
   that plan is built. Any dispatch keyed on the two-scope-category model is keyed on
   something that was removed.
 - **Two incompatible perspective vocabularies.** Questions use the 12 Title-Case Glossary
@@ -439,7 +439,7 @@ defaulting to the investigation once non-empty and to everything-known while emp
 `renderProjectList()` (`:3059-3090`) buckets into collapsible sections. Investigation
 scoping lands in the same place as the Owner filter (§7). Build them together.
 
-**Related, worth fixing here:** `docs/funnel-stage-data-needs-review.md` flags that
+**Related, worth fixing here:** `docs/repo-analysis-funnel.md (§9)` flags that
 `OnboardingWizard.run()` triggers full RAG ingestion at `add` time, before Scouting or
 Discovery run — contrary to the funnel's own cheap-first premise. An investigation with a
 declared Purpose knows whether deep ingestion is warranted at all. Natural to fix here

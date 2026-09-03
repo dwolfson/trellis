@@ -109,7 +109,7 @@ for one run rather than a fix.
 > state and would have rebuilt the orchestrator plumbing. Verified against the source before this
 > note was written. **What remains open is the vocabulary, not the mechanism** — richer context
 > facts (`first_party_code`, `is_deployable`, `has_documentation_site`) per
-> `docs/repo-context-and-tool-routing.md` §4, and guard evaluation in the EXECUTOR, which is
+> `docs/question-answering-and-context.md (§9)` §4, and guard evaluation in the EXECUTOR, which is
 > separate and still unbuilt.
 >
 > The entry is kept rather than deleted because the reasoning below is what the built feature
@@ -136,7 +136,7 @@ The consequences are already visible, and they are not crashes:
   middle one — *skipped, with a stated reason* — never silence. A step that vanishes from a report
   is indistinguishable from one that ran and found nothing, which is the failure this codebase keeps
   removing. `repo_classification`'s `architecture_recovery_gate` is the worked example of doing it
-  right (`docs/repo-context-and-tool-routing.md` §3): it reports `skipped_by_design`, the reason
+  right (`docs/question-answering-and-context.md (§9)` §3): it reports `skipped_by_design`, the reason
   travels with the skip, and `respect_gate=False` still runs it — the gate changes the default, not
   the permission.
 
@@ -145,7 +145,7 @@ The consequences are already visible, and they are not crashes:
 `project_dependencies`" or "this step is pointless on a repo with no first-party code". The design
 note already proposes the shape — `requires_context` alongside `requires_resources`, checked before
 dispatch, producing a `skipped_by_design` with a reason when unmet
-(`docs/repo-context-and-tool-routing.md` §4) — but nothing is built beyond the one hand-wired gate.
+(`docs/question-answering-and-context.md (§9)` §4) — but nothing is built beyond the one hand-wired gate.
 
 **Egeria already has the branching half of this, and it is worth not reinventing.** Reported
 2026-09-01 by a concurrent session that read `EngineActionHandler.initiateNextEngineActions`
@@ -202,8 +202,8 @@ conflicts**, and the distinction was made honestly rather than used to argue for
   a reason to dismiss the split and becomes a reason the split needs auth.
 - **Trellis-wide admin centralisation** — Dan's own flag, and the largest version of this. RE, EA and
   Workspaces Portal each have their own admin surface with their own auth posture and their own
-  triage vocabulary; the surveys in `docs/feedback-signals-shared.md` and
-  `docs/feedback-triage-from-workspaces.md` are already evidence of three implementations converging
+  triage vocabulary; the surveys in `docs/feedback-and-curation.md` and
+  `docs/feedback-and-curation.md (§7)` are already evidence of three implementations converging
   on the same needs. If admin is going to be shared, extracting RE's into pages first is a
   prerequisite step rather than wasted work.
 
@@ -234,11 +234,11 @@ same rule as everywhere else here.
 wanted is a periodic pass over feedback AND chat scores together, looking for concentrations — three
 reports blaming routing in one area is a finding that no single report is. Scope should include:
 `feedback`, `resource_feedback`, and the chat signal (`chunk_feedback`, now trinary — see
-`docs/feedback-signals-shared.md`), since a low chat score and a written complaint may be the same
+`docs/feedback-and-curation.md`), since a low chat score and a written complaint may be the same
 gap seen twice.
 
 Prerequisites, in order: RE has **no way to change any feedback state today** — the gated
-`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-triage-from-workspaces.md`).
+`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-and-curation.md (§7)`).
 That must land first, and `/api/curate/feedback` must be gated, before adding a second field that
 also needs writing.
 
@@ -259,7 +259,7 @@ public demo.
 
 Egeria Workspaces Portal has already solved this shape, and `demo_feedback_handler.py::_is_admin()`
 is the model rather than the counter-example it was briefly mistaken for (see
-`docs/feedback-triage-from-workspaces.md` §5, framing withdrawn): **two modes — a public demo
+`docs/feedback-and-curation.md (§7)` §5, framing withdrawn): **two modes — a public demo
 requiring an external identity, and a local mode relying on Egeria's own users.** RE will need the
 same distinction, and should adopt that pattern rather than reinvent one.
 
@@ -1112,7 +1112,7 @@ ground truth written before the detectors run on them** (`tests/fixtures/archite
 Writing that fixture is the actual cost, and it is what makes the re-check meaningful rather than
 a re-confirmation.
 
-Related: `docs/approach-portfolio-model.md` §4 proposes recording approach outcomes against repo
+Related: `docs/repo-analysis-funnel.md (§12)` §4 proposes recording approach outcomes against repo
 characteristics — if that is built, this re-check becomes a query rather than an exercise.
 
 ---
@@ -1443,7 +1443,7 @@ moves the weights also shapes what anyone thinks to check.
 #### Step outcomes and the Egeria governance model — what landed 2026-08-21, and what was deferred
 
 **Landed:** `resource_explorer/step_outcome.py` — the five-label vocabulary from
-`docs/approach-portfolio-model.md` §3 (`recovered` / `partial` / `no_signal` / `unverified` /
+`docs/repo-analysis-funnel.md (§12)` §3 (`recovered` / `partial` / `no_signal` / `unverified` /
 `regression`), with §3's rule enforced in the constructor: an approach with no known-positive
 check cannot report `no_signal`, only `unverified`. `repo_website_ingestion` is the first
 adopter. Recording only — nothing routes on these labels.
@@ -1615,7 +1615,7 @@ function.
    reasons.
 2. **Persist the referenced ancestors** — emit the intermediate candidates so the
    links resolve. Truer to "store the hierarchy, project a level"
-   (`approach-portfolio-model.md` §2a), but grows the stored set.
+   (`repo-analysis-funnel.md (§12)` §2a), but grows the stored set.
 
 **Investigated 2026-08-24 — and the answer reverses that. (1) recovers nothing; (2) is
 the only option that works.**
@@ -2829,7 +2829,7 @@ the native-survey path is proven, not one.
 
 Originally: filling out the local filesystem survey pop-up and clicking Run appeared to hang — no progress, no response to further clicks — while the server was actually alive and grinding through a very long synchronous scan, dumping a wall of `Could not profile schema for ...` warnings and pandas/openpyxl noise to the server console that the user never saw (2026-07-13 report, full console dump captured in chat).
 
-**Implemented (2026-07-13), per `docs/filesystem-survey-analytics-plan.md`:**
+**Implemented (2026-07-13), per `docs/filesystem-and-database-surveying.md (§5)`:**
 - `IGNORE_DIRS` now skips bare `venv` as well as `.venv` — this was the concrete cause of the multi-minute scan across dozens of stray venvs (`tzdata`/`pytz` zoneinfo files) in the original report.
 - `LocalFileSystemSurveyor` (`resource_explorer/surveyors/filesystem/local_filesystem_surveyor.py`) is now split internally into a metadata-only structure pass and a separate profiling pass. Per-file profiling failures and inaccessible files/directories are collected into `survey_data["profiling_errors"]`/`["inaccessible_files"]` instead of only `log.warning`, and — for the Survey Definitions run path — surfaced as real `RequestForActionAnnotation`s (`egeria_filesystem_surveyor.py::publish_step_annotations`) so a run that hits malformed CSVs/legacy `.xls` files reads as "completed with warnings," not silence. Verified against reproductions of the exact original error strings; covered by `tests/test_filesystem_survey_definition_adapter.py`.
 - Kept as **one** Survey Definition step rather than two, per follow-up direction (if you're already asking the OS for one file's `stat()`, there's no benefit to walking the tree twice for the rest of it) — also matches Egeria's own native survey, which turns out to be a single un-decomposed step itself.

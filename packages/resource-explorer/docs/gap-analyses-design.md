@@ -47,7 +47,7 @@ session — has now been corrected in place**: it was stale relative to this bui
 richer unbuilt mechanism. The four `PRECONDITIONS` entries currently registered
 (`step_preconditions.py:75-84`: `has_dependencies`, `has_versioned_dependencies`,
 `has_file_inventory`, `has_code_symbols`) are the complete list as of this checkout; a
-`first_party_code`-style context fact (`docs/repo-context-and-tool-routing.md` §4) is a real gap in
+`first_party_code`-style context fact (`docs/question-answering-and-context.md (§9)` §4) is a real gap in
 that list, not a gap in the dispatch mechanism itself. **The plumbing this design needs already
 exists for the "reads a table that might be empty" shape**, and the only new work on that axis is
 adding `has_contributing_doc`-style entries to `PRECONDITIONS` if a given analysis needs one not
@@ -467,7 +467,7 @@ name rather than wave past:
 **Artifacts it reads.** `zipball_root` (`VIEW_SOURCE`) — a fresh extraction, walked file-by-file
 (or handed whole to the external binary, if that path is chosen), matched against the vendored
 ruleset's rules. Binary/generated/vendored paths need exclusion (the same "first-party" question
-`docs/repo-context-and-tool-routing.md` §4 names as `holds first-party code` / `exclusion.scan`'s
+`docs/question-answering-and-context.md (§9)` §4 names as `holds first-party code` / `exclusion.scan`'s
 census) — scanning a vendored `node_modules` or a fixture blob is both slow and a likely
 false-positive generator, and most standard rulesets (gitleaks included) ship their own default
 ignore-paths that should be honoured rather than re-invented.
@@ -681,7 +681,7 @@ degrade to a flat `RequestForActionAnnotation`-per-match list as §1 until that 
   confidence classification, not an RFA.
 - Must not treat "no disclosure document found" as proof no disclosure exists — a disclosure could
   live in a separate docs site (the same `has_a_documentation_site` fact
-  `docs/repo-context-and-tool-routing.md` §4 already names as observable via `doc_locations`'
+  `docs/question-answering-and-context.md (§9)` §4 already names as observable via `doc_locations`'
   outward hop) that this Discovery-tier check does not follow.
 
 ---
@@ -1013,7 +1013,7 @@ and each independently sequenced:**
   file's raw content — a full-file-content grep pass over every source file in a large repo
   (`odpi/egeria`-sized) could plausibly land in `medium`, not `low`, and I have not run it. This is
   why both #1 and #2 above are flagged `compute_cost="medium" **VERIFY**` rather than asserted.
-- Whether the `docs/repo-context-and-tool-routing.md` §4 "context as declared facts" table's
+- Whether the `docs/question-answering-and-context.md (§9)` §4 "context as declared facts" table's
   unbuilt facts (e.g. `first_party_code`, only "computed in `arch_recovery_detect`" per that
   table, not yet a `PRECONDITIONS` entry) should gate #1/#2's file-scanning scope (skip
   third-party/vendored code) via a real precondition, or via an in-surveyor exclusion list the way

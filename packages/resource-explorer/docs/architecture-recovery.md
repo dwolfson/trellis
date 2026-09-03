@@ -1662,7 +1662,7 @@ a follow-on, because it is the clearest demonstration of value.
 **The single most important consequence of Q3's answer.** If component identity is a module path
 (§8.2), then *a component is a path prefix* — and RE already has a path-prefix mechanism: the
 `scope_locator` column and `accepts_scope_locator` flag from the repo scope-narrowing funnel
-(`docs/repo-scope-narrowing-funnel.md`, D5/D6).
+(`docs/repo-analysis-funnel.md`, D5/D6).
 
 So "re-aggregate existing analyses per component" is **not a new aggregation layer**. It is running the
 existing scope-locator-capable steps once per component path. Every step already flagged

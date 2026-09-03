@@ -403,6 +403,6 @@ the metric, the annotation and the log row are all intermediate.
 
 - `docs/dr-egeria/resource_questions_guide.md` — questions, end to end
 - `docs/dr-egeria/foundations/foundations.md` — Perspectives and Funnel Stages
-- `docs/code-volume-and-doc-coverage-design.md` — a worked example of adding
+- `docs/repo-analysis-funnel.md (§13)` — a worked example of adding
   measures, including what was got wrong
 - `docs/egeria-operations.md` — when Egeria and RE disagree

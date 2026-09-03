@@ -1,3 +1,10 @@
+# Egeria Workspaces — component reference notes
+
+**Status:** hand-authored reference outline describing runtime and deployment
+components. Sibling to `egeria.md` and `trellis.md`. **Not the scoring fixture** — the pre-registered
+ground-truth partitions used to score architecture recovery live in
+`tests/fixtures/architecture-ground-truth/` and are richer; these three are
+descriptive notes, and the two sets deliberately differ.
 
 ## egeria-workspaces
 
