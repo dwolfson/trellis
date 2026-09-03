@@ -278,6 +278,37 @@ excludes it from being proposed as an architecture component at all — a real, 
 larger than a quick fix (touches detector design: is a benchmark harness a component that
 happens to be untyped, or a different KIND of thing that shouldn't be proposed as one?). Not
 scoped further here.
+
+**8. `SolutionArchitect` has no `create_solution_port` — real Egeria SolutionPort materialization
+is currently blocked, not just unmeasured — found 2026-09-03, scoping the port/wire work named in
+the Curate redesign conversation, live check pending an Egeria redeploy.** Checked both the
+installed pyegeria and the canonical `egeria-python` checkout's `.http` ground truth
+(`Egeria-api-solution-architect.http`): `link_solution_component_port`/`link_solution_port_
+delegation` (attach an *existing* port) and their detach counterparts exist; no `create_solution_
+port` method and no `POST .../solution-ports` endpoint anywhere. No `SolutionPortProperties`
+model exists either, so even the generic fallback (`MetadataExpert.create_metadata_element`,
+`NewOpenMetadataElementRequestBody`) has nothing typed to build against — would mean hand-
+guessing property names against the verbose `ElementProperties`/`propertyValueMap` shape this
+repo's own CLAUDE.md already flags as a footgun (confirmed silently dropping `qualifiedName` for
+a different type). `egeria-python-65` confirmed the same absence independently and is checking
+the live server's actual OpenAPI spec once the platform's back up (the `.http`-vs-live precedent:
+3 relationship types looked unbuilt from `.http` alone and turned out to have zero real endpoint,
+but a 4th that looked the same way did — `.http` files can mislead in either direction). Separate
+and NOT blocked: `SolutionLinkingWire`'s OMVS-layer methods are already implemented and working
+in pyegeria — the only gap there is a missing Dr.Egeria compact command, which `egeria-python-65`
+is adding independently.
+
+**9. Minor, measured-not-fixed: `_candidate_blueprints_results` and `_architecture_recovery_
+results` each build their own slug→scope_locator map independently** (the same duplication-by-
+design pattern this codebase already uses elsewhere — `materializer.py`'s `_find_element_guid`
+docstring gives the same "small helper duplicated once is safer than cross-module coupling"
+reasoning). Measured against `egeria_workspaces_git` (109 components, 39 blueprints, its own
+Backlog-recorded largest fixture): 0.544s for the full `_architecture_recovery_results` call,
+including both walks. Not slow enough to be worth threading a shared map through two functions
+that are each deliberately self-contained and independently testable — noted here as a measured
+fact, not acted on, so a future session doesn't re-measure it from scratch if it comes up again.
+
+**Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
 browser one); doc-kind chunking selection (0 of 20 collections are API-reference shaped);
