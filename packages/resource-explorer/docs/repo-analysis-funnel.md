@@ -1,20 +1,16 @@
-# Repo scope-narrowing funnel: recommend → select → catalog → scoped analysis
+# The repo analysis funnel — narrowing scope, and knowing when it is enough
 
-**Status: Phase 1 AND Phase 2 both implemented, tested (916 tests total), and live-verified
-end-to-end against `sqlglot` (2026-08-11) — see "Phase 1 verification" and "Phase 2 verification"
-below.**
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** how repository analysis narrows — which resources stay in play, which
+*parts* of a resource stay in play, and how a stage decides an answer is good
+enough to act on. For what a survey is, see `survey-model.md`; for how it runs,
+`survey-execution.md`.
 
-**Decisions confirmed 2026-08-11 (third pass)**: D7 resolved (perspective stays a within-intent
-filter, no schema change); mixed-shape kinds get one conservative shape, not per-output tagging,
-until real friction shows up; D2's local table is generic across resource types from the start;
-database's schema→table narrowing is acknowledged as a natural fit for later, no urgency now;
-D6's payoff is repo-specific-weak/other-types-strong, and a genuinely new, repo-specific idea
-(dependency-graph lateral exploration) was raised as a result — see the new section below.
-
-**Decisions confirmed 2026-08-11 (fourth pass)**: database's per-card dispatch gap gets fixed
-alongside Phase 2, not deferred indefinitely; `index_health` removed from `analysis_catalog.yaml`
-(zero backing implementation, not worth advertising); `privilege_audit` kept as-is (also
-unimplemented, but not worth deleting).
+> **This document consolidates nine.** Part I is the scope-narrowing funnel
+> (D1–D7), implemented and live-verified. Part II merges the visibility-source
+> model, per-stage data needs, sub-resource cataloguing, the granularity
+> measurement, and the three notes on whether an analysis is *sufficient*. Part
+> III is the settled register.
 
 ## Context
 
@@ -379,3 +375,174 @@ Run dispatched the real `POST .../run` call, and the results panel rendered the 
 this repo has no extracted code symbols yet) response with no console errors.
 
 Full RE test suite green (916 passing).
+
+---
+
+# Part II — Visibility, sub-resources, and sufficiency
+
+*Merged 2026-09-02 from eight notes. Each section names its source.*
+
+## 8. The five visibility sources
+
+*(from `repo-phase-visibility-model.md`)*
+
+Every repository-analysis capability ultimately reads from one of these. **Naming
+them explicitly is what made the phase boundaries fall out cleanly** — before
+that, arguments about which stage owned what were really arguments about where
+data came from.
+
+| | source | cost |
+|---|---|---|
+| **1** | **GitHub API** — stars, forks, contributors, `pushed_at` | cheap, already self-refreshing |
+| **2a** | **File inventory** from the zipball — type, size, path shape | requires a download |
+| **2b** | **Language/classification** — computed *from* 2a, not fetched | free once 2a exists |
+| **2c** | **Vector/AI content** — chunked and embedded | independent refresh path |
+| **2d/2e** | **Other and cross-repo analysis** | not built |
+| **3** | **What Egeria already knows** — catalogue relationships, lineage | not yet consumed by RE's own analysis |
+| **4** | **User-supplied context** | human-paced |
+
+### Refresh versus survey — the distinction that mattered most
+
+Two kinds of action are easy to conflate, and conflating them was the root of the
+original "Refresh & profile" confusion:
+
+- **Refresh** updates the *substrate*. No interpretation, no annotations, no
+  findings. The file-inventory refresh (2a) and the incremental re-ingest (2c)
+  are refreshes.
+- **Survey** *reads* the substrate and produces annotations and findings.
+  Classification (2b), security hygiene, API structure are surveys.
+
+> **A survey can silently read stale substrate if nothing refreshed it first.**
+> That is the exact mechanism behind three intents' worth of frozen data:
+> `project_code_symbols` was written only at initial ingestion and never by any
+> refresh, so analyses depending on it reported confidently against a snapshot
+> that could be months old.
+
+### The three-way "Discovery" collision
+
+Resolved once, restated so it is not re-litigated by accident:
+
+1. the canonical **`discovery` nav intent** — launches Egeria survey definitions,
+   and by design has zero analysis-catalogue entries;
+2. **Scouting's "Discover" sub-tab** — finding *new* candidate repositories,
+   unrelated to (1);
+3. the **informal usage** — "download the zipball, look at file and language
+   shape", which is what visibility sources 2a/2b actually are, and is built
+   under neither label.
+
+## 9. What each stage needs to know
+
+*(from `funnel-stage-data-needs-review.md` — draft, for discussion)*
+
+Each funnel stage was reviewed for what it must know before it can decide
+anything, and the useful output is negative: several stages were asking for data
+they did not act on. A stage's data needs are defined by **the decision it makes
+next**, not by what happens to be available at that point.
+
+## 10. Sub-resource cataloguing — the narrowing mechanism
+
+*(from `assessment-sub-resource-cataloging.md`, `assessment-expansion-plan.md`; both built)*
+
+Narrowing *within* a resource is what makes deep analysis affordable, and the
+model was taken from Egeria's own native pattern rather than invented by analogy.
+`initiate_file_folder_survey(file_folder_guid, survey_name)` operates on an
+**already-catalogued** folder GUID, and its own docstring lists four real survey
+variants — folders, folder-and-files, all-folders, all-folders-and-files.
+
+> **Survey and catalogue are separate acts.** You catalogue a sub-resource to
+> make it addressable; you survey it to learn something about it. Egeria's API
+> requires the first before the second, and this design adopts that shape.
+
+## 11. Granularity — what actually duplicates
+
+*(from `granularity-pass.md`)*
+
+A previous pass proposed collapsing `analysis_id` — folding its *bundling* role
+into survey types and its *results* role into a declared annotation type.
+**Measuring the codebase to plan that migration changed the recommendation.**
+
+> **`analysis_id` is not redundant as a catalogue concept. It is redundant as a
+> schedulable unit.** The duplication is entirely in *"what do I run"*, and not
+> at all in *"what do I show"*.
+
+So the catalogue stays. Re-key the schedulable unit to survey types, leave the
+catalogue alone, and the thing that actually wanted the change — a survey list in
+Automate — is unblocked by about six rows.
+
+This is the pattern worth carrying: a redundancy that is obvious in the abstract
+often turns out, on measurement, to live in only one of the two roles a concept
+plays.
+
+## 12. Sufficiency, not correctness
+
+*(from `approach-portfolio-model.md`)*
+
+> **Evaluation should ask "is this good enough for what this stage will do with
+> the answer?", not "is this correct?"**
+
+Architecture recovery's Phase 0 reported ARI 0.56 and called it a qualified pass,
+as if correctness were the target. But 0.56 is not one verdict — it is four:
+
+| Stage | What it does with the partition | Is ARI 0.56 enough? |
+|---|---|---|
+| **Scouting** | nothing — needs no partition | n/a |
+| **Discovery** | "which subsystem is undocumented?" | **yes, comfortably** |
+| **Analysis** | component-scoped metrics | marginal — usable with confidence shown |
+| **Assessment / publish** | a blueprint in the catalogue of record | **no, not close** |
+
+This is the funnel's own question applied to method quality: the same number is
+sufficient at one stage and inadequate at another, so a single pass/fail verdict
+on an analysis is the wrong shape. **Granularity is not precision, and depth is
+never discarded** — a coarse answer that is honest about being coarse is more
+useful than a fine one that is not.
+
+## 13. Coverage is not a property of the subject
+
+*(from `code-volume-and-doc-coverage-design.md` — design only, not built)*
+
+The sharpest instance of absence-as-answer in the analysis layer. Measured across
+the whole symbol table:
+
+| language | symbols | with docstring |
+|---|---|---|
+| java | 203,521 | 60,437 |
+| python | 114,055 | 54,985 |
+| **go** | 70,955 | **0** |
+| **javascript** | 48,533 | **0** |
+
+Go has doc comments. JavaScript has JSDoc. Both exist in the language and in the
+code. The extractors **hardcode `docstring=""`** — three and four assignment
+sites respectively, all empty.
+
+> A documentation-coverage score computed over this table would report Go and
+> JavaScript projects as entirely undocumented. That is a fact about the
+> extractor, rendered as a fact about the code.
+
+Any coverage metric must therefore carry its own denominator and refuse a verdict
+for languages it cannot read, rather than averaging their zeros in.
+
+## 14. Confidence-gated validation
+
+*(from `confidence-gated-validation-plan.md` — framed, not built)*
+
+Where an analysis is confident, act on it; where it is not, ask. The fallback is
+**Enrichment** — a human-supplied answer — rather than a lower-confidence
+automated guess. This is the designed outcome rather than a failure path: some
+things are cheap for a maintainer to answer and impossible to derive.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Is the funnel repo-specific? | **No** — generic vocabulary | D1; repo is the worked example, not the model |
+| Should sub-resource tracking live in Egeria? | **No** — a local table first | D2; independent of Egeria, generic across resource types |
+| Is the selection UI a checklist? | **No** — a filterable metrics table | D3; you decide by comparing numbers, not by ticking boxes |
+| Should scope selection just parameterise every analysis? | **No** — it gates which are offered | D6 |
+| Does `perspectives` need a schema change? | **No** — a within-intent filter | D7, confirmed |
+| Collapse `analysis_id` into survey types? | **No** — only its schedulable half | Measured: redundant in "what do I run", not in "what do I show" |
+| Is a survey the same act as cataloguing? | **No** | Egeria's own API requires the catalogue entry before the survey |
+| Is ARI 0.56 a pass? | **Depends on the stage** | Comfortable for Discovery, not close for publishing |
+| Does 0 docstrings mean undocumented code? | **No** | The Go and JavaScript extractors hardcode `docstring=""` |
+| Should low confidence fall back to a weaker guess? | **No** — ask a human | Enrichment is the designed outcome, not a failure path |

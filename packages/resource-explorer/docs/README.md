@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-53 documents, grouped by what they *are* rather than what they are about — the
+45 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -22,16 +22,16 @@ Live plans. The work is not done; the doc is the specification.
 
 Decisions and models. Cited from source where a comment cannot restate them.
 
-- **[approach-portfolio-model.md](approach-portfolio-model.md)** — 2026-09-02  
-  design note, for review
 - **[architecture-recovery-in-practice.md](architecture-recovery-in-practice.md)** — 2026-09-02  
   reference, current as of 2026-09-02
 - **[context-compiler-across-trellis.md](context-compiler-across-trellis.md)** — 2026-08-30  
   review, 2026-08-30. Requested as "how the context compiler notion can be leveraged
-- **[egeria-integration.md](egeria-integration.md)** —   
+- **[egeria-integration.md](egeria-integration.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
-- **[egeria-operations.md](egeria-operations.md)** —   
+- **[egeria-operations.md](egeria-operations.md)** — 2026-09-02  
   consolidated runbook. Current as of 2026-09-02
+- **[repo-analysis-funnel.md](repo-analysis-funnel.md)** —   
+  consolidated design. Current as of 2026-09-02
 - **[survey-execution.md](survey-execution.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[survey-model.md](survey-model.md)** — 2026-09-02  
@@ -48,33 +48,19 @@ Evidence. What was measured, when, and against what.
 
 The work is done and these are NOT archive candidates: source comments point here for the reasoning behind decisions.
 
-- **[assessment-expansion-plan.md](assessment-expansion-plan.md)** — 2026-08-15  
-  built. Corrected 2026-08-15 — this header was stale; direct
-- **[assessment-sub-resource-cataloging.md](assessment-sub-resource-cataloging.md)** — 2026-08-15  
-  built. Corrected 2026-08-15 — this header was stale; the
 - **[automate-notification-manager-pyegeria-spec.md](automate-notification-manager-pyegeria-spec.md)** — 2026-08-13  
   specification only, not implemented. Written per explicit direction
-- **[code-volume-and-doc-coverage-design.md](code-volume-and-doc-coverage-design.md)** — 2026-09-01  
-  design only. Nothing below is built
-- **[confidence-gated-validation-plan.md](confidence-gated-validation-plan.md)** — 2026-08-15  
-  framed, not built. Written per direct request (2026-08-14):
 - **[discovery-automate-project-context-plan.md](discovery-automate-project-context-plan.md)** — 2026-08-15  
   all 5 parts built and live-verified (2026-08-13). Part 1 (Discovery
 - **[feedback-signals-shared.md](feedback-signals-shared.md)** — 2026-09-01  
   survey + proposal, nothing built. Dan's ask: RE has a thumbs up/down signal in
-- **[filesystem-survey-analytics-plan.md](filesystem-survey-analytics-plan.md)** — 2026-08-06  
+- **[filesystem-survey-analytics-plan.md](filesystem-survey-analytics-plan.md)** — 2026-09-02  
   Design agreed (2026-07-13). §4 items 1-3, 5, 6 implemented (2026-07-13) — Technology Type string
-- **[funnel-stage-data-needs-review.md](funnel-stage-data-needs-review.md)** — 2026-08-15  
-  draft, first pass — for discussion, not yet decided or implemented
-- **[granularity-pass.md](granularity-pass.md)** — 2026-09-02  
-  design pass complete. Nothing built. Recommends a smaller change than
 - **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-09-02  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
 - **[repo-context-and-tool-routing.md](repo-context-and-tool-routing.md)** — 2026-09-02  
   design note. Nothing here is built beyond the one worked example named in §3
-- **[repo-scope-narrowing-funnel.md](repo-scope-narrowing-funnel.md)** — 2026-08-11  
-  Phase 1 AND Phase 2 both implemented, tested (916 tests total), and live-verified
-- **[survey-definitions.md](survey-definitions.md)** — 2026-08-06  
+- **[survey-definitions.md](survey-definitions.md)** — 2026-09-02  
   Implemented and validated end-to-end against a live Egeria server (2026-07-07/08) — both a singl
 
 ## Guides, references and unmarked
@@ -102,7 +88,6 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-09-02
 - **[project-review-2026-07-14.md](project-review-2026-07-14.md)** — 2026-08-06
 - **[repair-operations-design.md](repair-operations-design.md)** — 2026-08-28
-- **[repo-phase-visibility-model.md](repo-phase-visibility-model.md)** — 2026-08-26
 - **[rfa-dismissals.md](rfa-dismissals.md)** — 2026-09-01
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-08-07
 - **[trellis.md](trellis.md)** — 2026-08-20

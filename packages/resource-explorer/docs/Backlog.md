@@ -1112,7 +1112,7 @@ ground truth written before the detectors run on them** (`tests/fixtures/archite
 Writing that fixture is the actual cost, and it is what makes the re-check meaningful rather than
 a re-confirmation.
 
-Related: `docs/approach-portfolio-model.md` §4 proposes recording approach outcomes against repo
+Related: `docs/repo-analysis-funnel.md (§12)` §4 proposes recording approach outcomes against repo
 characteristics — if that is built, this re-check becomes a query rather than an exercise.
 
 ---
@@ -1443,7 +1443,7 @@ moves the weights also shapes what anyone thinks to check.
 #### Step outcomes and the Egeria governance model — what landed 2026-08-21, and what was deferred
 
 **Landed:** `resource_explorer/step_outcome.py` — the five-label vocabulary from
-`docs/approach-portfolio-model.md` §3 (`recovered` / `partial` / `no_signal` / `unverified` /
+`docs/repo-analysis-funnel.md (§12)` §3 (`recovered` / `partial` / `no_signal` / `unverified` /
 `regression`), with §3's rule enforced in the constructor: an approach with no known-positive
 check cannot report `no_signal`, only `unverified`. `repo_website_ingestion` is the first
 adopter. Recording only — nothing routes on these labels.
@@ -1615,7 +1615,7 @@ function.
    reasons.
 2. **Persist the referenced ancestors** — emit the intermediate candidates so the
    links resolve. Truer to "store the hierarchy, project a level"
-   (`approach-portfolio-model.md` §2a), but grows the stored set.
+   (`repo-analysis-funnel.md (§12)` §2a), but grows the stored set.
 
 **Investigated 2026-08-24 — and the answer reverses that. (1) recovers nothing; (2) is
 the only option that works.**
