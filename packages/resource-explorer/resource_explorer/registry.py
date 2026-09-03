@@ -1322,6 +1322,49 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_components_scope "
                 "ON architecture_materialized_components(entity_type, entity_slug, scope_locator)"
             )
+            # Migration: verdict_target — distinguishes a single-component
+            # verdict row ('component', the only shape this table held until
+            # now) from a blueprint verdict row ('blueprint'), added for
+            # docs/blueprint-materialization-plan.md's Decision 3: a
+            # blueprint verdict reuses this same table rather than a parallel
+            # one, since get_component_verdicts/list_component_verdict_history/
+            # the append-only-history convention/_ENTITY_SLUG_TABLES rename
+            # wiring are all already correct for this shape too. For a
+            # blueprint row, scope_locator is repurposed to hold
+            # f"{perspective}::{cluster_name}" — a candidate_blueprint finding
+            # has no scope_locator of its own (clustering.py's findings all
+            # share scope_locator="", distinguished by label), so this reuses
+            # the column rather than adding a second identity to keep in sync.
+            # Same ALTER TABLE ... ADD COLUMN pattern as the last_run_status/
+            # target_kind migrations on resource_schedules above.
+            existing_verdicts = self._get_table_columns(conn, "architecture_component_verdicts")
+            if "verdict_target" not in existing_verdicts:
+                conn.execute(
+                    "ALTER TABLE architecture_component_verdicts ADD COLUMN "
+                    "verdict_target TEXT NOT NULL DEFAULT 'component'"
+                )
+            # New table: architecture_materialized_blueprints — parallel in
+            # shape to architecture_materialized_components (Decision 4), but
+            # keyed by (entity_type, entity_slug, perspective, cluster_name)
+            # rather than scope_locator, since a blueprint has no scope_locator
+            # of its own (same reason the verdict row above repurposes that
+            # column instead of reusing it directly here).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_materialized_blueprints (
+                    id              TEXT PRIMARY KEY,
+                    entity_type     TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    perspective     TEXT NOT NULL,
+                    cluster_name    TEXT NOT NULL,
+                    qualified_name  TEXT NOT NULL,
+                    guid            TEXT NOT NULL,
+                    materialized_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_blueprints_scope "
+                "ON architecture_materialized_blueprints(entity_type, entity_slug, perspective, cluster_name)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
@@ -2207,9 +2250,17 @@ class ProjectRegistry:
     #: this module has one place to find the vocabulary.
     COMPONENT_VERDICTS = {"accepted", "rejected", "retyped"}
 
+    #: Valid verdict values for a verdict_target='blueprint' row. No
+    #: "retyped" — a component has a free-text `type` field a retype
+    #: corrects (see materializer.py's module docstring); a cluster has no
+    #: equivalent free-text field to retype. The route validates against
+    #: whichever set matches the verdict_target it's recording.
+    BLUEPRINT_VERDICTS = {"accepted", "rejected"}
+
     def record_component_verdict(
         self, entity_type: str, entity_slug: str, scope_locator: str,
         verdict: str, retyped_to: str = "", note: str = "",
+        verdict_target: str = "component",
     ) -> dict:
         """A curator's accept/reject/retype call on one proposed architecture
         component (docs/Backlog.md "take architecture results into Curate").
@@ -2229,9 +2280,18 @@ class ProjectRegistry:
         (persist.py's scope_locator_for) — the component's path prefix — so
         the results reader can attach a verdict to a component by the same
         key it already groups on, with no separate identity to keep in sync.
+
+        `verdict_target` distinguishes a single-component verdict
+        ('component', the default — every caller before blueprint
+        materialization existed) from a blueprint verdict ('blueprint') —
+        see blueprint-materialization-plan.md's Decision 3. For a blueprint
+        row, `scope_locator` is repurposed by the caller to hold
+        f"{perspective}::{cluster_name}" rather than a real scope_locator;
+        this method does not itself interpret the string, it just stores it.
         """
-        if verdict not in self.COMPONENT_VERDICTS:
-            raise ValueError(f"verdict must be one of {self.COMPONENT_VERDICTS}, got {verdict!r}")
+        valid = self.BLUEPRINT_VERDICTS if verdict_target == "blueprint" else self.COMPONENT_VERDICTS
+        if verdict not in valid:
+            raise ValueError(f"verdict must be one of {valid}, got {verdict!r}")
         from datetime import timezone
         entry = {
             "id": str(uuid.uuid4()),
@@ -2242,12 +2302,13 @@ class ProjectRegistry:
             "retyped_to": retyped_to,
             "note": note,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "verdict_target": verdict_target,
         }
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO architecture_component_verdicts
-                   (id, entity_type, entity_slug, scope_locator, verdict, retyped_to, note, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, entity_type, entity_slug, scope_locator, verdict, retyped_to, note, created_at, verdict_target)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
         return entry
@@ -2257,7 +2318,13 @@ class ProjectRegistry:
         resource has ever received a verdict on — the shape
         _architecture_recovery_results merges onto each component by `path`.
         One query, not one per component, same reasoning as
-        query_finding_scopes' withdrawal check."""
+        query_finding_scopes' withdrawal check.
+
+        Returns rows for BOTH verdict_target values mixed together — a
+        caller that wants only 'blueprint' (or only 'component') rows
+        filters client-side on the returned `verdict_target` field. Not
+        worth a second query parameter for what is currently one filter
+        (see curate.py's list_blueprint_verdicts)."""
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM architecture_component_verdicts
@@ -2351,6 +2418,70 @@ class ProjectRegistry:
                 """INSERT INTO architecture_materialized_components
                    (id, entity_type, entity_slug, scope_locator, qualified_name, guid, materialized_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def get_materialized_blueprint(
+        self, entity_type: str, entity_slug: str, perspective: str, cluster_name: str,
+    ) -> dict | None:
+        """Whether a real Egeria SolutionBlueprint already exists for this
+        (perspective, cluster_name), or None. Byte-for-byte the same shape
+        as get_materialized_component — see Decision 4 in
+        blueprint-materialization-plan.md for why this is a parallel table
+        rather than a scope_locator-keyed row in the existing one (a
+        blueprint has no scope_locator)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND perspective=? AND cluster_name=?""",
+                (entity_type, entity_slug, perspective, cluster_name),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_materialized_blueprints(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{f"{perspective}::{cluster_name}": row} for every blueprint this
+        resource has ever materialized — mirrors get_materialized_components'
+        shape exactly, keyed the same way a blueprint verdict's scope_locator
+        is repurposed to read (Decision 3)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return {f"{r['perspective']}::{r['cluster_name']}": dict(r) for r in rows}
+
+    def record_materialized_blueprint(
+        self, entity_type: str, entity_slug: str, perspective: str, cluster_name: str,
+        qualified_name: str, guid: str,
+    ) -> dict:
+        """Record that (perspective, cluster_name) now has a real Egeria
+        SolutionBlueprint. Keyed by (entity_type, entity_slug, perspective,
+        cluster_name) as a natural key via delete-then-insert, not appended —
+        same "nothing append-only about does this exist in Egeria" reasoning
+        as record_materialized_component."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "perspective": perspective,
+            "cluster_name": cluster_name,
+            "qualified_name": qualified_name,
+            "guid": guid,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND perspective=? AND cluster_name=?""",
+                (entity_type, entity_slug, perspective, cluster_name),
+            )
+            conn.execute(
+                """INSERT INTO architecture_materialized_blueprints
+                   (id, entity_type, entity_slug, perspective, cluster_name, qualified_name, guid, materialized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
         return entry
@@ -2853,6 +2984,7 @@ class ProjectRegistry:
         "resource_working_set", "entity_egeria_project_context",
         "working_set_members", "notification_subscriptions",
         "architecture_component_verdicts", "architecture_materialized_components",
+        "architecture_materialized_blueprints",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,

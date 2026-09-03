@@ -91,12 +91,71 @@ they differ. New `tests/test_foss_scorecard_results_reader.py` adds the same sup
 finding 118 built for `_note` — calls the real `score()` and asserts every key it returns reaches
 the reader, so a sixth key added later fails loudly instead of vanishing the same way.
 
-**What this covered vs. what's still open:** grepped this file for the exact mechanical shape
-(`for key in (<tuple>): if key in metrics/detail`) — only 2 of this file's 33 `_X_results`
-functions use it (`_cve_scan_results`, `_foss_scorecard_results`), both now checked. **The other
-31 readers were not individually audited against their writers** — that's real, larger work
-(some run 50-80 lines), not a formality this pass covered by implication. Left genuinely open,
-not silently claimed done.
+**Update, 2026-09-03 — the remaining 31 readers are now all checked. DONE.** Every `_X_results`
+function in `repo_survey_definition_adapter.py` diffed against its writer's actual persisted
+keys, one at a time — not the mechanical grep alone, since the shape varies too much for that to
+generalize. 13 real, load-bearing drops found and fixed, across 5 commits:
+
+- **`repo_classification.py` (`05466bb`)** — a writer bug, not a reader one: `confirmations`/
+  `unexpected` are two of only three things this module's own docstring says it reports, computed
+  and sent to Egeria's `additionalProperties`, but the finding-persistence loop only ever iterated
+  `report.missing`/`report.found`. Nothing wrote them anywhere `query_findings` could see. Fixed
+  by adding the two missing loops.
+- **`contribution_provenance.py`, `sla_content.py` (`5fc8bbf`, allowlist fix `567770b`)** —
+  another writer bug: `_gap_analysis_results`' own docstring says "each of the four [GAP analyses]
+  writes" a `check_name="scan_summary"` row, and two of the four didn't on their normal,
+  completed-run path (only their empty-inventory early return did) — so `_status` was silently
+  `None` on every ordinary run, not an edge case.
+- **`_gap_analysis_results` itself (`3c995c4`)** — the shared reader for all four GAP analyses
+  stripped every finding to `check_name`/`label`/`summary`/`confidence`. `secret_scan.py`'s
+  per-match `excerpt` (the actual matched text, needed to triage without re-opening the file) was
+  computed, persisted, and permanently unreachable. Fixed with full `detail` passthrough,
+  confirmed harmless for the other three kinds (their detail fields were independently checked
+  redundant with `summary`/`label`).
+- **Nine more in one pass (`79f06ab`)**: `_ci_quality_results` (`workflow_files`, keywords past
+  3), `_interface_surface_results` (`file_count`, files/dependencies past 3 — this module's own
+  docstring calls evidence strength "the entire point of the analysis"), `_cii_badge_results`
+  (badge `url`/`project_id` — the only way to click through and verify — and `unmet_criteria`,
+  previously only a bare count), `_repo_conventions_results` (full directory path for
+  `security_policy_content` — basename only was shown, and root/`.github/`/`docs/` is a real
+  distinction — plus truncated keyword/file lists), `_manifest_parse_results` (`manifests`/`error`,
+  nested a level deeper than `result_status_from_detail` looks), `_website_ingestion_results`
+  (`ingested_by`/`ingested_at` — a *second*, independent drop of the exact field finding 118
+  already fixed once at the writer's own allowlist — plus `error`), `_architecture_interfaces_
+  results` (`operation_count` — `persist.py`'s own neighboring comment names this exact bug
+  class, and it recurred one layer up), `_architecture_recovery_results` (`identity`, the
+  precedence-chain qualifier `ir.py` calls a "materially" different claim from confidence; and
+  `blueprint`, the only surviving path to blueprint membership since the sibling
+  `architecture_blueprints` finding kind has no reader anywhere in this file), `_data_profile_
+  results` (`formats`, the only place a too-large-to-profile file is counted at all).
+
+**Confirmed fine, checked not assumed** (dropped keys verified redundant with `summary`/`label`,
+constant across every real construction site, or genuinely internal bookkeeping): `_file_
+classification_results`, `_dependency_results`, `_refresh_plan_results`, `_security_summary_
+results`, `_sub_resource_survey_results`, `_security_results`, `_documentation_results`, `_license_
+results`, `_chaoss_metrics_results`, `_community_support_results`, `_security_features_results`,
+`_telemetry_scan_results`, `_maturity_results`, `_api_structure_results`, `_symbol_extraction_
+results`, `_rag_ingestion_results`, `_architecture_summary_results`, `_architecture_doc_lens_
+results`, `_health_results`.
+
+**Found, deliberately left open — genuine gaps, not silently folded in:**
+- `secret_scan.py`'s own skip path (`_emit_skip`) writes its skip finding under
+  `check_name="ruleset_available"`, not `"scan_summary"` — so `_gap_analysis_results`'s
+  `scan_summary` lookup finds nothing on that specific path and `_status` is never attached, even
+  though the finding list clearly shows `skipped_by_design`. Structurally different from the
+  `contribution_provenance`/`sla_content` fix above (a *misnamed* row, not a *missing* one).
+- `documentation.py`'s per-language `by_language` breakdown and `symbol_extraction.py`'s
+  `files_scanned` known-positive signal — both computed, both currently unreachable from their
+  results readers, both judged non-load-bearing (redundant or not referenced by any consumer) at
+  the time of checking. Worth a second look if either becomes load-bearing later.
+
+Verification: 15 new regression tests (`tests/test_field_allowlist_sweep_2026_09_03.py`, plus
+`test_repo_classification_confirmations.py`, `test_gap_analysis_results_reader.py`, and additions
+to `test_sla_content.py`/`test_contribution_provenance.py`), each seeded through a real registry
+and confirming the previously-dropped field now survives end-to-end through the actual reader.
+Full suite green after every commit, confirmed with a final clean run at the end: 3604 passed, 92
+skipped (corpus/live-Egeria-gated), 0 failed — excluding the one test needing a currently-
+unreachable local Egeria platform (unrelated to this sweep).
 
 **4. Split `architecture-recovery.md` — DONE, 2026-09-03.** §5 *Extraction design* (913 of 2,720
 lines) moved verbatim to `architecture-recovery-extraction-design.md`, keeping its original §5.x
