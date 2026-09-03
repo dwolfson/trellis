@@ -1,6 +1,6 @@
 # SS-4 — per-user artifact namespacing
 
-**Status:** design, not built. Written 2026-08-29 after Dan settled the two questions that had this
+**Status:** design, not built. Written 2026-08-29 after the maintainer settled the two questions that had this
 paused. One question remains open (§5).
 
 ## 1. The problem
@@ -29,7 +29,7 @@ the remaining half.
 
 ## 2. Settled — the namespace key
 
-**Dan, 2026-08-29: "There is one namespace — which is the one we use to connect to Egeria."**
+**Maintainer decision, 2026-08-29: "There is one namespace — which is the one we use to connect to Egeria."**
 
 So the namespace is **the Egeria user the app connects as**, not an app-local user id invented for
 the purpose. That already exists and is already per-request:
@@ -39,7 +39,7 @@ get_egeria_credentials(request)  ->  {"user_id": <from the JWT>, "password": ...
 resolve_egeria_credentials(creds) ->  falls back to settings.egeria_user
 ```
 
-This is a better key than an app-local one for the reason Dan gives: artifacts are *about* Egeria
+This is a better key than an app-local one for the reason the decision gives: artifacts are *about* Egeria
 work, so the identity that scopes them should be the identity that performs it. It also means the
 namespace and the credentials cannot drift apart — a user cannot end up writing artifacts under one
 identity while acting in Egeria as another.
@@ -48,7 +48,7 @@ Layout: `~/egeria-plans/{egeria_user}/drafts/`, `~/egeria-reports/{egeria_user}/
 
 ## 3. Settled — the migration
 
-**Dan, 2026-08-29: a one-time migration assigning existing artifacts to `peterprofile` (the Egeria
+**Maintainer decision, 2026-08-29: a one-time migration assigning existing artifacts to `peterprofile` (the Egeria
 user we are logged in as).**
 
 That resolves what previously had no answer: the 49 existing artifacts (5 plan drafts, 24 session
@@ -61,7 +61,7 @@ under a namespace directory), and reversible while nothing else has written.
 
 ## 4. Settled — an authenticated identity is required, with no config fallback
 
-**Dan, 2026-08-29: "require an authenticated identity, no config fallback."**
+**Maintainer decision, 2026-08-29: "require an authenticated identity, no config fallback."**
 
 This resolves the prerequisite found while designing this note, and resolves it by removing the
 unreliable path rather than repairing it.
@@ -90,7 +90,7 @@ storage-layout half and the auth half are no longer separable, because the layou
 
 ## 5. Resource Explorer will need this too, and it is a much larger piece
 
-**Dan: "both EA and RE will need (ultimately) to support multi-user."**
+**Maintainer decision: "both EA and RE will need (ultimately) to support multi-user."**
 
 EA can do this now because it already has real per-user login. **RE cannot**, and the gap is bigger
 than a refactor:

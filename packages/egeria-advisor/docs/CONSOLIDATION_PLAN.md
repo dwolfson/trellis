@@ -1,7 +1,8 @@
 # Egeria Advisor documentation — consolidation plan
 
 **Status:** `history/` and `design/` clusters 1–5 are DONE (2026-09-03).
-Clusters 6–7 remain a proposal awaiting approval.
+Cluster 6 was reviewed and **deliberately not merged** — see below. Cluster 7
+remains a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -139,13 +140,36 @@ separate documents using the same phrase:
 Also found: the cache those metrics write to (`data/cache/enhanced_metrics.json`)
 is absent, so anything consuming them is reading nothing.
 
-### 6. Session, state, and artifacts — 4 files, ~5,600 words
+### 6. Session, state, and artifacts — **REVIEWED 2026-09-03, NOT MERGED**
 
 `SESSION_AND_INTERACTION_STATE` · `PER_USER_ARTIFACT_NAMESPACING` ·
 `RELATIONSHIP_LINKING_SCOPE` · `REPORT_SPEC_BUILDER_DESIGN`
 
-The loosest grouping. `REPORT_SPEC_BUILDER_DESIGN` may deserve to stand alone —
-it is an active design area.
+This plan called it "the loosest grouping". Checked against the code and against
+`CLAUDE.md`, **it is not a grouping at all** — four separate live designs that
+share only the fact that none of them fitted the other five clusters. Merging
+them would have produced one document with four unrelated subjects and destroyed
+two authoritative pointers.
+
+| | Why it stands alone |
+|---|---|
+| `REPORT_SPEC_BUILDER_DESIGN` | cited in `CLAUDE.md`'s **header** as the report-spec architecture, and backed by six numbered rules (A–F) |
+| `RELATIONSHIP_LINKING_SCOPE` | cited in `CLAUDE.md` **rule 27** as the "full design and rollout scope" |
+| `PER_USER_ARTIFACT_NAMESPACING` | live open design (**SS-4**, one of 14 SS- items in `BACKLOG.md`), one question still open. Verified unbuilt: `_drafts_path()` is a fixed root with no user component |
+| `SESSION_AND_INTERACTION_STATE` | design-only, and its diagnosis still holds — `_activeDraftId` is still used 53 times in `index.html` with no flow-state object |
+
+**Both status lines were verified rather than trusted**, since two of them are
+months old and this consolidation has already found four documents claiming a
+state the code contradicted.
+
+Work done here instead: the six conversational attributions in
+`PER_USER_ARTIFACT_NAMESPACING` were rewritten as dated maintainer decisions,
+keeping their force while removing the first-person framing. They were the only
+such references anywhere in EA's live documentation.
+
+**The lesson for clusters that look loose: check whether the residue is one
+subject or several before merging it.** A cluster defined by what is left over is
+not a cluster.
 
 ### 7. Open work — 4 files, ~3,750 words
 
