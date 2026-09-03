@@ -1,5 +1,14 @@
 # Building Project Explorer: An Incremental Design Tutorial
 
+> **HISTORICAL — do not follow this as instructions.** This tutorial narrates how
+> **Project Explorer**, Resource Explorer's predecessor, was built. It teaches a
+> stack that no longer exists here: Milvus was replaced by pgvector, and the
+> package was renamed from `explorer` to `resource_explorer`. Kept for the
+> design reasoning, which is still good — the incremental narrative of *why* each
+> piece was added is the value, not the code. For how the current system works,
+> see `user-guide.md`, `extending-resource-explorer.md` and `Architecture.md`.
+
+
 This tutorial walks through how Project Explorer was designed and built in stages, explaining the reasoning behind each decision and the open-source tools chosen at each step. The goal is not just to describe what was built, but to show *why* each piece was added when it was, what problem it solved, and what you would have been missing without it.
 
 The project is a multi-agent RAG system that lets you ask natural-language questions about GitHub repositories. By the end of this tutorial you will understand how to build something similar from scratch using the same open-source stack.

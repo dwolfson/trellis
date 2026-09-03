@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-35 documents, grouped by what they *are* rather than what they are about — the
+34 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -15,7 +15,7 @@ python scripts/regen_docs_index.py
 
 Live plans. The work is not done; the doc is the specification.
 
-- **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-08-24  
+- **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-09-02  
   DATED SNAPSHOT — 2026-08-24. Superseded; do not act on it. It planned the work ahead of a PR tha
 
 ## Design and framing
@@ -32,11 +32,11 @@ Decisions and models. Cited from source where a comment cannot restate them.
   hand-authored reference outline. Sparse by nature — the headings are
 - **[end-to-end-gap-audit-2026-08-25.md](end-to-end-gap-audit-2026-08-25.md)** — 2026-09-02  
   DATED SNAPSHOT — 2026-08-25. Do not act on it directly. Several gaps it records have since been 
-- **[feedback-and-curation.md](feedback-and-curation.md)** —   
+- **[feedback-and-curation.md](feedback-and-curation.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[filesystem-and-database-surveying.md](filesystem-and-database-surveying.md)** — 2026-09-02  
   consolidated design and reference. Current as of 2026-09-02
-- **[project-review-2026-07-14.md](project-review-2026-07-14.md)** — 2026-08-06  
+- **[project-review-2026-07-14.md](project-review-2026-07-14.md)** — 2026-09-02  
   DATED SNAPSHOT — 2026-07-14, the oldest document here. Predates the migration into the Trellis m
 - **[question-answering-and-context.md](question-answering-and-context.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
@@ -90,4 +90,3 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-08-07
 - **[tutorial.md](tutorial.md)** — 2026-08-06
 - **[user-guide.md](user-guide.md)** — 2026-08-21
-- **[using-the-intent-shell.md](using-the-intent-shell.md)** — 2026-09-02
