@@ -42,10 +42,33 @@ causes but is `pytest.mark.corpus`-gated (one of its 7 tests touches the real sh
 not re-run live this session per the coordinate-shared-writes convention; the code was read and
 independently confirmed correct rather than re-verified against the shared corpus.
 
-**3. The silent field-allowlist pattern**, filed under *Corpus, signals & testing*. Three
-instances in one day, one closed with a superset guard (finding 118); the sweep across other
-sites is unowned. The action that matters: check each allowlist against its **current** source
-shape, not the shape it had when written — none of the three was wrong when written.
+**3. The silent field-allowlist pattern — partially closed, 2026-09-03.** Finding 118's other two
+named same-day instances checked and confirmed correct: `arch_recovery/persist.py`'s port/wire
+`detail` dicts now pass `additionalProperties` through wholesale rather than naming keys, so
+`operationCount` (the bug finding 118 named) reaches storage; every other port/wire field traced
+to its source in `interfaces.py` and accounted for. `registry.py`'s four `_row_to_*` converters
+looked like the same shape but aren't — their `known` set is `{f.name for f in
+dataclasses.fields(X)}`, computed from the dataclass itself, so a new field can't silently fall
+out of sync the way a hand-written tuple can.
+
+**A new, real instance found and fixed, not one of the original three**:
+`_foss_scorecard_results` (`repo_survey_definition_adapter.py`) read 3 of the 5 keys
+`score()` (`foss_scorecard.py`) computes and persists — `checks_total` and
+`comparable_to_openssf` lived only in `detail` and were never read back.
+`checks_total` is exactly the denominator this reader's own docstring warns about ("8.0 over
+five checks and 8.0 over twelve are different claims"), and `_foss_scorecard_headline` was
+rendering "N checks" with no way to tell which. Fixed to mirror `_cve_scan_results`'s existing
+two-loop shape (metrics, then detail); `_foss_scorecard_headline` now says "N of M checks" when
+they differ. New `tests/test_foss_scorecard_results_reader.py` adds the same superset-guard shape
+finding 118 built for `_note` — calls the real `score()` and asserts every key it returns reaches
+the reader, so a sixth key added later fails loudly instead of vanishing the same way.
+
+**What this covered vs. what's still open:** grepped this file for the exact mechanical shape
+(`for key in (<tuple>): if key in metrics/detail`) — only 2 of this file's 33 `_X_results`
+functions use it (`_cve_scan_results`, `_foss_scorecard_results`), both now checked. **The other
+31 readers were not individually audited against their writers** — that's real, larger work
+(some run 50-80 lines), not a formality this pass covered by implication. Left genuinely open,
+not silently claimed done.
 
 **4. Split `architecture-recovery.md` — DONE, 2026-09-03.** §5 *Extraction design* (913 of 2,720
 lines) moved verbatim to `architecture-recovery-extraction-design.md`, keeping its original §5.x
