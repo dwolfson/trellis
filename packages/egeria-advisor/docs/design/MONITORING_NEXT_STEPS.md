@@ -784,5 +784,5 @@ python scripts/capture_baseline_metrics.py
 
 For questions or issues, refer to:
 - `docs/design/MONITORING_IMPLEMENTATION_STATUS.md`
-- `docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md`
+- `docs/design/QUERY_HANDLING_AND_QUALITY.md`
 - Implementation files in `advisor/`

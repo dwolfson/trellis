@@ -207,7 +207,7 @@ Based on the design analysis, we expect:
 ### Documentation
 - `docs/design/PHASE2_COLLECTION_PARAMETERS_IMPLEMENTATION.md` - This file
 - `docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md` - Collection split design (Phase 1)
-- `docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md` - Monitoring design (Phase 1)
+- `docs/design/QUERY_HANDLING_AND_QUALITY.md` - Monitoring design (Phase 1)
 
 ## Success Criteria
 
@@ -237,8 +237,8 @@ See `docs/design/MONITORING_NEXT_STEPS.md` for integration instructions.
 
 - **Phase 1 Monitoring**: `docs/design/MONITORING_IMPLEMENTATION_STATUS.md`
 - **Collection Split Design**: `docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md`
-- **Query Classification**: `docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md`
-- **RAG Quality Analysis**: `docs/design/RAG_QUALITY_IMPROVEMENTS.md`
+- **Query Classification**: `docs/design/QUERY_HANDLING_AND_QUALITY.md`
+- **RAG Quality Analysis**: `docs/design/QUERY_HANDLING_AND_QUALITY.md`
 
 ## Conclusion
 

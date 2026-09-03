@@ -538,7 +538,7 @@ See separate design documents:
 1. ✅ `advisor/query_classifier.py` (449 lines)
 2. ✅ `advisor/collection_metrics.py` (401 lines)
 3. ✅ `advisor/assembly_metrics.py` (429 lines)
-4. ✅ `docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md` (723 lines)
+4. ✅ `docs/design/QUERY_HANDLING_AND_QUALITY.md` (723 lines)
 5. ✅ `docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md` (523 lines)
 
 ### Modified (1 file, ~200 lines added)

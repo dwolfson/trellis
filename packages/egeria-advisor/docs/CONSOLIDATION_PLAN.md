@@ -1,7 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** `history/` is DONE (2026-09-03, see below). The `design/` clusters
-remain a proposal awaiting approval.
+**Status:** `history/` and `design/` cluster 1 are DONE (2026-09-03). Clusters
+2–7 remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -43,16 +43,28 @@ lines.
 Sizes are current word counts; the targets are estimates based on the ratio the
 RE clusters achieved (roughly 2.5:1).
 
-### 1. Query handling and answer quality — 7 files, ~8,300 words
+### 1. Query handling and answer quality — **DONE 2026-09-03**
 
-`QUERY_CLASSIFICATION_AND_TRACKING` · `HALLUCINATION_ANALYSIS_AND_FIXES` ·
-`RAG_QUALITY_IMPROVEMENTS` · `EXHAUSTIVE_QUERY_DETECTION` ·
-`SCOPED_QUERIES_IMPLEMENTATION` · `SCOPED_QUERIES_TROUBLESHOOTING` ·
-`PERFORMANCE_AND_QUALITY_ANALYSIS`
+7 files, 8,294 words → `QUERY_HANDLING_AND_QUALITY.md`. Merged: query
+classification and tracking, scoped queries (implementation and troubleshooting),
+exhaustive query detection, hallucination analysis, RAG quality improvements, and
+the performance/quality analysis.
 
-The strongest cluster: one subject, seven documents. Note that
-`SCOPED_QUERIES_TROUBLESHOOTING` is operator-facing and may belong in
-`user-docs/` rather than in the merged design document.
+`SCOPED_QUERIES_TROUBLESHOOTING` stayed with the design rather than moving to
+`user-docs/` as this plan suggested — the troubleshooting steps are only
+intelligible next to the root cause they came from.
+
+**Four claims did not survive the check against the code**, which is the value of
+the pass and is recorded in the new document's §6:
+
+- the two headline hallucination fixes (bigger chunks, bigger embedding model)
+  were never adopted — both are still the live config, while the cheaper
+  recommendations did ship;
+- a Milvus scalar-filter workaround is still in `pyegeria_agent.py:270` though
+  Milvus was removed in July and pgvector has no such limitation;
+- `PyegeriaAgent` looked orphaned on a first grep and is not — a malformed
+  exclusion pattern, caught before it reached the document;
+- it is missing from `CLAUDE.md`'s agent table.
 
 ### 2. Indexing and collections — 6 files, ~7,400 words
 

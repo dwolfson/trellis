@@ -473,16 +473,16 @@ both apps running without needing an Egeria server.
 
 - [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md)
 - [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md)
-- [Query Classification & Tracking](docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md)
+- [Query Classification & Tracking](docs/design/QUERY_HANDLING_AND_QUALITY.md)
 - [Egeria Docs Split Strategy](docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md)
 
 How live subsystems actually work — these were unlinked until 2026-08-30, which is why they
 were hard to find rather than out of date:
 
 - [Incremental Indexing](docs/design/INCREMENTAL_INDEXING_DESIGN.md) — `advisor/incremental_indexer.py`
-- [Scoped Queries](docs/design/SCOPED_QUERIES_IMPLEMENTATION.md) and its
-  [troubleshooting notes](docs/design/SCOPED_QUERIES_TROUBLESHOOTING.md)
-- [Exhaustive Query Detection](docs/design/EXHAUSTIVE_QUERY_DETECTION.md)
+- [Scoped Queries](docs/design/QUERY_HANDLING_AND_QUALITY.md) and its
+  [troubleshooting notes](docs/design/QUERY_HANDLING_AND_QUALITY.md)
+- [Exhaustive Query Detection](docs/design/QUERY_HANDLING_AND_QUALITY.md)
 - [Metadata Filtering](docs/design/METADATA_FILTERING_ENHANCEMENT.md) — `advisor/metadata_filters.py`
 - [Code Analysis Update Guide](docs/design/CODE_ANALYSIS_UPDATE_GUIDE.md)
 - [Egeria & pyegeria wish list](docs/design/egeria-wishlist.md) — gaps found while integrating
