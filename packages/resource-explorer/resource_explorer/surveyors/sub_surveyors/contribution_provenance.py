@@ -258,6 +258,36 @@ class ContributionProvenanceSurveyor(BaseSurveyor):
                     )
                 )
 
+            # _gap_analysis_results (the shared reader all four GAP analyses
+            # go through) reads status from a "scan_summary" row specifically
+            # — its own docstring says "each of the four writes" one. This
+            # module's success path never did: only its _unverified early
+            # return (empty file inventory) wrote scan_summary, so a normal
+            # completed run left attach_status with nothing to read, silently
+            # dropping the status envelope every other GAP analysis carries.
+            # RECOVERED here mirrors secret_scan.py's own template for "the
+            # scan ran to completion" — real findings above already carry the
+            # substantive verdict; this row exists so the reader can tell
+            # "ran, produced these findings" apart from "did not run".
+            scan_summary_text = (
+                f"CLA/DCO provenance check completed — stated: {stated_outcome.outcome}, "
+                f"enforced: {enforced_label}."
+            )
+            findings.append({
+                "check_name": "scan_summary", "label": RECOVERED,
+                "confidence": 100, "summary": scan_summary_text,
+                "detail": StepOutcome(RECOVERED, known_positive=True).as_row(),
+            })
+            results.append(
+                ClassificationAnnotation(
+                    check_name="scan_summary",
+                    summary=scan_summary_text, analysis_step=STEP,
+                    candidate_classifications=[RECOVERED], confidence=100,
+                    explanation=scan_summary_text,
+                    json_properties=StepOutcome(RECOVERED, known_positive=True).as_row(),
+                )
+            )
+
             self._persist(findings)
 
         except Exception as exc:

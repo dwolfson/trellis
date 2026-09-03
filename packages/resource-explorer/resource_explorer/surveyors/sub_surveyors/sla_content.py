@@ -189,6 +189,18 @@ class SlaContentSurveyor(BaseSurveyor):
                 "summary": summary_text,
                 "detail": {**outcome.as_row(), "candidate_paths_checked": candidates},
             })
+            # _gap_analysis_results (the shared reader all four GAP analyses
+            # go through) reads status from a "scan_summary" row — its own
+            # docstring says "each of the four writes" one. Only _unverified
+            # above did; every normal-run branch above wrote "sla_content"
+            # instead, so a completed run left attach_status with nothing to
+            # read. `outcome` here is already the same object the real
+            # finding above used, so this row costs nothing new to compute.
+            findings.append({
+                "check_name": "scan_summary", "label": outcome.outcome,
+                "confidence": 100 if outcome.is_conclusive else 0,
+                "summary": summary_text, "detail": outcome.as_row(),
+            })
 
             # Evidence rows — only when content was actually found. For the
             # common "absent" case there is deliberately little to link

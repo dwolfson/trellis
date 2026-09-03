@@ -158,3 +158,36 @@ class TestMustNotClaimTruth:
         assert summary
         text = summary[0].summary.lower()
         assert "not" in text and ("verify" in text or "honoured" in text or "true" in text)
+
+
+class TestScanSummaryOnEveryRun:
+    """The shared _gap_analysis_results reader (repo_survey_definition_adapter.py)
+    reads status from a check_name='scan_summary' row — its own docstring says
+    each of the four GAP analyses writes one. Only the empty-inventory
+    _unverified() path did; every normal-run branch wrote 'sla_content'
+    instead, silently dropping the status envelope on every completed run.
+    Backlog.md item 3's 31-reader sweep."""
+
+    def test_absent_branch_writes_scan_summary(self, tmp_path, registry, project):
+        root = tmp_path / "root"
+        _write_inventory(registry, project.slug, root, {"README.md": "# hi\n"})
+        SlaContentSurveyor(project, registry, local_path=str(root)).run()
+        rows = _finding(registry, project.slug, "scan_summary")
+        assert rows, "no scan_summary row on a normal completed run"
+
+    def test_present_branch_writes_scan_summary(self, tmp_path, registry, project):
+        root = tmp_path / "root"
+        _write_inventory(registry, project.slug, root, {
+            "SUPPORT.md": "We guarantee 99.9% uptime and respond to P1 issues within 1 hour.\n",
+        })
+        SlaContentSurveyor(project, registry, local_path=str(root)).run()
+        rows = _finding(registry, project.slug, "scan_summary")
+        assert rows, "no scan_summary row on a normal completed run"
+        assert rows[0]["label"] == "recovered"
+
+    def test_no_candidate_paths_branch_still_writes_scan_summary(self, tmp_path, registry, project):
+        root = tmp_path / "root"
+        _write_inventory(registry, project.slug, root, {"main.py": "print('hi')\n"})
+        SlaContentSurveyor(project, registry, local_path=str(root)).run()
+        rows = _finding(registry, project.slug, "scan_summary")
+        assert rows, "no scan_summary row when there were no candidate paths at all"

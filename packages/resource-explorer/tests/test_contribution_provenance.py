@@ -170,3 +170,32 @@ class TestUnreadableContributing:
         rows = _finding(registry, project.slug, "cla_dco_stated")
         assert rows[0]["label"] == "unverified"
         assert rows[0]["detail"]["outcome_cause"] == "contributing_doc_unreadable"
+
+
+class TestScanSummaryOnEveryRun:
+    """The shared _gap_analysis_results reader (repo_survey_definition_adapter.py)
+    reads status from a check_name='scan_summary' row — its own docstring says
+    each of the four GAP analyses writes one. Only the empty-inventory
+    _unverified() path did; the normal-run path never wrote one at all,
+    silently dropping the status envelope on every completed run.
+    Backlog.md item 3's 31-reader sweep."""
+
+    def test_normal_run_writes_scan_summary(self, tmp_path, registry, project):
+        root = tmp_path / "root"
+        _write_inventory(registry, project.slug, root, {
+            "CONTRIBUTING.md": "We use DCO.\n",
+        })
+        ContributionProvenanceSurveyor(project, registry, local_path=str(root)).run()
+        rows = _finding(registry, project.slug, "scan_summary")
+        assert rows, "no scan_summary row on a normal completed run"
+        assert rows[0]["label"] == "recovered"
+
+    def test_no_signal_run_still_writes_scan_summary(self, tmp_path, registry, project):
+        """Neither a stated document nor enforcement config — the
+        cla_dco_provenance no_signal branch — must still leave a
+        scan_summary row behind."""
+        root = tmp_path / "root"
+        _write_inventory(registry, project.slug, root, {"README.md": "# hi\n"})
+        ContributionProvenanceSurveyor(project, registry, local_path=str(root)).run()
+        rows = _finding(registry, project.slug, "scan_summary")
+        assert rows, "no scan_summary row on a normal completed run"
