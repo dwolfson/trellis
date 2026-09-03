@@ -1713,6 +1713,17 @@ def _foss_scorecard_results(registry, slug: str) -> dict:
     `checks_evaluated`/`checks_unknown` travel WITH the score. A scorecard
     number without its coverage is what this analysis exists to avoid: 8.0
     over five checks and 8.0 over twelve are different claims.
+
+    That claim was being violated by this function itself until the
+    silent-field-allowlist sweep (docs/Backlog.md item 3, following the
+    pattern finding 118 named): `score()` (foss_scorecard.py) computes and
+    persists `checks_total` and `comparable_to_openssf` in `detail` alongside
+    the three metric keys below, but only the three were ever read back —
+    `checks_total`, the denominator this docstring's own example depends on,
+    was silently dropped, and `_foss_scorecard_headline` rendered "8.0/10
+    over 5 checks" with no way to say whether that was 5 of 5 or 5 of 12.
+    Mirrors `_cve_scan_results`'s existing two-loop shape (metrics, then
+    detail) rather than inventing a new one.
     """
     rows = registry.query_findings(slug, "foss_scorecard")
     findings = [
@@ -1725,6 +1736,11 @@ def _foss_scorecard_results(registry, slug: str) -> dict:
     for key in ("score", "checks_evaluated", "checks_unknown"):
         if key in metrics:
             out[key] = metrics[key]
+    detail = metrics.get("detail") or {}
+    if isinstance(detail, dict):
+        for key in ("checks_total", "comparable_to_openssf"):
+            if key in detail:
+                out[key] = detail[key]
     return out
 
 
@@ -1741,8 +1757,16 @@ def _foss_scorecard_headline(registry, slug: str) -> dict | None:
         return {"label": "no check could be evaluated", "tone": "warn"}
     evaluated = int(data.get("checks_evaluated") or 0)
     unknown = int(data.get("checks_unknown") or 0)
+    total = data.get("checks_total")
+    # "8.0/10 over 5 checks" doesn't say whether that's 5 of 5 or 5 of 12 —
+    # exactly the ambiguity this analysis's own docstring exists to avoid.
+    # Only spell out the denominator when it differs; "5 of 5 checks" reads
+    # as noise where "5 checks" already said everything.
+    count_phrase = (f"{evaluated} of {int(total)} {_plural('check', int(total))}"
+                     if total is not None and int(total) != evaluated
+                     else f"{evaluated} {_plural('check', evaluated)}")
     return {
-        "label": f"{score}/10 over {evaluated} {_plural('check', evaluated)}"
+        "label": f"{score}/10 over {count_phrase}"
                  + (f", {unknown} not evaluable" if unknown else ""),
         "tone": "good" if score >= 7 else "warn" if score >= 4 else "bad",
     }
