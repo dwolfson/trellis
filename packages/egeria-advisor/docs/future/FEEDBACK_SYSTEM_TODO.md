@@ -227,7 +227,7 @@ This document tracks planned enhancements for the user feedback system to improv
 ## Related Documents
 
 - [USER_FEEDBACK_GUIDE.md](../user-docs/USER_FEEDBACK_GUIDE.md) - Current feedback system guide
-- [PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md](../history/PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md) - Routing improvements
+- `PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md` (archived out-of-repo 2026-09-03; `docs/history/` was gitignored and never in the repository) - Routing improvements
 - [SYSTEM_ARCHITECTURE.md](../design/SYSTEM_ARCHITECTURE.md) - Overall system architecture
 
 ## Notes

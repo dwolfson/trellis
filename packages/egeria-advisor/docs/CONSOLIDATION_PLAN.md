@@ -1,6 +1,7 @@
 # Egeria Advisor documentation — consolidation plan
 
-**Status:** proposal, awaiting approval. Nothing here has been done.
+**Status:** `history/` is DONE (2026-09-03, see below). The `design/` clusters
+remain a proposal awaiting approval.
 **Written:** 2026-09-02, after consolidating Resource Explorer's documentation
 from 92 top-level documents to 35 across seven clusters.
 
@@ -32,7 +33,7 @@ lines.
 |---|---|---|---|
 | `design/` | 32 | 43,223 | the real consolidation target |
 | `user-docs/` | 25 | 32,524 | guides; likely fine, may have overlap |
-| `history/` | 31 | 37,050 | phase-completion records — archive candidates |
+| ~~`history/`~~ | ~~31~~ | ~~37,050~~ | **done 2026-09-03** — was gitignored, never in the repo; 5 rescued, 26 archived |
 | `archive/` | 18 | 19,294 | already archived; check nothing live is buried |
 | `future/` | 2 | 2,269 | leave alone |
 | top level | 2 | 26,536 | `PROJECT_SUMMARY.md` (18,757) is the entry point |
@@ -96,25 +97,45 @@ it is an active design area.
 `REMAINING_TODOS` · `TODO_IMPLEMENTATION_SUMMARY` · `egeria-wishlist` ·
 `SPRINT_2026_03_07_SUMMARY`
 
-These are trackers, not designs. The sprint summary is dated and belongs in
-`history/`. The other three likely collapse into one backlog, the way RE keeps a
-single `Backlog.md`.
+These are trackers, not designs. The other three likely collapse into one
+backlog, the way RE keeps a single `Backlog.md`. The sprint summary is dated —
+and `history/` no longer exists, so it needs a status line rather than a move.
 
 ### Left standing
 
 `SYSTEM_ARCHITECTURE` and `egeria-advisor-plan` are the entry points and should
 stay separate, as `Architecture.md` did in RE.
 
-## `history/` — 31 files, 37,050 words
+## `history/` — DONE 2026-09-03, and the premise was wrong
 
-Named `PHASE2_COMPLETE`, `PHASE10.3_DESIGN`, `MULTI_COLLECTION_STATUS` and
-similar: completion records for work that finished. **The directory name already
-does the job a status line does**, so the question is only whether they should
-stay in the repository at all — a maintainer judgement, not a mechanical one.
+**`docs/history/` was gitignored** (`packages/egeria-advisor/.gitignore:209`,
+`/docs/history/`). All 31 files were local-only working notes that **had never
+been in the repository at all** — `git ls-files` returned zero for that
+directory. This plan's claim that it was "a third of EA's documentation by
+volume" was true of the working tree and false of the repository, and the
+recommendation to start there because it was "the largest reduction" was
+therefore built on a measurement of the wrong thing.
 
-The RE approach was: export out of the repository, verify by checksum, then
-delete. `history/` is the natural candidate for exactly that, and it is a third of
-EA's documentation by volume.
+What that hid was more interesting than what it counted. **Five of the 31 were
+not history**, and one was a real defect:
+
+| file | verdict | evidence |
+|---|---|---|
+| `PHASE6_CLI_GUIDE` → `user-docs/CLI_GUIDE.md` | **live user documentation** | the CLI exists (`egeria-advisor = advisor.cli.main:cli`) and `--interactive` is still its entry point; `CLI_COMMAND_AGENT_GUIDE` is a different feature and never mentions it |
+| `PHASE5_LESSONS_LEARNED` → `design/BEEAI_INTEGRATION_LESSONS.md` | **still relevant** | `beeai-framework` is still a dependency, so the difficulties it records are a live caution |
+| `FRAMEWORK_COMPARISON` → `design/` | **reference** | informed a framework choice still in force |
+| `PYTHON_VERSION_SOLUTION` → `design/PYTHON_VERSION_FOR_ROCM.md` | **possibly operative** | ROCm is still referenced by `embeddings_onnx.py`, `embeddings.py`, `advisor.yaml` |
+| `PHASE9_USE_CASE_EXAMPLES` → `future/USE_CASE_EXAMPLES.md` | **unbuilt** | declares itself "Design Phase, Priority: High" — open work, not a completion record |
+
+**A user guide for a shipping CLI was invisible to anyone cloning the
+repository**, because it happened to be named after the phase that produced it
+and filed with the completion records. The directory name was doing the
+classifying, and it was wrong about five files out of 31.
+
+The remaining 26 were genuine completion records and are archived out-of-repo
+(checksum-verified) and removed from the working tree. Four surviving documents
+pointed into `history/`; those pointers were **already dangling for everyone but
+this machine**, and now say the target is archived rather than linking nowhere.
 
 ## What to check before merging anything
 
@@ -137,7 +158,11 @@ Learned from the RE passes, in the order they cost time:
 
 ## Recommended order
 
-`history/` first — it is the largest single reduction and the lowest-risk
-judgement, because the directory already declares what the files are. Then
-`design/` cluster 1, which is the most coherent and would prove the pattern on
-this codebase before committing to it.
+`history/` is done. Next is `design/` cluster 1 (query handling and answer
+quality) — seven documents on one subject, the most coherent grouping here, and
+the right place to prove the pattern on this codebase before committing to it.
+
+**And carry forward the lesson `history/` produced:** check each file against the
+code before believing where it was filed. Five of 31 were misfiled, including a
+user guide for a shipping CLI. A directory name is a claim about its contents,
+and claims are the thing to verify.
