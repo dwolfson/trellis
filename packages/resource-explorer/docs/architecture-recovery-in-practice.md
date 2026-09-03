@@ -4,6 +4,9 @@
 **Audience:** written to stand alone. It assumes no knowledge of Resource Explorer,
 Egeria, or the rest of Trellis.
 
+**Contributed to the LF AI & Data Context Intelligence Workgroup.**
+**Contact:** Dan Wolfson — dan.wolfson@pdr-associates.com
+
 ---
 
 ## 1. The situation
@@ -535,3 +538,10 @@ draws on the following.
 
 14. **Egeria** (LF AI & Data / ODPi) — open metadata and governance platform;
     the catalogue of record described in §8.
+
+---
+
+*Contributed to the **LF AI &amp; Data Context Intelligence Workgroup**.
+Contact: Dan Wolfson — dan.wolfson@pdr-associates.com.
+The system described here is Resource Explorer, part of Trellis, built on
+[Egeria](https://egeria-project.org) (LF AI &amp; Data).*
