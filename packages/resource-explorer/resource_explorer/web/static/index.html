@@ -8526,6 +8526,31 @@ function _curateFilterChipsHtml(values, active, toggleFn) {
         : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600'}">${_esc(v)}</button>`).join('');
 }
 
+// Collapsible sections (2026-09-03 — "make it easier to see when you're
+// going from one to the other" as more segments get added: Components,
+// Blueprints, and now Ports & Wires). Generic rather than special-cased per
+// section, specifically so a future 4th segment slots in with zero new
+// plumbing — the request itself named this as the reason to build it this
+// way now rather than bolt it on per-section later. Collapsed state is a
+// Set of section ids, default empty (everything open) — a curator's first
+// visit should see everything, not have to discover collapsed content.
+let _curateCollapsedSections = new Set();
+function _curateToggleSection(id) {
+  if (_curateCollapsedSections.has(id)) _curateCollapsedSections.delete(id);
+  else _curateCollapsedSections.add(id);
+  if (_curateArchData) renderCurateArchitecturePanel(_curateArchEntityType, _curateArchSlug, _curateArchData);
+}
+function _curateSectionHtml(id, headerHtml, bodyHtml) {
+  const collapsed = _curateCollapsedSections.has(id);
+  return `<div>
+    <button onclick="_curateToggleSection('${id}')" class="w-full flex items-center justify-between text-left mb-2 group">
+      ${headerHtml}
+      <span class="text-slate-600 group-hover:text-slate-400 shrink-0 ml-2">${collapsed ? '▸' : '▾'}</span>
+    </button>
+    ${collapsed ? '' : bodyHtml}
+  </div>`;
+}
+
 function _curateSubnavHtml(active, entityType) {
   const tabs = [{ tab: 'general', label: '🗂 General' }];
   if (entityType === 'repo') tabs.push({ tab: 'architecture', label: '🏛 Architecture Verdicts' });
@@ -9306,6 +9331,17 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
     ? filteredBlueprints.map(bp => _curateBlueprintRow(bp, slug, componentsByPath)).join('')
     : `<div class="text-slate-600 text-xs text-center py-4">${allBlueprints.length ? 'No blueprints match the current filter.' : 'No candidate blueprints proposed yet — run Analysis → Architecture Recovery.'}</div>`;
 
+  // ── Ports & Wires (2026-09-03 — read-only, reuses the exact reader/
+  // renderer Analysis already has: _architecture_interfaces_results/
+  // _renderDeploymentInterfaces. Declared deployment topology (Dockerfile
+  // EXPOSE, compose ports/expose/depends_on, OpenAPI) — not the same thing
+  // as SolutionPort/SolutionLinkingWire materialization, which doesn't
+  // exist yet (wires specifically are deliberately deferred — Backlog.md,
+  // Phase A.5's live multi-link measurement). Nothing here gets a verdict;
+  // there's no proposal to accept or reject, just declared fact.
+  const interfaces = data.interfaces || [];
+  const portWireCount = interfaces.reduce((n, d) => n + d.components.reduce((m, c) => m + c.ports.length, 0) + d.wires.length, 0);
+
   view.innerHTML = `
     <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — 📁 ${_esc(slug)}</span>
@@ -9313,9 +9349,9 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
     <div class="p-4 space-y-6 max-w-2xl">
       ${_curateSubnavHtml('architecture', entityType)}
 
-      <div>
-        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🧩 Components (${filteredComponents.length}${filteredComponents.length !== allComponents.length ? ` of ${allComponents.length}` : ''})</div>
-        <div class="text-xs text-slate-500 mb-2">${decidedCount ? `${decidedCount} of ${allComponents.length} already decided. ` : ''}Accept, reject, or retype what architecture recovery proposed — evidence and candidate-blueprint links shown below each one.</div>
+      ${_curateSectionHtml('components',
+        `<span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🧩 Components (${filteredComponents.length}${filteredComponents.length !== allComponents.length ? ` of ${allComponents.length}` : ''})</span>`,
+        `<div class="text-xs text-slate-500 mb-2">${decidedCount ? `${decidedCount} of ${allComponents.length} already decided. ` : ''}Accept, reject, or retype what architecture recovery proposed — evidence and candidate-blueprint links shown below each one.</div>
         <div class="flex gap-2 items-center mb-2">
           <input type="text" placeholder="Search by name or path…" value="${_esc(_curateComponentFilter.search)}"
             oninput="_curateSetComponentSearch(this.value)"
@@ -9323,15 +9359,18 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
         </div>
         ${allTypes.length > 1 ? `<div class="flex flex-wrap gap-1.5 mb-2">${_curateFilterChipsHtml(allTypes, _curateComponentFilter.types, '_curateToggleTypeFilter')}</div>` : ''}
         ${componentsHtml}
-        ${componentsTruncatedNote}
-      </div>
+        ${componentsTruncatedNote}`)}
 
-      <div>
-        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏛 Candidate Blueprints (${filteredBlueprints.length}${filteredBlueprints.length !== allBlueprints.length ? ` of ${allBlueprints.length}` : ''})</div>
-        <div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
+      ${_curateSectionHtml('blueprints',
+        `<span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🏛 Candidate Blueprints (${filteredBlueprints.length}${filteredBlueprints.length !== allBlueprints.length ? ` of ${allBlueprints.length}` : ''})</span>`,
+        `<div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
         ${allPerspectives.length > 1 ? `<div class="flex flex-wrap gap-1.5 mb-2">${_curateFilterChipsHtml(allPerspectives, _curateBlueprintFilter.perspectives, '_curateTogglePerspectiveFilter')}</div>` : ''}
-        ${blueprintsHtml}
-      </div>
+        ${blueprintsHtml}`)}
+
+      ${interfaces.length ? _curateSectionHtml('ports-wires',
+        `<span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🔌 Ports &amp; Wires (${portWireCount})</span>`,
+        `<div class="text-xs text-slate-500 mb-2">Declared deployment topology — read-only, no verdict to give; see below for what "declared" means. Not the same as an Egeria SolutionPort/SolutionLinkingWire — those aren't materialized yet.</div>
+        ${_renderDeploymentInterfaces(interfaces)}`) : ''}
     </div>`;
 }
 
