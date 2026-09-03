@@ -38,6 +38,41 @@ instances in one day, one closed with a superset guard (finding 118); the sweep 
 sites is unowned. The action that matters: check each allowlist against its **current** source
 shape, not the shape it had when written — none of the three was wrong when written.
 
+**4. Split `architecture-recovery.md`** — 2,720 lines, flagged by CLAUDE.md's "Writing project
+docs" rule (roughly 1,500–2,000 lines is the point to split). Measured section sizes: §5
+*Extraction design* (detectors, distillation, the IR, evidence/confidence, the six validation
+subsections 5.5–5.5f, tooling, wrapping as survey steps) is lines 730–1642, **913 lines — a third
+of the whole document** and the one section large enough on its own to justify the move. Every
+other section is materially smaller (§3 *Grounding* 272 lines, §4 *Architecture of the solution*
+365 lines, §8 *Churn and versioning* 248 lines; nothing else exceeds ~220).
+
+Proposed split: pull §5 out verbatim into a new `architecture-recovery-extraction-design.md`,
+renumbering its subsections to their own top-level structure. Conceptually clean — later sections
+(§6 component-scoped analytics, §7 curation, §8 churn) consume *what* extraction produces (the
+IR, confidence, components), not its internal mechanics — but **not mechanically clean**: already
+measured, not assumed. Within `architecture-recovery.md` itself, ~40 lines carry a `§5.x`
+subsection reference — most from §5's own front-matter summary (lines 26–45, listing what's
+coming) and internal cross-references within §5, but three (lines 1761/1766/1767, inside §6
+itself) point *into* specific §5 subsections (`§5.2`, `§5.5d`, `§5.5e`) from the section that's
+staying behind — those three need rewriting as inter-document links, not just renumbering.
+`Backlog.md` separately carries ~19 more `§5.x` references (mostly `§5.5a`–`§5.5f`, the
+validation-signals subsections), and four other RE docs
+(`consolidation-2026-08-24.md`, `investigation-framing-design.md`, `feedback-and-curation.md`,
+`question-answering-and-context.md`) each reference §5 generically. All of these need to resolve
+to the new file's own numbering, not just get a pointer slapped on the old one — this is real
+work, not a formality pass. Leave §§1–4 and §§6–20 in the main document (~1,807 lines after the
+cut — inside the CLAUDE.md guidance, and keeps the framing/grounding/architecture front matter
+together with the payoff/curation/versioning/plan/assessment back matter as one coherent read).
+Add a two-way cross-link (`architecture-recovery.md` §5 becomes a pointer + one-paragraph
+summary; the new doc opens with "part of the architecture-recovery design — see
+`architecture-recovery.md` for the model this extracts into").
+
+Verification: after the split, re-run the `§5\.[0-9a-z]*` grep across `docs/` (this package) and
+confirm zero hits remain that point at content no longer in `architecture-recovery.md` — every
+surviving reference should either target the new file's own numbering or be a §5.x reference to a
+subsection that stayed in place (none do, per the measurement above, but confirm rather than
+assume post-edit). No code change; pure doc reorganization.
+
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
