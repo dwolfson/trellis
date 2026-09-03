@@ -3772,23 +3772,111 @@ function _archRow(c, slug, rowUid) {
   // so no second fetch here. `slug` gates the whole area: a payload built
   // without it (a test fixture, or a future caller that doesn't carry it)
   // renders no verdict UI rather than wiring buttons to a broken URL.
-  const verdictArea = !slug ? '' : (c.verdict
+  // A real, pre-existing detection anomaly, found 2026-09-03 rendering the
+  // FULL component list for the first time (this UI used to show only
+  // undecided rows, capped — never enough of the list to notice): a
+  // manifest-detected top-level package can be persisted with scope_locator
+  // "" (empty), distinct from a directory-scoped proposal of the same name
+  // — curate.py's add_component_verdict already 400s on an empty
+  // scope_locator (correctly — there's no addressable target), but nothing
+  // stopped the UI from offering Accept/Reject buttons that would always
+  // fail against it. Guard here rather than let a curator hit a dead
+  // button; the underlying detection/persist-layer question (why this
+  // proposal has no scope at all) is a separate, deeper investigation not
+  // attempted in this pass.
+  const verdictArea = (!slug || !c.path) ? '' : (c.verdict
     ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict, c.materialized)
     // No verdict yet, read-only context (Analysis): render nothing rather
     // than an inert-looking control set — the "Accept"/"Reject" affordance
     // only exists in Curate.
     : (_archInteractiveMode ? _archVerdictControlsHtml(rowUid, slug, c.path) : ''));
+  const noScopeNote = (_archInteractiveMode && !c.verdict && !c.path)
+    ? `<div class="text-[11px] text-amber-400/80 mt-0.5">⚠ No addressable scope for this proposal — can't be individually accepted or rejected.</div>`
+    : '';
+  // Evidence + candidate-blueprint backlinks (2026-09-03, Curate redesign
+  // item 2/5) — Curate-only (_archInteractiveMode), same reasoning as the
+  // verdict controls: Analysis stays a compact read-only summary, Curate is
+  // where a curator needs enough to actually judge. `c.evidence` is the
+  // per-approach "why" (repo_survey_definition_adapter.py's
+  // _architecture_recovery_results already computes this; it just never
+  // reached the UI before now). `c.candidate_blueprints` is the derived
+  // backlink (see that function's own docstring on why it's derived, not
+  // trusted from Component.blueprint) — rendered as jump chips.
+  // Evidence is append-only across every survey run (repo_survey_
+  // definition_adapter.py's evidence_rows has no dedup — correct for the
+  // backend, since a repeat run IS a new fact worth its own row), but
+  // rendering every historical repeat is noise a curator doesn't need —
+  // dedup by (approach, summary) here, display-only, keeping the most
+  // recent occurrence's confidence. First surfaced 2026-09-03: sqlglot,
+  // re-surveyed many times during this feature's own live testing, showed
+  // ~10 near-identical "manifest: ..." lines for one component before this
+  // existed.
+  const evidenceDeduped = [];
+  const evidenceSeen = new Set();
+  for (const e of (c.evidence || []).slice().reverse()) {
+    const key = `${e.approach || e.assertion}::${e.summary}`;
+    if (evidenceSeen.has(key)) continue;
+    evidenceSeen.add(key);
+    evidenceDeduped.unshift(e);
+  }
+  const evidenceHtml = (_archInteractiveMode && evidenceDeduped.length)
+    ? `<div class="mt-1 pl-2 border-l-2 border-slate-700/50 space-y-0.5">
+        ${evidenceDeduped.map(e => `<div class="text-[11px] text-slate-500">🔍 <span class="text-slate-400">${_esc(e.approach || e.assertion)}</span>: ${_esc(e.summary)}${e.confidence ? ` <span class="text-slate-600">(${e.confidence}%)</span>` : ''}</div>`).join('')}
+      </div>`
+    : '';
+  const blueprintLinksHtml = (_archInteractiveMode && (c.candidate_blueprints || []).length)
+    ? `<div class="mt-1 flex flex-wrap gap-1">
+        ${c.candidate_blueprints.map(bp => `<button onclick="_curateJumpToBlueprint('${_esc(bp.perspective)}','${_esc(bp.cluster_name).replace(/'/g, "\\'")}')"
+            class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-cyan-400 hover:bg-slate-700" title="Jump to this blueprint">🏛 ${_esc(bp.cluster_name)} (${_esc(bp.perspective)})</button>`).join('')}
+      </div>`
+    : '';
+  const anchorId = (_archInteractiveMode && c.path) ? ` id="${_curateComponentAnchorId(c.path)}"` : '';
   return `
-        <div class="text-xs text-slate-300 mb-1">
+        <div class="text-xs text-slate-300 mb-1"${anchorId}>
           <div class="flex justify-between gap-2">
             <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
             <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'untyped'} · ${c.confidence}%</span>
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
+          ${evidenceHtml}
+          ${blueprintLinksHtml}
+          ${noScopeNote}
           ${verdictArea}
         </div>`;
 }
+
+// Stable, filter-independent DOM anchor ids for cross-linking between a
+// component row and the blueprint(s) that propose it — a positional rowUid
+// (curate-comp-${i}) shifts under a search/type filter, so jump targets use
+// the scope_locator/perspective+name identity instead, run through a safe
+// id-charset encoding (a path contains slashes/dots, invalid in a bare id).
+function _curateComponentAnchorId(path) {
+  return 'curate-comp-' + btoa(unescape(encodeURIComponent(path))).replace(/[^a-zA-Z0-9]/g, '');
+}
+function _curateBlueprintAnchorId(perspective, clusterName) {
+  return 'curate-bp-' + btoa(unescape(encodeURIComponent(`${perspective}::${clusterName}`))).replace(/[^a-zA-Z0-9]/g, '');
+}
+
+// Clears both filter panes (the target may be hidden by the current filter)
+// then scrolls to and briefly highlights the anchor. Re-render happens
+// synchronously (no fetch — _curateArchData is already in memory), so the
+// element exists by the time scrollIntoView runs.
+function _curateJumpTo(anchorId) {
+  _curateComponentFilter.search = '';
+  _curateComponentFilter.types = new Set();
+  _curateBlueprintFilter.perspectives = new Set();
+  if (_curateArchData) renderCurateArchitecturePanel(_curateArchEntityType, _curateArchSlug, _curateArchData);
+  const el = document.getElementById(anchorId);
+  if (!el) { showToast('error', 'Not found — it may belong to a different repo view.'); return; }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prevBg = el.style.backgroundColor;
+  el.style.transition = 'background-color 0.3s';
+  el.style.backgroundColor = 'rgba(34, 211, 238, 0.15)';
+  setTimeout(() => { el.style.backgroundColor = prevBg; }, 1200);
+}
+function _curateJumpToComponent(path) { _curateJumpTo(_curateComponentAnchorId(path)); }
+function _curateJumpToBlueprint(perspective, clusterName) { _curateJumpTo(_curateBlueprintAnchorId(perspective, clusterName)); }
 
 // ─── Architecture component verdicts ────────────────────────────────────────
 // First slice of "take architecture results into Curate" — accept, reject,
@@ -3806,19 +3894,30 @@ function _archRow(c, slug, rowUid) {
 // (HTML-attribute-escaped through _esc(), safe regardless of quoting) and
 // are read back via `.dataset` inside the handlers instead.
 function _archVerdictControlsHtml(rowUid, slug, path) {
-  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
-    <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
-      onclick="_archSubmitVerdict('${rowUid}','accepted')">✓ Accept</button>
-    <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
-      onclick="_archSubmitVerdict('${rowUid}','rejected')">✗ Reject</button>
-    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archShowRetype('${rowUid}')">✎ Retype</button>
-    <span data-arch-retype="${_esc(rowUid)}" class="hidden items-center gap-1">
-      <input type="text" data-arch-retype-input="${_esc(rowUid)}" placeholder="new type"
-        class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-0.5 w-24 text-slate-200"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();_archSubmitRetype('${rowUid}');}" />
-      <button class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-200 hover:bg-slate-600"
-        onclick="_archSubmitRetype('${rowUid}')">Set</button>
-    </span>
+  // Optional curator note (2026-09-03, Curate redesign item 2's "cheap
+  // version") — free text captured alongside the verdict, reusing
+  // record_component_verdict's existing `note` column rather than a new
+  // field. Not an override of the proposal's own name/type (that stays
+  // whatever architecture_recovery detected); it's the curator's own
+  // rationale riding alongside the decision, shown back on the badge once
+  // saved.
+  return `<div class="mt-1" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <input type="text" data-arch-note-input="${_esc(rowUid)}" placeholder="Optional note (why accept/reject, or a better description)…"
+      class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 w-full text-slate-300 mb-1" />
+    <div class="flex gap-2 items-center flex-wrap">
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+        onclick="_archSubmitVerdict('${rowUid}','accepted')">✓ Accept</button>
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
+        onclick="_archSubmitVerdict('${rowUid}','rejected')">✗ Reject</button>
+      <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archShowRetype('${rowUid}')">✎ Retype</button>
+      <span data-arch-retype="${_esc(rowUid)}" class="hidden items-center gap-1">
+        <input type="text" data-arch-retype-input="${_esc(rowUid)}" placeholder="new type"
+          class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-0.5 w-24 text-slate-200"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();_archSubmitRetype('${rowUid}');}" />
+        <button class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-200 hover:bg-slate-600"
+          onclick="_archSubmitRetype('${rowUid}')">Set</button>
+      </span>
+    </div>
   </div>`;
 }
 
@@ -3844,11 +3943,17 @@ function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
   const changeBtn = _archInteractiveMode
     ? `<button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>`
     : '';
-  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
-    <span class="text-[10px] ${color}">${label}</span>
-    <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
-    ${egeriaBadge}
-    ${changeBtn}
+  const noteHtml = v.note
+    ? `<div class="text-[11px] text-slate-400 italic mt-0.5">"${_esc(v.note)}"</div>`
+    : '';
+  return `<div class="mt-1" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <div class="flex gap-2 items-center flex-wrap">
+      <span class="text-[10px] ${color}">${label}</span>
+      <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+      ${egeriaBadge}
+      ${changeBtn}
+    </div>
+    ${noteHtml}
   </div>`;
 }
 
@@ -3877,11 +3982,13 @@ async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
   const el = document.querySelector(`[data-arch-verdict="${rowUid}"]`);
   if (!el) return;
   const slug = el.dataset.archSlug, path = el.dataset.archPath;
+  const noteInput = document.querySelector(`[data-arch-note-input="${rowUid}"]`);
+  const note = (noteInput?.value || '').trim();
   try {
     const resp = await fetch(`/api/curate/component-verdicts/repo/${encodeURIComponent(slug)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope_locator: path, verdict, retyped_to: retypedTo || '' }),
+      body: JSON.stringify({ scope_locator: path, verdict, retyped_to: retypedTo || '', note }),
     });
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
@@ -3899,7 +4006,7 @@ async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
     const saved = await resp.json();
     const m = saved.materialization;
     el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
-      verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at,
+      verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at, note: saved.note,
     }, m && m.status !== 'error' ? m : null);
     if (m && m.status === 'error') {
       showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
@@ -8385,6 +8492,40 @@ let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each 
 // repo analysis). Mirrors _automateSubTab's module-level-state pattern.
 let _curateSubTab = 'general';  // 'general' | 'architecture'
 
+// Architecture Verdicts panel state (2026-09-03 redesign, feedback from
+// live review) — cached so filter/search changes and cross-links
+// (_curateJumpTo) re-render instantly from memory rather than re-fetching.
+// Filters are Sets of the exact string values present in the data
+// (component type, blueprint perspective) — empty Set means "no filter,
+// show everything", not "show nothing".
+let _curateArchEntityType = null;
+let _curateArchSlug = null;
+let _curateArchData = null;
+let _curateComponentFilter = { search: '', types: new Set() };
+let _curateBlueprintFilter = { perspectives: new Set() };
+
+function _curateSetComponentSearch(value) {
+  _curateComponentFilter.search = value;
+  if (_curateArchData) renderCurateArchitecturePanel(_curateArchEntityType, _curateArchSlug, _curateArchData);
+}
+function _curateToggleTypeFilter(type) {
+  if (_curateComponentFilter.types.has(type)) _curateComponentFilter.types.delete(type);
+  else _curateComponentFilter.types.add(type);
+  if (_curateArchData) renderCurateArchitecturePanel(_curateArchEntityType, _curateArchSlug, _curateArchData);
+}
+function _curateTogglePerspectiveFilter(persp) {
+  if (_curateBlueprintFilter.perspectives.has(persp)) _curateBlueprintFilter.perspectives.delete(persp);
+  else _curateBlueprintFilter.perspectives.add(persp);
+  if (_curateArchData) renderCurateArchitecturePanel(_curateArchEntityType, _curateArchSlug, _curateArchData);
+}
+
+function _curateFilterChipsHtml(values, active, toggleFn) {
+  return values.map(v => `<button onclick="${toggleFn}('${_esc(v).replace(/'/g, "\\'")}')"
+      class="text-[10px] px-2 py-0.5 rounded-full border transition-colors ${active.has(v)
+        ? 'bg-cyan-700 border-cyan-600 text-white'
+        : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600'}">${_esc(v)}</button>`).join('');
+}
+
 function _curateSubnavHtml(active, entityType) {
   const tabs = [{ tab: 'general', label: '🗂 General' }];
   if (entityType === 'repo') tabs.push({ tab: 'architecture', label: '🏛 Architecture Verdicts' });
@@ -8963,33 +9104,90 @@ async function loadCurateArchitecturePanel() {
   }
 }
 
-function _curateBlueprintRow(bp, slug) {
+// componentsByPath — scope_locator -> component dict, from the SAME
+// results payload's `components` list. Needed to show a member's actual
+// name/type (member_status only carries slug/scope_locator — the reader
+// deliberately doesn't duplicate the full component record onto every
+// blueprint that references it) and to build the jump-to-component anchor.
+function _curateBlueprintRow(bp, slug, componentsByPath) {
   const rowUid = 'bp' + (++_archUidSeq);
   const sizeLabel = `${bp.size} component(s)${bp.children.length ? ` across ${bp.children.length} nested blueprint(s)` : ''}`;
   const oversizedNote = bp.oversized
     ? `<div class="text-[11px] text-amber-400/80 mt-0.5">⚠ Over the target cluster size (~${bp.target_size ?? '?'}) with no further declared structure — review before accepting.</div>`
     : '';
+  // Rationale (2026-09-03, Curate redesign item 2) — signal/carrier are
+  // clustering.py's own "why this group" evidence (e.g. carrier:
+  // "compose.yaml" means a docker-compose file declared this topology),
+  // already computed server-side, never surfaced here before now.
+  const rationaleParts = [];
+  if (bp.signal) rationaleParts.push(`signal: ${_esc(bp.signal)}`);
+  if (bp.carrier) rationaleParts.push(`via ${_esc(bp.carrier)}`);
+  const rationaleHtml = rationaleParts.length
+    ? `<div class="text-[11px] text-slate-500 mt-0.5">${rationaleParts.join(' · ')}</div>` : '';
+  const membersHtml = (bp.member_status || []).length
+    ? `<div class="mt-1 pl-2 border-l-2 border-slate-700/50 space-y-0.5">
+        ${bp.member_status.map(st => {
+          const comp = componentsByPath[st.scope_locator];
+          const name = comp ? comp.name : st.slug;
+          return `<div class="flex justify-between items-center gap-2 text-[11px]">
+            <button onclick="_curateJumpToComponent('${_esc(st.scope_locator).replace(/'/g, "\\'")}')"
+              class="text-slate-400 hover:text-cyan-300 truncate text-left" title="Jump to this component">🧩 ${_esc(name)}</button>
+            ${memberVerdictBadgeInline(st)}
+          </div>`;
+        }).join('')}
+      </div>`
+    : '';
+  const childrenHtml = (bp.child_status || []).length
+    ? `<div class="mt-1 pl-2 border-l-2 border-slate-700/50 space-y-0.5">
+        ${bp.child_status.map(st => `<div class="flex justify-between items-center gap-2 text-[11px]">
+            <button onclick="_curateJumpToBlueprint('${_esc(bp.perspective)}','${_esc(st.cluster_name).replace(/'/g, "\\'")}')"
+              class="text-slate-400 hover:text-cyan-300 truncate text-left" title="Jump to this nested blueprint">🏛 ${_esc(st.cluster_name)}</button>
+            ${memberVerdictBadgeInline(st)}
+          </div>`).join('')}
+      </div>`
+    : '';
   const verdictArea = bp.verdict
     ? _archBlueprintVerdictBadgeHtml(rowUid, slug, bp.perspective, bp.cluster_name, bp.verdict, bp.materialized)
     : _archBlueprintVerdictControlsHtml(rowUid, slug, bp.perspective, bp.cluster_name);
+  const anchorId = _curateBlueprintAnchorId(bp.perspective, bp.cluster_name);
   return `
-    <div class="rpt-section text-xs text-slate-300" style="margin-bottom:.5rem;">
+    <div class="rpt-section text-xs text-slate-300" id="${anchorId}" style="margin-bottom:.5rem;">
       <div class="flex justify-between gap-2">
         <span class="font-medium text-cyan-400">${_esc(bp.cluster_name)}</span>
         <span class="text-slate-500 shrink-0">${_esc(bp.perspective)}</span>
       </div>
       <div class="text-slate-500">${_esc(sizeLabel)}${bp.parent ? ` · nested under ${_esc(bp.parent)}` : ''}</div>
+      ${rationaleHtml}
       ${oversizedNote}
+      ${membersHtml}
+      ${childrenHtml}
       ${verdictArea}
     </div>`;
 }
 
+// Shared by member/child rows above — same badge language as
+// _archVerdictBadgeHtml's label/color choices, deliberately smaller (this
+// renders once per member, potentially many per blueprint) and with no
+// interactive affordance of its own — "change" lives on the member's own
+// row, reached via the jump link, not duplicated here.
+function memberVerdictBadgeInline(st) {
+  if (!st || !st.verdict) return '<span class="text-slate-600">awaiting verdict</span>';
+  const label = st.verdict.verdict === 'accepted' ? '✓ accepted' : st.verdict.verdict === 'rejected' ? '✗ rejected' : '✎ retyped';
+  const color = st.verdict.verdict === 'accepted' ? 'text-emerald-400' : st.verdict.verdict === 'rejected' ? 'text-red-400' : 'text-cyan-400';
+  const egeria = (st.materialized && st.materialized.guid) ? ' ⬡' : '';
+  return `<span class="${color}">${label}${egeria}</span>`;
+}
+
 function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterName) {
-  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
-    <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
-      onclick="_archSubmitBlueprintVerdict('${rowUid}','accepted')">✓ Accept</button>
-    <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
-      onclick="_archSubmitBlueprintVerdict('${rowUid}','rejected')">✗ Reject</button>
+  return `<div class="mt-1" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
+    <input type="text" data-arch-bp-note-input="${_esc(rowUid)}" placeholder="Optional note (why accept/reject, or a better description)…"
+      class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 w-full text-slate-300 mb-1" />
+    <div class="flex gap-2 items-center flex-wrap">
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+        onclick="_archSubmitBlueprintVerdict('${rowUid}','accepted')">✓ Accept</button>
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
+        onclick="_archSubmitBlueprintVerdict('${rowUid}','rejected')">✗ Reject</button>
+    </div>
   </div>`;
 }
 
@@ -9002,11 +9200,17 @@ function _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, 
   const unmatBadge = (materialized && (materialized.unmaterialized_members || materialized.unmaterialized_children))
     ? `<span class="text-[10px] text-amber-400/80" title="Some members aren't materialized in Egeria yet — accept them individually first, then re-accept this blueprint.">⚠ partial</span>`
     : '';
-  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
-    <span class="text-[10px] ${color}">${label}</span>
-    <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
-    ${egeriaBadge}${unmatBadge}
-    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertBlueprintVerdictUi('${rowUid}')">change</button>
+  const noteHtml = v.note
+    ? `<div class="text-[11px] text-slate-400 italic mt-0.5">"${_esc(v.note)}"</div>`
+    : '';
+  return `<div class="mt-1" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
+    <div class="flex gap-2 items-center flex-wrap">
+      <span class="text-[10px] ${color}">${label}</span>
+      <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+      ${egeriaBadge}${unmatBadge}
+      <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertBlueprintVerdictUi('${rowUid}')">change</button>
+    </div>
+    ${noteHtml}
   </div>`;
 }
 
@@ -9020,11 +9224,13 @@ async function _archSubmitBlueprintVerdict(rowUid, verdict) {
   const el = document.querySelector(`[data-arch-bp-verdict="${rowUid}"]`);
   if (!el) return;
   const slug = el.dataset.archBpSlug, perspective = el.dataset.archBpPersp, clusterName = el.dataset.archBpName;
+  const noteInput = document.querySelector(`[data-arch-bp-note-input="${rowUid}"]`);
+  const note = (noteInput?.value || '').trim();
   try {
     const resp = await fetch(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ perspective, cluster_name: clusterName, verdict }),
+      body: JSON.stringify({ perspective, cluster_name: clusterName, verdict, note }),
     });
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
@@ -9034,7 +9240,7 @@ async function _archSubmitBlueprintVerdict(rowUid, verdict) {
     const saved = await resp.json();
     const m = saved.materialization;
     el.outerHTML = _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, {
-      verdict: saved.verdict, decided_at: saved.created_at,
+      verdict: saved.verdict, decided_at: saved.created_at, note: saved.note,
     }, m && m.status !== 'error' ? m : null);
     if (m && m.status === 'error') {
       showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
@@ -9055,27 +9261,50 @@ async function _archSubmitBlueprintVerdict(rowUid, verdict) {
 
 function renderCurateArchitecturePanel(entityType, slug, data) {
   const view = document.getElementById('curate-view');
-  const blueprints = data.blueprints || [];
-  const components = (data.components || []).filter(c => !c.structural);
+  _curateArchEntityType = entityType;
+  _curateArchSlug = slug;
+  _curateArchData = data;
 
-  const blueprintsHtml = blueprints.length
-    ? blueprints.map(bp => _curateBlueprintRow(bp, slug)).join('')
-    : '<div class="text-slate-600 text-xs text-center py-4">No candidate blueprints proposed yet — run Analysis → Architecture Recovery.</div>';
+  const allBlueprints = data.blueprints || [];
+  const allComponents = (data.components || []).filter(c => !c.structural);
+  const componentsByPath = {};
+  allComponents.forEach(c => { componentsByPath[c.path] = c; });
 
-  // Components already decided don't need attention here — surface only
-  // what's still awaiting a verdict, capped the same way Analysis caps its
-  // own per-perspective panes, so a large repo's card stays scannable.
-  const undecided = components.filter(c => !c.verdict);
-  const decidedCount = components.length - undecided.length;
+  // ── Components (2026-09-03 redesign: moved above Blueprints — item 1 of
+  // the live-review feedback; a curator judges the parts before the whole
+  // groups them). Shows the FULL list, not just undecided, now that
+  // search/type filters exist to keep a large repo's list scannable —
+  // narrowing to "awaiting a verdict only" was the old, cruder way to keep
+  // it short.
+  const allTypes = [...new Set(allComponents.map(c => c.type || 'untyped'))].sort();
+  const search = _curateComponentFilter.search.trim().toLowerCase();
+  const filteredComponents = allComponents.filter(c => {
+    if (_curateComponentFilter.types.size && !_curateComponentFilter.types.has(c.type || 'untyped')) return false;
+    if (search && !(c.name.toLowerCase().includes(search) || c.path.toLowerCase().includes(search))) return false;
+    return true;
+  });
+  const decidedCount = allComponents.filter(c => c.verdict).length;
+
   _archInteractiveMode = true;
   let componentsHtml;
   try {
-    componentsHtml = undecided.length
-      ? undecided.slice(0, _ARCH_ROW_CAP).map((c, i) => _archRow(c, slug, `curate-comp-${i}`)).join('')
-      : '<div class="text-slate-600 text-xs text-center py-4">No components awaiting a verdict.</div>';
+    componentsHtml = filteredComponents.length
+      ? filteredComponents.slice(0, _ARCH_ROW_CAP).map((c, i) => _archRow(c, slug, `curate-comp-${i}`)).join('')
+      : `<div class="text-slate-600 text-xs text-center py-4">${allComponents.length ? 'No components match the current filter.' : 'No components proposed yet.'}</div>`;
   } finally {
     _archInteractiveMode = false;
   }
+  const componentsTruncatedNote = filteredComponents.length > _ARCH_ROW_CAP
+    ? `<div class="text-[11px] text-amber-400/80 mt-1">Showing the first ${_ARCH_ROW_CAP} of ${filteredComponents.length} — narrow with search or a type filter to see more.</div>`
+    : '';
+
+  // ── Blueprints
+  const allPerspectives = [...new Set(allBlueprints.map(bp => bp.perspective))].sort();
+  const filteredBlueprints = allBlueprints.filter(bp =>
+    !_curateBlueprintFilter.perspectives.size || _curateBlueprintFilter.perspectives.has(bp.perspective));
+  const blueprintsHtml = filteredBlueprints.length
+    ? filteredBlueprints.map(bp => _curateBlueprintRow(bp, slug, componentsByPath)).join('')
+    : `<div class="text-slate-600 text-xs text-center py-4">${allBlueprints.length ? 'No blueprints match the current filter.' : 'No candidate blueprints proposed yet — run Analysis → Architecture Recovery.'}</div>`;
 
   view.innerHTML = `
     <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
@@ -9085,15 +9314,23 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
       ${_curateSubnavHtml('architecture', entityType)}
 
       <div>
-        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏛 Candidate Blueprints</div>
-        <div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
-        ${blueprintsHtml}
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🧩 Components (${filteredComponents.length}${filteredComponents.length !== allComponents.length ? ` of ${allComponents.length}` : ''})</div>
+        <div class="text-xs text-slate-500 mb-2">${decidedCount ? `${decidedCount} of ${allComponents.length} already decided. ` : ''}Accept, reject, or retype what architecture recovery proposed — evidence and candidate-blueprint links shown below each one.</div>
+        <div class="flex gap-2 items-center mb-2">
+          <input type="text" placeholder="Search by name or path…" value="${_esc(_curateComponentFilter.search)}"
+            oninput="_curateSetComponentSearch(this.value)"
+            class="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1.5 flex-1 text-slate-200" />
+        </div>
+        ${allTypes.length > 1 ? `<div class="flex flex-wrap gap-1.5 mb-2">${_curateFilterChipsHtml(allTypes, _curateComponentFilter.types, '_curateToggleTypeFilter')}</div>` : ''}
+        ${componentsHtml}
+        ${componentsTruncatedNote}
       </div>
 
       <div>
-        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🧩 Components awaiting a verdict</div>
-        <div class="text-xs text-slate-500 mb-2">${decidedCount ? `${decidedCount} already decided — see Analysis → Architecture Recovery for the full read-only view. ` : ''}Accept, reject, or retype what architecture recovery proposed.</div>
-        ${componentsHtml}
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏛 Candidate Blueprints (${filteredBlueprints.length}${filteredBlueprints.length !== allBlueprints.length ? ` of ${allBlueprints.length}` : ''})</div>
+        <div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
+        ${allPerspectives.length > 1 ? `<div class="flex flex-wrap gap-1.5 mb-2">${_curateFilterChipsHtml(allPerspectives, _curateBlueprintFilter.perspectives, '_curateTogglePerspectiveFilter')}</div>` : ''}
+        ${blueprintsHtml}
       </div>
     </div>`;
 }
