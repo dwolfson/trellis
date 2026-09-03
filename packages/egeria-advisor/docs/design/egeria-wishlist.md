@@ -1,5 +1,16 @@
 # Egeria & pyegeria Feature Wish List
 
+**Status: upstream-facing, not Egeria Advisor design.** This lists feature gaps
+and model-alignment requests for **Egeria and pyegeria themselves**, identified
+while integrating against them — it is not a backlog of this application's own
+work, which lives in `BACKLOG.md`.
+
+It is complementary to `egeria-python`'s `PYEGERIA_ISSUES.md`, which is the
+canonical tracker for **bugs**. This is the place for *"the API could do X"*
+rather than *"the API does X wrong"*. Kept in `design/` because the gaps it names
+shape what this application can be designed to do.
+
+
 This document lists design gaps, improvements, and enhancements identified during the integration of Egeria's Area 5 (Data Classes / Value Specifications) and Area 6 (Governance Actions) into the Resource Explorer.
 
 ---

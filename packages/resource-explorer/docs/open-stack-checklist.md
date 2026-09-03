@@ -261,7 +261,7 @@ Migration risk was the blocker; that is now moot — Egeria can be wiped and
 rebuilt (export/import round-trips 62 resources, bulk republish works). So this
 is about the model being right, not about data.
 
-- [x] **Design pass done 2026-08-28** — `docs/granularity-pass.md`. It
+- [x] **Design pass done 2026-08-28** — `docs/repo-analysis-funnel.md (§11)`. It
       recommends a **smaller** change than the one it set out to design, and
       the checklist's own risk note was wrong: `resource_schedules` has **one**
       row, and the whole bundling role is **6 rows** across three tables. The

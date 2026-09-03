@@ -1,16 +1,15 @@
-# Filesystem and database resource types — design inputs
+# Filesystem and database surveying
 
-**Not a design. Inputs to one**, gathered 2026-09-02 from Egeria's source at
-`/Users/dwolfson/localGit/egeria-v6/egeria`. Dan: *"For FS and DB, we may need
-more design work — Egeria already has survey types useful for both"*, and
-*"we also need to include Annotation types in the discussion."*
+**Status:** consolidated design and reference. Current as of 2026-09-02.
+**Work on this is deliberately deferred until the repository path is finished** —
+a direct maintainer decision, 2026-09-02. This document is the design input for
+when it resumes, not an active plan.
 
-The headline is that **the repo experience is a poor guide to FS and DB**,
-because for repos Egeria had nothing and RE built everything. For filesystems
-and databases Egeria ships working survey services and a richer annotation
-vocabulary than RE currently uses.
-
----
+> **This document consolidates five.** Part I is the grounding — what Egeria
+> already surveys natively, and how much of RE's repo machinery does *not* carry
+> over. Part II merges the database surveyor design, the Postgres exploration,
+> the filesystem analytics plan, and the operator quickstart. Part III is the
+> settled register.
 
 ## 1. Egeria already surveys filesystems and databases
 
@@ -28,8 +27,8 @@ whole shape of RE's repo work — 40 steps, its own surveyors, its own
 persistence — and it does not carry over.
 
 So the first design question for FS and DB is not "what steps do we write"
-but **which surveys does each side orchestrate** — and Dan's correction,
-2026-09-02, is that this is not a choice between two answers:
+but **which surveys does each side orchestrate** — and a direct maintainer decision
+(2026-09-02) is that this is not a choice between two answers:
 
 > "Egeria may be orchestrating its own surveys for some of them — and others
 > may be orchestrated by RE. Egeria does not have all the Survey Types we will
@@ -110,7 +109,7 @@ types, so RE's output would not sit alongside theirs.
 
 ### Rectifying this is a task, not an observation
 
-Dan, 2026-09-02, on the type mismatch: **"we may need to rectify this."**
+the maintainer, 2026-09-02, on the type mismatch: **"we may need to rectify this."**
 
 Two pieces, and the second is the one with a deadline attached:
 
@@ -169,3 +168,68 @@ generic type) answered rather than assumed.
    published annotations is the expensive direction.
 4. Only then design steps, and only for whatever RE is actually going to
    survey itself.
+
+---
+
+# Part II — Database and filesystem designs
+
+*Merged 2026-09-02 from four notes.*
+
+## 5. Filesystem: two steps, drawn at the cost boundary
+
+*(from `filesystem-survey-analytics-plan.md`; design agreed 2026-07-13)*
+
+**Do not fragment into one step per annotation type.** If the code is already
+asking the OS for a file's `stat()`, it should take everything that call offers in
+the same pass rather than walking the tree again per annotation.
+
+> **The real boundary is cost, not annotation shape:** a cheap metadata-only pass
+> (one `stat()` and one extension lookup per file) versus an expensive
+> content-reading pass (opening and parsing every data file's bytes).
+
+That boundary is also exactly where the "hang" came from — the parsing errors and
+multi-minute runtimes all lived in the second pass — so it is a natural split
+regardless of Egeria parity.
+
+- **Step 1, `filesystem_structure`** — one walk, one `stat()` per file. Produces
+  the counts measure, per-group classifications, an extension breakdown, and two
+  requests for action: **unclassified files** and **inaccessible files**. That
+  second one directly fixes the silent half of the hang bug — permission errors
+  were being swallowed during the walk and reaching only the server console.
+- **Step 2, `filesystem_data_profiling`** — the existing content-reading pass,
+  unchanged in kind, now separable and skippable.
+
+## 6. Database: what Egeria's Postgres model already provides
+
+*(from `egeria-postgresql-exploration.md`, `database-surveyor-design.md`)*
+
+Egeria defines **seven PostgreSQL technology types** as valid metadata values,
+separating concerns RE would otherwise have conflated: the *server software*, the
+*server instance*, the *database*, the *schema* (as a tabular-data-set
+collection), the *table*, and the *RDBMS capability* that manages them.
+
+The design consequence is that RE's database surveyor should map onto that
+existing hierarchy rather than inventing an asset shape — the same conclusion the
+repository path reached about Area 6, arrived at independently.
+
+## 7. Running a database survey
+
+*(from `database-surveyor-quickstart.md`)*
+
+The operator path — install, connect, run, and read the survey output — is
+unchanged by the consolidation and lives here so the design and the instructions
+for using it are not in separate files. The survey produces schema, table and
+column structure plus profiling statistics, published as annotations against the
+catalogued database asset.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Does RE's repo machinery carry over to FS and DB? | **No** | 17 native survey services exist for FS/DB/catalog/platform, and **none for repositories** — the asymmetry is why the repo path looks the way it does |
+| Is orchestration a choice between Egeria and RE? | **No** — mixed | Direct maintainer decision: Egeria orchestrates where a native service does the job, RE orchestrates the survey types Egeria lacks |
+| Should steps be split per annotation type? | **No** — per cost | One `stat()` pass yields several annotations; the meaningful boundary is metadata-only versus content-reading |
+| Should RE define its own database asset shape? | **No** | Egeria already separates server software, server instance, database, schema, table and RDBMS capability |
+| Are RE's 7 annotation types sufficient for FS/DB? | **Unresolved** | Egeria defines 18; which of the remaining 11 apply is open, and is design input rather than a settled answer |

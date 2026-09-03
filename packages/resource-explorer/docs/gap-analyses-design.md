@@ -47,7 +47,7 @@ session — has now been corrected in place**: it was stale relative to this bui
 richer unbuilt mechanism. The four `PRECONDITIONS` entries currently registered
 (`step_preconditions.py:75-84`: `has_dependencies`, `has_versioned_dependencies`,
 `has_file_inventory`, `has_code_symbols`) are the complete list as of this checkout; a
-`first_party_code`-style context fact (`docs/repo-context-and-tool-routing.md` §4) is a real gap in
+`first_party_code`-style context fact (`docs/question-answering-and-context.md (§9)` §4) is a real gap in
 that list, not a gap in the dispatch mechanism itself. **The plumbing this design needs already
 exists for the "reads a table that might be empty" shape**, and the only new work on that axis is
 adding `has_contributing_doc`-style entries to `PRECONDITIONS` if a given analysis needs one not
@@ -143,7 +143,7 @@ in the future should not be able to make the `foss_scorecard` mistake by pattern
 
 ## 0b. One provider concept, not a secrets-only one — and IN SCOPE for three existing analyses
 
-Dan's review reframed §1's vendoring decision, and the reframing is the more important design
+The project owner's review reframed §1's vendoring decision, and the reframing is the more important design
 input than the decision itself: *"vendored analyses have provenance and reputation — if we rolled
 our own, who would believe us?"* For this whole class of analysis, **the standing of the answer is
 part of the deliverable, not a footnote to its accuracy.** A user does not just want "clean" or
@@ -316,7 +316,7 @@ and resolved against lower-stakes code before it is applied to the analysis that
 
 ## 0c. Evidence shape: summary annotations linked to evidence via `AnnotationExtension`
 
-Dan pointed at Egeria's Annotations model (https://egeria-project.org/types/6/0610-Annotations/).
+The project owner pointed at Egeria's Annotations model (https://egeria-project.org/types/6/0610-Annotations/).
 The coordinating session verified against the Java rather than the page: `OpenMetadataType.
 java:6010` defines the **`AnnotationExtension`** relationship, GUID
 `605aaa6d-682e-405c-964b-ca6aaa94be1b`, model 0610, *"Additional information to augment an
@@ -397,7 +397,7 @@ per-match rows regardless of Egeria publication) — it is specifically the Eger
 of "one summary, many linked evidence annotations" that waits on this plumbing. Flagged as a
 sequencing dependency in the Sequencing section below.
 
-**Why this also protects the deferred third reporting level, without building it.** Dan named three
+**Why this also protects the deferred third reporting level, without building it.** the project owner named three
 reporting levels — overall finding/score, evidence, and improvement suggestions keyed off whether
 the reader maintains or consumes the artifact — and confirmed level 3 is out of scope here,
 already backlogged (`docs/Backlog.md` "Reporting levels", written up in detail there; not repeated
@@ -412,7 +412,7 @@ the summary-plus-linked-evidence shape rather than a single flattened finding.
 
 ## 1. Secret handling (`repo_secret_scan`)
 
-**RESOLVED (2026-09-01, Dan): the secret-scanning ruleset is vendored, not hand-rolled.** *"use a
+**RESOLVED (2026-09-01, the project owner): the secret-scanning ruleset is vendored, not hand-rolled.** *"use a
 standard approach - so perhaps vendored?"* — the honest-limits section of the previous draft
 flagged the choice between a vendored ruleset (e.g. gitleaks-shaped) and a small hand-maintained
 pattern list as undetermined and materially affecting both compute cost and false-positive rate.
@@ -467,7 +467,7 @@ name rather than wave past:
 **Artifacts it reads.** `zipball_root` (`VIEW_SOURCE`) — a fresh extraction, walked file-by-file
 (or handed whole to the external binary, if that path is chosen), matched against the vendored
 ruleset's rules. Binary/generated/vendored paths need exclusion (the same "first-party" question
-`docs/repo-context-and-tool-routing.md` §4 names as `holds first-party code` / `exclusion.scan`'s
+`docs/question-answering-and-context.md (§9)` §4 names as `holds first-party code` / `exclusion.scan`'s
 census) — scanning a vendored `node_modules` or a fixture blob is both slow and a likely
 false-positive generator, and most standard rulesets (gitleaks included) ship their own default
 ignore-paths that should be honoured rather than re-invented.
@@ -681,7 +681,7 @@ degrade to a flat `RequestForActionAnnotation`-per-match list as §1 until that 
   confidence classification, not an RFA.
 - Must not treat "no disclosure document found" as proof no disclosure exists — a disclosure could
   live in a separate docs site (the same `has_a_documentation_site` fact
-  `docs/repo-context-and-tool-routing.md` §4 already names as observable via `doc_locations`'
+  `docs/question-answering-and-context.md (§9)` §4 already names as observable via `doc_locations`'
   outward hop) that this Discovery-tier check does not follow.
 
 ---
@@ -1013,7 +1013,7 @@ and each independently sequenced:**
   file's raw content — a full-file-content grep pass over every source file in a large repo
   (`odpi/egeria`-sized) could plausibly land in `medium`, not `low`, and I have not run it. This is
   why both #1 and #2 above are flagged `compute_cost="medium" **VERIFY**` rather than asserted.
-- Whether the `docs/repo-context-and-tool-routing.md` §4 "context as declared facts" table's
+- Whether the `docs/question-answering-and-context.md (§9)` §4 "context as declared facts" table's
   unbuilt facts (e.g. `first_party_code`, only "computed in `arch_recovery_detect`" per that
   table, not yet a `PRECONDITIONS` entry) should gate #1/#2's file-scanning scope (skip
   third-party/vendored code) via a real precondition, or via an in-surveyor exclusion list the way

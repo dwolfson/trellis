@@ -1,5 +1,7 @@
 # End-to-end gap audit — 2026-08-25
 
+**Status: DATED SNAPSHOT — 2026-08-25. Do not act on it directly.** Several gaps it records have since been closed. Kept because the *method* is reusable — it was measured against the live 60-repo corpus and the running UI rather than read off the code. Live items are in `Backlog.md`.
+
 **What this is:** a survey of where RE's end-to-end story (launch an analysis →
 it runs → it produces something → the UI shows something meaningful) actually
 breaks. Measured against the live 60-repo corpus and the running UI, not read

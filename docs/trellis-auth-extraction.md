@@ -1,6 +1,6 @@
 # Trellis-level login — where it should live, and what it costs
 
-**Status:** design note, 2026-08-29. Nothing built. Prompted by Dan: *"If RE doesn't have a login,
+**Status:** design note, 2026-08-29. Nothing built. Prompted by the project owner: *"If RE doesn't have a login,
 it should — we could do this at the Trellis level or in each of EA and RE."*
 
 **Recommendation: the Trellis level, as `trellis-auth`, with EA's implementation as the base and RE

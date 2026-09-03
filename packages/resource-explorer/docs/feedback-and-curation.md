@@ -1,18 +1,16 @@
-# Feedback signals — survey and proposal
+# Feedback and curation — signals, triage, and what curation still owes
 
-**Status: survey + proposal, nothing built.** Dan's ask: RE has a thumbs up/down signal in
-chat; EA had a third signal on the same kind of interaction, plus an admin panel that
-summarised results; some of this may belong in shared Trellis code. This doc establishes what
-each app actually has (by reading, not assuming), what genuinely reconciles, and what doesn't.
-It also folds in the standing TODO at `resource_explorer/web/static/index.html:628-634` — "BOTH
-feedback stores... badged by source rather than merged... see docs/Backlog.md for the eventual
-merge" — that merge is scoped here.
+**Status:** consolidated design. Current as of 2026-09-02.
+**Scope:** the several kinds of feedback the system collects, why they are not one
+thing, how they get triaged, and the curation capabilities that were named but
+not built.
 
-A separate agent is concurrently editing `web/static/index.html` and the Admin feedback routes
-to badge RE's two existing stores by origin. This doc does not touch that work; it is written to
-be consistent with it and to describe, as of this reading, what that panel currently does.
+> **This document consolidates three.** Part I surveys the feedback signals
+> across RE and Egeria Advisor and argues against unifying them. Part II merges
+> the triage gap measured against Egeria Workspaces Portal, and the scoped Curate
+> follow-ups. Part III is the settled register.
 
-## 1. What EA actually has
+## 1. What Egeria Advisor actually has
 
 ### 1.1 The signal: three buckets, not two
 
@@ -273,7 +271,7 @@ Satisfaction breakdown (§1.3) already mixes vote-derived stats with star-rating
 (`avg_star_rating`, `feedback_collector.py:234-235`) in the same `stats` dict without a typed
 union — `star_rating: None` for a pure-vote entry and `star_rating: None` for "nobody asked for
 a star rating on this UI" are already indistinguishable there. Not this doc's problem to fix in
-EA, but worth naming since Dan asked about leveraging EA's model, not just its data.
+EA, but worth naming since the project owner asked about leveraging EA's model, not just its data.
 
 ## 5. What's shared vs. per-app
 
@@ -380,3 +378,63 @@ in-flight files.
   real distinction), not confirmed with EA's author.
 - **No code in either app was changed, and no query was run against the shared Postgres
   instance**, per the ground rules for this task.
+
+---
+
+# Part II — Triage, and what curation still owes
+
+*Merged 2026-09-02 from two notes.*
+
+## 7. The triage gap
+
+*(from `feedback-triage-from-workspaces.md`)*
+
+Measured against what an Egeria Workspaces Portal administrator can actually do,
+and the finding is a familiar shape:
+
+> **RE has a triage-status `PATCH` endpoint, admin-gated and working. Nothing in
+> the admin feedback page calls it.** A grep for `PATCH` in
+> `admin-feedback.html` returns no matches.
+
+So the capability is built and unreachable — the same class as the metric written
+to a table no reader consults, and the reason this codebase's standing rule is to
+open the surface a person opens rather than verifying next to the code.
+
+Three status vocabularies exist across Workspaces, Egeria Advisor and RE. They
+were read **out of the database rather than off the documentation**, which matters
+because two of the three had drifted from their own docs.
+
+**Editing safety** is the constraint that shapes any fix: feedback is a record of
+what somebody said, so a triage workflow may change *status* and *assignment* but
+must not edit the submitted text. An admin surface that can silently rewrite a
+report is worse than one that cannot triage at all.
+
+## 8. What curation still owes
+
+*(from `curate-followups.md`)*
+
+Three capabilities were named as belonging to Curate and are **not built**. Each
+needs its own design pass rather than being folded into an existing surface:
+
+- **Digital-product evaluation** — judging a resource as something offered to
+  others, not merely catalogued.
+- **Sample-dataset creation** — producing a representative extract a consumer can
+  try without taking the whole thing.
+- **Quality-issue remediation** — a workflow, distinct from recording that a
+  quality problem exists.
+
+They are recorded here so that "Curate is done" is never read off the presence of
+tags, feedback and curator notes, which are the three pieces that *are* built.
+
+---
+
+# Part III — Settled — do not reopen without re-measuring
+
+| Question | Settled | On what basis |
+|---|---|---|
+| Should the feedback stores be unified into one shape? | **No** | Four different subjects — a page, a resource, a query's retrieved chunks, a chat turn. Flattening forces every row to carry columns that do not apply to it |
+| Is a UI bug report the same signal as resource commentary? | **No** | Different subject, different audience, different lifecycle |
+| Is RE's admin feedback pane read-only by design? | **No** — unwired | The `PATCH` endpoint exists and is admin-gated; the page simply never calls it |
+| Were the status vocabularies taken from the docs? | **No** — from the database | Two of the three had drifted from their own documentation |
+| May a triage workflow edit submitted feedback text? | **No** | Feedback is a record of what somebody said; status and assignment are editable, the text is not |
+| Is Curate complete once tags, feedback and notes exist? | **No** | Three named capabilities remain unbuilt, each needing its own design pass |

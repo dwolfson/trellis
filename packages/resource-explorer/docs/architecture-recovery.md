@@ -1040,7 +1040,7 @@ The diagnosis is a §4.1 violation this document did not anticipate: `coupling.p
 filed under the same word and the lens joins on it. The only genuinely logical source in the
 pipeline is the one input forbidden from proposing anything.
 
-Decision (Dan, 2026-08-29): **a documentation-derived component may exist without a
+Decision (project owner, 2026-08-29): **a documentation-derived component may exist without a
 `scope_locator`** — docs become a source, bridged to code by `ImplementedBy` (§3.6, §4.1). The
 consequences, the gate this needs (the existing `undetected_is_meaningful` licenses *reading*, not
 *proposing*, and its denominator is circular), and why §5.5a(b)'s dating becomes a precondition
@@ -1662,7 +1662,7 @@ a follow-on, because it is the clearest demonstration of value.
 **The single most important consequence of Q3's answer.** If component identity is a module path
 (§8.2), then *a component is a path prefix* — and RE already has a path-prefix mechanism: the
 `scope_locator` column and `accepts_scope_locator` flag from the repo scope-narrowing funnel
-(`docs/repo-scope-narrowing-funnel.md`, D5/D6).
+(`docs/repo-analysis-funnel.md`, D5/D6).
 
 So "re-aggregate existing analyses per component" is **not a new aggregation layer**. It is running the
 existing scope-locator-capable steps once per component path. Every step already flagged

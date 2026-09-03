@@ -589,7 +589,7 @@ stats = collector.get_feedback_stats()
 
 ## References
 
-- [Phase 8 Improvements](docs/history/PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md)
+- Phase 8 Improvements — `PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md` (archived out-of-repo 2026-09-03; `docs/history/` was gitignored and never in the repository)
 - [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md)
 - [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md)
 

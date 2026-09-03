@@ -1,6 +1,6 @@
 # Admin surface: separate site, separate page, or stay inline?
 
-Dan's observation: "EA has a separate /admin site — which we might need for RE
+The project owner's observation: "EA has a separate /admin site — which we might need for RE
 as well as admin gets more sophisticated." This is a survey and a proposal
 only. No production code changes.
 

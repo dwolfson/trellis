@@ -1,5 +1,7 @@
 # Resource Explorer — work timeline, 2026-08-30 to 2026-09-02
 
+**Status: source material, not a design document.** A commit-derived narrative of one work window, kept as raw material for write-ups. Not superseded — it does not describe current state and is not meant to.
+
 Raw material for blog posts. Built from `git log` on `trellis` (`main`,
 currently 4 commits ahead of `upstream/main` — an extension-guide doc
 sequence, `9b2573a..c3bf19f`, not otherwise referenced below). Scope: 171
@@ -166,7 +168,7 @@ imposed from outside, but read off the commits themselves.
 
 **Tests green for the wrong reason.**
 - `f44a5e1`: the first known-negative test for the secret-scan fix used
-  Dan's real leaked-looking line — but *both* new gates (entropy and
+  the project owner's real leaked-looking line — but *both* new gates (entropy and
   allowlist) independently caught it, so deleting either gate alone still
   passed, and the suite would have shipped with half the fix silently
   missing. Replaced with two cases, each isolating one gate.
