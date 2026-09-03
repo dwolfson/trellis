@@ -280,20 +280,28 @@ happens to be untyped, or a different KIND of thing that shouldn't be proposed a
 scoped further here.
 
 **8. `SolutionArchitect` has no `create_solution_port` — real Egeria SolutionPort materialization
-is currently blocked, not just unmeasured — found 2026-09-03, scoping the port/wire work named in
-the Curate redesign conversation, live check pending an Egeria redeploy.** Checked both the
-installed pyegeria and the canonical `egeria-python` checkout's `.http` ground truth
+is blocked at the SERVER, confirmed live, not just unmeasured on the client side — found
+2026-09-03, scoping the port/wire work named in the Curate redesign conversation.** Checked the
+installed pyegeria and the canonical `egeria-python` checkout's `.http` ground truth first
 (`Egeria-api-solution-architect.http`): `link_solution_component_port`/`link_solution_port_
 delegation` (attach an *existing* port) and their detach counterparts exist; no `create_solution_
-port` method and no `POST .../solution-ports` endpoint anywhere. No `SolutionPortProperties`
-model exists either, so even the generic fallback (`MetadataExpert.create_metadata_element`,
-`NewOpenMetadataElementRequestBody`) has nothing typed to build against — would mean hand-
-guessing property names against the verbose `ElementProperties`/`propertyValueMap` shape this
-repo's own CLAUDE.md already flags as a footgun (confirmed silently dropping `qualifiedName` for
-a different type). `egeria-python-65` confirmed the same absence independently and is checking
-the live server's actual OpenAPI spec once the platform's back up (the `.http`-vs-live precedent:
-3 relationship types looked unbuilt from `.http` alone and turned out to have zero real endpoint,
-but a 4th that looked the same way did — `.http` files can mislead in either direction). Separate
+port` method and no `POST .../solution-ports` endpoint anywhere. `.http` files can mislead in
+either direction though (a real precedent named by `egeria-python-65`: 3 relationship types
+looked unbuilt from `.http` alone and turned out to have zero real live endpoint, but a 4th that
+looked the same way did) — so this went to a live check once the platform came back up from the
+redeploy: `GET /v3/api-docs` against the real `qs-view-server` (2.39MB spec), every path
+containing "port" enumerated — **30 POST paths, all attach/detach, zero creation endpoints,
+anywhere in the entire live spec** (not just solution-architect — checked a generic
+process-ports attach under a different service too). Definitive: this is a confirmed Egeria
+Server gap, not a client-side omission pyegeria could paper over. No `SolutionPortProperties`
+model exists either, so the generic fallback (`MetadataExpert.create_metadata_element`,
+`NewOpenMetadataElementRequestBody` — confirmed live to be a real, reachable route,
+`/servers/{serverName}/api/open-metadata/{urlMarker}/metadata-elements`) has nothing typed to
+build against — would mean hand-guessing property names against the verbose
+`ElementProperties`/`propertyValueMap` shape this repo's own CLAUDE.md already flags as a
+footgun (confirmed silently dropping `qualifiedName` for a different type). Real port
+materialization is on hold until this exists server-side (or a workaround surfaces) — reported
+to `egeria-python-65` for their tracker; not something to build around speculatively. Separate
 and NOT blocked: `SolutionLinkingWire`'s OMVS-layer methods are already implemented and working
 in pyegeria — the only gap there is a missing Dr.Egeria compact command, which `egeria-python-65`
 is adding independently.
