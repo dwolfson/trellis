@@ -527,6 +527,30 @@ That second decision is the clearest case in the codebase of a shared-resource
 declaration being *wrong* even though it is consistent — consistency would have
 cost the property that makes the step usable.
 
+## 12. Cross-resource questions: comparison and integration
+
+*(from `comparison-integration-approach.md`)*
+
+A class of question the routing above cannot serve, because it spans resources:
+
+- **Comparison** — *"Which project has more contributors, A or B?"*, *"How does A
+  compare to B on community health?"*
+- **Integration** — *"Can I use A with B?"*, *"Which of these work together for an
+  MLOps pipeline?"*
+
+Today each query routes to **one** resource's collections and can only answer
+within that scope, so cross-resource questions fall through to the general
+retrieval path with no multi-resource awareness — and answer confidently about one
+of the two things asked about.
+
+Detection is pattern-based on the query text (comparison connectives, integration
+verbs), and the important design consequence is that a comparison question needs
+**structured** answers from both sides rather than retrieved prose from either:
+contributor counts and health scores come from the stats and findings tables, not
+from documents that happen to mention them.
+
+Not built.
+
 ---
 
 # Part III — Settled — do not reopen without re-measuring

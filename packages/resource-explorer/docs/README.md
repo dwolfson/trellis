@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-38 documents, grouped by what they *are* rather than what they are about — the
+35 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -10,6 +10,13 @@ someone adds a file. Regenerate after adding or reclassifying:
 ```bash
 python scripts/regen_docs_index.py
 ```
+
+## Open — planned or on hold
+
+Live plans. The work is not done; the doc is the specification.
+
+- **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-08-24  
+  DATED SNAPSHOT — 2026-08-24. Superseded; do not act on it. It planned the work ahead of a PR tha
 
 ## Design and framing
 
@@ -23,8 +30,14 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated runbook. Current as of 2026-09-02
 - **[egeria.md](egeria.md)** — 2026-09-02  
   hand-authored reference outline. Sparse by nature — the headings are
-- **[filesystem-and-database-surveying.md](filesystem-and-database-surveying.md)** —   
+- **[end-to-end-gap-audit-2026-08-25.md](end-to-end-gap-audit-2026-08-25.md)** — 2026-09-02  
+  DATED SNAPSHOT — 2026-08-25. Do not act on it directly. Several gaps it records have since been 
+- **[feedback-and-curation.md](feedback-and-curation.md)** —   
+  consolidated design. Current as of 2026-09-02
+- **[filesystem-and-database-surveying.md](filesystem-and-database-surveying.md)** — 2026-09-02  
   consolidated design and reference. Current as of 2026-09-02
+- **[project-review-2026-07-14.md](project-review-2026-07-14.md)** — 2026-08-06  
+  DATED SNAPSHOT — 2026-07-14, the oldest document here. Predates the migration into the Trellis m
 - **[question-answering-and-context.md](question-answering-and-context.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
 - **[repo-analysis-funnel.md](repo-analysis-funnel.md)** — 2026-09-02  
@@ -35,6 +48,8 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated design and reference. Current as of 2026-09-02
 - **[trellis.md](trellis.md)** — 2026-09-02  
   hand-authored reference outline describing runtime and deployment
+- **[work-timeline-2026-08-31-to-09-02.md](work-timeline-2026-08-31-to-09-02.md)** — 2026-09-02  
+  source material, not a design document. A commit-derived narrative of one work window, kept as r
 - **[workspaces.md](workspaces.md)** — 2026-09-02  
   hand-authored reference outline describing runtime and deployment
 
@@ -53,8 +68,6 @@ The work is done and these are NOT archive candidates: source comments point her
   specification only, not implemented. Written per explicit direction
 - **[discovery-automate-project-context-plan.md](discovery-automate-project-context-plan.md)** — 2026-08-15  
   all 5 parts built and live-verified (2026-08-13). Part 1 (Discovery
-- **[feedback-signals-shared.md](feedback-signals-shared.md)** — 2026-09-01  
-  survey + proposal, nothing built. Dan's ask: RE has a thumbs up/down signal in
 - **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-09-02  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
 - **[survey-definitions.md](survey-definitions.md)** — 2026-09-02  
@@ -68,20 +81,13 @@ Includes the user-facing guides. Anything here without a Status line is a candid
 - **[admin-surface-options.md](admin-surface-options.md)** — 2026-09-01
 - **[Architecture.md](Architecture.md)** — 2026-08-30
 - **[Backlog.md](Backlog.md)** — 2026-09-02
-- **[comparison-integration-approach.md](comparison-integration-approach.md)** — 2026-09-02
-- **[consolidation-2026-08-24.md](consolidation-2026-08-24.md)** — 2026-08-24
-- **[curate-followups.md](curate-followups.md)** — 2026-08-07
-- **[end-to-end-gap-audit-2026-08-25.md](end-to-end-gap-audit-2026-08-25.md)** — 2026-09-02
 - **[extending-resource-explorer.md](extending-resource-explorer.md)** — 2026-09-02
-- **[feedback-triage-from-workspaces.md](feedback-triage-from-workspaces.md)** — 2026-09-01
 - **[gap-analyses-design.md](gap-analyses-design.md)** — 2026-09-02
 - **[kroki-diagram-rendering.md](kroki-diagram-rendering.md)** — 2026-08-15
 - **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-09-02
-- **[project-review-2026-07-14.md](project-review-2026-07-14.md)** — 2026-08-06
 - **[repair-operations-design.md](repair-operations-design.md)** — 2026-08-28
 - **[rfa-dismissals.md](rfa-dismissals.md)** — 2026-09-01
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-08-07
 - **[tutorial.md](tutorial.md)** — 2026-08-06
 - **[user-guide.md](user-guide.md)** — 2026-08-21
 - **[using-the-intent-shell.md](using-the-intent-shell.md)** — 2026-09-02
-- **[work-timeline-2026-08-31-to-09-02.md](work-timeline-2026-08-31-to-09-02.md)** — 2026-09-02

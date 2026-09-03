@@ -1,5 +1,7 @@
 # Consolidation: what is actually open, and in what order
 
+**Status: DATED SNAPSHOT — 2026-08-24. Superseded; do not act on it.** It planned the work ahead of a PR that has since merged. Kept as a record of what was open on that date. Anything still live is in `Backlog.md`.
+
 **Written 2026-08-24, at the point where `re/deferred-cleanup-followups` is 190 commits
 ahead of `main`.** Purpose: decide what has to happen before a PR, what can run in parallel
 after it, and which backlog entries are stale rather than open. Put in the repo rather than

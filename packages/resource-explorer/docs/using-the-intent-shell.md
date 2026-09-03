@@ -82,7 +82,7 @@ Making the selected resource easier to find and more trustworthy to reuse. One p
 - **💬 Feedback** — leave a star rating (optional), a category (optional), and a message about this specific resource — "this dataset looks stale," "great documentation," etc. This is feedback *about the resource*, different from the 💬 Feedback button in the corner, which is about the Resource Explorer app itself.
 - **📝 Curator Notes** — an ongoing commentary log (discoverability, quality, readiness) distinct from Enrichment's context notes, which are a one-time fact-gathering field. Add notes freely; delete with the × next to any note.
 
-A footer note lists what's intentionally **not** here yet — digital-product evaluation, sample-dataset creation, a dedicated quality-remediation workflow — each is a real open design question, not an oversight; see `docs/curate-followups.md` if you're curious what's still being worked out.
+A footer note lists what's intentionally **not** here yet — digital-product evaluation, sample-dataset creation, a dedicated quality-remediation workflow — each is a real open design question, not an oversight; see `docs/feedback-and-curation.md (§8)` if you're curious what's still being worked out.
 
 ## ⚙ Admin
 

@@ -202,8 +202,8 @@ conflicts**, and the distinction was made honestly rather than used to argue for
   a reason to dismiss the split and becomes a reason the split needs auth.
 - **Trellis-wide admin centralisation** — Dan's own flag, and the largest version of this. RE, EA and
   Workspaces Portal each have their own admin surface with their own auth posture and their own
-  triage vocabulary; the surveys in `docs/feedback-signals-shared.md` and
-  `docs/feedback-triage-from-workspaces.md` are already evidence of three implementations converging
+  triage vocabulary; the surveys in `docs/feedback-and-curation.md` and
+  `docs/feedback-and-curation.md (§7)` are already evidence of three implementations converging
   on the same needs. If admin is going to be shared, extracting RE's into pages first is a
   prerequisite step rather than wasted work.
 
@@ -234,11 +234,11 @@ same rule as everywhere else here.
 wanted is a periodic pass over feedback AND chat scores together, looking for concentrations — three
 reports blaming routing in one area is a finding that no single report is. Scope should include:
 `feedback`, `resource_feedback`, and the chat signal (`chunk_feedback`, now trinary — see
-`docs/feedback-signals-shared.md`), since a low chat score and a written complaint may be the same
+`docs/feedback-and-curation.md`), since a low chat score and a written complaint may be the same
 gap seen twice.
 
 Prerequisites, in order: RE has **no way to change any feedback state today** — the gated
-`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-triage-from-workspaces.md`).
+`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-and-curation.md (§7)`).
 That must land first, and `/api/curate/feedback` must be gated, before adding a second field that
 also needs writing.
 
@@ -259,7 +259,7 @@ public demo.
 
 Egeria Workspaces Portal has already solved this shape, and `demo_feedback_handler.py::_is_admin()`
 is the model rather than the counter-example it was briefly mistaken for (see
-`docs/feedback-triage-from-workspaces.md` §5, framing withdrawn): **two modes — a public demo
+`docs/feedback-and-curation.md (§7)` §5, framing withdrawn): **two modes — a public demo
 requiring an external identity, and a local mode relying on Egeria's own users.** RE will need the
 same distinction, and should adopt that pattern rather than reinvent one.
 

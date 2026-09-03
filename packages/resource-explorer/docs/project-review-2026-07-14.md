@@ -1,5 +1,7 @@
 # Resource Explorer — Project Review & Backlog Analysis
 
+**Status: DATED SNAPSHOT — 2026-07-14, the oldest document here.** Predates the migration into the Trellis monorepo; its links point at the retired standalone checkout and are deliberately left as written. Historical only.
+
 **Timestamp:** 2026-07-14T08:54:52-05:00
 
 This document provides a comprehensive review of the **Resource Explorer** project, cataloging its core architecture, current implementation status, open backlog items, and upstream Egeria/pyegeria dependencies.
