@@ -6,7 +6,7 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 **Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-pyegeria-issues.md` is superseded and frozen at 6 entries; it is kept for history only.
 
-**Current-state map (2026-08-19):** `docs/survey-and-analysis-current-state-2026-08-19.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery-design.md` (deriving Solution Blueprints from repos).
+**Current-state map (2026-08-19):** `docs/survey-and-analysis-current-state-2026-08-19.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery.md` (deriving Solution Blueprints from repos).
 
 ---
 
@@ -397,7 +397,7 @@ Prefect's teardown logging.
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
 
-*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery-decision-trace.md` §5.)*
+*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery.md (§18)` §5.)*
 
 The decision trace is now persisted as findings, and that doc argues it should **not** go to
 MLflow, Phoenix or OTEL: decision provenance is read months later by resource and must be durable
@@ -484,7 +484,7 @@ implementation, not the catalog.)*
 | `zipball_root` + `git_clone_root` acquisition | 15.7s |
 | **the same two steps via `SurveyOrchestrator`** | **110.5s** |
 
-`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
+`architecture-recovery.md (§13.2)` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
 cites to justify Discovery placement — is **correct and still holds**. Nothing regressed. The cost
 is entirely in *how the route acquires the repo*.
 
@@ -759,7 +759,7 @@ that into a clickable link is UI work in `index.html`, not `trellis_context`.
 #### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
 
 *(Opened 2026-08-30. Evidence and three costed options in
-`architecture-recovery-presentation-findings.md` — findings only, no design chosen.)*
+`architecture-recovery.md (§17a)` — findings only, no design chosen.)*
 
 `egeria_git`: 1035 components recovered, 451 after depth projection, **20 rendered**, chosen
 alphabetically by `path`. Four findings, in the order they are worth fixing:
@@ -784,7 +784,7 @@ treats a symptom when the problem is that they are the wrong 20.
 
 #### MEDIUM — tombstoning step 4: backfill the orphans no run can ever withdraw
 
-*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery-scope-tombstoning.md`.)*
+*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery.md (§16)`.)*
 
 R2 forbids withdrawing rows that no step is recorded as having written, and **every existing orphan
 predates `run_label`** — measured, `_scopes_last_written_by` returns 0 scopes for `egeria_git`
@@ -843,7 +843,7 @@ with high confidence and still not be interesting at the current threshold (a le
 a low-confidence guess can be exactly what a curator needs to see because it's the one thing
 standing between them and understanding a subsystem that matters.
 
-The 1035→451→20 collapse (`architecture-recovery-presentation-findings.md`) is already implicitly
+The 1035→451→20 collapse (`architecture-recovery.md (§17a)`) is already implicitly
 answering this question by discarding most of the graph — but as a fixed row cap, which is the
 wrong shape for a threshold that needs to slide from "show everything" to "publish nothing found."
 Worth designing as an explicit, adjustable utility score — a field separate from Confidence, not
@@ -900,7 +900,7 @@ lineage graph queries."* **Memento elements are excluded from normal queries and
 the caller passes `forLineage`.**
 
 That is this project's tombstoning design, already built, natively, in the platform it is
-Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery-scope-tombstoning.md`)
+Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery.md (§16)`)
 reimplements the same shape locally: mark-not-delete, retained for history, hidden from normal
 reads. Two things worth checking before step 4 (the backfill, above) goes further:
 
@@ -1051,7 +1051,7 @@ on the full corpus. Cost is bounded and known: detect averages ~28s/repo with no
 #### Architecture recovery — the PORTED implementation has never been scored
 
 Phase 1's declared numbers (13 of 13 components, 97% coverage, ARI 0.969 —
-`docs/architecture-recovery-phase1-findings.md`) were measured on the **throwaway spike** in
+`docs/architecture-recovery.md (§13.2)`) were measured on the **throwaway spike** in
 `scripts/arch-spike/`. What shipped into `resource_explorer/surveyors/arch_recovery/` is a *port*,
 and it has at least one known behavioural difference: the spike merged agreeing proposals at IR
 level and boosted confidence on agreement, while the port discovers agreement at read time by
@@ -1073,7 +1073,7 @@ output to the scorer is new.
 #### Architecture recovery — re-check the Phase 1 measurements once there are more samples
 
 **Not a doubt about the current numbers; a limit on what two repos can establish.** Phase 1's
-measurement goals were declared met on 2026-08-20 (`docs/architecture-recovery-phase1-findings.md`)
+measurement goals were declared met on 2026-08-20 (`docs/architecture-recovery.md (§13.2)`)
 — 13 of 13 components, 97% file coverage, ARI 0.969 on trellis, T1 recall held at 18/27, 5.3s per
 repo. Every criterion in the plan's §5 was cleared, several by a wide margin.
 
@@ -1675,7 +1675,7 @@ read by nothing. It becomes meaningful the moment projection has real input.
 #### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
 
 Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
-and `architecture-recovery-design.md` were checked: nothing ties depth or completeness to
+and `architecture-recovery.md` were checked: nothing ties depth or completeness to
 purpose. §3 of the framing design says the opposite for the neighbouring axis — *"changing
 perspective changes how much you see but never what gets run."*
 
@@ -1698,7 +1698,7 @@ wrong *for a purpose nobody declared*.
 
 * **Completeness is already expressible.** Egeria's base annotation type carries
   `sampleSize` / `samplePercent` / `samplingMethod` — *"how much did we look at"*
-  (`architecture-recovery-design.md` §6.1, which says to reuse them and populate them
+  (`architecture-recovery.md` §6.1, which says to reuse them and populate them
   honestly when a component is only partially analysed). The vocabulary for *reporting*
   depth exists; nothing *decides* the depth required.
 * **The one measured selection mechanism is a gate, not a weighting.**
@@ -2848,7 +2848,7 @@ The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-downloa
 
 #### Clustering: propose candidate blueprints, starting with the deployment perspective
 
-Design: `docs/architecture-recovery-clustering.md` (2026-08-29). Promoted from "parallel workstream"
+Design: `docs/architecture-recovery.md (§14)` (2026-08-29). Promoted from "parallel workstream"
 to **prerequisite for the curator review surface**, because rendering the corpus showed more than a
 quarter of repos produce a proposal no curator could read and depth alone does not fix it.
 

@@ -3,7 +3,7 @@
 **Status:** steps 1-4 are BUILT for the **repo** path — which is all Phase 2 needs (§6 step 4's
 own scoping). **D1 settled: per element** (Dan, 2026-08-31). Database, filesystem and
 investigation publishers still call Egeria directly. Written 2026-08-28 to unblock
-`architecture-recovery-design.md`
+`architecture-recovery.md`
 §8.4, which names this as the sole remaining prerequisite for Phase 2 (Egeria projection of
 recovered architecture) and is blunt about why: *"a half-published blueprint is worse than none."*
 
@@ -217,7 +217,7 @@ egeria_outbox
 
 ## 5a. What report-then-curate changes here
 
-`architecture-recovery-report-then-curate.md` (2026-08-29) replaces Phase 2's structural projection
+`architecture-recovery.md (§17)` (2026-08-29) replaces Phase 2's structural projection
 with publishing a **proposal** as annotations, materialised into real blueprints and components only
 when a curator accepts. That does **not** relax this item — it tightens it. Annotations are Egeria
 writes too, and under that model they are the *only* carrier — so a proposal that publishes half

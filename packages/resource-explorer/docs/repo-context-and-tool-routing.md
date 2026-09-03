@@ -23,7 +23,7 @@ This note takes that as settled and works out what it costs.
 **The failure it is a response to.** Architecture recovery runs the same pipeline on everything.
 On `egeria_git` that yields 878 live components — Java package paths — while the project's own
 documentation describes it as Common Services, OMAS, OMVS, View Server and Integration Daemon.
-`docs/architecture-recovery-docs-as-source.md` §1 measured the join between those two sets at
+`docs/architecture-recovery.md (§15)` §1 measured the join between those two sets at
 **zero**, and was blunt that no amount of better matching fixes it. The pipeline was not wrong;
 it was the wrong pipeline for that repo, run because nothing decides which pipeline to run.
 

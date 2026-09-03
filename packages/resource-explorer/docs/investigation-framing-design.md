@@ -355,7 +355,7 @@ and unbuilt. Compliance recurs in a way exploration does not.
 ## 5. Scores: the GovernanceMetric gate
 
 RE has a stated design principle against scoring, in five places —
-`docs/architecture-recovery-design.md:1085-1088` and echoes in `github/repo_role.py:28-29`,
+`docs/architecture-recovery.md:1085-1088` and echoes in `github/repo_role.py:28-29`,
 `github/expectations.py:33-38`, `github/doc_locations.py:18`,
 `surveyors/sub_surveyors/repo_classification.py:23-28`:
 
