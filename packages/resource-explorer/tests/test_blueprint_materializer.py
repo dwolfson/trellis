@@ -52,19 +52,45 @@ class TestFreshMaterialization:
         assert props["displayName"] == "svc cluster"
         assert props["additionalProperties"]["recoveredBy"] == "architecture_recovery"
 
-    def test_draft_status_body_shape(self):
-        """The one deliberate divergence from ComponentMaterializer (Decision
-        5 in the plan): a blueprint must be created Draft, via
-        NewSolutionElementRequestBody — NOT NewElementRequestBody, which
-        pyegeria's own docstring says defaults to ACTIVE."""
+    def test_body_shape_matches_what_pyegeria_actually_validates(self):
+        """Corrected 2026-09-03 (Backlog.md item 6): the originally-planned
+        Draft-status divergence from ComponentMaterializer — class:
+        "NewSolutionElementRequestBody" + initialStatus: "DRAFT", per
+        SolutionArchitect.create_solution_blueprint's own docstring — fails
+        client-side pydantic validation in every installed pyegeria version
+        checked (5.3.4.23 here, 6.1.9 in the canonical egeria-python
+        checkout): NewSolutionElementRequestBody is documented but never
+        defined as a real model, so the client validates every body against
+        a bare TypeAdapter(NewElementRequestBody), whose `class` field is
+        Literal["NewElementRequestBody"]. Confirmed live 2026-09-03
+        accepting a real candidate blueprint against sqlglot — this is the
+        regression guard. Same body shape ComponentMaterializer already
+        uses (ACTIVE, not Draft, until pyegeria ships a real model)."""
         m = _materializer(registry=MagicMock(get_materialized_blueprint=MagicMock(return_value=None)))
         m.materialize_blueprint_element(
             "repo", "myproj", "deployment", "svc-cluster", display_name="svc cluster",
         )
         body = m._solution_architect.create_solution_blueprint.call_args[0][0]
-        assert body["class"] == "NewSolutionElementRequestBody"
-        assert body["initialStatus"] == "DRAFT"
+        assert body["class"] == "NewElementRequestBody"
+        assert "initialStatus" not in body
         assert body["isOwnAnchor"] is True
+
+    def test_body_actually_validates_against_installed_pyegeria(self):
+        """Not a mock-shape assertion — runs the exact body this method
+        builds through pyegeria's own TypeAdapter(NewElementRequestBody),
+        the real validator create_solution_blueprint calls internally.
+        This is what would have caught the original bug before it reached
+        a live accept."""
+        from pydantic import TypeAdapter
+
+        from pyegeria.models import NewElementRequestBody
+
+        m = _materializer(registry=MagicMock(get_materialized_blueprint=MagicMock(return_value=None)))
+        m.materialize_blueprint_element(
+            "repo", "myproj", "deployment", "svc-cluster", display_name="svc cluster",
+        )
+        body = m._solution_architect.create_solution_blueprint.call_args[0][0]
+        TypeAdapter(NewElementRequestBody).validate_python(body)  # raises on failure
 
     def test_oversized_flag_recorded_in_additional_properties(self):
         m = _materializer(registry=MagicMock(get_materialized_blueprint=MagicMock(return_value=None)))

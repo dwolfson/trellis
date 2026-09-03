@@ -201,18 +201,31 @@ nothing currently calls it, so there's no live bug — but it's the next candida
 `scripts/arch-spike/measure_wire_multi_link.py` treatment (the return-value test, one call)
 **before** anything in Phase 3 adds it to the outbox, not after.
 
-**6. `BlueprintMaterializer.materialize_blueprint_element` fails Egeria's request-body
-validation on a real accept — found 2026-09-03, live-verifying Phase C above against `sqlglot`
-through the actual UI, not fixed here.** Accepting the `.github` candidate blueprint saved the
-verdict correctly (the report-then-curate split held — a materialization failure is reported,
-not fatal to the verdict), but the `NewSolutionElementRequestBody` POST came back
-`VALIDATION_ERROR_1`, "Request body failed validation," from the live Egeria instance. Pre-dates
-Phase C — this is Phase A code (`6a76e4b`), a request-body shape bug in `blueprint_materializer.py`
-itself, not a frontend regression. Not diagnosed further here (scope discipline: found while
-verifying a different phase, and fixing it means reading Egeria's actual validation error detail
-against `NewSolutionElementRequestBody`'s schema, which is its own task). Component materialization
-(`ComponentMaterializer`, `NewElementRequestBody`) was live-verified working back in Phase A/B —
-this is specific to the blueprint element's body shape, not a systemic outbox/materializer issue.
+**6. `BlueprintMaterializer.materialize_blueprint_element` failed Egeria's request-body
+validation on a real accept — found 2026-09-03 live-verifying Phase C above against `sqlglot`
+through the actual UI. FIXED same day — root cause was a pyegeria gap, not an Egeria-side
+rejection.** The `VALIDATION_ERROR_1` ("Request body failed validation") never reached the
+network: `SolutionArchitect.create_solution_blueprint`'s own docstring documents a
+`NewSolutionElementRequestBody` body (with `initialStatus: "DRAFT"`) for Draft-status creation,
+but that class doesn't exist as a real pydantic model in pyegeria — confirmed by direct
+inspection of both the installed version here (5.3.4.23) and the canonical egeria-python
+checkout (6.1.9-dev; `create_solution_component` carries the identical, separately-confirmed
+gap). The client validates every create-blueprint body against a bare
+`TypeAdapter(NewElementRequestBody)`, whose `class` field is `Literal["NewElementRequestBody"]`
+— any other value is a local pydantic `ValidationError` before any HTTP call, which
+`BlueprintMaterializationError`'s message wording made read like a server-side rejection.
+Logged as egeria-python's `PYEGERIA_ISSUES.md` ISSUE-84 (not patched there directly, per this
+repo's policy — [[feedback_pyegeria_gaps_tracking]]); `egeria-python-65` messaged to review.
+Fixed here by matching `ComponentMaterializer`'s existing, working body shape — `class:
+"NewElementRequestBody"`, no `initialStatus` — so materialized blueprints are ACTIVE, not Draft,
+same pre-existing gap `ComponentMaterializer` already has (its own follow-up, not new). Two new
+regression tests added, including one that runs the actual body through pyegeria's real
+`TypeAdapter(NewElementRequestBody)` rather than only asserting the mock-call shape — the kind
+of test that would have caught this before it reached a live accept. Re-verified live against
+`sqlglot`: the client-side validation failure is gone (the POST now reaches an actual network
+call); a separate TLS-handshake timeout to `https://localhost:9443` in this environment blocked
+confirming a full live materialization end-to-end — an unrelated, apparently-transient platform
+connectivity issue at the time of this fix, not chased further here.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
