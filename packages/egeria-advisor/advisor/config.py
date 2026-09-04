@@ -263,10 +263,13 @@ class CLIConfig(BaseModel):
     max_response_length: int = 5000
 
 
+DEFAULT_MLFLOW_TRACKING_URI = "http://localhost:5025"
+
+
 class MLflowConfig(BaseModel):
     """MLflow configuration."""
     enabled: bool = True
-    tracking_uri: str = "http://localhost:5000"
+    tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI
     experiment_name: str = "egeria-advisor"
     log_system_metrics: bool = True
     log_query_metrics: bool = True
@@ -363,8 +366,12 @@ class AdvisorSettings(BaseSettings):
     embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
 
     # MLflow
+    # Default matches advisor.yaml observability.mlflow.tracking_uri (the
+    # mlflow_tracking_server container listens on 5025). Prefer
+    # resolve_mlflow_tracking_uri() over reading this field directly: it
+    # applies the env > yaml > default precedence used elsewhere in EA.
     mlflow_tracking_uri: str = Field(
-        default="http://localhost:5000",
+        default=DEFAULT_MLFLOW_TRACKING_URI,
         alias="MLFLOW_TRACKING_URI"
     )
     mlflow_experiment_name: str = Field(
@@ -457,6 +464,27 @@ def resolve_model_tier(config_path: Optional[Path] = None) -> str:
         )
 
     return DEFAULT_MODEL_TIER
+
+
+def resolve_mlflow_tracking_uri(config_path: Optional[Path] = None) -> str:
+    """
+    Resolve the MLflow tracking URI from one source of truth.
+
+    Priority: ``MLFLOW_TRACKING_URI`` env var (checked via ``os.environ``
+    directly so an unset var never masquerades as a setting), then
+    ``observability.mlflow.tracking_uri`` in advisor.yaml, then
+    ``DEFAULT_MLFLOW_TRACKING_URI``.
+    """
+    env_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    if env_uri:
+        return env_uri
+
+    raw = load_config(config_path) or {}
+    yaml_uri = ((raw.get("observability") or {}).get("mlflow") or {}).get("tracking_uri")
+    if yaml_uri and str(yaml_uri).strip():
+        return str(yaml_uri).strip()
+
+    return DEFAULT_MLFLOW_TRACKING_URI
 
 
 def resolve_llm_tier_config(config_path: Optional[Path] = None) -> ResolvedLLMTierConfig:

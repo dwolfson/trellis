@@ -7,7 +7,7 @@ This guide details how MLflow will be used to track experiments, tune models, an
 ## MLflow Setup
 
 ### Connection Details
-- **Tracking URI**: http://localhost:5000
+- **Tracking URI**: http://localhost:5025
 - **Container**: Running in Docker
 - **Backend Store**: SQLite (default) or PostgreSQL (recommended for production)
 - **Artifact Store**: Local filesystem or S3
@@ -22,7 +22,7 @@ from typing import Optional
 class MLflowConfig:
     def __init__(
         self,
-        tracking_uri: str = "http://localhost:5000",
+        tracking_uri: str = "http://localhost:5025",
         experiment_name: str = "egeria-advisor",
         enable_autolog: bool = True
     ):
@@ -627,4 +627,4 @@ This MLflow setup provides:
 4. **Model Registry**: Version and deploy models
 5. **Continuous Improvement**: Data-driven optimization
 
-All experiments and metrics are centralized in MLflow at http://localhost:5000, making it easy to compare approaches and track progress over time.
+All experiments and metrics are centralized in MLflow at http://localhost:5025, making it easy to compare approaches and track progress over time.

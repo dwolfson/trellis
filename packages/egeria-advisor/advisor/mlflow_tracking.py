@@ -14,9 +14,11 @@ import time
 import psutil
 import os
 import json
+import socket
 import uuid
+from urllib.parse import urlparse
 
-from advisor.config import settings
+from advisor.config import settings, resolve_mlflow_tracking_uri
 
 if TYPE_CHECKING:
     from advisor.query_classifier import QueryClassification
@@ -136,6 +138,30 @@ class AccuracyTracker:
         return metrics
 
 
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 0.5
+
+
+def _is_tracking_server_reachable(tracking_uri: str, timeout: float) -> bool:
+    """
+    Cheap TCP reachability probe for an http(s) MLflow tracking URI.
+
+    Returns True for non-network URIs (file:, sqlite:, ...) so they are
+    handed straight to mlflow. Never raises.
+    """
+    try:
+        parsed = urlparse(tracking_uri)
+    except Exception:
+        return True
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return True
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 class MLflowTracker:
     """MLflow tracking wrapper for Egeria Advisor with resource and accuracy monitoring."""
     
@@ -144,18 +170,24 @@ class MLflowTracker:
         tracking_uri: Optional[str] = None,
         experiment_name: Optional[str] = None,
         enable_resource_monitoring: bool = True,
-        enable_accuracy_tracking: bool = True
+        enable_accuracy_tracking: bool = True,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ):
         """
         Initialize MLflow tracker.
         
         Args:
-            tracking_uri: MLflow tracking server URI
+            tracking_uri: MLflow tracking server URI. Defaults to
+                resolve_mlflow_tracking_uri() (env > advisor.yaml > default).
             experiment_name: Name of the experiment
             enable_resource_monitoring: Enable CPU/memory/GPU monitoring
             enable_accuracy_tracking: Enable accuracy metrics tracking
+            connect_timeout: Seconds allowed for the initial TCP reachability
+                probe. An unreachable server disables tracking with a single
+                warning instead of going through mlflow's urllib3
+                retry/backoff, which otherwise stalls for minutes.
         """
-        self.tracking_uri = tracking_uri or settings.mlflow_tracking_uri
+        self.tracking_uri = tracking_uri or resolve_mlflow_tracking_uri()
         self.experiment_name = experiment_name or settings.mlflow_experiment_name
         self.enabled = settings.mlflow_enable_tracking
         self.enable_resource_monitoring = enable_resource_monitoring
@@ -169,6 +201,16 @@ class MLflowTracker:
             logger.info("MLflow tracking is disabled")
             return
         
+        # Fail fast: one short probe, no retries. Done before touching mlflow so
+        # an unreachable server never triggers its urllib3 retry/backoff loop.
+        if not _is_tracking_server_reachable(self.tracking_uri, connect_timeout):
+            logger.warning(
+                f"MLflow tracking server unreachable at {self.tracking_uri} "
+                f"(connect timeout {connect_timeout}s); MLflow tracking disabled for this process"
+            )
+            self.enabled = False
+            return
+
         # Set tracking URI
         mlflow.set_tracking_uri(self.tracking_uri)
         logger.info(f"MLflow tracking URI: {self.tracking_uri}")
