@@ -404,6 +404,12 @@ Placeholder, same conversation: chat can already surface findings like failing C
 report (e.g. a "Security Details" report) rather than living only in a chat transcript. Logged
 for later design, not attempted here.
 
+**Deferred, project-owner decision 2026-08-31: "We are deferring work on DB/FS until all the
+Repo work is complete."** Applies directly to (b) above — do not start authoring database/
+filesystem question catalogs, or any other DB/FS-specific feature work, until Repo work is
+signaled complete. Surfacing a DB/FS gap for the backlog (as this item already does) is fine;
+starting to build it is not.
+
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
@@ -2730,6 +2736,14 @@ Consequences beyond the empty tab:
 Sequencing note: write these **after** the Purpose subset measurement (item 6 above), not before. If Purpose
 turns out not to discriminate, the CSV schema changes — and authoring two new question sets against a schema
 that is about to change is the expensive order to do this in.
+
+**Deferred, project-owner decision 2026-08-31: "We are deferring work on DB/FS until all the
+Repo work is complete."** Authoring `database_questions`/`filesystem_questions` is exactly the
+DB/FS-specific work this applies to — do not start it until Repo work is signaled complete. The
+silent-failure fix (an explicit not-authored signal instead of an empty list) is a small,
+resource-type-agnostic correctness fix and isn't itself DB/FS feature work — it can proceed
+independently if picked up. See also item 13 above (chat/`compile_context` scope), same
+deferral.
 
 ---
 
