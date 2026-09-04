@@ -322,8 +322,46 @@ def web(
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)"),
 ):
     """Start the web UI (FastAPI + HTML frontend with Plotly charts and markdown)."""
+    import signal
+
     import uvicorn
     console.print(f"[cyan]Starting web UI at http://{host}:{port}[/cyan]")
+
+    # Instrumentation added 2026-09-04, after a real incident: the server
+    # stopped responding, a request that should take seconds hung for 35+
+    # seconds, and SIGTERM was ignored for 8+ seconds before a kill -9 was
+    # needed. There was no way to tell "genuinely stuck" from "slow" without
+    # guessing — this closes that gap two ways:
+    #
+    # 1. On-demand thread dump, not continuous polling. faulthandler.
+    #    dump_traceback_later() would dump every N seconds unconditionally,
+    #    which is noise on a healthy server that's just doing real (slow)
+    #    work. register(SIGUSR1) is the standard low-overhead pattern
+    #    instead: costs nothing while idle, and the next time this happens,
+    #    `kill -USR1 <pid>` (pid printed below) writes every thread's exact
+    #    Python stack frame to this process's stderr — the actual "what is
+    #    it doing", not a theory reconstructed from timing.
+    if hasattr(signal, "SIGUSR1"):
+        import faulthandler
+        faulthandler.enable()
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        console.print(
+            f"[dim]Stuck? kill -USR1 {os.getpid()} dumps every thread's stack to this process's stderr.[/dim]"
+        )
+    else:
+        # SIGUSR1 doesn't exist on Windows — faulthandler.enable() alone
+        # (fatal-signal dumps) still applies; just no on-demand trigger.
+        import faulthandler
+        faulthandler.enable()
+
+    # 2. A bounded graceful shutdown. uvicorn's own default is to wait
+    #    indefinitely for in-flight requests/threads on SIGTERM — which is
+    #    exactly why the kill -9 was needed instead. This does NOT fix
+    #    whatever caused a thread to be slow (see the log-based instrumentation
+    #    in survey_definition_reader.py's find_candidate_process_guids_by_
+    #    questions for that half), it just guarantees SIGTERM/Ctrl-C always
+    #    actually exits within 10s.
+    #
     # Configure before the server starts, and hand uvicorn a matching config so
     # server and application lines share one format and one destination. Without
     # log_config, uvicorn installs its own non-propagating handlers and its
@@ -332,7 +370,7 @@ def web(
         configure_logging, uvicorn_log_config)
     configure_logging()
     uvicorn.run("resource_explorer.web.app:app", host=host, port=port, reload=reload,
-                log_config=uvicorn_log_config())
+                log_config=uvicorn_log_config(), timeout_graceful_shutdown=10)
 
 
 @app.command()

@@ -270,7 +270,7 @@ class EgeriaPublisher:
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
         try:
-            from pyegeria import AssetMaker, AutomatedCuration, ExternalReferences
+            from pyegeria import AssetMaker, AutomatedCuration, CollectionManager, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
             from pyegeria.omvs.metadata_expert import MetadataExpert
 
@@ -307,6 +307,24 @@ class EgeriaPublisher:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             self._metadata_expert.create_egeria_bearer_token(self.user_id, self.user_password)
+
+            # 2026-09-04, real bug: egeria_outbox.py's _create_collection_
+            # membership() (used to enqueue+attach blueprint members and
+            # other collection-membership relationships) requires a
+            # 'collection_manager' client — but _default_clients() below
+            # (the one the SCHEDULED outbox drain actually uses) never
+            # constructed one, so every collection_membership row it drains
+            # fails with "This element needs the 'collection_manager'
+            # client" — confirmed live in the server log, the same 3 rows
+            # failing on every 15-minute drain cycle, never once succeeding.
+            # egeria_investigation_publisher.py already had the right
+            # recipe (CollectionManager + create_egeria_bearer_token) for
+            # its own, different call site — this gives EgeriaPublisher
+            # (and therefore the scheduled drain) the same client.
+            self._collection_manager = CollectionManager(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            self._collection_manager.create_egeria_bearer_token(self.user_id, self.user_password)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."

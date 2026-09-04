@@ -43,6 +43,29 @@ _DEFAULT_PASSWORD = "secret"
 # hours — matches D3's "Survey Definitions change rarely but not never").
 _QUESTION_GUID_CACHE_TTL_SECONDS = 3600
 _CANDIDATES_CACHE_TTL_SECONDS = 300
+# 2026-09-04, found live via the new SIGUSR1 thread dump (cli/main.py) while
+# chasing the stuck-server incident: get_guid_for_name() is a SYNC pyegeria
+# call that internally does asyncio.get_event_loop().run_until_complete(...)
+# — but resolve_question_guid() is itself called from a background
+# ThreadPoolExecutor worker (warm_question_guid_cache() at startup, and
+# find_candidate_process_guids_by_questions()'s own pool), a thread with no
+# running loop of its own. Caught, live, 6 worker threads still blocked in
+# selectors.select() 15+ seconds after starting, all in the exact same
+# get_guid_for_name -> nest_asyncio -> select() frame — consistent with a
+# cross-thread/cross-event-loop asyncio hazard (a client/connection object
+# created against one loop, used from a different one), not simple Egeria
+# slowness — a direct curl to the platform's own origin endpoint at the same
+# moment returned in 18ms. pyegeria's own httpx.Timeout (30s) evidently
+# doesn't bound this path either. That deeper cross-loop issue is NOT fixed
+# here — it needs its own investigation, likely in how pyegeria's async
+# client is constructed/reused across threads, out of scope for tonight's
+# instrumentation pass. What IS fixed: the call is now wrapped in its own
+# single-purpose thread with a hard join timeout, so a hang like this
+# degrades to resolve_question_guid's existing "not found" contract (already
+# every other failure mode's behavior) instead of blocking the calling
+# thread — and everything that pools these calls (warm_question_guid_cache,
+# find_candidate_process_guids_by_questions) — forever.
+_QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15
 _question_guid_cache: dict[str, tuple[float, str | None]] = {}
 _candidates_cache: dict[tuple, tuple[float, list]] = {}
 _fetch_cache: dict[str, tuple[float, object]] = {}  # process_guid -> (cached_at, SurveyDefinition)
@@ -448,11 +471,34 @@ class SurveyDefinitionReader:
         guid: str | None = None
         try:
             client = self._connect_classification_explorer()
-            guid = _as_guid(client.get_guid_for_name(
-                question_display_name,
-                property_name=["displayName"],
-                type_name="GlossaryTerm",
-            ))
+            # Bounded, not a direct call — see _QUESTION_GUID_CALL_TIMEOUT_
+            # SECONDS' comment for the live incident this closes. shutdown(
+            # wait=False): on timeout, the worker thread is almost certainly
+            # still blocked in Egeria's client — waiting for it to finish
+            # would just reintroduce the exact hang this exists to avoid.
+            # It's abandoned, not cancelled (Python threads can't be force-
+            # killed) — a real leak, traded deliberately against "the
+            # calling thread, and everything pooling this call, hangs
+            # forever" instead.
+            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(
+                client.get_guid_for_name, question_display_name,
+                property_name=["displayName"], type_name="GlossaryTerm",
+            )
+            try:
+                guid = _as_guid(future.result(timeout=_QUESTION_GUID_CALL_TIMEOUT_SECONDS))
+            except _FutureTimeoutError:
+                log.warning(
+                    "resolve_question_guid(%r) did not return within %ss — "
+                    "treating as not-found rather than blocking; see "
+                    "_QUESTION_GUID_CALL_TIMEOUT_SECONDS' comment",
+                    question_display_name, _QUESTION_GUID_CALL_TIMEOUT_SECONDS,
+                )
+            finally:
+                pool.shutdown(wait=False)
         except Exception as exc:
             log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
 
@@ -673,12 +719,35 @@ class SurveyDefinitionReader:
         by_guid: dict[str, dict] = {}
         try:
             client = self._connect_classification_explorer()
+            # Sequential, one Egeria round trip per question — unlike the GUID
+            # resolution above, not pooled (2026-09-04: not changing that here,
+            # it's a real perf project of its own, not a "minor" instrumentation
+            # pass). What WAS missing: any visibility into whether a slow
+            # candidates load is "Egeria is just slow today" or "something is
+            # actually stuck" — this request has no distinguishing signal from
+            # the outside; a hung server and a loaded one look identical from a
+            # pending fetch(). get_scoped_elements() takes no timeout kwarg of
+            # its own to override here (it forwards **kwargs, but pyegeria's own
+            # request layer isn't verified to honor a shorter one reliably, so
+            # not attempted) — logging the actual per-call and total duration is
+            # the honest, low-risk fix: next time this is slow, the log says by
+            # how much and which question, rather than a guess from wall-clock
+            # browser timing.
+            loop_started = time.monotonic()
             for question_text, question_guid in question_guids:
+                call_started = time.monotonic()
                 results = client.get_scoped_elements(
                     question_guid,
                     page_size=1000,
                     body={"class": "ResultsRequestBody", "metadataElementTypeName": "GovernanceActionProcess"},
                 )
+                call_elapsed = time.monotonic() - call_started
+                if call_elapsed > 5.0:
+                    log.warning(
+                        "get_scoped_elements for question %r took %.1fs (guid=%s) — "
+                        "slow Egeria response, not necessarily stuck",
+                        question_text, call_elapsed, question_guid,
+                    )
                 if isinstance(results, str):
                     continue  # pyegeria returns a string ("No elements found") when empty
                 for el in results or []:
@@ -707,6 +776,14 @@ class SurveyDefinitionReader:
                         }
                     elif question_text not in existing["matched_questions"]:
                         existing["matched_questions"].append(question_text)
+            loop_elapsed = time.monotonic() - loop_started
+            if loop_elapsed > 10.0:
+                log.warning(
+                    "find_candidate_process_guids_by_questions: %d sequential "
+                    "get_scoped_elements call(s) took %.1fs total for technology_type=%r "
+                    "survey_kind=%r",
+                    len(question_guids), loop_elapsed, technology_type, survey_kind,
+                )
         except Exception as exc:
             log.debug("find_candidate_process_guids_by_questions failed: %s", exc)
             return []

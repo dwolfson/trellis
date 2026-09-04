@@ -8645,10 +8645,18 @@ function _curateToggleSection(id) {
 }
 function _curateSectionHtml(id, headerHtml, bodyHtml) {
   const collapsed = _curateCollapsedSections.has(id);
+  // 2026-09-04, direct feedback: the old ▸/▾ (text-slate-600, inherited
+  // small size) was too easy to miss as a toggle at all. Bigger, its own
+  // distinct accent color (not the muted grey the rest of the row's meta
+  // text uses), and a circular hover background give it real button affordance —
+  // matches how other icon-only controls in this app (e.g. the ⚙ Admin
+  // button) read as clickable, rather than looking like a stray glyph.
   return `<div>
     <button onclick="_curateToggleSection('${id}')" class="w-full flex items-center justify-between text-left mb-2 group">
       ${headerHtml}
-      <span class="text-slate-600 group-hover:text-slate-400 shrink-0 ml-2">${collapsed ? '▸' : '▾'}</span>
+      <span class="shrink-0 ml-2 w-7 h-7 flex items-center justify-center rounded-full text-cyan-400 text-xl leading-none
+                   bg-slate-800/80 group-hover:bg-cyan-900/50 group-hover:text-cyan-300 transition-colors"
+            title="${collapsed ? 'Expand' : 'Collapse'}">${collapsed ? '▸' : '▾'}</span>
     </button>
     ${collapsed ? '' : bodyHtml}
   </div>`;

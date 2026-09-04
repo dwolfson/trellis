@@ -880,3 +880,34 @@ class TestTheClaimSqlIsValidOnPostgres:
         assert parent in claimed and child not in claimed
         db.mark_outbox_done(parent, "guid-1")
         assert child in {r["id"] for r in db.claim_due_outbox_elements()}
+
+
+class TestDefaultClientsIncludesCollectionManager:
+    """2026-09-04, real bug found live: _default_clients() (what the
+    SCHEDULED drain actually uses — drain_outbox()'s own default when no
+    clients= is passed) built discovery/metadata_expert but never a
+    collection_manager. Every collection_membership row it drained failed
+    with "This element needs the 'collection_manager' client, which the
+    drain was not given" — confirmed in the live server log, same 3 rows
+    failing on every 15-minute cycle. This is exactly how a blueprint could
+    materialize (a different outbox kind) while its members never actually
+    got attached. Regression guard: _default_clients()'s OutboxClients must
+    carry a non-None collection_manager, sourced from EgeriaPublisher's own
+    connected client (not a second, independent connection)."""
+
+    def test_default_clients_carries_a_collection_manager(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from resource_explorer import egeria_outbox as mod
+
+        fake_publisher = MagicMock()
+        fake_publisher._collection_manager = "the-real-collection-manager-client"
+        fake_publisher._connect = MagicMock()
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.egeria_publisher.EgeriaPublisher",
+            lambda: fake_publisher,
+        )
+
+        clients, _find_guid = mod._default_clients()
+
+        assert clients.collection_manager == "the-real-collection-manager-client"
