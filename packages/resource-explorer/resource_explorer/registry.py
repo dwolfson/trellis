@@ -555,8 +555,30 @@ class ProjectRegistry:
             conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
         log.info("registry: added user_id to %s and widened its primary key", table)
 
+    def _search_path_schema(self) -> str:
+        """Schema named by the connection URL's `options=-csearch_path=<name>`
+        query parameter; `resource_explorer` when the URL does not pin one."""
+        from urllib.parse import parse_qs, unquote, urlsplit
+        opts = parse_qs(urlsplit(self.database_url).query).get("options", [])
+        for opt in opts:
+            for part in unquote(opt).split():
+                if part.startswith("-csearch_path="):
+                    name = part.split("=", 1)[1].split(",")[0].strip().strip('"')
+                    if name and name.replace("_", "").isalnum():
+                        return name
+        return "resource_explorer"
+
     def _init_schema(self) -> None:
         with self._conn() as conn:
+            if self.database_url.startswith("postgresql"):
+                # A fresh database has no `resource_explorer` schema, and the
+                # connection URL pins search_path to it, so every CREATE TABLE
+                # below fails with "no schema has been selected to create in"
+                # (found on trevor's first deployment, 2026-09-04). The vector
+                # store already guards its schema the same way (trellis-vectorstore
+                # pg.py); the registry now does too. The schema name is whatever
+                # search_path resolves to for this connection.
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._search_path_schema()}"')
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     slug TEXT PRIMARY KEY,

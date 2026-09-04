@@ -591,3 +591,36 @@ class TestPoolDoesNotHoldTheProcessOpen:
         assert "_pool_shutdown(wait=False)" in worker_src
         cli_src = (PKG / "cli" / "main.py").read_text()
         assert "_pool_shutdown(wait=False)" in cli_src
+
+
+def test_registry_creates_its_schema_on_a_fresh_postgres(monkeypatch):
+    """A fresh database has no resource_explorer schema; the registry must create it
+    before its tables, or every CREATE TABLE fails under the pinned search_path."""
+    import pytest as _pytest
+    try:
+        import psycopg2 as _pg
+    except ImportError:  # pragma: no cover
+        import psycopg as _pg
+    from resource_explorer.config import get_config
+    url = get_config().registry.database_url
+    if not url.startswith("postgresql"):
+        _pytest.skip("registry is not on Postgres in this environment")
+    try:
+        raw = _pg.connect(url.split("?")[0], connect_timeout=3)
+        raw.autocommit = True
+    except Exception as exc:  # pragma: no cover - environment dependent
+        _pytest.skip(f"postgres unreachable: {exc}")
+    with raw.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS re_fresh_schema_test CASCADE")
+    raw.close()
+    # Point the registry at a search_path whose schema does not exist yet.
+    from resource_explorer.registry import ProjectRegistry
+    fresh_url = url.split("?")[0] + "?options=-csearch_path%3Dre_fresh_schema_test"
+    try:
+        reg = ProjectRegistry(database_url=fresh_url)
+        assert reg.list_all() == []
+    finally:
+        c = _pg.connect(url.split("?")[0]); c.autocommit = True
+        with c.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS re_fresh_schema_test CASCADE")
+        c.close()
