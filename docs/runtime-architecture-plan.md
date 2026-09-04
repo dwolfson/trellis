@@ -339,13 +339,13 @@ Zones flow with the element, a view server has `supportedZones`, `defaultZones` 
 side data that never reaches Egeria (working sets, conversation memory, drafts) is scoped by
 `user_id` as above; anything published carries `ZoneMembership`.
 
-**Proposed use, to confirm with the owner:** one zone per trellis app for elements in flight
+**Decided 2026-09-04 (owner): one zone per app, refine later if needed.** One zone per trellis app for elements in flight
 (`resource-explorer-draft`, `egeria-advisor-draft`) that only the publishing user and curators
 see, and promotion into the deployment's normal `publishZones` on acceptance, so "curate" has a
 zone transition as its Egeria-visible effect. Per-user zones are possible but multiply fast;
 per-project zones (one per RE registered project) may be the better grain if visibility needs
-to be limited by what is being surveyed rather than by who. Decide when the curate workflow is
-extracted (§3), since that is where the transition lives. Zone hierarchy and the security
+to be limited by what is being surveyed rather than by who. Per-project zones stay a later refinement; the
+transition lands with the curate workflow extraction (§3). Zone hierarchy and the security
 connector's lack of awareness of it (per the type doc) are Egeria facts to design around, not
 trellis work.
 
