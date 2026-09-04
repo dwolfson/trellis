@@ -160,6 +160,10 @@ COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
 COPY --chown=trellis:trellis docker/entrypoint-resource-explorer.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Writable runtime data for the non-root user: caches, feedback, per-user
+# document namespaces, cloned survey checkouts. Mount a volume here in
+# compose; a named volume inherits this ownership on first use.
+RUN mkdir -p /app/data && chown trellis:trellis /app/data
 USER trellis
 
 EXPOSE 8810
