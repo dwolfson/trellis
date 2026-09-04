@@ -479,18 +479,22 @@
            ("Analyses" sub-tab; see _assessmentSubnavHtml). -->
       <div id="assessment-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
+      <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
+      <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
       <!-- Sub-Resources sub-tab (repos, repo selected) — the "Select"/"Catalog"
            stages of the repo scope-narrowing funnel (docs/repo-scope-narrowing-
            funnel.md, D2/D3/D4): review SubResourceSurveyor's recommendation
            list, select a subset, track it locally and optionally publish to
-           Egeria. Moved here from Scouting (2026-08-13) — its own design doc
-           (docs/assessment-sub-resource-cataloging.md) always framed this as
-           Assessment work; it only lived in Scouting's rail as a placement
-           artifact of the Scouting workflow redesign plan, not design intent. -->
-      <div id="assessment-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
-
-      <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
-      <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+           Egeria. Moved to Assessment from Scouting on 2026-08-13, then to
+           Analysis on 2026-09-03 (direct feedback: the survey itself is
+           catalog-tagged intent: analysis — "produces a structural
+           recommendation, not an evaluation against criteria" — so the only
+           UI that could act on it belongs alongside it, not in a different
+           stage). Its own design doc (docs/assessment-sub-resource-
+           cataloging.md) kept its old name; the content moved, the filename
+           didn't. -->
+      <div id="analysis-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
       <!-- Discovery's analysis cards. Added 2026-08-24: all five discovery-intent
            analyses (repo_classification, architecture_recovery,
            license_classification, maturity, repo_conventions) were catalogued,
@@ -1894,13 +1898,10 @@ function _currentHostSubTab() {
 }
 
 // ── Assessment sub-tabs ────────────────────────────────────────────────────
-// Mirrors Scouting's sub-tab pattern exactly. Sub-Resources moved here from
-// Scouting (2026-08-13) — its own design doc (docs/assessment-sub-resource-
-// cataloging.md) always framed it as Assessment work ("existing tables only,
-// deeper analytics — no new fetch"); it only lived in Scouting's rail because
-// that's where the Scouting workflow redesign plan needed a home for it at
-// the time, not because of any design intent.
-let _assessmentSubTab = 'analyses';  // 'analyses' | 'sub-resources' | 'questions' | 'disposition' — persists across selection changes
+// Mirrors Scouting's sub-tab pattern exactly. Sub-Resources lived here
+// 2026-08-13 through 2026-09-03 (moved from Scouting, then on to Analysis —
+// see Analysis sub-tabs below for why).
+let _assessmentSubTab = 'analyses';  // 'analyses' | 'questions' | 'disposition' — persists across selection changes
 
 function showAssessmentPane() {
   _showAssessmentSubTab(_assessmentSubTab);
@@ -1909,7 +1910,6 @@ function showAssessmentPane() {
 function _assessmentSubnavHtml(active) {
   const tabs = [
     { tab: 'analyses',      label: '📊 Survey' },
-    { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   // Questions/Disposition (D6, docs/survey-question-context-plan.md) —
@@ -1929,18 +1929,8 @@ function _assessmentSubnavHtml(active) {
 
 function _showAssessmentSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'assessment'; showMainView('stage-results'); return; }
-  // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
-  // repos) — fall back to Analyses rather than show a blank/stale panel
-  // when nothing (or a db/filesystem) is selected, same spirit as
-  // Scouting's own selectedProject guard in _showScoutingSubTab.
-  // Questions/Disposition do NOT redirect the same way (2026-09-01) — the
-  // tab stays selected and its own view renders an honest "select a repo"
-  // empty state (_qdTabsApply, D6) instead of silently landing on Analyses,
-  // which used to look like the click did nothing.
-  if (tab === 'sub-resources' && !selectedProject) tab = 'analyses';
   _assessmentSubTab = tab;
   if (tab === 'analyses') showMainView('assessment-analyses');
-  else if (tab === 'sub-resources') showMainView('assessment-sub-resources');
   else if (tab === 'questions') { _questionsDispositionHost = 'assessment'; _questionsPhase = 'assessment'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'assessment'; showMainView('scouting-disposition'); }
 }
@@ -1948,7 +1938,7 @@ function _showAssessmentSubTab(tab) {
 // ── Analysis sub-tabs (D6) — Analysis's own catalog previously had no
 // sub-tab rail at all (a flat panel); gains one only to host Questions/
 // Disposition, same pattern as Assessment/Scouting. ────────────────────────
-let _analysisSubTab = 'catalog';  // 'catalog' | 'questions' | 'disposition'
+let _analysisSubTab = 'catalog';  // 'catalog' | 'sub-resources' | 'questions' | 'disposition'
 
 function showAnalysisPane() {
   _showAnalysisSubTab(_analysisSubTab);
@@ -1956,6 +1946,14 @@ function showAnalysisPane() {
 
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
+  // Sub-Resources moved here 2026-09-03 (was Assessment, 2026-08-13 through
+  // 2026-09-03) — direct feedback: sub_resource_survey is catalog-tagged
+  // intent: analysis ("produces a structural recommendation, not an
+  // evaluation against criteria" — see analysis_catalog.yaml), but its only
+  // interactive UI (select/catalog) lived in a different stage's tab. The
+  // generic card in this stage's own Survey grid was a dead end without it —
+  // no selection affordance, just a bare Run button.
+  tabs.push({ tab: 'sub-resources', label: '🗂 Sub-Resources' });
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1968,8 +1966,14 @@ function _analysisSubnavHtml(active) {
 
 function _showAnalysisSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'analysis'; showMainView('stage-results'); return; }
+  // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
+  // repos) — fall back to the Survey grid rather than show a blank/stale
+  // panel when nothing (or a db/filesystem) is selected, same guard
+  // Assessment used to carry for this same tab.
+  if (tab === 'sub-resources' && !selectedProject) tab = 'catalog';
   _analysisSubTab = tab;
   if (tab === 'catalog') showMainView('analysis');
+  else if (tab === 'sub-resources') showMainView('analysis-sub-resources');
   else if (tab === 'questions') { _questionsDispositionHost = 'analysis'; _questionsPhase = 'analysis'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'analysis'; showMainView('scouting-disposition'); }
 }
@@ -2655,6 +2659,7 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     }
     renderAnalysisCatalogCards(analyses, candidates, view, {
       title,
+      intent,
       emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
       egeriaStatus,
       entityType: resourceType,
@@ -2704,7 +2709,7 @@ async function _fetchEgeriaMergeStatus(resourceType) {
 // vs ☁ Egeria Survey tag) — merging the *display* doesn't pretend they're
 // the same underlying system, just stops presenting them as two unrelated
 // sections a user has to separately notice.
-function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, lastActivity, subnavHtml, viewId }) {
+function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent, emptyText, egeriaStatus, entityType, slug, schedules, lastActivity, subnavHtml, viewId }) {
   schedules = schedules || {};
   lastActivity = lastActivity || {};
   candidates = candidates || [];
@@ -2736,7 +2741,8 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     || (c.perspectives || []).some(x => activePerspectives.has(x)));
 
   if (!analyses.length && !validCandidates.length) {
-    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
+    view.innerHTML = subnavHtml + header + (entityType === 'repo' ? _runAllStageHtml(intent, slug) : '')
+      + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
     return;
   }
 
@@ -2913,7 +2919,8 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
         : `<div class="text-slate-600 text-xs text-center py-3 col-span-2">No Survey Definitions exist for ${_esc(title)} yet.</div>`)
     : '';
 
-  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${noSurveysNote}${cards}</div>`;
+  view.innerHTML = subnavHtml + header + (entityType === 'repo' ? _runAllStageHtml(intent, slug) : '')
+    + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${noSurveysNote}${cards}</div>`;
 }
 
 // Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
@@ -4357,6 +4364,73 @@ async function runAnalysisCatalogCard(analysisId, slug) {
     }
   }
   closeBtn.textContent = 'Done';
+}
+
+// ── "Run all <Stage>" — pinned, visually-distinct batch action ─────────────
+// 2026-09-03, direct feedback: "make it first and separate so a user can
+// easily just select that and be confident that all the surveys are being
+// run" — not a re-labeling of one of the existing per-stage Egeria Survey
+// Definitions (those cover a real subset of each stage's cards, not all of
+// it), but a genuine "run every local analysis this stage's grid offers"
+// action, self-maintaining as entries are added (see projects.py's
+// run_stage_batch). Repo-only for now, same scope as the panels it lives in.
+const _STAGE_BATCH_LABELS = {
+  scouting: 'Scouting', discovery: 'Discovery', assessment: 'Assessment', analysis: 'Analysis',
+};
+
+function _runAllStageHtml(stage, slug) {
+  if (!slug || !_STAGE_BATCH_LABELS[stage]) return '';
+  return `<div class="px-4 pt-3 pb-1">
+    <button onclick="_runStageBatch(${JSON.stringify(stage)}, ${JSON.stringify(slug)}, this)"
+      class="w-full rounded border border-amber-500/60 bg-amber-950/30 hover:bg-amber-900/40 text-amber-300
+             text-xs font-semibold py-2 px-3 transition-colors">
+      ▶ Run all ${_esc(_STAGE_BATCH_LABELS[stage])} surveys
+    </button>
+  </div>`;
+}
+
+async function _runStageBatch(stage, slug, btn) {
+  const label = _STAGE_BATCH_LABELS[stage] || stage;
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = `Starting…`;
+
+  const opId = logOp({ type: 'analysis', slug, status: 'running', summary: `Running all ${label} surveys on ${slug}…` });
+  let started;
+  try {
+    const startRes = await fetch(`/api/projects/${slug}/analyses/stage/${stage}/run`, { method: 'POST' });
+    started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start');
+  } catch (e) {
+    btn.disabled = false; btn.textContent = origText;
+    updateOp(opId, 'error', `Failed to start Run all ${label}`, e.message);
+    showToast('error', `Failed to start Run all ${_esc(label)}: ${_esc(e.message)}`, 8000);
+    return;
+  }
+
+  showToast('running', `Running all <strong>${_esc(started.step_count)}</strong> ${_esc(label)} step(s) (${_esc(started.analysis_count)} analyses) on <strong>${_esc(slug)}</strong>…`, 0);
+  const runningToastId = `toast-${_toastSeq}`;
+
+  const final = await _pollActivityUntilDone(started.activity_id, {
+    onTick: (elapsedSec) => { btn.textContent = `Running… (${elapsedSec}s elapsed)`; },
+  });
+  document.getElementById(runningToastId)?.remove();
+  btn.disabled = false; btn.textContent = origText;
+
+  if (final.status === 'error') {
+    updateOp(opId, 'error', `Run all ${label} failed`, final.summary || 'failed');
+    showToast('error', `Run all ${_esc(label)} failed: ${_esc(final.summary || '')}`, 8000);
+  } else {
+    updateOp(opId, 'ok', `Run all ${label} complete`, final.summary || '');
+    showToast('success', `Run all ${_esc(label)} complete for <strong>${_esc(slug)}</strong> — ${_esc(final.summary || '')}`, 6000);
+  }
+  // Reload whichever panel is on screen so results/last-run badges refresh —
+  // mirrors what a single card's Run already does per-card, just for the
+  // whole grid at once.
+  if (stage === 'scouting') { loadScoutingOverview(); }
+  else if (stage === 'discovery') { loadDiscoveryAnalysesPanel?.(); }
+  else if (stage === 'assessment') { loadAssessmentPanel?.(); }
+  else if (stage === 'analysis') { loadAnalysisPanel?.(); }
 }
 
 // ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
@@ -7796,7 +7870,7 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, s
     const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/survey-results`
       + (stage ? `?stage=${encodeURIComponent(stage)}` : ''));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderSurveyResultsPanel(await res.json(), entityType, slug, viewElId, subnavHtml);
+    renderSurveyResultsPanel(await res.json(), entityType, slug, viewElId, subnavHtml, stage);
   } catch (e) {
     view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs text-center py-12">Failed to load Survey Results: ${_esc(e.message)}</div>`;
   }
@@ -7836,7 +7910,7 @@ function _renderResultsCardStatusHtml(d) {
   return `<div class="text-xs mb-1.5 flex flex-wrap gap-2.5">${statusHtml}${surveyedHtml}${publishedHtml}</div>`;
 }
 
-function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) {
+function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml, stage = '') {
   const view = document.getElementById(viewElId);
   const dashboards = data.dashboards || [];
 
@@ -7858,7 +7932,7 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) 
 
   const cardsHtml = visible.map(d => {
     const body = d.render === 'custom' && typeof window[d.custom_renderer] === 'function'
-      ? window[d.custom_renderer](d)
+      ? window[d.custom_renderer](d, stage)
       : _renderGroupedCardsDashboard(d);
     return `<div class="analysis-card">
       <div class="text-xs font-semibold text-slate-200">${_esc(d.title)}</div>
@@ -7971,7 +8045,7 @@ function _renderGroupedCardsDashboard(dashboard) {
 // dashboard-plan.md D3) — a single pass/gap/risk-tier scorecard derived from
 // >1 analysis_id at once, with the full grouped detail underneath so nothing
 // is lost relative to viewing each card individually.
-function renderSecurityOverviewDashboard(dashboard) {
+function renderSecurityOverviewDashboard(dashboard, stage = '') {
   const byId = {};
   const headlineById = {};
   (dashboard.analyses || []).forEach(a => { byId[a.analysis_id] = a.results; headlineById[a.analysis_id] = a.headline; });
@@ -7979,14 +8053,44 @@ function renderSecurityOverviewDashboard(dashboard) {
   const countLabels = (results, labels) => (results?.findings || []).filter(f => labels.includes(f.label)).length;
   const totalFindings = (results) => (results?.findings || []).length;
 
+  const licenseFinding = (byId.license_classification?.findings || [])[0];
+  const policyFinding = (byId.repo_conventions?.findings || []).find(f => f.check_name === 'security_policy_content');
+
+  // Discovery-tier teaser (2026-09-04, project-owner decision "both" — item
+  // 11 in docs/Backlog.md): this dashboard spans Discovery (license_
+  // classification, repo_conventions) and Assessment (the other 11 inputs)
+  // by construction — get_dashboard_stages() derives that from the inputs'
+  // own catalog intents, it isn't hand-picked. Rendering the full Assessment
+  // scorecard under Discovery made every Assessment-tier tile read as "not
+  // run yet", which looks like a gap when it's actually just a stage that
+  // hasn't happened. Show only the Discovery-tier signals here, honestly
+  // labeled, with a pointer to Assessment for the rest — never the full
+  // detail dump underneath.
+  if (stage === 'discovery') {
+    const tile = (label, value, status) => {
+      const color = status === 'ok' ? 'text-emerald-400' : status === 'warn' ? 'text-amber-400' : 'text-slate-300';
+      return `<div class="bg-slate-950 border border-slate-800 rounded px-2 py-1.5">
+        <div class="text-[10px] text-slate-500 uppercase tracking-wide">${_esc(label)}</div>
+        <div class="text-xs font-semibold ${color}">${_esc(value)}</div>
+      </div>`;
+    };
+    if (!licenseFinding && !policyFinding) {
+      return '<div class="text-xs text-slate-500">No Discovery-tier security signals yet — run License Classification/Repo Conventions to populate this.</div>';
+    }
+    return `<div class="text-xs text-slate-400 mb-2">Discovery-tier signals below are current. Deeper checks
+      (CVEs, secrets, CI, FOSS Scorecard, and more) run in Assessment — see that tab for the full picture.</div>
+      <div class="grid grid-cols-2 gap-1.5">
+        ${licenseFinding ? tile('License', licenseFinding.summary || licenseFinding.check_name, 'info') : ''}
+        ${policyFinding ? tile('Disclosure policy', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'Present' : 'Missing', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'ok' : 'warn') : ''}
+      </div>`;
+  }
+
   const securityGaps = countLabels(byId.security_scan, ['gap']);
   const securityTotal = totalFindings(byId.security_scan);
   const featuresOn = countLabels(byId.security_features, ['pass']);
   const featuresTotal = totalFindings(byId.security_features);
   const ciPassing = countLabels(byId.ci_quality, ['pass']);
   const ciTotal = totalFindings(byId.ci_quality);
-  const licenseFinding = (byId.license_classification?.findings || [])[0];
-  const policyFinding = (byId.repo_conventions?.findings || []).find(f => f.check_name === 'security_policy_content');
   // cve_scan/foss_scorecard/cii_badge added 2026-08-31 (docs/Backlog.md
   // "Survey Results dashboards cover 14 of 29 analyses") — same "is this
   // trustworthy" question as the five above, sourced externally instead of
@@ -9170,9 +9274,20 @@ function _curateBlueprintRow(bp, slug, componentsByPath) {
           </div>`).join('')}
       </div>`
     : '';
+  // Readiness check BEFORE the Accept click, not just the amber "partial"
+  // badge after (2026-09-04, direct feedback: "not allow the blueprint to
+  // be published unless all components have [been published]... with a
+  // nice message"). A member counts ready only once it has a real Egeria
+  // GUID (st.materialized.guid) — an 'accepted' verdict alone isn't enough,
+  // same distinction memberVerdictBadgeInline's own ⬡ glyph already draws.
+  const unmetMembers = (bp.member_status || [])
+    .filter(st => !(st.materialized && st.materialized.guid))
+    .map(st => ({ scope_locator: st.scope_locator, name: (componentsByPath[st.scope_locator] || {}).name || st.slug }));
+  const unmetChildCount = (bp.child_status || [])
+    .filter(st => !(st.materialized && st.materialized.guid)).length;
   const verdictArea = bp.verdict
     ? _archBlueprintVerdictBadgeHtml(rowUid, slug, bp.perspective, bp.cluster_name, bp.verdict, bp.materialized)
-    : _archBlueprintVerdictControlsHtml(rowUid, slug, bp.perspective, bp.cluster_name);
+    : _archBlueprintVerdictControlsHtml(rowUid, slug, bp.perspective, bp.cluster_name, unmetMembers, unmetChildCount);
   const anchorId = _curateBlueprintAnchorId(bp.perspective, bp.cluster_name);
   return `
     <div class="rpt-section text-xs text-slate-300" id="${anchorId}" style="margin-bottom:.5rem;">
@@ -9202,17 +9317,84 @@ function memberVerdictBadgeInline(st) {
   return `<span class="${color}">${label}${egeria}</span>`;
 }
 
-function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterName) {
-  return `<div class="mt-1" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}">
+function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterName, unmetMembers, unmetChildCount) {
+  unmetMembers = unmetMembers || [];
+  unmetChildCount = unmetChildCount || 0;
+  const notReady = unmetMembers.length + unmetChildCount > 0;
+  // Blocks the Accept click itself, not just a post-hoc "partial" badge —
+  // 2026-09-04 direct feedback. Reject stays available regardless: rejecting
+  // never needs materialization. Children aren't auto-published here (a
+  // nested blueprint has its own members that may need the same treatment
+  // first) — jump to it via its own row instead, same link the member list
+  // above already offers.
+  const readinessHtml = notReady
+    ? `<div class="mb-1.5 rounded border border-amber-700/50 bg-amber-950/20 px-2 py-1.5">
+        <div class="text-[11px] text-amber-300">
+          ⚠ ${unmetMembers.length ? `${unmetMembers.length} component(s)` : ''}${unmetMembers.length && unmetChildCount ? ' and ' : ''}${unmetChildCount ? `${unmetChildCount} nested blueprint(s)` : ''}
+          not yet published to Egeria — accept can't complete a real blueprint until every member is.
+        </div>
+        ${unmetMembers.length ? `<div class="text-[10px] text-slate-500 mt-0.5 truncate">${unmetMembers.map(m => _esc(m.name)).join(', ')}</div>` : ''}
+        ${unmetMembers.length ? `<button class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/70 mt-1"
+            onclick='_curatePublishMissingComponents("${rowUid}")'>📤 Publish missing component(s) &amp; accept</button>` : ''}
+      </div>`
+    : '';
+  return `<div class="mt-1" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}" data-arch-bp-unmet="${_esc(JSON.stringify(unmetMembers))}">
+    ${readinessHtml}
     <input type="text" data-arch-bp-note-input="${_esc(rowUid)}" placeholder="Optional note (why accept/reject, or a better description)…"
       class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 w-full text-slate-300 mb-1" />
     <div class="flex gap-2 items-center flex-wrap">
-      <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70 disabled:opacity-40 disabled:cursor-not-allowed"
+        ${notReady ? 'disabled title="Publish the missing component(s) above first"' : ''}
         onclick="_archSubmitBlueprintVerdict('${rowUid}','accepted')">✓ Accept</button>
       <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
         onclick="_archSubmitBlueprintVerdict('${rowUid}','rejected')">✗ Reject</button>
     </div>
   </div>`;
+}
+
+// "How do I redo these failed publishes" (2026-09-04, direct feedback) —
+// one click instead of finding+accepting each unmaterialized member
+// individually then re-accepting the blueprint. Reuses the exact workflow
+// _archBlueprintVerdictBadgeHtml's own "accept them individually first,
+// then re-accept this blueprint" tooltip already describes; this just
+// automates it. Idempotent: component-verdicts POST for an already-
+// materialized component returns 'already_materialized', not a duplicate.
+async function _curatePublishMissingComponents(rowUid) {
+  const el = document.querySelector(`[data-arch-bp-verdict="${rowUid}"]`);
+  if (!el) return;
+  const slug = el.dataset.archBpSlug;
+  let unmet = [];
+  try { unmet = JSON.parse(el.dataset.archBpUnmet || '[]'); } catch (_) { unmet = []; }
+  if (!unmet.length) return;
+
+  const btn = el.querySelector('button[onclick^="_curatePublishMissingComponents"]');
+  if (btn) { btn.disabled = true; btn.textContent = `Publishing ${unmet.length} component(s)…`; }
+
+  const failures = [];
+  for (const m of unmet) {
+    try {
+      const resp = await fetch(`/api/curate/component-verdicts/repo/${encodeURIComponent(slug)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope_locator: m.scope_locator, verdict: 'accepted', retyped_to: '', note: '' }),
+      });
+      const saved = await resp.json();
+      if (!resp.ok || (saved.materialization && saved.materialization.status === 'error')) {
+        failures.push(`${m.name}: ${(saved.materialization && saved.materialization.error) || saved.detail || `HTTP ${resp.status}`}`);
+      }
+    } catch (e) {
+      failures.push(`${m.name}: ${e.message}`);
+    }
+  }
+
+  if (failures.length) {
+    showToast('error', `${failures.length} of ${unmet.length} component(s) could not be published: ${_esc(failures.join('; '))}`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '📤 Publish missing component(s) & accept'; }
+    return;
+  }
+
+  showToast('success', `Published ${unmet.length} component(s) to Egeria — accepting blueprint…`, 4000);
+  await _archSubmitBlueprintVerdict(rowUid, 'accepted');
 }
 
 function _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, v, materialized) {
@@ -9948,7 +10130,7 @@ function showMainView(tab) {
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const scoutingQuestionsView = document.getElementById('scouting-questions-view');
-  const assessmentSubResourcesView = document.getElementById('assessment-sub-resources-view');
+  const analysisSubResourcesView = document.getElementById('analysis-sub-resources-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -9970,7 +10152,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, adminLogsView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, analysisSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, adminLogsView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -9984,9 +10166,9 @@ function showMainView(tab) {
   } else if (tab === 'assessment-analyses') {
     assessmentView.classList.remove('hidden');
     loadAssessmentPanel();
-  } else if (tab === 'assessment-sub-resources') {
-    assessmentSubResourcesView.classList.remove('hidden');
-    loadAssessmentSubResourcesView();
+  } else if (tab === 'analysis-sub-resources') {
+    analysisSubResourcesView.classList.remove('hidden');
+    loadAnalysisSubResourcesView();
   } else if (tab === 'analysis') {
     analysisView.classList.remove('hidden');
     loadAnalysisPanel();
@@ -10265,6 +10447,7 @@ function renderScoutingOverview(d) {
            Survey, shows up here as an ordinary candidate card. Populated
            by _loadSurveyPanel() right after this render (see
            loadScoutingOverview()). -->
+      ${_runAllStageHtml('scouting', d.slug)}
       <div id="scouting-survey-panel-view" class="pt-2"></div>
     </div>`;
 }
@@ -11192,11 +11375,11 @@ function _isShapeCompatible(targetShape, kind) {
   return false;  // whole_resource_only, or unrecognized
 }
 
-async function loadAssessmentSubResourcesView() {
+async function loadAnalysisSubResourcesView() {
   if (!selectedProject) return;
   const slug = selectedProject;
-  const view = document.getElementById('assessment-sub-resources-view');
-  view.innerHTML = _assessmentSubnavHtml('sub-resources') +
+  const view = document.getElementById('analysis-sub-resources-view');
+  view.innerHTML = _analysisSubnavHtml('sub-resources') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const [resultsRes, catalogedRes] = await Promise.all([
@@ -11208,9 +11391,9 @@ async function loadAssessmentSubResourcesView() {
     const catalogedRows = catalogedRes.ok ? await catalogedRes.json() : [];
     _subResCataloged = {};
     catalogedRows.forEach(r => { _subResCataloged[r.locator] = r; });
-    _renderAssessmentSubResourcesView(slug);
+    _renderAnalysisSubResourcesView(slug);
   } catch(e) {
-    view.innerHTML = _assessmentSubnavHtml('sub-resources') +
+    view.innerHTML = _analysisSubnavHtml('sub-resources') +
       `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
@@ -11224,7 +11407,7 @@ async function _runSubResourceSurvey(slug, btn) {
     const data = await res.json();
     if (data.status === 'ok') {
       showToast('success', data.message || 'Survey complete.', 4000);
-      loadAssessmentSubResourcesView();
+      loadAnalysisSubResourcesView();
     } else {
       showToast('error', `Survey failed: ${_esc(data.error || 'unknown error')}`, 6000);
     }
@@ -11239,19 +11422,19 @@ async function _runSubResourceSurvey(slug, btn) {
 function _subResSort(key) {
   if (_subResSortKey === key) _subResSortDir *= -1;
   else { _subResSortKey = key; _subResSortDir = 1; }
-  _renderAssessmentSubResourcesView(selectedProject);
+  _renderAnalysisSubResourcesView(selectedProject);
 }
 
 function _subResApplyFilter(text) {
   _subResFilterText = text;
-  _renderAssessmentSubResourcesView(selectedProject);
+  _renderAnalysisSubResourcesView(selectedProject);
 }
 
-function _renderAssessmentSubResourcesView(slug) {
-  const view = document.getElementById('assessment-sub-resources-view');
+function _renderAnalysisSubResourcesView(slug) {
+  const view = document.getElementById('analysis-sub-resources-view');
   const catalogedSectionHtml = _renderCatalogedSubResourcesSection(slug);
   if (!_subResFindings.length) {
-    view.innerHTML = _assessmentSubnavHtml('sub-resources') + `
+    view.innerHTML = _analysisSubnavHtml('sub-resources') + `
       <div class="max-w-2xl space-y-4">
         <div>
           <h2 class="text-sm font-semibold text-slate-200 mb-2">Sub-Resources: ${_esc(slug)}</h2>
@@ -11317,7 +11500,7 @@ function _renderAssessmentSubResourcesView(slug) {
     </tr>`;
   }).join('');
 
-  view.innerHTML = _assessmentSubnavHtml('sub-resources') + `
+  view.innerHTML = _analysisSubnavHtml('sub-resources') + `
     <div class="space-y-3">
       <div>
         <h2 class="text-sm font-semibold text-slate-200">Sub-Resources: ${_esc(slug)}</h2>
@@ -11494,14 +11677,14 @@ async function _loadScopedAnalysisResults(slug, locator, analysisId, resultsDiv)
 }
 
 function _subResSelectAll(checked) {
-  document.querySelectorAll('#assessment-sub-resources-view input[type=checkbox][data-locator]').forEach(cb => {
+  document.querySelectorAll('#analysis-sub-resources-view input[type=checkbox][data-locator]').forEach(cb => {
     cb.checked = checked;
   });
 }
 
 async function _submitSubResourceCatalog(slug, btn) {
   const boxes = Array.from(
-    document.querySelectorAll('#assessment-sub-resources-view input[type=checkbox][data-locator]:checked')
+    document.querySelectorAll('#analysis-sub-resources-view input[type=checkbox][data-locator]:checked')
   );
   const fb = document.getElementById('subres-catalog-feedback');
   if (!boxes.length) {
@@ -11527,7 +11710,7 @@ async function _submitSubResourceCatalog(slug, btn) {
       : `Catalogued ${data.cataloged.length} sub-resource(s) locally.`;
     showToast('success', msg, 5000);
     if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(msg)}</span>`;
-    loadAssessmentSubResourcesView();
+    loadAnalysisSubResourcesView();
   } catch(e) {
     showToast('error', `Catalog failed: ${_esc(e.message)}`, 6000);
     if (fb) fb.innerHTML = `<span class="text-amber-400">✗ ${_esc(e.message)}</span>`;

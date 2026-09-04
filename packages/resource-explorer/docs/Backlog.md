@@ -369,8 +369,13 @@ work. Not a bug, but a real UX rough edge: someone who's only done Discovery-tie
 mostly-empty security card. Decided: do both — (a) reframe the copy shown under Discovery
 specifically ("Discovery-tier signals below are current; the rest needs Assessment" rather than a
 flat "not run yet" that reads as a gap), and (b) split out a lean Discovery-tier security teaser
-(license/conventions only) alongside the full Assessment-only picture. Not scoped further or built
-yet.
+(license/conventions only) alongside the full Assessment-only picture. **Built 2026-09-04**:
+`renderSecurityOverviewDashboard(dashboard, stage)` now branches on the requesting stage — under
+Discovery it shows only the two Discovery-tier tiles (License, Disclosure policy) with the
+reframed copy and no detail dump underneath; under Assessment (or any other caller) the full
+scorecard renders exactly as before. `stage` is threaded down from `_loadSurveyResultsPanel`'s
+own request param through `renderSurveyResultsPanel`, not re-derived — the same value the server
+was already asked for.
 
 **12. Dashboard trend charts — real feature, cheap because the plumbing already exists.**
 Every `AnalysisKindResults` already carries a `trend_reader` (`GET /{slug}/analyses/{analysis_id}
@@ -409,6 +414,50 @@ Repo work is complete."** Applies directly to (b) above — do not start authori
 filesystem question catalogs, or any other DB/FS-specific feature work, until Repo work is
 signaled complete. Surfacing a DB/FS gap for the backlog (as this item already does) is fine;
 starting to build it is not.
+
+**14. "Run all &lt;Stage&gt;" — built 2026-09-04, direct feedback: "make it first and separate so
+a user can easily just select that and be confident that all the surveys are being run."** Not a
+re-labeling of the existing per-stage Egeria Survey Definitions (`RepoScoutingSurvey`/
+`RepoDiscoverySurvey`/`RepoAssessmentSurvey`/`RepoAnalysisSurvey`) — measured 2026-09-04 those
+cover 3/3, 5/7, 8/14, and 7/10 of each stage's individual `analysis_catalog.yaml` entries
+respectively, so pinning one under a "Run all" label would silently under-run three of the four
+stages. New `POST /{slug}/analyses/stage/{stage}/run` (`projects.py`) instead derives the full
+`step_keys` set live from every local `AnalysisKind` entry tagged that intent (via
+`REPO_ANALYSIS_STEP_MAP`), excluding `action` entries (`ingest`/`publish`/`profile` — same
+exclusion the scheduler already applies), then runs them as one `SurveyOrchestrator.run(steps=…)`
+call via the adapter's existing `run_batch` primitive (previously only reachable from
+`survey_definition_executor.py`). Self-maintaining as entries are added to a stage — no drift risk
+the way a fixed Survey Definition has. A visually-distinct amber button, pinned above the regular
+card grid, in Scouting/Discovery/Assessment/Analysis (`_runAllStageHtml`/`_runStageBatch` in
+`index.html`). 5 new tests (`tests/test_stage_batch_run_route.py`), full suite green.
+
+**15. Sub-Resources tab moved from Assessment to Analysis — built 2026-09-04, direct feedback.**
+`sub_resource_survey` is catalog-tagged `intent: analysis` ("produces a structural recommendation,
+not an evaluation against criteria") but its only interactive UI (select/catalog) lived in
+Assessment's own sub-tab since 2026-08-13 — a placement artifact of the Scouting workflow redesign
+plan, not design intent. The Analysis-tab card was a dead end: a bare Run button with no selection
+affordance. Moved the whole sub-tab (view container, nav entry, dispatch) to Analysis; backend
+routes (`/api/projects/{slug}/sub-resources*`) are resource-type-generic and needed no changes.
+`docs/assessment-sub-resource-cataloging.md` keeps its old filename — the content moved, the name
+didn't (not worth a doc rename for this).
+
+**16. Curate blueprint accept blocked until every member is materialized, with a one-click fix —
+built 2026-09-04, direct feedback:** accepting a proposed blueprint could fail on unpublished
+member components (an existing, deliberate partial-accept design — Decision 2, "accepting a
+blueprint does not implicitly accept or materialize its members" — not a bug), but the UI gave no
+warning before the click and no easy recovery after. `_curateBlueprintRow` now computes each
+member/child's real Egeria-materialized status (via the same `materialized.guid` check
+`memberVerdictBadgeInline`'s ⬡ glyph already uses) *before* rendering the Accept control: when
+anything is unmet, the Accept button is disabled with an explicit message naming which components,
+and a "📤 Publish missing component(s) & accept" button (`_curatePublishMissingComponents`) does
+the previously-manual workflow — accept each unmet member individually (materializing it), then
+re-submit the blueprint verdict — in one click, reporting any individual failures rather than
+swallowing them. Nested-blueprint children are surfaced but not auto-cascaded (a child has its own
+members that may need the same treatment first) — still reached via the existing jump-to-blueprint
+link. **Deliberately left the backend's permissive partial-accept (Decision 2) unchanged** — the
+UI now defaults to blocking the common accidental case, but the API still allows a genuinely
+intentional partial accept (e.g. a child that will never materialize because it was rejected) if
+called directly.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where

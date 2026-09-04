@@ -10,12 +10,17 @@ issued it **twice** — once scoped to the stage, once unscoped for cross-stage
           question.
   client  the two fetches were awaited one after the other.
 
-Neither was work. Both were waiting. These tests pin the properties that make
-the fix safe rather than the timings, which vary with whatever Egeria is doing.
+Neither was work. Both were waiting.
+
+UPDATED 2026-09-03 (commit 6c402e8): the client half of this fix (make the
+second fetch concurrent with the first) was superseded by removing the
+second fetch outright — the cross-stage `automate_full` merge it existed to
+speed up turned out not to be load-bearing at all (Automate's own Surveys
+sub-tab already lists it). The server-half fix (concurrent GUID resolution
+within one fetch) still stands and is still what most of this file pins.
 """
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -132,29 +137,25 @@ def test_a_single_question_does_not_start_a_thread_pool():
 
 
 def test_the_two_candidate_fetches_are_issued_together():
-    """Client half. They are independent — the second only appends cross-stage
-    definitions the first cannot return — so awaiting one before starting the
-    other paid both round trips end to end.
+    """UPDATED 2026-09-03 (commit 6c402e8): the second, cross-stage
+    `automate_full` fetch this test used to pin as concurrent with the first
+    was removed entirely, not made concurrent — Automate's own Surveys
+    sub-tab already lists every Survey Definition catalog-wide, so merging
+    Full Survey into every other stage's list was never load-bearing. There
+    is now exactly one candidate fetch per stage; nothing to parallelize.
+    This asserts that, so a reintroduced second fetch (concurrent or not)
+    gets caught rather than silently restoring the duplication commit
+    6c402e8 removed.
     """
     src = INDEX.read_text()
     block = src[src.index("const _candParams = { phase: intent"):]
-    block = block[:block.index("/* non-fatal")]
+    block = block[:block.index("} catch {")]
 
-    assert "Promise.allSettled" in block, (
-        "the two candidate fetches are not issued concurrently"
+    assert block.count("await fetch(") == 1, (
+        f"expected exactly one candidate fetch per stage, found {block.count('await fetch(')} "
+        "— see this test's docstring for why a second one should not come back"
     )
-    # allSettled rather than all: the cross-stage fetch was already non-fatal,
-    # and `all` rejects the pair as soon as either fails.
-    assert "Promise.all(" not in block, (
-        "Promise.all would make a failing cross-stage fetch take the stage's "
-        "own surveys down with it"
-    )
-    # No await may sit between the two fetch() calls, or they are serial again
-    # while looking concurrent.
-    between = block[block.index("Promise.allSettled"):block.index("]);")]
-    assert "await" not in between, (
-        f"an await appears between the two fetches, re-serialising them: {between!r}"
-    )
+    assert "survey_kind: 'automate_full'" not in block
 
 
 def test_both_candidate_filters_are_still_sent():
@@ -163,4 +164,3 @@ def test_both_candidate_filters_are_still_sent():
     this file rewrote the call site."""
     src = INDEX.read_text()
     assert "const _candParams = { phase: intent, survey_kind: intent };" in src
-    assert re.search(r"survey_kind:\s*'automate_full'", src)

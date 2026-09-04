@@ -831,6 +831,104 @@ async def run_single_analysis(slug: str, analysis_id: str) -> dict:
     return {"status": "started", "activity_id": activity_id}
 
 
+_STAGE_BATCH_ANALYSIS_ID = "__stage_batch__"
+
+
+def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str], activity_id: str) -> None:
+    """Runs in a daemon thread, mirroring _run_single_analysis_background's
+    shape exactly — one activity entry, terminal status written back via
+    update_activity_status(). Uses the adapter's run_batch (repo_survey_
+    definition_adapter.py's _run_batch), the same primitive survey_definition_
+    executor.py already uses to run a multi-step Survey Definition as one
+    SurveyOrchestrator.run() call — this just derives its own step_keys from
+    the catalog's intent tags instead of from an authored Survey Definition,
+    so it can't drift out of sync as analyses are added to a stage."""
+    import json
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
+    from resource_explorer.surveyors.survey_report import summarise_annotations
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    try:
+        result = _run_batch(project, registry, step_keys)
+        ann_summary = summarise_annotations(result["annotations"])
+        errors = result.get("errors") or []
+        status = "error" if errors and not result["annotations"] else "ok"
+        n = len(step_keys)
+        summary = (f"Ran all {n} {stage} step(s)" + (f" — {len(errors)} error(s)" if errors else ""))
+        registry.update_activity_status(
+            activity_id, status, summary=summary,
+            detail=json.dumps({"stage": stage, "step_keys": step_keys, "errors": errors}),
+            annotations=ann_summary,
+        )
+    except Exception as exc:  # pragma: no cover — genuinely unexpected
+        log.exception("Stage-batch run crashed for %s/%s", slug, stage)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"Run all {stage} crashed: {exc}",
+            detail=json.dumps({"stage": stage, "step_keys": step_keys, "error": str(exc)}),
+        )
+
+
+@router.post("/{slug}/analyses/stage/{stage}/run")
+async def run_stage_batch(slug: str, stage: str) -> dict:
+    """'Run all <Stage>' — the pinned, visually-distinct action at the top
+    of Scouting/Discovery/Assessment/Analysis's card grids (2026-09-03,
+    direct feedback: "make it first and separate so a user can easily just
+    select that and be confident that all the surveys are being run").
+
+    Deliberately NOT a re-use of the existing per-stage Egeria Survey
+    Definitions (RepoScoutingSurvey/RepoDiscoverySurvey/RepoAssessmentSurvey/
+    RepoAnalysisSurvey) — those cover 3/3, 5/7, 8/14, and 7/10 of each
+    stage's individual catalog entries respectively (measured 2026-09-03),
+    so pinning one of them under a "Run all" label would silently under-run
+    the stage. Instead derives the full step_keys set live from every local
+    AnalysisKind catalog entry tagged this intent — self-maintaining as
+    entries are added, and genuinely runs everything the stage's grid
+    offers, not a fixed subset."""
+    import threading
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_reconciler import process_identity
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    entries = [a for a in get_analyses("repo", intent=stage, include_egeria_live=False)
+               if a.get("action") not in ("ingest", "publish", "profile")]
+    step_keys: list[str] = []
+    for a in entries:
+        for sk in REPO_ANALYSIS_STEP_MAP.get(a["id"], []):
+            if sk not in step_keys:
+                step_keys.append(sk)
+    if not step_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stage '{stage}' has no batch-runnable local analyses.",
+        )
+
+    activity_id = log_analysis_run(
+        registry, "repo", slug, project.display_name, "running",
+        f"Running all {len(step_keys)} {stage} step(s) on {slug}…", _STAGE_BATCH_ANALYSIS_ID,
+        published=None, runner=process_identity(),
+    )
+
+    t = threading.Thread(
+        target=_run_stage_batch_background,
+        args=(slug, stage, step_keys, activity_id),
+        daemon=True, name="resource-explorer-stage-batch-run",
+    )
+    t.start()
+
+    return {"status": "started", "activity_id": activity_id, "step_count": len(step_keys),
+            "analysis_count": len(entries)}
+
+
 @router.get("/{slug}/analyses/last-activity")
 async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
