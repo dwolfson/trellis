@@ -618,39 +618,53 @@ async def system_status() -> Dict[str, Any]:
 
 
 @app.post("/api/plans/import")
-async def import_plan(body: Dict[str, Any]) -> Dict[str, Any]:
+async def import_plan(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Import an externally-written Dr.Egeria/LGCI markdown document as a new
     managed plan in inbox. Detects whether the content is already LGCI-structured
     or a bare Dr.Egeria command file and wraps the latter automatically.
+
+    Written into the signed-in user's namespace (docs/runtime-architecture-plan.md
+    §4); an anonymous request keeps today's shared namespace.
     """
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
     title = (body.get("title") or "").strip() or None
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     dm = get_doc_manager()
     try:
-        doc_id = dm.import_document(content, title=title)
+        doc_id = dm.import_document(content, title=title, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
 
 
 @app.get("/api/plans")
-async def list_plans() -> Dict[str, Any]:
-    """Return inbox, outbox, and trash plan document lists, annotated with active draft IDs."""
+async def list_plans(request: Request) -> Dict[str, Any]:
+    """Return inbox, outbox, and trash plan document lists, annotated with active draft IDs.
+
+    A signed-in user sees the shared namespace plus their own; a curator
+    role (admin/curator) sees every namespace. Anonymous sees shared only.
+    """
     from advisor.governance_docs import get_doc_manager
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import list_visible_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
-    inbox = dm.list_inbox()
-    outbox = dm.list_outbox()
-    trash = dm.list_trash()
+    inbox = dm.list_inbox(requester_user_id=user_id, requester_role=role)
+    outbox = dm.list_outbox(requester_user_id=user_id, requester_role=role)
+    trash = dm.list_trash(requester_user_id=user_id, requester_role=role)
 
     # Build doc_id → draft_id map for plans that have an active refine/generate draft
     doc_to_draft: Dict[str, str] = {}
-    for d in get_draft_manager().list_drafts():
+    for d in list_visible_drafts(user_id=user_id, role=role):
         if d.get("doc_id") and d.get("phase") in ("generate", "refine", "template_offer"):
             doc_to_draft[d["doc_id"]] = d["draft_id"]
 
@@ -661,12 +675,21 @@ async def list_plans() -> Dict[str, Any]:
 
 
 @app.get("/api/plans/{doc_id}")
-async def get_plan(doc_id: str) -> Dict[str, Any]:
-    """Return the content of a plan document by doc_id (inbox, outbox, or trash)."""
+async def get_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Return the content of a plan document by doc_id (inbox, outbox, or trash).
+
+    Ownership-checked: a namespaced plan belonging to another user comes
+    back as 404 (never 403) unless the requester is a curator.
+    """
     from fastapi import HTTPException
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
-    content = dm.load(doc_id, include_trash=True)
+    content = dm.load(doc_id, include_trash=True, requester_user_id=user_id,
+                       requester_role=role, enforce_ownership=True)
     if content is None:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
     folder = dm.folder_of(doc_id) or "outbox"
@@ -930,11 +953,22 @@ async def save_plan_as_template(doc_id: str, body: Dict[str, Any]) -> Dict[str, 
 
 
 @app.delete("/api/plans/{doc_id}")
-async def delete_plan(doc_id: str) -> Dict[str, Any]:
-    """Move a plan document from inbox or outbox to trash (saves a version first). Reversible."""
+async def delete_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Move a plan document from inbox or outbox to trash (saves a version first). Reversible.
+
+    Ownership-checked: 404 (not 403) for a namespaced plan that isn't the
+    requester's own, unless the requester is a curator.
+    """
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
+    visible = dm.load(doc_id, requester_user_id=user_id, requester_role=role, enforce_ownership=True)
+    if visible is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
     ok = dm.delete(doc_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
@@ -969,30 +1003,42 @@ async def purge_plan(doc_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/drafts")
-async def list_drafts() -> Dict[str, Any]:
-    """Return active planning session drafts."""
-    from advisor.governance_draft import get_draft_manager
-    return {"drafts": get_draft_manager().list_drafts()}
+async def list_drafts(request: Request) -> Dict[str, Any]:
+    """Return active planning session drafts visible to the requester:
+    shared + their own namespace, or every namespace for a curator role."""
+    from advisor.governance_draft import list_visible_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    return {"drafts": list_visible_drafts(user_id=user_id, role=role)}
 
 
 @app.get("/api/drafts/{draft_id}")
-async def get_draft(draft_id: str) -> Dict[str, Any]:
+async def get_draft(request: Request, draft_id: str) -> Dict[str, Any]:
     """Return a single draft spec by ID (for the Plan Canvas).
 
     Self-heals doc_id via resolve_live_doc_id() before returning — every
     frontend consumer of this endpoint (Plan Canvas's open(), the Active
     Drafts sidebar) gets a repaired pointer automatically, with no
     frontend-side staleness handling required.
+
+    Ownership-checked: 404 (not 403) for a draft in another user's
+    namespace, unless the requester is a curator.
     """
     from fastapi import HTTPException
-    from advisor.governance_draft import get_draft_manager
-    dm = get_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    from advisor.governance_draft import resolve_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
-    resolved = dm.resolve_live_doc_id(draft_id, spec=spec)
-    if resolved != spec.get("doc_id"):
-        spec["doc_id"] = resolved
+    dm, spec = resolved
+    resolved_doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
+    if resolved_doc_id != spec.get("doc_id"):
+        spec["doc_id"] = resolved_doc_id
     return spec
 
 
@@ -1005,17 +1051,21 @@ async def patch_draft_commands(request: Request, draft_id: str, body: Dict[str, 
     returned to the caller instead of being silently dropped. resort=False is
     required here specifically: this endpoint fires on every drag-reorder, and
     re-sorting by priority would silently undo a manual reorder.
+
+    Ownership-checked like GET /api/drafts/{draft_id} above.
     """
     from fastapi import HTTPException
     from advisor.auth import get_current_user
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import resolve_draft
     from advisor.plan_validator import validate_commands
     user = get_current_user(request)
     edited_by = (user or {}).get("sub")
-    dm = get_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    dm, spec = resolved
     warnings: List[str] = []
     if "commands" in body:
         fixed_commands, spec["answers"], warnings = validate_commands(
@@ -1070,28 +1120,41 @@ async def patch_draft_commands(request: Request, draft_id: str, body: Dict[str, 
 
 
 @app.delete("/api/drafts/{draft_id}")
-async def delete_draft(draft_id: str) -> Dict[str, str]:
-    """Discard a planning session draft."""
-    from advisor.governance_draft import get_draft_manager
-    deleted = get_draft_manager().delete(draft_id)
+async def delete_draft(request: Request, draft_id: str) -> Dict[str, str]:
+    """Discard a planning session draft. Ownership-checked (see GET above)."""
+    from advisor.governance_draft import resolve_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
+        return {"status": "not_found"}
+    dm, _spec = resolved
+    deleted = dm.delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
 # ── Report Spec Document / Draft endpoints ──────────────────────────────────────
 
 @app.get("/api/reports/docs")
-async def list_report_docs() -> Dict[str, Any]:
-    """Return inbox, outbox, and trash report spec document lists, annotated with active draft IDs."""
+async def list_report_docs(request: Request) -> Dict[str, Any]:
+    """Return inbox, outbox, and trash report spec document lists, annotated
+    with active draft IDs. Namespace-scoped like GET /api/plans."""
     from advisor.report_spec_docs import get_report_spec_doc_manager
-    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_draft import list_visible_report_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_report_spec_doc_manager()
-    inbox = dm.list_inbox()
-    outbox = dm.list_outbox()
-    trash = dm.list_trash()
+    inbox = dm.list_inbox(requester_user_id=user_id, requester_role=role)
+    outbox = dm.list_outbox(requester_user_id=user_id, requester_role=role)
+    trash = dm.list_trash(requester_user_id=user_id, requester_role=role)
 
     # Build doc_id -> draft_id map for active report drafts
     doc_to_draft: Dict[str, str] = {}
-    for d in get_report_draft_manager().list_drafts():
+    for d in list_visible_report_drafts(user_id=user_id, role=role):
         if d.get("doc_id") and d.get("phase") in ("generate", "refine"):
             doc_to_draft[d["doc_id"]] = d["draft_id"]
 
@@ -1102,12 +1165,20 @@ async def list_report_docs() -> Dict[str, Any]:
 
 
 @app.get("/api/reports/docs/{doc_id}")
-async def get_report_doc(doc_id: str) -> Dict[str, Any]:
-    """Return the content of a report spec document by doc_id (inbox, outbox, or trash)."""
+async def get_report_doc(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Return the content of a report spec document by doc_id (inbox, outbox, or trash).
+
+    Ownership-checked like GET /api/plans/{doc_id}.
+    """
     from fastapi import HTTPException
     from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_report_spec_doc_manager()
-    content = dm.load(doc_id, include_trash=True)
+    content = dm.load(doc_id, include_trash=True, requester_user_id=user_id,
+                       requester_role=role, enforce_ownership=True)
     if content is None:
         raise HTTPException(status_code=404, detail=f"Report spec {doc_id!r} not found")
     folder = dm.folder_of(doc_id) or "outbox"
@@ -1131,20 +1202,24 @@ async def export_report_doc(doc_id: str) -> Response:
 
 
 @app.post("/api/reports/specs/import")
-async def import_report_spec(body: Dict[str, Any]) -> Dict[str, Any]:
+async def import_report_spec(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Import an externally-written Report Spec markdown document as a new
-    managed spec in inbox. Mirrors POST /api/plans/import.
+    managed spec in inbox. Mirrors POST /api/plans/import (namespaced to
+    the signed-in user; anonymous keeps the shared namespace).
     """
     from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
     title = (body.get("title") or "").strip() or None
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     dm = get_report_spec_doc_manager()
     try:
-        doc_id = dm.import_document(content, title=title)
+        doc_id = dm.import_document(content, title=title, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
@@ -1251,10 +1326,18 @@ async def restore_report_doc_version(doc_id: str, version_file: str) -> Dict[str
 
 
 @app.delete("/api/reports/docs/{doc_id}")
-async def delete_report_doc(doc_id: str) -> Dict[str, str]:
-    """Soft delete a report spec document."""
+async def delete_report_doc(request: Request, doc_id: str) -> Dict[str, str]:
+    """Soft delete a report spec document. Ownership-checked (see GET above)."""
     from advisor.report_spec_docs import get_report_spec_doc_manager
-    deleted = get_report_spec_doc_manager().delete(doc_id)
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    dm = get_report_spec_doc_manager()
+    visible = dm.load(doc_id, requester_user_id=user_id, requester_role=role, enforce_ownership=True)
+    if visible is None:
+        return {"status": "not_found"}
+    deleted = dm.delete(doc_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
@@ -1275,21 +1358,29 @@ async def purge_report_doc(doc_id: str) -> Dict[str, str]:
 
 
 @app.get("/api/reports/drafts")
-async def list_report_drafts() -> List[Dict[str, Any]]:
-    """List all active report drafts."""
-    from advisor.report_draft import get_report_draft_manager
-    return get_report_draft_manager().list_drafts()
+async def list_report_drafts(request: Request) -> List[Dict[str, Any]]:
+    """List active report drafts visible to the requester (see GET /api/drafts)."""
+    from advisor.report_draft import list_visible_report_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    return list_visible_report_drafts(user_id=user_id, role=role)
 
 
 @app.get("/api/reports/drafts/{draft_id}")
-async def get_report_draft(draft_id: str) -> Dict[str, Any]:
-    """Get report spec draft details by draft_id."""
+async def get_report_draft(request: Request, draft_id: str) -> Dict[str, Any]:
+    """Get report spec draft details by draft_id. Ownership-checked (see GET /api/drafts/{id})."""
     from fastapi import HTTPException
-    from advisor.report_draft import get_report_draft_manager
-    spec = get_report_draft_manager().load(draft_id)
-    if spec is None:
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Report draft {draft_id!r} not found")
-    return spec
+    return resolved[1]
 
 
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -1392,19 +1483,31 @@ async def get_report_draft_schema(request: Request, draft_id: str) -> List[Dict[
 
 
 @app.delete("/api/reports/drafts/{draft_id}")
-async def delete_report_draft(draft_id: str) -> Dict[str, str]:
-    """Discard an active report spec draft."""
-    from advisor.report_draft import get_report_draft_manager
-    deleted = get_report_draft_manager().delete(draft_id)
+async def delete_report_draft(request: Request, draft_id: str) -> Dict[str, str]:
+    """Discard an active report spec draft. Ownership-checked (see GET /api/drafts/{id})."""
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
+        return {"status": "not_found"}
+    dm, _spec = resolved
+    deleted = dm.delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
 @app.post("/api/reports/drafts/builder")
-async def create_report_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a blank report spec draft for builder canvas entry point."""
+async def create_report_builder_draft(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a blank report spec draft for builder canvas entry point.
+    Namespaced to the signed-in user; anonymous keeps the shared namespace."""
     from advisor.report_draft import get_report_draft_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     title = (body.get("title") or "Untitled Report").strip()
-    dm = get_report_draft_manager()
+    dm = get_report_draft_manager(user_id)
     spec = dm.create(
         title=title,
         original_query=f"[builder] {title}",
@@ -1645,16 +1748,20 @@ async def list_actions() -> Dict[str, Any]:
 
 
 @app.post("/api/drafts/builder")
-async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
+async def create_builder_draft(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new blank draft in builder mode (Plan Editor entry point).
 
     Body: {title: str, perspective?: str}
     Returns the draft spec with builder_mode=true and an empty command list.
+    Namespaced to the signed-in user; anonymous keeps the shared namespace.
     """
     from advisor.governance_draft import create_builder_draft as _create_builder_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     title = (body.get("title") or "Untitled Plan").strip()
     perspective = body.get("perspective")
-    return _create_builder_draft(title, perspective)
+    return _create_builder_draft(title, perspective, user_id=user_id)
 
 
 @app.get("/api/plan-templates")

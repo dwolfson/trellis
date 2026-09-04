@@ -1,7 +1,19 @@
 # Session & Interaction State Design
 
-**Status:** Design only — not yet implemented. Captures the diagnosis and target
-design from a review conversation (Jul 2026) before surgery begins.
+**Status:** implemented 2026-09-04 with a Postgres store; see
+docs/runtime-architecture-plan.md §4. Captures the diagnosis and target
+design from a review conversation (Jul 2026) that the implementation below
+follows, with one correction from the plan doc (Postgres, not in-memory —
+see "Session store" below) and a bounded scope for the storage-layout
+section (drafts and the direct-write REST entry points for governance
+plans/report specs are namespaced and ownership-checked this pass; the
+chat/elicitation-driven document creation path — rag_system.py →
+plan_elicitor.py/report_spec_elicitor.py → governance_plan_agent.py/
+report_spec_agent.py — still writes to the shared namespace, since
+threading a user_id through that whole pipeline was out of scope for this
+pass; flagged as follow-on, not a regression: those documents are found and
+operate correctly wherever they are namespaced, they're just not namespaced
+by that particular path yet).
 
 ## Problem 1: Plan/report mode confusion (confirmed root cause)
 
@@ -165,32 +177,60 @@ equivalent helpers in `report_draft.py`/`report_spec_docs.py`), just
 parameterized by `user_id`. These stop being process-wide singletons and
 become per-user instances (or a small cache keyed by `user_id`).
 
-### Session store — new, small, in-memory
+### Session store — implemented as Postgres, not in-memory
 
-The app runs single-process today (`uvicorn advisor.web.app:app`, no worker
-flag), so a simple in-memory store is sufficient for now:
+**Correction from the original design (docs/runtime-architecture-plan.md
+§4):** this section originally proposed a simple in-memory
+`Dict[str, SessionState]`, reasoning that the app ran single-process
+(`uvicorn advisor.web.app:app`, no worker flag) so a plain dict TTL-evicted
+in-process would be sufficient, with Redis or sticky routing flagged only
+as a hypothetical future need "if this app ever moves to multi-worker or
+multi-instance deployment." The plan doc's revision made that correction
+explicit up front — "Session store is Postgres-backed from the start
+because a request can land on any web worker" — rather than building the
+in-memory version and migrating later: a request landing on a different
+worker than the one that created a session is exactly the failure mode an
+in-memory dict cannot survive, and there was no reason to build something
+known to need replacing.
 
-```python
-SessionState = {
-    "user_id": str,
-    "active_draft_id": Optional[str],
-    "mode": str,           # "idle" | "draft" | "report_modal"
-    "last_seen": float,
-}
-SESSIONS: Dict[str, SessionState]   # keyed by session_id, TTL-evicted
+**What was built instead:** `advisor/session_state.py`, backed by a new
+`advisor_sessions` table in the existing `ConsolidatedDBManager`/pgvector
+Postgres instance (`advisor/db_consolidated.py` — same database
+(`egeria_advisor`) and connection pool every other Postgres-backed store in
+this app already uses, DDL added alongside `query_metrics` et al.):
+
+```sql
+CREATE TABLE advisor_sessions (
+    session_id   VARCHAR(100) PRIMARY KEY,
+    user_id      VARCHAR(100),
+    created_at   DOUBLE PRECISION NOT NULL,
+    last_seen_at DOUBLE PRECISION NOT NULL,
+    state        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at   DOUBLE PRECISION NOT NULL
+);
 ```
 
-`session_id` is minted **client-side** as a UUID and stored in
-`sessionStorage` (not `localStorage`) — this is already the right
-primitive, since `sessionStorage` is tab-scoped and dies on tab close,
-matching the desired session lifetime. Sent as a header (`X-Session-Id`) on
-every request. No cookie/CORS complexity needed since JWT already handles
-auth.
+`state` holds the same shape the original design proposed
+(`active_draft_id`, `mode`, ...) — this module stores and returns it
+without interpreting it. `get`/`upsert`/`touch`/`expire` are the CRUD
+surface; `get_for_owner(session_id, requester_user_id)` adds the
+404-not-403 ownership check (a session created under one user is not
+readable by another, and this cannot be used to enumerate other users'
+session_ids — see its docstring). Expiry tracks the owning JWT's own `exp`
+(Egeria's bearer token caps out around 1 hour — see `advisor/auth.py`),
+not an independent session TTL, so a session can't outlive the credential
+that authenticated it. Cleanup is `sweep_expired()`, invoked at low
+probability from `touch()`/`upsert()` (`maybe_sweep()`) — EA still has no
+worker role to own a scheduled job, so sweeping piggybacks on ordinary
+request traffic exactly as the plan doc specified ("a sweeper the web app
+runs lazily (on access, not a thread)") rather than a background thread.
 
-If this app ever moves to multi-worker or multi-instance deployment, the
-in-memory dict would need to move to Redis or the deployment would need
-sticky routing on `session_id`. Not needed for the current single-process
-deployment.
+`session_id` is still minted **client-side** as a UUID and stored in
+`sessionStorage` (not `localStorage`) — this part of the original design is
+unchanged and still the right primitive, since `sessionStorage` is
+tab-scoped and dies on tab close, matching the desired session lifetime.
+Sent as a header (`X-Session-Id`) on every request. No cookie/CORS
+complexity needed since JWT already handles auth.
 
 ### Routing fix
 

@@ -150,6 +150,24 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     chunks_created INTEGER,
     source VARCHAR(200)
 );
+
+-- 6. Session store (docs/runtime-architecture-plan.md §4 / advisor/session_state.py)
+-- user_id persistent, session_id ephemeral (dies with the tab) — see
+-- docs/design/SESSION_AND_INTERACTION_STATE.md. Postgres-backed (not the
+-- design doc's original in-memory Dict) because a request can land on any
+-- web worker. expires_at tracks the owning JWT's own expiry (Egeria's 1h
+-- cap, see advisor/auth.py) so a session never outlives the token that
+-- authenticated it.
+CREATE TABLE IF NOT EXISTS advisor_sessions (
+    session_id   VARCHAR(100) PRIMARY KEY,
+    user_id      VARCHAR(100),
+    created_at   DOUBLE PRECISION NOT NULL,
+    last_seen_at DOUBLE PRECISION NOT NULL,
+    state        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at   DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_advisor_sessions_user_id    ON advisor_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_advisor_sessions_expires_at ON advisor_sessions(expires_at);
 """
 
 

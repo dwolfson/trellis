@@ -65,14 +65,57 @@ def _slug(title: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-user namespacing — docs/design/SESSION_AND_INTERACTION_STATE.md's
+# target layout: `~/egeria-plans/users/{user_id}/drafts/`, sibling to the
+# shared drafts/ root above. See docs/runtime-architecture-plan.md §4.
+# ---------------------------------------------------------------------------
+
+def _safe_user_id(user_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.@-]", "_", user_id)[:100]
+
+
+def _user_drafts_path(user_id: str) -> Path:
+    p = _drafts_path().parent / "users" / _safe_user_id(user_id) / "drafts"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _list_namespaced_user_ids() -> List[str]:
+    users_dir = _drafts_path().parent / "users"
+    if not users_dir.is_dir():
+        return []
+    return sorted(p.name for p in users_dir.iterdir() if p.is_dir())
+
+
+_CURATOR_ROLES = {"admin", "curator"}
+
+
+def _is_curator_role(role: Optional[str]) -> bool:
+    return (role or "").lower() in _CURATOR_ROLES
+
+
+# ---------------------------------------------------------------------------
 # DraftManager
 # ---------------------------------------------------------------------------
 
 class DraftManager:
-    """CRUD for plan draft specs."""
+    """CRUD for plan draft specs.
 
-    def __init__(self) -> None:
-        self._root = _drafts_path()
+    Namespacing: an instance with no user_id (the module singleton every
+    existing internal caller uses — rag_system.py, plan_elicitor.py,
+    governance_plan_agent.py) reads/writes the shared root, unchanged. An
+    instance constructed with a user_id (get_draft_manager(user_id=...))
+    reads/writes that user's `users/{user_id}/drafts/` tree instead — used
+    by the direct REST creation entry point (create_builder_draft) and by
+    resolve_draft()/list_visible_drafts() below for ownership-aware reads.
+    Chat-driven draft creation (PlanElicitor → DraftManager.create()) still
+    goes through the shared singleton this pass — threading user_id through
+    that whole pipeline is out of scope here; flagged as follow-on.
+    """
+
+    def __init__(self, user_id: Optional[str] = None) -> None:
+        self._user_id = user_id
+        self._root = _user_drafts_path(user_id) if user_id else _drafts_path()
 
     def _path(self, draft_id: str) -> Path:
         return self._root / f"{draft_id}.json"
@@ -112,6 +155,7 @@ class DraftManager:
             "created_at": time.time(),
             "updated_at": time.time(),
             "summary_of_answers": "",
+            "user_id": self._user_id,
         }
         self._write(spec)
         return spec
@@ -344,24 +388,91 @@ class DraftManager:
 # ---------------------------------------------------------------------------
 
 _dm: Optional[DraftManager] = None
+_dm_by_user: Dict[str, DraftManager] = {}
 
 
-def get_draft_manager() -> DraftManager:
+def get_draft_manager(user_id: Optional[str] = None) -> DraftManager:
+    """The shared-root singleton (no args — every existing internal caller
+    uses this, unchanged), or a cached per-user instance when user_id is
+    given (used by the direct REST routes and by resolve_draft()/
+    list_visible_drafts() below)."""
     global _dm
-    if _dm is None:
-        _dm = DraftManager()
-    return _dm
+    if user_id is None:
+        if _dm is None:
+            _dm = DraftManager()
+        return _dm
+    if user_id not in _dm_by_user:
+        _dm_by_user[user_id] = DraftManager(user_id=user_id)
+    return _dm_by_user[user_id]
 
 
-def create_builder_draft(title: str, perspective: Optional[str] = None) -> Dict[str, Any]:
+def list_visible_drafts(user_id: Optional[str] = None,
+                         role: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Drafts visible to this requester: shared always; the requester's own
+    namespace when signed in; every namespace for a curator role. Each entry
+    carries "owner" (None for shared). No-args call (anonymous) returns just
+    the shared list — preserves `_anonymous_rag_mode`."""
+    entries: List[Dict[str, Any]] = []
+    for d in get_draft_manager(None).list_drafts():
+        d["owner"] = None
+        entries.append(d)
+    seen_uids = set()
+    if user_id:
+        for d in get_draft_manager(user_id).list_drafts():
+            d["owner"] = user_id
+            entries.append(d)
+        seen_uids.add(user_id)
+    if _is_curator_role(role):
+        for uid in _list_namespaced_user_ids():
+            if uid in seen_uids:
+                continue
+            for d in get_draft_manager(uid).list_drafts():
+                d["owner"] = uid
+                entries.append(d)
+    entries.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
+    return entries
+
+
+def resolve_draft(draft_id: str, user_id: Optional[str] = None,
+                   role: Optional[str] = None) -> Optional["tuple[DraftManager, Dict[str, Any]]"]:
+    """Find draft_id across the namespaces this requester can see and
+    return (its DraftManager, its spec) — or None if it doesn't exist OR
+    exists but isn't visible to this requester (404, not 403 — avoids
+    confirming another user's draft_id exists, same rule as the session
+    store). Anonymous (user_id=None) sees the shared namespace only."""
+    dm = get_draft_manager(None)
+    spec = dm.load(draft_id)
+    if spec is not None:
+        return dm, spec
+    if user_id:
+        dm = get_draft_manager(user_id)
+        spec = dm.load(draft_id)
+        if spec is not None:
+            return dm, spec
+    if _is_curator_role(role):
+        for uid in _list_namespaced_user_ids():
+            if uid == user_id:
+                continue
+            dm = get_draft_manager(uid)
+            spec = dm.load(draft_id)
+            if spec is not None:
+                return dm, spec
+    return None
+
+
+def create_builder_draft(title: str, perspective: Optional[str] = None,
+                          user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Create a new blank draft in builder mode (Plan Editor entry point).
     Shared by POST /api/drafts/builder and any chat-driven path (e.g. an
     explicit "...using the canvas" request) that wants to open the canvas
     directly without a separate modal round-trip.
+
+    user_id, when given (the REST route passes the signed-in user), creates
+    the draft in that user's namespace instead of the shared root.
     """
     title = (title or "Untitled Plan").strip() or "Untitled Plan"
-    dm = get_draft_manager()
+    dm = get_draft_manager(user_id)
     spec = dm.create(
         title=title,
         original_query=f"[builder] {title}",

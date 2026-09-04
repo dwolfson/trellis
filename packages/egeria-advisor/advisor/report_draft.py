@@ -49,11 +49,42 @@ def _slug(title: str) -> str:
     return s[:40].strip("_")
 
 
-class ReportDraftManager:
-    """CRUD for report spec drafts."""
+# ---------------------------------------------------------------------------
+# Per-user namespacing — mirrors governance_draft.py's identical mechanism;
+# see that module and docs/runtime-architecture-plan.md §4.
+# ---------------------------------------------------------------------------
 
-    def __init__(self) -> None:
-        self._root = _drafts_path()
+def _safe_user_id(user_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.@-]", "_", user_id)[:100]
+
+
+def _user_drafts_path(user_id: str) -> Path:
+    p = _drafts_path().parent / "users" / _safe_user_id(user_id) / "drafts"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _list_namespaced_user_ids() -> List[str]:
+    users_dir = _drafts_path().parent / "users"
+    if not users_dir.is_dir():
+        return []
+    return sorted(p.name for p in users_dir.iterdir() if p.is_dir())
+
+
+_CURATOR_ROLES = {"admin", "curator"}
+
+
+def _is_curator_role(role: Optional[str]) -> bool:
+    return (role or "").lower() in _CURATOR_ROLES
+
+
+class ReportDraftManager:
+    """CRUD for report spec drafts. Namespacing mirrors
+    governance_draft.DraftManager — see its docstring."""
+
+    def __init__(self, user_id: Optional[str] = None) -> None:
+        self._user_id = user_id
+        self._root = _user_drafts_path(user_id) if user_id else _drafts_path()
 
     def _path(self, draft_id: str) -> Path:
         return self._root / f"{draft_id}.json"
@@ -97,6 +128,7 @@ class ReportDraftManager:
             "created_at": time.time(),
             "updated_at": time.time(),
             "summary_of_answers": "",
+            "user_id": self._user_id,
         }
         self._write(spec)
         return spec
@@ -186,10 +218,65 @@ class ReportDraftManager:
 
 
 _rdm: Optional[ReportDraftManager] = None
+_rdm_by_user: Dict[str, ReportDraftManager] = {}
 
 
-def get_report_draft_manager() -> ReportDraftManager:
+def get_report_draft_manager(user_id: Optional[str] = None) -> ReportDraftManager:
+    """The shared-root singleton (no args), or a cached per-user instance
+    when user_id is given. See ReportDraftManager's docstring."""
     global _rdm
-    if _rdm is None:
-        _rdm = ReportDraftManager()
-    return _rdm
+    if user_id is None:
+        if _rdm is None:
+            _rdm = ReportDraftManager()
+        return _rdm
+    if user_id not in _rdm_by_user:
+        _rdm_by_user[user_id] = ReportDraftManager(user_id=user_id)
+    return _rdm_by_user[user_id]
+
+
+def list_visible_report_drafts(user_id: Optional[str] = None,
+                                role: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Mirrors governance_draft.list_visible_drafts() for report drafts."""
+    entries: List[Dict[str, Any]] = []
+    for d in get_report_draft_manager(None).list_drafts():
+        d["owner"] = None
+        entries.append(d)
+    seen_uids = set()
+    if user_id:
+        for d in get_report_draft_manager(user_id).list_drafts():
+            d["owner"] = user_id
+            entries.append(d)
+        seen_uids.add(user_id)
+    if _is_curator_role(role):
+        for uid in _list_namespaced_user_ids():
+            if uid in seen_uids:
+                continue
+            for d in get_report_draft_manager(uid).list_drafts():
+                d["owner"] = uid
+                entries.append(d)
+    entries.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
+    return entries
+
+
+def resolve_report_draft(draft_id: str, user_id: Optional[str] = None,
+                          role: Optional[str] = None) -> Optional["tuple[ReportDraftManager, Dict[str, Any]]"]:
+    """Mirrors governance_draft.resolve_draft() for report drafts — 404-shaped
+    None (not 403) for a draft that exists but isn't visible to this requester."""
+    dm = get_report_draft_manager(None)
+    spec = dm.load(draft_id)
+    if spec is not None:
+        return dm, spec
+    if user_id:
+        dm = get_report_draft_manager(user_id)
+        spec = dm.load(draft_id)
+        if spec is not None:
+            return dm, spec
+    if _is_curator_role(role):
+        for uid in _list_namespaced_user_ids():
+            if uid == user_id:
+                continue
+            dm = get_report_draft_manager(uid)
+            spec = dm.load(draft_id)
+            if spec is not None:
+                return dm, spec
+    return None
