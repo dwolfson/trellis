@@ -450,7 +450,17 @@ class EgeriaDatabaseSurveyor:
     )
 
     def _find_element_guid(self, name: str) -> str:
-        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found."""
+        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
+
+        '' is the callers' cue to *create* the element, so anything that is not a
+        clean "no such element" must at least be visible. pyegeria raises for an
+        ambiguous name ("Multiple elements found for supplied name!") exactly as
+        it does for a transport failure; swallowing both silently meant a name
+        that already had two elements got a third on the next catalog run, and a
+        dead view server looked like an empty catalog. Verified live 2026-09-04
+        against qs-view-server while diagnosing a stale linkage: the by-name
+        search itself was fine, the element had simply been deleted.
+        """
         try:
             result = self._automated_curation.get_guid_for_name(name)
             if isinstance(result, list) and result:
@@ -458,8 +468,12 @@ class EgeriaDatabaseSurveyor:
                 return candidate if self._UUID_RE.match(candidate or "") else ""
             if isinstance(result, str) and self._UUID_RE.match(result):
                 return result
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(
+                f"Egeria by-name lookup for {name!r} failed rather than returning "
+                f"'not found' — treating as absent, which may create a duplicate: "
+                f"{' '.join(str(exc).split())[:300] or type(exc).__name__}"
+            )
         return ""
 
     def check_survey_exists(self, db_slug: str) -> bool:
