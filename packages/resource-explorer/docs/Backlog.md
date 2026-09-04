@@ -359,6 +359,51 @@ clearing has no data-loss risk. **Not fixed at the code level** — `_resolve_pr
 has no staleness check, so this can recur after any future full re-seed; worth a real fix
 (verify-before-trust, or a TTL) if platform re-seeds become routine rather than rare.
 
+**11. Survey Results Dashboards — Security Overview's Discovery placement, project-owner decision
+2026-09-04: "both."** A dashboard's stage placement is derived (never hand-authored) from its
+input analyses' own catalog intents, and `security_overview` genuinely spans Discovery
+(`license_classification`, `repo_conventions`) and Assessment (`security_scan`, `ci_quality`,
+`cve_scan`, `secret_scan`, and 5 more) — so it correctly shows under both, and the Assessment-tier
+inputs correctly report "not run" under Discovery, since Discovery doesn't trigger Assessment-tier
+work. Not a bug, but a real UX rough edge: someone who's only done Discovery-tier work sees a
+mostly-empty security card. Decided: do both — (a) reframe the copy shown under Discovery
+specifically ("Discovery-tier signals below are current; the rest needs Assessment" rather than a
+flat "not run yet" that reads as a gap), and (b) split out a lean Discovery-tier security teaser
+(license/conventions only) alongside the full Assessment-only picture. Not scoped further or built
+yet.
+
+**12. Dashboard trend charts — real feature, cheap because the plumbing already exists.**
+Every `AnalysisKindResults` already carries a `trend_reader` (`GET /{slug}/analyses/{analysis_id}
+/trend` already serves raw JSON, already consumed by Understanding's charts) — `SURVEY_RESULT_
+DASHBOARDS` currently only renders single-snapshot `grouped_cards`/`custom` views, never a trend.
+Extending dashboards to also chart each input's trend (matching `loadRepoSurveyHistoryChart`'s
+existing client-side chart-building convention) is wiring existing infrastructure together, not
+building new plumbing. Not scoped or built yet — named here so the next pass doesn't have to
+rediscover that the hard part is already done.
+
+**13. Detailed survey data reachable from chat — corrected scope, 2026-09-04 (an earlier claim
+in this session that chat has "zero access to structured findings" was wrong).** Chat already
+does real structured-findings access for repos via `context_compile.py`'s `compile_context()`:
+resolves the question catalog's `analysis_ids` for the actual query asked (ranked by relevance,
+not just catalog position), pulls each analysis's *stored results* (not RAG text), and packs them
+into the prompt with explicit gap-reporting for anything unrun — confirmed this is exactly how
+chat correctly listed failing CVEs when asked. The real gap, checked directly: `get_questions
+("database")`/`get_questions("filesystem")` both return **0** — the question catalog is
+repo-only (51 questions), so `compile_context`'s hardcoded `resource_type="repo"` isn't a bug,
+it correctly reflects there being nothing to pass through for the other two resource types yet.
+Chat for a database/filesystem resource currently falls back to plain RAG search only (confirmed
+fail-soft, not broken — `_compiled_evidence`'s own docstring: "any problem here returns nothing
+and the agent proceeds... searching collections itself"). **Scope for closing this**: (a) small
+code change — thread `resource_type` through `compile_context`/`_compiled_evidence` instead of
+the repo hardcode (mechanical, `get_questions` already accepts the param); (b) the real work —
+author database and filesystem question catalogs mirroring the repo catalog's 51 entries, which
+needs real domain knowledge about what DB/FS surveys actually produce, not a quick generation
+pass. (b) is the actual size of this item; (a) is nearly free once (b) exists. Not started.
+Placeholder, same conversation: chat can already surface findings like failing CVEs in an answer
+— project owner noted (not yet scoped) that these could feed an RFA and/or a generated detailed
+report (e.g. a "Security Details" report) rather than living only in a chat transcript. Logged
+for later design, not attempted here.
+
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
 documentation exists); milvus site ingestion (302-loops for every user agent including a
