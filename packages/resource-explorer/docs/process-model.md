@@ -33,9 +33,17 @@ Part 1 below has been rewritten to describe what runs now, not what ran then. Wh
 enqueue instead of spawning threads, and the CLI has commands on the same functions. §1.2 below
 describes the queue rather than the per-request threads it replaced.
 
-**Still pending after 2b:** the `a2a` role and `trellis-auth` adoption. Those two are related —
-`requested_by` exists on every queue row and is `""` until RE has real user identities, which is
-also why the per-user fairness rule currently exempts that bucket (§1.2c).
+**The `a2a` role has since landed too (2026-09-04).** `resource-explorer serve` is now one
+service on one port (8090) with every agent routed by path, a bearer token required on every
+call, and an agent card per agent plus a `/.well-known/agents.json` index —
+`resource_explorer/a2a_role.py`, `a2a_auth.py`, and
+[`docs/a2a.md`](a2a.md). All five roles are now real.
+
+**Still pending:** full `trellis-auth` adoption in RE. The A2A role uses `trellis-auth` to
+*authenticate* its callers and puts the caller's Egeria token in a ContextVar, but RE's existing
+pyegeria client construction sites still build service-account clients, and `requested_by` is
+still `""` on every queue row — which is also why the per-user fairness rule currently exempts
+that bucket (§1.2c). Identity now enters RE through the A2A door and stops there.
 
 ---
 
@@ -484,8 +492,8 @@ threading/multi-user). Not redesigned here — see the plan for rationale and re
 alternatives. **Most of this is now the present, not the target.** Four of the five roles are
 real: `web` and `worker` were built in 2a, `cli`/`tui` were already real, and 2b gave the CLI the
 core capability §3 said it lacked. `web` honours its "never spawns a thread for work that outlives
-the request" rule now that the run queue exists. **`a2a` is still untouched**, and so is
-`trellis-auth`. The migration map below says which is which.
+the request" rule now that the run queue exists. **`a2a` landed on 2026-09-04.** What is still
+outstanding is RE-wide `trellis-auth` adoption. The migration map below says which is which.
 
 **Five process roles, one core, one image: `web`, `worker`, `cli`, `tui`, `a2a`.**
 
@@ -510,17 +518,25 @@ the request" rule now that the run queue exists. **`a2a` is still untouched**, a
   "Reduced capability" for the CLI now means only: no background loops unless a `worker` is
   running, and no browser-shaped features.
 - **`tui`** — the existing Textual app, unchanged.
-- **`a2a`** — the entry point for other systems. Today's `agentstack_server.py` (RE's A2A surface,
-  one port per specialist agent, 8080-8086, no authentication) becomes one service on one port,
-  agents routed by path, the same Egeria bearer token (plan §4) accepted on every call, with a
-  published agent card per app.
+- **`a2a`** — the entry point for other systems. **Built 2026-09-04.**
+  `resource-explorer serve --port 8090` is one service on one port: all seven agents mounted at
+  `/agents/<name>`, the orchestrator also at `/`, a bearer token required on every agent call
+  (either a trellis app JWT or a raw Egeria bearer token, validated once per token and cached for
+  its lifetime — plan §4), an A2A agent card per agent at the SDK's well-known path, and a
+  `/.well-known/agents.json` index so a Portal or external orchestrator can discover all seven in
+  one fetch. `A2A_ALLOW_ANONYMOUS=true` restores the old no-auth behaviour for local dev and warns
+  at startup. `resource_explorer/a2a_role.py` + `a2a_auth.py`; see [`docs/a2a.md`](a2a.md).
+  The agentstack SDK hosts exactly one agent per `Server` (design rule 8, re-confirmed against
+  agentstack-sdk 0.7.1), so the role mounts each agent's `create_app()` FastAPI application under
+  a path prefix on one root instead.
 
 **Process-management rules that come with the roles** (plan §2): no library starts a server on its
 own (`PREFECT_ENABLED` defaults `False`, `PREFECT_SERVER_EPHEMERAL_ENABLED=false` set in every
 profile — already true in the code today, see §1.5 above); every long-running unit of work has a
 row recording who owns it, when it last heartbeated, how to kill it; every process answers
-`SIGUSR1` with a thread dump and shuts down within a bound (**done for `web` and `worker`**,
-`cli/main.py:318`; `a2a`/`cli`/`tui` still lack it); `make ps` lists every trellis-owned process
+`SIGUSR1` with a thread dump and shuts down within a bound (**done for `web`, `worker` and
+`a2a`**, `cli/main.py`'s `_install_stack_dump`; `cli`/`tui` are one-shot/interactive and still
+lack it); `make ps` lists every trellis-owned process
 and container with role, pid, age and port (**done**, root `Makefile`).
 
 **One bounded shared `ThreadPoolExecutor` per process** for sync-pyegeria bridging, replacing
@@ -572,7 +588,8 @@ flowchart TB
 
 ## Migration map — what is done, what is pending
 
-Step 2a and step 2b are both done. What remains is the `a2a` role and `trellis-auth`.
+Step 2a, step 2b and the `a2a` role are all done. What remains is RE-wide `trellis-auth`
+adoption.
 
 | Current thread / pool | Moves to | Status |
 |---|---|---|
@@ -589,9 +606,9 @@ Step 2a and step 2b are both done. What remains is the `a2a` role and `trellis-a
 | `agents/base.py`, `conversation_agent.py` ×2, `tui/app.py` one-worker pools | One bounded shared pool per process | **Done** (§1.3's table) |
 | `prefect_adapter.py`'s unbounded per-call `ThreadPoolExecutor()` | Same shared bounded pool | **Done** — the uncapped construction is gone |
 | `survey_definition_reader.py`'s two pools — the incident hazard | Same shared bounded pool, per-call timeout kept | **Done**, plus the nesting removed (leaf work submitted instead of pooled work that pooled again) and a batch-level deadline added. **The cross-loop hazard itself is still open** — it lives in pyegeria, and the plan's concurrency spike has not happened |
-| `cli/main.py`'s SIGUSR1 + bounded-shutdown instrumentation (`web`-only) | Every role | **Done for `web` and `worker`** (`_install_stack_dump`, `cli/main.py:318`). `a2a`, `cli` and `tui` still do not have it |
-| RE's `agentstack_server.py` (8080-8086, unauthenticated) | `a2a` role | **Pending — step 2b/beyond.** Untouched |
-| — | `trellis-auth` adoption in RE | **Pending.** Out of scope for 2a |
+| `cli/main.py`'s SIGUSR1 + bounded-shutdown instrumentation (`web`-only) | Every role | **Done for `web`, `worker` and `a2a`** (`_install_stack_dump`). `cli` and `tui` still do not have it. The helper now degrades instead of raising when stderr is not a real file — `faulthandler.enable()` throws `UnsupportedOperation` under a captured stream, which would otherwise make instrumentation the reason a role fails to start |
+| RE's `agentstack_server.py` (8080-8086, unauthenticated) | `a2a` role | **Done — 2026-09-04.** One port (8090), path routing, bearer auth, per-agent cards plus a `/.well-known/agents.json` index. `agentstack_server.py` keeps the agent *definitions* and exposes `agent_factories()`; the hosting moved to `a2a_role.py`. The old `run(all_agents=True)` path is kept but unreachable from the CLI |
+| — | `trellis-auth` adoption in RE | **Partial.** The `a2a` role authenticates callers with `trellis-auth` and carries the caller's Egeria token in a ContextVar (`a2a_auth.current_caller`, `apply_caller_token`). RE's own pyegeria client construction sites, the web tier's login, and `requested_by` on queue rows are all still unconverted |
 
 ## Findings that contradict or refine the plan's description (summary)
 

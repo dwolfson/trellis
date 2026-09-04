@@ -17,6 +17,11 @@ from typing import Optional
 import typer
 from rich.console import Console
 
+# Module level only for the `serve` command's default port, which Typer
+# evaluates at import time. a2a_role imports nothing heavier than stdlib at
+# module scope, so this costs the CLI nothing on any other command.
+from resource_explorer.a2a_role import DEFAULT_A2A_PORT
+
 app = typer.Typer(
     name="resource-explorer",
     help="Scout, survey, and catalog information resources using Egeria.",
@@ -337,7 +342,16 @@ def _install_stack_dump(label: str) -> None:
     import faulthandler
     import signal
 
-    faulthandler.enable()
+    # faulthandler writes to the real stderr file descriptor, so both calls
+    # raise io.UnsupportedOperation when stderr is not a real file — a captured
+    # stream under a test runner, or a container that redirected it oddly.
+    # Instrumentation must never be the reason a role fails to start, so this
+    # degrades to "no thread dump" rather than taking the process down.
+    try:
+        faulthandler.enable()
+    except Exception as exc:
+        console.print(f"[dim]thread dumps unavailable in this {label} process ({exc})[/dim]")
+        return
     if hasattr(signal, "SIGUSR1"):
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
         console.print(
@@ -483,27 +497,77 @@ def web(
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", help="Bind host"),
-    port: int = typer.Option(8100, help="Base port"),
-    all_agents: bool = typer.Option(False, "--all", help="Start all 6 specialist agents on consecutive ports"),
+    port: int = typer.Option(DEFAULT_A2A_PORT, help="Bind port — ONE port for every agent"),
+    base_port: Optional[int] = typer.Option(
+        None, "--base-port",
+        help="DEPRECATED alias for --port. Agents no longer occupy consecutive ports."),
+    all_agents: bool = typer.Option(
+        False, "--all",
+        help="DEPRECATED and ignored — every agent is always served."),
+    shutdown_timeout: float = typer.Option(
+        10.0, help="Seconds to allow for a graceful stop before exiting anyway"),
 ):
-    """Start the AgentStack A2A server (exposes agents to beeai.dev platform).
+    """Run the `a2a` process role: every agent on ONE port, behind a bearer token.
 
-    Without --all: orchestrator only on PORT (routes by intent, general RAG fallback).
+    Layout (see packages/resource-explorer/docs/a2a.md):
 
-    With --all: starts all 6 agents on consecutive ports:
-      PORT+0  orchestrator
-      PORT+1  statistics
-      PORT+2  code search
-      PORT+3  documentation
-      PORT+4  health
-      PORT+5  compare
+      /                                    orchestrator — the default agent
+      /.well-known/agents.json             index of all seven agents + auth scheme
+      /.well-known/agent-card.json         the orchestrator's A2A card
+      /whoami                              who your token says you are
+      /agents/<name>/                      one of stats, code, docs, health,
+                                           compare, integration, orchestrator
+      /agents/<name>/v1/message:send       its A2A REST endpoint
+      /agents/<name>/jsonrpc/              its A2A JSON-RPC endpoint
+
+    Every call needs `Authorization: Bearer <token>` — either a trellis app JWT
+    or a raw Egeria bearer token. Cards and the index are readable without one.
+    `A2A_ALLOW_ANONYMOUS=true` restores the pre-2026-09-04 no-auth behaviour for
+    local development, and says so loudly at startup.
+
+    Replaces the one-port-per-agent layout (8080-8086, no authentication) per
+    docs/runtime-architecture-plan.md §2.
     """
-    from resource_explorer.agentstack_server import run as agentstack_run
+    import signal
+    import threading
+
+    from resource_explorer.a2a_role import run_a2a
+    from resource_explorer.observability.logging_setup import configure_logging
+
+    if base_port is not None:
+        console.print(
+            "[yellow]--base-port is deprecated: every agent is now served on a "
+            "single port with path routing, so there is no base to offset from. "
+            f"Using it as --port ({base_port}). Switch to --port.[/yellow]"
+        )
+        port = base_port
     if all_agents:
-        console.print(f"[cyan]Starting all Resource Explorer agents (base port {port})...[/cyan]")
-    else:
-        console.print(f"[cyan]Starting Resource Explorer orchestrator on {host}:{port}[/cyan]")
-    agentstack_run(host=host, port=port, all_agents=all_agents)
+        console.print(
+            "[yellow]--all is deprecated and ignored: every agent is always "
+            "served, on this one port under /agents/<name>.[/yellow]"
+        )
+
+    configure_logging()
+    console.print(
+        f"[cyan]Starting Resource Explorer a2a role on {host}:{port}[/cyan]\n"
+        f"[dim]Discovery: http://{host}:{port}/.well-known/agents.json[/dim]"
+    )
+    _install_stack_dump("a2a")
+
+    stop_event = threading.Event()
+
+    def _request_stop(signum, _frame) -> None:
+        # Bounded shutdown, same contract as `worker`: SIGTERM was ignored for
+        # 8+ seconds during the 2026-09-03 incident and needed a kill -9.
+        console.print(f"[yellow]signal {signum} — stopping a2a role[/yellow]")
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    run_a2a(host=host, port=port, stop_event=stop_event,
+            shutdown_timeout=shutdown_timeout)
+    console.print("[green]a2a role stopped[/green]")
 
 
 def _resolve_slugs(registry, slugs, all_projects: bool, top_level: bool):

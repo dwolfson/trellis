@@ -93,6 +93,9 @@ resource_explorer/
 ├── egeria_resync.py        # 10-min loop: clear stale Egeria pointers left by a store wipe
 ├── run_reconciler.py       # resolve activity rows and `runs` rows a dead process left claimed
 ├── run_queue.py            # the Postgres run queue: claim (SKIP LOCKED), heartbeat, execute, finish
+├── a2a_role.py             # the `a2a` role: all seven agents on ONE port, path-routed, card per agent
+├── a2a_auth.py             # bearer auth for that role: app JWT or raw Egeria token, cached
+├── agentstack_server.py    # the seven agent definitions themselves (a2a_role mounts them)
 │
 │   # the workflows — one module per unit of work, FastAPI-free
 ├── workflows/
@@ -121,12 +124,22 @@ resource_explorer/
 └── observability/          # MLflow, Phoenix, metrics
 ```
 
-**Two process roles, one codebase.** `resource-explorer web` serves HTTP; `resource-explorer
-worker` owns the background loops. `web --embed-worker` (the default, so `make dev` stays one
-command) runs the worker role in-process. Which process actually runs a given loop is decided by a
-Postgres advisory lock, not by startup order, so a second RE process against the same registry
-stands by rather than double-firing. `make ps` lists every trellis process and container.
+**Process roles, one codebase.** `resource-explorer web` serves HTTP; `resource-explorer
+worker` owns the background loops; `resource-explorer serve` is the `a2a` role. `web
+--embed-worker` (the default, so `make dev` stays one command) runs the worker role in-process.
+Which process actually runs a given loop is decided by a Postgres advisory lock, not by startup
+order, so a second RE process against the same registry stands by rather than double-firing.
+`make ps` lists every trellis process and container, `re-a2a` among them.
 Full detail, including the advisory keys: [`process-model.md`](process-model.md).
+
+**The A2A surface is one port and requires a token.** `resource-explorer serve --port 8090` hosts
+all seven agents (orchestrator, stats, code, docs, health, compare, integration) on a single
+service: `/agents/<name>` for each, `/` for the orchestrator as the default, an A2A agent card per
+agent at its own well-known path, and `/.well-known/agents.json` as an index of all of them for a
+Portal or external orchestrator to discover. Every agent call needs
+`Authorization: Bearer <token>` — either a trellis app JWT or a raw Egeria bearer token validated
+once against the view server and cached for the token's own lifetime. This replaced seven
+unauthenticated servers on ports 8080-8086. See [`a2a.md`](a2a.md).
 
 **Work is queued, not threaded.** A route that starts a survey writes a row to the `runs` table
 and returns; a `worker` process claims it (`SELECT … FOR UPDATE SKIP LOCKED`), heartbeats every

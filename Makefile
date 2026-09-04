@@ -71,7 +71,7 @@ ps: ## List trellis-owned processes and containers: role, pid, age, port
 		case "$$cmd" in \
 		  *"resource-explorer web"*)   role='re-web' ;; \
 		  *"resource-explorer worker"*) role='re-worker' ;; \
-		  *"resource-explorer serve"*) role='re-a2a' ;; \
+		  *"resource-explorer serve"*|*"resource-explorer a2a"*) role='re-a2a' ;; \
 		  *"resource-explorer tui"*)   role='re-tui' ;; \
 		  *egeria-advisor-web*)        role='ea-web' ;; \
 		  *"prefect.server.api.server:create_app"*) role='prefect-ephemeral' ;; \

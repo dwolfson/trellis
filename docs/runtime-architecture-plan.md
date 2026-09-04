@@ -207,16 +207,30 @@ with N uvicorn workers they would run N times.
   the request. `--embed-worker` runs the worker role in-process for the dev profile.
 - **`cli`** is the existing Typer/Click CLIs, at full core capability (§3).
 - **`tui`** is the existing Textual app, unchanged.
-- **`a2a`** is the entry point for other systems. RE already has one:
-  `agentstack_server.py` runs each specialist agent (orchestrator, stats, code, docs, health,
+- **`a2a`** is the entry point for other systems. **Done for RE, 2026-09-04.** It was
+  `agentstack_server.py` running each specialist agent (orchestrator, stats, code, docs, health,
   compare, integration) as its own A2A endpoint on ports 8080 to 8086 via `resource-explorer
-  serve`. It has **no authentication at all** today and its one-port-per-agent layout is awkward
-  in compose. It becomes a role: one service, one port, agents routed by path, the same Egeria
-  bearer token (§4) accepted on every call so an external orchestrator acts as a real Egeria
-  identity, and an agent card published per app. EA has no A2A surface; it gets one on the same
-  shape, exposing its report and governance-plan agents. MCP stays what it is (EA's tool surface
-  for LLM clients); A2A is the agent-to-agent surface. Both apps register their cards with the
-  Portal so the Portal can discover them the way it discovers EA today via `EGERIA_ADVISOR_URL`.
+  serve`, with **no authentication at all** and a one-port-per-agent layout that was awkward in
+  compose. It is now a role: `resource-explorer serve --port 8090` is **one service on one port**,
+  all seven agents routed by path (`/agents/<name>`, orchestrator also at `/`), with **a bearer
+  token required on every agent call** — either a trellis app JWT or a raw Egeria bearer token
+  (§4), the latter validated once against the view server and cached for the token's own lifetime,
+  so an external orchestrator acts as a real Egeria identity. An A2A agent card is published per
+  agent at the SDK's well-known path, plus a `/.well-known/agents.json` index listing all seven
+  with their URLs and the required auth scheme. `A2A_ALLOW_ANONYMOUS=true` keeps the old
+  behaviour for local dev and warns at startup.
+  (`resource_explorer/a2a_role.py`, `a2a_auth.py`,
+  `packages/resource-explorer/docs/a2a.md`.) Two things this did *not* settle and one it added:
+  the agentstack SDK hosts exactly one agent per `Server`, so the role mounts each agent's
+  `create_app()` FastAPI app under a path prefix on one root rather than using an SDK multi-agent
+  mechanism, which does not exist; the caller's token reaches agent code through a ContextVar but
+  RE's own pyegeria client construction sites are not yet converted, so Egeria writes are still
+  attributed to the service account until RE-wide `trellis-auth` adoption lands.
+  **EA's A2A surface is still open** — it has none, and it should get one on the same shape,
+  exposing its report and governance-plan agents. MCP stays what it is (EA's tool surface for LLM
+  clients); A2A is the agent-to-agent surface. Registering the cards with the Portal is also still
+  open; the URL the Portal would fetch is `<app URL>/.well-known/agents.json`, the same shape as
+  its existing `EGERIA_ADVISOR_URL` discovery.
 - Leader election via `pg_try_advisory_lock` stays as cheap insurance so that two workers, or a
   worker plus an embedded one, cannot both fire schedules.
 
