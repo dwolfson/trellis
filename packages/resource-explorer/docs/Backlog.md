@@ -430,6 +430,16 @@ call via the adapter's existing `run_batch` primitive (previously only reachable
 the way a fixed Survey Definition has. A visually-distinct amber button, pinned above the regular
 card grid, in Scouting/Discovery/Assessment/Analysis (`_runAllStageHtml`/`_runStageBatch` in
 `index.html`). 5 new tests (`tests/test_stage_batch_run_route.py`), full suite green.
+**Caught only by live browser testing, not by any Python test or `node --check`**: the button's
+`onclick` attribute was double-quoted around `JSON.stringify()`'s own double-quoted output,
+silently truncating the handler to `onclick="_runStageBatch("` — the button rendered fine and
+looked clickable; nothing happened on click. Every other `JSON.stringify`-into-`onclick` call site
+in the file already single-quotes for exactly this reason; this one didn't follow the convention.
+Fixed, plus a regression test pinning the single-quoted form (`node --check` parses the JS fine
+either way — it can't see what a `<button onclick>` attribute's exact string content does at
+click time, only whether the surrounding script is syntactically valid). Live-verified end to end
+after the fix on a real repo: POST fired, toast showed correct step/analysis counts, run
+completed.
 
 **15. Sub-Resources tab moved from Assessment to Analysis — built 2026-09-04, direct feedback.**
 `sub_resource_survey` is catalog-tagged `intent: analysis` ("produces a structural recommendation,
