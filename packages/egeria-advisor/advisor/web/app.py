@@ -64,6 +64,42 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
+
+@app.middleware("http")
+async def _user_context_middleware(request: Request, call_next):
+    """
+    Sets advisor.request_context's per-request ContextVar from this
+    request's JWT (via advisor.auth.get_current_user), for every request —
+    so any code reached from a route handler, no matter how many plain
+    function calls deep (rag_system → plan_elicitor/report_spec_elicitor →
+    the agents, in particular — see request_context.py's module docstring),
+    can recover the signed-in user's identity without it being threaded
+    through every intervening signature. Reset in `finally` so a handler
+    that raises can't leak identity into whatever runs next.
+
+    Mirrors the `user_id = None if not user or user.get("anonymous") else
+    user.get("user_id") or user.get("sub")` extraction every namespaced
+    route already does explicitly (those explicit computations still win —
+    this only supplies the ambient default for code that doesn't have a
+    `Request` to ask).
+    """
+    from advisor.auth import get_current_user
+    from advisor.request_context import set_current_user, reset_current_user
+
+    user = None
+    try:
+        user = get_current_user(request)
+    except Exception:  # pragma: no cover - get_current_user itself never raises; defensive only
+        logger.debug("_user_context_middleware: get_current_user failed", exc_info=True)
+    user_id = None if not user or user.get("anonymous") else (user.get("user_id") or user.get("sub"))
+    role = (user or {}).get("role")
+    token = set_current_user(user_id, role)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_user(token)
+
+
 from advisor.web.admin import router as _admin_router
 app.include_router(_admin_router)
 
@@ -1389,16 +1425,25 @@ _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 async def discover_draft_schema_internal(
     draft_id: str, egeria_credentials: Optional[Dict[str, str]] = None
 ) -> List[Dict[str, str]]:
-    """Internal helper to dynamically retrieve the schema for a draft report specification."""
-    from advisor.report_draft import get_report_draft_manager
+    """Internal helper to dynamically retrieve the schema for a draft report specification.
+
+    Ownership-checked via the ambient request context (advisor.request_context):
+    resolves draft_id across the shared root and every namespace exactly like
+    the direct REST routes do, honouring the requester's own visibility
+    (own namespace + shared, or every namespace for a curator role) — a
+    draft namespaced to a different user is treated as not found here too.
+    """
+    from advisor.report_draft import resolve_report_draft
     from advisor.report_spec_parser import register_report_spec, parse_report_spec_markdown
     from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
     from advisor.report_pipeline import get_report_pipeline
+    from advisor.request_context import current_user
     from pyegeria.egeria_tech_client import EgeriaTech
     import time
 
-    dm = get_report_draft_manager()
-    draft = dm.load(draft_id)
+    _requester = current_user() or {}
+    resolved = resolve_report_draft(draft_id, user_id=_requester.get("user_id"), role=_requester.get("role"))
+    draft = resolved[1] if resolved else None
     if not draft:
         logger.warning(f"Draft {draft_id} not found for schema discovery")
         return []
@@ -1688,14 +1733,24 @@ async def edit_spec_by_id(doc_id: str) -> Dict[str, Any]:
 
 
 @app.patch("/api/reports/drafts/{draft_id}/columns")
-async def patch_report_draft_columns(draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
-    """Update columns and metadata in a report draft (called by Report Canvas edits)."""
+async def patch_report_draft_columns(request: Request, draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+    """Update columns and metadata in a report draft (called by Report Canvas edits).
+
+    Ownership-checked: resolves draft_id across the shared root and every
+    namespace via resolve_report_draft() — a draft namespaced to another
+    user comes back as 404 (never 403) unless the requester is a curator,
+    matching every other draft/document route.
+    """
     from fastapi import HTTPException
-    from advisor.report_draft import get_report_draft_manager
-    dm = get_report_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    dm, spec = resolved
     
     if "columns" in body:
         spec["columns"] = body["columns"]

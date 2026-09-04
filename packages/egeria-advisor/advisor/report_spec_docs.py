@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from loguru import logger
 
+from advisor.request_context import UNSET, resolve_user_id
+
 
 def _load_paths() -> Dict[str, Path]:
     """Resolve report spec directory paths inside ~/egeria-reports/."""
@@ -138,9 +140,17 @@ class ReportSpecDocumentManager:
             return True
         return owner == requester_user_id or _is_curator_role(requester_role)
 
-    def create(self, title: str, content: str, user_id: Optional[str] = None) -> str:
+    def create(self, title: str, content: str, user_id: Optional[str] = UNSET) -> str:
         """Write a new report spec document to inbox/ — namespaced to
-        user_id when given, else the shared root."""
+        user_id when given, else the shared root.
+
+        When user_id is not passed at all (the chat/elicitation path's
+        `get_report_spec_doc_manager().create(title, content)`), it defaults
+        to `advisor.request_context.current_user_id()` — see
+        `DocumentManager.create()`'s docstring in governance_docs.py for the
+        full rationale, which this mirrors. Pass `user_id=None` explicitly
+        to force the shared namespace regardless of ambient context."""
+        user_id = resolve_user_id(user_id)
         root_paths = _user_paths(self._paths, user_id) if user_id else self._paths
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         doc_id = f"report_{ts}_{_slug(title)}"
@@ -512,6 +522,9 @@ _report_spec_doc_manager: Optional[ReportSpecDocumentManager] = None
 
 
 def get_report_spec_doc_manager() -> ReportSpecDocumentManager:
+    """The single shared-root instance — see `get_doc_manager()`'s docstring
+    in governance_docs.py; `create()`/`import_document()` default their own
+    `user_id` from ambient request context, not this factory."""
     global _report_spec_doc_manager
     if _report_spec_doc_manager is None:
         _report_spec_doc_manager = ReportSpecDocumentManager()

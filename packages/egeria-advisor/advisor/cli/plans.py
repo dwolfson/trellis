@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import click
 from rich.console import Console
@@ -47,8 +48,26 @@ def _get_doc_manager():
 # ---------------------------------------------------------------------------
 
 @click.group()
-def plans():
+@click.option(
+    '--user',
+    'user_id',
+    default=None,
+    help="Egeria user id whose namespace this invocation operates in "
+         "(new documents land there, and `list`/`show`/etc. can see that "
+         "user's own namespace in addition to the shared one). Not "
+         "required — no --user behaves like an anonymous web request "
+         "(shared namespace only). See egeria-advisor's own --user for why "
+         "this doesn't fall back to the EGERIA_USER service-account "
+         "setting."
+)
+@click.pass_context
+def plans(ctx: click.Context, user_id: Optional[str]):
     """Manage Governance Plan Documents (inbox / outbox / versions)."""
+    from advisor.request_context import using_user
+    cm = using_user(user_id)
+    cm.__enter__()
+    ctx.call_on_close(lambda: cm.__exit__(None, None, None))
+    ctx.obj = {"user_id": user_id}
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +78,11 @@ def plans():
 @click.option("--outbox", "show_outbox", is_flag=True, default=False, help="Include outbox plans")
 def list_plans(show_outbox: bool):
     """List plans in inbox (and optionally outbox)."""
+    from advisor.request_context import current_user_id
     dm = _get_doc_manager()
-    inbox = dm.list_inbox()
-    outbox = dm.list_outbox() if show_outbox else []
+    requester = current_user_id()
+    inbox = dm.list_inbox(requester_user_id=requester)
+    outbox = dm.list_outbox(requester_user_id=requester) if show_outbox else []
 
     if not inbox and not outbox:
         console.print("[dim]No plans found.[/dim]")

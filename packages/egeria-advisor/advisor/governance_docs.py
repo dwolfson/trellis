@@ -29,6 +29,8 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
+from advisor.request_context import UNSET, resolve_user_id
+
 
 # ---------------------------------------------------------------------------
 # Config loading
@@ -384,7 +386,7 @@ class DocumentManager:
     # CRUD
     # ------------------------------------------------------------------
 
-    def create(self, title: str, content: str, user_id: Optional[str] = None) -> str:
+    def create(self, title: str, content: str, user_id: Optional[str] = UNSET) -> str:
         """
         Write a new plan document to inbox/.
 
@@ -394,8 +396,17 @@ class DocumentManager:
         regardless (`_locate` searches shared + all namespaces), so no
         caller needs to remember which root a document lives in.
 
+        When user_id is not passed at all (the chat/elicitation creation
+        path's `get_doc_manager().create(title, content)` — no third
+        argument), it defaults to `advisor.request_context.current_user_id()`
+        — the signed-in user for whatever request is in flight, or None
+        (shared namespace) for an anonymous request or a call with no
+        ambient request context (e.g. a background job). Pass `user_id=None`
+        explicitly to force the shared namespace regardless of context.
+
         Returns the doc_id (filename stem) for subsequent operations.
         """
+        user_id = resolve_user_id(user_id)
         root_paths = _user_paths(self._paths, user_id) if user_id else self._paths
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         doc_id = f"{ts}_{_slug(title)}"
@@ -943,6 +954,10 @@ _doc_manager: Optional[DocumentManager] = None
 
 
 def get_doc_manager() -> DocumentManager:
+    """The single shared-root instance (DocumentManager namespaces per-call,
+    not per-instance — see the class docstring). `create()`/`import_document()`
+    default their own `user_id` argument from `advisor.request_context`'s
+    ambient identity when not given explicitly — see those methods."""
     global _doc_manager
     if _doc_manager is None:
         _doc_manager = DocumentManager()

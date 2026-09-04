@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from loguru import logger
 
+from advisor.request_context import UNSET, resolve_user_id
+
 
 def _drafts_path() -> Path:
     """Return path to the reports drafts folder, creating it if necessary."""
@@ -221,10 +223,18 @@ _rdm: Optional[ReportDraftManager] = None
 _rdm_by_user: Dict[str, ReportDraftManager] = {}
 
 
-def get_report_draft_manager(user_id: Optional[str] = None) -> ReportDraftManager:
-    """The shared-root singleton (no args), or a cached per-user instance
-    when user_id is given. See ReportDraftManager's docstring."""
+def get_report_draft_manager(user_id: Optional[str] = UNSET) -> ReportDraftManager:
+    """A cached per-user instance when user_id resolves to one, else the
+    shared-root singleton.
+
+    user_id not passed at all (report_spec_elicitor.py / report_spec_agent.py
+    call `get_report_draft_manager()` with no args, as do the report-draft
+    /columns PATCH route and discover_draft_schema_internal — see their
+    call sites) defaults to `advisor.request_context.current_user_id()` —
+    mirrors `get_draft_manager()` in governance_draft.py; see its docstring
+    for the full rationale."""
     global _rdm
+    user_id = resolve_user_id(user_id)
     if user_id is None:
         if _rdm is None:
             _rdm = ReportDraftManager()

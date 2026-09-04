@@ -170,7 +170,7 @@ def test_discover_draft_schema_internal(monkeypatch):
                 "columns": [],
                 "answers": {"Heading": "Test Title"}
             }
-    monkeypatch.setattr("advisor.report_draft.get_report_draft_manager", lambda: MockDraftManager())
+    monkeypatch.setattr("advisor.report_draft.get_report_draft_manager", lambda *a, **k: MockDraftManager())
     
     class MockElicitor:
         def _generate_report_spec_md(self, draft):
@@ -226,7 +226,7 @@ def test_discover_draft_schema_cache(monkeypatch):
     class MockDraftManager:
         def load(self, draft_id):
             return draft_store.get(draft_id)
-    monkeypatch.setattr("advisor.report_draft.get_report_draft_manager", lambda: MockDraftManager())
+    monkeypatch.setattr("advisor.report_draft.get_report_draft_manager", lambda *a, **k: MockDraftManager())
     
     class MockElicitor:
         def _generate_report_spec_md(self, draft): return "# Test Spec\n"

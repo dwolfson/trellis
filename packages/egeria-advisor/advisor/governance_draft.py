@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 from loguru import logger
 
+from advisor.request_context import UNSET, resolve_user_id
+
 
 # ---------------------------------------------------------------------------
 # Path resolution
@@ -391,12 +393,22 @@ _dm: Optional[DraftManager] = None
 _dm_by_user: Dict[str, DraftManager] = {}
 
 
-def get_draft_manager(user_id: Optional[str] = None) -> DraftManager:
-    """The shared-root singleton (no args — every existing internal caller
-    uses this, unchanged), or a cached per-user instance when user_id is
-    given (used by the direct REST routes and by resolve_draft()/
-    list_visible_drafts() below)."""
+def get_draft_manager(user_id: Optional[str] = UNSET) -> DraftManager:
+    """A cached per-user instance when user_id resolves to one, else the
+    shared-root singleton.
+
+    user_id not passed at all (every internal caller in plan_elicitor.py /
+    rag_system.py / governance_plan_agent.py calls `get_draft_manager()`
+    with no args) defaults to `advisor.request_context.current_user_id()` —
+    the signed-in user for whatever request/CLI invocation is in flight, or
+    None (shared namespace) when anonymous or when there's no ambient
+    context at all. The direct REST routes and resolve_draft()/
+    list_visible_drafts() below pass an explicit user_id (including
+    explicit None for an anonymous request), which always wins over the
+    ambient context.
+    """
     global _dm
+    user_id = resolve_user_id(user_id)
     if user_id is None:
         if _dm is None:
             _dm = DraftManager()
@@ -461,15 +473,19 @@ def resolve_draft(draft_id: str, user_id: Optional[str] = None,
 
 
 def create_builder_draft(title: str, perspective: Optional[str] = None,
-                          user_id: Optional[str] = None) -> Dict[str, Any]:
+                          user_id: Optional[str] = UNSET) -> Dict[str, Any]:
     """
     Create a new blank draft in builder mode (Plan Editor entry point).
     Shared by POST /api/drafts/builder and any chat-driven path (e.g. an
     explicit "...using the canvas" request) that wants to open the canvas
     directly without a separate modal round-trip.
 
-    user_id, when given (the REST route passes the signed-in user), creates
-    the draft in that user's namespace instead of the shared root.
+    user_id, when given (the REST route passes the signed-in user, resolved
+    to explicit None for an anonymous request), creates the draft in that
+    user's namespace instead of the shared root. When not passed at all
+    (rag_system.py's chat-driven call), forwarded to get_draft_manager()
+    as UNSET too, so it resolves from the ambient request context there —
+    see get_draft_manager()'s docstring.
     """
     title = (title or "Untitled Plan").strip() or "Untitled Plan"
     dm = get_draft_manager(user_id)

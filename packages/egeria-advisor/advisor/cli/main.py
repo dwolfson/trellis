@@ -76,6 +76,21 @@ console = Console()
     is_flag=True,
     help='Use conversational agent mode (with conversation history)'
 )
+@click.option(
+    '--user',
+    'user_id',
+    default=None,
+    help='Egeria user id that owns any plan/report drafts and documents this '
+         'session creates (chat-driven creation lands in this user\'s '
+         'namespace instead of the shared one). Not required. The CLI has '
+         'no login/session of its own — unlike the web app there is no '
+         'signed-in identity to default to here, so omitting this means the '
+         'shared namespace, same as an anonymous web request. Deliberately '
+         'does NOT fall back to the EGERIA_USER/.env service-account '
+         'setting (advisor.config.settings.egeria_user) — that identity is '
+         'a live-Egeria-call fallback only and is explicitly excluded from '
+         'owning artifacts (see advisor/auth.py\'s module docstring).'
+)
 @click.version_option(version='0.1.0', prog_name='egeria-advisor')
 def cli(
     query: Optional[str],
@@ -88,7 +103,8 @@ def cli(
     track: bool,
     feedback: bool,
     debug: bool,
-    agent: bool
+    agent: bool,
+    user_id: Optional[str]
 ):
     """
     Egeria Advisor - AI-powered assistance for pyegeria
@@ -138,22 +154,31 @@ def cli(
         'agent_mode': agent,
     }
     
+    from advisor.request_context import using_user
+
     try:
         # If agent mode is requested, automatically enable interactive
         if agent and not interactive and not query:
             interactive = True
-        
-        if interactive:
-            # Start interactive mode
-            start_interactive(options)
-        elif query:
-            # Handle direct query
-            direct_query(query, options)
-        else:
-            # No query provided, show help
-            ctx = click.get_current_context()
-            click.echo(ctx.get_help())
-            sys.exit(0)
+
+        # Ambient identity for the whole session (see --user's help text):
+        # any plan/report draft or document the chat/agent path creates
+        # underneath this call — however many function calls deep, per
+        # advisor/request_context.py's module docstring — lands in
+        # user_id's namespace instead of the shared one. None (no --user)
+        # behaves exactly like an anonymous web request.
+        with using_user(user_id):
+            if interactive:
+                # Start interactive mode
+                start_interactive(options)
+            elif query:
+                # Handle direct query
+                direct_query(query, options)
+            else:
+                # No query provided, show help
+                ctx = click.get_current_context()
+                click.echo(ctx.get_help())
+                sys.exit(0)
     
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/yellow]")
