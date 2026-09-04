@@ -154,6 +154,14 @@ and `/dev/dri`). So the recommendation becomes **two profiles, both overlays on
   CPU-only with no GPU stanza; the GPU variant is new work in `egeria-workspaces`.
 - Model tier and context cap pinned per box (§5).
 
+**Future profile, recorded not designed: edge.** A "skinny" Egeria deployed beside trellis on a
+demo or edge box, federated with a "mother ship" Egeria elsewhere (owner, 2026-09-04). For this
+plan it means two things only: identity comes from whichever view server trellis-auth is pointed
+at, so the login policy must not assume the identity provider is the same platform the data lives
+in; and everything trellis publishes must carry enough provenance (`Ownership`, zones, the
+integration identity) to survive federation, which is Egeria's cohort/federation machinery, not
+trellis work. Topology details wait until a skinny profile actually exists.
+
 **Rejected: one fixed topology for all four machines.** Revision 1's hybrid is the dev profile
 on Dev 1 and nothing else.
 
@@ -328,6 +336,37 @@ becomes `get_egeria_token`. The password exists only for the instant the direct 
 exchanges it for a token. Egeria token expiry becomes the app session bound; refresh is a
 re-login, as it is in the Portal. This resolves the "should the JWT carry the raw password"
 question by removing the password, and it holds on the LAN demo profile.
+
+### Login policy: shared, and required (decided 2026-09-04)
+
+**Both apps require login, and the policy lives in `trellis-auth`, not in each app.** Owner's
+decision, superseding `trellis-auth`'s original "whether an app requires login at all is each
+app's own answer." One policy object with a default of require-login, a short allowlist of public
+paths (health, static assets, the login and Portal-exchange routes, the A2A agent cards and
+discovery index, which must be public so a client can learn how to authenticate), and one
+deployment override `TRELLIS_ANONYMOUS_READ=true`, off by default, for a dev box only. Each app
+keeps a thin adapter that supplies its resolved config and nothing else.
+
+Consequences accepted with the decision:
+- **Egeria is a hard dependency** of both apps, because Egeria is the identity provider. The
+  QUICKSTART's "answers questions without an Egeria platform" path is retired from the docs;
+  the anonymous override is the only remaining way to run without one and is not a supported
+  mode. Consistent with RE being integration-daemon-shaped.
+- **Sessions are bounded by Egeria's token**: one hour by Egeria's built-in default, and every
+  token dies when the platform restarts because the quickstart's `rsa.key-id` is empty (random
+  signing key per restart). `application.properties` exposes no lifetime setting today. **Ask the
+  Egeria project for a configurable token lifetime in `application.properties`**; until then the
+  browser re-logs-in hourly (invisible inside the Portal, which re-issues) and the CLI gets a
+  cached login (`resource-explorer login` / `egeria-advisor login`, token in the user config dir,
+  a clear "session expired" message) rather than a per-command prompt.
+- Portal users never see a second login: the Portal hands over the Egeria token it already holds.
+- Background loops (worker role) keep the platform's integration identity; A2A already requires a
+  token; the anonymous RAG mode in EA becomes the dev-only override.
+
+**EA moves to multi-user on the same footing as RE**: its session store and per-user namespacing
+landed 2026-09-04 (a4ef5ec, d3bf498); login enforcement via the shared policy is next; `Ownership`
+on the Egeria elements EA creates when a governance plan executes follows the same rule as RE's
+publish. The `EgeriaContext`/MCP report agent singletons stay deferred as before.
 
 ### Attribution: Egeria already records who did it
 
