@@ -25,7 +25,14 @@ process did the work.
 **Claiming.** `registry.claim_next_run()` selects and marks in one transaction,
 with `FOR UPDATE SKIP LOCKED` on Postgres so a second claimer skips a locked
 row rather than blocking on it. See that method for the per-user fairness rule
-and why the empty `requested_by` bucket is exempt from it today.
+and why the empty `requested_by` bucket is exempt from it — since 2026-09-04
+that bucket holds only the worker's own service-account work, so the exemption
+is narrow and the fairness rule finally applies to real people.
+
+**Attribution.** A claimed row is executed inside `_run_as_requester`, which
+publishes `requested_by` as the caller so anything the run writes to Egeria is
+owned by the person who asked for it. The row deliberately carries no Egeria
+token — see that function for why, and for what the resulting gap is.
 
 **Heartbeating.** A run's heartbeat is written every
 `HEARTBEAT_INTERVAL_SECONDS` by a small companion thread, not by the executing
@@ -45,6 +52,7 @@ import os
 import socket
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -96,15 +104,26 @@ def queue_consumption_enabled() -> bool:
 
 
 def requested_by() -> str:
-    """Who a run is attributed to. `""` until RE adopts trellis-auth.
+    """Who a run is attributed to: the signed-in caller, or `""`.
 
-    A function rather than a literal at every call site so that adopting auth is
-    one edit here plus wiring the request's identity through, not a hunt for
-    every `requested_by=""`. Until then every row lands in the unattributed
-    bucket, which `registry.claim_next_run()` deliberately exempts from the
-    per-user fairness rule — see that method.
+    This was the plan's own hook and it has now been taken (2026-09-04, plan
+    §4): it reads RE's one identity ContextVar, set by the web
+    `_identity_middleware`, by the A2A middleware, and by the CLI's
+    `cli.session.activate()`. So a run enqueued from a browser, from an agent
+    or from a terminal all carry the same user id with no per-call-site
+    threading — which is exactly why this was a function and not a literal.
+
+    `""` now means one thing only: **the worker's own service-account work**,
+    plus a genuinely signed-out invocation. `registry.claim_next_run()` still
+    exempts that bucket from the per-user fairness rule, and that exemption is
+    now narrow rather than universal — see that method.
     """
-    return ""
+    from resource_explorer.a2a_auth import caller
+
+    identity = caller()
+    if identity is None or identity.auth_source == "anonymous":
+        return ""
+    return identity.user_id or ""
 
 
 @dataclass(frozen=True)
@@ -237,6 +256,59 @@ class _Heartbeat:
         self._stop.set()
 
 
+@contextmanager
+def _run_as_requester(row: dict):
+    """Execute a claimed row attributed to the person who queued it.
+
+    **The interim shape, and it is deliberate** (plan §4, and see
+    `egeria_identity`'s module docstring): the row carries `requested_by` and
+    **no token**. An Egeria bearer token lives one hour and dies whenever the
+    platform restarts, while a queued survey may wait longer than that and
+    then run for sixteen minutes — so a token stored with the row would be
+    expired more often than not. Storing it in `runs.target` was rejected
+    outright (a credential in a plaintext JSON column), and an encrypted
+    column with a key to manage is out of scope for this pass.
+
+    So the worker authenticates to Egeria **as itself** and stamps
+    `Ownership` with `requested_by`. Egeria's provenance for such a publish
+    says the worker did it; the `Ownership` classification says whose it is,
+    and that is the attribution curate authorization actually reads. The gap
+    is real and named rather than papered over: closing it needs an
+    encrypted-at-rest credential store or a delegation token from Egeria.
+
+    A row with an empty `requested_by` is the worker's own service-account
+    work and runs with no caller at all, which is the correct attribution for
+    bootstrap heal, resync and the outbox drain.
+    """
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_identity import identity_for_user
+
+    requester = (row.get("requested_by") or "").strip()
+    if not requester:
+        yield
+        return
+
+    identity = identity_for_user(requester)
+    # A service-account identity carries no token, so `use_identity` would
+    # clear the caller rather than publish one — and the caller is exactly
+    # what `Ownership` is read from. Set it directly, with the token left
+    # None so `apply_identity` mints a service-account token as before.
+    from resource_explorer.a2a_auth import CallerIdentity
+
+    reset = current_caller.set(
+        CallerIdentity(
+            user_id=identity.user_id,
+            egeria_token=None,
+            auth_source="queued-run",
+            role="user",
+        )
+    )
+    try:
+        yield
+    finally:
+        current_caller.reset(reset)
+
+
 def execute_run(row: dict, registry=None) -> RunOutcome:
     """Run one claimed row to a terminal state and record it.
 
@@ -289,7 +361,7 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     log.info("run started: id=%s kind=%s claimed_by=%s target=%s",
              run_id, kind, row.get("claimed_by"), target)
     try:
-        with _Heartbeat(registry, run_id):
+        with _Heartbeat(registry, run_id), _run_as_requester(row):
             outcome = handler(target, result_ref)
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         log.exception("run %s (%s) crashed", run_id, kind)

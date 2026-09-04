@@ -14,7 +14,7 @@ It is the successor to [Project Explorer](https://github.com/LF-AI/project-explo
 - RequestForAction lifecycle management for human-provided context
 - Temporal analysis: track how resources change over time
 
-**Target users:** Data engineers, data stewards, DBAs, AI engineers, and security practitioners who need to understand and catalog information resources. Egeria is required for the core survey/catalog workflow; RAG-based querying works without it.
+**Target users:** Data engineers, data stewards, DBAs, AI engineers, and security practitioners who need to understand and catalog information resources. Egeria is required — for the core survey/catalog workflow, and since 2026-09-04 to sign in at all, since it is the identity provider (`docs/runtime-architecture-plan.md` §4). RAG-based querying still needs no Egeria of its own, but reaching it needs a session and a session needs Egeria.
 
 **Design reference:** `docs/survey-model.md` — read this before making architectural changes.
 
@@ -58,7 +58,7 @@ cp .env.example .env
 External services:
 - **pgvector** — shared Postgres instance (`egeria-shared-postgres`, port 5442) in a Trellis checkout, normally already running (managed by `egeria-workspaces-fs`'s `compose-configs/shared-infra/shared-infra.yaml`); a standalone `pgvector/pgvector:pg17` container for a from-scratch environment
 - **Ollama** at `localhost:11434` — `ollama pull llama3.1:8b`
-- **Egeria** at `EGERIA_PLATFORM_URL` — required for survey/catalog; optional for RAG-only use
+- **Egeria** at `EGERIA_PLATFORM_URL` — **required**, for survey/catalog *and* for login (it is the identity provider). `TRELLIS_ANONYMOUS_READ=true` is a dev-box override, not a supported mode
 - **Arize Phoenix** (optional) — `python -m phoenix.server.main` → `localhost:6006`
 - **MLflow** (optional) — `mlflow server --port 5025` → `localhost:5025`
 - **Kroki** (optional) at `KROKI_URL`, default `http://localhost:6002` — renders mermaid diagrams server-side (`POST /api/diagrams/mermaid`, see `web/routes/diagrams.py`); only used for the database ER-diagram view, nothing else depends on it. Same shared `egeria-shared-kroki` container as the rest of an egeria-v6 checkout (`egeria-workspaces-fs`'s `compose-configs/shared-infra/shared-infra.yaml`), reached via its published host port `6002` (not Kroki's own default `8000` — that collides with common local dev servers like `mkdocs serve`) — **not** the container-name URL (`http://egeria-shared-kroki:8000`) other, containerized Egeria services use, since resource-explorer runs as a bare host process and isn't on the `egeria_network` docker network. If Egeria/Kroki run on a different host than resource-explorer (a remote/production deployment, not a single-box dev checkout), point `KROKI_URL` at that host's published Kroki port instead — Kroki has no built-in auth, so a remote deployment should sit behind a firewall/VPN/reverse-proxy, not be exposed directly to the internet. See `docs/kroki-diagram-rendering.md` for the full picture (network topology, failure behavior, troubleshooting).

@@ -59,11 +59,30 @@ def _registry() -> ProjectRegistry:
 # ComponentMaterializer/BlueprintMaterializer). The routes below are thin: they
 # validate, record the verdict, and merge whatever the workflow reports.
 from resource_explorer.workflows.curate import (  # noqa: E402
+    CurationDenied,
     find_candidate_blueprint as _find_candidate_blueprint,
     materialize_blueprint_if_accepted as _materialize_blueprint_if_accepted,
     materialize_component_if_accepted as _materialize_if_accepted,
+    owner_of as _owner_of,
+    promote_to_publish_zones as _promote_to_publish_zones,
+    require_curation_rights as _require_curation_rights,
     slug_to_scope_map as _slug_to_scope_map,
 )
+
+
+def _authorize_curation(registry: ProjectRegistry, entity_type: str, slug: str,
+                        scope_locator: str) -> None:
+    """403 unless the caller owns this element or holds a curator role.
+
+    The decision itself lives in `workflows/curate` so the CLI and the A2A
+    surface inherit it (plan §4: "enforced at the workflow layer so the CLI
+    and A2A honour it too"); this function is only the HTTP shape of the
+    same answer.
+    """
+    try:
+        _require_curation_rights(_owner_of(registry, entity_type, slug, scope_locator))
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 # ── Tags ─────────────────────────────────────────────────────────────────────
@@ -315,6 +334,7 @@ def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCre
     if body.verdict == "retyped" and not body.retyped_to.strip():
         raise HTTPException(status_code=400, detail="retyped_to is required when verdict='retyped'")
     registry = _registry()
+    _authorize_curation(registry, entity_type, slug, body.scope_locator)
     verdict = registry.record_component_verdict(
         entity_type, slug, body.scope_locator, body.verdict, body.retyped_to, body.note,
     )
@@ -323,6 +343,12 @@ def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCre
     )
     if materialization is not None:
         verdict["materialization"] = materialization
+        # Accepting is what moves an element out of the draft zone — the
+        # zone transition IS the Egeria-visible effect of curation (plan §4).
+        # Reported alongside the verdict, never gating it.
+        guid = materialization.get("guid", "")
+        if body.verdict == "accepted" and guid:
+            verdict["promotion"] = _promote_to_publish_zones(guid)
     return verdict
 
 
@@ -378,6 +404,7 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
         )
     registry = _registry()
     scope_locator = f"{body.perspective}::{body.cluster_name}"
+    _authorize_curation(registry, entity_type, slug, scope_locator)
     verdict = registry.record_component_verdict(
         entity_type, slug, scope_locator, body.verdict, "", body.note,
         verdict_target="blueprint",
@@ -387,4 +414,7 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
     )
     if materialization is not None:
         verdict["materialization"] = materialization
+        guid = materialization.get("guid", "")
+        if body.verdict == "accepted" and guid:
+            verdict["promotion"] = _promote_to_publish_zones(guid)
     return verdict

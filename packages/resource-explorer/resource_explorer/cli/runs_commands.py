@@ -41,8 +41,17 @@ def _registry():
 
 
 def _enqueue(kind: str, target: dict, *, activity_id: str = "") -> str:
+    """Queue one row, attributed to whoever is signed in.
+
+    `activate()` first: `requested_by()` reads the caller ContextVar, and a
+    `--queue` command that never activated its cached session would enqueue
+    into the unattributed bucket while looking, from the operator's side,
+    exactly like one that did.
+    """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.run_queue import requested_by
 
+    cli_session.activate(cli_session.resolve_identity()[1])
     run_id = _registry().enqueue_run(
         kind, target, result_ref=activity_id, requested_by=requested_by(),
     )
@@ -71,7 +80,16 @@ def analysis_run(
         _enqueue("analysis_run", {"slug": project, "analysis_id": analysis_id})
         return
 
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.workflows.analysis import resolve_analysis_plan, run_analysis
+
+    # A run that will publish needs a signed-in owner. A run that will not is
+    # local work on local data and stays usable with no session — the same
+    # split `survey` makes.
+    if publish:
+        cli_session.require_and_activate(console)
+    else:
+        cli_session.activate(cli_session.resolve_identity()[1])
 
     is_ingest, steps = resolve_analysis_plan(analysis_id)
     if not is_ingest and not steps:
@@ -226,12 +244,33 @@ def curate_materialize(
     blueprint, anything else is a component's scope_locator. That is the same
     key `add_blueprint_verdict` builds, not a new convention.
     """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.workflows.curate import (
         materialize_blueprint_if_accepted,
         materialize_component_if_accepted,
     )
 
+    # Materialization creates real Egeria elements and stamps them with an
+    # owner, so it needs a person to be that owner (plan §4). Exits 2 with one
+    # line when the session is missing or expired.
+    cli_session.require_and_activate(console)
+
+    from resource_explorer.workflows.curate import (
+        CurationDenied,
+        owner_of,
+        promote_to_publish_zones,
+        require_curation_rights,
+    )
+
     registry = _registry()
+    # The same check the route makes, from the same place — the CLI does not
+    # get a second, laxer answer to "may this person curate this".
+    try:
+        require_curation_rights(owner_of(registry, entity_type, project, target))
+    except CurationDenied as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=3)
+
     if "::" in target:
         perspective, cluster_name = target.split("::", 1)
         result = materialize_blueprint_if_accepted(
@@ -246,6 +285,9 @@ def curate_materialize(
         console.print("[yellow]Nothing attempted — materialization is only wired "
                       "for entity_type='repo'.[/yellow]")
         raise typer.Exit(code=1)
+    guid = result.get("guid", "")
+    if guid and result.get("status") != "error":
+        result["promotion"] = promote_to_publish_zones(guid)
     console.print(json.dumps(result, indent=2, default=str))
     if result.get("status") == "error":
         raise typer.Exit(code=1)
@@ -319,8 +361,10 @@ def runs_cancel(run_id: str = typer.Argument(help="Run id")):
 def runs_enqueue(
     kind: str = typer.Argument(help="analysis_run | survey_definition_run | scouting_scan | stage_batch | discovery_expand"),
     target: str = typer.Argument("{}", help="Target as a JSON object, e.g. '{\"slug\": \"myrepo\"}'"),
-    requested_by: str = typer.Option("", "--requested-by",
-                                     help="Attribute the run to a user id (fairness applies)"),
+    requested_by: str = typer.Option(
+        "", "--requested-by",
+        help="Attribute the run to a user id (fairness applies). "
+             "Defaults to the signed-in user from `resource-explorer login`."),
 ):
     """Queue work for a worker straight from a shell.
 
@@ -328,6 +372,8 @@ def runs_enqueue(
     way to script the queue. `target` is passed to the kind's handler verbatim —
     see run_queue.py's HANDLERS for what each one reads.
     """
+    from resource_explorer import run_queue
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.registry import ProjectRegistry
 
     if kind not in ProjectRegistry.RUN_KINDS:
@@ -343,7 +389,21 @@ def runs_enqueue(
         console.print("[red]target must be a JSON object[/red]")
         raise typer.Exit(code=1)
 
-    run_id = _registry().enqueue_run(kind, parsed, requested_by=requested_by)
+    # A queued run must carry a real user id or it lands in the unattributed
+    # bucket, which `claim_next_run` exempts from per-user fairness — one
+    # person could then hold every worker slot. So: `--requested-by` wins when
+    # given (a script attributing on someone's behalf), otherwise the signed-in
+    # user, and only a genuinely signed-out shell falls through to "".
+    cli_session.activate(cli_session.resolve_identity()[1])
+    attributed_to = requested_by or run_queue.requested_by()
+    if not attributed_to:
+        console.print(
+            "[yellow]Not signed in — this run is unattributed and exempt from "
+            "per-user fairness. `resource-explorer login`, or pass "
+            "--requested-by.[/yellow]"
+        )
+
+    run_id = _registry().enqueue_run(kind, parsed, requested_by=attributed_to)
     console.print(run_id, highlight=False)
 
 

@@ -23,6 +23,154 @@ from resource_explorer.registry import ProjectRegistry
 log = logging.getLogger(__name__)
 
 
+class CurationDenied(PermissionError):
+    """The caller may not curate this element. Surfaces as HTTP 403.
+
+    A distinct exception rather than a boolean so the enforcement lives at the
+    workflow layer and every entry point inherits it — the plan's isolation
+    matrix says authorization is "enforced at the workflow layer so the CLI and
+    A2A honour it too", and a boolean returned to a route is a boolean the next
+    route forgets to check.
+    """
+
+
+#: JWT `role` claims that grant curation beyond what one owns.
+#:
+#: The plan's model is a `GovernanceRole` with `PersonRoleAppointment`, read
+#: from Egeria. **This is the bridge, not the destination**, and the plan says
+#: so in as many words: "the Portal `role` claim is the bridge until
+#: appointments are read from Egeria". Reading it here rather than inventing a
+#: trellis-side curator table is the point — when appointments land, this
+#: constant is what gets replaced, and nothing else moves.
+CURATOR_ROLES = frozenset({"curator", "admin"})
+
+
+def may_curate(owner: str) -> tuple[bool, str]:
+    """`(allowed, why_not)` for the current caller curating an element owned by `owner`.
+
+    Three cases, in the order the plan states them:
+
+    1. **The owner.** "Ownership is curation by default" — the person who
+       discovered, surveyed and catalogued a resource may accept, reject,
+       promote and delete it with no separate grant. There is no global
+       curator role for one's own resources.
+    2. **A role appointee.** A `curator` or `admin` role claim curates across
+       resources it does not own.
+    3. **Everyone else** — denied.
+
+    An element with **no recorded owner** is treated as belonging to the
+    shared/legacy bucket and is curatable by any signed-in user. That is
+    deliberate and is the migration story: every verdict recorded before this
+    change has no owner, and locking all of them behind a role nobody has been
+    appointed to would make the existing corpus uncurateable overnight.
+
+    Not signed in is always denied, whoever owns what.
+    """
+    from resource_explorer.a2a_auth import caller
+
+    identity = caller()
+    if identity is None or identity.auth_source == "anonymous":
+        return False, (
+            "Authentication required to curate. Sign in (POST /api/auth/login) "
+            "or run `resource-explorer login`."
+        )
+    if not owner:
+        return True, ""
+    if identity.user_id == owner:
+        return True, ""
+    if (identity.role or "").lower() in CURATOR_ROLES:
+        return True, ""
+    return False, (
+        f"This element is owned by {owner!r}. Curating someone else's element "
+        f"requires a curator or admin role; you are signed in as "
+        f"{identity.user_id!r} with role {identity.role!r}."
+    )
+
+
+def require_curation_rights(owner: str) -> None:
+    """`may_curate`, raised. The form every call site should use."""
+    allowed, why_not = may_curate(owner)
+    if not allowed:
+        raise CurationDenied(why_not)
+
+
+def owner_of(registry: ProjectRegistry, entity_type: str, slug: str,
+             scope_locator: str) -> str:
+    """Who owns the element behind this verdict, as RE recorded it.
+
+    Read from RE's own verdict/materialization trail rather than from Egeria's
+    `Ownership` classification, deliberately: the authorization decision must
+    be answerable when Egeria is unreachable, and it must be answerable for a
+    proposal that has not been materialized into Egeria at all yet. Egeria's
+    classification is the record of ownership *for the catalogue*; this is the
+    same fact as RE knows it, written at the same moment by the same publish.
+
+    Reads the **latest** verdict's `decided_by`, which is the person who last
+    curated this element — and, because recording a verdict already requires
+    passing this same check, the only ways to become that person are to have
+    been the owner, to hold a curator role, or to have been the first to touch
+    an element nobody owned. The first-toucher case is the plan's own rule
+    working as intended: "the user who discovers, surveys and catalogs a
+    resource is its owner, and ownership carries the right to curate it."
+
+    `""` when nothing recorded an owner — the shared/legacy bucket, see
+    `may_curate`.
+    """
+    try:
+        verdicts = registry.get_component_verdicts(entity_type, slug) or {}
+    except Exception:  # pragma: no cover - a registry failure is its own error
+        return ""
+    row = verdicts.get(scope_locator) or {}
+    return str(row.get("decided_by") or "")
+
+
+def promote_to_publish_zones(guid: str) -> dict:
+    """Move an accepted element out of the draft zone. The Egeria-visible effect of "accept".
+
+    Plan §4: "promotion into the deployment's normal `publishZones` on
+    acceptance, so 'curate' has a zone transition as its Egeria-visible
+    effect". One `add_zone_membership` call replaces the classification's
+    property outright, so the element is never briefly in both.
+
+    Best-effort and reported: the verdict is already saved and real, exactly as
+    materialization is, so a failed promotion is a line in the response rather
+    than a rolled-back decision.
+    """
+    from resource_explorer.egeria_identity import (
+        current_zones,
+        publish_zones,
+        set_zone_membership,
+    )
+
+    zones = publish_zones()
+    if not guid:
+        return {"status": "skipped", "reason": "no Egeria element to promote", "zones": zones}
+
+    # **A no-op promotion is an error in Egeria, not a nothing.** Its security
+    # connector refuses a zone change whose before and after are equal —
+    # observed live 2026-09-04:
+    #
+    #     OMAG-SERVER-SECURITY-403-005 User erinoverview is not authorized to
+    #     change the zone membership for element ... from [egeria-runtime] to
+    #     [egeria-runtime]
+    #
+    # Re-accepting an already-accepted element is an ordinary thing to do, so
+    # checking first is not an optimisation: without it, "this was already
+    # promoted" is reported to the user as a permissions failure.
+    already = current_zones(guid)
+    if already and set(already) == set(zones):
+        return {"status": "already_promoted", "guid": guid, "zones": zones}
+
+    ok = set_zone_membership(guid, zones)
+    return {
+        "status": "promoted" if ok else "error",
+        "guid": guid,
+        "zones": zones,
+        "from_zones": already,
+        **({} if ok else {"error": "Egeria did not accept the ZoneMembership change"}),
+    }
+
+
 def materialize_component_if_accepted(registry: ProjectRegistry, entity_type: str, slug: str,
                               scope_locator: str, verdict: str) -> dict | None:
     """docs/architecture-recovery-report-then-curate.md — acting on the

@@ -272,6 +272,28 @@ def pg_registry(pg_test_schema):
     return ProjectRegistry(database_url=url)
 
 
+# RE requires login as of 2026-09-04 (docs/runtime-architecture-plan.md §4),
+# and `LoginRequiredMiddleware` 401s every `/api/` route without a token. The
+# ~300 route tests in this suite predate that and are about route behaviour,
+# not about authentication — so the gate is off for the suite by default and
+# the tests that ARE about it turn it back on for exactly the app object they
+# assert against (`test_login_and_identity.py`, which reloads
+# `resource_explorer.web.app` under the policy it wants).
+#
+# The same shape as `EXPLORER_RUN_QUEUE_ENABLED` above, and for the same
+# reason: a cross-cutting behaviour that would otherwise have to be defeated,
+# identically, in every one of three hundred fixtures. Set at import rather
+# than in a fixture because the policy is resolved once, when the middleware is
+# constructed at `web/app.py` import — which happens the first time any test
+# module imports the app, before any fixture has run.
+os.environ.setdefault("EXPLORER_REQUIRE_LOGIN", "false")
+
+# A JWT secret for the whole session, so a test that mints a token and a test
+# that verifies one agree. Without it `auth.jwt_secret()` derives one from the
+# hostname and logs a warning per process — correct behaviour, noisy here.
+os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
+
+
 @pytest.fixture(autouse=True)
 def ephemeral_prefect(monkeypatch):
     """Force Prefect to run flows in-process, ignoring any configured server.

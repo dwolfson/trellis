@@ -398,6 +398,193 @@ class TestCurateNotesRouter:
         assert resp.status_code == 404
 
 
+@pytest.fixture()
+def signed_in_curator(client):
+    """Sign the shared TestClient in, for the curate routes.
+
+    Curate is authorization-gated as of 2026-09-04 (plan §4): ownership is
+    curation by default, and "nobody is signed in" is denied whoever owns what.
+    The suite runs with the login *gate* off (`tests/conftest.py`), so a curate
+    route reached with no caller 403s at the workflow layer — the right answer,
+    and it means these tests have to name who is curating rather than be exempt
+    from the question.
+
+    A **header**, not a ContextVar set here: `_identity_middleware` resolves the
+    caller from the request's own token and resets it in `finally`, so an
+    identity set in the test's context is overwritten with None before any
+    handler runs. Setting the ContextVar directly looks like it works and does
+    nothing — which is worth knowing, because it is the mistake the middleware's
+    own `finally` guarantees.
+    """
+    from resource_explorer.auth import create_access_token
+
+    token = create_access_token(user_id="dan", egeria_token="egeria-token")
+    client.headers["Authorization"] = f"Bearer {token}"
+    yield "dan"
+    client.headers.pop("Authorization", None)
+
+
+class TestQueryFeedbackRouter:
+    """POST /api/query/feedback — vote is trinary (+1/0/-1), 0 being the
+    neutral/"partially correct" vote (see docs/feedback-signals-shared.md).
+    The route itself is a two-line delegate to MetricsCollector.record_feedback;
+    what matters here is that vote=0 survives the request round-trip rather
+    than being coerced or dropped (e.g. by a falsy-value check)."""
+
+    def test_neutral_vote_passed_through_unmodified(self, client):
+        with patch(
+            "resource_explorer.observability.metrics_collector.MetricsCollector"
+        ) as mock_cls:
+            resp = client.post("/api/query/feedback", json={
+                "query_hash": "abc123", "vote": 0,
+            })
+        assert resp.status_code == 200
+        assert resp.json() == {"recorded": True}
+        mock_cls.return_value.record_feedback.assert_called_once_with("abc123", 0)
+
+    def test_positive_and_negative_votes_still_pass_through(self, client):
+        with patch(
+            "resource_explorer.observability.metrics_collector.MetricsCollector"
+        ) as mock_cls:
+            client.post("/api/query/feedback", json={"query_hash": "h", "vote": 1})
+            client.post("/api/query/feedback", json={"query_hash": "h", "vote": -1})
+        calls = [c.args for c in mock_cls.return_value.record_feedback.call_args_list]
+        assert calls == [("h", 1), ("h", -1)]
+
+
+# ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
+
+def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):
+    from resource_explorer.registry import ActivityEntry
+    annotations = [
+        {"annotation_type": "RequestForActionAnnotation", "analysis_name": "Security Scan",
+         "count": 1, "summary": f"Finding {i}", "status": "local"}
+        for i in range(num_rfas)
+    ]
+    if extra_annotations:
+        annotations.extend(extra_annotations)
+    registry.write_activity(ActivityEntry(
+        id=entry_id, ts="2026-08-01T00:00:00", operation="survey", intent="assessment",
+        entity_type="repo", entity_slug="myproj", entity_name="My Project",
+        annotations=annotations,
+    ))
+
+
+# ── /api/curate — tags, resource feedback, curator notes ───────────────────────
+
+class TestCurateTagsRouter:
+    def test_add_list_remove_tag(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
+        assert resp.status_code == 200
+        assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
+
+        listed = client.get("/api/curate/tags/repo/myproj").json()
+        assert listed == ["gold-tier"]
+
+        resp = client.delete("/api/curate/tags/repo/myproj/gold-tier")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/tags/repo/myproj").json() == []
+
+    def test_add_tag_rejects_empty(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
+        assert resp.status_code == 400
+
+    def test_list_all_tags_with_counts(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        client.post("/api/curate/tags/database/db-a", json={"tag": "gold-tier"})
+        tags = {t["tag"]: t["count"] for t in client.get("/api/curate/tags").json()}
+        assert tags["gold-tier"] == 2
+
+    def test_resources_by_tag(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/gold-tier/resources")
+        assert resp.status_code == 200
+        assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
+
+    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client):
+        # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
+        # are both 2-segment paths — declaration order matters (see curate.py's
+        # comment). A resource literally named "resources" would be the edge
+        # case that breaks if the order were ever flipped back.
+        client.post("/api/curate/tags/repo/myproj", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/repo/myproj")
+        assert resp.status_code == 200
+        assert resp.json() == ["gold-tier"]
+
+
+class TestCurateFeedbackRouter:
+    def test_add_and_list_feedback(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={
+            "rating": 4, "category": "quality", "message": "Schema looks stale",
+        })
+        assert resp.status_code == 200
+        listed = client.get("/api/curate/feedback/repo/myproj").json()
+        assert len(listed) == 1
+        assert listed[0]["message"] == "Schema looks stale"
+
+    def test_rejects_empty_message(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": ""})
+        assert resp.status_code == 400
+
+    def test_rejects_out_of_range_rating(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"rating": 9, "message": "x"})
+        assert resp.status_code == 400
+
+    def test_feedback_without_rating_is_allowed(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": "just a note"})
+        assert resp.status_code == 200
+        assert resp.json()["rating"] is None
+
+
+class TestCurateNotesRouter:
+    def test_add_list_delete_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
+        assert resp.status_code == 200
+        note_id = resp.json()["id"]
+
+        listed = client.get("/api/curate/notes/repo/myproj").json()
+        assert len(listed) == 1
+
+        resp = client.delete(f"/api/curate/notes/{note_id}")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/notes/repo/myproj").json() == []
+
+    def test_rejects_empty_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
+        assert resp.status_code == 400
+
+    def test_delete_nonexistent_note_404s(self, client):
+        resp = client.delete("/api/curate/notes/nonexistent-id")
+        assert resp.status_code == 404
+
+
+@pytest.fixture()
+def signed_in_curator(client):
+    """Sign the shared TestClient in, for the curate routes.
+
+    Curate is authorization-gated as of 2026-09-04 (plan §4): ownership is
+    curation by default, and "nobody is signed in" is denied whoever owns what.
+    The suite runs with the login *gate* off (`tests/conftest.py`), so a curate
+    route reached with no caller 403s at the workflow layer — the right answer,
+    and it means these tests have to name who is curating rather than be exempt
+    from the question.
+
+    A **header**, not a ContextVar set here: `_identity_middleware` resolves the
+    caller from the request's own token and resets it in `finally`, so an
+    identity set in the test's context is overwritten with None before any
+    handler runs. Setting the ContextVar directly looks like it works and does
+    nothing — which is worth knowing, because it is the mistake the middleware's
+    own `finally` guarantees.
+    """
+    from resource_explorer.auth import create_access_token
+
+    token = create_access_token(user_id="dan", egeria_token="egeria-token")
+    client.headers["Authorization"] = f"Bearer {token}"
+    yield "dan"
+    client.headers.pop("Authorization", None)
+
+
+@pytest.mark.usefixtures("signed_in_curator")
 class TestCurateComponentVerdictsRouter:
     def test_add_and_list_verdict(self, client):
         resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
@@ -501,6 +688,7 @@ class TestCurateComponentVerdictsRouter:
         }
 
 
+@pytest.mark.usefixtures("signed_in_curator")
 class TestCurateBlueprintVerdictsRouter:
     """docs/blueprint-materialization-plan.md Phase B. Wires are deliberately
     out of scope (project-owner decision, 2026-09-03) — none of these tests

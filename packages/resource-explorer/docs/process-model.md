@@ -39,11 +39,36 @@ call, and an agent card per agent plus a `/.well-known/agents.json` index —
 `resource_explorer/a2a_role.py`, `a2a_auth.py`, and
 [`docs/a2a.md`](a2a.md). All five roles are now real.
 
-**Still pending:** full `trellis-auth` adoption in RE. The A2A role uses `trellis-auth` to
-*authenticate* its callers and puts the caller's Egeria token in a ContextVar, but RE's existing
-pyegeria client construction sites still build service-account clients, and `requested_by` is
-still `""` on every queue row — which is also why the per-user fairness rule currently exempts
-that bucket (§1.2c). Identity now enters RE through the A2A door and stops there.
+**`trellis-auth` adoption has since landed too (2026-09-04, plan §4).** Identity no longer enters
+RE through the A2A door and stops there:
+
+- **Login is required** on every non-public path. `trellis_auth.LoginRequiredMiddleware` is
+  installed in `web/app.py` under RE's own policy (`resource_explorer/auth.py`,
+  `resolve_policy("EXPLORER")`), with `/api/auth/login|portal|me|defaults|policy`, the SPA shell
+  and `/.well-known/` public. Middleware order is CORS → login gate → identity → routes, so a
+  cross-origin 401 still carries its CORS headers and a rejected request never sets an identity.
+- **One identity mechanism.** `a2a_auth.current_caller` — the ContextVar the A2A role already
+  had — is now set by the web middleware and by the CLI too. Downstream code asks
+  `a2a_auth.caller()` and does not care which door the call came through.
+- **Per-request Egeria clients.** `EgeriaPublisher`, `ComponentMaterializer` and
+  `BlueprintMaterializer` build their pyegeria clients from the caller's bearer token
+  (`egeria_identity.apply_identity`), so Egeria's own provenance records the person. The worker
+  role's loops keep the service account, which is the correct attribution for them.
+- **`requested_by` is a real user id**, so the per-user fairness rule in §1.2c has stopped being
+  inert: `""` now holds only the worker's own service-account runs.
+- **Ownership and zones.** Everything RE publishes carries the `Ownership` classification (owner =
+  the requesting user) and lands in the `resource-explorer-draft` zone; curate-accept promotes it
+  into the deployment's publish zones.
+- **CLI login.** `resource-explorer login` / `logout`, cached via `trellis_auth.session_file`.
+  Commands that reach Egeria exit 2 with one line when the session is missing or expired;
+  read-only commands keep working without one.
+
+**Still pending:** a queued run carries `requested_by` but **no token** — see the interim note in
+`run_queue._run_as_requester` and `egeria_identity`'s module docstring. The worker publishes as
+the service account with `Ownership` set to the requester, which is the attribution curate
+authorization reads, but Egeria's provenance for that publish names the worker. Closing it needs
+an encrypted-at-rest credential store or a delegation token from Egeria. Also pending: reading
+`GovernanceRole` appointments from Egeria instead of the JWT `role` claim.
 
 ---
 
@@ -256,12 +281,21 @@ documents.
 
 `claim_next_run` will not take a row for a `requested_by` that already has a `claimed` or
 `running` row; that user's next row waits. **Scoped to a non-empty `requested_by`, deliberately.**
-RE has not adopted `trellis-auth`, so every row today is attributed to `""` — and applying the
-rule to that bucket would collapse the whole queue to one run at a time for everybody, a visible
-regression against the pre-queue behaviour where each route spawned its own thread. `""` is the
-unattributed bucket and is exempt; the moment real user ids appear the rule starts applying with
-no further change. `resource-explorer runs enqueue <kind> <target> --requested-by alice` exercises
-it today.
+
+**Live since 2026-09-04.** Before `trellis-auth` landed, every row was attributed to `""`, the
+exemption covered the entire queue, and the rule was inert — applying it to that bucket would have
+collapsed the queue to one run at a time for everybody, a visible regression against the pre-queue
+behaviour where each route spawned its own thread. `run_queue.requested_by()` now reads the
+signed-in caller from RE's identity ContextVar, so the rule applies to real people and `""` is left
+holding what it should: **the worker's own service-account runs**. No code changed in
+`claim_next_run` when real ids appeared, which is what the hook was for.
+
+A run is also *executed* as the person who queued it: `_run_as_requester` publishes `requested_by`
+as the caller for the duration of the handler, so anything the run writes to Egeria is owned by
+them. The row carries no token — see that function for the reasoning and for the gap that leaves.
+
+`resource-explorer runs enqueue <kind> <target>` attributes to the signed-in user by default;
+`--requested-by alice` still wins, for a script attributing on someone's behalf.
 
 ### 1.2d Who runs the queue, and why it is not leader-elected
 
@@ -588,8 +622,7 @@ flowchart TB
 
 ## Migration map — what is done, what is pending
 
-Step 2a, step 2b and the `a2a` role are all done. What remains is RE-wide `trellis-auth`
-adoption.
+Step 2a, step 2b, the `a2a` role and RE-wide `trellis-auth` adoption are all done.
 
 | Current thread / pool | Moves to | Status |
 |---|---|---|
@@ -608,7 +641,7 @@ adoption.
 | `survey_definition_reader.py`'s two pools — the incident hazard | Same shared bounded pool, per-call timeout kept | **Done**, plus the nesting removed (leaf work submitted instead of pooled work that pooled again) and a batch-level deadline added. **The cross-loop hazard itself is still open** — it lives in pyegeria, and the plan's concurrency spike has not happened |
 | `cli/main.py`'s SIGUSR1 + bounded-shutdown instrumentation (`web`-only) | Every role | **Done for `web`, `worker` and `a2a`** (`_install_stack_dump`). `cli` and `tui` still do not have it. The helper now degrades instead of raising when stderr is not a real file — `faulthandler.enable()` throws `UnsupportedOperation` under a captured stream, which would otherwise make instrumentation the reason a role fails to start |
 | RE's `agentstack_server.py` (8080-8086, unauthenticated) | `a2a` role | **Done — 2026-09-04.** One port (8090), path routing, bearer auth, per-agent cards plus a `/.well-known/agents.json` index. `agentstack_server.py` keeps the agent *definitions* and exposes `agent_factories()`; the hosting moved to `a2a_role.py`. The old `run(all_agents=True)` path is kept but unreachable from the CLI |
-| — | `trellis-auth` adoption in RE | **Partial.** The `a2a` role authenticates callers with `trellis-auth` and carries the caller's Egeria token in a ContextVar (`a2a_auth.current_caller`, `apply_caller_token`). RE's own pyegeria client construction sites, the web tier's login, and `requested_by` on queue rows are all still unconverted |
+| — | `trellis-auth` adoption in RE | **Done — 2026-09-04, plan §4.** Login required (`web/app.py`'s `LoginRequiredMiddleware` under `resource_explorer/auth.py`'s policy), one identity ContextVar shared by the web, A2A and CLI doors, per-request pyegeria clients built from the caller's token, `Ownership` + draft-zone `ZoneMembership` on everything published, curate authorization at the workflow layer, `user_id` on the three user-owned tables, and `requested_by` carrying a real id so per-user fairness applies. Two follow-ons named rather than closed: a queued run carries no token (`run_queue._run_as_requester`), and curator rights read the JWT `role` claim rather than Egeria `PersonRoleAppointment`s |
 
 ## Findings that contradict or refine the plan's description (summary)
 

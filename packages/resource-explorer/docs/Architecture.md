@@ -24,9 +24,16 @@ Resource Explorer discovers, understands and catalogs information resources — 
 repositories, PostgreSQL databases and file systems — using [Egeria](https://egeria-project.org/)
 as the catalog of record.
 
-**Egeria-first, but not Egeria-dependent.** Every survey result that can be written to Egeria
-should be. Local storage is a cache and a queue, so the tool keeps working while Egeria is
-unreachable and reconciles afterwards. RAG-based querying needs no Egeria at all.
+**Egeria-first, and Egeria is now a hard dependency for *access*.** Every survey result that can
+be written to Egeria should be. Local storage is a cache and a queue, so the tool keeps working
+while Egeria is briefly unreachable and reconciles afterwards.
+
+**But Egeria is also the identity provider** (2026-09-04, `docs/runtime-architecture-plan.md`
+§4): RE requires login, and the only way to sign in is an Egeria user id and password exchanged
+for an Egeria bearer token. The older claim that "RAG-based querying needs no Egeria at all" is
+retired — the querying itself still needs none, but reaching it requires a session, and a session
+requires Egeria. `TRELLIS_ANONYMOUS_READ=true` is the one remaining way to run without one and is
+a dev-box override, not a supported mode.
 
 Two layers:
 
@@ -94,8 +101,13 @@ resource_explorer/
 ├── run_reconciler.py       # resolve activity rows and `runs` rows a dead process left claimed
 ├── run_queue.py            # the Postgres run queue: claim (SKIP LOCKED), heartbeat, execute, finish
 ├── a2a_role.py             # the `a2a` role: all seven agents on ONE port, path-routed, card per agent
-├── a2a_auth.py             # bearer auth for that role: app JWT or raw Egeria token, cached
+├── a2a_auth.py             # bearer auth + THE identity ContextVar (`current_caller`) every door sets
 ├── agentstack_server.py    # the seven agent definitions themselves (a2a_role mounts them)
+│
+│   # identity — see "Who a call runs as" below
+├── auth.py                 # thin adapter over trellis-auth: policy, secrets, token mint/exchange
+├── egeria_identity.py      # per-request pyegeria clients, Ownership, ZoneMembership, the draft zone
+├── cli/session.py          # `resource-explorer login`'s cached session (trellis_auth.session_file)
 │
 │   # the workflows — one module per unit of work, FastAPI-free
 ├── workflows/
@@ -297,6 +309,79 @@ not the native one). The RAG context budget is applied in
 prompt (`rag_system.py`, `agents/doc_agent.py`, `agents/code_agent.py`) — it keeps the
 highest-ranked chunks and stops adding once the (approximate, 4 chars/token) estimate would
 exceed the budget.
+
+---
+
+## Who a call runs as
+
+`docs/runtime-architecture-plan.md` §4, landed 2026-09-04. Three doors, one identity, one place
+that decides what an Egeria write is attributed to.
+
+**Login is required.** `trellis_auth.LoginRequiredMiddleware`, installed in `web/app.py` under the
+policy `resource_explorer/auth.py` resolves (`TRELLIS_*` then `EXPLORER_*`, the app-specific one
+winning). Public: `/health`, `/health/ready`, `/static/`, the SPA shell, the five `/api/auth/*`
+routes, and `/.well-known/` — the A2A agent cards must be readable before a client holds the
+credential they describe. Middleware order, measured rather than assumed, is
+**CORS → login gate → identity → routes**: a cross-origin 401 keeps its CORS headers (without
+them the browser reports an opaque network error and the login form never appears), and a
+rejected request never sets an identity.
+
+**Two ways in, one token.** The login form exchanges an Egeria user id and password for a bearer
+token exactly once and forgets the password; the Portal hands over the token it already holds.
+Either way RE mints its own HS256 session JWT carrying that bearer token — never a password — and
+caps its expiry at the Egeria token's own. Sessions therefore last as long as Egeria's tokens do
+(one hour by default, and every token dies when the platform restarts); refresh is a re-login.
+
+**One identity mechanism.** `a2a_auth.current_caller` is a ContextVar, and all three doors set the
+same one:
+
+| Door | Sets it in |
+|---|---|
+| Browser / HTTP | `web/app.py::_identity_middleware` |
+| A2A agent traffic | `a2a_auth.A2AAuthMiddleware` |
+| CLI | `cli/session.activate()`, from the cached login |
+
+Everything downstream asks `a2a_auth.caller()`. Nothing has to know which door a call came
+through, and there is deliberately no second, web-shaped identity type.
+
+**Per-request Egeria clients.** `egeria_identity.apply_identity` is the single place a pyegeria
+client is authenticated. A signed-in person's client reuses *their* bearer token
+(`set_bearer_token`), so Egeria's own provenance records the person rather than `erinoverview`.
+The **worker role's own loops** — bootstrap heal, resync, outbox drain — keep the service account,
+which is the correct attribution for them and the only legitimate use of it.
+
+**Ownership is curation by default.** Everything RE publishes gets Egeria's `Ownership`
+classification (`0445`) with `owner` = the requesting user and `ownerTypeName = "UserIdentity"`.
+The owner may accept, reject, promote and delete with no separate grant; a `curator`/`admin` role
+claim curates across resources it does not own; everyone else gets 403. Enforced in
+`workflows/curate.py`, not in the routes, so the CLI and A2A inherit it.
+
+**One draft zone per app.** *Everything* RE creates in Egeria — survey reports, the library
+element, materialized components and blueprints — is born in `resource-explorer-draft`
+(`ZoneMembership`, `0424`), and curate-accept promotes it into the deployment's publish zones
+(`EXPLORER_PUBLISH_ZONES`, default `egeria-runtime`, which is what the quickstart configures). The
+worker creates the zone itself once at startup, leader-elected.
+
+"Everything, no exceptions" is a correction, made against the live platform on 2026-09-04. A
+materialized component was at first written straight into the publish zones, on the reasoning that
+it *is* the accepted outcome — and the accept path's promotion then failed with
+`OMAG-SERVER-SECURITY-403-005: not authorized to change the zone membership ... from
+[egeria-runtime] to [egeria-runtime]`. Egeria's security connector treats a no-op zone change as an
+error, so a second code path with its own rule produced a permissions failure on a correct
+operation. One rule removes the special case and makes the transition observable:
+`promote_to_publish_zones` reports `from_zones` alongside `zones`, so "promoted" can be told from
+"was already there".
+
+**Trellis-side scoping.** `resource_working_set`, `entity_egeria_project_context` and
+`conversation_history` carry `user_id`, resolved *in the registry layer* rather than by each
+route — a route that has to remember to scope is a route that will not. `''` is the shared/legacy
+bucket, and a read takes the caller's own row falling back to it, so nothing written before this
+existed disappeared.
+
+**Known gaps, named rather than hidden.** A queued run carries `requested_by` but no token — a
+one-hour credential does not survive a queue — so the worker publishes as the service account with
+`Ownership` set to the requester (`run_queue._run_as_requester`). And curator rights read the JWT
+`role` claim; the plan's destination is Egeria `PersonRoleAppointment`s.
 
 ---
 

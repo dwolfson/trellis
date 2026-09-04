@@ -67,6 +67,12 @@ class TestAdvisoryKeys:
             "scheduler": -6561321191492868153,
             "bootstrap-monitor": 5582179307941343378,
             "egeria-resync": -3163458856154549756,
+            # Not a loop — the one-shot that creates RE's draft GovernanceZone
+            # at worker startup (2026-09-04, plan §4). It takes a lock for the
+            # same reason: N workers starting together would each race to
+            # create the same zone, and pyegeria's generic element create has
+            # no upsert.
+            "draft-zone-bootstrap": 3533934354696901714,
         }
 
     def test_keys_are_distinct_and_fit_int64(self):

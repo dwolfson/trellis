@@ -100,11 +100,59 @@ EGERIA__DEFAULT_SURVEY_ZONES=["survey-zone"]
 
 Zone names can also be specified per-operation via the Egeria publish panel in the web UI (comma-separated text field), or via the `zone_names` field in the `POST /api/egeria/{slug}/publish` body.
 
-Egeria is only required for:
+**Egeria is a hard dependency as of 2026-09-04**, because it is also the identity provider — see
+"Authentication" below. Beyond signing in, it is required for:
 - `resource-explorer survey --publish` (writes to Egeria catalog)
 - Egeria-native database survey
 - RFA lifecycle management
 - Reading Egeria annotation results back into the survey report
+
+### Authentication
+
+Login is required on every non-public path (`docs/runtime-architecture-plan.md` §4). Users sign in
+with an **Egeria user id and password**; RE exchanges the password for an Egeria bearer token once
+and issues its own session JWT carrying that token. No password is ever stored or signed into a
+token.
+
+```bash
+# Required in any deployment. Without it RE derives a per-host secret and logs a warning —
+# workable on a single-box checkout, but sessions do not survive a move to another machine.
+RE_JWT_SECRET=<a long random string>
+
+# Only if this deployment accepts Portal SSO. Must match the Portal's own shared secret.
+RE_PORTAL_SECRET=<shared with the Egeria Portal>
+
+# Optional. Default 8; the effective session length is whichever is shorter, and Egeria's
+# own bearer tokens last one hour.
+RE_JWT_TTL_HOURS=8
+```
+
+Policy knobs, read as `TRELLIS_<NAME>` first then `EXPLORER_<NAME>` (the app-specific one wins):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `EXPLORER_REQUIRE_LOGIN` | `true` | `false` turns the gate off entirely. **Not a supported deployment mode** — it exists so a test or a one-off experiment can opt out explicitly rather than by deleting the middleware |
+| `EXPLORER_ANONYMOUS_READ` | `false` | Dev-box override: unauthenticated `GET`/`HEAD` is allowed, **writes still 401**. That asymmetry is the point — an anonymous reader cannot create anything, so nothing lands in Egeria without an identity behind it |
+| `EXPLORER_PUBLIC_PATHS` | — | Comma-separated, **added** to the defaults, never replacing them (an operator adding an A2A path must not silently drop the login route) |
+| `EXPLORER_EXPOSE_OPENAPI` | `false` | Adds `/docs` and `/openapi.json` to the allowlist |
+
+**Sessions last as long as Egeria's token** — one hour by Egeria's default, and every token dies
+when the platform restarts (the quickstart leaves `rsa.key-id` empty, so the signing key is random
+per restart). Browsers re-log-in; the CLI caches a session (`resource-explorer login`) and says
+`session expired at HH:MM` when it lapses.
+
+### Governance zones
+
+Everything RE publishes lands in a **draft zone** and is promoted on curate-accept:
+
+```bash
+# The zone unreviewed publishes land in. The worker creates it at startup if absent.
+EXPLORER_DRAFT_ZONE=resource-explorer-draft
+
+# Where curate-accept promotes an element. Default: egeria-runtime, which is what the
+# quickstart deployment configures.
+EXPLORER_PUBLISH_ZONES=egeria-runtime
+```
 
 ### Observability (optional)
 

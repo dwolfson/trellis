@@ -64,6 +64,11 @@ KEY_NAMESPACE = "resource-explorer/worker"
 LOCK_SCHEDULER = "scheduler"
 LOCK_BOOTSTRAP = "bootstrap-monitor"
 LOCK_EGERIA_RESYNC = "egeria-resync"
+#: Not a loop — a one-shot at worker startup (RE's draft GovernanceZone,
+#: plan §4). It takes a lock for the same reason the loops do: N worker
+#: processes starting together would otherwise each race to create the same
+#: zone, and pyegeria's generic element create has no upsert.
+LOCK_DRAFT_ZONE = "draft-zone-bootstrap"
 
 
 def advisory_key(name: str) -> int:
@@ -206,7 +211,7 @@ class LeaderLock:
             pass
 
 
-ALL_LOCK_NAMES = (LOCK_SCHEDULER, LOCK_BOOTSTRAP, LOCK_EGERIA_RESYNC)
+ALL_LOCK_NAMES = (LOCK_SCHEDULER, LOCK_BOOTSTRAP, LOCK_EGERIA_RESYNC, LOCK_DRAFT_ZONE)
 
 
 def documented_keys() -> dict[str, int]:

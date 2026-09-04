@@ -50,6 +50,7 @@ from typing import Callable
 
 from resource_explorer.leader_election import (
     LOCK_BOOTSTRAP,
+    LOCK_DRAFT_ZONE,
     LOCK_EGERIA_RESYNC,
     LOCK_SCHEDULER,
     LeaderLock,
@@ -227,6 +228,46 @@ def _warm_survey_definition_cache() -> None:
     threading.Thread(target=_run, name="survey-cache-warm", daemon=True).start()
 
 
+def _ensure_draft_zone() -> None:
+    """Create RE's draft `GovernanceZone` once, if Egeria does not have one.
+
+    Leader-elected and one-shot, not a loop: the zone either exists or it does
+    not, and asking Egeria about it every 60 seconds would be a round trip
+    whose answer never changes. The lock is what makes "once" true across N
+    worker processes starting together — pyegeria's generic element create has
+    no upsert, so two simultaneous creates would produce two zones with the
+    same qualified name.
+
+    A process that loses the election does **not** retry: whoever won either
+    created the zone or found it there, and a loser retrying later would just
+    re-ask a settled question. Contrast the loops in `_supervise`, which retry
+    forever precisely because leadership can change hands.
+
+    Its own thread, never joined, for the same reason as the cache warm above:
+    startup must not wait on Egeria, which is routinely not up yet. Failure is
+    logged and tolerated — `ensure_draft_zone_exists` never raises, and a
+    publish still names the zone in its `ZoneMembership` whether or not the
+    zone element exists.
+    """
+
+    def _run() -> None:
+        lock = LeaderLock(LOCK_DRAFT_ZONE)
+        if not lock.acquire():
+            log.debug("draft-zone bootstrap: another process holds the lock — skipping")
+            return
+        try:
+            from resource_explorer.egeria_identity import ensure_draft_zone_exists
+
+            outcome = ensure_draft_zone_exists()
+            log.info("draft-zone bootstrap: %s", outcome)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("draft-zone bootstrap failed: %s", exc)
+        finally:
+            lock.release()
+
+    threading.Thread(target=_run, name="draft-zone-bootstrap", daemon=True).start()
+
+
 # ── the leader-gated supervisor ─────────────────────────────────────────
 
 def _supervise(spec: LoopSpec, stop_event: threading.Event, embedded: bool) -> None:
@@ -290,12 +331,14 @@ def run_worker(
 
     log.info(
         "worker role starting (embedded=%s): %s leader-elected loop(s) "
-        "plus orphaned-run reconciliation and survey-definition cache warm",
+        "plus orphaned-run reconciliation, survey-definition cache warm and "
+        "draft-zone bootstrap",
         embedded, len(loop_specs()),
     )
 
     _reconcile_orphaned_runs()
     _warm_survey_definition_cache()
+    _ensure_draft_zone()
 
     # The run queue. NOT leader-elected and NOT a LoopSpec, deliberately: the
     # three loops above take an advisory lock because two processes firing the

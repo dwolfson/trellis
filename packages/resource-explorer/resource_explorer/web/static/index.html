@@ -14,6 +14,18 @@
        /api/diagrams/mermaid, see diagrams.py) instead of client-side
        mermaid.js, so the browser never needs mermaid at all. svg-pan-zoom
        still runs client-side against whatever SVG comes back. -->
+  <!-- FIRST, deliberately: auth.js wraps window.fetch to attach the bearer
+       token. A script that fetches before this loads would send an
+       unauthenticated request and get a 401 nobody handled.
+
+       `?v=` is a cache-bust marker, and it is here rather than on the vendor
+       bundles because this is the file whose staleness is *silent*. Hit during
+       this change's own verification: the browser served a cached auth.js
+       against a freshly-deployed index.html, the two disagreed about how the
+       overlay is hidden, and the result was a signed-out page with no login
+       form and no console error — indistinguishable from the app simply not
+       working. Bump it whenever auth.js changes shape. -->
+  <script src="/static/auth.js?v=2026-09-04"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/plotly.min.js" charset="utf-8"></script>
   <script src="/static/vendor/svg-pan-zoom.min.js"></script>
@@ -203,6 +215,54 @@
 </head>
 <body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
 
+<!-- Login overlay. Non-dismissible while the server requires login and nobody
+     is signed in — see auth.js's hideLogin(). Deliberately plain: this is the
+     one screen that must render correctly with no data, no session and
+     possibly no Egeria, so it depends on nothing but Tailwind. -->
+<!-- Styled INLINE rather than with Tailwind utilities, deliberately.
+     `static/tailwind.css` is a pre-built, purged stylesheet, not a JIT build:
+     `inset-0`, `z-[100]`, `shadow-2xl` and every arbitrary-value class are
+     simply absent from it. A version of this panel written in those classes
+     rendered as an unstyled block in the top-left corner with the app shell
+     showing through — it *looked* like a login form to the code and like a
+     broken page to a person. This is the one screen that must render
+     correctly before anything else works, so it depends on nothing. -->
+<!-- `display:none` INLINE, not `class="hidden"`. An inline style beats a class
+     rule, so an inline `display:flex` here plus Tailwind's `.hidden` left the
+     overlay permanently visible *over a fully signed-in app* — the class said
+     hidden, the computed style said flex, and the page looked exactly like a
+     login that had failed. auth.js toggles `el.style.display` for the same
+     reason: one mechanism controls this, not two that can disagree. -->
+<div id="login-overlay"
+     style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;
+            background:rgba(2,6,23,0.96);align-items:center;justify-content:center;">
+  <div style="width:380px;max-width:90vw;background:#0f172a;border:1px solid #334155;
+              border-radius:8px;padding:24px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);">
+    <h2 style="margin:0 0 4px;font-size:17px;font-weight:600;color:#f1f5f9;">
+      🔑 Sign in to Resource Explorer
+    </h2>
+    <p style="margin:0 0 16px;font-size:12px;color:#94a3b8;line-height:1.5;">
+      Use your Egeria user id and password. Egeria is the identity provider; your
+      password is exchanged for a token once and never stored.
+    </p>
+    <p id="login-message" class="hidden" style="margin:0 0 12px;font-size:12px;color:#fcd34d;"></p>
+    <label for="login-username" style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px;">Egeria user id</label>
+    <input id="login-username" type="text" autocomplete="username"
+           style="width:100%;box-sizing:border-box;margin-bottom:12px;padding:8px 12px;border-radius:6px;
+                  background:#1e293b;border:1px solid #334155;color:#f1f5f9;font-size:14px;">
+    <label for="login-password" style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px;">Password</label>
+    <input id="login-password" type="password" autocomplete="current-password"
+           style="width:100%;box-sizing:border-box;margin-bottom:16px;padding:8px 12px;border-radius:6px;
+                  background:#1e293b;border:1px solid #334155;color:#f1f5f9;font-size:14px;">
+    <p id="login-error" class="hidden" style="margin:0 0 12px;font-size:12px;color:#f87171;"></p>
+    <button id="login-submit-btn"
+            style="width:100%;padding:9px 12px;border:0;border-radius:6px;background:#0369a1;
+                   color:#fff;font-size:14px;font-weight:500;cursor:pointer;">
+      Sign in
+    </button>
+  </div>
+</div>
+
 <!-- Toast container (fixed overlay, survives all re-renders) -->
 <div id="toast-container"></div>
 <!-- Bootstrap banner — visible only while Dr.Egeria definitions are being
@@ -257,11 +317,15 @@
       title="The investigation this work belongs to">
       🧭 <span id="current-investigation-label">No investigation</span>
     </span>
-    <!-- Read-only identity indicator — RE has no per-user login yet (see
-         egeria.py::whoami's comment); this just surfaces the fixed Egeria
-         service-account identity currently configured via .env. Clicking it
-         explains how that's configured rather than opening a login form. -->
-    <span id="whoami-badge" class="text-xs text-slate-500 cursor-help" onclick="_showWhoamiInfo()" title="Click for how this is configured">⏳ Connecting…</span>
+    <!-- Identity indicator. **Changed 2026-09-04**: this used to surface the
+         fixed Egeria service-account id from .env, because RE had no per-user
+         login. It now shows the signed-in person, taken from the session
+         token's own claims rather than from a server round trip — the token IS
+         the identity, and asking /api/egeria/whoami who we are would answer
+         with whichever account that route happens to connect as. -->
+    <span id="whoami-badge" class="text-xs text-slate-400 cursor-help" onclick="_showWhoamiInfo()" title="Click for connection details">⏳ Connecting…</span>
+    <button id="logout-btn" class="hidden text-xs text-slate-500 hover:text-slate-300 px-1"
+            title="Sign out">⏻</button>
     <!-- Egeria Project context (Part 5 — the "uber intent"), reworked to a
          session-wide default (direct feedback, 2026-08-24): pick it once,
          next to who you're connected as, and it applies to every publish
@@ -1634,6 +1698,14 @@ function _startBootstrapBannerPoll() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Nothing below runs until there is a session. Every one of these calls hits
+  // an authenticated route, so starting them first would produce a page whose
+  // every panel is a 401 behind the login form — which is the broken page the
+  // login form exists to replace, not an acceptable version of it.
+  Auth.init(_startApp);
+});
+
+function _startApp() {
   checkBackendHealth();
   _startBackendHealthPoll();
   loadProjects();
@@ -1686,7 +1758,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Restore sidebar width
   const stored = localStorage.getItem('pe_sidebar_w');
   if (stored) document.getElementById('sidebar').style.width = stored + 'px';
-});
+}
 
 // ── intent navigation (primary nav) ─────────────────────────────────────────────
 const INTENT_PLACEHOLDER_TEXT = {};
@@ -2126,31 +2198,51 @@ function showCuratePane() {
   showMainView('curate');
 }
 
-// The connected identity, for attributing a recorded decision.
+// The signed-in identity, for attributing a recorded decision.
 //
-// This is the Egeria SERVICE-ACCOUNT id, not an authenticated person —
-// there is no per-person login in this codebase (same caveat already
-// carried by repo_dispositions.decided_by). Treat what it returns as a
-// self-reported note about who was at the keyboard, never as an
-// authenticated fact, and expect '' when Egeria is unreachable rather than
-// substituting a plausible-looking name.
+// **This is now an authenticated person** (2026-09-04). It used to be the
+// Egeria SERVICE-ACCOUNT id, with the honest caveat that it was a
+// self-reported note about who was at the keyboard rather than an
+// authenticated fact. RE requires login now, so the value comes from the
+// session token's claims and IS an authenticated fact. '' still means "we do
+// not know" — a signed-out browser — and must not be replaced by a
+// plausible-looking name.
 function _currentUserLabel() {
-  return document.getElementById('whoami-badge')?.dataset.userId || '';
+  return (typeof Auth !== 'undefined' && Auth.getUser()?.user_id) || '';
 }
 
-// ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
+// ── identity indicator ────────────────────────────────────────────────────
+//
+// Two different questions, deliberately kept apart:
+//   who am I      — the session token's own claims. No round trip; the token
+//                   IS the identity, and asking the server would answer with
+//                   whichever account /api/egeria/whoami connects as.
+//   what am I connected to — the view server and platform URL, which only the
+//                   server knows. Fetched, and purely informational.
 async function loadWhoami() {
   const badge = document.getElementById('whoami-badge');
+  const user = (typeof Auth !== 'undefined' && Auth.getUser()) || null;
+  const userId = user?.user_id || user?.sub || '';
+  if (userId) {
+    badge.textContent = `🔑 Signed in as: ${userId}`;
+    badge.dataset.userId = userId;
+    document.getElementById('logout-btn')?.classList.remove('hidden');
+  } else {
+    badge.textContent = '⚠ Not signed in';
+    badge.dataset.userId = '';
+  }
   try {
     const res = await fetch('/api/egeria/whoami');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const who = await res.json();
-    badge.textContent = `🔑 Connected as: ${who.user_id}`;
-    badge.dataset.userId = who.user_id || '';
     badge.dataset.viewServer = who.view_server;
     badge.dataset.platformUrl = who.platform_url;
   } catch(e) {
-    badge.textContent = '⚠ Not connected to Egeria';
+    // Connection detail is a nice-to-have; who is signed in is not, and is
+    // already shown. Deliberately does NOT overwrite the badge with
+    // "not connected" — that would replace a fact we know with one we don't.
+    badge.dataset.viewServer = '';
+    badge.dataset.platformUrl = '';
   }
 }
 
@@ -2158,10 +2250,16 @@ function _showWhoamiInfo() {
   const badge = document.getElementById('whoami-badge');
   const vs = badge.dataset.viewServer || '?';
   const url = badge.dataset.platformUrl || '?';
+  const who = badge.dataset.userId || '(not signed in)';
   showToast('info',
-    `Connected to Egeria view server <b>${_esc(vs)}</b> at <b>${_esc(url)}</b> as a single shared service account. ` +
-    `This isn't per-user login yet — change it via <code>EGERIA_USER_ID</code>/<code>EGERIA_USER_PASSWORD</code> in .env, not from this UI.`,
-    10000);
+    `Signed in as <b>${_esc(who)}</b>. Every Egeria read and write this session makes ` +
+    `runs as you, so Egeria's own provenance records your user id — and anything ` +
+    `published is owned by you and starts in the <code>resource-explorer-draft</code> zone ` +
+    `until a curator accepts it.<br><br>` +
+    `Egeria view server <b>${_esc(vs)}</b> at <b>${_esc(url)}</b>. ` +
+    `Sessions last as long as your Egeria token (one hour by default); when it lapses, ` +
+    `sign in again.`,
+    12000);
 }
 
 // ── Egeria Project context (Part 5 — the "uber intent") ────────────────────

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -87,8 +87,85 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+@app.middleware("http")
+async def _identity_middleware(request, call_next):
+    """Publish the signed-in caller for the duration of this request.
+
+    Sets `a2a_auth.current_caller` — RE's **one** identity ContextVar, already
+    set by the A2A middleware for agent traffic and by `use_identity()` for the
+    CLI. Everything downstream (the publisher, the materializers, the run
+    queue's `requested_by`, the registry's user scoping) asks that one
+    question, so it does not matter which door a call came through.
+
+    Reset in `finally`, so a handler that raises cannot leak an identity into
+    whatever the worker thread serves next — the failure mode that makes a
+    ContextVar-based identity worth writing carefully.
+
+    Deliberately tolerant of an absent/invalid token: rejecting is
+    `LoginRequiredMiddleware`'s job, and it runs outside this. A request that
+    reaches here without a token is on the public allowlist, and the right
+    thing to publish for it is "nobody".
+    """
+    from resource_explorer.a2a_auth import current_caller
+
+    from resource_explorer.auth import get_current_user, identity_from_claims
+
+    # Unguarded, deliberately: `get_current_user` already returns None rather
+    # than raising for an absent, malformed or forged token — that IS the
+    # tolerance this needs. A broad `except` here would additionally swallow a
+    # genuine bug in identity resolution and serve the request as nobody,
+    # which is the "we never measured this looks exactly like we measured
+    # nothing" failure applied to authorization.
+    claims = get_current_user(request)
+    identity = identity_from_claims(claims) if claims is not None else None
+
+    reset = current_caller.set(identity)
+    try:
+        return await call_next(request)
+    finally:
+        current_caller.reset(reset)
+
+
+def _install_login_required_middleware() -> None:
+    """Install `trellis_auth.LoginRequiredMiddleware` — the shared login policy.
+
+    **Ordering, measured rather than assumed.** Starlette's `add_middleware`
+    does `user_middleware.insert(0, ...)` and the stack is then built by
+    iterating `reversed(...)`, so the **last** middleware added ends up
+    **outermost**. Verified empirically against this checkout's Starlette
+    (two probe middlewares, the second-added logged first) rather than read
+    off a docstring — the two readings are one `reversed()` apart and the
+    wrong one puts the login gate inside the thing it is meant to gate.
+
+    Hence the order in this file, bottom to top of the stack:
+
+        CORS  (added last  → outermost)
+          └── LoginRequiredMiddleware   (this)
+                └── _identity_middleware (added first → innermost)
+                      └── routes
+
+    * The login gate is outside `_identity_middleware`, so a rejected request
+      never sets an identity at all.
+    * CORS is outside the login gate, so a cross-origin 401 still carries its
+      CORS headers. Without that the browser reports an opaque network error
+      instead of "please sign in", and the login form never appears — the
+      exact broken page this whole change exists to prevent.
+    """
+    from trellis_auth import LoginRequiredMiddleware
+
+    from resource_explorer.auth import auth_config, get_policy
+
+    app.add_middleware(
+        LoginRequiredMiddleware, config=auth_config(), policy=get_policy(),
+    )
+
+
+_install_login_required_middleware()
+
+# Added last, therefore outermost — see `_install_login_required_middleware`.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+app.include_router(auth_routes.router, prefix="/api/auth", tags=["auth"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(databases.router, prefix="/api/databases", tags=["databases"])

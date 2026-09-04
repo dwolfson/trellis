@@ -155,6 +155,39 @@ class TestDiscoveryCommands:
 
 
 class TestCurateCommand:
+    """`curate materialize` requires a signed-in session as of 2026-09-04.
+
+    It creates real Egeria elements and stamps them with an owner, so it needs
+    a person to be that owner (plan §4). These tests supply one rather than
+    working around the gate — `_signed_in` gives the command exactly what a
+    real `resource-explorer login` would leave behind, so what they exercise is
+    still the routing, not the gate. `TestTheGate` below covers the other side.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _signed_in(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("RE_JWT_SECRET", "cli-curate-test-secret")
+        import jwt as _jwt
+
+        from resource_explorer.cli import session as cli_session
+
+        egeria_token = _jwt.encode({"sub": "dan", "exp": 9999999999}, "irrelevant",
+                                   algorithm="HS256")
+        cli_session.save_login("dan", egeria_token)
+        yield
+        cli_session.activate(None)
+
+    def test_without_a_session_it_exits_2_and_names_the_fix(self, runner, registry,
+                                                            tmp_path, monkeypatch):
+        """Exit 2, not 1: "you are not signed in" is a different outcome from
+        "the command ran and failed", and a wrapping script must be able to
+        tell them apart without parsing the message."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+        result = runner.invoke(app, ["curate", "materialize", "myproj", "src/api"])
+        assert result.exit_code == 2
+        assert "resource-explorer login" in result.output
+
     def test_a_component_id_routes_to_the_component_materializer(self, runner, registry):
         with patch("resource_explorer.workflows.curate.materialize_component_if_accepted",
                    return_value={"status": "ok", "guid": "g1"}) as comp, \

@@ -17,6 +17,24 @@ from resource_explorer.surveyors.arch_recovery.materializer import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_live_classification(monkeypatch):
+    """Ownership/ZoneMembership go to a mock, not to a real view server.
+
+    `materialize()` stamps both on the element it creates (2026-09-04, plan
+    §4), and `stamp_published` builds its own client rather than reusing one of
+    the mocks below — deliberately, because the whole point is that the client
+    carries *this caller's* credential. Without this fixture the module's "no
+    live Egeria in any test here" promise quietly stopped holding: the calls
+    went out, failed against the real platform, and were swallowed as
+    best-effort warnings.
+    """
+    monkeypatch.setattr(
+        "resource_explorer.egeria_identity.classification_client",
+        lambda identity=None: MagicMock(),
+    )
+
+
 def _materializer(registry=None):
     m = ComponentMaterializer(platform_url="https://fake", registry=registry)
     m._solution_architect = MagicMock()
@@ -38,11 +56,19 @@ class TestFreshMaterialization:
         m = _materializer(registry=MagicMock(get_materialized_component=MagicMock(return_value=None)))
         result = m.materialize("repo", "myproj", "src/svc", name="svc", component_type="Software Service",
                                 perspective="deployment", confidence=85)
+        governance = result.pop("governance")
         assert result == {
             "status": "materialized",
             "guid": "11111111-1111-1111-1111-111111111111",
             "qualified_name": "SolutionComponent::repo::myproj::src/svc",
         }
+        # Born in the draft zone, like every other element RE creates. The
+        # accept path promotes it immediately after — and it must, because
+        # Egeria's security connector 403s a zone change whose before and
+        # after are equal, which is what writing the publish zones here
+        # produced (live, 2026-09-04).
+        assert governance["zones"] == ["resource-explorer-draft"]
+        assert governance["ownership"] is True and governance["zone_membership"] is True
         m._connect.assert_called_once()
         body = m._solution_architect.create_solution_component.call_args[0][0]
         assert body["class"] == "NewElementRequestBody"

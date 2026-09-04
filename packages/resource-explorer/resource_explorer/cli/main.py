@@ -30,6 +30,76 @@ app = typer.Typer(
 console = Console()
 
 
+# ── sign in / sign out ───────────────────────────────────────────────────────
+#
+# `docs/runtime-architecture-plan.md` §4: Egeria is the identity provider, its
+# bearer tokens last an hour, and every one of them dies when the platform
+# restarts. A CLI that prompted on every command would be unusable and one
+# that stored the password would undo the point of the token contract — so the
+# password is exchanged once, here, and what lands on disk is this app's
+# session JWT (mode 0600). See `resource_explorer/cli/session.py`.
+
+
+@app.command(name="login")
+def login_command(
+    user: Optional[str] = typer.Option(
+        None, "--user", help="Egeria user id (prompted for if omitted)"),
+):
+    """Sign in to Egeria and cache the session for later commands.
+
+    The password is **prompted for, never taken as an argument** — an argument
+    lands in the shell history, in `ps` output, and in whatever process
+    accounting the box keeps. It is exchanged for an Egeria bearer token once
+    and then discarded.
+
+    Commands that reach Egeria (`survey --publish`, `egeria-reset`,
+    `egeria-recheck`, `curate materialize`, `analysis run --publish`,
+    `runs enqueue`) use this session; read-only commands keep working without
+    one.
+    """
+    from resource_explorer.auth import login_with_password
+    from resource_explorer.cli import session as cli_session
+
+    if not user:
+        from resource_explorer.config import get_config
+
+        user = typer.prompt("Egeria user id", default=get_config().egeria.user_id or None)
+    password = typer.prompt("Password", hide_input=True)
+
+    egeria_token = login_with_password(user, password)
+    del password
+    if not egeria_token:
+        # One message for three causes (bad credentials, Egeria unreachable,
+        # pyegeria missing): `login_with_password` cannot tell them apart, and
+        # guessing one would be worse than naming all three.
+        console.print(
+            "[red]✗ Sign-in failed.[/red] Check the user id and password, and that the "
+            "Egeria platform in .env (EGERIA_PLATFORM_URL/EGERIA_VIEW_SERVER) is reachable."
+        )
+        raise typer.Exit(1)
+
+    record = cli_session.save_login(user, egeria_token)
+    when = f" until {record.expires_at_local:%H:%M}" if record.expires_at_local else ""
+    console.print(f"[green]✓ Signed in as {user}[/green]{when}")
+    console.print(f"[dim]Session cached at {record.path} (mode 0600)[/dim]")
+
+
+@app.command(name="logout")
+def logout_command():
+    """Forget the cached session.
+
+    Local only, and honestly so: there is no server-side session to revoke —
+    the Egeria bearer token inside the cached JWT stays valid at the platform
+    until its own expiry. Deleting the file is the whole of what logout can do.
+    """
+    from resource_explorer.cli import session as cli_session
+
+    if cli_session.clear_session():
+        console.print("[green]✓ Signed out[/green] [dim](cached session removed)[/dim]")
+    else:
+        console.print("[dim]Nothing to do — no cached session.[/dim]")
+
+
 @app.command()
 def add(
     github_url: str = typer.Argument(help="GitHub repository URL to add"),
@@ -1107,6 +1177,17 @@ def survey(
     if not targets:
         raise typer.Exit(1)
 
+    # A publish writes to Egeria on behalf of a person, so it needs one. A
+    # bare `survey` prints a markdown report from local data and deliberately
+    # does not — gating it would make the cheapest, most-used command depend
+    # on a live platform for no reason (plan §4, "read-only commands keep
+    # working without").
+    identity = None
+    if publish:
+        from resource_explorer.cli import session as cli_session
+
+        identity = cli_session.require_and_activate(console)
+
     batch = len(targets) > 1
 
     # Build Egeria client once (if needed) and reuse across projects
@@ -1366,8 +1447,14 @@ def egeria_reports(
     Reads from the local registry by default (no Egeria connection needed).
     Use --full to fetch and display all annotations from Egeria for the latest survey.
     """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.egeria_reader import EgeriaReader, EgeriaReaderError
+
+    # `--full` is the branch that actually reaches Egeria; without it this is a
+    # registry read and stays usable with no session (and with no platform).
+    if full:
+        cli_session.require_and_activate(console)
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -2373,8 +2460,14 @@ def egeria_recheck(
       resource-explorer egeria-recheck --dry-run
       resource-explorer egeria-recheck --entity-type repo --entity-type database
     """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.egeria_linkage import recheck_all_linkages
     from resource_explorer.registry import ProjectRegistry
+
+    # Every GUID this checks is read from the live platform, so it needs a
+    # session — and reading as the person rather than as the service account
+    # matters here: a GUID this user cannot see is stale *for them*.
+    cli_session.require_and_activate(console)
 
     registry = ProjectRegistry()
     types = list(entity_type) if entity_type else None
