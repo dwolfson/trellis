@@ -63,6 +63,20 @@ demo profile is finalised** (step 1 of the sequencing; not on cray, which is liv
 the owner, is: the old boxes demo Egeria plus the non-LLM Resource Explorer paths (survey,
 publish, curate, reports); Dev 2 is the demo machine when EA chat or RE ask is the point.
 
+**CPU-only probe, 2026-09-04: no usable number yet.** Neither Linux box is reachable from Dev 1
+(`~/.ssh/config` has no named hosts; `known_hosts` names only cray, which is off-limits). The
+probe was run on Dev 1 with Ollama forced to CPU (`num_gpu: 0`) and produced prefill 7 to 8 tok/s
+and 12 minutes to first token, but that number is **discarded** for two reasons: the machine was
+under a load average of 23 to 64 at the time (Egeria's own repository was holding nine active
+entity searches on Postgres at nearly four cores, and an EA test suite was running), and
+llama.cpp's NEON path on Apple Silicon with Metal disabled is not a proxy for AVX2 on x86 in
+either direction. The reusable probe is `packages/egeria-advisor/scripts/probe_llm_cpu.py`;
+**run it on Demo 2 or on Dev 2 with `num_gpu: 0`** and record the second run here. The
+extrapolation above stands until then.
+
+The same observation is a data point for §1: at rest, Egeria's repository connector alone was
+the largest CPU consumer on Dev 1. A demo box running Egeria and CPU inference shares that CPU.
+
 Disk for a demo box: about 20 GB of images for the demo profile without Jupyter (the Jupyter
 image alone is 7 GB), plus 5 GB per 8B model and 7.4 GB for codellama:13b, plus the trellis
 images. Dev 1 holds 166 GB of images of which 100 GB is reclaimable; demo boxes get a curated

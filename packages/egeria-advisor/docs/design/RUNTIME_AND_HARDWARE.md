@@ -85,6 +85,55 @@ That is the thing to resolve before either flipping the switch or removing the
 path: the migration is either an unrealised speedup or a measured
 disappointment, and nothing on disk distinguishes those.
 
+**Measured 2026-09-04 on M3 Max (Dev 1).** Command run from
+`packages/egeria-advisor`:
+
+```
+uv run --package egeria-advisor python scripts/benchmark_onnx.py --batch-size <N> --num-texts <M>
+```
+
+Both benchmarks run CPU-only as written — `benchmark_pytorch()` hardcodes
+`device="cpu"`, and `benchmark_onnx()` picks up whatever `onnxruntime` reports
+as available providers (`CoreMLExecutionProvider`, `AzureExecutionProvider`,
+`CPUExecutionProvider` on this Mac), so this is not an MPS-vs-CPU comparison —
+the script has no MPS path for either backend. Four runs at different
+`num_texts`/`batch_size` combinations, using the pre-exported
+`models/all-MiniLM-L6-v2.onnx`:
+
+| num_texts | batch_size | PyTorch texts/sec | ONNX texts/sec | Speedup (PyTorch time / ONNX time) | PyTorch RSS delta | ONNX RSS delta |
+|---|---|---|---|---|---|---|
+| 100 | 32 | 1483.7 | 217.8 | 0.15x | 12.0 MB | 177.2 MB |
+| 500 | 16 | 1175.9 | 222.5 | 0.19x | 13.3 MB | 292.8 MB |
+| 500 | 64 | 2249.0 | 320.4 | 0.14x | 40.7 MB | 1366.8 MB |
+| 1000 | 16 | 1237.0 | 302.1 | 0.24x | 15.5 MB | 349.8 MB |
+| 1000 | 64 | 2176.6 | 308.9 | 0.14x | 47.0 MB | 1210.3 MB |
+
+Embedding quality (cosine similarity, all runs): mean/min/max 1.000000, std
+0.000000 — ONNX and PyTorch produce numerically identical embeddings here, so
+export correctness is not in question.
+
+**The ONNX path did not meet its stated target on this hardware — it is
+slower, not faster.** PyTorch on CPU beat ONNX by roughly 4-7x across every
+batch size and corpus size tried, and ONNX's RSS delta was consistently
+10-30x larger than PyTorch's. The suite's own success-criteria block reports
+`✗ Speedup: 0.1x-0.2x < 2.0x` and `✗ Memory reduction: negative < 30%` on
+every run; only the embedding-quality criterion passes. This contradicts the
+plan's "2x+ speedup on CPU" target directly — on this M3 Max, with this
+export, ONNX Runtime is not winning against `sentence-transformers`' own
+(already reasonably optimized) CPU path, plausibly because
+`benchmark_onnx()` does per-batch Python tokenization plus manual
+mean-pooling/normalization in NumPy rather than a fused/optimized runtime
+path, while `benchmark_pytorch()` calls straight into
+`SentenceTransformer.encode()`. GPU/MPS speedup (the "3x+ on GPU" target) is
+**not tested by this script at all** — the ONNX benchmark never requests
+`CoreMLExecutionProvider` explicitly and PyTorch is pinned to `device="cpu"`,
+so no accelerator comparison exists yet, on this hardware or any other.
+
+**Conclusion for the switch:** based on this measurement, flipping
+`backend: onnx` on this Mac would make embeddings slower and heavier, not
+faster and lighter. Nothing here has been changed — `backend: pytorch`
+remains as configured in `advisor/configdata/advisor.yaml`.
+
 ### 4b. Track B was never started, and has been split out
 
 The source document was *"ONNX Migration & Egeria-Advisor-Pro Implementation
