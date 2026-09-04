@@ -278,6 +278,26 @@ Sections resolve through the **fact layer**, not raw results, so a gap distingui
 ran* from *ran and found nothing*. Nothing is executed to fill a gap — a compile never blocks
 on a survey.
 
+### Model tiers and the RAG context budget
+
+See [`docs/runtime-architecture-plan.md`](../../../docs/runtime-architecture-plan.md) §5 (repo root) for the full design and the measurements behind it
+(prompt tokens, not model size, is the lever for time-to-first-token). `EXPLORER_MODEL_TIER`
+(`dev` default / `demo-gpu` / `demo-cpu`) resolves, per machine profile, the Ollama model,
+Ollama's `num_ctx` ceiling, and the RAG retrieval context budget together —
+`resource_explorer/config.py`'s `TIER_PRESETS`, mirroring Egeria Advisor's
+`advisor/config.py` (same tier names, same `num_ctx`/budget values) so the two apps converge
+rather than drift. `dev` keeps today's unbounded behaviour (`num_ctx=32768`, no RAG budget); the
+demo tiers cap `num_ctx` at 8192 and the RAG context budget at ~2000 tokens. An explicit
+`LLM__OLLAMA__MODEL` still wins over the tier's model. `num_ctx` is threaded through every
+Ollama call RE makes — `llm_client.py`'s `OllamaBackend` (the raw `ollama` client's `options`)
+and `agents/base.py`'s BeeAI `RequirementAgent` path (an `OllamaChatModel` built with
+`settings={"num_ctx": ...}`, since BeeAI talks to Ollama over its OpenAI-compatible endpoint,
+not the native one). The RAG context budget is applied in
+`prompt_templates.py::build_context()`, used everywhere retrieved chunks are joined into a
+prompt (`rag_system.py`, `agents/doc_agent.py`, `agents/code_agent.py`) — it keeps the
+highest-ranked chunks and stops adding once the (approximate, 4 chars/token) estimate would
+exceed the budget.
+
 ---
 
 ## Cross-cutting: absence is a first-class result

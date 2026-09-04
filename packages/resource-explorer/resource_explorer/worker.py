@@ -284,6 +284,10 @@ def run_worker(
     """
     stop_event = stop_event if stop_event is not None else threading.Event()
 
+    from resource_explorer.config import get_llm_tier_config
+
+    get_llm_tier_config()  # logs the resolved tier/model/num_ctx/budget once
+
     log.info(
         "worker role starting (embedded=%s): %s leader-elected loop(s) "
         "plus orphaned-run reconciliation and survey-definition cache warm",

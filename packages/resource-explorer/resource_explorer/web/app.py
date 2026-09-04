@@ -53,6 +53,10 @@ async def _lifespan(app: FastAPI):
     to, and even then leader election decides whether that thread's loops
     actually fire. See docs/process-model.md.
     """
+    from resource_explorer.config import get_llm_tier_config
+
+    get_llm_tier_config()  # logs the resolved tier/model/num_ctx/budget once
+
     worker_stop = None
     if _embed_worker_enabled():
         from resource_explorer.worker import start_embedded_worker

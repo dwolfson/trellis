@@ -48,7 +48,7 @@ class BaseExplorerAgent(ABC):
         from beeai_framework.agents.requirement import RequirementAgent
 
         return RequirementAgent(
-            llm=self._llm_name(),
+            llm=self._build_llm(),
             tools=self.tools(),
             instructions=self.system_prompt(),
         )
@@ -64,6 +64,38 @@ class BaseExplorerAgent(ABC):
         else:
             model = cfg.ollama.model
         return f"{backend}:{model}"
+
+    def _build_llm(self):
+        """
+        Return the value to pass as RequirementAgent's ``llm=`` — a bare
+        ``"backend:model"`` string for openai/anthropic (unchanged), or a
+        constructed ``OllamaChatModel`` for the ollama backend so the
+        resolved-tier ``num_ctx`` (resource_explorer/config.py TIER_PRESETS)
+        can be threaded through.
+
+        BeeAI's ``OllamaChatModel`` talks to Ollama via litellm's
+        OpenAI-compatible ``/v1/chat/completions`` endpoint, not Ollama's
+        native ``/api/chat`` — so there is no ``options={"num_ctx": ...}``
+        dict to pass the way llm_client.py's raw ``ollama`` client takes
+        one. Verified empirically (monkeypatching litellm's ``acompletion``
+        and inspecting the outgoing kwargs) that a ``settings={"num_ctx":
+        ...}`` constructor kwarg survives BeeAI's own supported-params
+        filtering and reaches the litellm call as a top-level ``num_ctx``
+        kwarg, which litellm forwards to Ollama's OpenAI-compatible server —
+        Ollama's compat layer reads ``num_ctx`` from the request body the
+        same way it does on the native endpoint.
+        """
+        cfg = self.config.llm
+        if cfg.backend != "ollama":
+            return self._llm_name()
+
+        from beeai_framework.adapters.ollama.backend.chat import OllamaChatModel
+
+        return OllamaChatModel(
+            cfg.ollama.model,
+            base_url=cfg.ollama.base_url,
+            settings={"num_ctx": cfg.ollama.num_ctx},
+        )
 
     def _infer_project_slug(self, query: str) -> str | None:
         """
