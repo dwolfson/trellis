@@ -624,3 +624,14 @@ def test_registry_creates_its_schema_on_a_fresh_postgres(monkeypatch):
         with c.cursor() as cur:
             cur.execute("DROP SCHEMA IF EXISTS re_fresh_schema_test CASCADE")
         c.close()
+
+
+def test_worker_preloads_pyegeria_before_threads(monkeypatch):
+    """The preload runs on the calling thread and never raises, with or without pyegeria."""
+    from resource_explorer import worker as w
+    assert w._preload_pyegeria() in (True, False)
+    calls = []
+    monkeypatch.setattr(w, "_preload_pyegeria", lambda: calls.append("preload") or True)
+    import inspect
+    src = inspect.getsource(w.run_worker)
+    assert "_preload_pyegeria()" in src.split("threading.Thread")[0], "preload must precede the first thread start"

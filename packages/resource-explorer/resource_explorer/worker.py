@@ -309,6 +309,29 @@ def _supervise(spec: LoopSpec, stop_event: threading.Event, embedded: bool) -> N
         lock.release()
 
 
+
+def _preload_pyegeria() -> bool:
+    """Import the pyegeria modules the loops use, on the calling thread, before
+    any loop thread starts.
+
+    The loops import pyegeria lazily inside their functions; when several start
+    at once on a cold interpreter, two threads import the same partially
+    initialised module tree and importlib raises ``_DeadlockError`` (seen on
+    trevor, 2026-09-04: the draft-zone bootstrap died with "deadlock detected
+    by _ModuleLock('pyegeria.omvs.classification_explorer')" while the resync
+    loop was importing the same package). One import on one thread, first,
+    removes the race. Returns False when pyegeria is not installed; the loops
+    then fail on their own terms as before.
+    """
+    try:
+        import pyegeria  # noqa: F401
+        from pyegeria import ClassificationExplorer, EgeriaTech  # noqa: F401
+        from pyegeria.omvs.metadata_expert import MetadataExpert  # noqa: F401
+        return True
+    except Exception as exc:  # pragma: no cover - environment dependent
+        log.debug("pyegeria preload skipped: %s", exc)
+        return False
+
 def run_worker(
     embedded: bool = False,
     stop_event: threading.Event | None = None,
@@ -323,6 +346,7 @@ def run_worker(
     leader election, not the caller, is what decides which process's
     loops actually fire.
     """
+    _preload_pyegeria()
     stop_event = stop_event if stop_event is not None else threading.Event()
 
     from resource_explorer.config import get_llm_tier_config
