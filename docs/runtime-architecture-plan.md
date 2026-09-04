@@ -40,7 +40,7 @@ Revision 2 adds two requirements and one exhibit:
 | OS | macOS | Linux, kernel 7.0, 24 threads, 61 GiB usable; hostname `hedwig`, reachable over Tailscale | Linux | Linux |
 | GPU | Metal, not passed into Docker | Radeon 890M iGPU; ROCm 7.2 installed, Ollama 0.24 native with `HSA_OVERRIDE_GFX_VERSION=11.0.0` (verified 2026-09-04) | none | **RTX 2070 SUPER, 8 GB VRAM**, currently on the open-source `nouveau` driver so unusable for inference until the proprietary driver and `nvidia-container-toolkit` are installed |
 | Storage | — | — | >10 TB free | >10 TB free (system NVMe 778 GB free) |
-| Role | dev | dev, or demo when LLM-interactive parts are the point | demo, browser-based portal | demo, browser-based portal; becomes an LLM-capable demo box once the NVIDIA driver is installed (8 GB VRAM fits the 8B model at 8k context with room, not the 13B) |
+| Role | dev | dev, or secondary LLM demo box (iGPU: 22 s TTFT) | demo, browser-based portal, no LLM-interactive parts | **primary LLM-interactive demo box** (CUDA: 3 s TTFT); NVIDIA driver installed 2026-09-04; needs native Docker Engine in place of Docker Desktop before the containerized profile can use the GPU |
 
 **Actuals on Dev 1, 2026-09-04.** Docker Desktop is allotted 8 CPUs and 45 GiB. Container
 memory in use across six compose projects: 12.9 GiB, of which the Egeria demo core that a demo
@@ -74,6 +74,25 @@ measurement (the probe script now varies the prompt per run).
 | Generation | 12.5 tok/s | 9.8 tok/s |
 | Time to first token, 5.3k prompt | 22.5 s | 175 s |
 | Loaded footprint at 8k context | 6.3 GB, VRAM 84% allocated | 5.7 GB |
+
+**Measured on trevor (Demo 2), 2026-09-04, Ollama 0.33.3 run natively from a user-space tarball
+(Docker Desktop's VM cannot see the GPU), same prompt shape, 8k context, machine otherwise idle:**
+
+| | RTX 2070 SUPER via CUDA | CPU only (`num_gpu: 0`) |
+|---|---|---|
+| Prefill | 1778 tok/s | 47 tok/s |
+| Generation | 67 tok/s | 3.9 tok/s |
+| Time to first token, 5.3k prompt | 3.0 s | 114 s |
+| Loaded footprint at 8k context | 5.8 GB of 8 GB VRAM, GPU at 99% | 6.2 GB RAM |
+
+Two corrections to what this document said before the number existed: trevor's CPU prefill (47
+tok/s, AVX2 at desktop clocks) beats hedwig's CPU (31 tok/s), so the "old x86 boxes are slower
+than the Framework on CPU" claim was wrong for prefill and right only for generation (3.9 vs 9.8
+tok/s, DDR4 vs LPDDR5X bandwidth). And the discrete GPU makes trevor the best interactive LLM
+demo box of the Linux set by a wide margin: 3 s to first token where hedwig's iGPU needs 22 s.
+An 8 GB card holds the 8B model at 8k context with 2 GB to spare; codellama:13b (7.4 GB) will not
+sit beside it, so on trevor the `demo-gpu` tier should keep every slot on the 8B model or accept
+a model swap per slot change (seconds, not minutes).
 
 Three conclusions:
 
@@ -139,6 +158,16 @@ and `/dev/dri`). So the recommendation becomes **two profiles, both overlays on
 on Dev 1 and nothing else.
 
 **Rejected: stay 100% bare-metal, and containerize-everything-on-the-Mac.** As in revision 1.
+
+**Docker Desktop for Linux cannot host the demo profile on a GPU box.** Found on trevor
+2026-09-04: Docker Desktop for Linux runs the engine inside a qemu VM (`qemu-system-x86` was at
+nine cores while idle containers ran), the VM has no access to the host GPU, and `--gpus` is
+rejected even with `nvidia-container-toolkit` installed on the host. A CPU probe run inside that
+VM crawled for forty minutes without finishing. The demo profile on trevor, and on any Linux box
+that should use its GPU, needs **native Docker Engine** (`docker-ce` from Docker's apt repo, or
+the distro package) with the NVIDIA runtime configured via `nvidia-ctk runtime configure`. hedwig
+already runs the quickstart on a native engine. Docker Desktop is fine on the Mac, where inference
+is native anyway.
 
 **ROCm on the 890M: already working natively, container variant still a spike.** Verified on
 hedwig 2026-09-04: ROCm 7.2, `/dev/kfd` and `/dev/dri/renderD128` present, and the native Ollama
@@ -356,7 +385,7 @@ one default. The config gains a `tier` with, per task slot, a model, a context c
 | Tier | Where | General / code model | Context cap | Loaded footprint |
 |---|---|---|---|---|
 | `dev` | Dev 1 | as today; 32B allowed | 32k | measured 5.7 GB at 8k for 8B; scales with cap |
-| `demo-gpu` | Dev 2 (hedwig, 890M) | llama3.1:8b / codellama:13b | 8k; RAG context budget 2k | ~14 GB both loaded; measured 22 s TTFT at 5.3k prompt, ~8 s at 2k |
+| `demo-gpu` | Dev 2 (hedwig, 890M, 64 GB shared) and Demo 2 (trevor, RTX 2070 SUPER 8 GB) | llama3.1:8b / codellama:13b on hedwig; 8B for every slot on trevor (13B does not fit beside it in 8 GB) | 8k; RAG context budget 2k | hedwig: 22 s TTFT at 5.3k, ~8 s at 2k. trevor: 3 s TTFT at 5.3k |
 | `demo-cpu` | Demo 1, Demo 2 | llama3.1:8b for every slot including code | 8k; RAG context budget 2k | ~6 GB; not interactive: 175 s TTFT at 5.3k on hedwig's CPU, worse on the old boxes |
 
 The cap is what makes the demo tiers fit and what stops one loaded model taking 22 GB by default.
