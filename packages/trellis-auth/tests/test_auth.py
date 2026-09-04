@@ -1,5 +1,9 @@
+"""Tests for the 2026-09-04 token contract: the app JWT carries the user's
+Egeria bearer token, never a password. See trellis_auth/auth.py's module
+docstring and docs/runtime-architecture-plan.md §4."""
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -8,15 +12,57 @@ from starlette.exceptions import HTTPException
 
 from trellis_auth import (
     AuthConfig,
+    apply_token,
     create_access_token,
     decode_token,
+    egeria_token_expiry,
     exchange_portal_token,
     get_current_user,
     get_egeria_credentials,
+    get_egeria_token,
     is_authenticated,
+    login_with_password,
     require_egeria_user,
     validate_egeria_credentials,
+    validate_egeria_token,
 )
+
+
+# ---------------------------------------------------------------------------
+# Helpers — Egeria bearer tokens are RS256 JWTs from the view server. We never
+# verify their signature (see egeria_token_expiry), so an HS256 stand-in with
+# the same claims exercises every path this package has.
+# ---------------------------------------------------------------------------
+
+def make_egeria_token(user_id: str = "dan.egeria", ttl_seconds: int = 3600) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "iss": "self",
+            "sub": user_id,
+            "iat": now,
+            "exp": now + timedelta(seconds=ttl_seconds),
+            "displayName": "Dan Egeria",
+        },
+        "egeria-view-server-key",
+        algorithm="HS256",
+    )
+
+
+def make_portal_token(config: AuthConfig, **overrides) -> str:
+    """A token in the shape the Portal actually issues
+    (demo_auth_handler.py::_make_jwt)."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": "dan.egeria",
+        "role": "user",
+        "display_name": "Dan Egeria",
+        "egeria_token": make_egeria_token(),
+        "exp": now + timedelta(minutes=5),
+    }
+    payload.update(overrides)
+    secret = overrides.pop("_secret", config.portal_secret)
+    return jwt.encode(payload, secret, algorithm=config.jwt_algorithm)
 
 
 # ---------------------------------------------------------------------------
@@ -24,21 +70,59 @@ from trellis_auth import (
 # ---------------------------------------------------------------------------
 
 def test_create_and_decode_round_trip(config):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+    egeria_token = make_egeria_token()
+    token = create_access_token("dan", egeria_token, config)
     payload = decode_token(token, config)
 
     assert payload["sub"] == "dan"
-    assert payload["egeria_user"] == "dan.egeria"
-    assert payload["egeria_password"] == "hunter2"
+    assert payload["user_id"] == "dan"
+    assert payload["role"] == "user"
+    assert payload["display_name"] == "dan"
+    assert payload["egeria_token"] == egeria_token
     assert "exp" in payload and "iat" in payload
+
+
+def test_app_jwt_never_contains_a_password(config):
+    """The whole point of the 2026-09-04 change. Assert on the decoded claims
+    AND on the raw token bytes, so a password smuggled under any other key name
+    still fails."""
+    token = create_access_token("dan", make_egeria_token(), config)
+    payload = decode_token(token, config)
+
+    assert "egeria_password" not in payload
+    assert "password" not in payload
+    assert not any("password" in key.lower() for key in payload)
+
+    # The JWT body is base64 of the JSON claims — a password anywhere in it
+    # would be recoverable by anyone holding the token.
+    import base64
+    import json
+    body = token.split(".")[1]
+    body += "=" * (-len(body) % 4)
+    raw = json.loads(base64.urlsafe_b64decode(body))
+    assert "hunter2" not in json.dumps(raw)
+
+
+def test_create_access_token_requires_an_egeria_token(config):
+    with pytest.raises(ValueError) as excinfo:
+        create_access_token("dan", "", config)
+    assert "bearer token" in str(excinfo.value).lower()
+
+
+def test_create_access_token_role_and_display_name(config):
+    token = create_access_token(
+        "dan", make_egeria_token(), config, role="admin", display_name="Dan W"
+    )
+    payload = decode_token(token, config)
+    assert payload["role"] == "admin"
+    assert payload["display_name"] == "Dan W"
 
 
 def test_decode_expired_token(config):
     now = datetime.now(timezone.utc)
     payload = {
         "sub": "dan",
-        "egeria_user": "dan.egeria",
-        "egeria_password": "hunter2",
+        "egeria_token": make_egeria_token(),
         "iat": now - timedelta(hours=10),
         "exp": now - timedelta(hours=2),
     }
@@ -49,11 +133,55 @@ def test_decode_expired_token(config):
 
 
 def test_decode_invalid_signature(config):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+    token = create_access_token("dan", make_egeria_token(), config)
     wrong_config = AuthConfig(jwt_secret="a-different-secret")
 
     with pytest.raises(jwt.InvalidSignatureError):
         decode_token(token, wrong_config)
+
+
+# ---------------------------------------------------------------------------
+# exp capping — the app session must never outlive the Egeria token it carries
+# ---------------------------------------------------------------------------
+
+def test_exp_capped_at_egeria_token_expiry(config):
+    """config.jwt_ttl_hours is 8; Egeria's own tokens last 1 hour (measured
+    2026-09-04 against qs-view-server). The Egeria expiry must win."""
+    egeria_token = make_egeria_token(ttl_seconds=3600)
+    egeria_exp = egeria_token_expiry(egeria_token)
+
+    payload = decode_token(create_access_token("dan", egeria_token, config), config)
+
+    assert payload["exp"] == egeria_exp
+    # And it is genuinely shorter than the app TTL would have been.
+    assert payload["exp"] < (datetime.now(timezone.utc) + timedelta(hours=8)).timestamp()
+
+
+def test_exp_uses_app_ttl_when_egeria_token_lives_longer(config):
+    """A long-lived Egeria token must not extend the app session past its own
+    configured TTL — the cap is a min(), not an assignment."""
+    egeria_token = make_egeria_token(ttl_seconds=60 * 60 * 24 * 7)  # a week
+    payload = decode_token(create_access_token("dan", egeria_token, config), config)
+
+    app_ttl_exp = (datetime.now(timezone.utc) + timedelta(hours=8)).timestamp()
+    assert payload["exp"] == pytest.approx(app_ttl_exp, abs=5)
+    assert payload["exp"] < egeria_token_expiry(egeria_token)
+
+
+def test_exp_falls_back_to_app_ttl_for_an_opaque_egeria_token(config):
+    """A deployment whose Egeria issues an opaque (non-JWT) token has no exp to
+    read — we must still issue a usable session rather than refusing."""
+    payload = decode_token(create_access_token("dan", "an-opaque-token", config), config)
+    app_ttl_exp = (datetime.now(timezone.utc) + timedelta(hours=8)).timestamp()
+    assert payload["exp"] == pytest.approx(app_ttl_exp, abs=5)
+
+
+def test_egeria_token_expiry_shapes():
+    assert egeria_token_expiry("") is None
+    assert egeria_token_expiry("not-a-jwt") is None
+    assert egeria_token_expiry(make_egeria_token()) is not None
+    no_exp = jwt.encode({"sub": "dan"}, "k", algorithm="HS256")
+    assert egeria_token_expiry(no_exp) is None
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +205,7 @@ def test_get_current_user_invalid_token_returns_none(config, make_request):
 
 
 def test_get_current_user_valid_token(config, make_request):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+    token = create_access_token("dan", make_egeria_token(), config)
     request = make_request(authorization=f"Bearer {token}")
 
     user = get_current_user(request, config)
@@ -94,7 +222,7 @@ def test_require_egeria_user_raises_401_when_absent(config, make_request):
 
 
 def test_require_egeria_user_returns_payload_when_present(config, make_request):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+    token = create_access_token("dan", make_egeria_token(), config)
     request = make_request(authorization=f"Bearer {token}")
 
     user = require_egeria_user(request, config)
@@ -103,47 +231,142 @@ def test_require_egeria_user_returns_payload_when_present(config, make_request):
 
 
 def test_is_authenticated(config, make_request):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+    token = create_access_token("dan", make_egeria_token(), config)
     assert is_authenticated(make_request(authorization=f"Bearer {token}"), config) is True
     assert is_authenticated(make_request(authorization=None), config) is False
 
 
 # ---------------------------------------------------------------------------
-# get_egeria_credentials
+# get_egeria_token / the removed get_egeria_credentials
 # ---------------------------------------------------------------------------
 
-def test_get_egeria_credentials_present(config, make_request):
-    token = create_access_token("dan", "dan.egeria", "hunter2", config)
+def test_get_egeria_token_present(config, make_request):
+    egeria_token = make_egeria_token()
+    token = create_access_token("dan", egeria_token, config)
     request = make_request(authorization=f"Bearer {token}")
 
-    creds = get_egeria_credentials(request, config)
-
-    assert creds == {"user_id": "dan.egeria", "password": "hunter2"}
+    assert get_egeria_token(request, config) == egeria_token
 
 
-def test_get_egeria_credentials_absent_returns_none(config, make_request):
+def test_get_egeria_token_absent_returns_none(config, make_request):
+    assert get_egeria_token(make_request(authorization=None), config) is None
+
+
+def test_get_egeria_credentials_is_removed_with_a_clear_message(config, make_request):
     request = make_request(authorization=None)
-    assert get_egeria_credentials(request, config) is None
+    with pytest.raises(RuntimeError) as excinfo:
+        get_egeria_credentials(request, config)
+    message = str(excinfo.value)
+    assert "get_egeria_token" in message
+    assert "bearer token" in message.lower()
+    assert "2026-09-04" in message
 
 
 # ---------------------------------------------------------------------------
-# Portal token exchange
+# apply_token
+# ---------------------------------------------------------------------------
+
+class _RecordingClient:
+    def __init__(self):
+        self.bearer = None
+        self.self_authenticated = False
+
+    def set_bearer_token(self, token):
+        self.bearer = token
+
+    def create_egeria_bearer_token(self):
+        self.self_authenticated = True
+
+
+def test_apply_token_uses_the_supplied_token():
+    client = _RecordingClient()
+    apply_token(client, "a-token")
+    assert client.bearer == "a-token"
+    assert client.self_authenticated is False
+
+
+def test_apply_token_falls_back_to_the_clients_own_credentials():
+    client = _RecordingClient()
+    apply_token(client, None)
+    assert client.bearer is None
+    assert client.self_authenticated is True
+
+
+# ---------------------------------------------------------------------------
+# Portal token exchange — the Portal's REAL payload shape
 # ---------------------------------------------------------------------------
 
 def test_exchange_portal_token_success(config):
-    now = datetime.now(timezone.utc)
-    portal_payload = {
-        "egeria_user": "dan.egeria",
-        "egeria_password": "hunter2",
-        "iat": now,
-        "exp": now + timedelta(minutes=5),
-    }
-    portal_token = jwt.encode(portal_payload, config.portal_secret, algorithm=config.jwt_algorithm)
+    egeria_token = make_egeria_token()
+    portal_token = make_portal_token(config, egeria_token=egeria_token)
 
     result = exchange_portal_token(portal_token, config)
 
-    assert result["egeria_user"] == "dan.egeria"
-    assert result["egeria_password"] == "hunter2"
+    assert result["sub"] == "dan.egeria"
+    assert result["role"] == "user"
+    assert result["display_name"] == "Dan Egeria"
+    assert result["egeria_token"] == egeria_token
+
+
+def test_portal_token_round_trips_into_an_app_jwt(config):
+    """The end-to-end SSO path: validate the Portal's token, then mint our own
+    session from it with no Egeria round-trip."""
+    egeria_token = make_egeria_token()
+    payload = exchange_portal_token(
+        make_portal_token(config, egeria_token=egeria_token, role="admin"), config
+    )
+    app_token = create_access_token(
+        payload["sub"], payload["egeria_token"], config,
+        role=payload["role"], display_name=payload["display_name"],
+    )
+    decoded = decode_token(app_token, config)
+
+    assert decoded["sub"] == "dan.egeria"
+    assert decoded["role"] == "admin"
+    assert decoded["egeria_token"] == egeria_token
+    assert "egeria_password" not in decoded
+
+
+def test_exchange_portal_token_rejects_the_retired_password_shape(config):
+    """Pre-2026-09-04 contract: {egeria_user, egeria_password, iat, exp}.
+    Nothing ever produced it, so a caller sending one is on the old contract and
+    must be told so explicitly rather than getting a generic 401."""
+    now = datetime.now(timezone.utc)
+    old_shape = jwt.encode(
+        {
+            "egeria_user": "dan.egeria",
+            "egeria_password": "hunter2",
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+        },
+        config.portal_secret,
+        algorithm=config.jwt_algorithm,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        exchange_portal_token(old_shape, config)
+
+    assert excinfo.value.status_code == 400
+    detail = excinfo.value.detail
+    assert "egeria_password" in detail
+    assert "egeria_token" in detail
+    assert "2026-09-04" in detail
+
+
+def test_exchange_portal_token_missing_egeria_token(config):
+    portal_token = make_portal_token(config, egeria_token="")
+    with pytest.raises(HTTPException) as excinfo:
+        exchange_portal_token(portal_token, config)
+    assert excinfo.value.status_code == 400
+    assert "egeria_token" in excinfo.value.detail
+
+
+def test_exchange_portal_token_missing_sub(config):
+    portal_token = make_portal_token(config, sub="")
+    with pytest.raises(HTTPException) as excinfo:
+        exchange_portal_token(portal_token, config)
+    assert excinfo.value.status_code == 400
+    assert "sub" in excinfo.value.detail
 
 
 def test_exchange_portal_token_not_configured():
@@ -156,13 +379,7 @@ def test_exchange_portal_token_not_configured():
 
 def test_exchange_portal_token_expired(config):
     now = datetime.now(timezone.utc)
-    portal_payload = {
-        "egeria_user": "dan.egeria",
-        "egeria_password": "hunter2",
-        "iat": now - timedelta(minutes=10),
-        "exp": now - timedelta(minutes=1),
-    }
-    expired = jwt.encode(portal_payload, config.portal_secret, algorithm=config.jwt_algorithm)
+    expired = make_portal_token(config, exp=now - timedelta(minutes=1))
 
     with pytest.raises(HTTPException) as excinfo:
         exchange_portal_token(expired, config)
@@ -172,13 +389,17 @@ def test_exchange_portal_token_expired(config):
 
 def test_exchange_portal_token_wrong_secret(config):
     now = datetime.now(timezone.utc)
-    portal_payload = {
-        "egeria_user": "dan.egeria",
-        "egeria_password": "hunter2",
-        "iat": now,
-        "exp": now + timedelta(minutes=5),
-    }
-    signed_wrong = jwt.encode(portal_payload, "not-the-portal-secret", algorithm=config.jwt_algorithm)
+    signed_wrong = jwt.encode(
+        {
+            "sub": "dan.egeria",
+            "role": "user",
+            "display_name": "Dan Egeria",
+            "egeria_token": make_egeria_token(),
+            "exp": now + timedelta(minutes=5),
+        },
+        "not-the-portal-secret",
+        algorithm=config.jwt_algorithm,
+    )
 
     with pytest.raises(HTTPException) as excinfo:
         exchange_portal_token(signed_wrong, config)
@@ -186,8 +407,113 @@ def test_exchange_portal_token_wrong_secret(config):
 
 
 # ---------------------------------------------------------------------------
-# validate_egeria_credentials — pyegeria client mocked, never a live server
+# login_with_password / validate_egeria_token / validate_egeria_credentials
+# — pyegeria client mocked, never a live server
 # ---------------------------------------------------------------------------
+
+def _connected_config() -> AuthConfig:
+    return AuthConfig(
+        jwt_secret="test-secret",
+        egeria_view_server="qs-view-server",
+        egeria_platform_url="https://localhost:9443",
+    )
+
+
+def _install_fake_pyegeria(monkeypatch, cls):
+    fake_module = type("module", (), {"EgeriaTech": cls})
+    monkeypatch.setitem(sys.modules, "pyegeria.egeria_tech_client", fake_module)
+
+
+def test_login_with_password_returns_the_token(monkeypatch):
+    issued = make_egeria_token()
+
+    class _FakeEgeriaTech:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def create_egeria_bearer_token(self, user_id, password):
+            assert (user_id, password) == ("dan.egeria", "hunter2")
+            return issued
+
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
+
+    assert login_with_password("dan.egeria", "hunter2", _connected_config()) == issued
+
+
+def test_login_with_password_bad_credentials_returns_none(monkeypatch):
+    class _FakeEgeriaTech:
+        def __init__(self, **kwargs):
+            pass
+
+        def create_egeria_bearer_token(self, user_id, password):
+            raise RuntimeError("invalid credentials")
+
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
+
+    assert login_with_password("dan.egeria", "wrong", _connected_config()) is None
+
+
+def test_login_with_password_unconfigured_returns_none():
+    config = AuthConfig(jwt_secret="test-secret")
+    assert login_with_password("dan.egeria", "hunter2", config) is None
+
+
+def test_login_with_password_missing_pyegeria_returns_none(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyegeria.egeria_tech_client", None)
+    assert login_with_password("dan.egeria", "hunter2", _connected_config()) is None
+
+
+def test_validate_egeria_token_success(monkeypatch):
+    class _FakeEgeriaTech:
+        def __init__(self, **kwargs):
+            self.bearer = None
+
+        def set_bearer_token(self, token):
+            self.bearer = token
+
+        def create_egeria_bearer_token(self):  # pragma: no cover - must not fire
+            raise AssertionError("should have reused the supplied token")
+
+        def get_my_profile(self):
+            assert self.bearer, "token was not applied before the call"
+            return {"class": "OpenMetadataRootElement"}
+
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
+
+    assert validate_egeria_token(make_egeria_token(), _connected_config()) is True
+
+
+def test_validate_egeria_token_rejected_by_egeria(monkeypatch):
+    class _FakeEgeriaTech:
+        def __init__(self, **kwargs):
+            pass
+
+        def set_bearer_token(self, token):
+            pass
+
+        def get_my_profile(self):
+            raise RuntimeError("AUTHORIZATION_ERROR_401")
+
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
+
+    assert validate_egeria_token(make_egeria_token(), _connected_config()) is False
+
+
+def test_validate_egeria_token_expired_short_circuits(monkeypatch):
+    """An already-expired token must be rejected locally, without a call."""
+    class _FakeEgeriaTech:  # pragma: no cover - must never be constructed
+        def __init__(self, **kwargs):
+            raise AssertionError("expired token should not reach Egeria")
+
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
+
+    expired = make_egeria_token(ttl_seconds=-60)
+    assert validate_egeria_token(expired, _connected_config()) is False
+
+
+def test_validate_egeria_token_empty_is_false():
+    assert validate_egeria_token("", _connected_config()) is False
+
 
 def test_validate_egeria_credentials_service_account_match_when_unconfigured():
     config = AuthConfig(
@@ -203,12 +529,6 @@ def test_validate_egeria_credentials_service_account_match_when_unconfigured():
 
 
 def test_validate_egeria_credentials_success_via_mocked_client(monkeypatch):
-    config = AuthConfig(
-        jwt_secret="test-secret",
-        egeria_view_server="qs-view-server",
-        egeria_platform_url="https://localhost:9443",
-    )
-
     class _FakeEgeriaTech:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -216,21 +536,12 @@ def test_validate_egeria_credentials_success_via_mocked_client(monkeypatch):
         def create_egeria_bearer_token(self, user_id, password):
             return "fake-bearer-token"
 
-    fake_module = type("module", (), {"EgeriaTech": _FakeEgeriaTech})
-    monkeypatch.setitem(
-        __import__("sys").modules, "pyegeria.egeria_tech_client", fake_module
-    )
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
 
-    assert validate_egeria_credentials("dan.egeria", "hunter2", config) is True
+    assert validate_egeria_credentials("dan.egeria", "hunter2", _connected_config()) is True
 
 
 def test_validate_egeria_credentials_failure_via_mocked_client(monkeypatch):
-    config = AuthConfig(
-        jwt_secret="test-secret",
-        egeria_view_server="qs-view-server",
-        egeria_platform_url="https://localhost:9443",
-    )
-
     class _FakeEgeriaTech:
         def __init__(self, **kwargs):
             pass
@@ -238,22 +549,14 @@ def test_validate_egeria_credentials_failure_via_mocked_client(monkeypatch):
         def create_egeria_bearer_token(self, user_id, password):
             raise RuntimeError("invalid credentials")
 
-    fake_module = type("module", (), {"EgeriaTech": _FakeEgeriaTech})
-    monkeypatch.setitem(
-        __import__("sys").modules, "pyegeria.egeria_tech_client", fake_module
-    )
+    _install_fake_pyegeria(monkeypatch, _FakeEgeriaTech)
 
-    assert validate_egeria_credentials("dan.egeria", "wrong", config) is False
+    assert validate_egeria_credentials("dan.egeria", "wrong", _connected_config()) is False
 
 
 def test_validate_egeria_credentials_missing_pyegeria_returns_false(monkeypatch):
     """pyegeria is an optional extra — a missing install must degrade to
     False (caught by the broad except), not raise ImportError."""
-    config = AuthConfig(
-        jwt_secret="test-secret",
-        egeria_view_server="qs-view-server",
-        egeria_platform_url="https://localhost:9443",
-    )
-    monkeypatch.setitem(__import__("sys").modules, "pyegeria.egeria_tech_client", None)
+    monkeypatch.setitem(sys.modules, "pyegeria.egeria_tech_client", None)
 
-    assert validate_egeria_credentials("dan.egeria", "hunter2", config) is False
+    assert validate_egeria_credentials("dan.egeria", "hunter2", _connected_config()) is False

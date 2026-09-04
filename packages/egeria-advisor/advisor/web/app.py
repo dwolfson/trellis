@@ -336,39 +336,59 @@ class PortalTokenRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def auth_login(req: LoginRequest) -> Dict[str, Any]:
-    """Validate Egeria credentials and return a JWT."""
-    from advisor.auth import validate_egeria_credentials, create_access_token
+    """Exchange Egeria credentials for a session JWT.
+
+    The password is used exactly once, here, to obtain an Egeria bearer token;
+    it is never stored and never signed into the JWT (contract change
+    2026-09-04 — see advisor/auth.py and docs/runtime-architecture-plan.md §4).
+    """
+    from advisor.auth import login_with_password, create_access_token
     if not req.username or not req.password:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="username and password required")
-    ok = await asyncio.get_event_loop().run_in_executor(
-        None, validate_egeria_credentials, req.username, req.password
+    egeria_token = await asyncio.get_event_loop().run_in_executor(
+        None, login_with_password, req.username, req.password
     )
-    if not ok:
+    if not egeria_token:
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Invalid credentials or Egeria is unreachable.")
-    token = create_access_token(
-        user_id=req.username,
-        egeria_user=req.username,
-        egeria_password=req.password,
-    )
+    token = create_access_token(user_id=req.username, egeria_token=egeria_token)
     return {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
 
 
 @app.post("/api/auth/portal")
 async def auth_portal(req: PortalTokenRequest) -> Dict[str, Any]:
-    """Exchange a Portal-issued short-lived token for a local JWT."""
-    from advisor.auth import exchange_portal_token, create_access_token
+    """Exchange a Portal-issued short-lived token for a local session JWT.
+
+    The Portal has already logged the user into Egeria and its JWT carries the
+    resulting bearer token: {sub, role, display_name, egeria_token, exp}. We
+    validate that under the shared secret and re-sign it as our own session —
+    no Egeria round-trip on this path beyond the optional cheap validation
+    below, and no password anywhere.
+    """
+    from advisor.auth import exchange_portal_token, create_access_token, validate_egeria_token
     payload = exchange_portal_token(req.portal_token)
-    egeria_user = payload.get("egeria_user", "")
-    egeria_password = payload.get("egeria_password", "")
-    if not egeria_user:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="Portal token missing egeria_user.")
+    egeria_user = payload.get("sub", "")
+    egeria_token = payload.get("egeria_token", "")
+
+    # Optional liveness check: the token was minted by someone else, so confirm
+    # it still works before wrapping a session around it. Deliberately NOT a
+    # gate — a briefly unreachable Egeria degrades SSO to "signed in, live
+    # features will fail on use", which is what a self-minted token does too.
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, validate_egeria_token, egeria_token
+    )
+    if not ok:
+        logger.warning(
+            f"auth: Portal token for {egeria_user!r} did not validate against Egeria; "
+            "issuing the session anyway (live calls may 401)"
+        )
+
     token = create_access_token(
         user_id=egeria_user,
-        egeria_user=egeria_user,
-        egeria_password=egeria_password,
+        egeria_token=egeria_token,
+        role=payload.get("role", "user"),
+        display_name=payload.get("display_name") or egeria_user,
     )
     return {"access_token": token, "token_type": "bearer", "egeria_user": egeria_user}
 
@@ -380,10 +400,17 @@ async def auth_me(request: Request) -> Dict[str, Any]:
     user = get_current_user(request)
     if user is None:
         return {"authenticated": False}
+    user_id = user.get("user_id") or user.get("sub", "")
     return {
         "authenticated": True,
-        "user_id": user.get("sub", ""),
-        "egeria_user": user.get("egeria_user", ""),
+        "user_id": user_id,
+        # `egeria_user` kept as a response key for the existing UI; since
+        # 2026-09-04 the JWT identifies the user by `sub`/`user_id` and carries
+        # their Egeria bearer token rather than a separate egeria_user/password
+        # pair, so the two are the same identity.
+        "egeria_user": user_id,
+        "role": user.get("role", "user"),
+        "display_name": user.get("display_name") or user_id,
     }
 
 
@@ -1306,8 +1333,8 @@ async def discover_draft_schema_internal(
         logger.error(f"Failed to read Egeria connection info: {exc}")
         return []
 
-    if not all((conn.get("view_server"), conn.get("platform_url"),
-                conn.get("user_id"), conn.get("user_pwd"))):
+    from advisor.report_pipeline import _conn_is_complete
+    if not _conn_is_complete(conn):
         logger.warning("Egeria connection is not fully configured; skipping schema discovery")
         return []
 
@@ -1321,7 +1348,8 @@ async def discover_draft_schema_internal(
             user_id=conn["user_id"],
             user_pwd=conn["user_pwd"]
         )
-        client.create_egeria_bearer_token()
+        from advisor.auth import apply_token
+        apply_token(client, conn.get("token"))
         
         # Speculative Discovery: query Egeria using client at depth 5
         schema_data = client.get_report_spec_schema(
