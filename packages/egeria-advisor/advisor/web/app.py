@@ -26,6 +26,14 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
 
+def _extended_feedback_path() -> Path:
+    """Path to the extended-feedback JSONL log, under the resolved writable
+    advisor data root (ADVISOR_DATA_PATH) rather than a bare relative
+    ``data/`` path — see advisor.config.resolve_advisor_data_root()."""
+    from advisor.config import resolve_advisor_data_root
+    return resolve_advisor_data_root() / "feedback" / "feedback_extended.jsonl"
+
+
 _STATIC = Path(__file__).parent / "static"
 _SPEC_FILES = [
     Path(__file__).parent.parent / "configdata" / "report_specs" / "plain_spec_question_specs_batch1.json",
@@ -1866,9 +1874,9 @@ async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
         # Also write the full record including response_text to an extended JSONL
         try:
             import json as _json
-            from pathlib import Path
-            ext_path = Path("data/feedback/feedback_extended.jsonl")
-            ext_path.parent.mkdir(parents=True, exist_ok=True)
+            from advisor.config import ensure_writable_dir
+            ext_path = _extended_feedback_path()
+            ensure_writable_dir(ext_path.parent, "ADVISOR_DATA_PATH")
             from datetime import datetime as _dt
             record = {
                 "timestamp": _dt.utcnow().isoformat(),
@@ -1903,8 +1911,7 @@ async def list_perspectives() -> Dict[str, Any]:
 async def feedback_extended() -> Dict[str, Any]:
     """Return all extended feedback records (with response_text, triage_status, etc.)."""
     import json as _json
-    from pathlib import Path
-    path = Path("data/feedback/feedback_extended.jsonl")
+    path = _extended_feedback_path()
     records = []
     if path.exists():
         for line in path.read_text().splitlines():
@@ -1919,9 +1926,8 @@ async def feedback_extended() -> Dict[str, Any]:
 async def update_feedback_record(idx: int, body: Dict[str, Any]) -> Dict[str, Any]:
     """Update triage_status or analysis_comments on a feedback record by line index."""
     import json as _json
-    from pathlib import Path
     from fastapi import HTTPException
-    path = Path("data/feedback/feedback_extended.jsonl")
+    path = _extended_feedback_path()
     if not path.exists():
         raise HTTPException(status_code=404, detail="No feedback records")
     lines = path.read_text().splitlines()

@@ -17,10 +17,13 @@ was never actually read anywhere).
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
-from typing import TypedDict
+from typing import List, Optional, Tuple, TypedDict
 
 from loguru import logger
 
@@ -57,3 +60,72 @@ def get_pyegeria_platform_config(config_path: "str | Path | None" = None) -> Pye
     platform_url = os.environ.get("EGERIA_VIEW_SERVER_URL", "") or json_platform_url
 
     return {"view_server": view_server, "platform_url": platform_url}
+
+
+def resolve_pyegeria_mcp_command() -> Optional[Tuple[str, List[str]]]:
+    """
+    Resolve the command + args used to spawn the "pyegeria" MCP server
+    subprocess (report tools: run_report, find_report_specs, list_reports,
+    describe_report — see CLAUDE.md rule 24).
+
+    config/mcp_servers.json ships a host-specific dev path
+    (``/Users/.../egeria-python/.venv/bin/python ... pyegeria/core/mcp_server.py``)
+    that only exists on that one developer's machine — it doesn't exist
+    inside a container image, so the subprocess fails to spawn at all
+    (``[Errno 2] No such file or directory``).
+
+    Priority, matching the "check os.environ directly, not a settings
+    default" idiom used elsewhere in this module (resolve_model_tier(),
+    resolve_mlflow_tracking_uri()) so an unset var never masquerades as an
+    override:
+
+      1. ``ADVISOR_PYEGERIA_MCP_COMMAND`` env var — the full argv to launch,
+         either as a JSON array (``["python3", "-m", "pyegeria.core.mcp_server"]``)
+         or a plain shell-split string (``python3 -m pyegeria.core.mcp_server``).
+      2. ``sys.executable -m pyegeria.core.mcp_server`` — the *current*
+         Python interpreter, used when ``pyegeria`` is importable in it. This
+         is the common case both inside the packaged image and in the uv
+         workspace: both install pyegeria into the same interpreter this
+         process runs from, so there's no need for a separate host-only venv
+         path at all.
+      3. ``None`` — signals the caller to fall back to config/mcp_servers.json's
+         configured ``command``/``args`` unchanged (today's behaviour).
+
+    Logs which branch was chosen, so a container's startup log shows exactly
+    which interpreter is about to be spawned.
+    """
+    env_cmd = os.environ.get("ADVISOR_PYEGERIA_MCP_COMMAND", "").strip()
+    if env_cmd:
+        argv: Optional[List[str]] = None
+        try:
+            parsed = json.loads(env_cmd)
+            if isinstance(parsed, list) and parsed:
+                argv = [str(x) for x in parsed]
+        except json.JSONDecodeError:
+            pass
+        if argv is None:
+            argv = shlex.split(env_cmd)
+        if argv:
+            logger.info(
+                f"pyegeria MCP command resolved from ADVISOR_PYEGERIA_MCP_COMMAND: {argv}"
+            )
+            return argv[0], argv[1:]
+        logger.warning(
+            f"ADVISOR_PYEGERIA_MCP_COMMAND={env_cmd!r} did not resolve to any argv; "
+            "falling back to the next resolution step"
+        )
+
+    if importlib.util.find_spec("pyegeria") is not None:
+        argv = [sys.executable, "-m", "pyegeria.core.mcp_server"]
+        logger.info(
+            f"pyegeria MCP command resolved to the current interpreter (pyegeria "
+            f"importable in it): {argv}"
+        )
+        return argv[0], argv[1:]
+
+    logger.info(
+        "pyegeria MCP command: pyegeria not importable in the current interpreter and "
+        "ADVISOR_PYEGERIA_MCP_COMMAND is unset — falling back to config/mcp_servers.json's "
+        "configured command/args"
+    )
+    return None

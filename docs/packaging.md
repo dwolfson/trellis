@@ -297,6 +297,36 @@ EA's own backlog):**
   image as configured today; it needs either a bundled/container-relative interpreter path or a
   config override mechanism, neither of which this packaging task adds.
 
+**Update (2026-09-04): both fixed in EA.** Every relative `data/`-style write (embedding/analytics
+cache, feedback logs, incremental-index state) now resolves through
+`advisor.config.resolve_advisor_data_root()`/`AdvisorSettings.advisor_cache_dir`, whose default is
+derived from the `ADVISOR_DATA_PATH` env var when it's set (`<path>/cache`, etc.) instead of a bare
+`./data` relative to cwd; each write site creates its directory lazily via the new
+`ensure_writable_dir()` helper, which raises a clear error naming both the path and the controlling
+env var on failure instead of surfacing a bare `PermissionError`. The pyegeria MCP server's launch
+command is now resolved (`advisor.mcp_config.resolve_pyegeria_mcp_command()`) in priority order —
+an explicit `ADVISOR_PYEGERIA_MCP_COMMAND` override, else `sys.executable -m
+pyegeria.core.mcp_server` using the *current* interpreter when `pyegeria` is importable in it (true
+in this image and in the uv workspace), else the `config/mcp_servers.json` command/args unchanged —
+logging which branch fired at startup. Verified live in a rebuilt `trellis/egeria-advisor:local`:
+`docker run --rm --network egeria_network --add-host host.docker.internal:host-gateway -e
+ADVISOR_DATA_PATH=/tmp/advisor-data trellis/egeria-advisor:local web` provisions all 9 pgvector
+collections with no "Permission denied" anywhere in the log, `/health` returns `{"status":"ok"}`,
+and the startup log shows `pyegeria MCP command resolved to the current interpreter ... ['/app/.venv/bin/python3',
+'-m', 'pyegeria.core.mcp_server']`. That verification run also surfaced a separate, unrelated
+packaging gap worth flagging here since it masked the fix on the first attempt: this image's build
+context includes whatever real (gitignored, untracked) `packages/egeria-advisor/.env` happens to
+exist on the *building* host, because nothing excludes it — no `.dockerignore` entry for `.env`.
+A dev host's `.env` explicitly setting `ADVISOR_CACHE_DIR=./data/cache` (an old, real value, not a
+placeholder) gets baked into the image and overrides the new default outright, since an explicit
+`.env` value always wins over a field default. Worked around for this verification by bind-mounting
+`/dev/null` over `/app/packages/egeria-advisor/.env`; the real fix (excluding `.env` from the image
+build context, or shipping `.env.example` instead) is `docker/`/Dockerfile territory, out of scope
+here. `dr-egeria` (a separate, legacy MCP server entry — see `packages/egeria-advisor/CLAUDE.md`
+rule 24 on why pyegeria's report tools are the only MCP-wrapped surface today) still hardcodes the
+host-only path and was intentionally left as-is; this task's env-var/current-interpreter resolution
+only applies to `mcpServers.pyegeria`.
+
 ## What the plan left open, and what was decided here
 
 - **Which health route to `HEALTHCHECK`.** The plan names `web` as a role with a health surface

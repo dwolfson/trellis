@@ -73,9 +73,11 @@ class DataPreparationPipeline:
         exclude_patterns : List[str], optional
             Patterns to exclude from processing
         """
+        from advisor.config import settings, ensure_writable_dir
+
         self.source_path = Path(source_path)
-        self.cache_dir = Path(cache_dir) if cache_dir else Path("./data/cache")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir = Path(cache_dir) if cache_dir else Path(settings.advisor_cache_dir)
+        ensure_writable_dir(self.cache_dir, "ADVISOR_CACHE_DIR")
         
         if exclude_patterns is None:
             exclude_patterns = [
@@ -443,7 +445,7 @@ def main():
     )
     parser.add_argument(
         "--cache-dir",
-        default="./data/cache",
+        default=str(settings.advisor_cache_dir),
         help="Directory for caching results"
     )
     parser.add_argument(

@@ -12,6 +12,8 @@ from pathlib import Path
 import json
 from loguru import logger
 
+from advisor.config import resolve_advisor_data_root, ensure_writable_dir
+
 # Import sentiment analyzer
 try:
     from advisor.sentiment_analysis import get_sentiment_analyzer
@@ -73,10 +75,10 @@ class FeedbackCollector:
             feedback_file: Path to feedback JSON file
         """
         if feedback_file is None:
-            feedback_file = Path("data/feedback/user_feedback.jsonl")
-        
+            feedback_file = resolve_advisor_data_root() / "feedback" / "user_feedback.jsonl"
+
         self.feedback_file = feedback_file
-        self.feedback_file.parent.mkdir(parents=True, exist_ok=True)
+        ensure_writable_dir(self.feedback_file.parent, "ADVISOR_DATA_PATH")
         
         logger.info(f"Initialized feedback collector: {self.feedback_file}")
     

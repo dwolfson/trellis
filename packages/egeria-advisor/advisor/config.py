@@ -22,6 +22,55 @@ import yaml
 from loguru import logger
 
 
+def resolve_advisor_data_root() -> Path:
+    """
+    Absolute root directory for Advisor's own writable on-disk state — the
+    embedding/analytics cache (``advisor_cache_dir`` below), feedback logs,
+    incremental-index state, etc. This is a *different* concern from
+    ``AdvisorSettings.advisor_data_path``/``_egeria_python_path_from_yaml``,
+    which resolves the (read-only) egeria-python *source* checkout used by
+    the data-prep pipeline — the two happen to share the ``ADVISOR_DATA_PATH``
+    env var name, but this function is never used for that lookup.
+
+    Priority: ``ADVISOR_DATA_PATH`` env var if explicitly set (checked via
+    ``os.environ`` directly, matching ``resolve_mlflow_tracking_uri()``'s
+    established idiom, so an unset var never masquerades as a setting), else
+    ``"./data"`` — the unchanged default for a native checkout, where the
+    process cwd is normally the package root and writable.
+
+    A container's non-root user typically can't write to its image cwd
+    (e.g. ``/app``), which is exactly the "Permission denied: 'data'" startup
+    failure this exists to fix — set ``ADVISOR_DATA_PATH`` to a writable
+    volume (e.g. ``/tmp/advisor-data``) to route every write here instead.
+    """
+    env_val = os.environ.get("ADVISOR_DATA_PATH", "").strip()
+    if env_val:
+        return Path(env_val).expanduser()
+    return Path("./data")
+
+
+def ensure_writable_dir(path: Path, env_var: str) -> Path:
+    """
+    Create ``path`` (and any missing parents) if it doesn't already exist,
+    lazily and idempotently (``parents=True, exist_ok=True``).
+
+    Raises a clear, actionable ``RuntimeError`` naming both the failed path
+    and the env var that controls it if creation fails (e.g. "Permission
+    denied" inside a container whose default cwd isn't writable by its
+    non-root user) — rather than letting a bare ``OSError`` (or a caller's
+    blanket ``except Exception`` that only logs and silently disables the
+    feature) obscure what to actually change.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not create required directory {path!s} ({exc}). "
+            f"Set {env_var} to a writable location."
+        ) from exc
+    return path
+
+
 def _egeria_python_path_from_yaml() -> Path:
     """Resolve egeria-python path from YAML config, falling back to a sensible default.
 
@@ -393,7 +442,7 @@ class AdvisorSettings(BaseSettings):
         alias="ADVISOR_DATA_PATH"
     )
     advisor_cache_dir: Path = Field(
-        default=Path("./data/cache"),
+        default_factory=lambda: resolve_advisor_data_root() / "cache",
         alias="ADVISOR_CACHE_DIR"
     )
     advisor_log_level: str = Field(default="INFO", alias="ADVISOR_LOG_LEVEL")
@@ -616,6 +665,8 @@ __all__ = [
     "settings",
     "load_config",
     "get_full_config",
+    "resolve_advisor_data_root",
+    "ensure_writable_dir",
     "DEFAULT_MODEL_TIER",
     "TIER_PRESETS",
     "ResolvedLLMTierConfig",
