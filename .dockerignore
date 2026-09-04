@@ -55,3 +55,17 @@ node_modules
 **/.DS_Store
 .idea
 .vscode
+
+# Secrets and local environment: never in an image. Both apps read .env at
+# runtime from the container's own environment or a mounted file, and the
+# 2026-09-04 EA image was found carrying this host's real .env baked in.
+.env
+**/.env
+**/*.env
+!**/.env.example
+**/config/certs
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.jks
