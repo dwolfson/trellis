@@ -107,3 +107,33 @@ class TestRunStageBatchBackground:
 
         entry = registry.get_activity(activity_id)
         assert entry["status"] == "error"
+
+
+class TestRunAllStageButtonMarkup:
+    """A real bug caught only by live browser testing, not by node --check
+    or any Python test: _runAllStageHtml's <button> wrapped its onclick in
+    DOUBLE quotes while embedding JSON.stringify(...)'s own double-quoted
+    output inside it — e.g. onclick="_runStageBatch("analysis", "docling",
+    this)". The first embedded quote closed the attribute early, silently
+    truncating it to onclick="_runStageBatch(" — the button rendered fine
+    and looked clickable, but its click handler was empty. Every other
+    JSON.stringify-into-onclick call site in this file (e.g.
+    _runAnalysisCatalogCard's) already used single quotes for exactly this
+    reason; this one didn't follow that convention. Pinned here so it can't
+    silently regress — a plain grep for the double-quoted form, since a
+    template literal's exact byte content is what a live click executes,
+    not what static analysis of the JS syntax tree would ever flag."""
+
+    def test_onclick_uses_single_quotes_around_json_stringify(self):
+        from pathlib import Path
+
+        index = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html"
+        src = index.read_text()
+        assert "onclick='_runStageBatch(" in src, (
+            "expected the Run-all-Stage button's onclick to be single-quoted"
+        )
+        assert 'onclick="_runStageBatch(' not in src, (
+            "the onclick attribute is double-quoted while wrapping JSON.stringify's "
+            "own double-quoted output — this truncates the handler silently on click, "
+            "see this test class's docstring"
+        )
