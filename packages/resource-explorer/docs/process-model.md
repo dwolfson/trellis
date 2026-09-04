@@ -264,7 +264,7 @@ alternatives.
   published agent card per app.
 
 **Process-management rules that come with the roles** (plan §2): no library starts a server on its
-own (`PREFECT_ENABLED` defaults `False`, `PREFECT_SERVER_ALLOW_EPHEMERAL_START=false` set in every
+own (`PREFECT_ENABLED` defaults `False`, `PREFECT_SERVER_EPHEMERAL_ENABLED=false` set in every
 profile — already true in the code today, see §1.5 above); every long-running unit of work has a
 row recording who owns it, when it last heartbeated, how to kill it; every process answers
 `SIGUSR1` with a thread dump and shuts down within a bound (today only `resource-explorer web`

@@ -1,13 +1,44 @@
 """Prefect Client Adapter — dispatches flow runs to the Prefect API or runs them locally."""
 from __future__ import annotations
 
+import os
+
+# Belt-and-braces guard against the ephemeral-server leak found 2026-09-04
+# (see PrefectConfig.enabled's docstring in config.py): 13 orphaned
+# `prefect.server.api.server:create_app` subprocess servers, days old,
+# reparented to launchd. Root cause is Prefect's own client, not RE's
+# fallback logic — `prefect.client.get_client()` starts an ephemeral
+# in-process subprocess server whenever PREFECT_SERVER_EPHEMERAL_ENABLED is
+# true and no PREFECT_API_URL is reachable, and nothing shuts that
+# subprocess down. Prefect's shipped default profile (profiles.toml,
+# `active = "ephemeral"`) sets PREFECT_SERVER_EPHEMERAL_ENABLED=true unless
+# an operator's own ~/.prefect/profiles.toml overrides it — so this must be
+# forced in-process, not just left to PrefectConfig.enabled defaulting to
+# False.
+#
+# Verified against the installed Prefect version (3.8.1):
+# prefect/settings/models/server/ephemeral.py — field `enabled`, env alias
+# `PREFECT_SERVER_EPHEMERAL_ENABLED` (also accepts the older
+# `PREFECT_SERVER_ALLOW_EPHEMERAL_MODE` spelling) — defaults to False in the
+# settings model itself, but the shipped "ephemeral" profile overrides that
+# default via profiles.toml, and env vars take priority over profile
+# settings in Prefect's settings-source order (see
+# prefect/settings/base.py's settings_customise_sources — env sources are
+# checked before ProfileSettingsTomlLoader). setdefault() so an operator who
+# deliberately wants ephemeral-server behavior can still override it via
+# their own environment.
+#
+# Must run before `import prefect` (below) — Prefect reads its settings at
+# import/first-use time.
+os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
+
 import asyncio
 import logging
 import nest_asyncio
 from typing import Any
 from prefect.client import get_client
 from resource_explorer.config import get_config
-from resource_explorer.prefect.flows import re_survey_flow
+from resource_explorer.prefect.flows import run_surveyor_step_task
 
 # Enable nested event loops if running inside another async loop (e.g. Uvicorn/FastAPI)
 nest_asyncio.apply()
@@ -148,9 +179,24 @@ def run_prefect_step(
                 type(e).__name__, e, exc_info=True,
             )
 
-    # Fallback/Local Run: run flow directly in-process
-    # This still records the flow and task runs locally if Prefect is configured.
-    return re_survey_flow(
+    # Fallback/Local Run: call the step's underlying function directly, NOT
+    # through `re_survey_flow` (a Prefect `@flow`). Found 2026-09-04: invoking
+    # the flow-wrapped version here still enters Prefect's flow engine, which
+    # itself calls `get_client()` to record flow-run state — with no
+    # PREFECT_API_URL configured, that used to succeed only because the
+    # ephemeral-server fallback silently started a subprocess server (the
+    # exact leak this module now guards against at import time). With that
+    # guard in place, calling the `@flow` here would raise instead of running
+    # locally — defeating the entire point of this fallback branch, which is
+    # reached whenever Prefect is disabled OR unreachable and must keep
+    # working with zero Prefect server, ephemeral or real.
+    #
+    # `run_surveyor_step_task.fn` is Prefect's own way to reach the
+    # undecorated function (same pattern `run_planned_step_task` already uses
+    # to call it from inside `re_survey_definition_flow` — see
+    # prefect/flows.py) — this runs the step as a plain Python call, no
+    # Prefect engine involved at all.
+    return run_surveyor_step_task.fn(
         entity_type=entity_type,
         slug=slug,
         step_name=step_name,

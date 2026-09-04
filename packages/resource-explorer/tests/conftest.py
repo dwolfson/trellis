@@ -300,9 +300,40 @@ def ephemeral_prefect(monkeypatch):
     first — was tested and falsified: it predicts a deterministic failure under
     `-p no:randomly`, and two fixed-order runs disagreed. See Backlog.
     """
-    from prefect.settings import PREFECT_API_URL, temporary_settings
+    from prefect.settings import (
+        PREFECT_API_URL,
+        PREFECT_SERVER_EPHEMERAL_ENABLED,
+        temporary_settings,
+    )
 
     for var in ("PREFECT_API_URL", "PREFECT_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    with temporary_settings({PREFECT_API_URL: None}):
+    # resource_explorer/__init__.py forces PREFECT_SERVER_EPHEMERAL_ENABLED=false
+    # process-wide (2026-09-04 fix for a real leak — see its docstring): 13
+    # orphaned `prefect.server.api.server:create_app` subprocess servers were
+    # found on this machine, spawned exactly the way this fixture's own docstring
+    # describes ("Prefect's client... loads that from `.env`") whenever no real
+    # API was reachable. That guard is correct for the *app*, but this fixture's
+    # actual job — proving Prefect's own flow-engine orchestration (topological
+    # order, guards, joins; see test_prefect_survey_flow.py) — genuinely needs
+    # a Prefect API to talk to, and ephemeral is the only sane one in a test.
+    #
+    # This must be an explicit `temporary_settings` update, NOT an env var
+    # (`monkeypatch.setenv` alone does not work here — found live 2026-09-04
+    # debugging why this exact fixture still failed after adding it).
+    # `prefect.context` bakes a frozen `GLOBAL_SETTINGS_CONTEXT` at its own
+    # *first import*, reading the environment as it stood then — which, in
+    # this suite, is already after `resource_explorer/__init__.py`'s
+    # `os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")` ran
+    # (package import happens at collection, before any test body). Every
+    # later `temporary_settings(...)` call derives its settings via
+    # `context.settings.copy_with_update(updates=...)` — copying from that
+    # already-frozen base and applying only the keys named in `updates`, never
+    # re-reading `os.environ` for the rest — so an env var set after Prefect's
+    # first import cannot reach this field at all; only passing it in
+    # `updates` (as done below) can.
+    with temporary_settings({
+        PREFECT_API_URL: None,
+        PREFECT_SERVER_EPHEMERAL_ENABLED: True,
+    }):
         yield

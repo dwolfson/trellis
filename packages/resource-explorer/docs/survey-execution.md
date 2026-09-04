@@ -580,8 +580,19 @@ thread-based path has. It gives no additional visibility into `executes_at: eger
 steps, which Egeria coordinates itself.
 
 **The fallback is not a degraded mode, it is a requirement.** With no Prefect
-server reachable, the step runs locally in-process. `PREFECT_ENABLED=true` with no
-server running is safe, costing only a connection attempt per step.
+server reachable, `run_prefect_step`'s own logic (`surveyors/prefect_adapter.py`)
+correctly falls back to running the step locally in-process, costing only a
+connection attempt per step. But that fallback is not the whole story: found
+2026-09-04, `PREFECT_ENABLED=true` with no server reachable let Prefect's *own*
+client start an ephemeral in-process subprocess server (nothing in RE ever shut
+it down) — 13 orphaned `prefect.server.api.server:create_app` processes,
+days old, were found this way. `PrefectConfig.enabled` now defaults to `False`
+(see its docstring in `config.py`), and `surveyors/prefect_adapter.py` /
+`resource_explorer/__init__.py` additionally force
+`PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process as a second, independent
+guard. Enable Prefect only where a compose service actually provides it
+(egeria-workspaces' `optional-associated-runtimes/prefect`), with both
+`PREFECT_ENABLED=true` and `PREFECT_API_URL` set explicitly.
 
 The comparative research behind the choice — how DataHub, OpenMetadata and Egeria
 differ in orchestration model, plus enterprise ingestion and human-in-the-loop
@@ -615,6 +626,6 @@ requires a Java engine host or a change to Egeria.**
 | Model step-to-step data dependencies? | **No** — model shared resources | D6.1; resources resolve once before the run, which is what keeps a microflow self-contained |
 | Use Dr.Egeria as the runtime invocation path? | **No** — A2A | Markdown through MCP is the wrong shape for a machine-to-machine governance call; Dr.Egeria keeps *authoring* |
 | Does Prefect give visibility into Egeria-side steps? | **No** | It orchestrates locally-run steps only |
-| Is `PREFECT_ENABLED=true` with no server unsafe? | **No** | Falls back to in-process; costs a connection attempt |
+| Is `PREFECT_ENABLED=true` with no server unsafe? | **Partly — revised 2026-09-04** | `run_prefect_step`'s own fallback is safe, but with no ephemeral-start guard Prefect's client would leak a subprocess server; now guarded and off by default |
 | Does engine-host registration need Egeria changes? | **No** | Confirmed in pyegeria 2026-08-26 — the mechanism already exists |
 | Should `analysis_id` carry both bundling and results meaning? | **No** | It sits across two rows of the granularity table and belongs in neither |

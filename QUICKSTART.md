@@ -148,8 +148,14 @@ None of these are needed to run either app; all are off unless configured.
 | MLflow | `localhost:5025` | Experiment tracking | `mlflow server --port 5025` |
 | Phoenix | `localhost:6006` | LLM tracing | `python -m phoenix.server.main` |
 
-With Prefect enabled and no server running, steps fall back to running in-process — safe, just
-slower by one connection attempt per step.
+With Prefect enabled and no server running, steps still fall back to running in-process — just
+slower by one connection attempt per step. Prefect itself stays off by default (`PREFECT_ENABLED`
+defaults to `False`) because leaving it enabled with no server reachable used to leak an ephemeral
+subprocess server that nothing shut down (13 found orphaned on one machine, 2026-09-04) — RE now
+also forces `PREFECT_SERVER_EPHEMERAL_ENABLED=false` as a second guard regardless of this setting.
+Enable it only where a compose service actually provides Prefect (egeria-workspaces'
+`optional-associated-runtimes/prefect`), setting both `PREFECT_ENABLED=true` and `PREFECT_API_URL`
+explicitly.
 
 ---
 

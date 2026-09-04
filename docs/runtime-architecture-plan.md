@@ -155,7 +155,7 @@ with N uvicorn workers they would run N times.
 **Process management rules that come with the roles**, each one motivated by something found
 on Dev 1 this week:
 - No library may start a server on its own. `PREFECT_ENABLED` defaults to `False`;
-  `PREFECT_SERVER_ALLOW_EPHEMERAL_START=false` is set in every profile; Prefect is enabled only
+  `PREFECT_SERVER_EPHEMERAL_ENABLED=false` is set in every profile; Prefect is enabled only
   where a compose service provides it. (Thirteen orphaned ephemeral servers.)
 - Every long-running unit of work has a row: who owns it, when it last heartbeated, how to kill
   it. (The reconciler exists because none of this is recorded today.)

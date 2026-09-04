@@ -11,6 +11,8 @@ wiring up feedback-admin access; fixed by giving every nested class the
 same env_file declaration (_ENV_FILE_CONFIG)."""
 from __future__ import annotations
 
+import os
+
 from resource_explorer.config import (
     EgeriaConfig,
     FeedbackConfig,
@@ -93,3 +95,35 @@ class TestNestedConfigsReadDotEnv:
         _write_env(tmp_path, monkeypatch, "FEEDBACK_ADMIN_TOKEN=from-dotenv\n")
         monkeypatch.setenv("FEEDBACK_ADMIN_TOKEN", "from-real-env")
         assert FeedbackConfig().admin_token == "from-real-env"
+
+
+class TestPrefectDisabledByDefault:
+    """Regression guard for the 2026-09-04 ephemeral-server leak: 13 orphaned
+    `prefect.server.api.server:create_app` subprocess servers were found on
+    this machine, reparented to launchd, days old — caused by
+    PrefectConfig.enabled defaulting to True with no reachable
+    PREFECT_API_URL, which makes Prefect's own client start an ephemeral
+    subprocess server that nothing ever shuts down. See PrefectConfig.enabled's
+    docstring in config.py and resource_explorer/__init__.py /
+    surveyors/prefect_adapter.py for the two independent guards."""
+
+    def test_prefect_enabled_defaults_to_false(self, tmp_path, monkeypatch):
+        _write_env(tmp_path, monkeypatch, "")
+        assert PrefectConfig().enabled is False
+
+    def test_ephemeral_start_env_var_is_forced_off_on_package_import(self, monkeypatch):
+        """resource_explorer/__init__.py sets this via os.environ.setdefault
+        at package-import time — the earliest point anything under this
+        package could import `prefect`, since more than one module imports
+        it directly (surveyors/prefect_adapter.py,
+        web/routes/prefect_status.py). Verified against the installed
+        Prefect version (see prefect.settings.models.server.ephemeral
+        .ServerEphemeralSettings) that PREFECT_SERVER_EPHEMERAL_ENABLED is
+        the correct env var name — not PREFECT_SERVER_ALLOW_EPHEMERAL_START,
+        which does not exist in this Prefect version."""
+        monkeypatch.delenv("PREFECT_SERVER_EPHEMERAL_ENABLED", raising=False)
+        import importlib
+        import resource_explorer
+
+        importlib.reload(resource_explorer)
+        assert os.environ.get("PREFECT_SERVER_EPHEMERAL_ENABLED") == "false"
