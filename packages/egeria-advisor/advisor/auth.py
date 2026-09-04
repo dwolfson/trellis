@@ -27,19 +27,36 @@ Portal never issued the password-shaped token this module's SSO route expected
     an authenticated user; `token` is what live call sites must use, via
     `trellis_auth.apply_token(client, token)`.
 
+**Login policy change (2026-09-04): login is required, and the policy is
+shared.** Until now this module answered "does EA require login at all?" for
+itself, from `advisor.yaml`'s `auth.enabled` / `auth.anonymous_rag_mode`. The
+project owner's decision of 2026-09-04 moves that answer into `trellis-auth`
+so both apps resolve it identically: `trellis_auth.resolve_policy("ADVISOR")`
+reads `TRELLIS_REQUIRE_LOGIN` / `TRELLIS_ANONYMOUS_READ` (then the
+`ADVISOR_*` forms, which win), and `LoginRequiredMiddleware` — installed in
+`advisor/web/app.py` ahead of the user-context middleware — enforces it before
+a route handler ever runs. `_auth_enabled()` and `_anonymous_rag_mode()` remain
+as names, but they are now *derived from that policy* rather than independent
+switches:
+
+    _auth_enabled()       == policy.require_login
+    _anonymous_rag_mode() == policy.anonymous_read
+
+The two `advisor.yaml` keys are retired; a checkout that still carries them
+gets one deprecation warning naming the env var that replaced them, and the
+policy wins.
+
 See `docs/runtime-architecture-plan.md` §4 and `docs/trellis-auth-extraction.md`.
 
-What stays here, deliberately, because it's EA's own policy/config, not
+What stays here, deliberately, because it's EA's own config, not
 mechanism:
   * config file locations (`advisor/configdata/advisor.yaml`,
     `mcp_servers.json`) and reading the environment for secrets;
-  * `_anonymous_rag_mode()` / `_auth_enabled()` — whether EA *requires* login
-    at all is EA's own answer, and `get_current_user`'s anonymous bypass
-    below depends on it, which is why `get_current_user`/`require_egeria_user`/
-    `is_authenticated`/`get_egeria_credentials` are re-implemented here (each
-    just a few lines) on top of this module's own bypass-aware
-    `get_current_user` rather than delegated straight to `trellis_auth`'s
-    versions of the same names, which have no notion of "auth disabled";
+  * `get_current_user`/`require_egeria_user`/`is_authenticated`/
+    `get_egeria_credentials` are re-implemented here (each just a few lines)
+    on top of this module's own policy-aware `get_current_user` rather than
+    delegated straight to `trellis_auth`'s versions of the same names, which
+    have no notion of a policy-driven anonymous bypass;
   * `resolve_egeria_credentials`'s service-account fallback — deliberately
     excluded from `trellis_auth` (see its module docstring) per the
     2026-08-29 decision that artifact ownership requires an authenticated
@@ -49,6 +66,7 @@ mechanism:
     service account" from "this is a signed-in person" by looking at `token`.
 
 Public API:
+  get_policy() -> trellis_auth.AuthPolicy          -- the shared login policy
   create_access_token(user_id, egeria_token, role=..., display_name=...) -> str
   decode_token(token) -> dict
   get_current_user(request) -> Optional[dict]   -- None for anonymous
@@ -84,6 +102,8 @@ from trellis_auth import validate_egeria_token as _validate_egeria_token
 __all__ = [
     "EgeriaCredentials",
     "apply_token",
+    "get_policy",
+    "reset_policy_cache",
     "create_access_token",
     "decode_token",
     "get_current_user",
@@ -161,12 +181,99 @@ def _jwt_ttl_hours() -> int:
     return int(_auth_cfg().get("jwt_ttl_hours", 8))
 
 
+# ---------------------------------------------------------------------------
+# Login policy — resolved by trellis_auth, not decided here (2026-09-04).
+# ---------------------------------------------------------------------------
+
+#: EA's env-var prefix for `resolve_policy`. Every knob is read as
+#: `TRELLIS_<NAME>` first and `ADVISOR_<NAME>` second, the app-specific one
+#: winning — so `TRELLIS_ANONYMOUS_READ=true` turns the dev override on for
+#: every trellis app on the box and `ADVISOR_ANONYMOUS_READ=false` takes EA
+#: back out of it.
+_POLICY_ENV_PREFIX = "ADVISOR"
+
+#: Public in EA beyond `trellis_auth`'s shared defaults. `/` and `/index.html`
+#: serve the SPA shell itself, which must load in order to *show* the login
+#: form — a 401 there is a blank page with nowhere to sign in. The shell holds
+#: no data; every `/api/...` call it makes is still challenged.
+#: `/api/auth/me`, `/api/auth/defaults` and `/api/auth/policy` are the three
+#: reads the login form itself performs before a token exists.
+_EA_PUBLIC_PATHS = (
+    "/",
+    "/index.html",
+    "/api/auth/me",
+    "/api/auth/defaults",
+    "/api/auth/policy",
+)
+
+_policy_cache = None
+_deprecation_warned = False
+
+
+def _warn_retired_yaml_keys() -> None:
+    """One warning per process if `advisor.yaml` still carries the retired keys.
+
+    Retired rather than honoured: two places that can answer "is login
+    required" is precisely the drift the shared-policy decision removes, and a
+    stale `anonymous_rag_mode: true` silently re-opening a deployment would be
+    the worst possible way to find that out. The warning names the replacement
+    so the fix is one line rather than a doc search.
+    """
+    global _deprecation_warned
+    if _deprecation_warned:
+        return
+    _deprecation_warned = True
+    cfg = _auth_cfg()
+    retired = [k for k in ("enabled", "anonymous_rag_mode") if k in cfg]
+    if retired:
+        logger.warning(
+            "auth: advisor.yaml still sets auth.{} — retired on 2026-09-04 and "
+            "IGNORED. Login policy is now shared and resolved by trellis-auth: use "
+            "TRELLIS_REQUIRE_LOGIN / TRELLIS_ANONYMOUS_READ (or the ADVISOR_* forms). "
+            "See docs/runtime-architecture-plan.md §4.".format("/auth.".join(retired))
+        )
+
+
+def get_policy():
+    """EA's resolved `trellis_auth.AuthPolicy`. Cached — the env is read once.
+
+    Cached deliberately: the middleware, `get_current_user` and the
+    `/api/auth/policy` route must all agree, and re-reading the environment
+    per call would let a mid-process `os.environ` change make them disagree
+    about whether the request that is in flight needed a token.
+    """
+    global _policy_cache
+    if _policy_cache is None:
+        from trellis_auth import resolve_policy
+        _warn_retired_yaml_keys()
+        _policy_cache = resolve_policy(
+            _POLICY_ENV_PREFIX,
+            extra_public_paths=_EA_PUBLIC_PATHS,
+        )
+    return _policy_cache
+
+
+def reset_policy_cache() -> None:
+    """Drop the cached policy — for tests that vary the environment."""
+    global _policy_cache, _deprecation_warned
+    _policy_cache = None
+    _deprecation_warned = False
+
+
 def _anonymous_rag_mode() -> bool:
-    return bool(_auth_cfg().get("anonymous_rag_mode", True))
+    """Derived, not decided: anonymous RAG mode *is* the policy's anonymous read.
+
+    The two were independent switches until 2026-09-04, which meant a
+    deployment could sit in the incoherent state of "login required" plus
+    "anonymous RAG allowed" and nobody could say from the config which one won
+    for a given route.
+    """
+    return get_policy().anonymous_read
 
 
 def _auth_enabled() -> bool:
-    return bool(_auth_cfg().get("enabled", True))
+    """Derived: True whenever the shared policy requires login (the default)."""
+    return get_policy().require_login
 
 
 def _base_config() -> AuthConfig:

@@ -111,15 +111,93 @@ Both halves are fixed. A Portal token in the old shape is now rejected with a
 `get_egeria_token`. Full write-up: `docs/trellis-auth-extraction.md` §6.
 
 Apps do not use this module directly — each keeps a thin adapter over it
-that supplies its own resolved `AuthConfig` and layers its own policy on
-top, the same shape `trellis-querycache`/`trellis-vectorstore` use. See
+that supplies its own resolved `AuthConfig` and the shared policy below, the
+same shape `trellis-querycache`/`trellis-vectorstore` use. See
 `advisor/auth.py`.
+
+## Login policy: shared, and required
+
+**Decided 2026-09-04 by the project owner**, replacing this README's original
+"whether an app requires login at all is each app's own answer." Both Trellis
+apps require login, and the policy lives here. Two apps independently deciding
+"is login required" is the same drift the token contract above already
+demonstrated — and the drift that matters most, because the failure mode is a
+deployment that is open when someone believed it was closed.
+
+```python
+from trellis_auth import LoginRequiredMiddleware, resolve_policy
+
+policy = resolve_policy("ADVISOR")     # TRELLIS_* then ADVISOR_*, app-specific wins
+app.add_middleware(LoginRequiredMiddleware, config=config, policy=policy)
+```
+
+`AuthPolicy` is a frozen dataclass: `require_login` (default **True**),
+`public_paths`, `anonymous_read` (default False), `login_required_message`.
+Anything not on the allowlist and without a valid app JWT gets a `401` with
+`WWW-Authenticate: Bearer` and a JSON body naming the login route.
+
+**The allowlist is an allowlist, not a denylist**, so a route added tomorrow is
+protected by default; the failure mode of getting it wrong is a loud 401 on a
+health probe rather than a silently public endpoint. Defaults: `/health`,
+`/health/ready`, `/static/`, `/api/auth/login`, `/api/auth/portal`,
+`/api/auth/logout`, `/.well-known/`, `/favicon.ico`; `/docs` and
+`/openapi.json` only when `TRELLIS_EXPOSE_OPENAPI=true`. An entry ending in
+`/` is a prefix, anything else is exact — except `"/"` itself, which is always
+exact, because read as a prefix it would silently make everything public.
+**A2A agent cards and the discovery index must be public** (a client has to
+learn how to authenticate before it holds a token) — add them via
+`TRELLIS_PUBLIC_PATHS` or `extra_public_paths`, which are additive, never a
+replacement.
+
+### Environment
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TRELLIS_REQUIRE_LOGIN` / `<APP>_REQUIRE_LOGIN` | `true` | `false` disables the gate entirely — not a supported mode |
+| `TRELLIS_ANONYMOUS_READ` / `<APP>_ANONYMOUS_READ` | `false` | **dev boxes only:** unauthenticated `GET`/`HEAD` pass; writes still 401 |
+| `TRELLIS_EXPOSE_OPENAPI` / `<APP>_EXPOSE_OPENAPI` | `false` | adds `/docs`, `/openapi.json` to the allowlist |
+| `TRELLIS_PUBLIC_PATHS` / `<APP>_PUBLIC_PATHS` | — | comma-separated, **added** to the defaults |
+
+Truthy is exactly `true`/`1`. An unset *or empty* variable is "not set", so an
+env file that declares `ADVISOR_ANONYMOUS_READ=` does not mask a deployment-wide
+`TRELLIS_ANONYMOUS_READ=true`. The mode is logged once at startup, and
+`anonymous_read` additionally logs a WARNING.
+
+**`anonymous_read` is not "auth off".** Reads pass, writes do not, so nothing
+is ever created without an identity behind it — the 2026-08-29 decision that
+artifact ownership requires an authenticated identity survives the override.
+
+**Consequence: Egeria is a hard dependency of both apps**, because Egeria is
+the identity provider. The QUICKSTART's "answers questions without an Egeria
+platform" path is retired.
+
+## The CLI's cached login (`trellis_auth.session_file`)
+
+Egeria's tokens last an hour and die on every platform restart, so a CLI that
+prompted per command would be unusable and one that stored the password would
+undo the token contract. `session_file` caches the **app JWT** at
+`$XDG_CONFIG_HOME/trellis/<app>/session.json`, mode `0600`, written atomically
+(temp file → `chmod` → `os.replace`, so the file is never briefly
+world-readable at its final name).
+
+```python
+from trellis_auth import session_file
+
+session_file.save_session("egeria-advisor", user_id, app_jwt)   # exp read from the JWT
+record = session_file.load_session("egeria-advisor")            # expired ones ARE returned
+if record is None or record.is_expired:
+    print(session_file.expired_message(record, "egeria-advisor login"))
+session_file.clear_session("egeria-advisor")
+```
+
+`load_session` returns an expired record rather than `None` because the caller
+needs the expiry time to say *when* it lapsed — "expired at 09:14" tells a
+person whether they were idle or whether the platform restarted under them, and
+those have different fixes. A token carrying no `exp` is never treated as
+expired: "I cannot tell" must not silently mean "you are signed out".
 
 ## What is NOT here (deliberately)
 
-* **Whether an app requires login at all.** EA's `_auth_enabled` /
-  `_anonymous_rag_mode` decide *whether* an endpoint demands a signed-in
-  user; that's each app's own answer, not this package's.
 * **Config file locations.** EA reads `advisor/configdata/advisor.yaml` and
   `mcp_servers.json`; this package never reads a file or the environment —
   every function takes an `AuthConfig` the caller already resolved.

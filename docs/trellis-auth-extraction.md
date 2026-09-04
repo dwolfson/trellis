@@ -96,9 +96,15 @@ reads the environment; each app resolves its own config into a frozen dataclass.
 `get_egeria_credentials` remains as a shim that raises with an explanation rather than a
 `{user_id, password}` dict nothing can produce any more.)
 
+**Also shared, added 2026-09-04 — see §7:** the *login policy* itself
+(`AuthPolicy`, `LoginRequiredMiddleware`, `resolve_policy`) and the CLI's cached-session file
+(`session_file`).
+
+> ~~**Policy**, not mechanism — EA's `_anonymous_rag_mode` and `_auth_enabled` decide *whether* an
+> app demands a login, which is each app's own answer.~~ **Superseded 2026-09-04 (project owner):
+> both apps require login and the policy is shared. See §7.**
+
 **App-specific, and must stay so:**
-* **Policy**, not mechanism — EA's `_anonymous_rag_mode` and `_auth_enabled` decide *whether* an app
-  demands a login, which is each app's own answer.
 * **Config location** — EA reads `advisor/configdata/advisor.yaml` and `mcp_servers.json`; RE has its
   own. Neither belongs in the package.
 * **`resolve_egeria_credentials`'s service-account fallback.** Deliberately excluded. Per the SS-4
@@ -231,3 +237,89 @@ and `advisor/web/app.py`'s report-preview client (~line 1318) still authenticate
 dict and call `apply_token(client, token)` instead of
 `create_egeria_bearer_token(user_id, user_pwd)`. Until then those two paths fall back to the
 client's own configured (service-account) credentials rather than acting as the signed-in user.
+
+---
+
+## 7. The login policy is shared, and login is required (2026-09-04)
+
+**Decision (project owner, 2026-09-04):** both apps require login, and the policy that says so
+lives in `trellis-auth`. This directly supersedes §4's "whether an app requires login at all"
+being on the *not shared* list, and the same sentence in `trellis_auth/config.py`,
+`trellis_auth/auth.py` and the package README. Recorded in
+`docs/runtime-architecture-plan.md` §4 ("Login policy: shared, and required").
+
+### Why it moved
+
+§4 put the login requirement on the app side for a defensible reason: it looked like policy, and
+policy is where apps legitimately differ. That reasoning does not survive contact with what the
+two answers actually were. EA answered "no" — `anonymous_rag_mode: true` by default, so an
+unauthenticated caller got the whole RAG surface. RE answered nothing at all, because it had no
+login to require. Neither answer was reached by deciding; both were defaults nobody revisited.
+
+The drift argument that justified extracting the package applies here more sharply than it did to
+the token contract. A mismatched token contract fails loudly, at the first Portal handoff. A
+mismatched login policy fails *silently*, and in the direction where the failure is an open
+deployment somebody believed was closed. That asymmetry is the whole argument.
+
+### What it costs, stated fairly
+
+The apps lose the ability to differ on this, and one of them (EA, in its "ask the corpus a
+question" mode) genuinely could have. §5's "what this costs" reasoning applies: the price is
+paid by the app that wanted the looser setting, and here that price is a login prompt in front
+of a Q&A tool that did not need one. Accepted, because EA is not only a Q&A tool — the same
+process creates governance plans, executes them against Egeria and publishes elements that carry
+`Ownership`, and the anonymous surface was never actually separable from that one by anything
+stronger than which route you called.
+
+`TRELLIS_ANONYMOUS_READ=true` is the escape hatch for the dev box, and it is deliberately weaker
+than the setting it replaces: reads pass, writes still 401. So the mode that used to be EA's
+default is now an override that cannot create anything, which keeps the 2026-08-29 decision
+(artifact ownership requires an authenticated identity, no config fallback) true even with the
+override on.
+
+### What landed
+
+| Piece | Where |
+|---|---|
+| `AuthPolicy` (frozen: `require_login=True`, `public_paths`, `anonymous_read=False`, `login_required_message`) | `trellis_auth/policy.py` |
+| `LoginRequiredMiddleware` — pure ASGI, 401 + `WWW-Authenticate: Bearer` + JSON body | `trellis_auth/policy.py` |
+| `resolve_policy(app_prefix)` — `TRELLIS_*` then `<APP>_*`, app-specific wins | `trellis_auth/policy.py` |
+| `session_file` — the CLI's cached app JWT, `$XDG_CONFIG_HOME/trellis/<app>/session.json`, 0600 | `trellis_auth/session_file.py` |
+| EA installs the middleware; `_auth_enabled`/`_anonymous_rag_mode` derived from the policy | `advisor/web/app.py`, `advisor/auth.py` |
+| `egeria-advisor login` / `logout`, session read by `ask` and `plans` | `advisor/cli/main.py`, `advisor/cli/session.py` |
+
+Two design choices worth keeping when RE adopts this:
+
+* **The public-path list is an allowlist**, so a route added later is protected by default. A
+  denylist fails open; this fails closed, and its failure mode is a loud 401 on a new health
+  probe. `"/"` is matched exactly rather than as a prefix — read as a prefix it makes every path
+  public, which is the entire policy disabled by the most innocuous-looking entry in the list.
+  This was caught by a test, not by review.
+* **The middleware validates the *app* JWT, not the Egeria token inside it.** `create_access_token`
+  already caps the app JWT's `exp` at the Egeria token's own, so a verifying app JWT carries a
+  non-expired Egeria token. Whether Egeria still *accepts* it is Egeria's answer to give on the
+  call that uses it, not a view-server round-trip per request.
+
+### Consequences recorded elsewhere
+
+* **Egeria is a hard dependency** of both apps — it is the identity provider. `QUICKSTART.md` and
+  the root `README.md` no longer describe a no-Egeria path.
+* **Sessions are bounded by Egeria's token** (one hour, and every token dies when the platform
+  restarts because the quickstart's `rsa.key-id` is empty). The browser re-logs-in; the CLI
+  caches a session and prints one line when it lapses. The ask to the Egeria project for a
+  configurable token lifetime in `application.properties` stands.
+* **Portal users never see a second login** — `/api/auth/portal` is public and issues the app JWT.
+
+### Still to do
+
+* **RE adopts the policy.** `trellis-auth` carries it and `session_file` is written to be reused
+  verbatim; RE's own middleware install, `resource-explorer login`/`logout` and its public-path
+  list (its A2A agent cards in particular) are the next step.
+* **A2A paths are not yet in any app's allowlist.** The agent cards and discovery index must be
+  public, and the app that serves them adds them through `TRELLIS_PUBLIC_PATHS` /
+  `extra_public_paths`. Nothing serves them today, so nothing was added; whoever builds the A2A
+  entry point (`runtime-architecture-plan.md` §2) must not forget it, because the failure is a
+  client that cannot discover how to authenticate.
+* **`exec_report_spec` still runs as the service account** for signed-in users — pyegeria only
+  accepts user/password there (egeria-python ISSUE-86). Unchanged by this pass, and now the only
+  remaining path where a signed-in person's Egeria writes are attributed to `erinoverview`.

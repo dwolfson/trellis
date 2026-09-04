@@ -65,6 +65,44 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 
+def _install_login_required_middleware() -> None:
+    """Install `trellis_auth.LoginRequiredMiddleware` — the shared login policy.
+
+    **Ordering matters and is the reason this is a function rather than two
+    inline lines.** Starlette applies `add_middleware` in reverse order: the
+    *last* one added is the *outermost*. `_user_context_middleware` below is
+    registered by its decorator at import time, after this call, so it ends up
+    outside this one — which is what we want spelled out explicitly, because
+    the requirement reads the other way round in prose ("install the login gate
+    ahead of the user-context middleware", i.e. it must run *before* a handler
+    does, not before the context middleware in the stack).
+
+    The user-context middleware being outermost is harmless and slightly
+    useful: it sets the ContextVar from whatever token is present and resets it
+    in `finally`, so even a request this gate rejects leaves no identity behind.
+    Nothing downstream of a 401 ever runs, so no handler can act on a
+    half-authenticated context.
+
+    Registered before the CORS middleware would be wrong in the other
+    direction — a cross-origin 401 must still carry its CORS headers or the
+    browser reports an opaque network error instead of "please sign in". CORS
+    is added above, therefore ends up outside this, therefore decorates the
+    401. That is the arrangement, and `test_login_required_middleware.py`
+    pins it.
+    """
+    from trellis_auth import LoginRequiredMiddleware
+    from advisor.auth import _base_config, get_policy
+
+    app.add_middleware(
+        LoginRequiredMiddleware,
+        config=_base_config(),
+        policy=get_policy(),
+    )
+
+
+_install_login_required_middleware()
+
+
 @app.middleware("http")
 async def _user_context_middleware(request: Request, call_next):
     """
@@ -473,6 +511,24 @@ async def auth_defaults() -> Dict[str, Any]:
     retrieve it before ever logging in."""
     from advisor.config import settings
     return {"username": settings.egeria_user}
+
+
+@app.get("/api/auth/policy")
+async def auth_policy() -> Dict[str, Any]:
+    """The active login policy, so the SPA can decide how to present the form.
+
+    Public, deliberately: the browser needs this *before* it holds a token, and
+    it discloses nothing an unauthenticated caller cannot already learn by
+    making one request and reading the 401. With `login_required` true the SPA
+    shows a non-dismissible login overlay instead of starting up into a page
+    whose every panel is a failed fetch.
+    """
+    from advisor.auth import get_policy
+    policy = get_policy()
+    return {
+        "login_required": policy.require_login and not policy.anonymous_read,
+        "anonymous_read": policy.anonymous_read,
+    }
 
 
 @app.post("/api/query")

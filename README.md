@@ -58,8 +58,16 @@ package boundary.
 ## Getting started
 
 **→ [QUICKSTART.md](QUICKSTART.md) takes you from a clone to a running app in about fifteen
-minutes, without needing an Egeria server.** The rest of this section is the reference version:
-what each step is doing and why, for when the quickstart's defaults are not what you want.
+minutes.** The rest of this section is the reference version: what each step is doing and why,
+for when the quickstart's defaults are not what you want.
+
+**An Egeria platform is required.** Both apps require login and authenticate against Egeria, so
+Egeria is the identity provider and a hard dependency — the earlier "runs without an Egeria
+server" path was retired on 2026-09-04 (project owner's decision; see
+[docs/runtime-architecture-plan.md](docs/runtime-architecture-plan.md) §4 and
+[docs/trellis-auth-extraction.md](docs/trellis-auth-extraction.md) §7). Setting
+`TRELLIS_ANONYMOUS_READ=true` allows unauthenticated reads on a development box only, and is not
+a supported deployment mode.
 
 ```bash
 git clone https://github.com/dwolfson/trellis.git

@@ -26,9 +26,12 @@ bearer token.
 This module never reads the environment or a config file — every function
 takes an `AuthConfig` the caller has already resolved (see `config.py`).
 
+Whether an app *requires* login is no longer app-specific: since 2026-09-04
+it is one shared policy in `policy.py` (`AuthPolicy`,
+`LoginRequiredMiddleware`, `resolve_policy`), and EA's `_auth_enabled` /
+`_anonymous_rag_mode` are derived from it.
+
 Deliberately NOT here (stays app-specific — see the design note, §4):
-  * whether an app *requires* login at all (EA's `_auth_enabled` /
-    `_anonymous_rag_mode` are policy, not mechanism);
   * where config lives (`advisor/configdata/advisor.yaml`, `mcp_servers.json`
     are EA's own paths);
   * `resolve_egeria_credentials`'s service-account fallback — deliberately

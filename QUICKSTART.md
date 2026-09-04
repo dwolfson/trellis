@@ -3,8 +3,12 @@
 From a fresh clone to a running app. Fifteen minutes, most of it waiting for model downloads.
 
 Trellis is a `uv` workspace holding two apps and six shared libraries. You do not need to
-understand the whole thing to run one app — start with the [10-minute path](#the-10-minute-path),
-which needs no Egeria server and no catalog.
+understand the whole thing to run one app — start with the [10-minute path](#the-10-minute-path).
+
+**You need a running Egeria platform.** Both apps sign you in against Egeria, so Egeria is the
+identity provider and therefore a hard dependency — the "answers questions without an Egeria
+platform" path this guide used to describe was retired on 2026-09-04 (project owner's decision;
+see `docs/runtime-architecture-plan.md` §4).
 
 For what the repo *is* and why it is one repo, see [README.md](README.md).
 
@@ -20,8 +24,14 @@ For what the repo *is* and why it is one repo, see [README.md](README.md).
 
 Python itself is handled by `uv` from `.python-version` — you do not need to install it.
 
-**Optional, and genuinely optional:** an Egeria platform. Both apps answer questions without
-one. You need Egeria only to survey and catalog resources (see [The full path](#the-full-path)).
+**Required: an Egeria platform.** It is what both apps authenticate against — login is required
+and there is no local user store, so without Egeria there is no way to sign in. An
+`egeria-quickstart` deployment at `https://localhost:9443` is the usual local answer. Set it in
+each app's `.env` (`EGERIA_VIEW_SERVER_URL`, `EGERIA_VIEW_SERVER`, `EGERIA_USER`).
+
+`TRELLIS_ANONYMOUS_READ=true` relaxes this on a development box — unauthenticated `GET`/`HEAD`
+pass, writes still require a signed-in user — but it is a dev-only override, not a supported way
+to run without Egeria.
 
 ---
 
@@ -113,16 +123,27 @@ Then open <http://localhost:8810>, pick the repo in the sidebar, and use **🔍 
 Ingestion runs as part of `add` and takes a few minutes — pick a small repo first. `odpi/egeria`
 itself is large enough to be a poor first choice.
 
-**Egeria Advisor** — open <http://localhost:8880> and ask *"what is a governance zone?"*. It
-answers from its own bundled corpus, so nothing needs indexing first.
+**Egeria Advisor** — open <http://localhost:8880>, sign in with your Egeria user id and
+password, then ask *"what is a governance zone?"*. The answer comes from its own bundled corpus,
+so nothing needs indexing first; the sign-in is what lets anything it creates be attributed to
+you in Egeria.
+
+From the terminal, cache a session once instead of signing in per command:
+
+```bash
+uv run --package egeria-advisor egeria-advisor login        # prompts for the password
+uv run --package egeria-advisor egeria-advisor "what is a governance zone?"
+```
+
+Egeria's tokens last an hour and every one of them dies when the platform restarts, so expect to
+run `login` again; commands that need Egeria say so in one line when the session has lapsed.
 
 ---
 
 ## The full path
 
-Everything above works with no Egeria server. These need one.
-
-Set the platform in each app's `.env` (`EGERIA_PLATFORM_URL`, view server, user), then:
+Everything above already needs the Egeria platform you configured in the prerequisites. These are
+what you do with it:
 
 - **Survey and catalog a resource.** Resource Explorer writes survey results into Egeria as
   the catalog of record. Start at [Resource Explorer's user guide](packages/resource-explorer/docs/user-guide.md).

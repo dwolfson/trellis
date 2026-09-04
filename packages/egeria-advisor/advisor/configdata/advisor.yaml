@@ -200,7 +200,14 @@ observability:
     trace_all_queries: false
 
 auth:
-  enabled: true
+  # `enabled` and `anonymous_rag_mode` were retired here on 2026-09-04. Whether
+  # login is required is no longer EA's own answer: it is one shared policy in
+  # trellis-auth, resolved from TRELLIS_REQUIRE_LOGIN / TRELLIS_ANONYMOUS_READ
+  # (or the ADVISOR_* forms, which win). Login is required by default;
+  # TRELLIS_ANONYMOUS_READ=true is a dev-box override that allows
+  # unauthenticated GET/HEAD only. Setting either key here again does nothing
+  # except produce a deprecation warning at startup.
+  # See docs/runtime-architecture-plan.md §4.
   jwt_secret: ""          # override with ADVISOR_JWT_SECRET env var; auto-derived from hostname if blank
   jwt_ttl_hours: 8        # token lifetime — one workday; re-login when expired
   portal:
@@ -208,8 +215,6 @@ auth:
     origin: "http://localhost:8885"
     shared_secret: ""     # override with ADVISOR_PORTAL_SECRET env var
     token_ttl_seconds: 30 # portal tokens expire quickly; Advisor exchanges them for a full JWT
-  anonymous_rag_mode: true  # allow unauthenticated RAG queries (Q&A, code examples, explanations)
-                            # set false to require login for all access
 
 logging:
   level: INFO

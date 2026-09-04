@@ -35,6 +35,15 @@ def _known_auth_config(monkeypatch):
     })
     monkeypatch.delenv("ADVISOR_JWT_SECRET", raising=False)
     monkeypatch.delenv("ADVISOR_PORTAL_SECRET", raising=False)
+    # The login policy is process-cached (advisor.auth.get_policy); clear it
+    # around every test so one that varies TRELLIS_*/ADVISOR_* env cannot leak
+    # its policy into the next.
+    for var in ("TRELLIS_REQUIRE_LOGIN", "ADVISOR_REQUIRE_LOGIN",
+                "TRELLIS_ANONYMOUS_READ", "ADVISOR_ANONYMOUS_READ"):
+        monkeypatch.delenv(var, raising=False)
+    auth.reset_policy_cache()
+    yield
+    auth.reset_policy_cache()
 
 
 class FakeRequest:
@@ -134,7 +143,14 @@ def test_resolve_egeria_credentials_service_account_fallback_has_no_token(monkey
 # ---------------------------------------------------------------------------
 
 def test_auth_disabled_bypass_yields_an_anonymous_user_with_no_token(monkeypatch):
-    monkeypatch.setattr(auth, "_auth_cfg", lambda: {"enabled": False})
+    """The bypass still exists; since 2026-09-04 the *switch* is the shared policy.
+
+    `advisor.yaml`'s `auth.enabled` is retired — this used to monkeypatch
+    `_auth_cfg` to `{"enabled": False}` and would now be silently ignored,
+    which is exactly what the deprecation warning is for.
+    """
+    monkeypatch.setenv("ADVISOR_REQUIRE_LOGIN", "false")
+    auth.reset_policy_cache()
 
     user = auth.get_current_user(FakeRequest())
 
