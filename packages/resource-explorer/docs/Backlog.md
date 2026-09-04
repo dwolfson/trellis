@@ -296,15 +296,44 @@ process-ports attach under a different service too). Definitive: this is a confi
 Server gap, not a client-side omission pyegeria could paper over. No `SolutionPortProperties`
 model exists either, so the generic fallback (`MetadataExpert.create_metadata_element`,
 `NewOpenMetadataElementRequestBody` — confirmed live to be a real, reachable route,
-`/servers/{serverName}/api/open-metadata/{urlMarker}/metadata-elements`) has nothing typed to
-build against — would mean hand-guessing property names against the verbose
-`ElementProperties`/`propertyValueMap` shape this repo's own CLAUDE.md already flags as a
-footgun (confirmed silently dropping `qualifiedName` for a different type). Real port
-materialization is on hold until this exists server-side (or a workaround surfaces) — reported
-to `egeria-python-65` for their tracker; not something to build around speculatively. Separate
-and NOT blocked: `SolutionLinkingWire`'s OMVS-layer methods are already implemented and working
-in pyegeria — the only gap there is a missing Dr.Egeria compact command, which `egeria-python-65`
-is adding independently.
+`/servers/{serverName}/api/open-metadata/{urlMarker}/metadata-elements`). Reported to
+`egeria-python-65` for their tracker (`PYEGERIA_ISSUES.md` ISSUE-85, PR #340). Separate and NOT
+blocked: `SolutionLinkingWire`'s OMVS-layer methods are already implemented and working in
+pyegeria, exposed via Dr.Egeria's `Link Solution Components` command (not a missing "wire"
+command as first thought — `egeria-python-65` corrected this after checking the actual
+processor code).
+
+**Correction, same day: `SolutionPortProperties` DOES exist** (this entry originally said it
+didn't — an earlier search filtered out anything with "solution" in the name and never actually
+checked). The live OpenAPI spec's `components/schemas` documents `SolutionPortProperties`
+(`direction` enum field) even with no create endpoint — the server genuinely understands the
+type, it just can't be created through a convenience wrapper. **Project-owner instruction,
+2026-09-04: build a temporary workaround via the generic route now, using `SolutionPort` (the
+right type — same `DesignModelElement` branch as `SolutionComponent`, confirmed via
+`SolutionComponentPort`'s live typedef), not the classic `Port`/`PortImplementation`/`PortAlias`
+family first suggested (ruled out: its attach relationship `ProcessPort` requires the owning end
+to be typed `Process`, a different branch entirely — no way to attach a classic Port to a
+`SolutionComponent`).** Built and live-verified end to end: `port_materializer.py`'s
+`PortMaterializer`, mirroring `BlueprintMaterializer`'s shape exactly so it's a clean swap once
+pyegeria ships a real `create_solution_port` — same idempotency-first structure, same
+`{"status", "guid", "qualified_name"}` return contract. Live probe (create → attach via the real
+`link_solution_component_port` → verify via `get_anchored_element_graph`'s `relationships` list
+→ delete both) confirmed the whole path works, including one real wrong turn caught and fixed:
+the `direction` enum's registered type is `SolutionPortDirection` with values
+`UNKNOWN`/`INPUT`/`OUTPUT`/`INOUT`/`OUTIN`/`OTHER` — a first attempt guessed `typeName: "PortType"`
+/ `symbolicName: "Input"` from the OpenAPI schema's toString-derived enum listing, which is
+actually the *classic* `Port.portType` enum's shape, and failed `OMAG-COMMON-400-032`. Full trail
+in memory note `reference_egeria_dedup_and_link_patterns` (including the
+`get_metadata_element_by_guid` `properties`-is-always-`None` trap — real key is
+`elementProperties.propertyValueMap`/`propertiesAsStrings` — positive-controlled against a real
+seeded element before trusting it on the throwaway). New `architecture_materialized_ports`
+registry table + accessor trio (mirrors `architecture_materialized_blueprints`'s shape, keyed by
+(scope_locator, port_name) since one component can have more than one port). 22 new tests (17
+materializer, 5 registry round-trip) — `MetadataExpert`-mocked, plus one that validates the real
+create body against pyegeria's actual `NewOpenMetadataElementRequestBody` model. Not built in
+this pass: any route/UI wiring, or the "which ports come from which component's deployment
+evidence" mapping — this is the create capability only, matching the project owner's own framing
+("if you need... try doing it").
 
 **9. Minor, measured-not-fixed: `_candidate_blueprints_results` and `_architecture_recovery_
 results` each build their own slug→scope_locator map independently** (the same duplication-by-
@@ -315,6 +344,20 @@ Backlog-recorded largest fixture): 0.544s for the full `_architecture_recovery_r
 including both walks. Not slow enough to be worth threading a shared map through two functions
 that are each deliberately self-contained and independently testable — noted here as a measured
 fact, not acted on, so a future session doesn't re-measure it from scratch if it comes up again.
+
+**10. `survey_definition_cache` has no staleness check — found and fixed live, 2026-09-04,
+right after Egeria's redeploy (full re-seed, fresh metadata store).** `survey_definition_
+executor.py`'s `_resolve_process_guid` trusts a cached `process_guid` unconditionally when
+`refresh_definition` isn't explicitly requested (the default) — no check that the cached GUID
+still resolves. Confirmed live: a cached row from 2026-08-09 pointed at a GovernanceActionProcess
+GUID that 404s post-redeploy (`GET .../metadata-elements/{guid}` → gone), while the real Survey
+Definitions exist fine under fresh GUIDs (`find_candidate_process_guids('Git Repository')`
+returned all 10 `Repo*` processes correctly). All 29 cached rows predated the redeploy by weeks,
+so cleared the whole table rather than individually verify each — it's a pure performance cache
+(self-repopulates via `find_candidate_process_guids` on next use), not a source of truth, so
+clearing has no data-loss risk. **Not fixed at the code level** — `_resolve_process_guid` still
+has no staleness check, so this can recur after any future full re-seed; worth a real fix
+(verify-before-trust, or a TTL) if platform re-seeds become routine rather than rare.
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where

@@ -1064,3 +1064,52 @@ class TestAnalysisLastRunPublishFailedFlag:
         self._log(db, published=None)
         activity = db.get_analysis_last_run("repo", "s")
         assert activity["fake_analysis"]["last_publish_failed"] is False
+
+
+class TestMaterializedPorts:
+    """architecture_materialized_ports (PortMaterializer's registry cache,
+    Backlog.md item 8) — same round-trip shape as architecture_materialized_
+    blueprints/_components, exercised directly since PortMaterializer's own
+    tests mock the registry entirely and never run this SQL."""
+
+    def test_missing_returns_none(self, db):
+        assert db.get_materialized_port("repo", "myproj", "src/web", "http") is None
+
+    def test_round_trips(self, db):
+        entry = db.record_materialized_port(
+            "repo", "myproj", "src/web", "http",
+            "SolutionPort::repo::myproj::src/web::http", "guid-1",
+        )
+        assert entry["guid"] == "guid-1"
+        got = db.get_materialized_port("repo", "myproj", "src/web", "http")
+        assert got["guid"] == "guid-1"
+        assert got["qualified_name"] == "SolutionPort::repo::myproj::src/web::http"
+
+    def test_two_ports_on_the_same_component_are_distinct(self, db):
+        """The reason for keying on (scope_locator, port_name) rather than
+        scope_locator alone — one component can have more than one port."""
+        db.record_materialized_port("repo", "myproj", "src/web", "http", "qn-http", "guid-http")
+        db.record_materialized_port("repo", "myproj", "src/web", "metrics", "qn-metrics", "guid-metrics")
+        assert db.get_materialized_port("repo", "myproj", "src/web", "http")["guid"] == "guid-http"
+        assert db.get_materialized_port("repo", "myproj", "src/web", "metrics")["guid"] == "guid-metrics"
+
+    def test_re_recording_overwrites_not_appends(self, db):
+        """Nothing append-only about "does this exist in Egeria" — same
+        reasoning record_materialized_component/_blueprint already give."""
+        db.record_materialized_port("repo", "myproj", "src/web", "http", "qn", "guid-old")
+        db.record_materialized_port("repo", "myproj", "src/web", "http", "qn", "guid-new")
+        got = db.get_materialized_port("repo", "myproj", "src/web", "http")
+        assert got["guid"] == "guid-new"
+        with db._conn() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM architecture_materialized_ports "
+                "WHERE entity_type='repo' AND entity_slug='myproj' AND scope_locator='src/web' AND port_name='http'"
+            ).fetchone()[0]
+        assert count == 1
+
+    def test_get_materialized_ports_keys_by_scope_and_name(self, db):
+        db.record_materialized_port("repo", "myproj", "src/web", "http", "qn-http", "guid-http")
+        db.record_materialized_port("repo", "myproj", "src/web", "metrics", "qn-metrics", "guid-metrics")
+        all_ports = db.get_materialized_ports("repo", "myproj")
+        assert set(all_ports.keys()) == {"src/web::http", "src/web::metrics"}
+        assert all_ports["src/web::http"]["guid"] == "guid-http"

@@ -1365,6 +1365,31 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_blueprints_scope "
                 "ON architecture_materialized_blueprints(entity_type, entity_slug, perspective, cluster_name)"
             )
+            # New table: architecture_materialized_ports — same parallel shape
+            # again, this time for PortMaterializer's temporary SolutionPort
+            # workaround (Backlog.md item 8 / egeria-python ISSUE-85:
+            # SolutionArchitect has no create_solution_port, confirmed live
+            # against the actual OpenAPI spec — no create endpoint anywhere).
+            # Keyed by (entity_type, entity_slug, scope_locator, port_name)
+            # rather than scope_locator alone, since one component can
+            # legitimately have more than one port (e.g. an HTTP port and a
+            # metrics port on the same deployed service).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_materialized_ports (
+                    id              TEXT PRIMARY KEY,
+                    entity_type     TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    scope_locator   TEXT NOT NULL,
+                    port_name       TEXT NOT NULL,
+                    qualified_name  TEXT NOT NULL,
+                    guid            TEXT NOT NULL,
+                    materialized_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_ports_scope "
+                "ON architecture_materialized_ports(entity_type, entity_slug, scope_locator, port_name)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
@@ -2486,6 +2511,69 @@ class ProjectRegistry:
             )
         return entry
 
+    def get_materialized_port(
+        self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,
+    ) -> dict | None:
+        """Whether a real Egeria SolutionPort already exists for this
+        (scope_locator, port_name), or None. Byte-for-byte the same shape
+        as get_materialized_component/get_materialized_blueprint —
+        PortMaterializer's own module docstring covers why this is a
+        temporary workaround (Backlog.md item 8 / ISSUE-85: no
+        create_solution_port anywhere)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=? AND port_name=?""",
+                (entity_type, entity_slug, scope_locator, port_name),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_materialized_ports(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{f"{scope_locator}::{port_name}": row} for every port this resource
+        has ever materialized — mirrors get_materialized_blueprints' shape,
+        same "no scope_locator of its own" reasoning applied to
+        disambiguating multiple ports on one component instead."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return {f"{r['scope_locator']}::{r['port_name']}": dict(r) for r in rows}
+
+    def record_materialized_port(
+        self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,
+        qualified_name: str, guid: str,
+    ) -> dict:
+        """Record that (scope_locator, port_name) now has a real Egeria
+        SolutionPort. Keyed as a natural key via delete-then-insert, not
+        appended — same "nothing append-only about does this exist in
+        Egeria" reasoning as record_materialized_component/_blueprint."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "scope_locator": scope_locator,
+            "port_name": port_name,
+            "qualified_name": qualified_name,
+            "guid": guid,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=? AND port_name=?""",
+                (entity_type, entity_slug, scope_locator, port_name),
+            )
+            conn.execute(
+                """INSERT INTO architecture_materialized_ports
+                   (id, entity_type, entity_slug, scope_locator, port_name, qualified_name, guid, materialized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
     _SCHEDULE_DAYS: dict[str, int] = {"daily": 1, "weekly": 7, "monthly": 30}
 
     def _next_run_iso(self, schedule: str, enabled: bool) -> str:
@@ -2984,7 +3072,7 @@ class ProjectRegistry:
         "resource_working_set", "entity_egeria_project_context",
         "working_set_members", "notification_subscriptions",
         "architecture_component_verdicts", "architecture_materialized_components",
-        "architecture_materialized_blueprints",
+        "architecture_materialized_blueprints", "architecture_materialized_ports",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,
