@@ -2635,35 +2635,22 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
         //   scouting   3 | discovery 2 | assessment 1 | analysis 1
         //
         // Cross-stage definitions (survey_kind=automate_full — "Full Survey (all
-        // steps)") belong to no single stage and would otherwise vanish from the
-        // UI entirely, so they are fetched separately and appended.
-        // Issued CONCURRENTLY (2026-08-31). These two requests are independent —
-        // the second exists only to append cross-stage definitions the first
-        // cannot return — and awaiting the first before starting the second
-        // made a stage load pay both round trips end to end. Each is a live
-        // Egeria lookup, so on a cold cache that was the difference between
-        // ~12s and ~24s before the server-side fix, and it is free to remove.
-        //
-        // allSettled, not all: the cross-stage fetch was already non-fatal
-        // (its failure must not take the stage's own surveys down with it), and
-        // `all` would reject the pair as soon as either failed.
+        // steps)") used to be fetched separately and appended to EVERY stage on
+        // the theory that they'd otherwise vanish from the UI entirely — wrong:
+        // Automate's own Surveys sub-tab (loadAutomateSurveysPanel, a completely
+        // separate code path hitting /api/survey-definitions/definitions) already
+        // lists every Survey Definition catalog-wide, Full Survey included. So
+        // merging it into Assessment/Analysis/Discovery too was pure duplication,
+        // not a rescue from disappearing — direct feedback, 2026-09-04: "every
+        // stage contains the Full Survey - I think that should only show up in
+        // Automation." Removed; each stage now only ever fetches its own
+        // survey_kind.
         const _candParams = { phase: intent, survey_kind: intent };
         const _candUrl = p => `/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(p)}`;
-        const [_stageRes, _fullRes] = await Promise.allSettled([
-          fetch(_candUrl(_candParams)),
-          fetch(_candUrl({ survey_kind: 'automate_full' })),
-        ]);
-        if (_stageRes.status === 'fulfilled' && _stageRes.value.ok) {
-          candidates = (await _stageRes.value.json()).candidates || [];
+        const _stageRes = await fetch(_candUrl(_candParams));
+        if (_stageRes.ok) {
+          candidates = (await _stageRes.json()).candidates || [];
         }
-        try {
-          if (_fullRes.status === 'fulfilled' && _fullRes.value.ok) {
-            const seen = new Set(candidates.map(c => c.qualified_name));
-            for (const c of (await _fullRes.value.json()).candidates || []) {
-              if (!seen.has(c.qualified_name)) candidates.push(c);
-            }
-          }
-        } catch { /* non-fatal — the stage's own surveys still render */ }
       } catch { /* non-fatal — local Analyses cards still render on their own */ }
     }
     renderAnalysisCatalogCards(analyses, candidates, view, {
@@ -2914,7 +2901,19 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     return x.lastRunAt < y.lastRunAt ? -1 : x.lastRunAt > y.lastRunAt ? 1 : 0;
   }).map(c => c.html).join('');
 
-  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+  // Two different absences, said differently (direct feedback, 2026-09-04:
+  // a perspective filter with nothing matching silently looked like "no
+  // surveys at all", and the reader couldn't tell why). Only shown when
+  // analyses cards ARE present — the fully-empty case above already has
+  // its own message via emptyText, and repeating a variant here would say
+  // the same thing twice in two different words.
+  const noSurveysNote = (!egeriaCardsHtml.length && localCardsHtml.length)
+    ? (candidates.length
+        ? `<div class="text-slate-600 text-xs text-center py-3 col-span-2">No Survey Definitions for ${_esc(title)} match the active perspective filter — ${candidates.length} exist${candidates.length === 1 ? 's' : ''} for this stage, just none tagged for the selected perspective.</div>`
+        : `<div class="text-slate-600 text-xs text-center py-3 col-span-2">No Survey Definitions exist for ${_esc(title)} yet.</div>`)
+    : '';
+
+  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${noSurveysNote}${cards}</div>`;
 }
 
 // Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
