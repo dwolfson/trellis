@@ -17,6 +17,19 @@ from advisor.multi_collection_store import get_multi_collection_store
 from advisor.query_cache import get_query_cache
 
 
+def _estimate_tokens(text: str) -> int:
+    """
+    Cheap token-count approximation: ~4 characters per token.
+
+    Not a real tokenizer call — good enough for a context-budget cutoff,
+    not for anything that needs an exact count. See
+    docs/runtime-architecture-plan.md §5: prompt tokens is the lever for
+    time-to-first-token, and the demo tiers' RAG context budget is
+    expressed in (approximate) tokens for that reason.
+    """
+    return max(1, len(text) // 4)
+
+
 class RAGRetriever:
     """Retrieves and formats context for RAG queries."""
 
@@ -51,6 +64,12 @@ class RAGRetriever:
         self.top_k = top_k or rag_config.retrieval.top_k
         self.min_score = min_score or rag_config.retrieval.min_score
         self.max_context_length = max_context_length or rag_config.context.max_length
+        # Tier-resolved RAG context token budget (advisor/config.py
+        # TIER_PRESETS). None (the `dev` tier) means the legacy
+        # character-based max_context_length above is the only cutoff;
+        # otherwise build_context() stops adding chunks once the estimated
+        # token count would exceed this, keeping the highest-ranked chunks.
+        self.rag_context_budget_tokens = rag_config.context.budget_tokens
 
         mode = "multi-collection" if use_multi_collection else "single-collection"
         cache_status = "with caching" if enable_cache else "no cache"
@@ -214,7 +233,13 @@ class RAGRetriever:
 
         context_parts = []
         total_length = 0
+        total_tokens = 0
+        budget_tokens = self.rag_context_budget_tokens
 
+        # `results` arrives pre-ranked by retrieval score (highest first);
+        # this loop only ever stops early, never reorders, so whichever
+        # budget is active keeps the highest-ranked chunks and drops the
+        # lowest-ranked ones. Retrieval ranking itself is untouched here.
         for i, result in enumerate(results, 1):
             # Extract fields from SearchResult object
             code = result.text
@@ -235,16 +260,32 @@ class RAGRetriever:
                     i, code, file_path, name, include_metadata
                 )
 
-            # Check length limit
-            if total_length + len(part) > self.max_context_length:
-                logger.warning(f"Context length limit reached at {i}/{len(results)} results")
-                break
+            if budget_tokens is not None:
+                # Tier RAG context budget (demo-gpu/demo-cpu): token-based.
+                part_tokens = _estimate_tokens(part)
+                if total_tokens + part_tokens > budget_tokens:
+                    logger.warning(
+                        f"RAG context token budget ({budget_tokens}) reached at "
+                        f"{i}/{len(results)} results (~{total_tokens} tokens so far)"
+                    )
+                    break
+            else:
+                # Legacy character-based budget (dev tier / no tier budget set).
+                if total_length + len(part) > self.max_context_length:
+                    logger.warning(f"Context length limit reached at {i}/{len(results)} results")
+                    break
 
             context_parts.append(part)
             total_length += len(part)
+            total_tokens += _estimate_tokens(part)
 
         context = "\n\n".join(context_parts)
         logger.info(f"Built context: {len(context_parts)} snippets, {total_length} chars")
+        logger.debug(
+            f"Assembled RAG context token estimate (4 chars/token approximation): "
+            f"~{_estimate_tokens(context)} tokens"
+            + (f", budget={budget_tokens}" if budget_tokens is not None else "")
+        )
 
         return context
 

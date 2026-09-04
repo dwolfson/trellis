@@ -74,6 +74,19 @@ vector_store_backend: pgvector
 llm:
   provider: ollama
   base_url: http://localhost:11434
+  # Model tier: dev | demo-gpu | demo-cpu. Resolves per-slot models, the
+  # Ollama num_ctx ceiling, and the RAG context token budget together (see
+  # docs/runtime-architecture-plan.md §5 and advisor/config.py TIER_PRESETS).
+  # ADVISOR_MODEL_TIER env var overrides this. dev leaves the `models` block
+  # below as-is; demo-gpu/demo-cpu use their own preset models for any slot
+  # not explicitly set below.
+  tier: dev
+  # Explicit per-slot overrides — these win over whatever the active tier
+  # would otherwise pick for that slot (an operator setting a slot here
+  # always means it, tier or no tier). qwen2.5-coder:32b for planning is a
+  # dev-machine-only choice; remove or reduce it before switching `tier` to
+  # demo-gpu/demo-cpu, since a 32B model is not part of either demo preset
+  # and this override would otherwise still take it there too.
   models:
     query: llama3.1:8b
     code: codellama:13b

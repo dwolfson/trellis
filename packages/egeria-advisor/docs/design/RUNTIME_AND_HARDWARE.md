@@ -156,6 +156,35 @@ is real, independent of whether ONNX is the active backend.
 
 ---
 
+## 4d. Model tiers
+
+Added per `docs/runtime-architecture-plan.md` §5 — see that doc's "Target environments
+and what was measured" section for the underlying numbers (neither app used to set
+`num_ctx`, so Ollama loaded a model at its full context window by default — 22 GB for
+llama3.1:8b at 131k vs 5.7 GB at 8k; time-to-first-token on hedwig's Radeon 890M scales
+linearly with prompt tokens, 22.5 s at a 5.3k-token RAG prompt vs ~8 s at 2k).
+
+A `tier` (`ADVISOR_MODEL_TIER` env var, or `llm.tier` in `advisor.yaml`; default `dev`)
+resolves, together, the per-slot Ollama model, the `num_ctx` ceiling passed on every
+generate/chat call, and the RAG retrieval context token budget:
+
+| Tier | Models | `num_ctx` | RAG context budget |
+|---|---|---|---|
+| `dev` | today's per-slot `llm.models` config, unchanged | 32768 | unchanged (legacy character-based `rag.context.max_length`) |
+| `demo-gpu` | llama3.1:8b general, codellama:13b code | 8192 | 2000 tokens |
+| `demo-cpu` | llama3.1:8b for every slot, including code | 8192 | 2000 tokens |
+
+An explicit per-slot override in `advisor.yaml`'s `llm.models` block, or the
+`OLLAMA_MODEL`/`OLLAMA_CODE_MODEL` env aliases, always wins over the tier's preset
+for that slot — see `advisor/config.py`'s `TIER_PRESETS`/`resolve_llm_tier_config()`
+for the exact precedence. The RAG context budget is enforced where retrieved chunks
+are assembled into the prompt (`advisor/rag_retrieval.py::RAGRetriever.build_context`)
+using a cheap 4-chars-per-token estimate, not a real tokenizer call — it stops adding
+chunks once the budget would be exceeded, keeping the highest-ranked ones; retrieval
+ranking itself is untouched.
+
+---
+
 ## 5. Settled — do not reopen without re-measuring
 
 | Question | Settled | On what basis |
