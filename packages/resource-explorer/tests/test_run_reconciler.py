@@ -188,18 +188,22 @@ class TestWiring:
         assert '"_runner"' in route
 
     def test_startup_reconciles(self):
+        """Moved out of web/app.py's lifespan into the worker role
+        (2026-09-04, docs/runtime-architecture-plan.md §2). The web
+        process reaches it through the embedded worker; a standalone
+        `resource-explorer worker` reaches it directly."""
         from pathlib import Path
 
-        src = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web"
-               / "app.py").read_text()
-        lifespan = src.split("async def _lifespan(")[1].split("\n\n")[0]
-        assert "_reconcile_orphaned_runs()" in lifespan
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "worker.py").read_text()
+        body = src.split("def run_worker(")[1].split("\n\n\n")[0]
+        assert "_reconcile_orphaned_runs()" in body
 
     def test_startup_reconciliation_cannot_break_startup(self):
-        """Bookkeeping must never stop the server coming up."""
+        """Bookkeeping must never stop the process coming up."""
         from pathlib import Path
 
-        src = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web"
-               / "app.py").read_text()
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "worker.py").read_text()
         fn = src.split("def _reconcile_orphaned_runs()")[1].split("\n\n\n")[0]
         assert "try:" in fn and "except Exception" in fn

@@ -12,6 +12,16 @@ issued it **twice** — once scoped to the stage, once unscoped for cross-stage
 
 Neither was work. Both were waiting.
 
+UPDATED 2026-09-04: `_resolve_question_guids` no longer builds its own
+`ThreadPoolExecutor(max_workers=8)`. It submits to the ONE bounded shared
+pool per process (`resource_explorer/concurrency.py`), and it submits
+`_resolve_one_pooled` — the cached lookup minus the pool hop — rather than
+`resolve_question_guid`, so a pooled task never re-enters the pool. That
+nesting (a pool of 8 workers each opening a one-worker pool of its own) was
+what `docs/process-model.md` §1.3 flagged as the incident's shape. The
+concurrency this file pins is unchanged; only which callable is submitted
+is, which is why the patch targets below moved.
+
 UPDATED 2026-09-03 (commit 6c402e8): the client half of this fix (make the
 second fetch concurrent with the first) was superseded by removing the
 second fetch outright — the cross-stage `automate_full` merge it existed to
@@ -45,6 +55,7 @@ def test_guid_resolution_preserves_input_order():
         return "guid-" + q
 
     with patch.object(SurveyDefinitionReader, "resolve_question_guid", side_effect=fake), \
+         patch.object(SurveyDefinitionReader, "_resolve_one_pooled", side_effect=fake), \
          patch.object(SurveyDefinitionReader, "_connect_classification_explorer", return_value=None):
         out = _reader()._resolve_question_guids(qs)
 
@@ -62,6 +73,7 @@ def test_unresolvable_questions_are_dropped_not_paired_with_none():
         return None if q == "missing" else "guid-" + q
 
     with patch.object(SurveyDefinitionReader, "resolve_question_guid", side_effect=fake), \
+         patch.object(SurveyDefinitionReader, "_resolve_one_pooled", side_effect=fake), \
          patch.object(SurveyDefinitionReader, "_connect_classification_explorer", return_value=None):
         out = _reader()._resolve_question_guids(qs)
 
@@ -79,6 +91,7 @@ def test_resolution_is_concurrent_not_serial():
         return "guid-" + q
 
     with patch.object(SurveyDefinitionReader, "resolve_question_guid", side_effect=fake), \
+         patch.object(SurveyDefinitionReader, "_resolve_one_pooled", side_effect=fake), \
          patch.object(SurveyDefinitionReader, "_connect_classification_explorer", return_value=None):
         start = time.monotonic()
         _reader()._resolve_question_guids(qs)
@@ -117,6 +130,7 @@ def test_the_client_is_warmed_before_the_pool_starts():
         return "guid-" + q
 
     with patch.object(SurveyDefinitionReader, "_connect_classification_explorer", fake_connect), \
+         patch.object(SurveyDefinitionReader, "_resolve_one_pooled", side_effect=fake_resolve), \
          patch.object(SurveyDefinitionReader, "resolve_question_guid", side_effect=fake_resolve):
         _reader()._resolve_question_guids([f"Q{i}" for i in range(10)])
 
@@ -131,6 +145,7 @@ def test_a_single_question_does_not_start_a_thread_pool():
     """The common case for a narrow stage. Spinning up an executor to wait on
     one call is pure overhead."""
     with patch.object(SurveyDefinitionReader, "resolve_question_guid", side_effect=lambda q: "g"), \
+         patch.object(SurveyDefinitionReader, "_resolve_one_pooled", side_effect=lambda q: "g"), \
          patch.object(SurveyDefinitionReader, "_connect_classification_explorer", return_value=None):
         assert _reader()._resolve_question_guids(["only"]) == [("only", "g")]
         assert _reader()._resolve_question_guids([]) == []

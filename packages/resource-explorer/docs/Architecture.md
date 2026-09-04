@@ -82,7 +82,17 @@ Two properties matter more than the list:
 resource_explorer/
 ├── registry.py             # every table, every read/write. Postgres or SQLite.
 ├── config.py               # Pydantic settings
-├── scheduler.py            # daemon thread — runs due schedules, fires subscriptions, drains outbox (see docs/process-model.md)
+│
+│   # process roles — see docs/process-model.md
+├── worker.py               # the `worker` role: owns every background loop, runs the two startup
+│                           #   one-shots, and is what `web --embed-worker` runs in a daemon thread
+├── leader_election.py      # pg_try_advisory_lock per loop, so exactly one process runs each
+├── concurrency.py          # THE one bounded thread pool per process for sync-pyegeria bridging
+├── scheduler.py            # the 15-min loop: due schedules, subscriptions, RFA reconcile, outbox drain
+├── bootstrap.py            # 10-min loop: heal Dr.Egeria definitions wiped by an Egeria reset
+├── egeria_resync.py        # 10-min loop: clear stale Egeria pointers left by a store wipe
+├── run_reconciler.py       # resolve activity rows a dead process left "running"
+│
 ├── facts.py                # FactLayer: reads what is known, never runs anything
 ├── step_outcome.py         # recovered / partial / no_signal / unverified / regression
 │   surveyors/result_status.py   # measured / nothing_found / not_established / never_run / …
@@ -96,10 +106,17 @@ resource_explorer/
 ├── ingestion/              # repo → chunks → pgvector; incremental re-index
 ├── agents/                 # BeeAI specialist agents (stats, code, doc, health, …)
 ├── surveyors/              # the survey layer — see below
-├── web/                    # FastAPI app, 25 route modules, single-page UI
-├── cli/                    # Typer CLI
+├── web/                    # FastAPI app, 25 route modules, single-page UI (starts no loops)
+├── cli/                    # Typer CLI — including `web` and `worker`
 └── observability/          # MLflow, Phoenix, metrics
 ```
+
+**Two process roles, one codebase.** `resource-explorer web` serves HTTP; `resource-explorer
+worker` owns the background loops. `web --embed-worker` (the default, so `make dev` stays one
+command) runs the worker role in-process. Which process actually runs a given loop is decided by a
+Postgres advisory lock, not by startup order, so a second RE process against the same registry
+stands by rather than double-firing. `make ps` lists every trellis process and container.
+Full detail, including the advisory keys: [`process-model.md`](process-model.md).
 
 Shared libraries live outside this package and are imported: `trellis-vectorstore`,
 `trellis-context`, `trellis-artifact-tree`, `trellis-microflow`, `trellis-querycache`,

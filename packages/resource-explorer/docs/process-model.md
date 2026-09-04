@@ -3,73 +3,122 @@
 **Added 2026-09-04**, per `docs/runtime-architecture-plan.md` §Sequencing step 1: "Write RE's
 threading and process-role model into `docs/Architecture.md`" — this is that write-up, split into
 its own file because `Architecture.md` was already dense (see that file's linked pointer). It
-precedes, and is a precondition for, the process-role refactor in the plan's step 2. Do not start
-that refactor from memory of this document — re-read the current-state section against the code
-first, since this is a snapshot as of the commit noted per section, not a contract the code is
-held to.
+preceded, and was a precondition for, the process-role refactor in the plan's step 2. **Rewritten
+2026-09-04 after step 2a landed** — Part 1 describes what runs now, not what ran before it. Do not
+start step 2b from memory of this document — re-read the current-state sections against the code
+first, since this is a snapshot, not a contract the code is held to. Step 2a's own findings F6 and
+F7 were both things this document got wrong or did not know until the code was built.
 
 Two parts: **current state** (what runs today, verified against the code, cited file:line) and
 **target state** (restated from the plan, not redesigned here). A migration map closes the gap.
 
 ---
 
+## Status: step 2a landed, 2026-09-04
+
+This document was written *before* the refactor and described a single process with five
+lifespan-started loops and six ad hoc thread pools. **Step 2a of the plan has since landed**, and
+Part 1 below has been rewritten to describe what runs now, not what ran then. What moved:
+
+| Moved | From | To |
+|---|---|---|
+| All three always-on loops, plus both startup one-shots | `web/app.py`'s FastAPI lifespan | `resource_explorer/worker.py`'s `run_worker()`, reached by `resource-explorer worker` or by `web`'s `--embed-worker` |
+| "Exactly one process runs each loop" | nothing enforced it (Finding F2) | `pg_try_advisory_lock` per loop, `resource_explorer/leader_election.py` |
+| Six ad hoc `ThreadPoolExecutor`s, one of them uncapped | scattered across six call sites | one bounded shared pool, `resource_explorer/concurrency.py` |
+| SIGUSR1 thread dump + bounded shutdown | the `web` command only | `_install_stack_dump()`, shared by `web` and `worker` (`cli/main.py:318`) |
+| `nest_asyncio` | imported and `apply()`-ed by RE | not imported by RE at all; pyegeria still applies it for its own reasons |
+
+**Still pending — step 2b, deliberately not started here:** the Postgres run queue with
+`claimed_by`/`heartbeat_at`, extraction of the analysis-run/discovery/curate workflows out of the
+route modules, the `a2a` role, and `trellis-auth` adoption. Per-request background threads (§1.2)
+therefore still spawn from route handlers exactly as they did.
+
+---
+
 ## Part 1 — Current state
 
-Today, Resource Explorer is **one process** (`resource-explorer web`, i.e. one `uvicorn` process
-running `resource_explorer.web.app:app`) that hosts, in addition to serving HTTP requests: five
-always-on daemon threads started at FastAPI startup, an unbounded number of ad hoc per-request
-threads spawned by route handlers, and several short-lived `ThreadPoolExecutor`s used to bridge
-sync pyegeria calls into async code. Nothing about this process is horizontally scalable — running
-a second copy against the same Postgres would duplicate every daemon-thread loop.
+Resource Explorer is now **two process roles over one codebase**: `resource-explorer web` (one or
+more `uvicorn` processes serving HTTP) and `resource-explorer worker` (every always-on background
+loop). `web --embed-worker` — still the default, so `make dev` is one command — runs the worker
+role in a daemon thread inside the web process. Which process actually *runs* a given loop is
+decided by a Postgres advisory lock, not by which one was started first, so a second RE process
+against the same registry stands by instead of duplicating work.
 
-### 1.1 Daemon threads started at FastAPI startup
+What has NOT changed: an unbounded number of ad hoc per-request threads spawned by route handlers
+(§1.2) — those wait on step 2b's run queue.
 
-All five are started from `_lifespan()` in
-`packages/resource-explorer/resource_explorer/web/app.py:72-107` (the plan's doc cited
-`~71-105`; current exact line numbers below). Call order in `_lifespan`:
+### 1.1 The background loops and where they live
+
+All of them are started from `run_worker()` in
+`packages/resource-explorer/resource_explorer/worker.py:201`. `web/app.py`'s `_lifespan`
+(`web/app.py:43`) starts **nothing** of its own; it either spawns the embedded worker or logs that
+it did not (`web/app.py:20`, `_embed_worker_enabled`).
 
 ```
-_reconcile_orphaned_runs()   # app.py:86, one-shot, not a loop — see §1.2
-start_scheduler()            # app.py:87  → scheduler.py
-start_bootstrap_monitor()    # app.py:94  → bootstrap.py (imported as start_bootstrap_monitor)
-start_resync_scheduler()     # app.py:103 → egeria_resync.py (imported as start_resync_scheduler)
-_warm_survey_definition_cache()  # app.py:104, spawns its own thread — see below
-yield                         # app.py:105
-stop_bootstrap_monitor(); stop_resync_scheduler()   # app.py:106-107 — scheduler.py's loop has no stop_* at all (see below)
+run_worker(embedded=?, stop_event=...)          # worker.py:201
+  _reconcile_orphaned_runs()                    # worker.py:116  one-shot, ungated
+  _warm_survey_definition_cache()                # worker.py:134  one-shot, own daemon thread, ungated
+  for spec in loop_specs():                      # worker.py:108
+      threading.Thread(_supervise, ...)          # worker.py:162  one per loop: win the lock, start it, hold
+  stop_event.wait()                              # returns on SIGTERM/SIGINT or lifespan shutdown
+  join supervisors within shutdown_timeout       # default 15s, daemon threads so exit never blocks
+  concurrency.shutdown(wait=False)               # detach abandoned pool workers — see §1.3
 ```
 
-| Thread (name) | Source | Loop interval | What it iterates / does | Global-singleton-shaped? | What it writes | Two copies running |
-|---|---|---|---|---|---|---|
-| `resource-explorer-scheduler` | `scheduler.py:82-92` (`start_scheduler`), loop body `scheduler.py:95-110` (`_scheduler_loop`) | `_CHECK_INTERVAL_SECONDS = 900` (15 min), `scheduler.py:77` | Three things per tick, in order: (1) `_run_due()` (`scheduler.py:243`) — analyses whose `resource_schedules.next_run` has passed, dispatched by `analysis_id`/`entity_type`, same-repo due surveys coalesced into one orchestrator call to avoid double-downloading a zipball (`_coalesce_repo_surveys`, `scheduler.py:159-227`); (2) `_reconcile_rfa_actions()` (`scheduler.py:126`, docs/rfa-egeria-todo-followup.md); (3) `_drain_egeria_outbox()` (`scheduler.py:135`, docs/outbox-publishing-design.md §5) — **this is where the outbox drain actually lives**; it is not a separate loop (see Finding F1 below) | Yes — `_run_due`/RFA reconcile/outbox drain must each run in exactly one process, or the same due analysis, RFA sync pass, or outbox row could be claimed/processed twice | `resource_schedules.next_run`/`last_run_status`, a real `ActivityEntry` per run (`activity_logger.log_survey`), `rfa_actions` rows, outbox rows via `drain_outbox`, plus `registry.purge_outbox_completed()` retention (`scheduler.py:178-183`) | Two copies would double-fire due schedules, double-process RFA reconciliation, and race on outbox row claims (outbox claiming is not shown here to be internally locked against a second RE process — see Finding F2) |
-| `resource-explorer-bootstrap` | `bootstrap.py:520-535` (`start_scheduler`), loop `bootstrap.py:509-517` (`_loop`) | `CHECK_INTERVAL_SECONDS = 600` (10 min), `bootstrap.py:120`; first pass runs immediately (loop condition checked before the first `check_and_heal`, then `stop.wait(interval)`) | `check_and_heal(docs_dir)` — detects and repairs Dr.Egeria definitions (glossaries, perspectives, Question terms, Survey Definitions) wiped by an Egeria reset | Yes, for the same reason as above — two processes healing concurrently is redundant work against Egeria, not corruption, but still wasted and noisy | Recreates missing Dr.Egeria glossary/term/Survey-Definition elements in Egeria; no local table write shown in the loop itself | Wasted duplicate Egeria writes/reads, not corruption, but no lock exists to stop it |
-| `egeria-resync-scheduler` | `egeria_resync.py:1254-1268` (`start_scheduler`), loop `egeria_resync.py:1223-1241` (`_loop`) | `CHECK_INTERVAL_SECONDS = 600` (10 min), `egeria_resync.py:1166`; mirrors bootstrap.py's shape deliberately, same "run first pass inside the thread" contract | `scan_and_clear()` (`egeria_resync.py:1183`) — scans for stale Egeria pointers (asset GUIDs, orphan publish claims, investigation/context GUIDs) left by a repository-store wipe, applies only `SAFE_SCHEDULED_STEPS` whose findings are present, explicitly re-checking `needs_decision`/`EXPENSIVE_STEPS` as defense in depth (`egeria_resync.py:1197-1205`) even though the input set should already exclude them | Yes, same reasoning | In-process `_status` dict (`last_run_at`, `last_reachable`, `last_applied`, `consecutive_failures` — `egeria_resync.py:1168-1177`, read by the admin banner) plus whatever `resync.apply()` clears in the registry/Egeria | Redundant scans/applies; no corruption shown, but no lock either |
-| `resource-explorer-scouting-scan` etc. | **not** a startup thread — per-request, see §1.2 | — | — | — | — | — |
-| `survey-cache-warm` | `app.py:36-69` (`_warm_survey_definition_cache`, itself called from `_lifespan` at `app.py:104`) | one-shot at startup, not a loop | `SurveyDefinitionReader().warm_question_guid_cache()` — pre-resolves Survey-Definition question display names to Egeria GUIDs so the first UI click doesn't pay the round trip; failures swallowed (best-effort) | Not really singleton-shaped — it just repopulates a process-local in-memory cache (`survey_definition_reader.py`'s module-level dicts), so running it twice wastes Egeria calls but corrupts nothing | Module-level `_question_guid_cache` / `_candidates_cache` dicts in `survey_definition_reader.py:69-71`, which die with the process | Wasted duplicate Egeria lookups only |
+| Thread (name) | Source | Loop interval | Advisory key | What it iterates / does | What it writes |
+|---|---|---|---|---|---|
+| `resource-explorer-scheduler` | `scheduler.py:84` (`start_scheduler`), loop `scheduler.py:132` (`_scheduler_loop`), stopped by `scheduler.py:109` (`stop_scheduler`) | `_CHECK_INTERVAL_SECONDS = 900` (15 min), `scheduler.py:77` | `scheduler` → `-6561321191492868153` | Three things per tick, in order: (1) `_run_due()` (`scheduler.py:286`) — analyses whose `resource_schedules.next_run` has passed, same-repo due surveys coalesced into one orchestrator call to avoid double-downloading a zipball; (2) `_reconcile_rfa_actions()` (`scheduler.py:158`, docs/rfa-egeria-todo-followup.md); (3) `_drain_egeria_outbox()` (`scheduler.py:170`, docs/outbox-publishing-design.md §5) — **this is where the outbox drain lives**; still not a separate loop (Finding F1) | `resource_schedules.next_run`/`last_run_status`, an `ActivityEntry` per run, `rfa_actions` rows, outbox rows via `drain_outbox`, plus `registry.purge_outbox_completed()` retention |
+| `resource-explorer-bootstrap` | `bootstrap.py:520` (`start_scheduler`), loop `bootstrap.py:509` (`_loop`) | `CHECK_INTERVAL_SECONDS = 600` (10 min), `bootstrap.py:120`; first pass runs immediately, inside the thread | `bootstrap-monitor` → `5582179307941343378` | `check_and_heal(docs_dir)` — detects and repairs Dr.Egeria definitions (glossaries, perspectives, Question terms, Survey Definitions) wiped by an Egeria reset | Recreates missing Dr.Egeria elements in Egeria; no local table write in the loop itself |
+| `egeria-resync-scheduler` | `egeria_resync.py:1254` (`start_scheduler`), loop `egeria_resync.py:1224` (`_loop`) | `CHECK_INTERVAL_SECONDS = 600` (10 min), `egeria_resync.py:1166` | `egeria-resync` → `-3163458856154549756` | `scan_and_clear()` (`egeria_resync.py:1185`) — clears stale Egeria pointers left by a repository-store wipe, applying only `SAFE_SCHEDULED_STEPS` whose findings are present, re-checking `needs_decision`/`EXPENSIVE_STEPS` as defense in depth | In-process `_status` dict read by the admin banner, plus whatever `resync.apply()` clears |
+| `survey-cache-warm` | `worker.py:134` (`_warm_survey_definition_cache`) | one-shot, not a loop | **none — deliberately ungated** | `SurveyDefinitionReader().warm_question_guid_cache()`; failures swallowed (best-effort) | Module-level `_question_guid_cache` / `_candidates_cache` dicts in `survey_definition_reader.py`, which die with the process |
 
-**One-shot at startup, not a daemon thread:** `_reconcile_orphaned_runs()` (`app.py:24-33`, calling
-`run_reconciler.reconcile()`) runs synchronously in the lifespan coroutine before any of the above
-threads start. See §1.4 for what it does; it is listed here only to be explicit that it is not one
-of the five loops.
+**Why the two one-shots take no lock**, which is easy to "fix" wrongly in both directions:
 
-**Finding F1 (contradicts the plan's list as literally read):** the plan's Context/§2 text lists
-"scheduler, bootstrap monitor, Egeria resync, outbox drain, orphaned-run reconciliation" as if
-outbox drain were its own loop parallel to the scheduler. It is not — `_drain_egeria_outbox()` is
-one of three things `scheduler.py`'s own `_scheduler_loop` does per tick (`scheduler.py:98-110`),
-sharing the scheduler's 15-minute interval and its single thread, alongside RFA reconciliation.
-There is no separate outbox-drain thread in `app.py`'s lifespan. This matters for the target-state
-migration: "outbox drain moves to the worker role" is true, but it moves as part of the scheduler
-loop's move, not as an independently-scheduled unit — unless the refactor deliberately gives it its
-own cadence, which today's 15-minute coupling to schedule-checking does not obviously require.
+- `_reconcile_orphaned_runs()` (`worker.py:116`, calling `run_reconciler.reconcile()`) judges
+  ownership **per row** — pid liveness plus a matched process start time — so it is already safe
+  in every process, and electing a single leader for it would make it *less* useful, not safer.
+- `_warm_survey_definition_cache()` (`worker.py:134`) fills a **process-local** dict. A leader
+  would warm one process's cache and leave every other one cold, which is the opposite of the
+  point.
 
-**Finding F2 (open question, not resolved by reading):** none of the three loops above take any
-lock (Postgres advisory lock, file lock, etc.) before doing their work. `start_scheduler()`/
-`start_bootstrap_monitor()`/`start_resync_scheduler()` are each idempotent *within one process*
-(guarded by a module-level `_started`/`_thread is not None and _thread.is_alive()` check), but
-nothing stops **two separate RE processes** sharing the same Postgres registry from both running
-these loops concurrently — which is explicitly called out elsewhere in this codebase as a routine
-development situation (`run_reconciler.py`'s own docstring: "two Resource Explorer processes can
-share one database (a second one started on another port is routine during development)"). The
-plan's `pg_try_advisory_lock` leader election (target state, §2) is the fix; today there is none.
+**Fixed in passing (a real bug, not a refactor artifact):** the old
+`_warm_survey_definition_cache()` in `app.py` was decorated `@asynccontextmanager` while being a
+plain synchronous function. Calling it therefore constructed a context-manager object and **never
+executed the body**, so the cache warm had silently not happened since that decorator was added —
+every restart charged the first user of each phase for its cold lookups, which is precisely the
+symptom the warm was written to remove. It runs now: verified live 2026-09-04, "survey-definition
+cache warmed: 51 question(s) checked, 48 resolved, 10 definition(s) prefetched, 0 failed".
+The failure was invisible from the outside because the warm is best-effort by design — nothing
+downstream distinguishes "warmed and found nothing" from "never ran".
+
+### 1.1a Leader election
+
+`resource_explorer/leader_election.py`. One `LeaderLock` per loop (`leader_election.py:77`),
+each holding **its own** connection (`NullPool`) for the life of the process, because
+`pg_try_advisory_lock` is session-scoped: the lock lives as long as the connection does, and
+Postgres drops it automatically when that connection goes — a killed worker frees its locks with
+no janitor. The connection is set autocommit (`leader_election.py:106`, `acquire`) so it does not
+sit `idle in transaction` for hours blocking vacuum on the shared instance; that was observed
+live before the fix.
+
+Keys are **derived, not chosen**: `blake2b(f"{KEY_NAMESPACE}:{name}", digest_size=8)` read as a
+signed big-endian int64 (`leader_election.py:69`, `advisory_key`), with
+`KEY_NAMESPACE = "resource-explorer/worker"`. The three values are in the table above and are
+pinned by `tests/test_process_roles.py::TestAdvisoryKeys::test_keys_are_stable` — a namespace
+change would otherwise let an old and a new process each become leader of their own key across a
+rolling restart and both run every loop, which presents as duplicated work rather than as an
+error. `python -m resource_explorer.leader_election` prints them.
+
+A loop that loses logs `worker loop standby: name=… leader=false advisory_key=…` and retries at
+its own interval, so leadership transfers on its own when the holder exits. A loop that wins logs
+`worker loop started: name=… interval=…s leader=true advisory_key=… embedded=…`. Those two lines
+are the only way to tell from the outside which process owns what — `make ps` cannot, because an
+embedded worker looks exactly like a plain web process.
+
+**Non-Postgres registries:** the registry is Postgres-only now (plan §3 retires the SQLite
+fallback). A `LeaderLock` built against a `sqlite://` URL logs a warning and **grants**
+leadership (`leader_election.py:113`) rather than crashing — a single-process SQLite setup has no
+peer to lose an election to. No SQLite locking is implemented or intended.
 
 ### 1.2 Ad hoc per-request threads
 
@@ -91,67 +140,120 @@ Every one of these threads "outlives the request" in the sense the target state'
 `query.py` streaming thread, which is closer to per-request request-handling machinery than a
 backgrounded job, since it has no independent existence past the HTTP response.
 
-### 1.3 `ThreadPoolExecutor` usage (sync/async bridging)
+**None of this changed in step 2a**, deliberately: moving these off the request thread requires the
+Postgres run queue (`claimed_by`/`heartbeat_at`) that lets a `web` request enqueue and return, and
+that is step 2b. So today the `web` role does still violate its own rule — with the practical
+consequence that `--workers N` spreads these across worker processes by luck of routing rather
+than by design, and that a `--no-embed-worker` web process is still where survey runs execute.
 
-The plan's Context section names six sites. All six are confirmed; two additional ones exist in
-`survey_definition_reader.py` beyond the "×2" the plan already counts (the plan's "×2" is
-correct — there are exactly two in that file, described separately below since they differ in
-purpose and hazard).
+### 1.3 Sync/async bridging — one bounded shared pool
 
-| Site | `max_workers` | What sync call it bridges | Goes through `nest_asyncio`? |
-|---|---|---|---|
-| `agents/base.py:196` (`_run_agent`) | `1` | `asyncio.run(_inner())` where `_inner` awaits a BeeAI `RequirementAgent.run(...)`, only when a running loop is already detected (`asyncio.get_running_loop()` succeeds) | No — this bridges by running a **fresh** `asyncio.run()` inside a **new** thread with no event loop of its own; it does not call into pyegeria's `nest_asyncio.run_until_complete` path |
-| `agents/conversation_agent.py:143` (`_inject`, memory replay) | `1` | `asyncio.run(_inject())`, `.result(timeout=10)` | No, same fresh-`asyncio.run`-in-new-thread pattern |
-| `agents/conversation_agent.py:270` (`_run_persistent`) | `1` | `asyncio.run(_inner())`, no explicit timeout on `.result()` | No, same pattern |
-| `tui/app.py:291` (`_add_to_memory`) | `1` | `asyncio.run(_add_to_memory())`, `.result(timeout=5)` | No, same pattern |
-| `surveyors/prefect_adapter.py:157-158` (`run_prefect_step`'s API branch) | default (unbounded — `ThreadPoolExecutor()` with no `max_workers` argument) | `asyncio.run(_run_prefect_step_api(...))`, used only when `config.prefect.enabled` is `True` **and** a running loop is already detected | No, same fresh-`asyncio.run` pattern — and this branch is exercised only when Prefect is both enabled and dispatched from inside an already-running event loop (a FastAPI request); comment at `prefect_adapter.py:130-138` notes this whole API branch was **dead code** until a `LOAD_DEREF`/`UnboundLocalError` bug was fixed, so it has limited production mileage |
-| `surveyors/survey_definition_reader.py:486` (`resolve_question_guid`) | `1`, constructed per-call (`pool = ThreadPoolExecutor(max_workers=1)`, not a context manager — deliberately `shutdown(wait=False)` on timeout, see below) | `client.get_guid_for_name(...)` — a **sync pyegeria call that itself does `asyncio.get_event_loop().run_until_complete(...)` internally**, which is `nest_asyncio`'s territory once called from a thread with no running loop of its own | **Yes — this is the hazard site.** Bounded by `_QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15` (`survey_definition_reader.py:69`); on timeout the pool is abandoned via `pool.shutdown(wait=False)` rather than joined, because the worker thread is "almost certainly still blocked in Egeria's client" (comment at `survey_definition_reader.py:482-488`) — a deliberate, acknowledged thread leak traded against not hanging the caller |
-| `surveyors/survey_definition_reader.py:672` (`_resolve_question_guids`) | `min(_GUID_RESOLVE_WORKERS, len(rest))`, `_GUID_RESOLVE_WORKERS = 8` (`survey_definition_reader.py:640`) | Pools **calls to `resolve_question_guid` itself** (`pool.map(self.resolve_question_guid, rest)`) — i.e. this is a pool of workers each of which internally opens the single-worker pool above, so a full batch can open up to 8 nested one-worker pools concurrently | Indirectly yes, once per resolved question, through the site above |
+**Was:** six ad hoc `ThreadPoolExecutor`s, five of them constructed per call, one
+(`prefect_adapter.py`) with **no `max_workers` at all**, and one pair in
+`survey_definition_reader.py` that nested — a pool of up to 8 workers each opening its own
+one-worker pool. **Now:** one pool per process, `resource_explorer/concurrency.py`, sized by
+`EXPLORER_SYNC_POOL_SIZE` (default 8, which is what `_GUID_RESOLVE_WORKERS` was).
 
-**This is the exact mechanism behind the 2026-09-03/04 stuck-server incident.**
-`warm_question_guid_cache()` (called from the startup daemon thread `survey-cache-warm`, §1.1) and
-`find_candidate_process_guids_by_questions()` both call into `_resolve_question_guids`, which pools
-`resolve_question_guid`, which opens its own one-worker pool around
-`client.get_guid_for_name(...)`. The live incident found six worker threads blocked in
-`selectors.select()` inside that `get_guid_for_name → nest_asyncio → run_until_complete` frame for
-15+ seconds, while a direct curl to the same platform's own endpoint returned in 18ms — i.e. not
-Egeria being slow, but a cross-thread/cross-event-loop asyncio hazard (comment at
-`survey_definition_reader.py:44-58`). The `_QUESTION_GUID_CALL_TIMEOUT_SECONDS` bound and
-`shutdown(wait=False)` abandonment (added same day) contain it — the caller degrades to "not
-found" instead of hanging — but the underlying cross-loop issue in pyegeria's async client
-construction/reuse is **explicitly left open** (comment: "That deeper cross-loop issue is NOT
-fixed here — it needs its own investigation"). The plan's step 2 calls for a "pyegeria concurrency
-spike" for exactly this reason.
+| Site | Then | Now |
+|---|---|---|
+| `agents/base.py:199` (`_run_agent`) | `ThreadPoolExecutor(max_workers=1)` per call | `run_sync(lambda: asyncio.run(_inner()))` |
+| `agents/conversation_agent.py:144` (`_inject`, memory replay) | same, `.result(timeout=10)` | `run_sync(..., timeout=10)` |
+| `agents/conversation_agent.py:272` (`_run_persistent`) | same, no timeout | `run_sync(...)` |
+| `tui/app.py:292` (`_add_to_memory`) | same, `.result(timeout=5)` | `run_sync(..., timeout=5)` |
+| `surveyors/prefect_adapter.py:179` (`run_prefect_step`'s API branch) | `ThreadPoolExecutor()` — **uncapped** | `run_sync(...)` |
+| `surveyors/survey_definition_reader.py:475` (`_lookup_question_guid`, split out of `resolve_question_guid`) | one-worker pool per call, abandoned via `shutdown(wait=False)` on timeout | `run_sync(_call, timeout=_QUESTION_GUID_CALL_TIMEOUT_SECONDS)` — the 15s bound kept (`survey_definition_reader.py:68`) |
+| `surveyors/survey_definition_reader.py:663` (`_resolve_question_guids`) | `pool.map(self.resolve_question_guid, rest)` — pooled work that opened its own pool | `submit_all(self._resolve_one_pooled, rest)` (`survey_definition_reader.py:732`) — **leaf** work, plus an overall batch deadline (`survey_definition_reader.py:712`) since the shared pool's width is not `len(rest)` |
 
-### 1.4 SIGUSR1 thread-dump and bounded shutdown (`cli/main.py`)
+**The re-entrancy rule the shared pool needs and the throwaway pools did not.** A bounded shared
+pool can self-deadlock: a task that submits back into the pool waits on a slot only a task behind
+it could free. Two things prevent it — batch callers submit leaf work (the `_resolve_one_pooled`
+split above), and `run_sync` detects that it is already running on a pool thread and runs the
+callable **inline** instead of submitting (`concurrency.py:264`). Inline execution loses the
+per-call timeout, because there is no second thread to abandon; the caller's own wait is what
+bounds it. That is the honest trade — an unbounded wait in one already-owned slot beats a
+deadlock that stops every slot.
 
-Added the same day as the incident, in the `web` command (`cli/main.py:317-373`), **not** applied
-automatically if the app is launched by any other means (e.g. `uvicorn
-resource_explorer.web.app:app` directly, bypassing `resource-explorer web`):
+**Abandoned workers cost more than they used to, and that is the point.** On timeout the worker
+is abandoned rather than joined (Python threads cannot be force-killed, and joining one blocked in
+Egeria's client is exactly the hang being avoided). The old throwaway pool went with it; a slot in
+a *shared* pool does not. `concurrency.stuck_worker_count()` reports how many, so a shrinking pool
+is observable rather than inferred from things getting slow.
 
-- **On-demand thread dump**: `faulthandler.enable()` plus, where `SIGUSR1` exists (not on
-  Windows), `faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)`
-  (`cli/main.py:344-350`). `kill -USR1 <pid>` then writes every thread's Python stack frame to the
-  process's stderr. Deliberately on-demand rather than `dump_traceback_later()`'s continuous
-  polling, to cost nothing while idle.
-- **Bounded graceful shutdown**: `uvicorn.run(..., timeout_graceful_shutdown=10)`
-  (`cli/main.py:373`) — uvicorn's own default is to wait indefinitely on `SIGTERM` for in-flight
-  requests/threads, which is what forced the `kill -9` during the incident (SIGTERM ignored 8+
-  seconds). This bounds it to 10s; it does not fix whatever made a thread slow.
+**Shutdown: `wait=False` was a lie, and this is new information.** Found live 2026-09-04 while
+verifying the worker role, using the SIGUSR1 dump §1.4 describes: the worker logged "worker role
+stopped cleanly", released its advisory locks — and did not exit. The dump showed the main thread
+parked in `concurrent.futures.thread._python_exit -> join` behind two pool workers in the exact
+`get_guid_for_name -> nest_asyncio -> select()` frame from the incident.
 
-`_reconcile_orphaned_runs()` (§1.1) is the piece of machinery that makes this survivable for
-survey/analysis runs specifically: a `kill -9` (or any process death) leaves `activity_log` rows
-`status="running"` with an owner recorded, and the **next** process start reconciles them to
-`interrupted` rather than leaving them stuck forever (`run_reconciler.py`, described in §1.2's
-table).
+`_python_exit` joins every pool worker regardless of `shutdown(wait=False)`, and CPython's
+`_thread_shutdown()` then waits for them because pool workers are not daemon threads. **The old
+per-call pools had precisely the same exposure** — `shutdown(wait=False)` never detached anything
+— so this is plausibly part of why the original incident needed a `kill -9` after SIGTERM was
+ignored for 8+ seconds. Two fixes, both in `concurrency.py`:
+
+- `_spawn_daemon_workers()` (`concurrency.py:185`) creates all the workers up front from a daemon
+  thread, because `threading.Thread` inherits `daemon` from its creator and there is no supported
+  way to daemonise a thread afterwards. Daemon workers are not waited for.
+- `detach_workers()` (`concurrency.py:298`) removes them from
+  `concurrent.futures.thread._threads_queues`, which is what `_python_exit` iterates. Private
+  name, guarded call: a CPython rename costs the fast exit, not an exception.
+
+Both roles call `concurrency.shutdown(wait=False)` explicitly on the way out (`worker.py`'s
+`run_worker` finally block, and `cli/main.py:473` after `uvicorn.run` returns) rather than relying
+on `atexit`, which runs *after* the interpreter has already joined those threads.
+
+**The cross-loop hazard itself is still not fixed.** Collapsing the pools does not resolve it —
+`get_guid_for_name` still reaches `nest_asyncio.run_until_complete` inside *pyegeria*, and the
+worker's own SIGUSR1 dump caught two threads in that frame again on 2026-09-04. What is true is
+that RE no longer imports or applies `nest_asyncio` itself (see below), every bridge is now a
+fresh `asyncio.run()` in a pool thread, and the per-call bound plus real abandonment mean a hang
+degrades to "not found" and cannot hold the process open. The plan's pyegeria concurrency spike is
+still the open item.
+
+**`nest_asyncio` is gone from RE.** `surveyors/prefect_adapter.py` was the only module that
+imported it, with a module-level `nest_asyncio.apply()` described as enabling nested loops under
+Uvicorn. It was removed on both counts: nothing in RE needs loop re-entrancy any more, and it was
+redundant anyway — pyegeria declares `nest-asyncio` as its own dependency and applies it at
+package import (`pyegeria/view/mermaid_utilities.py:20`, reached from `pyegeria/__init__.py`), so
+the global patch is in effect for any process that touches pyegeria whether RE asks for it or not.
+The direct dependency is off RE's `pyproject.toml`; the package stays installed transitively.
+`tests/test_process_roles.py::TestNestAsyncio` pins all three facts.
+
+### 1.4 SIGUSR1 thread-dump and bounded shutdown
+
+Added the same day as the incident, in the `web` command only. It is now shared by both roles via
+`_install_stack_dump(label)` (`cli/main.py:318`), called from `web` (`cli/main.py:396`) and from
+`worker` (`cli/main.py:352`). Still **not** applied when the app is launched by other means (e.g.
+`uvicorn resource_explorer.web.app:app` directly, bypassing the CLI).
+
+- **On-demand thread dump**: `faulthandler.enable()` plus, where `SIGUSR1` exists,
+  `faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)`. `kill -USR1 <pid>`
+  writes every thread's Python stack to stderr. Deliberately on-demand rather than
+  `dump_traceback_later()`'s continuous polling, so it costs nothing while idle. **This earned its
+  keep during this very refactor** — it is what identified `_python_exit`'s join as the reason a
+  cleanly-stopped worker would not exit (§1.3), a cause no amount of reading the shutdown code
+  would have suggested.
+- **Bounded graceful shutdown**, per role:
+  - `web`: `uvicorn.run(..., timeout_graceful_shutdown=10)` (`cli/main.py:470`).
+  - `worker`: SIGTERM/SIGINT set the stop event (`cli/main.py:377`); `run_worker` joins its
+    supervisors within `shutdown_timeout` (default 15s, `worker.py:201`), logs anything still
+    running, and returns — the supervisors are daemon threads, so a stuck one goes with the
+    process instead of holding it open.
+  - both: `concurrency.shutdown(wait=False)` on the way out, without which a stuck pool worker
+    outlasts every bound above (§1.3).
+
+`_reconcile_orphaned_runs()` (now `worker.py:116`) is what makes a `kill -9` survivable for
+survey/analysis runs specifically: process death leaves `activity_log` rows `status="running"`
+with an owner recorded, and the next worker start resolves them to `interrupted` rather than
+leaving them stuck for ever (`run_reconciler.py`).
 
 ### 1.5 Prefect: enabled/unreachable handling and the ephemeral-server leak
 
 `surveyors/prefect_adapter.py`'s `run_prefect_step` checks `config.prefect.enabled`
 (`PrefectConfig.enabled`, `config.py:248`) before attempting the Prefect API branch at all; on any
 exception other than `PrefectFlowRunCancelled` (an unreachable server, a real bug, anything) it
-falls back to running the step locally in-process (`prefect_adapter.py`, comment at
-lines ~168-175) — that fallback path is not the leak.
+falls back to running the step locally in-process (`prefect_adapter.py:191-200`) — that fallback
+path is not the leak.
 
 **The leak** (found live 2026-09-04, per both `config.py:228-240` and `prefect_adapter.py:6-28`'s
 comments): with `config.prefect.enabled=True` and no reachable `PREFECT_API_URL`, Prefect's own
@@ -170,36 +272,28 @@ following as what the code shows, not as a prediction):
 - `config.py:248` — `PrefectConfig.enabled` now defaults to `False` (`PREFECT_ENABLED`), with a
   comment dated 2026-09-04 recording that it was `True` from 2026-08-26 to 2026-09-04 and that the
   `True` default is what leaked.
-- `prefect_adapter.py:30` — `os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")`,
+- `prefect_adapter.py:33` — `os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")`,
   set **before** `import prefect` (Prefect reads settings at import time), as a second, independent
   guard against the same leak regardless of `PrefectConfig.enabled`'s default. `setdefault` so an
   operator who deliberately wants ephemeral-server behavior can still override it via their own
   environment.
 
-Note `packages/resource-explorer/CLAUDE.md`'s "Setup" section still describes Prefect as
-"optional, default-on as of 2026-08-26" — that line is now stale against `config.py:228-248` and
-was not in scope to fix under this task's file restriction (only `Architecture.md`/this file); flag
-it for whoever next touches that file.
+`resource_explorer/__init__.py` carries the same `setdefault` at **package import**, which is what
+makes it hold in every uvicorn child process under `--workers N` — a CLI-only guard would not.
+`tests/test_process_roles.py::TestWebLifespan::test_package_import_still_guards_ephemeral_prefect`
+pins that.
+
+(The earlier note here about `CLAUDE.md` calling Prefect "default-on as of 2026-08-26" no longer
+applies — that file now says off by default.)
 
 ### 1.6 Diagram — current process
 
 ```mermaid
 flowchart TB
-    subgraph P["one uvicorn process — resource-explorer web"]
+    subgraph WEBP["resource-explorer web (1..N uvicorn processes)"]
         direction TB
-
-        subgraph startup["FastAPI lifespan startup (app.py:71-103)"]
-            R0["_reconcile_orphaned_runs()\n(one-shot, not a thread)"]
-        end
-
-        subgraph daemons["always-on daemon threads"]
-            SCHED["resource-explorer-scheduler\nscheduler.py — every 15 min\nrun-due + RFA reconcile + outbox drain"]
-            BOOT["resource-explorer-bootstrap\nbootstrap.py — every 10 min\nheal Dr.Egeria definitions"]
-            RESYNC["egeria-resync-scheduler\negeria_resync.py — every 10 min\nclear stale Egeria pointers"]
-            WARM["survey-cache-warm\napp.py — one-shot\nwarm question-GUID cache"]
-        end
-
-        subgraph adhoc["per-request threads (spawned on demand, daemon=True)"]
+        HTTP["uvicorn HTTP request handling"]
+        subgraph adhoc["per-request threads (still route-spawned — step 2b)"]
             SCOUT["scouting-scan\nprojects.py:482"]
             ARUN["analysis-run\nprojects.py:824"]
             SBATCH["stage-batch-run\nprojects.py:921"]
@@ -207,20 +301,30 @@ flowchart TB
             IMPORT["discovery-import\ndiscovery.py:535"]
             QSTREAM["query streaming\n(unnamed) query.py:244"]
         end
-
-        subgraph pools["ThreadPoolExecutor bridges"]
-            AGENTPOOL["agents/base.py, conversation_agent.py x2,\ntui/app.py — max_workers=1 each\nfresh asyncio.run(), no nest_asyncio"]
-            PREFPOOL["prefect_adapter.py — unbounded\nfresh asyncio.run(), API branch only"]
-            GUIDPOOL["survey_definition_reader.py x2\nmax_workers=1 (single call) /\nmax_workers<=8 (batch)\ngoes through nest_asyncio —\nTHE incident hazard, 15s timeout + abandon"]
-        end
-
-        HTTP["uvicorn HTTP request handling"] --> adhoc
-        HTTP --> pools
-        daemons -.-> GUIDPOOL
+        WPOOL["ONE bounded shared pool\nconcurrency.py\nEXPLORER_SYNC_POOL_SIZE=8\ndaemon workers, per-call timeout"]
+        EMB["embedded worker role\n(--embed-worker, the default)\nworker.py:268"]
+        HTTP --> adhoc
+        HTTP --> WPOOL
+        EMB -.-> WPOOL
     end
 
-    PG[(Postgres registry\nshared across processes)]
+    subgraph WORKP["resource-explorer worker (0..N processes)"]
+        direction TB
+        ONESHOT["one-shots, ungated:\n_reconcile_orphaned_runs()\n_warm_survey_definition_cache()"]
+        SCHED["resource-explorer-scheduler\nevery 15 min\nrun-due + RFA reconcile + outbox drain"]
+        BOOT["resource-explorer-bootstrap\nevery 10 min"]
+        RESYNC["egeria-resync-scheduler\nevery 10 min"]
+        WPOOL2["ONE bounded shared pool"]
+        ONESHOT -.-> WPOOL2
+    end
+
+    PG[(Postgres registry\n+ advisory locks)]
     EGERIA[(Egeria platform)]
+
+    EMB -. "pg_try_advisory_lock x3" .-> PG
+    SCHED -. "pg_try_advisory_lock\n-6561321191492868153" .-> PG
+    BOOT -. "pg_try_advisory_lock\n5582179307941343378" .-> PG
+    RESYNC -. "pg_try_advisory_lock\n-3163458856154549756" .-> PG
 
     SCHED --> PG
     BOOT --> EGERIA
@@ -228,8 +332,12 @@ flowchart TB
     RESYNC --> EGERIA
     adhoc --> PG
     adhoc --> EGERIA
-    GUIDPOOL --> EGERIA
+    WPOOL --> EGERIA
+    WPOOL2 --> EGERIA
 ```
+
+Exactly one process wins each key. The embedded worker and a standalone worker compete on equal
+terms; whoever loses logs `standby` and retries at that loop's interval.
 
 ---
 
@@ -237,7 +345,10 @@ flowchart TB
 
 Restated from `docs/runtime-architecture-plan.md` §2 (Process roles) and §1 (interaction with
 threading/multi-user). Not redesigned here — see the plan for rationale and rejected
-alternatives.
+alternatives. **This is still the target, not a second description of the present**: two of the
+five roles (`web`, `worker`) are built and `cli`/`tui` were already real, but `a2a` is untouched,
+the run queue does not exist, and `web` does not yet honour its own "never spawns a thread for
+work that outlives the request" rule (§1.2). The migration map below says which is which.
 
 **Five process roles, one core, one image: `web`, `worker`, `cli`, `tui`, `a2a`.**
 
@@ -267,16 +378,15 @@ alternatives.
 own (`PREFECT_ENABLED` defaults `False`, `PREFECT_SERVER_EPHEMERAL_ENABLED=false` set in every
 profile — already true in the code today, see §1.5 above); every long-running unit of work has a
 row recording who owns it, when it last heartbeated, how to kill it; every process answers
-`SIGUSR1` with a thread dump and shuts down within a bound (today only `resource-explorer web`
-does this — see §1.4's "not applied automatically" caveat; the target state implies every role,
-including `worker`, gets the same instrumentation, not just `web`); `make ps` lists every
-trellis-owned process and container with role, pid, age and port.
+`SIGUSR1` with a thread dump and shuts down within a bound (**done for `web` and `worker`**,
+`cli/main.py:318`; `a2a`/`cli`/`tui` still lack it); `make ps` lists every trellis-owned process
+and container with role, pid, age and port (**done**, root `Makefile`).
 
 **One bounded shared `ThreadPoolExecutor` per process** for sync-pyegeria bridging, replacing
-today's many ad hoc single-purpose pools (§1.3's table). Per-call timeout kept (the
-`_QUESTION_GUID_CALL_TIMEOUT_SECONDS` pattern). pyegeria thread-safety verified by a spike before
-this lands — the plan does not claim the cross-loop hazard itself is fixed, only contained; the
-spike is where that gets investigated.
+today's many ad hoc single-purpose pools. **Done** — `resource_explorer/concurrency.py`, §1.3 —
+with the per-call timeout kept. The pyegeria thread-safety spike this was supposed to follow has
+**not** happened; the cross-loop hazard is contained, not fixed, and step 2a's own live run caught
+two threads in that frame again.
 
 ### Diagram — target process topology
 
@@ -319,49 +429,59 @@ flowchart TB
 
 ---
 
-## Migration map
+## Migration map — what is done, what is pending
 
-| Current thread / pool | Moves to |
-|---|---|
-| `resource-explorer-scheduler` (`scheduler.py`) — run-due, RFA reconcile, outbox drain | `worker` role's background-loop set |
-| `resource-explorer-bootstrap` (`bootstrap.py`) | `worker` role |
-| `egeria-resync-scheduler` (`egeria_resync.py`) | `worker` role |
-| `survey-cache-warm` (`app.py`, one-shot) | `worker` role (or `web`'s own startup, if the target design keeps a cheap one-shot warm per `web` worker too — not specified in the plan; flag for the refactor session) |
-| `_reconcile_orphaned_runs()` one-shot | `worker` role's startup, generalized from pid-based reconciliation to run-queue-row reconciliation (`claimed_by`/`heartbeat_at`) |
-| Per-request threads: scouting scan, analysis run, stage-batch run, survey-def run, discovery import (§1.2) | `worker` role, via the Postgres run queue — a `web` request enqueues a row and returns rather than spawning a thread |
-| Per-request query-streaming thread (`query.py:244`) | Stays in `web` — it is request-scoped, not backgrounded work, and the plan's "never spawns threads for work that outlives the request" rule does not forbid a bridge thread whose lifetime is the request itself |
-| `agents/base.py`, `conversation_agent.py` ×2, `tui/app.py` `ThreadPoolExecutor(max_workers=1)` sites | Collapse into the one bounded shared `ThreadPoolExecutor` per process (`web` gets one, `worker` gets one, `cli`/`tui` likely share the in-process pattern since they are single-user, single-process by nature) |
-| `prefect_adapter.py`'s unbounded per-call `ThreadPoolExecutor()` | Same shared bounded pool; the unbounded construction is itself something the refactor should fix regardless of role, since it currently has no cap at all |
-| `survey_definition_reader.py`'s two pools (single-call + 8-worker batch) — the incident hazard | Same shared bounded pool, with the existing per-call timeout kept; this is the site the plan's "pyegeria concurrency spike" is specifically about, since collapsing it into a shared pool does not by itself resolve the cross-loop hazard described in §1.3 |
-| `cli/main.py`'s SIGUSR1 + bounded-shutdown instrumentation (currently `web`-only, via `resource-explorer web`) | Every role, per the target state's "every process answers `SIGUSR1`" rule — `worker`, `a2a`, and arguably `cli`/`tui` for long-running interactive sessions, not just `web` |
-| RE's `agentstack_server.py` (8080-8086, unauthenticated) | `a2a` role — one service, one port, path-routed, bearer-token auth |
+Step 2a is done; step 2b is the run queue and the workflow extraction.
+
+| Current thread / pool | Moves to | Status |
+|---|---|---|
+| `resource-explorer-scheduler` (`scheduler.py`) — run-due, RFA reconcile, outbox drain | `worker` role, leader-elected | **Done.** Moved as one unit, per F1 — the outbox drain kept the scheduler's 15-minute cadence rather than getting its own, since nothing showed it needed one. `scheduler.py` also gained the `stop_scheduler()` it had always lacked (`scheduler.py:109`) |
+| `resource-explorer-bootstrap` (`bootstrap.py`) | `worker` role | **Done**, leader-elected |
+| `egeria-resync-scheduler` (`egeria_resync.py`) | `worker` role | **Done**, leader-elected |
+| `survey-cache-warm` (one-shot) | `worker` role — the earlier note flagged "or `web`'s own startup too, not specified in the plan" | **Done, and the open question settled:** it runs in the worker role only, **ungated**, because the cache is process-local. A `--no-embed-worker` web process therefore pays its own first-click lookups; that is the accepted cost of the split, and it is the only behaviour in this refactor that a user could notice. It also had to be *fixed* to move at all — see §1.1's `@asynccontextmanager` bug |
+| `_reconcile_orphaned_runs()` one-shot | `worker` role's startup, eventually generalized to run-queue rows | **Moved; not generalized.** Still pid-based (`run_reconciler.py`); the `claimed_by`/`heartbeat_at` version is step 2b |
+| Per-request threads: scouting scan, analysis run, stage-batch run, survey-def run, discovery import (§1.2) | `worker` role, via the Postgres run queue | **Pending — step 2b.** Unchanged; still route-spawned |
+| Per-request query-streaming thread (`query.py:244`) | Stays in `web` | **Done by staying put** — request-scoped, not backgrounded work |
+| `agents/base.py`, `conversation_agent.py` ×2, `tui/app.py` one-worker pools | One bounded shared pool per process | **Done** (§1.3's table) |
+| `prefect_adapter.py`'s unbounded per-call `ThreadPoolExecutor()` | Same shared bounded pool | **Done** — the uncapped construction is gone |
+| `survey_definition_reader.py`'s two pools — the incident hazard | Same shared bounded pool, per-call timeout kept | **Done**, plus the nesting removed (leaf work submitted instead of pooled work that pooled again) and a batch-level deadline added. **The cross-loop hazard itself is still open** — it lives in pyegeria, and the plan's concurrency spike has not happened |
+| `cli/main.py`'s SIGUSR1 + bounded-shutdown instrumentation (`web`-only) | Every role | **Done for `web` and `worker`** (`_install_stack_dump`, `cli/main.py:318`). `a2a`, `cli` and `tui` still do not have it |
+| RE's `agentstack_server.py` (8080-8086, unauthenticated) | `a2a` role | **Pending — step 2b/beyond.** Untouched |
+| — | `trellis-auth` adoption in RE | **Pending.** Out of scope for 2a |
 
 ## Findings that contradict or refine the plan's description (summary)
 
-- **F1** — the plan's Context text implies "outbox drain" is a background loop parallel to
-  "scheduler" in `app.py`'s lifespan. It is not a separate thread; it is one of three things
+- **F1 — still true, and it shaped the refactor.** The plan's Context text implies "outbox drain"
+  is a background loop parallel to "scheduler". It is not; it is one of three things
   `scheduler.py`'s single loop does per 15-minute tick, alongside RFA reconciliation
-  (`scheduler.py:95-110`). Five things are started from the lifespan (§1.1's table), not five
-  independent loops — the scheduler loop does three jobs itself.
-- **F2** — none of the three always-on loops (scheduler, bootstrap monitor, Egeria resync) take
-  any lock today. The plan's "must run in exactly one place" framing is correct as a requirement,
-  but nothing currently enforces it beyond in-process idempotency guards; two RE processes sharing
-  one Postgres registry (explicitly called "routine during development" by `run_reconciler.py`'s
-  own docstring) can and do run all three redundantly today. This is exactly what
-  `pg_try_advisory_lock` leader election (target state) is meant to fix, but it is worth being
-  precise that today's exposure is real, not hypothetical.
-- **F3** — the Prefect ephemeral-server-leak fix (`config.py`'s `False` default and
-  `prefect_adapter.py`'s `setdefault` guard, both commented 2026-09-04) landed in the working tree
-  while this document was being written, from a concurrent session on the same day. §1.5
-  describes the leak as it was found and the fix as it now reads in the code.
-- **F4** — `packages/resource-explorer/CLAUDE.md`'s Setup section still says Prefect is
-  "optional, default-on as of 2026-08-26," which is now stale against `config.py`. Out of scope
-  for this document to fix (file restriction), flagged for whoever next touches that file.
-- **F5** — not every backgrounded run is tracked the same way. `log_survey()` (used by the
-  scouting-scan and survey-definition-run threads) has no `runner` parameter; only
-  `log_analysis_run()` (analysis-run, stage-batch-run) accepts one directly. The survey-definition
-  route works around this by hand-building `detail={"_runner": ...}` itself
-  (`survey_definitions.py:618-623`); the scouting-scan route does not, so a crashed scouting scan
-  is reconciled by the 6-hour age heuristic rather than by pid-liveness (§1.2's table). This is a
-  real, if minor, gap in today's ownership model that the target state's uniform run-queue table
-  (`claimed_by`/`heartbeat_at` on every row, no exceptions) would close by construction.
+  (`scheduler.py:132`). It therefore moved to the worker role as part of the scheduler's move and
+  shares its single advisory lock, rather than getting a key and a cadence of its own — nothing
+  observed suggests it needs them.
+- **F2 — closed.** None of the three loops took any lock; two RE processes sharing one Postgres
+  ran all three redundantly, which `run_reconciler.py`'s own docstring calls routine during
+  development. `pg_try_advisory_lock` leader election now enforces one leader per loop
+  (§1.1a), verified live 2026-09-04: a standalone worker held all three keys while a
+  `--no-embed-worker` web process on 8811 held none, and a second worker started against the same
+  registry logged `standby` for all three without starting anything.
+- **F3 — unchanged.** The Prefect ephemeral-server-leak fix (`config.py`'s `False` default and the
+  `PREFECT_SERVER_EPHEMERAL_ENABLED` `setdefault` guard) was already in the tree. `__init__.py`'s
+  copy of the guard is what makes it hold in every uvicorn worker process, which matters more now
+  that `--workers N` is a supported flag; `tests/test_process_roles.py` pins it.
+- **F4 — still open.** `packages/resource-explorer/CLAUDE.md`'s Setup section has since been
+  updated to say Prefect is off by default, so the specific staleness F4 named is gone; the
+  file's process description ("one process, threads at startup") is now the stale part.
+- **F5 — still open, and step 2b's job.** `log_survey()` has no `runner` parameter while
+  `log_analysis_run()` does, so a crashed scouting scan is reconciled by the 6-hour age heuristic
+  rather than by pid-liveness. The uniform run-queue table closes this by construction; nothing
+  in step 2a touched it.
+- **F6 (new, found by building this) — `wait=False` did not mean what every pool site assumed.**
+  CPython joins pool workers at interpreter shutdown regardless, so an abandoned worker stuck in
+  pyegeria held the process open past every timeout — including a worker that had already logged a
+  clean stop and released its locks. This was true of the *old* per-call pools too, which makes it
+  a plausible contributor to the original incident's "SIGTERM ignored 8+ seconds, needed `kill
+  -9`". Fixed in §1.3; found only because the SIGUSR1 dump added during the incident was pointed
+  at the new worker.
+- **F7 (new) — the survey-definition cache warm had silently never run.** `@asynccontextmanager`
+  on a plain sync function meant calling it built an object and executed nothing. Invisible from
+  outside because the warm is best-effort and nothing distinguishes "warmed, found nothing" from
+  "never ran". See §1.1.

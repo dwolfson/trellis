@@ -77,27 +77,70 @@ from resource_explorer.registry import TARGET_ANALYSIS, TARGET_SURVEY
 _CHECK_INTERVAL_SECONDS = 900  # 15 minutes
 _started = False
 _lock = threading.Lock()
+_stop_event: threading.Event | None = None
+_thread: threading.Thread | None = None
 
 
 def start_scheduler() -> None:
-    """Start the background scheduler daemon thread (idempotent)."""
-    global _started
+    """Start the background scheduler daemon thread (idempotent).
+
+    Owned by the worker role since 2026-09-04 (docs/process-model.md):
+    resource_explorer/worker.py calls this only after winning the
+    `scheduler` advisory lock, so a second RE process against the same
+    registry stands by rather than double-firing every due schedule.
+    """
+    global _started, _stop_event, _thread
     with _lock:
-        if _started:
+        if _started and _thread is not None and _thread.is_alive():
             return
         _started = True
-    t = threading.Thread(
-        target=_scheduler_loop,
-        daemon=True,
-        name="resource-explorer-scheduler",
-    )
+        _stop_event = threading.Event()
+        _thread = threading.Thread(
+            target=_scheduler_loop,
+            args=(_stop_event,),
+            daemon=True,
+            name="resource-explorer-scheduler",
+        )
+        t = _thread
     t.start()
     log.info("Background scheduler started (check interval: %ds)", _CHECK_INTERVAL_SECONDS)
 
 
-def _scheduler_loop() -> None:
-    while True:
-        time.sleep(_CHECK_INTERVAL_SECONDS)
+def stop_scheduler(timeout: float = 5.0) -> None:
+    """Ask the loop to stop and wait, bounded, for it to notice.
+
+    This did not exist before 2026-09-04 — bootstrap.py and
+    egeria_resync.py each had a stop_scheduler() and this one did not,
+    so app.py's lifespan shut two of its three loops down and left the
+    third running until the process died. Needed now for real: the
+    worker role must release its advisory lock on the way out, and a
+    loop still running past that release is exactly the double-fire the
+    lock exists to prevent.
+    """
+    global _started, _stop_event, _thread
+    with _lock:
+        stop, thread = _stop_event, _thread
+        _stop_event = None
+        _thread = None
+        _started = False
+    if stop is not None:
+        stop.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+
+
+def _scheduler_loop(stop: threading.Event | None = None) -> None:
+    """Tick every _CHECK_INTERVAL_SECONDS, sleeping FIRST — startup is
+    not a reason to fire every due schedule at once.
+
+    `stop` is optional so the loop stays directly callable (tests drive
+    one iteration by patching time.sleep); the worker always passes one.
+    """
+    while stop is None or not stop.is_set():
+        if stop is None:
+            time.sleep(_CHECK_INTERVAL_SECONDS)
+        elif stop.wait(_CHECK_INTERVAL_SECONDS):
+            break
         try:
             _run_due()
         except Exception:

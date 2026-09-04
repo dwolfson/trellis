@@ -34,14 +34,30 @@ os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
 
 import asyncio
 import logging
-import nest_asyncio
 from typing import Any
 from prefect.client import get_client
 from resource_explorer.config import get_config
 from resource_explorer.prefect.flows import run_surveyor_step_task
 
-# Enable nested event loops if running inside another async loop (e.g. Uvicorn/FastAPI)
-nest_asyncio.apply()
+# `import nest_asyncio` + `nest_asyncio.apply()` used to sit here, described as
+# "enable nested event loops if running inside another async loop (e.g.
+# Uvicorn/FastAPI)". Removed 2026-09-04 with the shared-pool refactor, on two
+# grounds:
+#
+# 1. It is not what makes this module work. Every sync/async bridge in RE now
+#    hands the coroutine to a thread with its own fresh loop
+#    (resource_explorer/concurrency.py), which needs no loop re-entrancy at all.
+# 2. It was redundant regardless. pyegeria declares nest-asyncio as its own
+#    dependency and applies it at package import
+#    (pyegeria/view/mermaid_utilities.py:20, reached from pyegeria/__init__.py),
+#    so the global patch is in effect for any process that touches pyegeria
+#    whether or not this module is imported — meaning RE's copy never changed
+#    the outcome, only who appeared to be responsible for it.
+#
+# The cross-loop hazard behind the 2026-09-03/04 incident lives in pyegeria's
+# async-client construction and is NOT claimed fixed by this (see
+# docs/process-model.md §1.3); this removes RE's own redundant global patch,
+# nothing more.
 
 
 class PrefectFlowRunCancelled(Exception):
@@ -153,13 +169,17 @@ def run_prefect_step(
 
             if loop and loop.is_running():
                 # Already inside an event loop (a FastAPI request thread): asyncio.run
-                # cannot nest, so hand the coroutine to a worker thread with its own loop.
-                from concurrent.futures import ThreadPoolExecutor
-                with ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        lambda: asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
-                    )
-                    return future.result()
+                # cannot nest, so hand the coroutine to a worker thread with its own
+                # loop. This used to construct `ThreadPoolExecutor()` with NO
+                # max_workers — the only one of the six bridge sites with no cap at
+                # all. It now uses the one bounded shared pool per process
+                # (resource_explorer/concurrency.py).
+                from resource_explorer.concurrency import run_sync
+
+                return run_sync(
+                    lambda: asyncio.run(
+                        _run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
+                )
             else:
                 return asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
         except PrefectFlowRunCancelled:

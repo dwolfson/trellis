@@ -350,6 +350,33 @@ class ArtifactTreeSettings(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+class RuntimeConfig(BaseSettings):
+    """Process-role runtime settings — see docs/process-model.md and
+    docs/runtime-architecture-plan.md §2.
+
+    sync_pool_size bounds the ONE shared thread pool per process that
+    bridges sync pyegeria/BeeAI calls into async code
+    (resource_explorer/concurrency.py). It replaced six ad hoc pools, one
+    of which was constructed with no max_workers at all. 8 matches the
+    old per-batch ceiling (_GUID_RESOLVE_WORKERS in
+    surveyors/survey_definition_reader.py) — these are reads against one
+    Egeria server, and the goal is to stop waiting in series, not to
+    load-test someone else's platform.
+
+    embed_worker decides whether the FastAPI lifespan runs the worker
+    role in-process (background loops in a daemon thread). It defaults
+    True so `make dev` and an existing .env keep behaving exactly as
+    they did when the loops were started from the lifespan directly.
+    `resource-explorer web --no-embed-worker` sets it to False for this
+    process; leader election (resource_explorer/leader_election.py) is
+    what makes it safe to leave on with --workers N.
+    """
+    sync_pool_size: int = Field(default=8, alias="EXPLORER_SYNC_POOL_SIZE")
+    embed_worker: bool = Field(default=True, alias="EXPLORER_EMBED_WORKER")
+
+    model_config = _ENV_FILE_CONFIG
+
+
 class ExplorerConfig(BaseSettings):
     pgvector: PgVectorConfig = Field(default_factory=PgVectorConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -365,6 +392,7 @@ class ExplorerConfig(BaseSettings):
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILES,

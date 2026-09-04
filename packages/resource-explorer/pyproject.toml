@@ -110,7 +110,14 @@ dependencies = [
     # release; RE is unaffected because it imports from the top-level package.
     "pyegeria>=6.1.5",
     "mcp>=0.1.0",
-    "nest-asyncio>=1.6.0",
+    # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
+    # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
+    # module-level nest_asyncio.apply(), was both unnecessary (every sync/async
+    # bridge now hands the coroutine to a thread with a fresh loop — see
+    # resource_explorer/concurrency.py) and redundant (pyegeria declares
+    # nest-asyncio itself and applies it at package import, in
+    # pyegeria/view/mermaid_utilities.py). It therefore stays installed as a
+    # pyegeria transitive dependency; what is gone is RE claiming it directly.
     # Database surveying
     "psycopg2-binary>=2.9.0",
     "prefect>=3.0.0",

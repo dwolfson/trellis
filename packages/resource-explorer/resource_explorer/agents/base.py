@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -190,11 +189,14 @@ class BaseExplorerAgent(ABC):
 
         try:
             asyncio.get_running_loop()
-            # Called from inside an async context (e.g. FastAPI) — run in a new thread
-            def _in_thread():
-                return asyncio.run(_inner())
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                return executor.submit(_in_thread).result()
+            # Called from inside an async context (e.g. FastAPI) — asyncio.run
+            # cannot nest, so hand the coroutine to a thread with its own loop.
+            # The ONE shared pool per process (resource_explorer/concurrency.py),
+            # not a fresh ThreadPoolExecutor per call — see that module for why
+            # six ad hoc pools became one.
+            from resource_explorer.concurrency import run_sync
+
+            return run_sync(lambda: asyncio.run(_inner()))
         except RuntimeError:
             # No running event loop — safe to call asyncio.run directly
             return asyncio.run(_inner())
