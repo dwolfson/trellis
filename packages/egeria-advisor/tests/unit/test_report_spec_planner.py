@@ -52,7 +52,7 @@ member_of[].properties.displayName
     
     # Mock connection reading
     class MockPipeline:
-        def _read_pyegeria_connection(self):
+        def _read_pyegeria_connection(self, egeria_credentials=None):
             return {
                 "view_server": "dev_server",
                 "platform_url": "http://localhost:9443",
@@ -111,7 +111,7 @@ properties.displayName
     monkeypatch.setattr("advisor.agents.report_spec_agent.get_report_spec_doc_manager", lambda: MockDocManager())
     
     class MockPipeline:
-        def _read_pyegeria_connection(self):
+        def _read_pyegeria_connection(self, egeria_credentials=None):
             return {
                 "view_server": "dev_server",
                 "platform_url": "http://localhost:9443",
@@ -137,16 +137,26 @@ properties.displayName
 
 
 def test_get_report_draft_schema_endpoint(monkeypatch):
+    """The route requires a signed-in user and forwards their Egeria credentials
+    (token-shaped since 2026-09-04) to the discovery helper."""
     from advisor.web.app import get_report_draft_schema
-    
-    async def mock_discover(draft_id):
+
+    captured = {}
+
+    async def mock_discover(draft_id, egeria_credentials=None):
+        captured["draft_id"] = draft_id
+        captured["creds"] = egeria_credentials
         return [{"attribute_path": "guid", "data_type": "string"}]
-        
+
+    fake_creds = {"user_id": "test_user", "password": "", "token": "egeria-token"}
     monkeypatch.setattr("advisor.web.app.discover_draft_schema_internal", mock_discover)
-    
+    monkeypatch.setattr("advisor.auth.require_egeria_user", lambda request: {"user_id": "test_user"})
+    monkeypatch.setattr("advisor.auth.get_egeria_credentials", lambda request: fake_creds)
+
     import asyncio
-    res = asyncio.run(get_report_draft_schema("test_draft"))
+    res = asyncio.run(get_report_draft_schema(object(), "test_draft"))
     assert res == [{"attribute_path": "guid", "data_type": "string"}]
+    assert captured == {"draft_id": "test_draft", "creds": fake_creds}
 
 
 def test_discover_draft_schema_internal(monkeypatch):
@@ -171,7 +181,7 @@ def test_discover_draft_schema_internal(monkeypatch):
     monkeypatch.setattr("advisor.report_spec_parser.register_report_spec", lambda name, spec: None)
     
     class MockPipeline:
-        def _read_pyegeria_connection(self):
+        def _read_pyegeria_connection(self, egeria_credentials=None):
             return {
                 "view_server": "dev_server",
                 "platform_url": "http://localhost:9443",
@@ -225,7 +235,7 @@ def test_discover_draft_schema_cache(monkeypatch):
     monkeypatch.setattr("advisor.report_spec_parser.register_report_spec", lambda name, spec: None)
     
     class MockPipeline:
-        def _read_pyegeria_connection(self):
+        def _read_pyegeria_connection(self, egeria_credentials=None):
             return {
                 "view_server": "dev_server",
                 "platform_url": "http://localhost:9443",
@@ -285,7 +295,7 @@ search_string=*
     monkeypatch.setattr("advisor.agents.report_spec_agent.get_report_spec_doc_manager", lambda: MockDocManager())
     
     class MockPipeline:
-        def _read_pyegeria_connection(self):
+        def _read_pyegeria_connection(self, egeria_credentials=None):
             return {
                 "view_server": "dev_server",
                 "platform_url": "http://localhost:9443",
