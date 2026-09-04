@@ -309,14 +309,21 @@ class TestScoutingScanMissingSurveyDefinitionFallback:
 
 
 class TestScoutingScanBackground:
-    """The background-thread wrapper: on success, writes the sync result's
+    """The record-the-outcome wrapper: on success, writes the workflow result's
     status/message onto the activity entry the route created; on an
     unexpected crash (not a survey-step error — a genuine bug), still
-    resolves the entry to 'error' rather than leaving it 'running' forever."""
+    resolves the entry to 'error' rather than leaving it 'running' forever.
+
+    Now patched at `workflows.scouting.run_scouting_scan` rather than at the
+    route module's `_run_scouting_scan_sync`: the workflow moved out of the
+    route in step 2b, and the queue worker calls it directly — patching the
+    route's own thin adapter would leave the path the queue actually takes
+    untested."""
 
     def test_writes_ok_status_and_summary_onto_the_activity_entry(self, registry):
         from resource_explorer.activity_logger import log_survey
-        from resource_explorer.web.routes.projects import ScoutingScanResult, _run_scouting_scan_background
+        from resource_explorer.web.routes.projects import _run_scouting_scan_background
+        from resource_explorer.workflows.scouting import ScoutingScanResult
 
         activity_id = log_survey(
             registry, entity_type="repo", entity_slug="myproj", entity_name="My Project",
@@ -325,7 +332,7 @@ class TestScoutingScanBackground:
         )
 
         with patch(
-            "resource_explorer.web.routes.projects._run_scouting_scan_sync",
+            "resource_explorer.workflows.scouting.run_scouting_scan",
             return_value=ScoutingScanResult(status="ok", slug="myproj", message="done"),
         ), patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
             _run_scouting_scan_background("myproj", activity_id)
@@ -345,7 +352,7 @@ class TestScoutingScanBackground:
         )
 
         with patch(
-            "resource_explorer.web.routes.projects._run_scouting_scan_sync",
+            "resource_explorer.workflows.scouting.run_scouting_scan",
             side_effect=RuntimeError("boom"),
         ), patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
             _run_scouting_scan_background("myproj", activity_id)

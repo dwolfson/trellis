@@ -91,7 +91,16 @@ resource_explorer/
 ├── scheduler.py            # the 15-min loop: due schedules, subscriptions, RFA reconcile, outbox drain
 ├── bootstrap.py            # 10-min loop: heal Dr.Egeria definitions wiped by an Egeria reset
 ├── egeria_resync.py        # 10-min loop: clear stale Egeria pointers left by a store wipe
-├── run_reconciler.py       # resolve activity rows a dead process left "running"
+├── run_reconciler.py       # resolve activity rows and `runs` rows a dead process left claimed
+├── run_queue.py            # the Postgres run queue: claim (SKIP LOCKED), heartbeat, execute, finish
+│
+│   # the workflows — one module per unit of work, FastAPI-free
+├── workflows/
+│   ├── analysis.py         # one analysis run, and a "run all <stage>" batch, incl. auto-publish
+│   ├── scouting.py         # the coarse scan, plus "has anything actually been measured here"
+│   ├── discovery.py        # GitHub search, list-load, org expansion, disposition, saved sources
+│   ├── survey_definition.py# execute an authored Survey Definition and record its outcome
+│   └── curate.py           # materialize an accepted component/blueprint verdict into Egeria
 │
 ├── facts.py                # FactLayer: reads what is known, never runs anything
 ├── step_outcome.py         # recovered / partial / no_signal / unverified / regression
@@ -106,7 +115,8 @@ resource_explorer/
 ├── ingestion/              # repo → chunks → pgvector; incremental re-index
 ├── agents/                 # BeeAI specialist agents (stats, code, doc, health, …)
 ├── surveyors/              # the survey layer — see below
-├── web/                    # FastAPI app, 25 route modules, single-page UI (starts no loops)
+├── web/                    # FastAPI app, 26 route modules, single-page UI (starts no loops,
+│                           #   spawns no background threads — routes enqueue onto the run queue)
 ├── cli/                    # Typer CLI — including `web` and `worker`
 └── observability/          # MLflow, Phoenix, metrics
 ```
@@ -117,6 +127,19 @@ command) runs the worker role in-process. Which process actually runs a given lo
 Postgres advisory lock, not by startup order, so a second RE process against the same registry
 stands by rather than double-firing. `make ps` lists every trellis process and container.
 Full detail, including the advisory keys: [`process-model.md`](process-model.md).
+
+**Work is queued, not threaded.** A route that starts a survey writes a row to the `runs` table
+and returns; a `worker` process claims it (`SELECT … FOR UPDATE SKIP LOCKED`), heartbeats every
+30s while it runs, and writes the terminal state. The browser's contract is unchanged — it still
+polls `GET /api/activity/{id}` and reads the result out of that entry's `detail`; the queue row
+carries that activity id in `result_ref`. `GET /api/runs?state=queued` is the queue's own view,
+and the way to tell "nothing is draining the queue" from "this survey is slow".
+
+**`workflows/` is what makes the CLI a peer of the web tier.** Each module is a plain function
+over explicit arguments returning a result dataclass, with no FastAPI anywhere
+(`tests/test_workflows.py` pins that by parsing the imports). The route, the Typer command and
+the queue handler are three callers of one function rather than three implementations — so
+`resource-explorer analysis run <project>` and clicking Run do the same thing by construction.
 
 Shared libraries live outside this package and are imported: `trellis-vectorstore`,
 `trellis-context`, `trellis-artifact-tree`, `trellis-microflow`, `trellis-querycache`,

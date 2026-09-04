@@ -131,6 +131,76 @@ def _reconcile_orphaned_runs() -> None:
         log.warning("orphaned-run reconciliation skipped: %s", exc)
 
 
+#: How often the worker re-checks the run queue for rows whose claimer died.
+#: Well inside the stale window (3 × 30s) so a dead claim is noticed within
+#: about two minutes rather than at the next process restart, which is when the
+#: activity-log reconciliation runs.
+_QUEUE_RECONCILE_INTERVAL_SECONDS = 60
+
+
+def _reconcile_stale_queue_runs(*, ignore_heartbeat: bool = False) -> None:
+    """Fail `runs` rows whose claiming process is provably gone.
+
+    Ungated for the same reason `_reconcile_orphaned_runs` is: the judgement is
+    per row and pid-based, so it is already safe in every process, and electing
+    a leader for it would make it slower without making it safer.
+
+    Runs on its own short interval rather than once at startup, because a queue
+    row that a dead worker holds blocks that user's fairness slot — the
+    activity-log equivalent blocks nothing, which is why a startup-only sweep
+    was enough there and is not enough here.
+
+    `ignore_heartbeat` is passed at worker startup. The heartbeat cutoff exists
+    so the periodic sweep does not test liveness for every active row every
+    minute; it is not part of the judgement. A pid that is provably gone is
+    gone whether or not it wrote a heartbeat ten seconds before it died — and
+    at startup a full sweep costs one query, so waiting three intervals to
+    notice a claim the previous process left behind would be a delay bought
+    with nothing.
+    """
+    try:
+        from resource_explorer.run_reconciler import reconcile_runs
+
+        result = reconcile_runs(ignore_heartbeat=ignore_heartbeat)
+        if result["resolved"]:
+            log.info(
+                "reconciled %s stale queue run(s); %s left alone",
+                result["resolved"], result["left_alone"],
+            )
+    except Exception as exc:
+        log.warning("queue-run reconciliation skipped: %s", exc)
+
+
+#: Deliberately NOT a LoopSpec. `loop_specs()` is the list of *leader-elected*
+#: loops — the advisory keys in docs/process-model.md §1.1 are pinned by
+#: tests/test_process_roles.py, and putting an ungated loop in that list would
+#: make "which loops need an election" and "which loops the worker runs" the
+#: same question when they are not. Same reasoning as the two one-shots.
+_queue_reconcile_stop = threading.Event()
+_queue_reconcile_thread: threading.Thread | None = None
+
+
+def _start_queue_reconcile_loop() -> None:
+    global _queue_reconcile_thread
+
+    def _loop() -> None:
+        while not _queue_reconcile_stop.wait(_QUEUE_RECONCILE_INTERVAL_SECONDS):
+            _reconcile_stale_queue_runs()
+
+    _queue_reconcile_stop.clear()
+    _queue_reconcile_thread = threading.Thread(
+        target=_loop, name="re-queue-reconcile", daemon=True,
+    )
+    _queue_reconcile_thread.start()
+
+
+def _stop_queue_reconcile_loop() -> None:
+    global _queue_reconcile_thread
+
+    _queue_reconcile_stop.set()
+    _queue_reconcile_thread = None
+
+
 def _warm_survey_definition_cache() -> None:
     """Pre-resolve Survey-Definition question GUIDs so the first UI click
     does not pay the Egeria round trip.
@@ -223,6 +293,17 @@ def run_worker(
     _reconcile_orphaned_runs()
     _warm_survey_definition_cache()
 
+    # The run queue. NOT leader-elected and NOT a LoopSpec, deliberately: the
+    # three loops above take an advisory lock because two processes firing the
+    # same schedule is duplicated work, whereas every extra queue consumer is
+    # extra throughput — `SKIP LOCKED` is what makes that safe, and electing a
+    # single leader would make the queue exactly as fast as its leader.
+    from resource_explorer.run_queue import start_queue_runner, stop_queue_runner
+
+    _reconcile_stale_queue_runs(ignore_heartbeat=True)
+    start_queue_runner()
+    _start_queue_reconcile_loop()
+
     supervisors: list[threading.Thread] = []
     for spec in loop_specs():
         t = threading.Thread(
@@ -238,6 +319,8 @@ def run_worker(
         stop_event.wait()
     finally:
         stop_event.set()
+        stop_queue_runner()
+        _stop_queue_reconcile_loop()
         # Bounded: a supervisor blocked on an Egeria call must not be
         # able to hold the process open past its shutdown budget. The
         # threads are daemons, so anything still running dies with the

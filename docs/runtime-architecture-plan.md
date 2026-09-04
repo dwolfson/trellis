@@ -241,16 +241,29 @@ EA has a Click CLI with one-shot query, REPL and agent REPL, plus a `plans` grou
 import FastAPI. `cli/main.py:1085` and `web/routes/survey_definitions.py:511` call the same
 `run_survey_definition`. Interactive ask and chat already work from the CLI in both apps.
 
-**What is web-only today, and moves into core so the CLI gets it:**
-- The analysis-run-and-auto-publish workflow, `web/routes/projects.py:632`
-  (`_run_single_analysis_sync`) and `:837` (`_run_stage_batch_background`). Its own docstring
-  says it was written FastAPI-free so it could run in a thread; it belongs in
-  `resource_explorer/workflows/`. The CLI has no `analysis` command at all.
-- GitHub discovery, the whole of `web/routes/discovery.py` (`_build_query`, `_expand_org`,
-  `_run_search_query`). No core module exists for it.
-- Curate materialization on accepted verdicts, `web/routes/curate.py:294` and `:449`, above the
-  `ComponentMaterializer` core class.
-- The background loops, via the worker role (§2).
+**What was web-only, and has moved into core so the CLI gets it** (all four **done**, RE step 2b,
+2026-09-04 — `resource_explorer/workflows/`, five modules, no FastAPI):
+- ~~The analysis-run-and-auto-publish workflow, `web/routes/projects.py:632`
+  (`_run_single_analysis_sync`) and `:837` (`_run_stage_batch_background`).~~ **Extracted** to
+  `workflows/analysis.py`; the CLI now has `analysis run` and `analysis stage-batch`. Its own
+  docstring had said it was written FastAPI-free so it could run in a thread — that same property
+  is what made it callable from a Typer command and from the run queue with no change.
+- ~~GitHub discovery, the whole of `web/routes/discovery.py` (`_build_query`, `_expand_org`,
+  `_run_search_query`).~~ **Extracted** to `workflows/discovery.py`; CLI `discovery search` and
+  `discovery expand-org`. Two shape changes were unavoidable: `async` became sync (the
+  `asyncio.to_thread` hop is a property of being called from an event loop, not of the work, and
+  stayed in the route), and `HTTPException` became `DiscoveryError` with a `kind` the route maps
+  back onto 400/502.
+- ~~Curate materialization on accepted verdicts, `web/routes/curate.py:294` and `:449`, above the
+  `ComponentMaterializer` core class.~~ **Extracted** to `workflows/curate.py`; CLI `curate
+  materialize`.
+- ~~The background loops, via the worker role (§2).~~ **Done in step 2a**, plus the run queue in
+  2b: routes enqueue onto a `runs` table and return, and a `worker` claims and executes. The
+  scouting scan (`projects.py:366`) and the Survey Definition run were extracted alongside the
+  three above, since the queue needed one definition of each.
+
+The CLI also gained `runs list|show|cancel|enqueue` so an operator can drive that queue from a
+shell. Every workflow command runs inline by default; `--queue` hands it to a worker instead.
 
 **Postgres is the one hard dependency of every path.** `ProjectRegistry.__init__` connects and
 runs DDL on construction (`registry.py:371-415`). The SQLite fallback that still exists there is

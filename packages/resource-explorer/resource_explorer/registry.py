@@ -2019,6 +2019,336 @@ class ProjectRegistry:
                 "ON notification_subscriptions(entity_type, entity_slug, analysis_id)"
             )
 
+            # ── the run queue (docs/runtime-architecture-plan.md §2, step 2b) ──
+            #
+            # One row per backgrounded unit of work. Before this, a `web`
+            # request spawned a `threading.Thread` and returned; the run then
+            # existed only as a live thread in whichever uvicorn process
+            # happened to serve the request, and as an `activity_log` row
+            # claiming "running" with the owner's pid buried in `detail`.
+            # That is what `run_reconciler.py` judges *after the fact*. This
+            # table is the same ownership question asked *before* the work
+            # starts: a claim, not a forensic reconstruction.
+            #
+            # Deliberately a NEW table rather than more columns on
+            # `activity_log`. `activity_log` is the user-facing narrative of
+            # everything that has happened — catalog writes, RFAs, scout
+            # entries — and only a minority of its rows are queueable work.
+            # Hanging state/claimed_by/heartbeat_at off all of them would put
+            # queue semantics on rows that can never be claimed, and would
+            # make "what is queued" a filtered scan of the largest table here.
+            # The two stay joined by `result_ref`, which holds the
+            # activity_log id the UI already polls — so the frontend contract
+            # (POST returns an activity_id, poll GET /api/activity/{id}) is
+            # unchanged by the queue existing.
+            #
+            # `claimed_by` is the human-readable "hostname:pid" the plan asks
+            # for; `runner` is the machine-readable
+            # `run_reconciler.process_identity()` (pid + process start time)
+            # that reconciliation actually tests for liveness. Two fields
+            # because pid alone is not an identity — pids are reused, which is
+            # exactly the trap `run_reconciler._is_alive` documents.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    id            TEXT PRIMARY KEY,
+                    kind          TEXT NOT NULL,
+                    target        TEXT NOT NULL DEFAULT '{}',
+                    requested_by  TEXT NOT NULL DEFAULT '',
+                    state         TEXT NOT NULL DEFAULT 'queued',
+                    claimed_by    TEXT NOT NULL DEFAULT '',
+                    runner        TEXT NOT NULL DEFAULT '',
+                    enqueued_at   TEXT NOT NULL,
+                    claimed_at    TEXT NOT NULL DEFAULT '',
+                    heartbeat_at  TEXT NOT NULL DEFAULT '',
+                    started_at    TEXT NOT NULL DEFAULT '',
+                    finished_at   TEXT NOT NULL DEFAULT '',
+                    error         TEXT NOT NULL DEFAULT '',
+                    result_ref    TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            # The claim's own ORDER BY, so a queue with a long terminal
+            # history does not scan it to find the oldest queued row.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_state_enqueued "
+                "ON runs(state, enqueued_at)"
+            )
+            # Per-user fairness reads this on every claim attempt.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_requested_by_state "
+                "ON runs(requested_by, state)"
+            )
+            # GET /api/runs/{id} joins back from the activity id the UI holds.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
+            )
+
+    # ── the run queue ─────────────────────────────────────────────────────────
+    #
+    # Row-level SQL only. The claim loop, the heartbeat and the dispatch to a
+    # workflow function live in resource_explorer/run_queue.py — the same split
+    # egeria_outbox.py keeps from claim_due_outbox_elements() above.
+
+    #: Every state a `runs` row can be in. queued -> claimed -> running ->
+    #: (succeeded | failed | cancelled). `claimed` and `running` are separate on
+    #: purpose: a claim is taken in one transaction and the work starts after
+    #: it, so a row stuck in `claimed` says "a worker took this and died before
+    #: it began", which is a different fact from "it died mid-run".
+    RUN_STATES = ("queued", "claimed", "running", "succeeded", "failed", "cancelled")
+
+    #: The kinds the queue knows how to execute. Not a foreign key to anything —
+    #: run_queue.py's dispatch table is the real registry of handlers, and a row
+    #: whose kind has no handler fails loudly rather than sitting queued for ever.
+    RUN_KINDS = (
+        "analysis_run",
+        "survey_definition_run",
+        "scouting_scan",
+        "stage_batch",
+        "discovery_expand",
+    )
+
+    #: States that occupy a user's one fairness slot.
+    _RUN_ACTIVE_STATES = ("claimed", "running")
+
+    def enqueue_run(
+        self,
+        kind: str,
+        target: dict | None = None,
+        *,
+        requested_by: str = "",
+        result_ref: str = "",
+        run_id: str | None = None,
+        now: str | None = None,
+    ) -> str:
+        """Add one unit of work to the queue and return its id.
+
+        `requested_by` is the user id the run is attributed to. It is `""`
+        everywhere today because RE has not adopted trellis-auth yet (plan §4);
+        see claim_next_run() for what changes the moment it stops being empty.
+        """
+        if kind not in self.RUN_KINDS:
+            raise ValueError(f"unknown run kind {kind!r} — expected one of {list(self.RUN_KINDS)}")
+        run_id = run_id or str(uuid.uuid4())
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO runs (id, kind, target, requested_by, state,
+                                     enqueued_at, result_ref)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?)""",
+                (run_id, kind, json.dumps(target or {}), requested_by, now, result_ref),
+            )
+        return run_id
+
+    def claim_next_run(
+        self,
+        claimed_by: str,
+        runner: dict | None = None,
+        *,
+        kinds: "list[str] | None" = None,
+        now: str | None = None,
+    ) -> dict | None:
+        """Take the oldest queued row this worker is allowed to run, or None.
+
+        **Concurrency.** Select-and-mark happen in one transaction, and on
+        Postgres the SELECT carries `FOR UPDATE SKIP LOCKED` so a second
+        claimer skips the row a first claimer has locked instead of blocking
+        on it and then claiming it a moment later. Exactly the shape
+        claim_due_outbox_elements() uses, and for the same reason: SQLite has
+        neither clause but serialises writers itself, so the transaction alone
+        is enough there.
+
+        **Per-user fairness.** A user with a run already `claimed` or `running`
+        does not get a second one; their next row waits. This is the plan's
+        step-5 hook, and it is deliberately scoped to a NON-EMPTY
+        `requested_by`: until trellis-auth lands every row is attributed to
+        `""`, and applying the rule to that bucket would collapse the whole
+        queue to one run at a time for everybody — a visible regression
+        against today's behaviour, where each route spawns its own thread.
+        So `""` is the unattributed bucket and is exempt; the moment real user
+        ids appear the fairness rule starts applying with no further change.
+        """
+        now = now or datetime.now(timezone.utc).isoformat()
+        sql = (
+            "SELECT r.id FROM runs r WHERE r.state = 'queued' "
+            # NOT EXISTS rather than a join: Postgres refuses FOR UPDATE over
+            # the nullable side of an outer join (the same trap
+            # claim_due_outbox_elements documents), and this has to keep
+            # working against the real backend, not only against SQLite.
+            "  AND (r.requested_by = '' OR NOT EXISTS ("
+            "        SELECT 1 FROM runs busy WHERE busy.requested_by = r.requested_by "
+            f"        AND busy.state IN ({','.join('?' * len(self._RUN_ACTIVE_STATES))}))) "
+        )
+        params: list = list(self._RUN_ACTIVE_STATES)
+        if kinds:
+            sql += f"  AND r.kind IN ({','.join('?' * len(kinds))}) "
+            params.extend(kinds)
+        sql += "ORDER BY r.enqueued_at ASC, r.id ASC LIMIT 1"
+
+        with self._conn() as conn:
+            if conn.is_postgres:
+                sql += " FOR UPDATE SKIP LOCKED"
+            row = conn.execute(sql, tuple(params)).fetchone()
+            if row is None:
+                return None
+            run_id = row["id"]
+            conn.execute(
+                """UPDATE runs SET state='claimed', claimed_by=?, runner=?,
+                                   claimed_at=?, heartbeat_at=?
+                   WHERE id = ? AND state = 'queued'""",
+                (claimed_by, json.dumps(runner or {}), now, now, run_id),
+            )
+            claimed = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(claimed) if claimed else None
+
+    def mark_run_running(self, run_id: str, *, now: str | None = None) -> None:
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE runs SET state='running', started_at=?, heartbeat_at=? WHERE id=?",
+                (now, now, run_id),
+            )
+
+    def heartbeat_run(self, run_id: str, *, now: str | None = None) -> bool:
+        """Refresh a claimed/running row's heartbeat. False when the row is no
+        longer active — which is how a heartbeat thread learns its run was
+        reconciled or cancelled out from under it and stops."""
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE runs SET heartbeat_at=? WHERE id=? AND state IN "  # noqa: S608
+                f"({','.join('?' * len(self._RUN_ACTIVE_STATES))})",
+                (now, run_id, *self._RUN_ACTIVE_STATES),
+            )
+            return bool(getattr(cur, "rowcount", 0))
+
+    def finish_run(
+        self,
+        run_id: str,
+        state: str,
+        *,
+        error: str = "",
+        result_ref: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        """Write a terminal state. `result_ref` is left alone when not given —
+        the enqueueing route usually set it already."""
+        if state not in ("succeeded", "failed", "cancelled"):
+            raise ValueError(f"{state!r} is not a terminal run state")
+        now = now or datetime.now(timezone.utc).isoformat()
+        sql = "UPDATE runs SET state=?, finished_at=?, error=?"
+        params: list = [state, now, error]
+        if result_ref is not None:
+            sql += ", result_ref=?"
+            params.append(result_ref)
+        sql += " WHERE id=?"
+        params.append(run_id)
+        with self._conn() as conn:
+            conn.execute(sql, tuple(params))
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_runs(
+        self,
+        *,
+        state: str | None = None,
+        kind: str | None = None,
+        requested_by: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        sql = "SELECT * FROM runs"
+        clauses, params = [], []
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if requested_by is not None:
+            clauses.append("requested_by = ?")
+            params.append(requested_by)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY enqueued_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def cancel_queued_run(self, run_id: str, *, now: str | None = None) -> bool:
+        """Cancel a row that has NOT been claimed yet. Returns False otherwise.
+
+        A claimed or running row is deliberately not cancellable here: it owns a
+        real Python thread inside some worker process, and Python threads cannot
+        be interrupted. Pretending otherwise would write `cancelled` over work
+        that is still running and still writing findings — the same
+        answer-shaped-non-answer `run_reconciler.py` exists to remove. If that
+        worker dies, reconciliation resolves the row as failed with the reason;
+        if it lives, the run finishes normally.
+        """
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE runs SET state='cancelled', finished_at=?, "
+                "error='cancelled before it was claimed' "
+                "WHERE id=? AND state='queued'",
+                (now, run_id),
+            )
+            return bool(getattr(cur, "rowcount", 0))
+
+    def set_activity_runner(self, entry_id: str, runner: dict) -> None:
+        """Merge `_runner` into an activity entry's `detail`, leaving the rest
+        of it alone.
+
+        Called when a queue worker actually starts the work, not when a route
+        enqueued it. The distinction is the whole point: before the queue, the
+        process that handled the request was the process that ran the survey, so
+        recording the enqueuer's pid was recording the owner. Now they are
+        different processes, and stamping the web server would make restarting
+        the web server look like every in-flight run had been interrupted.
+
+        A merge rather than an overwrite because `detail` already carries the
+        run's own join keys (`analysis_id`, `survey_definition_ref`) that other
+        readers depend on.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT detail FROM activity_log WHERE id = ?", (entry_id,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                detail = json.loads(row["detail"] or "{}") or {}
+            except (TypeError, ValueError):
+                # An unparseable detail is someone else's format, not ours to
+                # replace — recording ownership must never destroy content.
+                return
+            if not isinstance(detail, dict):
+                return
+            detail["_runner"] = runner
+            conn.execute(
+                "UPDATE activity_log SET detail = ? WHERE id = ?",
+                (json.dumps(detail), entry_id),
+            )
+
+    def stale_active_runs(self, cutoff_iso: str) -> list[dict]:
+        """Claimed/running rows whose heartbeat is older than `cutoff_iso`.
+
+        Candidates for reconciliation, not conclusions: whether each one is
+        actually dead is decided by pid liveness in run_reconciler.py, never by
+        the heartbeat alone. A worker paused by a slow Egeria call is late, not
+        gone.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM runs WHERE state IN "  # noqa: S608
+                f"({','.join('?' * len(self._RUN_ACTIVE_STATES))}) "
+                f"AND heartbeat_at <> '' AND heartbeat_at < ? "
+                f"ORDER BY enqueued_at ASC",
+                (*self._RUN_ACTIVE_STATES, cutoff_iso),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
     ) -> dict | None:

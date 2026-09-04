@@ -93,6 +93,20 @@ def _pgvector_reachable() -> bool:
 _PGVECTOR_AVAILABLE = _pgvector_reachable()
 
 
+# The test suite must never CLAIM rows from the shared registry's run queue.
+# `tests/test_process_roles.py` calls `run_worker()` for real, and the worker
+# role starts a queue-claim loop — pointed, by default, at the same Postgres
+# several sessions and the developer's own running server share. A unit test
+# that picked up someone's queued architecture survey and executed it would be
+# a genuinely destructive accident, and an intermittent one.
+#
+# Set here rather than per-test so it cannot be forgotten by the next test that
+# starts a worker. The run-queue tests that DO need consumption turn it back on
+# for the single call they are asserting about (see test_run_queue.py).
+# Enqueueing, reading and reconciling are unaffected — only claiming.
+os.environ.setdefault("EXPLORER_RUN_QUEUE_ENABLED", "false")
+
+
 def _egeria_reachable() -> bool:
     """Same posture as _pgvector_reachable() — a real Egeria platform is an
     external dependency this test suite must run without. Only checks basic

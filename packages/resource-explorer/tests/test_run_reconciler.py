@@ -178,14 +178,48 @@ class TestReconcile:
 class TestWiring:
     def test_a_run_records_its_owner(self):
         """Without this every row falls back to the age rule, which cannot tell
-        a dead 5-minute run from a live one."""
+        a dead 5-minute run from a live one.
+
+        Rewritten for the run queue (step 2b). The *route* used to record
+        ownership because the route's own process ran the survey. It no longer
+        does — it enqueues, and a `worker` process executes — so stamping the
+        web process there would be a precise-looking wrong answer: restarting
+        the web server would mark every in-flight run interrupted while a worker
+        was still driving it. The ownership record moved with the ownership, to
+        run_queue.execute_run, which stamps the executing process onto the same
+        activity entry when the work actually starts.
+        """
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "run_queue.py").read_text()
+        body = src.split("def execute_run(")[1]
+        assert "process_identity()" in body
+        assert "set_activity_runner" in body
+
+    def test_the_enqueueing_route_does_not_claim_ownership(self):
+        """The other half of the rule above, and the one a future change is
+        likely to get wrong: re-adding `process_identity()` to the route would
+        look like restoring a lost feature and would in fact make a web restart
+        interrupt runs that are still running elsewhere."""
         from pathlib import Path
 
         src = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web"
                / "routes" / "survey_definitions.py").read_text()
         route = src.split('@router.post("/{entity_type}/{slug}/run")')[1]
-        assert "process_identity()" in route
-        assert '"_runner"' in route
+        assert "process_identity()" not in route
+
+    def test_log_survey_can_record_a_runner(self):
+        """docs/process-model.md Finding F5: log_analysis_run took a `runner`
+        and log_survey did not, so a scouting scan's row had no owner at all and
+        was reconciled by the six-hour age heuristic rather than by pid
+        liveness. Same field, same reader, now the same parameter."""
+        import inspect
+
+        from resource_explorer.activity_logger import log_analysis_run, log_survey
+
+        assert "runner" in inspect.signature(log_survey).parameters
+        assert "runner" in inspect.signature(log_analysis_run).parameters
 
     def test_startup_reconciles(self):
         """Moved out of web/app.py's lifespan into the worker role

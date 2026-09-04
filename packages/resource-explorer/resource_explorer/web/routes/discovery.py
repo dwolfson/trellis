@@ -165,37 +165,70 @@ class RepoSearchRequest(BaseModel):
     include_forks: bool = False
 
 
-def _build_query(req: RepoSearchRequest) -> str:
-    """Translate structured filter fields into GitHub's qualifier-string
-    query language, server-side — keeps the frontend/API contract
-    provider-agnostic; a future GitLab client would take the same
-    structured filters and build its own query shape (D4)."""
-    parts = []
-    if req.keyword:
-        parts.append(req.keyword)
-    if req.min_stars:
-        parts.append(f"stars:>={req.min_stars}")
-    if req.language:
-        parts.append(f"language:{req.language}")
-    if req.license:
-        parts.append(f"license:{req.license}")
-    if req.pushed_after:
-        parts.append(f"pushed:>{req.pushed_after}")
-    if req.org:
-        parts.append(f"org:{req.org}")
-    if req.topic:
-        parts.append(f"topic:{req.topic}")
-    if not parts:
-        # Checked before the archived:false/fork:false defaults below are
-        # appended — those aren't user-provided filters, so a request with
-        # nothing else would otherwise silently produce a valid-looking
-        # query and match "everything not archived and not a fork."
-        raise ValueError("At least one search filter is required.")
-    if not req.include_archived:
-        parts.append("archived:false")
-    if not req.include_forks:
-        parts.append("fork:false")
-    return " ".join(parts)
+# ── the workflow seam ────────────────────────────────────────────────────────
+#
+# `_build_query`, `_enrich_repos`, `_run_search_query`, `_run_list_urls` and
+# `_expand_org` all moved to resource_explorer/workflows/discovery.py in step 2b
+# — plan §3 named "GitHub discovery, the whole of web/routes/discovery.py" as
+# web-only code with no core module behind it, which is why the CLI had no
+# discovery command at all.
+#
+# What stays here is what is genuinely web: the pydantic request/response
+# models, the `asyncio.to_thread` hop that keeps blocking GitHub calls off the
+# event loop, and the mapping from the workflow's `DiscoveryError.kind` back
+# onto a status code.
+
+from resource_explorer.workflows import discovery as _wf  # noqa: E402
+from resource_explorer.workflows.discovery import (  # noqa: E402
+    ORG_EXPAND_LIMIT as _ORG_EXPAND_LIMIT,
+    VALID_DISPOSITIONS as _VALID_DISPOSITIONS,
+    DiscoveryError,
+)
+
+
+def _http(exc: DiscoveryError) -> HTTPException:
+    """A workflow failure as the status code this API has always returned:
+    400 for a query the caller can fix, 502 for GitHub refusing or being
+    unreachable."""
+    return HTTPException(
+        status_code=502 if exc.kind == "upstream" else 400, detail=str(exc),
+    )
+
+
+def _criteria(req: "RepoSearchRequest") -> "_wf.RepoSearchCriteria":
+    return _wf.RepoSearchCriteria(**req.model_dump())
+
+
+def _build_query(req: "RepoSearchRequest") -> str:
+    try:
+        return _wf.build_query(_criteria(req))
+    except DiscoveryError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _enrich_repos(repos: list[dict], registry) -> list["DiscoveredRepo"]:
+    return [DiscoveredRepo(**vars(r)) for r in _wf.enrich_repos(repos, registry)]
+
+
+async def _run_search_query(req: "RepoSearchRequest", registry) -> list[dict]:
+    try:
+        return await asyncio.to_thread(_wf.run_search_query, _criteria(req), registry)
+    except DiscoveryError as exc:
+        raise _http(exc) from exc
+
+
+async def _run_list_urls(urls: list[str], registry) -> list[dict]:
+    return await asyncio.to_thread(_wf.fetch_list_urls, urls, registry)
+
+
+async def _expand_org(org: str) -> list[str]:
+    """Repo URLs for a GitHub account. Raises on failure, as the route path
+    below already expects — the workflow reports the error in its result, and
+    this adapter is where "report" becomes "raise"."""
+    expansion = await asyncio.to_thread(_wf.expand_org, org)
+    if expansion.error:
+        raise RuntimeError(expansion.error)
+    return expansion.urls
 
 
 class DiscoveredRepo(BaseModel):
@@ -213,84 +246,6 @@ class DiscoveredRepo(BaseModel):
     disposition: str = "undecided"
     disposition_reason: str = ""
     disposition_decided_at: str = ""
-
-
-def _enrich_repos(repos: list[dict], registry) -> list["DiscoveredRepo"]:
-    """Shared tail for every discovery path (ad-hoc search, a saved 'search'
-    source, or a saved 'list' source) — attaches already_registered/
-    disposition context to each raw repo dict."""
-    out = []
-    for r in repos:
-        disp = registry.get_disposition(r["html_url"]) or {}
-        out.append(DiscoveredRepo(
-            full_name=r["full_name"], html_url=r["html_url"], description=r["description"],
-            stars=r["stars"], language=r["language"],
-            license=r.get("license", ""), forks=r.get("forks", 0),
-            already_registered=registry.get_by_github_url(r["html_url"]) is not None,
-            disposition=disp.get("disposition", "undecided"),
-            disposition_reason=disp.get("reason", ""),
-            disposition_decided_at=disp.get("decided_at", ""),
-        ))
-    return out
-
-
-async def _run_search_query(req: "RepoSearchRequest", registry) -> list[dict]:
-    """Raw repo dicts for a 'search' source (or the ad-hoc form) — shared
-    by POST /search and POST /sources/{slug}/run."""
-    from github import GithubException
-
-    from resource_explorer.github.client import GitHubClient
-
-    try:
-        query = _build_query(req)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # Runtime override (set via the Scouting > Discover repos inline
-    # setting) takes precedence over the .env-configured deployment default
-    # (config.py's GitHubConfig.base_url, applied inside GitHubClient itself
-    # when base_url=None) — D2.
-    base_url = registry.get_setting("github_base_url") or None
-
-    def _search():
-        return GitHubClient(base_url=base_url).search_repos(
-            query, sort=req.sort, order="desc", limit=req.limit,
-        )
-
-    try:
-        return await asyncio.to_thread(_search)
-    except GithubException as exc:
-        if exc.status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="GitHub authentication/rate-limit error — check GITHUB_TOKEN in .env",
-            ) from exc
-        if exc.status == 422:
-            raise HTTPException(status_code=400, detail=f"Invalid search query: {query}") from exc
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}") from exc
-
-
-async def _run_list_urls(urls: list[str], registry) -> list[dict]:
-    """Raw repo dicts for a 'list' source — a manually-curated set of
-    github_urls (Eclipse-style many-orgs foundations, or a user's own
-    enterprise repos), best-effort enriched via one GitHubClient.get_repo()
-    call per URL. A URL that 404s or otherwise fails is skipped, not fatal
-    to the rest of the batch ("Scouting workflow redesign" plan, D1)."""
-    from resource_explorer.github.client import GitHubClient
-
-    base_url = registry.get_setting("github_base_url") or None
-    client = GitHubClient(base_url=base_url)
-
-    def _fetch_all():
-        out = []
-        for url in urls:
-            try:
-                out.append(client._repo_to_dict(client.get_repo(url)))
-            except Exception:
-                continue
-        return out
-
-    return await asyncio.to_thread(_fetch_all)
 
 
 @router.get("/inventory.csv")
@@ -344,31 +299,6 @@ class RepoListText(BaseModel):
     it equally usable for a paste, a drag-and-drop, or curl.
     """
     text: str
-
-
-# One account can hold thousands of repos; a file of five foundation pages must
-# not become an unbounded fetch. Capped and reported as truncated so a partial
-# expansion is never mistaken for the whole account.
-_ORG_EXPAND_LIMIT = 100
-
-
-async def _expand_org(org: str) -> list[str]:
-    """Repo URLs belonging to a GitHub account, newest-activity first.
-
-    Reuses the same search path as the ad-hoc form (`org:X`), so an expanded
-    account and a typed org search return the same repos in the same order.
-    """
-    import asyncio as _asyncio
-
-    from resource_explorer.github.client import GitHubClient
-
-    def _search():
-        return GitHubClient().search_repos(
-            f"org:{org} fork:false archived:false",
-            sort="updated", limit=_ORG_EXPAND_LIMIT)
-
-    repos = await _asyncio.to_thread(_search)
-    return [r["html_url"] for r in repos]
 
 
 class ListLoadResult(BaseModel):
@@ -541,21 +471,6 @@ async def import_repos(body: ImportRequest) -> ImportResponse:
         t.start()
 
     return ImportResponse(queued=len(to_queue), skipped=skipped)
-
-
-# undecided -> tracking/investigating -> {recommended, using, abandoned, ignored}.
-# "ignored" = passed on it early/cheaply, never got past scouting;
-# "abandoned" = went further (investigated, maybe surveyed/analyzed) and
-# then decided against it — same hiding-from-sidebar treatment, but the
-# history reads honestly instead of collapsing both into one word
-# (Scouting workflow redesign, D3). "recommended" = decided for it, worth
-# pursuing. "using" = a step further than recommended — the org is either
-# already actively using the resource, or knows of its use elsewhere in
-# the org; not hidden, same as recommended (both are positive signals
-# worth surfacing, not states to tuck away).
-_VALID_DISPOSITIONS = {
-    "undecided", "tracking", "investigating", "recommended", "using", "abandoned", "ignored",
-}
 
 
 class DispositionRequest(BaseModel):

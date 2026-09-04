@@ -28,10 +28,14 @@ Part 1 below has been rewritten to describe what runs now, not what ran then. Wh
 | SIGUSR1 thread dump + bounded shutdown | the `web` command only | `_install_stack_dump()`, shared by `web` and `worker` (`cli/main.py:318`) |
 | `nest_asyncio` | imported and `apply()`-ed by RE | not imported by RE at all; pyegeria still applies it for its own reasons |
 
-**Still pending — step 2b, deliberately not started here:** the Postgres run queue with
-`claimed_by`/`heartbeat_at`, extraction of the analysis-run/discovery/curate workflows out of the
-route modules, the `a2a` role, and `trellis-auth` adoption. Per-request background threads (§1.2)
-therefore still spawn from route handlers exactly as they did.
+**Step 2b has since landed too (2026-09-04).** The Postgres run queue exists (`runs`,
+`run_queue.py`), the four workflows are extracted into `resource_explorer/workflows/`, the routes
+enqueue instead of spawning threads, and the CLI has commands on the same functions. §1.2 below
+describes the queue rather than the per-request threads it replaced.
+
+**Still pending after 2b:** the `a2a` role and `trellis-auth` adoption. Those two are related —
+`requested_by` exists on every queue row and is `""` until RE has real user identities, which is
+also why the per-user fairness rule currently exempts that bucket (§1.2c).
 
 ---
 
@@ -44,8 +48,9 @@ role in a daemon thread inside the web process. Which process actually *runs* a 
 decided by a Postgres advisory lock, not by which one was started first, so a second RE process
 against the same registry stands by instead of duplicating work.
 
-What has NOT changed: an unbounded number of ad hoc per-request threads spawned by route handlers
-(§1.2) — those wait on step 2b's run queue.
+Since step 2b the `web` role also honours its own rule: it spawns no thread for work that
+outlives a request. A route that starts a survey writes a row to the Postgres `runs` table and
+returns; a `worker` claims and executes it (§1.2).
 
 ### 1.1 The background loops and where they live
 
@@ -120,31 +125,158 @@ fallback). A `LeaderLock` built against a `sqlite://` URL logs a warning and **g
 leadership (`leader_election.py:113`) rather than crashing — a single-process SQLite setup has no
 peer to lose an election to. No SQLite locking is implemented or intended.
 
-### 1.2 Ad hoc per-request threads
+### 1.2 The run queue — what replaced the ad hoc per-request threads
 
-None of these are daemon-thread singletons; each is spawned fresh per HTTP request that triggers
-it, always `daemon=True`, and the request handler returns immediately (`{"status": "started",
-"activity_id": ...}`) while the thread does the work.
+Until step 2b, a `POST` that started a survey spawned a `daemon=True`
+`threading.Thread` and returned `{"status": "started", "activity_id": ...}` while the thread did
+the work. Five routes did this: the scouting scan, the single-analysis run, the stage batch, the
+Survey Definition run, and the GitHub org import.
 
-| Route / trigger | Thread name | File:line (spawn) | What it does | Ownership / completion recorded | Crash behavior |
-|---|---|---|---|---|---|
-| `POST` scouting scan (`projects.py`) | `resource-explorer-scouting-scan` | `web/routes/projects.py:482-486` | Runs `_run_scouting_scan_background` — a fast repo scan | `activity_log` row via `log_survey(...status="running"...)` (`projects.py:~470`), **no `runner`/`_runner` recorded** — `log_survey` takes no `runner` kwarg (only `log_analysis_run` does, `activity_logger.py:80-119`) | If the process dies mid-run, the row is left `status="running"` with no owner in `detail`. `run_reconciler.reconcile()` falls back to its age heuristic for rows with no recorded owner (`run_reconciler.py:170-178`, `_ORPHAN_AGE = timedelta(hours=6)`) — so it is eventually reconciled, but only after 6 hours, not by pid-liveness like the two paths below |
-| `POST` single analysis run (`projects.py:_run_single_analysis_sync` region) | `resource-explorer-analysis-run` | `projects.py:824-828` | Runs one analysis's mapped survey steps via `_run_single_analysis_background` | `activity_log` row via `log_analysis_run(...runner=process_identity()...)` (`projects.py:818-820`) — **does** record `{"pid": ..., "started_at": ...}` in `detail._runner` | `run_reconciler.reconcile()` checks `os.kill(pid, 0)` plus a matched process-start-time (`run_reconciler.py:91-113`) — resolved to `interrupted` (not `error`) as soon as the pid is confirmed gone, no 6-hour wait |
-| `POST` stage batch run (`projects.py`) | `resource-explorer-stage-batch-run` | `projects.py:921-925` | Runs `_run_stage_batch_background`, all steps for one Funnel stage in one call | Same as above: `log_analysis_run(...runner=process_identity()...)`, analysis_id `__stage_batch__` (`projects.py:913-918`) | Same pid-based reconciliation as single-analysis run |
-| `POST` run Survey Definition (`survey_definitions.py`) | `resource-explorer-survey-def-run` | `survey_definitions.py:629-633` | Runs `_run_survey_definition_background` — executes a Survey Definition (GovernanceActionProcess chain) against a resource | `activity_log` row via `log_survey(...detail=json.dumps({"_runner": process_identity(), "survey_definition_ref": ...}))` (`survey_definitions.py:618-623`) — records the runner manually inside `detail` since `log_survey` has no `runner` kwarg | Same pid-based reconciliation via `run_reconciler.owner_of()` reading `detail._runner` (`run_reconciler.py:118-123`) |
-| `POST` GitHub org import (`discovery.py`) | `resource-explorer-discovery-import` | `discovery.py:535-540` | Runs `_run_import_batch` from `github/org_importer.py` — queues/imports repos found by discovery, writes to the `scout` activity log as each completes | Per-repo activity log entries written incrementally by `_run_import_batch` itself, not one row per batch | Not reconciled by `run_reconciler.py` at all — that module only resolves rows left `status="running"`; org-import progress rows are written as each repo finishes rather than held `running` for the whole batch, so there is nothing here for the reconciler's ownership model to apply to |
-| Chat/query streaming (`query.py`) | unnamed (`threading.Thread(target=_producer, daemon=True)`) | `query.py:244` | Bridges a synchronous `ConversationAgent.handle()` or `RAGSystem.stream()` call into an `asyncio.Queue` the async request handler awaits from (`loop.call_soon_threadsafe`) | **No activity log entry at all** — this is not survey/analysis work, it is the streaming-response mechanism for a single request; the thread's lifetime is bounded by the request | Not tracked by `run_reconciler.py`; if the process dies mid-stream the HTTP connection simply drops, same as any other in-flight request |
+**None of them do any more, except the org import** (see below). A route now writes a row to the
+Postgres `runs` table and returns; a `worker` process claims it and executes it. Three things that
+were true of the thread version and are no longer:
 
-Every one of these threads "outlives the request" in the sense the target state's `web` role rule
-(`web` "never spawns threads for work that outlives the request") is written against — except the
-`query.py` streaming thread, which is closer to per-request request-handling machinery than a
-backgrounded job, since it has no independent existence past the HTTP response.
+- the run lived in whichever uvicorn process happened to serve the request, so `--workers N`
+  spread long-running work across processes by luck of routing;
+- a `--no-embed-worker` web process — nominally "HTTP only" — was still where every survey
+  actually executed, which is the plan's own rule for the `web` role being broken by the `web`
+  role;
+- the only record of ownership was a pid buried in an `activity_log` row's `detail`, judged
+  *after the fact*. A claim taken before the work starts is the same question asked in time to be
+  useful.
 
-**None of this changed in step 2a**, deliberately: moving these off the request thread requires the
-Postgres run queue (`claimed_by`/`heartbeat_at`) that lets a `web` request enqueue and return, and
-that is step 2b. So today the `web` role does still violate its own rule — with the practical
-consequence that `--workers N` spreads these across worker processes by luck of routing rather
-than by design, and that a `--no-embed-worker` web process is still where survey runs execute.
+**What did NOT change, and must not:** the frontend contract. The route still creates the
+`activity_log` row up front, still returns its `activity_id`, and the browser still polls
+`GET /api/activity/{id}` and reads the run's result out of that entry's `detail`
+(`index.html`'s `_pollActivityUntilDone`). The queue row carries that activity id in `result_ref`,
+and the worker writes the terminal activity status through the very same `execute_and_record_*`
+functions the route's thread used to call. From the UI's point of view the only difference is
+which process did the work. A `run_id` is returned alongside for anyone who wants the queue's own
+view; nothing in the frontend reads it.
+
+| Route / trigger | Queue kind | Target | What executes it |
+|---|---|---|---|
+| `POST /api/projects/{slug}/scouting-scan` | `scouting_scan` | `{slug}` | `workflows.scouting.execute_and_record_scouting_scan` |
+| `POST /api/projects/{slug}/analyses/{id}/run` | `analysis_run` | `{slug, analysis_id}` | `workflows.analysis.execute_and_record_analysis` |
+| `POST /api/projects/{slug}/analyses/stage/{stage}/run` | `stage_batch` | `{slug, stage, step_keys}` | `workflows.analysis.execute_and_record_stage_batch` |
+| `POST /api/survey-definitions/{type}/{slug}/run` | `survey_definition_run` | `{entity_type, slug, params}` | `workflows.survey_definition.execute_and_record_definition` |
+| CLI `discovery expand-org --queue` | `discovery_expand` | `{org}` | `workflows.discovery.expand_org` |
+
+**Two threads that deliberately stayed threads.**
+
+- `query.py:244`'s streaming bridge. It has no independent existence past the HTTP response — it
+  is request-handling machinery, not backgrounded work, and the `web` role's rule is about work
+  that *outlives* the request.
+- `discovery.py`'s org import (`_run_import_batch`). It was never held `running` as one row: it
+  writes a `scout` activity entry per repo as each completes, so there is no single row for the
+  queue's ownership model to own and nothing for the reconciler to resolve. Queueing it would
+  have meant redesigning its progress reporting, which is a different change from this one.
+
+### 1.2a The `runs` table
+
+```sql
+CREATE TABLE runs (
+    id            TEXT PRIMARY KEY,   -- uuid4
+    kind          TEXT NOT NULL,      -- analysis_run | survey_definition_run |
+                                      --   scouting_scan | stage_batch | discovery_expand
+    target        TEXT NOT NULL DEFAULT '{}',  -- JSON; the handler's arguments
+    requested_by  TEXT NOT NULL DEFAULT '',    -- user id; "" until trellis-auth
+    state         TEXT NOT NULL DEFAULT 'queued',
+    claimed_by    TEXT NOT NULL DEFAULT '',    -- "hostname:pid", human-readable
+    runner        TEXT NOT NULL DEFAULT '',    -- JSON process_identity(): pid + start time
+    enqueued_at   TEXT NOT NULL,
+    claimed_at    TEXT NOT NULL DEFAULT '',
+    heartbeat_at  TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL DEFAULT '',
+    finished_at   TEXT NOT NULL DEFAULT '',
+    error         TEXT NOT NULL DEFAULT '',
+    result_ref    TEXT NOT NULL DEFAULT ''     -- the activity_log id the UI polls
+);
+CREATE INDEX idx_runs_state_enqueued     ON runs(state, enqueued_at);
+CREATE INDEX idx_runs_requested_by_state ON runs(requested_by, state);
+CREATE INDEX idx_runs_result_ref         ON runs(result_ref);
+```
+
+Written by `registry.py`'s `_init_schema` alongside every other table — RE has no separate
+migration tool, and `CREATE TABLE IF NOT EXISTS` plus the "add column if missing" pass is the
+convention every table here follows.
+
+**A new table, not more columns on `activity_log`.** `activity_log` is the user-facing narrative
+of everything that has happened — catalog writes, RFAs, scout entries — and only a minority of its
+rows are queueable work. Hanging `state`/`claimed_by`/`heartbeat_at` off all of them would put
+queue semantics on rows that can never be claimed, and make "what is queued" a filtered scan of
+the largest table in the schema. The two join on `result_ref`.
+
+**`claimed_by` and `runner` are both there on purpose.** `claimed_by` is what an operator reads
+(`runs list`, the worker's own log line). `runner` is what reconciliation tests, because a pid
+alone is not an identity — pids are reused, which is precisely the trap `run_reconciler._is_alive`
+documents.
+
+### 1.2b State machine
+
+```
+                    ┌──────────── registry.cancel_queued_run ──► cancelled
+                    │
+ enqueue ──► queued ─┴─ claim_next_run ──► claimed ──► mark_run_running ──► running
+                       (FOR UPDATE                                            │
+                        SKIP LOCKED)                                          │
+                                                              finish_run ─────┤
+                                                                              ├──► succeeded
+                                                                              └──► failed
+                                          reconcile_runs (dead pid) ──────────────► failed
+```
+
+- **`claimed` and `running` are separate.** A claim is taken in one transaction and the work
+  starts after it, so a row stuck in `claimed` says "a worker took this and died before it began",
+  which is a different fact from "it died mid-run".
+- **A claimed or running row cannot be cancelled.** It owns a real Python thread in some worker
+  process and Python threads cannot be interrupted. `cancel_queued_run` returns False and the API
+  answers 409; writing `cancelled` over live work would be a false claim of exactly the kind
+  `run_reconciler.py` exists to remove.
+- **`heartbeat_at`** is refreshed every 30 s (`HEARTBEAT_INTERVAL_SECONDS`) by a companion daemon
+  thread, not by the executing thread — the executing thread is inside a survey that may not
+  return for sixteen minutes, so it cannot also be the thing that proves it is alive. The
+  companion thread's liveness is the process's liveness, which is what reconciliation tests.
+- **Reconciliation is pid-based, as it has always been.** A heartbeat older than three intervals
+  makes a row a *candidate*; only `run_reconciler._is_alive()` returning a definite `False` makes
+  it a failure. A worker parked in a slow Egeria call is late, not gone. At worker startup the
+  heartbeat filter is skipped entirely (`ignore_heartbeat=True`): a pid that is provably gone is
+  gone whether or not it beat ten seconds before it died, and the filter exists only to keep the
+  periodic sweep cheap.
+
+### 1.2c Per-user fairness — the plan's step-5 hook
+
+`claim_next_run` will not take a row for a `requested_by` that already has a `claimed` or
+`running` row; that user's next row waits. **Scoped to a non-empty `requested_by`, deliberately.**
+RE has not adopted `trellis-auth`, so every row today is attributed to `""` — and applying the
+rule to that bucket would collapse the whole queue to one run at a time for everybody, a visible
+regression against the pre-queue behaviour where each route spawned its own thread. `""` is the
+unattributed bucket and is exempt; the moment real user ids appear the rule starts applying with
+no further change. `resource-explorer runs enqueue <kind> <target> --requested-by alice` exercises
+it today.
+
+### 1.2d Who runs the queue, and why it is not leader-elected
+
+`run_worker()` starts `run_queue.start_queue_runner()` — a plain thread, **not** a `LoopSpec`, and
+the one worker-owned loop that takes no advisory lock. The three background loops take one because
+two processes firing the same schedule is duplicated work. The queue is the opposite: `SKIP
+LOCKED` means every extra consumer is extra throughput, and electing a leader would make the queue
+exactly as fast as its leader. `tests/test_run_queue.py` pins that it is absent from
+`loop_specs()`, because "it doesn't take a lock" reads like an oversight.
+
+Each claimed run is executed through the shared bounded pool (§1.3) rather than a thread of its
+own — a run is exactly the kind of blocking sync-pyegeria work that pool exists to bound, and a
+queue spawning an unbounded thread per row would reintroduce what step 2a removed.
+
+`EXPLORER_RUN_QUEUE_ENABLED=false` stops a process claiming rows without stopping it enqueueing
+them or running its background loops — for a deliberate drain pause, and to keep the test suite
+from claiming rows out of the shared registry (`tests/conftest.py` sets it).
+
+**The embedded worker executes queued rows too**, so `make dev` is unchanged from a user's point
+of view: `web --embed-worker` is still the default, and the worker role it embeds includes the
+queue loop. A `--no-embed-worker` web process with no worker running accepts every enqueue and
+executes none — visible as `GET /api/runs?state=queued`, which is what makes "nothing is draining
+the queue" distinguishable from "this survey is slow".
 
 ### 1.3 Sync/async bridging — one bounded shared pool
 
@@ -293,12 +425,9 @@ flowchart TB
     subgraph WEBP["resource-explorer web (1..N uvicorn processes)"]
         direction TB
         HTTP["uvicorn HTTP request handling"]
-        subgraph adhoc["per-request threads (still route-spawned — step 2b)"]
-            SCOUT["scouting-scan\nprojects.py:482"]
-            ARUN["analysis-run\nprojects.py:824"]
-            SBATCH["stage-batch-run\nprojects.py:921"]
-            SDEF["survey-def-run\nsurvey_definitions.py:629"]
-            IMPORT["discovery-import\ndiscovery.py:535"]
+        subgraph adhoc["request-scoped only"]
+            ENQ["routes ENQUEUE onto runs\nand return an activity_id\n(scouting-scan, analysis-run,\nstage-batch, survey-def-run)"]
+            IMPORT["discovery-import\ndiscovery.py — still a thread,\nper-repo progress rows, §1.2"]
             QSTREAM["query streaming\n(unnamed) query.py:244"]
         end
         WPOOL["ONE bounded shared pool\nconcurrency.py\nEXPLORER_SYNC_POOL_SIZE=8\ndaemon workers, per-call timeout"]
@@ -310,12 +439,15 @@ flowchart TB
 
     subgraph WORKP["resource-explorer worker (0..N processes)"]
         direction TB
-        ONESHOT["one-shots, ungated:\n_reconcile_orphaned_runs()\n_warm_survey_definition_cache()"]
+        ONESHOT["one-shots, ungated:\n_reconcile_orphaned_runs()\n_reconcile_stale_queue_runs()\n_warm_survey_definition_cache()"]
+        RQ["re-worker-run-queue\nNOT leader-elected\nclaim FOR UPDATE SKIP LOCKED\nheartbeat 30s, execute, finish"]
+        RQREC["re-queue-reconcile\nevery 60s, ungated\ndead-pid claims -> failed"]
         SCHED["resource-explorer-scheduler\nevery 15 min\nrun-due + RFA reconcile + outbox drain"]
         BOOT["resource-explorer-bootstrap\nevery 10 min"]
         RESYNC["egeria-resync-scheduler\nevery 10 min"]
         WPOOL2["ONE bounded shared pool"]
         ONESHOT -.-> WPOOL2
+    RQ --> WPOOL2
     end
 
     PG[(Postgres registry\n+ advisory locks)]
@@ -330,6 +462,10 @@ flowchart TB
     BOOT --> EGERIA
     RESYNC --> PG
     RESYNC --> EGERIA
+    ENQ -- "INSERT INTO runs" --> PG
+    PG -- "claim" --> RQ
+    RQ --> PG
+    RQREC --> PG
     adhoc --> PG
     adhoc --> EGERIA
     WPOOL --> EGERIA
@@ -345,10 +481,11 @@ terms; whoever loses logs `standby` and retries at that loop's interval.
 
 Restated from `docs/runtime-architecture-plan.md` §2 (Process roles) and §1 (interaction with
 threading/multi-user). Not redesigned here — see the plan for rationale and rejected
-alternatives. **This is still the target, not a second description of the present**: two of the
-five roles (`web`, `worker`) are built and `cli`/`tui` were already real, but `a2a` is untouched,
-the run queue does not exist, and `web` does not yet honour its own "never spawns a thread for
-work that outlives the request" rule (§1.2). The migration map below says which is which.
+alternatives. **Most of this is now the present, not the target.** Four of the five roles are
+real: `web` and `worker` were built in 2a, `cli`/`tui` were already real, and 2b gave the CLI the
+core capability §3 said it lacked. `web` honours its "never spawns a thread for work that outlives
+the request" rule now that the run queue exists. **`a2a` is still untouched**, and so is
+`trellis-auth`. The migration map below says which is which.
 
 **Five process roles, one core, one image: `web`, `worker`, `cli`, `tui`, `a2a`.**
 
@@ -358,16 +495,20 @@ work that outlives the request" rule (§1.2). The migration map below says which
   for the dev profile's single-command `make dev`.
 - **`worker`** — owns every background loop (scheduler, bootstrap monitor, Egeria resync, outbox
   drain, orphaned-run reconciliation) plus long-running survey/analysis runs, pulled from a
-  Postgres-backed run queue (a `runs` table with `claimed_by`/`heartbeat_at` — a generalization of
-  what `run_reconciler.py`'s pid-based ownership check already approximates, but as a claim taken
-  *before* the work starts rather than judged after the fact). One compose replica in the demo
-  profile. `pg_try_advisory_lock` leader election is cheap insurance so two workers (or a worker
+  Postgres-backed run queue (the `runs` table, §1.2a — a generalization of what
+  `run_reconciler.py`'s pid-based ownership check already approximated, but as a claim taken
+  *before* the work starts rather than judged after the fact). **Built in 2b.** One compose
+  replica in the demo profile — though unlike the loops, more than one replica is *useful* here,
+  since `SKIP LOCKED` makes each extra consumer extra throughput. `pg_try_advisory_lock` leader election is cheap insurance so two workers (or a worker
   plus a `--embed-worker` web process) cannot both fire the same schedule.
-- **`cli`** — the existing Typer CLI, at full core capability once the three web-only workflows
-  (analysis-run-and-auto-publish, GitHub discovery, curate materialization — plan §3) are
-  extracted into `resource_explorer/workflows/` and exposed as commands. "Reduced capability" for
-  the CLI means only: no background loops unless a `worker` is running, and no browser-shaped
-  features.
+- **`cli`** — the existing Typer CLI, **now at full core capability** (2b): the three web-only
+  workflows plan §3 named — analysis-run-and-auto-publish, GitHub discovery, curate
+  materialization — are extracted into `resource_explorer/workflows/` and exposed as commands
+  (`analysis run`, `analysis stage-batch`, `scout run`, `discovery search`, `discovery
+  expand-org`, `curate materialize`), alongside `runs list|show|cancel|enqueue` for driving the
+  queue from a shell. Each runs its workflow inline by default; `--queue` hands it to a worker.
+  "Reduced capability" for the CLI now means only: no background loops unless a `worker` is
+  running, and no browser-shaped features.
 - **`tui`** — the existing Textual app, unchanged.
 - **`a2a`** — the entry point for other systems. Today's `agentstack_server.py` (RE's A2A surface,
   one port per specialist agent, 8080-8086, no authentication) becomes one service on one port,
@@ -431,7 +572,7 @@ flowchart TB
 
 ## Migration map — what is done, what is pending
 
-Step 2a is done; step 2b is the run queue and the workflow extraction.
+Step 2a and step 2b are both done. What remains is the `a2a` role and `trellis-auth`.
 
 | Current thread / pool | Moves to | Status |
 |---|---|---|
@@ -439,8 +580,11 @@ Step 2a is done; step 2b is the run queue and the workflow extraction.
 | `resource-explorer-bootstrap` (`bootstrap.py`) | `worker` role | **Done**, leader-elected |
 | `egeria-resync-scheduler` (`egeria_resync.py`) | `worker` role | **Done**, leader-elected |
 | `survey-cache-warm` (one-shot) | `worker` role — the earlier note flagged "or `web`'s own startup too, not specified in the plan" | **Done, and the open question settled:** it runs in the worker role only, **ungated**, because the cache is process-local. A `--no-embed-worker` web process therefore pays its own first-click lookups; that is the accepted cost of the split, and it is the only behaviour in this refactor that a user could notice. It also had to be *fixed* to move at all — see §1.1's `@asynccontextmanager` bug |
-| `_reconcile_orphaned_runs()` one-shot | `worker` role's startup, eventually generalized to run-queue rows | **Moved; not generalized.** Still pid-based (`run_reconciler.py`); the `claimed_by`/`heartbeat_at` version is step 2b |
-| Per-request threads: scouting scan, analysis run, stage-batch run, survey-def run, discovery import (§1.2) | `worker` role, via the Postgres run queue | **Pending — step 2b.** Unchanged; still route-spawned |
+| `_reconcile_orphaned_runs()` one-shot | `worker` role's startup, eventually generalized to run-queue rows | **Done.** Generalized in 2b: `run_reconciler.reconcile_runs()` applies the same pid-liveness judgement to `runs` rows. Still one-shot for `activity_log`; the queue version also runs on a 60s loop, because a dead worker's claim blocks that user's fairness slot where a stale activity row blocks nothing |
+| Per-request threads: scouting scan, analysis run, stage-batch run, survey-def run (§1.2) | `worker` role, via the Postgres run queue | **Done — step 2b.** Routes enqueue and return; `run_queue.py` claims (`FOR UPDATE SKIP LOCKED`), heartbeats and executes. No route module spawns a thread any more, pinned by `tests/test_routes_enqueue_not_thread.py` |
+| Per-request thread: discovery org import (`discovery.py`) | `worker` role, eventually | **Deliberately not moved.** It is never held `running` as one row — it writes a `scout` activity entry per repo as each completes — so there is nothing for the queue's ownership model to own. Queueing it means redesigning its progress reporting, which is a different change |
+| The analysis-run / scouting / discovery / curate workflows living inside `web/routes/` | `resource_explorer/workflows/`, callable by route, CLI and queue alike | **Done — step 2b.** Five modules, no FastAPI (pinned by parsing the imports, not grepping — the package docstring explains at length why FastAPI must stay out, and a substring check flags that prose as the violation) |
+| CLI parity for those workflows (plan §3: "the CLI has no `analysis` command at all") | Typer commands on the same functions | **Done — step 2b.** `analysis run` / `analysis stage-batch` / `scout run` / `discovery search` / `discovery expand-org` / `curate materialize`, plus `runs list|show|cancel|enqueue`. Each runs inline by default; `--queue` enqueues |
 | Per-request query-streaming thread (`query.py:244`) | Stays in `web` | **Done by staying put** — request-scoped, not backgrounded work |
 | `agents/base.py`, `conversation_agent.py` ×2, `tui/app.py` one-worker pools | One bounded shared pool per process | **Done** (§1.3's table) |
 | `prefect_adapter.py`'s unbounded per-call `ThreadPoolExecutor()` | Same shared bounded pool | **Done** — the uncapped construction is gone |
@@ -470,10 +614,18 @@ Step 2a is done; step 2b is the run queue and the workflow extraction.
 - **F4 — still open.** `packages/resource-explorer/CLAUDE.md`'s Setup section has since been
   updated to say Prefect is off by default, so the specific staleness F4 named is gone; the
   file's process description ("one process, threads at startup") is now the stale part.
-- **F5 — still open, and step 2b's job.** `log_survey()` has no `runner` parameter while
-  `log_analysis_run()` does, so a crashed scouting scan is reconciled by the 6-hour age heuristic
-  rather than by pid-liveness. The uniform run-queue table closes this by construction; nothing
-  in step 2a touched it.
+- **F5 — closed in 2b, and the fix is not where it was expected to be.** `log_survey()` now takes
+  a `runner` parameter like `log_analysis_run()`, merged into `detail` rather than overwriting it.
+  But the parameter is not what actually closes the gap for queued work, and reaching for it there
+  would have introduced a new bug: **the enqueueing process is no longer the running process**, so
+  a route stamping itself as owner would make restarting the web server mark every in-flight run
+  interrupted while a worker was still driving it. Ownership moved with ownership —
+  `run_queue.execute_run` calls `registry.set_activity_runner()` when the work actually starts, so
+  a queued scouting scan now records its owner exactly as an analysis run does and is reconciled
+  by pid liveness rather than by the six-hour age heuristic. Verified live 2026-09-04: a `kill -9`
+  of a worker mid-run left both the `runs` row and the `activity_log` row resolvable, and the next
+  worker start resolved both. `tests/test_run_reconciler.py::TestWiring` pins both halves,
+  including that the route does *not* stamp itself.
 - **F6 (new, found by building this) — `wait=False` did not mean what every pool site assumed.**
   CPython joins pool workers at interpreter shutdown regardless, so an abandoned worker stuck in
   pyegeria held the process open past every timeout — including a worker that had already logged a

@@ -2362,5 +2362,13 @@ def egeria_recheck(
             console.print(f"  {row['entity_type']}/{row['slug']}: {row['detail'][:200]}")
 
 
+# The workflow and run-queue command groups (plan §3's CLI parity) live in
+# their own module — cli/main.py is already 2,300 lines, and the new commands
+# are a coherent group rather than more of the same list.
+from resource_explorer.cli import runs_commands as _runs_commands  # noqa: E402
+
+_runs_commands.register(app)
+
+
 if __name__ == "__main__":
     app()

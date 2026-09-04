@@ -19,6 +19,12 @@ router = APIRouter()
 _HIDDEN_DISPOSITIONS = {"ignored", "abandoned"}
 
 
+# Who a queued run is attributed to. `""` everywhere until RE adopts
+# trellis-auth (plan §4) — imported rather than hard-coded so adopting auth is
+# one edit in run_queue.py, not a sweep of every enqueue site.
+from resource_explorer.run_queue import requested_by as _requested_by  # noqa: E402
+
+
 class ProjectSummary(BaseModel):
     slug: str
     display_name: str
@@ -361,88 +367,40 @@ class ScoutingScanStarted(BaseModel):
     status: str = "started"
     slug: str
     activity_id: str
+    # The queue row that will execute it. Added in step 2b; the frontend still
+    # polls activity_id, so this is additive, never a replacement.
+    run_id: str = ""
+
+
+# The scan itself, the two "has anything been measured" helpers, and the
+# activity-recording wrapper all live in resource_explorer/workflows/scouting.py
+# now (step 2b). These are the names this module and its tests already used;
+# they stay as aliases so a caller does not have to know which side of the move
+# a function ended up on.
+from resource_explorer.workflows.scouting import (  # noqa: E402
+    execute_and_record_scouting_scan as _run_scouting_scan_background_impl,
+    question_has_data as _question_has_data,
+    results_have_data as _results_have_data,
+    run_scouting_scan as _run_scouting_scan_workflow,
+)
 
 
 def _run_scouting_scan_sync(slug: str, registry) -> ScoutingScanResult:
-    """The actual scan work, shared by the background-thread path below and
-    kept as a plain sync function (no FastAPI/asyncio coupling) so it's
-    trivially callable from a daemon thread with its own fresh registry
-    connection — same convention as org_importer.py's _run_import_batch."""
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
+    """Thin adapter: the workflow returns its own dataclass, the route's
+    response model is pydantic. Kept so callers and tests inside this module
+    keep the shape they had."""
+    result = _run_scouting_scan_workflow(slug, registry)
+    return ScoutingScanResult(
+        status=result.status, slug=result.slug,
+        message=result.message, error=result.error or None,
     )
-    from resource_explorer.surveyors.survey_definition_executor import (
-        SurveyDefinitionExecutorError,
-        run_survey_definition,
-    )
-    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
-
-    try:
-        # fast=True — Coarse Scout's whole premise is being the cheap, fast
-        # tier; without this, HealthSurveyor's stats refresh makes one
-        # GitHub API call per commit in the last 90 days (a confirmed real
-        # slowness bug for active repos, easily several minutes). See
-        # StepInfo.accepts_fast / HealthSurveyor.__init__'s own docstrings.
-        result = run_survey_definition(
-            "repo", slug, registry=registry,
-            survey_definition_ref=REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
-            fast=True,
-        )
-    except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        # Egeria-side Survey Definitions don't survive an Egeria database
-        # reset — a real, recurring event in development, not a one-off
-        # mistake. Without a fallback, that silently breaks Scouting Scan
-        # entirely (including the git-stats refresh HealthSurveyor does at
-        # scan time — the reason stale stats and a failed scan are usually
-        # the same underlying problem, not two bugs) until someone notices
-        # and manually re-authors the definition in Egeria. Scouting Scan
-        # never actually needed Egeria to know *what* the two steps are,
-        # only to name/bundle them — so fall back to running them directly.
-        try:
-            from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
-            survey_result = SurveyOrchestrator(registry).run(
-                slug, steps=["repo_health", "repo_language"], fast=True,
-            )
-        except Exception as fallback_exc:
-            return ScoutingScanResult(
-                status="error", slug=slug,
-                error=f"{exc} (local fallback also failed: {fallback_exc})",
-            )
-        if survey_result.errors:
-            return ScoutingScanResult(status="error", slug=slug, error="; ".join(survey_result.errors))
-        return ScoutingScanResult(
-            status="ok", slug=slug,
-            message=(
-                "Coarse scan complete — ran locally. Egeria's 'Repo Coarse Scout' "
-                "Survey Definition wasn't found (likely an Egeria database reset); "
-                "re-author it if you want scans to route through Egeria again."
-            ),
-        )
-
-    errors = result.get("errors") or []
-    if errors:
-        return ScoutingScanResult(status="error", slug=slug, error="; ".join(errors))
-    return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
 
 
 def _run_scouting_scan_background(slug: str, activity_id: str) -> None:
-    """Runs in a daemon thread — nothing here returns to an HTTP response.
-    Mirrors org_importer.py's _run_import_batch background-thread pattern:
-    its own fresh ProjectRegistry() (SQLite connections aren't shared
-    across threads), terminal status written back onto the same activity_id
-    the route created up front via registry.update_activity_status()."""
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = ProjectRegistry()
-    try:
-        result = _run_scouting_scan_sync(slug, registry)
-    except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
-        log.exception("Scouting Scan background thread crashed for %s", slug)
-        registry.update_activity_status(activity_id, "error", summary=f"Scouting Scan crashed: {exc}")
-        return
-    registry.update_activity_status(
-        activity_id, result.status, summary=result.message or result.error or "",
-    )
+    """Run the scan and record it. No longer spawned from a request — the
+    queue worker calls the workflow directly; this survives as the seam the
+    route's own tests patch."""
+    _run_scouting_scan_background_impl(slug, activity_id)
 
 
 @router.post("/{slug}/scouting-scan", response_model=ScoutingScanStarted)
@@ -453,17 +411,19 @@ async def run_scouting_scan(slug: str) -> ScoutingScanStarted:
     auto-publish, matching the existing convention that publish is always
     a separate, deliberate action.
 
-    Fire-and-forget (background thread), not synchronous — a real, observed
-    problem: for an active repo, the pre-fast-flag version of this route
-    could block for 10+ minutes with zero visibility (see
-    _run_scouting_scan_sync's own fast=True comment for the actual root
-    cause). The route now returns immediately once the scan is queued; the
-    frontend polls GET /api/activity/{activity_id} for status, same
-    Activity Log every other operation in this codebase already writes to —
-    matches org_importer.py's _run_import_batch precedent exactly, just for
-    a single-repo scan instead of a batch."""
-    import threading
+    **Enqueues; does not run.** Until step 2b this spawned a daemon thread in
+    whichever web process served the request — see run_queue.py for why that
+    had to stop. The response is unchanged: the activity entry is still created
+    here, still returned, and the frontend still polls
+    GET /api/activity/{activity_id}. `run_id` is added alongside it for anyone
+    who wants the queue's own view (GET /api/runs/{run_id}); nothing existing
+    reads it.
 
+    With `--no-embed-worker` and no `resource-explorer worker` running, a
+    queued row stays queued. That is the honest state — visible in
+    GET /api/runs?state=queued — rather than the previous behaviour, where a
+    web process claiming to serve HTTP only was quietly executing surveys.
+    """
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
 
@@ -478,15 +438,13 @@ async def run_scouting_scan(slug: str) -> ScoutingScanStarted:
         intent="scouting", status="running",
         summary=f"Scouting Scan running for {project.display_name}…",
     )
-
-    t = threading.Thread(
-        target=_run_scouting_scan_background,
-        args=(slug, activity_id),
-        daemon=True, name="resource-explorer-scouting-scan",
+    run_id = registry.enqueue_run(
+        "scouting_scan", {"slug": slug}, result_ref=activity_id,
+        requested_by=_requested_by(),
     )
-    t.start()
+    log.info("enqueued scouting_scan run %s for %s (activity %s)", run_id, slug, activity_id)
 
-    return ScoutingScanStarted(slug=slug, activity_id=activity_id)
+    return ScoutingScanStarted(slug=slug, activity_id=activity_id, run_id=run_id)
 
 
 class QuestionChecklistEntry(BaseModel):
@@ -514,37 +472,6 @@ class QuestionChecklist(BaseModel):
     perspectives: list[str] = []
     purposes: list[str] = []
     questions: list[QuestionChecklistEntry] = []
-
-
-def _question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | None:
-    """Best-effort "has RE actually run this for this resource" check —
-    True as soon as ANY of the question's mapped analysis_ids has data,
-    False if none do, None if the question has no analysis_ids at all
-    (nothing to check). repository_health has no results_reader in
-    REPO_ANALYSIS_RESULTS_MAP (repo_survey_definition_adapter.py) — it's
-    checked via project_stats directly instead, the same signal
-    scouting-overview itself reads. Every reader call is wrapped: a
-    results_reader raising must never break the whole checklist."""
-    if not analysis_ids:
-        return None
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_RESULTS_MAP
-
-    for analysis_id in analysis_ids:
-        if analysis_id == "repository_health":
-            if registry.get_latest_project_stats(slug):
-                return True
-            continue
-        entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
-        if not entry:
-            continue
-        results_reader, _ = entry
-        try:
-            data = results_reader(registry, slug)
-        except Exception:
-            continue
-        if data and (not isinstance(data, dict) or any(v for v in data.values())):
-            return True
-    return False
 
 
 @router.get("/{slug}/scouting-questions", response_model=QuestionChecklist)
@@ -629,168 +556,59 @@ class AnalysisRunResult(BaseModel):
     error: str | None = None
 
 
-def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool, steps: list[str] | None) -> dict:
-    """The actual run — plain sync function (no FastAPI/asyncio coupling) so
-    it's trivially callable from a daemon thread with its own fresh registry
-    connection, matching survey_definitions.py's
-    `_execute_survey_definition_sync` precedent. Returns a plain dict —
-    {"status", "summary", "error", "published"} — for the caller (the
-    background wrapper below) to fold into the activity entry's terminal
-    `detail`; never raises for an analysis-level failure, only for something
-    genuinely unexpected (caught by the caller, same split
-    `_run_survey_definition_background` makes)."""
-    from resource_explorer.registry import ProjectRegistry
+# The analysis-run and stage-batch workflows moved to
+# resource_explorer/workflows/analysis.py in step 2b — including the
+# ingest-vs-survey branch, the has_assigned_egeria_project auto-publish gate and
+# its three-state `published`, and the summary text. Behaviour is unchanged; the
+# functions are simply reachable from the CLI and the run queue now as well as
+# from here. The names below are the seams this module and its tests use.
+from resource_explorer.workflows.analysis import (  # noqa: E402
+    STAGE_BATCH_ANALYSIS_ID as _STAGE_BATCH_ANALYSIS_ID,
+    execute_and_record_analysis as _run_single_analysis_background_impl,
+    execute_and_record_stage_batch as _run_stage_batch_background_impl,
+    resolve_analysis_plan as _resolve_analysis_plan,
+    resolve_stage_step_keys as _resolve_stage_step_keys,
+    run_analysis as _run_analysis_workflow,
+)
 
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        # Can't happen in practice — the route checks this synchronously
-        # before ever starting the thread — but a background function must
-        # not assume the world hasn't moved (e.g. the project was removed
-        # between the route's check and the thread actually running).
-        return {"status": "error", "error": f"Project '{slug}' not found"}
 
-    if is_ingest:
-        from resource_explorer.ingestion.incremental import IncrementalIndexer
-        from resource_explorer.query_cache import QueryCache
-
-        IncrementalIndexer().refresh(project)
-        QueryCache().invalidate_project(slug)
-        return {"status": "ok", "summary": "Re-ingested into pgvector.", "published": None}
-
-    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
-
-    result = SurveyOrchestrator(registry).run(slug, steps=steps)
-    if result.errors:
-        return {"status": "error", "error": "; ".join(result.errors)}
-    summary = f"{len(result.annotations)} annotation(s)."
-
-    # Auto-publish, gated the same way survey_definition_executor.py's Survey
-    # Definition path is (has_assigned_egeria_project) — this is the "actual
-    # ask" this gating pass exists for: an Assessment/Analysis "Run →" against
-    # an assigned resource now reaches Egeria without a separate manual
-    # Publish click, same as a Survey Definition run already does. Scoped to
-    # exactly the steps that just ran (this `result`, not a fresh full
-    # survey), same as the manual Publish button's own `steps` scoping — so
-    # last-published attribution (get_last_published_annotation_types) stays
-    # accurate to what actually ran. Publish failure must not turn an
-    # otherwise-successful survey into a reported error: the findings are
-    # real and stored either way.
-    # Three-state, not a bool: None (never attempted — unassigned or no
-    # annotations) and False (attempted, failed) both keep the card's ☁
-    # Publish button visible as the only/recovery path; True hides it, since
-    # the whole reason to hide it is "nothing left to do here."
-    published = None
-    if result.annotations and registry.has_assigned_egeria_project("repo", slug):
-        try:
-            from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
-
-            # Already off the FastAPI event loop here (this whole function
-            # runs in a daemon thread), so no asyncio.to_thread needed —
-            # pyegeria's synchronous methods drive their own event loop
-            # internally, which is what made the OLD synchronous route (this
-            # call wrapped in asyncio.to_thread from inside a running loop)
-            # raise "this event loop is already running" and fail auto-publish
-            # on every Egeria-bound project reached through this route, softly,
-            # into `summary`, with the run still reporting ok.
-            EgeriaPublisher(registry=registry).publish(result)
-            published = True
-        except Exception as exc:
-            published = False
-            summary += f" (⚠ auto-publish to Egeria failed: {exc})"
-            log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
-
-    # Carried out of here so the background function can write them onto
-    # the activity entry. Without this the RFA drawer never saw a single
-    # annotation from an Analyses-card run — see
-    # registry.update_activity_status() for the measurement.
-    from resource_explorer.surveyors.survey_report import summarise_annotations
-
-    # Belt and braces with summarise_annotations' own skip: a run that
-    # produced and stored real findings must never be reported as failed
-    # because the sentence describing it could not be built.
-    try:
-        ann_summary = summarise_annotations(result.annotations)
-    except Exception as exc:
-        log.warning("Could not summarise annotations for %s/%s: %s", slug, analysis_id, exc)
-        ann_summary = []
-
-    return {"status": "ok", "summary": summary, "published": published,
-            "annotations": ann_summary}
+def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool,
+                              steps: list[str] | None) -> dict:
+    """Thin adapter to the workflow, returning the plain dict this module's
+    callers and tests already read."""
+    return _run_analysis_workflow(
+        slug, analysis_id, is_ingest=is_ingest, steps=steps,
+    ).to_dict()
 
 
 def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str) -> None:
-    """Runs in a daemon thread — nothing here returns to an HTTP response.
-    Mirrors survey_definitions.py's `_run_survey_definition_background`
-    precedent: the ONE activity entry the route created up front
-    (status='running') gets its terminal status/summary written back via
-    registry.update_activity_status(), `detail` re-encoded as
-    {"analysis_id", "published", ...} so registry.get_analysis_last_run()
-    keeps reading the same shape it always has — see log_analysis_run()'s
-    docstring for why the running row's own `_runner` key is fine to drop
-    here rather than round-tripped."""
-    import json
+    _run_single_analysis_background_impl(slug, analysis_id, activity_id)
 
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
 
-    catalog_entry = next(
-        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
-    )
-    is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
-    steps = None if is_ingest else REPO_ANALYSIS_STEP_MAP.get(analysis_id)
-
-    registry = ProjectRegistry()
-    try:
-        result = _run_single_analysis_sync(slug, analysis_id, is_ingest, steps)
-    except Exception as exc:  # pragma: no cover — genuinely unexpected, not an analysis-step error
-        log.exception("Analysis run background thread crashed for %s/%s", slug, analysis_id)
-        registry.update_activity_status(
-            activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
-            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}),
-        )
-        return
-
-    status = result["status"]
-    summary = result.get("summary") or result.get("error") or ""
-    detail = {"analysis_id": analysis_id, "published": result.get("published")}
-    if status == "error":
-        detail["error"] = result.get("error", summary)
-    else:
-        detail["message"] = summary
-    registry.update_activity_status(
-        activity_id, status, summary=summary, detail=json.dumps(detail),
-        annotations=result.get("annotations"),
-    )
+def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
+                                activity_id: str) -> None:
+    _run_stage_batch_background_impl(slug, stage, step_keys, activity_id)
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run")
 async def run_single_analysis(slug: str, analysis_id: str) -> dict:
-    """Fire-and-forget (background thread), not synchronous — a real,
-    live-reported gap (2026-08-30): "pressing the architecture survey button
-    starts the task but doesn't bring up the pop-up asking if we should run
-    it in the background, so it's easy to miss the toast" — this route used
-    to block the whole HTTP request for the run's entire duration (measured
-    100s+ for architecture_recovery, see docs/Backlog.md), with only a toast
-    and no way to tell whether it was still working or had hung. Mirrors
-    survey_definitions.py's `run_survey_definition_route` precedent exactly:
-    returns an activity_id immediately; the frontend polls
-    GET /api/activity/{id} until it's terminal, then reads the run's result
-    back out of that entry's own `detail` field (see
-    `_run_single_analysis_background`).
+    """Queue one named analysis's mapped survey step(s) — the per-card "Run"
+    action in Analysis/Assessment.
 
-    Runs only the sub-surveyor step(s) for one named repo analysis, not the
-    whole 10-surveyor survey — the per-card "Run" action in Analysis/
-    Assessment. Reuses the same analysis_id -> step(s) map the scheduler's
-    per-analysis-id dispatch uses (repo_survey_definition_adapter.py)."""
-    import threading
+    **Enqueues; does not run.** Before step 2b this spawned a daemon thread
+    inside the web process (itself a fix for an earlier version that blocked the
+    whole HTTP request for the run's duration — measured 100s+ for
+    architecture_recovery). The response contract is untouched: an activity_id
+    comes back immediately, the frontend polls GET /api/activity/{id} until it
+    is terminal, and reads the run's result out of that entry's own `detail`.
+    What changed is who executes it — a `worker` role process claiming the row,
+    which is the whole point of the queue.
 
+    Validation still happens synchronously, so an unknown analysis_id is a 400
+    rather than a queued row that fails a minute later in a different process.
+    """
     from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.run_reconciler import process_identity
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -799,16 +617,11 @@ async def run_single_analysis(slug: str, analysis_id: str) -> dict:
 
     # action:"ingest" (currently just rag_ingestion) isn't a SurveyOrchestrator
     # step at all — it re-embeds content into pgvector via IncrementalIndexer,
-    # not a survey. Checked before the step-map lookup below, same as
-    # scheduler.py's own action:"publish" special-case. Done here too (not
-    # only in the background function) so an unknown analysis_id still fails
-    # fast with a 400, synchronously, rather than starting a thread just to
-    # background a validation error.
-    catalog_entry = next(
-        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
-    )
-    is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
-    if not is_ingest and not REPO_ANALYSIS_STEP_MAP.get(analysis_id):
+    # not a survey. Checked before the step-map lookup, same as scheduler.py's
+    # own action:"publish" special-case, so an unknown analysis_id fails fast
+    # and synchronously rather than being queued just to fail later.
+    is_ingest, steps = _resolve_analysis_plan(analysis_id)
+    if not is_ingest and not steps:
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no mapped survey step(s) — "
@@ -818,94 +631,43 @@ async def run_single_analysis(slug: str, analysis_id: str) -> dict:
     activity_id = log_analysis_run(
         registry, "repo", slug, project.display_name, "running",
         f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
-        runner=process_identity(),
     )
-
-    t = threading.Thread(
-        target=_run_single_analysis_background,
-        args=(slug, analysis_id, activity_id),
-        daemon=True, name="resource-explorer-analysis-run",
+    run_id = registry.enqueue_run(
+        "analysis_run", {"slug": slug, "analysis_id": analysis_id},
+        result_ref=activity_id, requested_by=_requested_by(),
     )
-    t.start()
+    log.info("enqueued analysis_run %s for %s/%s (activity %s)",
+             run_id, slug, analysis_id, activity_id)
 
-    return {"status": "started", "activity_id": activity_id}
-
-
-_STAGE_BATCH_ANALYSIS_ID = "__stage_batch__"
-
-
-def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str], activity_id: str) -> None:
-    """Runs in a daemon thread, mirroring _run_single_analysis_background's
-    shape exactly — one activity entry, terminal status written back via
-    update_activity_status(). Uses the adapter's run_batch (repo_survey_
-    definition_adapter.py's _run_batch), the same primitive survey_definition_
-    executor.py already uses to run a multi-step Survey Definition as one
-    SurveyOrchestrator.run() call — this just derives its own step_keys from
-    the catalog's intent tags instead of from an authored Survey Definition,
-    so it can't drift out of sync as analyses are added to a stage."""
-    import json
-
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
-    from resource_explorer.surveyors.survey_report import summarise_annotations
-
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    try:
-        result = _run_batch(project, registry, step_keys)
-        ann_summary = summarise_annotations(result["annotations"])
-        errors = result.get("errors") or []
-        status = "error" if errors and not result["annotations"] else "ok"
-        n = len(step_keys)
-        summary = (f"Ran all {n} {stage} step(s)" + (f" — {len(errors)} error(s)" if errors else ""))
-        registry.update_activity_status(
-            activity_id, status, summary=summary,
-            detail=json.dumps({"stage": stage, "step_keys": step_keys, "errors": errors}),
-            annotations=ann_summary,
-        )
-    except Exception as exc:  # pragma: no cover — genuinely unexpected
-        log.exception("Stage-batch run crashed for %s/%s", slug, stage)
-        registry.update_activity_status(
-            activity_id, "error", summary=f"Run all {stage} crashed: {exc}",
-            detail=json.dumps({"stage": stage, "step_keys": step_keys, "error": str(exc)}),
-        )
+    return {"status": "started", "activity_id": activity_id, "run_id": run_id}
 
 
 @router.post("/{slug}/analyses/stage/{stage}/run")
 async def run_stage_batch(slug: str, stage: str) -> dict:
-    """'Run all <Stage>' — the pinned, visually-distinct action at the top
-    of Scouting/Discovery/Assessment/Analysis's card grids (2026-09-03,
-    direct feedback: "make it first and separate so a user can easily just
-    select that and be confident that all the surveys are being run").
+    """'Run all <Stage>' — the pinned, visually-distinct action at the top of
+    Scouting/Discovery/Assessment/Analysis's card grids (2026-09-03, direct
+    feedback: "make it first and separate so a user can easily just select that
+    and be confident that all the surveys are being run").
 
     Deliberately NOT a re-use of the existing per-stage Egeria Survey
-    Definitions (RepoScoutingSurvey/RepoDiscoverySurvey/RepoAssessmentSurvey/
-    RepoAnalysisSurvey) — those cover 3/3, 5/7, 8/14, and 7/10 of each
-    stage's individual catalog entries respectively (measured 2026-09-03),
-    so pinning one of them under a "Run all" label would silently under-run
-    the stage. Instead derives the full step_keys set live from every local
-    AnalysisKind catalog entry tagged this intent — self-maintaining as
-    entries are added, and genuinely runs everything the stage's grid
-    offers, not a fixed subset."""
-    import threading
+    Definitions — those cover 3/3, 5/7, 8/14 and 7/10 of each stage's individual
+    catalog entries respectively (measured 2026-09-03), so pinning one of them
+    under a "Run all" label would silently under-run the stage. The step set is
+    derived live from the catalog instead; see
+    workflows.analysis.resolve_stage_step_keys.
+
+    **Enqueues; does not run** — same change as the per-analysis route above,
+    same unchanged response contract.
+    """
     from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.run_reconciler import process_identity
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
 
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    entries = [a for a in get_analyses("repo", intent=stage, include_egeria_live=False)
-               if a.get("action") not in ("ingest", "publish", "profile")]
-    step_keys: list[str] = []
-    for a in entries:
-        for sk in REPO_ANALYSIS_STEP_MAP.get(a["id"], []):
-            if sk not in step_keys:
-                step_keys.append(sk)
+    step_keys, analysis_count = _resolve_stage_step_keys(stage)
     if not step_keys:
         raise HTTPException(
             status_code=400,
@@ -914,19 +676,18 @@ async def run_stage_batch(slug: str, stage: str) -> dict:
 
     activity_id = log_analysis_run(
         registry, "repo", slug, project.display_name, "running",
-        f"Running all {len(step_keys)} {stage} step(s) on {slug}…", _STAGE_BATCH_ANALYSIS_ID,
-        published=None, runner=process_identity(),
+        f"Running all {len(step_keys)} {stage} step(s) on {slug}…",
+        _STAGE_BATCH_ANALYSIS_ID, published=None,
     )
-
-    t = threading.Thread(
-        target=_run_stage_batch_background,
-        args=(slug, stage, step_keys, activity_id),
-        daemon=True, name="resource-explorer-stage-batch-run",
+    run_id = registry.enqueue_run(
+        "stage_batch", {"slug": slug, "stage": stage, "step_keys": step_keys},
+        result_ref=activity_id, requested_by=_requested_by(),
     )
-    t.start()
+    log.info("enqueued stage_batch run %s for %s/%s (activity %s)",
+             run_id, slug, stage, activity_id)
 
-    return {"status": "started", "activity_id": activity_id, "step_count": len(step_keys),
-            "analysis_count": len(entries)}
+    return {"status": "started", "activity_id": activity_id, "run_id": run_id,
+            "step_count": len(step_keys), "analysis_count": analysis_count}
 
 
 @router.get("/{slug}/analyses/last-activity")
@@ -1105,85 +866,6 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
                    "classification, not tracked over time.",
         )
     return {"runs": trend_reader(registry, slug)}
-
-
-def _results_have_data(results) -> bool:
-    """Does a results payload actually contain anything?
-
-    Truthiness is not enough and that is the whole point of this function: the
-    readers return a shaped-but-empty dict when a step has never run for a repo
-    — `{"findings": [], "gap_count": 0}` — which is truthy, so `any(results)`
-    reported five-of-five analyses present for a repo that had never been
-    surveyed for any of them.
-
-    A payload counts as having data when it holds a non-empty collection or a
-    non-zero number. An all-empty, all-zero payload is what "never ran" looks
-    like. A genuinely all-zero result is therefore hidden too, which is the
-    accepted trade: it reads as "nothing to show" either way, and
-    include_empty=true returns everything for anyone who needs the distinction.
-    """
-    if not results:
-        return False
-    if isinstance(results, dict):
-        # Caught 2026-08-31 wiring architecture_recovery/architecture_summary/
-        # architecture_doc_lens into a dashboard for the first time (docs/
-        # Backlog.md "Survey Results dashboards cover 14 of 29 analyses") —
-        # the exact "shaped but empty" bug this function exists for, just
-        # never triggered before because none of the three had ever reached
-        # this code path. A never-run result here isn't an empty collection,
-        # it's `{"state": "never_run", "message": "..."}` — result_status.py's
-        # vocabulary, and the explanatory `message` is non-empty text, so the
-        # general envelope exclusion below didn't catch it.
-        #
-        # `state` alone can't be blanket-excluded: result_status.py's ladder
-        # gives `nothing_found` the SAME shape and it is "a real, final
-        # answer" (a genuine negative result), not an absence — excluding it
-        # here would hide real content the same way this function exists to
-        # stop pretending emptiness is content. Only the never-run state
-        # itself means nothing was produced.
-        from resource_explorer.surveyors import result_status
-        if results.get("state") == result_status.NEVER_RUN:
-            return False
-
-        # `_status` is an ENVELOPE, not content — it describes why a payload is
-        # empty, so counting it as data makes every explained emptiness claim to
-        # hold something. That is the opposite of what this function exists for:
-        # a card saying "skipped, here is why" would be reported as having
-        # results and then render as an explanation of nothing.
-        #
-        # `surveyed_at` and `detail` are excluded for the same reason — a
-        # timestamp is evidence a step ran, not evidence it found anything, and
-        # a reader that returns only a timestamp has nothing to show.
-        # (_renderMetricsResults in index.html already filters exactly these
-        # three for the same reason; this is the server-side half of it.)
-        #
-        # `documentation` is architecture_recovery's own decorative field —
-        # the documentation-SITE ingestion status, carried on this card for
-        # unrelated presentation reasons (_doc_ingestion_state) — never the
-        # recovery analysis's own findings. Confirmed no other reader uses
-        # "documentation" as a real top-level content key.
-        # `slug` is the resource's own identifier, echoed back by
-        # `_architecture_recovery_results` for the renderer's convenience. It is
-        # ALWAYS non-empty, so leaving it out of this set makes every payload
-        # containing it read as data — which is this function's failure mode
-        # exactly, not an edge of it. Caught 2026-08-31 in integration: the
-        # architecture_overview dashboard passed on its own branch and failed
-        # once merged, because `test_shaped_but_empty_results_do_not_count_as_data`
-        # only exists here.
-        #
-        # Same category as `surveyed_at` above: a name is evidence the resource
-        # exists, never evidence an analysis found anything about it.
-        envelope = {"_status", "surveyed_at", "detail", "documentation", "slug"}
-        return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
-    if isinstance(results, (list, tuple, set)):
-        return len(results) > 0
-    if isinstance(results, bool):
-        return results
-    if isinstance(results, (int, float)):
-        return results != 0
-    if isinstance(results, str):
-        return bool(results.strip())
-    return True
 
 
 @router.get("/{slug}/survey-results")
