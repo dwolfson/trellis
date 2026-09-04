@@ -1,0 +1,178 @@
+# syntax=docker/dockerfile:1
+#
+# trellis/resource-explorer — one image, arm64 and amd64, used unchanged by
+# the dev profile (as a build artifact CI produces but dev boxes don't run)
+# and by the demo profile (as the running container). See
+# docs/runtime-architecture-plan.md §1/§2 and docs/packaging.md.
+#
+# Build context is the repo root (a uv workspace): this package depends on
+# the workspace's other members via [tool.uv.sources] path entries, so
+# `uv sync` needs the whole tree, not just packages/resource-explorer.
+#
+#   docker buildx build -f docker/Dockerfile.resource-explorer -t trellis/resource-explorer:local .
+#
+# CPU-only PyTorch, deliberately, not CUDA and not ONNX: measured this week
+# (packages/egeria-advisor/docs/design/RUNTIME_AND_HARDWARE.md §4a) ONNX
+# Runtime is 4-7x SLOWER than PyTorch's own CPU path for this embedding
+# model on this hardware, so there is no ONNX-vs-torch tradeoff to make —
+# torch wins outright and is what ships. LLM inference is never in-process:
+# it is Ollama over the network (OLLAMA_URL / LLM__OLLAMA__BASE_URL), so
+# this image never needs a GPU-enabled torch build either. The default
+# `uv.lock` resolution pulls PyPI's CUDA-linked linux wheel plus ~15
+# nvidia-*/triton packages (multiple GB, all dead weight for a CPU-only,
+# network-inference image) — the builder stage below removes those and
+# reinstalls torch from PyTorch's own CPU-only wheel index instead. See
+# docs/packaging.md for the measured size delta.
+
+ARG PYTHON_VERSION=3.13
+
+# ---- builder --------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.9.13 /uv /uvx /usr/local/bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON=python${PYTHON_VERSION} \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /app
+
+# Dependency layer first (workspace metadata only), so an app-code-only
+# change doesn't invalidate the (expensive) dependency install.
+COPY pyproject.toml uv.lock ./
+COPY packages/resource-explorer/pyproject.toml packages/resource-explorer/pyproject.toml
+COPY packages/egeria-advisor/pyproject.toml packages/egeria-advisor/pyproject.toml
+COPY packages/trellis-microflow/pyproject.toml packages/trellis-microflow/pyproject.toml
+COPY packages/trellis-vectorstore/pyproject.toml packages/trellis-vectorstore/pyproject.toml
+COPY packages/trellis-artifact-tree/pyproject.toml packages/trellis-artifact-tree/pyproject.toml
+COPY packages/trellis-context/pyproject.toml packages/trellis-context/pyproject.toml
+COPY packages/trellis-querycache/pyproject.toml packages/trellis-querycache/pyproject.toml
+COPY packages/trellis-auth/pyproject.toml packages/trellis-auth/pyproject.toml
+
+# Dependency layer, cache-mounted. Deliberately no torch swap here yet —
+# see the swap step below the source COPY for why it has to happen AFTER
+# every `uv sync`, not before.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+# Now the actual source, and install the two workspace packages this image
+# needs (resource-explorer + its workspace-local deps) without re-resolving.
+COPY packages/resource-explorer packages/resource-explorer
+COPY packages/trellis-microflow packages/trellis-microflow
+COPY packages/trellis-vectorstore packages/trellis-vectorstore
+COPY packages/trellis-artifact-tree packages/trellis-artifact-tree
+COPY packages/trellis-context packages/trellis-context
+COPY packages/trellis-querycache packages/trellis-querycache
+COPY packages/trellis-auth packages/trellis-auth
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --package resource-explorer
+
+# Swap torch/torchvision for CPU-only builds and drop the CUDA runtime
+# packages torch's default linux wheel drags in, as the LAST dependency
+# step — deliberately after every `uv sync` in this stage, not before.
+# `uv sync --no-install-package <name>` was tried first (exclude those
+# packages during the frozen sync) and does NOT work here even when every
+# torch/torchvision/triton/nvidia-* package is listed (2.9 GB of nvidia-*,
+# 652 MB of triton still ended up installed — found live, 2026-09-04).
+# Putting the swap between the two `uv sync` calls doesn't work either: the
+# second `uv sync --package resource-explorer` re-resolves against the
+# frozen lock, sees the venv no longer matches it (torch is now `+cpu`
+# instead of the locked CUDA build), and "fixes" that by reinstalling
+# straight from the lock — silently undoing the swap. Only running it after
+# the LAST sync in this stage sticks.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        torch torchvision triton \
+        nvidia-cublas nvidia-cuda-cupti nvidia-cuda-nvrtc nvidia-cuda-runtime \
+        nvidia-cudnn-cu13 nvidia-cufft nvidia-cufile nvidia-curand \
+        nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 nvidia-nccl-cu13 \
+        nvidia-nvjitlink nvidia-nvshmem-cu13 nvidia-nvtx \
+    && uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==2.13.0" "torchvision==0.28.0"
+# torch AND torchvision reinstalled together, pinned to the exact versions
+# uv.lock itself resolved (2.13.0 / 0.28.0), from the CPU wheel index, so
+# they stay ABI-matched — torch alone, with the original CUDA-linked
+# torchvision left in place, hit "RuntimeError: operator torchvision::nms
+# does not exist" the first time this was tried, live, same day.
+
+# Pre-download the embedding model so a demo box starts offline. RE's
+# embeddings.py tries `local_files_only=True` first — this populates that
+# cache at the same HF_HOME the runtime stage will use.
+ENV HF_HOME=/app/.cache/huggingface
+RUN --mount=type=cache,target=/app/.cache/huggingface \
+    "${UV_PROJECT_ENVIRONMENT}/bin/python" -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
+    && mkdir -p /app/hf-cache && cp -r /app/.cache/huggingface/. /app/hf-cache/
+
+# ---- runtime ----------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+RUN groupadd --gid 1000 trellis && \
+    useradd --uid 1000 --gid trellis --shell /bin/bash --create-home trellis && \
+    apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HOST=0.0.0.0 \
+    PORT=8810 \
+    WORKERS=1 \
+    EMBED_WORKER=0 \
+    # Container-friendly defaults — override per deployment. Postgres/Kroki
+    # are separate compose services reached by service name on the shared
+    # egeria_network; Ollama is native on the host (Metal on Dev 1, ROCm/CPU
+    # native on Dev 2), reached via the Docker Desktop / Docker Engine
+    # host gateway. On Linux without host.docker.internal support, pass
+    # --add-host=host.docker.internal:host-gateway (Docker 20.10+) or
+    # override LLM__OLLAMA__BASE_URL to the host's real address.
+    PGVECTOR_HOST=egeria-shared-postgres \
+    KROKI_URL=http://egeria-shared-kroki:8000 \
+    EGERIA_PLATFORM_URL=https://egeria-main:9443 \
+    LLM__OLLAMA__BASE_URL=http://host.docker.internal:11434 \
+    # RegistryConfig/FeedbackConfig/ObservabilityConfig each hardcode their
+    # own "postgresql://...@localhost:5442/..." default independently of
+    # PGVECTOR_HOST/PGVECTOR_PORT (config.py:280-283, :309-312, :146-150) —
+    # found live testing this image, 2026-09-04: PGVECTOR_HOST alone left
+    # the registry trying to reach Postgres at localhost from inside the
+    # container and failing /health/ready. These three need their own
+    # container-friendly override.
+    REGISTRY_DATABASE_URL=postgresql://egeria_advisor:advisor@egeria-shared-postgres:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer \
+    FEEDBACK_DATABASE_URL=postgresql://egeria_advisor:advisor@egeria-shared-postgres:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer \
+    METRICS_DATABASE_URL=postgresql://egeria_advisor:advisor@egeria-shared-postgres:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer
+
+COPY --from=builder --chown=trellis:trellis /app/.venv /app/.venv
+COPY --from=builder --chown=trellis:trellis /app/hf-cache /app/.cache/huggingface
+COPY --chown=trellis:trellis packages/resource-explorer packages/resource-explorer
+COPY --chown=trellis:trellis packages/trellis-microflow packages/trellis-microflow
+COPY --chown=trellis:trellis packages/trellis-vectorstore packages/trellis-vectorstore
+COPY --chown=trellis:trellis packages/trellis-artifact-tree packages/trellis-artifact-tree
+COPY --chown=trellis:trellis packages/trellis-context packages/trellis-context
+COPY --chown=trellis:trellis packages/trellis-querycache packages/trellis-querycache
+COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
+COPY --chown=trellis:trellis docker/entrypoint-resource-explorer.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER trellis
+
+EXPOSE 8810
+
+# /health/ready (not the bare /health) deliberately: /health is a pure
+# liveness probe that returns 200 even with Postgres unreachable (see
+# resource_explorer/web/app.py's docstring — that was a deliberate design
+# choice for the frontend's own use, and it means it can't tell Docker
+# apart a genuinely-serving container from one where every /api/ route
+# 500s). /health/ready exercises the registry's DB connection, so it fails
+# the same way real requests do.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT}/health/ready" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["web"]

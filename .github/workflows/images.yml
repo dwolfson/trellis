@@ -1,0 +1,87 @@
+# Multi-arch container images for the two trellis apps (step 3 of
+# docs/runtime-architecture-plan.md's Sequencing: "Dockerfile ... CI builds
+# both arches"). One image per app, arm64 and amd64, unchanged between the
+# dev profile (artifact only) and the demo profile (the running container).
+#
+# Trigger shape deliberately differs from resource-explorer.yml's, which
+# fires on `push` to `main` AND `re/**` with no `pull_request` at all,
+# because that repo has no forks and pull_request+push on the same branch
+# double-fired (see that file's own comment, removed 2026-09-03). This
+# workflow needs a real build-without-push step for PRs (this task's
+# requirement), so it splits the two: `pull_request` builds every branch
+# without pushing, and `push` is scoped to `main` and tags only — so a
+# `re/**` push never fires both triggers here the way it did there.
+name: images
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: resource-explorer
+            image: trellis-resource-explorer
+            dockerfile: docker/Dockerfile.resource-explorer
+          - app: egeria-advisor
+            image: trellis-egeria-advisor
+            dockerfile: docker/Dockerfile.egeria-advisor
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # Needed to build the linux/arm64 leg on the amd64 GitHub runner.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # PRs never push — GITHUB_TOKEN has packages:write on this repo's own
+      # runs, but a build-only PR job should not be able to publish images
+      # regardless, and login is simply skipped for that event.
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build ${{ matrix.app }} (and push outside PRs)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}

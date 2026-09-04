@@ -138,3 +138,33 @@ prefect-up: ## Bring up Prefect (server+worker) for RE's local survey-step dispa
 
 prefect-down: ## Stop what prefect-up started
 	packages/resource-explorer/scripts/prefect_down.sh
+
+## Container images
+# Step 3 of docs/runtime-architecture-plan.md: one image per app, built for
+# both arm64 and amd64 in CI (.github/workflows/images.yml), used unchanged
+# by the dev profile (as an artifact — dev boxes still run native `uv run`)
+# and by the demo profile (as the running container). These targets are the
+# local, single-arch (host-arch) equivalent for building and smoke-testing
+# on a dev box; they intentionally do not push anywhere.
+#
+# image-run-re assumes the shared-infra compose network from
+# egeria-workspaces-fs (compose-configs/shared-infra/shared-infra.yaml) is
+# already up — `egeria_network`, with Postgres reachable in-network as
+# `egeria-shared-postgres`. Picks a port off the two the user's native
+# servers hold (8810 RE, 8880 EA per re-web/ea-web above): 8811.
+
+image-re: ## Build the resource-explorer image for the host arch, tag :local
+	docker buildx build -f docker/Dockerfile.resource-explorer -t trellis/resource-explorer:local --load .
+
+image-ea: ## Build the egeria-advisor image for the host arch, tag :local
+	docker buildx build -f docker/Dockerfile.egeria-advisor -t trellis/egeria-advisor:local --load .
+
+images: image-re image-ea ## Build both images for the host arch
+
+image-run-re: ## Run resource-explorer's web role against shared-infra, on 8811 (8810 is the native dev server's port)
+	docker run --rm -p 8811:8810 \
+		--network egeria_network \
+		-e PGVECTOR_HOST=egeria-shared-postgres \
+		-e EGERIA_PLATFORM_URL=https://egeria-main:9443 \
+		-e KROKI_URL=http://egeria-shared-kroki:8000 \
+		trellis/resource-explorer:local web

@@ -1,0 +1,57 @@
+# Root .dockerignore for the trellis uv workspace. Both docker/Dockerfile.*
+# build from this directory as context (see docker/packaging.md).
+
+.git
+.gitignore
+
+# Local virtualenvs — the image builds its own inside the container; a
+# host .venv copied in would be wrong-platform (arm64 Mac vs. amd64 build)
+# and pointlessly large.
+.venv
+**/.venv
+
+# Local data, logs, and caches that don't belong in an image and would
+# otherwise balloon the build context uploaded to the daemon.
+data
+**/data
+logs
+debug_log.log
+htmlcov
+.coverage
+**/.coverage
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+**/.mypy_cache
+.ruff_cache
+**/.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+
+# SQLite files — Postgres is the only supported store (runtime-architecture-
+# plan.md §3: "the SQLite fallback ... is retired"); none of these belong
+# in an image.
+*.db
+**/*.db
+
+# Model / embedding caches on the host — the image pre-downloads its own
+# copy at build time (see the Dockerfiles' "Pre-download the embedding
+# model" stage) so a stale host-side cache is never accidentally baked in
+# instead of a fresh one.
+**/.cache
+**/models/*.onnx
+**/models/*.optimized.onnx
+
+# Incident evidence and other docs not needed inside the image.
+docs/incident-evidence
+
+# Node / frontend tooling artifacts, if any package grows them later.
+node_modules
+**/node_modules
+
+# Editor/OS noise.
+.DS_Store
+**/.DS_Store
+.idea
+.vscode
