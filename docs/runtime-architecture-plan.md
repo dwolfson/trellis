@@ -37,8 +37,8 @@ Revision 2 adds two requirements and one exhibit:
 | | Dev 1 | Dev 2 | Demo 1 "cray" | Demo 2 |
 |---|---|---|---|---|
 | Machine | MacBook Pro M3 Max, 96 GB | Framework 13, Ryzen AI 9 HX 370, 64 GB | Ryzen 9 3900X, 64 GB | Intel i7-10700, 64 GB |
-| OS | macOS | Linux | Linux | Linux |
-| GPU | Metal, not passed into Docker | Radeon 890M iGPU (ROCm, used previously; support for this part is recent) | none | UHD 630 only |
+| OS | macOS | Linux, kernel 7.0, 24 threads, 61 GiB usable; hostname `hedwig`, reachable over Tailscale | Linux | Linux |
+| GPU | Metal, not passed into Docker | Radeon 890M iGPU; ROCm 7.2 installed, Ollama 0.24 native with `HSA_OVERRIDE_GFX_VERSION=11.0.0` (verified 2026-09-04) | none | UHD 630 only |
 | Storage | — | — | >10 TB free | >10 TB free |
 | Role | dev | dev, or demo when LLM-interactive parts are the point | demo, browser-based portal | demo, browser-based portal |
 
@@ -63,19 +63,40 @@ demo profile is finalised** (step 1 of the sequencing; not on cray, which is liv
 the owner, is: the old boxes demo Egeria plus the non-LLM Resource Explorer paths (survey,
 publish, curate, reports); Dev 2 is the demo machine when EA chat or RE ask is the point.
 
-**CPU-only probe, 2026-09-04: no usable number yet.** Neither Linux box is reachable from Dev 1
-(`~/.ssh/config` has no named hosts; `known_hosts` names only cray, which is off-limits). The
-probe was run on Dev 1 with Ollama forced to CPU (`num_gpu: 0`) and produced prefill 7 to 8 tok/s
-and 12 minutes to first token, but that number is **discarded** for two reasons: the machine was
-under a load average of 23 to 64 at the time (Egeria's own repository was holding nine active
-entity searches on Postgres at nearly four cores, and an EA test suite was running), and
-llama.cpp's NEON path on Apple Silicon with Metal disabled is not a proxy for AVX2 on x86 in
-either direction. The reusable probe is `packages/egeria-advisor/scripts/probe_llm_cpu.py`;
-**run it on Demo 2 or on Dev 2 with `num_gpu: 0`** and record the second run here. The
-extrapolation above stands until then.
+**Measured on hedwig (Dev 2), 2026-09-04, native Ollama 0.24, llama3.1:8b, 5.3k-token prompt,
+8k context, Egeria quickstart running alongside at load average 1.8.** Cold run each, because a
+repeated identical prompt hits Ollama's prompt cache and reports 60k tok/s prefill, which is not a
+measurement (the probe script now varies the prompt per run).
 
-The same observation is a data point for §1: at rest, Egeria's repository connector alone was
-the largest CPU consumer on Dev 1. A demo box running Egeria and CPU inference shares that CPU.
+| | 890M via ROCm | CPU only (`num_gpu: 0`) |
+|---|---|---|
+| Prefill | 278 tok/s | 31 tok/s |
+| Generation | 12.5 tok/s | 9.8 tok/s |
+| Time to first token, 5.3k prompt | 22.5 s | 175 s |
+| Loaded footprint at 8k context | 6.3 GB, VRAM 84% allocated | 5.7 GB |
+
+Three conclusions:
+
+- **The iGPU is a prefill engine, not a generation engine.** Nine times faster prefill, but
+  generation is within 30% of the CPU because both share the same LPDDR5X bandwidth. For
+  RAG-shaped traffic, where prefill dominates, that is the number that matters, and it makes
+  hedwig a usable interactive demo box: 22 s to first token on a large prompt, then a readable
+  stream.
+- **The revision-1 extrapolation for the old boxes was optimistic.** A Zen 5 HX 370 with
+  LPDDR5X-7500 needs 175 s on CPU; a Zen 2 3900X or a 10th-gen i7 on dual-channel DDR4 will be
+  slower, plausibly 4 to 6 minutes to first token on the same prompt. **The old boxes are not
+  interactive-LLM demo machines** for the current prompt sizes; they remain fine for Egeria and
+  the non-LLM Resource Explorer paths. Measure Demo 2 only if that conclusion needs a number.
+- **Prompt size is the lever, more than model size.** Time to first token scales linearly with
+  prompt tokens. A per-tier RAG context budget (e.g. 2k tokens for the demo tiers instead of
+  5k+) cuts hedwig to about 8 s and even the old boxes to about 2 minutes. That belongs in §5's
+  tier config next to the model and the context cap: **a context budget per tier**, applied by the
+  retrieval layer, not just a `num_ctx` ceiling.
+
+The Mac run with `num_gpu: 0` from earlier the same day (7 tok/s prefill) is discarded: the
+machine was under a load average of 23 to 64 at the time and NEON-vs-AVX2 is not comparable
+anyway. The same observation stands as a §1 data point: at rest, Egeria's own repository
+connector was the largest CPU consumer on Dev 1, and a demo box running CPU inference shares that.
 
 Disk for a demo box: about 20 GB of images for the demo profile without Jupyter (the Jupyter
 image alone is 7 GB), plus 5 GB per 8B model and 7.4 GB for codellama:13b, plus the trellis
@@ -119,10 +140,14 @@ on Dev 1 and nothing else.
 
 **Rejected: stay 100% bare-metal, and containerize-everything-on-the-Mac.** As in revision 1.
 
-**Spike required: ROCm on the 890M.** Strix Point (`gfx1150`) support in ROCm is recent. The
-containerized path needs the `ollama/ollama:rocm` image, the `kfd`/`dri` device mounts and
-possibly an `HSA_OVERRIDE_GFX_VERSION` override. The owner ran ROCm on this machine before, so it
-is plausible, not proven. Time-boxed, result recorded in this doc.
+**ROCm on the 890M: already working natively, container variant still a spike.** Verified on
+hedwig 2026-09-04: ROCm 7.2, `/dev/kfd` and `/dev/dri/renderD128` present, and the native Ollama
+systemd unit already carries `HSA_OVERRIDE_GFX_VERSION=11.0.0`, `ROCR_VISIBLE_DEVICES=0`,
+`HIP_VISIBLE_DEVICES=0` and the ROCm library path. That is the exact override this plan guessed
+at, and it is the configuration the containerized `ollama/ollama:rocm` variant must reproduce
+(same env, plus `--device /dev/kfd --device /dev/dri` and the `video`/`render` groups). hedwig
+also runs the full Egeria quickstart today at a load average under 2, so it is a working
+single-box demo host already; the demo profile packages what it does by hand.
 
 ### Why this interacts with threading and multi-user
 
@@ -326,13 +351,13 @@ its own spike. Any GPU-bound engine on Dev 1 stays native regardless of which en
 
 **Added: model tiers and a context cap, per profile.** Neither app sets `num_ctx`; EA hardcodes
 a model per task slot (`advisor.yaml:129-145`, `config.py:167-189`) with no tier concept; RE has
-one default. The config gains a `tier` with, per task slot, a model and a context cap:
+one default. The config gains a `tier` with, per task slot, a model, a context cap, and a RAG context budget (the measured lever for time to first token):
 
 | Tier | Where | General / code model | Context cap | Loaded footprint |
 |---|---|---|---|---|
 | `dev` | Dev 1 | as today; 32B allowed | 32k | measured 5.7 GB at 8k for 8B; scales with cap |
-| `demo-gpu` | Dev 2 | llama3.1:8b / codellama:13b | 8k | ~14 GB both loaded |
-| `demo-cpu` | Demo 1, Demo 2 | llama3.1:8b for every slot including code | 8k | ~6 GB |
+| `demo-gpu` | Dev 2 (hedwig, 890M) | llama3.1:8b / codellama:13b | 8k; RAG context budget 2k | ~14 GB both loaded; measured 22 s TTFT at 5.3k prompt, ~8 s at 2k |
+| `demo-cpu` | Demo 1, Demo 2 | llama3.1:8b for every slot including code | 8k; RAG context budget 2k | ~6 GB; not interactive: 175 s TTFT at 5.3k on hedwig's CPU, worse on the old boxes |
 
 The cap is what makes the demo tiers fit and what stops one loaded model taking 22 GB by default.
 This lands in EA alongside the backend abstraction it lacks and RE already has.
