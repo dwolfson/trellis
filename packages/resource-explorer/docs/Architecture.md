@@ -12,6 +12,9 @@ responsibilities change slowly; file lists change weekly.
 - Conventions and rules for *working on* this code: [`../CLAUDE.md`](../CLAUDE.md)
 - Getting it running: [the workspace quickstart](../../../QUICKSTART.md)
 - What is being worked on: [`Backlog.md`](Backlog.md)
+- The process and threading model — every daemon thread, per-request thread and
+  `ThreadPoolExecutor` in the current one-process design, plus the target multi-role topology
+  from `docs/runtime-architecture-plan.md`: [`process-model.md`](process-model.md)
 
 ---
 
@@ -79,7 +82,7 @@ Two properties matter more than the list:
 resource_explorer/
 ├── registry.py             # every table, every read/write. Postgres or SQLite.
 ├── config.py               # Pydantic settings
-├── scheduler.py            # daemon thread — runs due schedules, fires subscriptions
+├── scheduler.py            # daemon thread — runs due schedules, fires subscriptions, drains outbox (see docs/process-model.md)
 ├── facts.py                # FactLayer: reads what is known, never runs anything
 ├── step_outcome.py         # recovered / partial / no_signal / unverified / regression
 │   surveyors/result_status.py   # measured / nothing_found / not_established / never_run / …
