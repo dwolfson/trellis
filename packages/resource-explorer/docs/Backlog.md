@@ -250,6 +250,13 @@ the same. Both checks: `properties.contentStatus` round-trips as `"DRAFT"` corre
 2's "All at ContentStatus = Draft" is achieved for blueprints. One new regression test
 (`test_content_status_draft`), 21/21 passing in `test_blueprint_materializer.py`.
 
+**GUID note (2026-09-04):** the platform was redeployed with a full repository-store wipe the
+same day this was verified. The three GUIDs above (`1c6550a9-...`, `8755a5ac-...`,
+`809025b5-...`) are historical — valid as of the verification date, not resolvable against the
+platform after the wipe. The finding itself (`contentStatus` round-trips correctly via
+`properties`, no separate request-body class needed) is a property of the API/pyegeria fix, not
+of that instance, and stands unaffected.
+
 **`ComponentMaterializer`'s identical gap fixed the same day, same fix.** `materializer.py`'s
 `materialize()` now sends `contentStatus: "DRAFT"` too — same field, same mechanism, no separate
 investigation needed since the pyegeria fix (odpi/egeria-python#337) already covers both element
@@ -468,6 +475,31 @@ link. **Deliberately left the backend's permissive partial-accept (Decision 2) u
 UI now defaults to blocking the common accidental case, but the API still allows a genuinely
 intentional partial accept (e.g. a child that will never materialize because it was rejected) if
 called directly.
+
+**17. Stale-Egeria-pointer scan-and-clear is now scheduled — built 2026-09-04, after the
+2026-09-04 full repository-store wipe.** The human-driven recovery path (`EgeriaResync.scan()`/
+`.apply()`, Admin > 🔄 Egeria Alignment) worked exactly as designed — but nothing ran it until
+someone remembered to; the wipe sat with 60 stale asset GUIDs, 1,040 orphaned publish claims, 4
+stale investigation GUIDs, and 58 stale contexts until manually triggered. `egeria_resync.py`
+gains `scan_and_clear()` + a background scheduler (`start_scheduler`/`stop_scheduler`, wired into
+`web/app.py`'s lifespan alongside `bootstrap`'s Dr.Egeria-definition healing, same 600s interval,
+same never-block-startup/never-die-on-exception discipline). Automates only
+`SAFE_SCHEDULED_STEPS` — `clear_stale_assets`, `clear_orphan_publish_claims`,
+`clear_stale_investigations`, `clear_stale_contexts` — a strict subset of `REPAIR_STEPS` chosen
+because every one of them verifies live before writing (never guesses — a lookup failure is
+`undetermined`, never cleared), costs no real time, and never needs a human decision. Deliberately
+excludes anything `EXPENSIVE_STEPS` (archive-downloading republishes) or `needs_decision`
+(Egeria Project bindings — RE genuinely cannot guess which Project a resource should join), with
+an explicit defense-in-depth check in `scan_and_clear()` itself (not just inherited from the
+constant) refusing to apply either kind even if a future finding's step name happened to collide.
+Live-verified against the real post-wipe registry: manually ran the same four steps first (60
+assets/1,040 claims/4 investigations/58 contexts cleared, independently re-scanned to confirm —
+not just trusted the apply response), which surfaced a genuine, expected downstream consequence
+worth recording here too: 59 repos went from "published" to `unpublishable` because the
+`all-current-repos` investigation's own Egeria Project binding was itself stale and got correctly
+cleared — those repos were inheriting publish-eligibility through it. That's a real
+`needs_decision` item (bind or create an Egeria Project), not something `scan_and_clear()` should
+or does attempt. 11 new tests (`test_egeria_resync_scheduler.py`).
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where

@@ -24,6 +24,8 @@ Scanning never writes. Repairs run only for the step names a caller asks for.
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
@@ -66,6 +68,23 @@ CATALOG_STEPS = ("repo_health",)
 #: as a set membership rather than a row count: "fewer than N analyses" would
 #: be a number whose meaning drifts the moment the catalog gains an entry.
 REGISTRATION_ONLY_ANALYSES = frozenset({"repository_health"})
+
+#: The steps a scheduled, unattended pass is allowed to apply — see
+#: scan_and_clear()/start_scheduler() below. Deliberately a strict subset of
+#: REPAIR_STEPS: every one of these clears a LOCAL record after verifying live
+#: (never guesses — a lookup failure is `undetermined`, not cleared), costs no
+#: real time (none are in EXPENSIVE_STEPS), and never needs a human decision
+#: (no finding these map to ever sets needs_decision=True). `catalog_assets`
+#: is excluded even though it's cheap: it PUBLISHES to Egeria, which is a
+#: judgment call about what an asset should look like, not a pure cleanup —
+#: left for a human to trigger deliberately, same reasoning REPAIR_STEPS'
+#: `republish_survey_results`/`relink_investigation_members` stay manual.
+SAFE_SCHEDULED_STEPS = (
+    "clear_stale_assets",
+    "clear_orphan_publish_claims",
+    "clear_stale_investigations",
+    "clear_stale_contexts",
+)
 
 
 @dataclass
@@ -1132,3 +1151,127 @@ def _reader():
         SurveyDefinitionReader,
     )
     return SurveyDefinitionReader()
+
+
+# ── scheduled scan-and-clear ─────────────────────────────────────────────────
+# 2026-09-04, after the full-repository-store-wipe redeploy: the human-driven
+# half of recovery (Admin > Egeria Alignment) worked exactly as designed, but
+# nothing ran it until someone remembered to. This automates only the part
+# that's safe to run unattended and repeatedly — see SAFE_SCHEDULED_STEPS'
+# comment for why each excluded step stays manual. Mirrors bootstrap.py's
+# check_and_heal scheduler shape deliberately (same interval, same
+# never-block-startup/never-die-on-exception discipline, same status-tracking
+# contract) rather than inventing a second pattern for the same problem.
+
+CHECK_INTERVAL_SECONDS = 600
+
+_status_lock = threading.Lock()
+_status: dict = {
+    "last_run_at": "",
+    "last_reachable": None,
+    "last_unreachable_reason": "",
+    "last_applied": {},
+    "last_error": "",
+    "consecutive_failures": 0,
+}
+_stop_event: threading.Event | None = None
+_thread: threading.Thread | None = None
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def scan_and_clear(registry: "ProjectRegistry | None" = None) -> dict:
+    """One pass: scan, then apply only the SAFE_SCHEDULED_STEPS whose findings
+    are actually present right now. Never guesses (every step re-verifies live
+    before writing, same as a human clicking Apply) and never touches anything
+    `needs_decision` or expensive — asserted explicitly below, not just
+    inherited from SAFE_SCHEDULED_STEPS' own comment, so a future edit to
+    REPAIR_STEPS' semantics can't silently make this unsafe.
+
+    Safe to call repeatedly and on any schedule: an unreachable Egeria or an
+    empty finding set both return cleanly with nothing applied, the same
+    'unreachable is never stale' discipline the rest of this module uses.
+    """
+    resync = EgeriaResync(registry=registry)
+    result = resync.scan()
+    if not result.reachable:
+        return {"reachable": False, "unreachable_reason": result.unreachable_reason, "applied": {}}
+
+    present_by_step = {f.repair_step: f for f in result.findings if f.repair_step}
+    to_apply = []
+    for step in SAFE_SCHEDULED_STEPS:
+        finding = present_by_step.get(step)
+        if finding is None:
+            continue
+        if finding.needs_decision or step in EXPENSIVE_STEPS:
+            # Defense in depth — should be unreachable given SAFE_SCHEDULED_
+            # STEPS' own construction, but an automated, unattended write path
+            # is exactly the place to assert an invariant rather than trust it.
+            log.warning("egeria_resync scheduler: skipping %r — needs_decision=%s expensive=%s",
+                        step, finding.needs_decision, step in EXPENSIVE_STEPS)
+            continue
+        to_apply.append(step)
+
+    if not to_apply:
+        return {"reachable": True, "unreachable_reason": "", "applied": {}}
+
+    applied = resync.apply(to_apply)
+    return applied
+
+
+def _loop(interval: int, stop: threading.Event) -> None:
+    while not stop.is_set():
+        try:
+            result = scan_and_clear()
+            with _status_lock:
+                _status["last_run_at"] = _now()
+                _status["last_reachable"] = result.get("reachable", True)
+                _status["last_unreachable_reason"] = result.get("unreachable_reason", "")
+                _status["last_applied"] = result.get("applied", {})
+                _status["last_error"] = ""
+                _status["consecutive_failures"] = 0
+        except Exception as exc:
+            # Never let a bad pass kill the loop — the next tick should still
+            # get a chance, same discipline bootstrap.py's loop uses.
+            log.exception("egeria_resync: scheduled scan-and-clear pass failed")
+            with _status_lock:
+                _status["last_run_at"] = _now()
+                _status["last_error"] = str(exc)
+                _status["consecutive_failures"] += 1
+        stop.wait(interval)
+
+
+def get_status() -> dict:
+    """Status for the admin banner — same shape convention as
+    bootstrap.get_status(), so both scheduled-recovery mechanisms read the
+    same way in the UI."""
+    with _status_lock:
+        return dict(_status)
+
+
+def start_scheduler(interval: int = CHECK_INTERVAL_SECONDS) -> None:
+    """Start the background scan-and-clear loop. Never blocks or fails
+    startup — matches bootstrap.start_scheduler()'s exact contract, including
+    running the first pass inside the thread rather than before returning."""
+    global _stop_event, _thread
+    if _thread is not None and _thread.is_alive():
+        return
+    _stop_event = threading.Event()
+    _thread = threading.Thread(
+        target=_loop, args=(interval, _stop_event),
+        name="egeria-resync-scheduler", daemon=True,
+    )
+    _thread.start()
+    log.info("egeria_resync: scheduled scan-and-clear started (check interval: %ds)", interval)
+
+
+def stop_scheduler() -> None:
+    global _stop_event, _thread
+    if _stop_event is not None:
+        _stop_event.set()
+    if _thread is not None:
+        _thread.join(timeout=5)
+    _stop_event = None
+    _thread = None

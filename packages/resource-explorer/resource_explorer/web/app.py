@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
+from resource_explorer.egeria_resync import start_scheduler as start_resync_scheduler, stop_scheduler as stop_resync_scheduler
 from resource_explorer.scheduler import start_scheduler
 from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
 
@@ -91,9 +92,19 @@ async def _lifespan(app: FastAPI):
     # happens inside the monitor thread, and it fails open when Egeria is
     # unreachable — see resource_explorer/bootstrap.py.
     start_bootstrap_monitor()
+    # Detect + clear stale Egeria pointers (asset GUIDs, orphan publish claims,
+    # investigation/context GUIDs) left behind by a repository-store wipe —
+    # the registry-side counterpart to start_bootstrap_monitor()'s Dr.Egeria-
+    # definition healing above. Same never-block/never-die-on-exception
+    # discipline; deliberately only the SAFE_SCHEDULED_STEPS subset — anything
+    # needing a human decision (Project bindings) or expensive (archive
+    # downloads) stays manual, via Admin > Egeria Alignment. See
+    # resource_explorer/egeria_resync.py.
+    start_resync_scheduler()
     _warm_survey_definition_cache()
     yield
     stop_bootstrap_monitor()
+    stop_resync_scheduler()
 
 
 # Configure logging at import, so `uvicorn resource_explorer.web.app:app` run
