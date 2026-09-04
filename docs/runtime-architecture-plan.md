@@ -36,11 +36,11 @@ Revision 2 adds two requirements and one exhibit:
 
 | | Dev 1 | Dev 2 | Demo 1 "cray" | Demo 2 |
 |---|---|---|---|---|
-| Machine | MacBook Pro M3 Max, 96 GB | Framework 13, Ryzen AI 9 HX 370, 64 GB | Ryzen 9 3900X, 64 GB | Intel i7-10700, 64 GB |
+| Machine | MacBook Pro M3 Max, 96 GB | Framework 13, Ryzen AI 9 HX 370, 64 GB | Ryzen 9 3900X, 64 GB | Intel i7-10700K, 16 threads, 62 GiB usable; hostname `trevor`, Pop!_OS, Tailscale SSH (verified 2026-09-04) |
 | OS | macOS | Linux, kernel 7.0, 24 threads, 61 GiB usable; hostname `hedwig`, reachable over Tailscale | Linux | Linux |
-| GPU | Metal, not passed into Docker | Radeon 890M iGPU; ROCm 7.2 installed, Ollama 0.24 native with `HSA_OVERRIDE_GFX_VERSION=11.0.0` (verified 2026-09-04) | none | UHD 630 only |
-| Storage | — | — | >10 TB free | >10 TB free |
-| Role | dev | dev, or demo when LLM-interactive parts are the point | demo, browser-based portal | demo, browser-based portal |
+| GPU | Metal, not passed into Docker | Radeon 890M iGPU; ROCm 7.2 installed, Ollama 0.24 native with `HSA_OVERRIDE_GFX_VERSION=11.0.0` (verified 2026-09-04) | none | **RTX 2070 SUPER, 8 GB VRAM**, currently on the open-source `nouveau` driver so unusable for inference until the proprietary driver and `nvidia-container-toolkit` are installed |
+| Storage | — | — | >10 TB free | >10 TB free (system NVMe 778 GB free) |
+| Role | dev | dev, or demo when LLM-interactive parts are the point | demo, browser-based portal | demo, browser-based portal; becomes an LLM-capable demo box once the NVIDIA driver is installed (8 GB VRAM fits the 8B model at 8k context with room, not the 13B) |
 
 **Actuals on Dev 1, 2026-09-04.** Docker Desktop is allotted 8 CPUs and 45 GiB. Container
 memory in use across six compose projects: 12.9 GiB, of which the Egeria demo core that a demo
