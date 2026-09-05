@@ -469,7 +469,31 @@ class CodeIngester:
             self.chunk_overlap = chunk_overlap if chunk_overlap is not None else 200
             logger.warning(f"Collection {collection_name} not found in config, using defaults")
         
+        # Per-file failures swallowed by ingest_file()/ingest_directory(), as
+        # (path, "ExcType: message"). Callers that see zero files ingested read
+        # this to report *why* instead of a silent zero (trevor, 2026-09-04).
+        self.failed_files: List[Tuple[str, str]] = []
+
         logger.info(f"Initialized CodeIngester for collection: {collection_name}")
+
+    def record_failure(self, file_path: Path, exc: BaseException) -> None:
+        """Remember a per-file failure so a zero-file outcome can explain itself."""
+        self.failed_files.append((str(file_path), f"{type(exc).__name__}: {exc}"))
+
+    def failure_summary(self, limit: int = 3) -> str:
+        """Human-readable digest of recorded failures: distinct error kinds with
+        counts, plus up to `limit` example files. Empty string when nothing failed."""
+        if not self.failed_files:
+            return ""
+        kinds: Dict[str, int] = {}
+        for _, err in self.failed_files:
+            kinds[err] = kinds.get(err, 0) + 1
+        ranked = sorted(kinds.items(), key=lambda kv: kv[1], reverse=True)
+        parts = [f"{count}x {err}" for err, count in ranked[:limit]]
+        if len(ranked) > limit:
+            parts.append(f"... and {len(ranked) - limit} other error kinds")
+        examples = ", ".join(path for path, _ in self.failed_files[:limit])
+        return f"{len(self.failed_files)} file(s) failed: {'; '.join(parts)} (e.g. {examples})"
     
     def _chunk_text(self, text: str) -> List[str]:
         """
@@ -522,6 +546,7 @@ class CodeIngester:
 
         except Exception as e:
             logger.error(f"Error ingesting {file_path}: {e}")
+            self.record_failure(file_path, e)
             return 0, 0, []
 
     def _extract_java_symbols(self, file_path: Path) -> None:
@@ -799,6 +824,15 @@ class CodeIngester:
                 
             except Exception as e:
                 logger.error(f"Error processing {file_path}: {e}")
+                self.record_failure(file_path, e)
                 continue
-        
+
+        if files and total_files == 0:
+            # Every candidate was swallowed by a per-file except above — say so
+            # at error level here, because the caller only sees (0, 0).
+            logger.error(
+                f"0 of {len(files)} files matching {file_pattern} under {dir_path} "
+                f"were ingested — {self.failure_summary() or 'no per-file errors recorded'}"
+            )
+
         return total_files, total_chunks
