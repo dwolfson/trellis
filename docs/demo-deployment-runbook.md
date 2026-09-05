@@ -1,5 +1,9 @@
 # Demo deployment runbook — trellis on a Linux box with a GPU
 
+> The general guide for all three configurations (demo, Mac developer, Linux developer) is
+> [deploying-trellis-with-quickstart.md](deploying-trellis-with-quickstart.md); this file is the
+> verbatim trevor sequence it refers to.
+
 What worked on trevor (Pop!_OS 24.04, i7-10700K, RTX 2070 SUPER) on 2026-09-04, written so it can be
 repeated. It is the plan's **demo profile** (`docs/runtime-architecture-plan.md` §1) with one variation
 for a box whose GPU is used by a **host-native Ollama**: the apps run as containers, inference runs on the
