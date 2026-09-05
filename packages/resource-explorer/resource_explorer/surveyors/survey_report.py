@@ -362,11 +362,8 @@ def disambiguate_shared_check_names(annotations) -> int:
         if check in shared and not (getattr(ann, "item_key", "") or "") and hasattr(ann, "item_key"):
             step = getattr(ann, "analysis_step", "") or ""
             if step:
-                try:
-                    ann.item_key = step
-                    stamped += 1
-                except Exception:  # frozen or read-only annotation shapes
-                    pass
+                ann.item_key = step
+                stamped += 1
     return stamped
 
 
