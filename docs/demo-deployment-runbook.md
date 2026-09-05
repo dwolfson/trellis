@@ -133,6 +133,15 @@ a plain CLI command dies.
 - `jdbcMaximumPoolSize` in the `.http` config builders only reaches the platform when those builders
   are run against it.
 - EA phase-1 ingestion: `pyegeria` and `pyegeria_cli` collections ingest zero files (open task).
+- Platform addressing: the trellis containers reach Egeria as `https://host.docker.internal:9443`,
+  not by its `egeria_network` name, because the platform image's baked-in certificate names only
+  `localhost` and `host.docker.internal`. Switching to the container name would only work with TLS
+  verification off. Decision 2026-09-05: deferred; a SAN request is filed with Egeria alongside the
+  token-lifetime request. The intra-platform round trip that caused the `HttpConnectTimeoutException`
+  bursts was fixed separately in egeria-workspaces (#482, `egeriaLocalEndpoint`), so nothing on the
+  trellis side is waiting on this.
+- pyegeria's stdio MCP server needs `mcp>=2.0` but declares `mcp>=0.1` (ISSUE-91); trellis pins
+  `mcp>=2.0.0` since 8441efb. Symptom if it regresses: "No response from MCP server" at EA start.
 
 ## Docker Desktop variant (Linux or Mac), for visibility
 
