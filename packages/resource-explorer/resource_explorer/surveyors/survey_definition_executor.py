@@ -160,6 +160,40 @@ class SurveyDefinitionExecutor:
         step_outputs: list = []
         errors: list = []
 
+        def _stamp_definition_provenance(output) -> None:
+            """Give every keyless annotation this call's `output` carries an
+            item_key naming the Survey Definition being executed, so a step
+            authored into more than one definition (e.g. `repo_secret_scan`,
+            included by both repo-survey-definition-compliance.md and
+            repo-survey-definition-full.md) cannot collide on publish —
+            see survey_report.assert_unique_qualified_names, which raises
+            exactly this collision rather than letting it silently drop an
+            annotation.
+
+            Stamped here, at the one place every RE-executed step's
+            annotations pass through on their way into `step_outputs`
+            (single-step, batched, and Prefect-routed alike), rather than in
+            each sub-surveyor — so a step that has never anticipated running
+            under more than one definition is covered automatically, and the
+            fix does not have to be repeated for the next shared step.
+
+            A step's own item_key (language, ecosystem, file_path,
+            secret_pattern's path:line...) is left untouched: this only
+            fills the gap for a check that is "one summary per run" and
+            never set one, which is exactly the shape that collides.
+            """
+            if not isinstance(output, dict):
+                return
+            for ann in output.get("annotations", []) or []:
+                # Defensive: a handful of dispatch-loop tests stand in
+                # "annotations" with plain dicts/strings rather than real
+                # Annotation instances — nothing to stamp on those, and
+                # nothing this fix should need to care about.
+                if not hasattr(ann, "item_key"):
+                    continue
+                if not ann.item_key:
+                    ann.item_key = survey_def.qualified_name
+
         # Hand the WHOLE definition to Prefect when it is available, instead of
         # sequencing it here. RE should not be a workflow engine: Egeria
         # coordinates and RE executes leaves, or RE coordinates and delegates
@@ -179,6 +213,8 @@ class SurveyDefinitionExecutor:
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
+                for _output in step_outputs:
+                    _stamp_definition_provenance(_output)
                 pending_steps = []
 
         # Order + guard information for the local loop below. Only built when
@@ -351,6 +387,7 @@ class SurveyDefinitionExecutor:
                     step_keys = [s.re_analysis_step for s in group]
                     try:
                         output = adapter.run_batch(entity, self.registry, step_keys, **runner_kwargs)
+                        _stamp_definition_provenance(output)
                         step_outputs.append(output)
                         batch_errors = output.get("errors") or []
                         # Batched steps share one status — real, minor cost
@@ -389,6 +426,7 @@ class SurveyDefinitionExecutor:
             if use_prefect:
                 try:
                     output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                    _stamp_definition_provenance(output)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
@@ -422,6 +460,7 @@ class SurveyDefinitionExecutor:
                     continue
                 try:
                     output = runner(entity, self.registry, **runner_kwargs)
+                    _stamp_definition_provenance(output)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok"})
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
