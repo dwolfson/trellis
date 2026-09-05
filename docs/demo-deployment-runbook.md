@@ -118,8 +118,10 @@ docker exec -w /app/packages/egeria-advisor trellis-ea-web python scripts/clone_
 docker exec -w /app/packages/egeria-advisor trellis-ea-web python scripts/ingest_collections.py --phase 1
 ```
 
-The survey publishes the asset with `Ownership{owner=erinoverview}` and `ZoneMembership[resource-explorer-draft]`;
-read it back with `MetadataExpert.get_metadata_element_by_guid` as the same user. Do **not** send
+Verified on trevor 2026-09-04 21:19: the asset (`SourceControlLibrary`) and the `SurveyReport` both read back
+with `createdBy=erinoverview`, `Ownership.owner=erinoverview`, `ZoneMembership=['resource-explorer-draft']`
+via `MetadataExpert.get_metadata_element_by_guid` as the same user. The survey CLI ends with an interactive
+"Trigger governance action process?" prompt; under `-T` it aborts harmlessly after the publish. Do **not** send
 `SIGUSR1` to a `survey` run for a thread dump: only `web`, `worker` and `serve` install the handler,
 a plain CLI command dies.
 
