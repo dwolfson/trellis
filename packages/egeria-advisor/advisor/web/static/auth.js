@@ -74,6 +74,10 @@ const Auth = (() => {
   }
 
   function showLogin(message) {
+    // The "continue without signing in" footer only makes sense in the dev-only
+    // anonymous-read mode; with login required it leads straight to a 401.
+    const anonFooter = document.getElementById('login-anon-footer');
+    if (anonFooter) anonFooter.hidden = loginRequired;
     const overlay = document.getElementById('login-overlay');
     if (!overlay) return;
     if (message) {

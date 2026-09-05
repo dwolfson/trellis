@@ -50,6 +50,7 @@ from trellis_auth import login_with_password as _login_with_password
 from trellis_auth import validate_egeria_token as _validate_egeria_token
 
 log = logging.getLogger(__name__)
+_DERIVED_SECRET_WARNED = False
 
 __all__ = [
     "APP_NAME",
@@ -127,10 +128,15 @@ def jwt_secret() -> str:
     import hashlib
 
     machine = os.environ.get("HOSTNAME", "resource-explorer-local")
-    log.warning(
-        "auth: neither RE_JWT_SECRET nor TRELLIS_JWT_SECRET is set — deriving a "
-        "per-host secret. Sessions will not survive a move to another machine."
-    )
+    global _DERIVED_SECRET_WARNED
+    if not _DERIVED_SECRET_WARNED:
+        # Once per process: this runs on every request that touches auth, and
+        # the same line repeated per request buried the useful log lines.
+        _DERIVED_SECRET_WARNED = True
+        log.warning(
+            "auth: neither RE_JWT_SECRET nor TRELLIS_JWT_SECRET is set — deriving a "
+            "per-host secret. Sessions will not survive a move to another machine."
+        )
     return hashlib.sha256(f"resource-explorer-{machine}".encode()).hexdigest()
 
 
