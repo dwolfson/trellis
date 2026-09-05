@@ -117,7 +117,7 @@ dependencies = [
     # pyegeria.omvs.metadata_explorer to pyegeria.omvs.metadata_expert in this
     # release; RE is unaffected because it imports from the top-level package.
     "pyegeria>=6.1.5",
-    "mcp>=0.1.0",
+    "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
     # module-level nest_asyncio.apply(), was both unnecessary (every sync/async

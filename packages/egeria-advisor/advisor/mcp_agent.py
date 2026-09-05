@@ -317,7 +317,15 @@ class MCPAgent:
                 
             except Exception as e:
                 logger.error(f"Failed to initialize server {server_name}: {e}")
-        
+
+        if not self.clients:
+            # Every enabled server failed. Do NOT mark initialized: a caller
+            # that sees _initialized=True with zero tools would report success
+            # (the web pre-warm did exactly that) and never retry.
+            raise ConnectionError(
+                f"none of the enabled MCP servers connected: {', '.join(enabled_servers)}"
+            )
+
         self._initialized = True
         logger.info(
             f"MCP agent initialized: {len(self.clients)} servers, "
