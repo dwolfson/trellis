@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Egeria Advisor</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="/static/auth.js"></script>
+  <script src="/static/auth.js?v=20260905a"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
@@ -3441,7 +3441,7 @@ function initReportCanvasResize() {
       </button>
     </div>
 
-    <div class="mt-5 pt-4 border-t border-slate-700 text-xs text-slate-500 text-center">
+    <div id="login-anon-footer" class="mt-5 pt-4 border-t border-slate-700 text-xs text-slate-500 text-center">
       Knowledge questions and code examples are available without signing in.<br>
       Reports and command execution require an active Egeria session.
       <br><br>
