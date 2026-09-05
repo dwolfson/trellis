@@ -121,12 +121,26 @@ class TestCacheWarmIsBestEffort:
 
     def test_it_actually_warms_when_egeria_answers(self):
         """Known-negative for the test above: a method that always returned
-        `warmed: 0` would satisfy it."""
+        `warmed: 0` would satisfy it.
+
+        2026-09-04: found this test was making a REAL, unmocked Egeria call —
+        warm_question_guid_cache() has a second phase after question-GUID
+        resolution, _warm_definition_fetches() -> find_process_guid_by_name()
+        -> self._governance_officer.get_governance_definitions_by_name(),
+        which this test never mocked. Harmless when Egeria answers fast; on a
+        night Egeria was genuinely slow for this call shape (the same live
+        incident cli/main.py's SIGUSR1 instrumentation was built to catch),
+        this test hung for the full pytest-timeout window instead of failing
+        fast. A unit test depending on a live service being both reachable
+        AND fast is the same class of bug as the test class's own docstring
+        warns the PRODUCTION code against."""
         from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
         r = SurveyDefinitionReader()
         with patch.object(SurveyDefinitionReader, "_resolve_question_guids",
-                          return_value=[("Q1", "guid-1"), ("Q2", None)]):
+                          return_value=[("Q1", "guid-1"), ("Q2", None)]), \
+             patch.object(SurveyDefinitionReader, "_warm_definition_fetches",
+                          return_value=(0, 0)):
             out = r.warm_question_guid_cache(["Q1", "Q2"])
         assert out["warmed"] == 2
         # Q2 resolving to None is recorded as checked-but-absent, exactly as the

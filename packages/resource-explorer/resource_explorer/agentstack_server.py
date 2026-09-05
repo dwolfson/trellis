@@ -1,15 +1,25 @@
-"""AgentStack A2A server — each specialized agent as its own discoverable endpoint.
+"""AgentStack agent definitions — the seven specialists, and how they are hosted.
 
-Each agent runs on its own port so external orchestrators and the BeeAI platform
-can call them independently. The orchestrator on the base port routes by intent.
+**Superseded as a hosting layer, 2026-09-04.** This module used to be both the
+agent definitions *and* the server: `_serve_all()` started seven independent
+`agentstack_sdk.server.Server` instances on ports 8080-8086, unauthenticated.
+`docs/runtime-architecture-plan.md` §2 replaced that with the `a2a` process
+role — **one service, one port, agents routed by path, a bearer token required
+on every call** — which lives in `resource_explorer/a2a_role.py`. This module
+now owns the agent definitions and exposes them through `agent_factories()`;
+that is what the role mounts.
 
-Default ports (base_port = 8080):
-  8080  orchestrator  — routes to the right specialist, general RAG fallback
-  8081  stats         — GitHub statistics and commit trends
-  8082  code          — source code search
-  8083  docs          — documentation and conceptual Q&A
-  8084  health        — community health and maintenance assessment
-  8085  compare       — side-by-side multi-project comparison
+The one-port-per-agent path is kept below (`run(all_agents=True)`) only so
+nothing that imported it breaks. Nothing in the CLI reaches it any more.
+
+Why the role could not simply ask this SDK to host seven agents
+---------------------------------------------------------------
+`Server.agent()` raises ``ValueError("Server can have only one agent.")`` and
+``Server.serve()`` owns a uvicorn of its own — one agent, one server, one port,
+by construction (RE design rule 8). The supported multi-agent shape is one
+level down: `agentstack_sdk.server.app.create_app(agent, ...)` returns a plain
+FastAPI app per agent, which mounts under a path prefix like any other ASGI
+app. See `a2a_role.py` for the mounting.
 
 Agents that require a project scope (stats, health) use the A2A input_required
 pattern: if they cannot infer the project from the query, they ask the user and
@@ -20,6 +30,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from uuid import uuid4
+
+from typing import Any
 
 from a2a.types import AgentSkill, Message, Part, TaskState, TaskStatus, TextPart
 from agentstack_sdk.server import Server
@@ -112,11 +124,14 @@ def _stats_server() -> Server:
         ),
         skills=[
             AgentSkill(id="project_stats", name="Project Statistics",
-                       description="Stars, forks, contributors, commit counts, releases, LOC, languages"),
+                       description="Stars, forks, contributors, commit counts, releases, LOC, languages",
+                       tags=["statistics", "github", "metrics"]),
             AgentSkill(id="top_committers", name="Top Committers",
-                       description="Ranked list of contributors by commit count over the last 90 days"),
+                       description="Ranked list of contributors by commit count over the last 90 days",
+                       tags=["statistics", "contributors", "github"]),
             AgentSkill(id="commit_activity", name="Commit Activity Trends",
-                       description="Weekly commit cadence chart over the last 90 days"),
+                       description="Weekly commit cadence chart over the last 90 days",
+                       tags=["statistics", "trends", "github"]),
         ],
     )
     async def stats_fn(message: Message, context: RunContext) -> AsyncGenerator:
@@ -145,9 +160,11 @@ def _code_server() -> Server:
         ),
         skills=[
             AgentSkill(id="code_search", name="Code Search",
-                       description="Find implementations, methods, and classes in source code"),
+                       description="Find implementations, methods, and classes in source code",
+                       tags=["code", "search"]),
             AgentSkill(id="usage_examples", name="Usage Examples",
-                       description="Find how a class or function is used across the codebase"),
+                       description="Find how a class or function is used across the codebase",
+                       tags=["code", "examples"]),
         ],
     )
     def code_fn(message: Message) -> str:
@@ -170,9 +187,11 @@ def _docs_server() -> Server:
         ),
         skills=[
             AgentSkill(id="conceptual_qa", name="Conceptual Q&A",
-                       description="Architecture, design patterns, getting started, configuration"),
+                       description="Architecture, design patterns, getting started, configuration",
+                       tags=["documentation", "qa"]),
             AgentSkill(id="api_reference", name="API Reference",
-                       description="Endpoint definitions, parameter descriptions, examples"),
+                       description="Endpoint definitions, parameter descriptions, examples",
+                       tags=["documentation", "api"]),
         ],
     )
     def docs_fn(message: Message) -> str:
@@ -195,9 +214,11 @@ def _health_server() -> Server:
         ),
         skills=[
             AgentSkill(id="health_score", name="Health Assessment",
-                       description="Activity status, bus factor, and maintenance indicators"),
+                       description="Activity status, bus factor, and maintenance indicators",
+                       tags=["health", "maintenance"]),
             AgentSkill(id="pr_metrics", name="PR Metrics",
-                       description="Open/closed PR counts and merge rate from live GitHub API"),
+                       description="Open/closed PR counts and merge rate from live GitHub API",
+                       tags=["health", "github", "pull-requests"]),
         ],
     )
     async def health_fn(message: Message, context: RunContext) -> AsyncGenerator:
@@ -226,7 +247,8 @@ def _compare_server() -> Server:
         ),
         skills=[
             AgentSkill(id="project_comparison", name="Project Comparison",
-                       description="Side-by-side analysis of two or more indexed projects"),
+                       description="Side-by-side analysis of two or more indexed projects",
+                       tags=["compare", "analysis"]),
         ],
     )
     async def compare_fn(message: Message, context: RunContext) -> AsyncGenerator:
@@ -279,7 +301,8 @@ def _integration_server() -> Server:
         ),
         skills=[
             AgentSkill(id="integration_analysis", name="Integration Analysis",
-                       description="Ecosystem fit, shared contributors, and cross-project integration guidance"),
+                       description="Ecosystem fit, shared contributors, and cross-project integration guidance",
+                       tags=["integration", "ecosystem"]),
         ],
     )
     async def integration_fn(message: Message, context: RunContext) -> AsyncGenerator:
@@ -319,8 +342,24 @@ def _integration_server() -> Server:
     return server
 
 
-def _orchestrator_server(agent_ports: dict[str, int]) -> Server:
+def _orchestrator_server(
+    agent_ports: dict[str, int] | None = None,
+    agent_paths: dict[str, str] | None = None,
+) -> Server:
+    """The default agent. Its skill descriptions point at the specialists.
+
+    `agent_paths` is what the single-port `a2a` role passes (``/agents/stats``
+    and friends); `agent_ports` is the legacy one-port-per-agent layout. Passing
+    neither is fine — the descriptions then just name the specialist.
+    """
     server = Server()
+
+    def _where(name: str) -> str:
+        if agent_paths and name in agent_paths:
+            return f"path {agent_paths[name]}"
+        if agent_ports and name in agent_ports:
+            return f"port {agent_ports[name]}"
+        return "this service"
 
     @server.agent(
         name="Resource Explorer",
@@ -331,19 +370,26 @@ def _orchestrator_server(agent_ports: dict[str, int]) -> Server:
         ),
         skills=[
             AgentSkill(id="stats", name="Statistics",
-                       description=f"Delegates to stats agent — port {agent_ports.get('stats', 8081)}"),
+                       description=f"Delegates to stats agent — {_where('stats')}",
+                       tags=["routing", "statistics"]),
             AgentSkill(id="code_search", name="Code Search",
-                       description=f"Delegates to code agent — port {agent_ports.get('code', 8082)}"),
+                       description=f"Delegates to code agent — {_where('code')}",
+                       tags=["code", "search"]),
             AgentSkill(id="documentation", name="Documentation",
-                       description=f"Delegates to docs agent — port {agent_ports.get('docs', 8083)}"),
+                       description=f"Delegates to docs agent — {_where('docs')}",
+                       tags=["routing", "documentation"]),
             AgentSkill(id="health", name="Health",
-                       description=f"Delegates to health agent — port {agent_ports.get('health', 8084)}"),
+                       description=f"Delegates to health agent — {_where('health')}",
+                       tags=["routing", "health"]),
             AgentSkill(id="compare", name="Compare",
-                       description=f"Delegates to compare agent — port {agent_ports.get('compare', 8085)}"),
+                       description=f"Delegates to compare agent — {_where('compare')}",
+                       tags=["routing", "compare"]),
             AgentSkill(id="integration", name="Integration",
-                       description=f"Delegates to integration agent — port {agent_ports.get('integration', 8086)}"),
+                       description=f"Delegates to integration agent — {_where('integration')}",
+                       tags=["routing", "integration"]),
             AgentSkill(id="general", name="General RAG",
-                       description="General-purpose RAG across all indexed content"),
+                       description="General-purpose RAG across all indexed content",
+                       tags=["routing", "rag"]),
         ],
         version="1.0.0",
     )
@@ -355,7 +401,55 @@ def _orchestrator_server(agent_ports: dict[str, int]) -> Server:
     return server
 
 
-# ── entry points ───────────────────────────────────────────────────────────────
+# ── the agent registry (what the `a2a` role mounts) ────────────────────────────
+
+#: Every specialist, in the order they are advertised. `orchestrator` is first
+#: because it is the default agent — it is what answers at the root.
+AGENT_NAMES: tuple[str, ...] = (
+    "orchestrator", "stats", "code", "docs", "health", "compare", "integration",
+)
+
+
+def agent_factories(agent_paths: dict[str, str] | None = None) -> dict[str, Any]:
+    """Return `{name: AgentFactory}` for every specialist.
+
+    An `AgentFactory` is what `@server.agent(...)` produces: a callable taking
+    the context store's `modify_dependencies` and returning an
+    `agentstack_sdk.server.agent.Agent` (card + dependencies + execute fn),
+    which is exactly what `create_app()` wants.
+
+    Reaching through a throwaway `Server` for `_agent_factory` rather than
+    calling `agentstack_sdk.server.agent.agent(...)` directly is deliberate:
+    the decorator call sites above stay the single definition of every agent's
+    name, description and skills. Duplicating them here to avoid one private
+    attribute would give each agent two descriptions that could drift, which is
+    the failure this repo has been bitten by elsewhere.
+    """
+    builders = {
+        "orchestrator": lambda: _orchestrator_server(agent_paths=agent_paths),
+        "stats": _stats_server,
+        "code": _code_server,
+        "docs": _docs_server,
+        "health": _health_server,
+        "compare": _compare_server,
+        "integration": _integration_server,
+    }
+    factories: dict[str, Any] = {}
+    for name in AGENT_NAMES:
+        server = builders[name]()
+        factory = server._agent_factory
+        if factory is None:  # pragma: no cover - a decorator that did not run
+            raise RuntimeError(f"agent {name!r} registered no factory")
+        factories[name] = factory
+    return factories
+
+
+# ── legacy entry points (one port per agent, no auth) ──────────────────────────
+#
+# Superseded by the `a2a` role — see this module's docstring. Kept so an
+# external caller that still imports `run()` gets the old behaviour rather than
+# an ImportError, and so the shape the plan replaced stays legible next to its
+# replacement.
 
 async def _serve_all(host: str, base_port: int) -> None:
     agent_ports = {name: base_port + offset for name, offset in _AGENT_OFFSETS.items()}

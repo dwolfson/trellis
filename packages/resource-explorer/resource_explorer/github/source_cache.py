@@ -192,10 +192,21 @@ def local_clone(source: Path, dest: Path) -> Path:
     shared-mutable-state problem this design avoids.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        ["git", "clone", "--local", "--no-checkout", "-q", str(source), str(dest)],
-        capture_output=True, timeout=300,
-    )
+    # `--local` hardlinks objects, which only works when the cache and the
+    # destination sit on the same filesystem. In a container the cache lives on
+    # the /app/data volume and the tempdir on the overlay root, and git fails
+    # with "Invalid cross-device link" (trevor, 2026-09-04). Detect that up
+    # front and copy objects instead; same result, just not 0.28 s.
+    args = ["git", "clone", "--local", "--no-checkout", "-q"]
+    try:
+        if source.stat().st_dev != dest.parent.stat().st_dev:
+            args.append("--no-hardlinks")
+    except OSError:
+        pass
+    proc = subprocess.run(args + [str(source), str(dest)], capture_output=True, timeout=300)
+    if proc.returncode != 0 and b"cross-device" in proc.stderr and "--no-hardlinks" not in args:
+        proc = subprocess.run(args + ["--no-hardlinks", str(source), str(dest)],
+                              capture_output=True, timeout=300)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", "replace"))
     return dest

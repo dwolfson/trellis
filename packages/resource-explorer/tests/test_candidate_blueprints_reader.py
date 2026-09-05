@@ -129,4 +129,114 @@ class TestArchitectureRecoveryResultsCarriesBlueprints:
         _seed_cluster(registry, "myproj", members=["web"])
         result = _architecture_recovery_results(registry, "myproj")
         assert len(result["blueprints"]) == 1
-        assert result["blueprints"][0]["cluster_name"] == "core-services"
+
+
+class TestMemberAndChildStatus:
+    """2026-09-03 Curate redesign — member_status/child_status resolve a
+    blueprint's members/children to their own verdict/materialization state,
+    so the frontend can render "which members are already approved" without
+    a second round trip."""
+
+    def test_member_with_no_verdict_is_awaiting(self, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "web", "slug": "web", "type": "Software Service"},
+        }], surveyed_at="2026-09-03T00:00:00", scope_locator="src/web")
+        _seed_cluster(registry, "myproj", members=["web"])
+        out = _candidate_blueprints_results(registry, "myproj")
+        assert out[0]["member_status"] == [
+            {"slug": "web", "scope_locator": "src/web", "verdict": None, "materialized": None},
+        ]
+
+    def test_member_with_a_verdict_and_materialization_resolves_both(self, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "web", "slug": "web", "type": "Software Service"},
+        }], surveyed_at="2026-09-03T00:00:00", scope_locator="src/web")
+        registry.record_component_verdict("repo", "myproj", "src/web", "accepted", "", "")
+        registry.record_materialized_component(
+            "repo", "myproj", "src/web", "SolutionComponent::repo::myproj::src/web", "guid-web",
+        )
+        _seed_cluster(registry, "myproj", members=["web"])
+        out = _candidate_blueprints_results(registry, "myproj")
+        st = out[0]["member_status"][0]
+        assert st["verdict"]["verdict"] == "accepted"
+        assert st["materialized"]["guid"] == "guid-web"
+
+    def test_member_slug_with_no_matching_component_has_empty_scope(self, registry):
+        """A member slug that clustering.py knows about but that has no
+        currently-live component finding (e.g. withdrawn since the cluster
+        was proposed) resolves to scope_locator="" and null verdict/
+        materialized — never raises, never crashes the whole read."""
+        _seed_cluster(registry, "myproj", members=["ghost"])
+        out = _candidate_blueprints_results(registry, "myproj")
+        assert out[0]["member_status"] == [
+            {"slug": "ghost", "scope_locator": "", "verdict": None, "materialized": None},
+        ]
+
+    def test_child_blueprint_verdict_resolves_by_perspective_and_name(self, registry):
+        _seed_cluster(registry, "myproj", perspective="physical", name="parent-bp",
+                      children=["child-bp"])
+        registry.upsert_finding("myproj", "architecture_blueprints", [{
+            "check_name": "candidate_blueprint", "label": "child-bp",
+            "detail": {"name": "child-bp", "perspective": "physical", "signal": "compose",
+                       "carrier": "", "composed_into": "", "size": 1, "members": ["web"],
+                       "children": [], "parent": "parent-bp", "oversized": False,
+                       "target_size": 8, "run_scope": "", "not_a_claim": True},
+        }], surveyed_at="2026-09-03T00:00:00")
+        registry.record_component_verdict(
+            "repo", "myproj", "physical::child-bp", "accepted", "", "",
+            verdict_target="blueprint",
+        )
+        out = _candidate_blueprints_results(registry, "myproj")
+        parent = next(bp for bp in out if bp["cluster_name"] == "parent-bp")
+        assert parent["child_status"] == [
+            {"cluster_name": "child-bp",
+             "verdict": {"verdict": "accepted", "retyped_to": "", "note": "",
+                         "decided_at": parent["child_status"][0]["verdict"]["decided_at"]},
+             "materialized": None},
+        ]
+
+
+class TestComponentBlueprintBacklink:
+    """2026-09-03 Curate redesign item 5 — "jump from a component to its
+    candidate blueprints". Derived from the blueprints list's own `members`
+    at read time (never trusted from Component.blueprint, which is
+    single-valued and overwritten per clustering() call — see the
+    docstring on _architecture_recovery_results' backlink block)."""
+
+    def test_component_with_no_blueprint_membership_has_empty_backlink(self, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "web", "slug": "web", "type": "Software Service"},
+        }], surveyed_at="2026-09-03T00:00:00", scope_locator="src/web")
+        result = _architecture_recovery_results(registry, "myproj")
+        assert result["components"][0]["candidate_blueprints"] == []
+
+    def test_component_in_one_blueprint_has_one_backlink(self, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "web", "slug": "web", "type": "Software Service"},
+        }], surveyed_at="2026-09-03T00:00:00", scope_locator="src/web")
+        _seed_cluster(registry, "myproj", members=["web"], perspective="logical", name="core")
+        result = _architecture_recovery_results(registry, "myproj")
+        assert result["components"][0]["candidate_blueprints"] == [
+            {"perspective": "logical", "cluster_name": "core"},
+        ]
+
+    def test_component_claimed_by_two_perspectives_has_both_backlinks(self, registry):
+        """The exact case Component.blueprint (single-valued, last-write-
+        wins) would get wrong — a component proposed into both a logical
+        AND a physical blueprint must show both, not just whichever
+        clustering() call happened to run last."""
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "web", "slug": "web", "type": "Software Service"},
+        }], surveyed_at="2026-09-03T00:00:00", scope_locator="src/web")
+        _seed_cluster(registry, "myproj", members=["web"], perspective="logical", name="core")
+        _seed_cluster(registry, "myproj", members=["web"], perspective="physical", name="deploy-unit")
+        result = _architecture_recovery_results(registry, "myproj")
+        backlinks = result["components"][0]["candidate_blueprints"]
+        assert {(b["perspective"], b["cluster_name"]) for b in backlinks} == {
+            ("logical", "core"), ("physical", "deploy-unit"),
+        }

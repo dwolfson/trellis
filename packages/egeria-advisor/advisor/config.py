@@ -22,6 +22,55 @@ import yaml
 from loguru import logger
 
 
+def resolve_advisor_data_root() -> Path:
+    """
+    Absolute root directory for Advisor's own writable on-disk state — the
+    embedding/analytics cache (``advisor_cache_dir`` below), feedback logs,
+    incremental-index state, etc. This is a *different* concern from
+    ``AdvisorSettings.advisor_data_path``/``_egeria_python_path_from_yaml``,
+    which resolves the (read-only) egeria-python *source* checkout used by
+    the data-prep pipeline — the two happen to share the ``ADVISOR_DATA_PATH``
+    env var name, but this function is never used for that lookup.
+
+    Priority: ``ADVISOR_DATA_PATH`` env var if explicitly set (checked via
+    ``os.environ`` directly, matching ``resolve_mlflow_tracking_uri()``'s
+    established idiom, so an unset var never masquerades as a setting), else
+    ``"./data"`` — the unchanged default for a native checkout, where the
+    process cwd is normally the package root and writable.
+
+    A container's non-root user typically can't write to its image cwd
+    (e.g. ``/app``), which is exactly the "Permission denied: 'data'" startup
+    failure this exists to fix — set ``ADVISOR_DATA_PATH`` to a writable
+    volume (e.g. ``/tmp/advisor-data``) to route every write here instead.
+    """
+    env_val = os.environ.get("ADVISOR_DATA_PATH", "").strip()
+    if env_val:
+        return Path(env_val).expanduser()
+    return Path("./data")
+
+
+def ensure_writable_dir(path: Path, env_var: str) -> Path:
+    """
+    Create ``path`` (and any missing parents) if it doesn't already exist,
+    lazily and idempotently (``parents=True, exist_ok=True``).
+
+    Raises a clear, actionable ``RuntimeError`` naming both the failed path
+    and the env var that controls it if creation fails (e.g. "Permission
+    denied" inside a container whose default cwd isn't writable by its
+    non-root user) — rather than letting a bare ``OSError`` (or a caller's
+    blanket ``except Exception`` that only logs and silently disables the
+    feature) obscure what to actually change.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not create required directory {path!s} ({exc}). "
+            f"Set {env_var} to a writable location."
+        ) from exc
+    return path
+
+
 def _egeria_python_path_from_yaml() -> Path:
     """Resolve egeria-python path from YAML config, falling back to a sensible default.
 
@@ -93,6 +142,55 @@ class LLMModelConfig(BaseModel):
     planning: str = "llama3.1:8b"   # overridden in advisor.yaml to qwen2.5-coder:32b
 
 
+# --- Model tiers -----------------------------------------------------------
+#
+# runtime-architecture-plan.md revision 2 §5: neither app used to set num_ctx,
+# so Ollama loaded a model at its full context window (131k for llama3.1:8b,
+# 22 GB) regardless of what a task slot actually needed. A tier resolves, per
+# machine profile, the per-slot models, the Ollama `num_ctx` ceiling, and the
+# RAG retrieval context budget (the measured lever for time-to-first-token —
+# see the plan's "Target environments and what was measured" section).
+#
+# `dev`'s "models" entry is intentionally None: dev keeps today's behaviour
+# (whatever is configured in advisor.yaml / class defaults), not a fixed
+# preset. Likewise `rag_context_budget_tokens: None` for dev means the
+# legacy character-based `rag.context.max_length` budget applies unchanged —
+# no new token-based cutoff is introduced for dev.
+DEFAULT_MODEL_TIER = "dev"
+
+TIER_PRESETS: Dict[str, Dict[str, Any]] = {
+    "dev": {
+        "num_ctx": 32768,
+        "rag_context_budget_tokens": None,
+        "models": None,
+    },
+    "demo-gpu": {
+        "num_ctx": 8192,
+        "rag_context_budget_tokens": 2000,
+        "models": {
+            "query": "llama3.1:8b",
+            "conversation": "llama3.1:8b",
+            "planning": "llama3.1:8b",
+            "code": "codellama:13b",
+            "maintenance": "codellama:13b",
+        },
+    },
+    "demo-cpu": {
+        "num_ctx": 8192,
+        "rag_context_budget_tokens": 2000,
+        "models": {
+            # Every slot, including code, uses the one 8B model — no room to
+            # keep a second model resident on a CPU-only box.
+            "query": "llama3.1:8b",
+            "conversation": "llama3.1:8b",
+            "planning": "llama3.1:8b",
+            "code": "llama3.1:8b",
+            "maintenance": "llama3.1:8b",
+        },
+    },
+}
+
+
 class LLMParametersConfig(BaseModel):
     """LLM parameters configuration."""
     temperature: float = 0.7
@@ -110,6 +208,11 @@ class LLMConfig(BaseModel):
     models: LLMModelConfig = Field(default_factory=LLMModelConfig)
     parameters: LLMParametersConfig = Field(default_factory=LLMParametersConfig)
     model_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    # Resolved from the active model tier (see TIER_PRESETS / resolve_llm_tier_config
+    # below) inside get_full_config() — not meant to be set directly in advisor.yaml.
+    # Passed as the `num_ctx` Ollama option on every generate/chat call.
+    tier: str = DEFAULT_MODEL_TIER
+    num_ctx: int = TIER_PRESETS[DEFAULT_MODEL_TIER]["num_ctx"]
 
 
 class EmbeddingConfig(BaseModel):
@@ -133,6 +236,12 @@ class RAGContextConfig(BaseModel):
     max_length: int = 4000
     format_style: str = "detailed"
     include_metadata: bool = True
+    # Resolved from the active model tier inside get_full_config(). None means
+    # the legacy character-based `max_length` cutoff above applies unchanged
+    # (the `dev` tier); an int is a token budget (approximate — see
+    # rag_retrieval.py's `_estimate_tokens`) that RAGRetriever.build_context()
+    # truncates retrieved chunks to, highest-ranked first.
+    budget_tokens: Optional[int] = None
 
 
 class RAGGenerationConfig(BaseModel):
@@ -203,10 +312,13 @@ class CLIConfig(BaseModel):
     max_response_length: int = 5000
 
 
+DEFAULT_MLFLOW_TRACKING_URI = "http://localhost:5025"
+
+
 class MLflowConfig(BaseModel):
     """MLflow configuration."""
     enabled: bool = True
-    tracking_uri: str = "http://localhost:5000"
+    tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI
     experiment_name: str = "egeria-advisor"
     log_system_metrics: bool = True
     log_query_metrics: bool = True
@@ -287,6 +399,14 @@ class AdvisorSettings(BaseSettings):
     ollama_code_model: str = Field(default="codellama:13b", alias="OLLAMA_CODE_MODEL")
     ollama_temperature: float = Field(default=0.7, alias="OLLAMA_TEMPERATURE")
 
+    # Model tier — see TIER_PRESETS / resolve_llm_tier_config() above.
+    # NOTE: the actual resolution logic reads os.environ directly rather
+    # than this field, because it needs to distinguish "explicitly set" from
+    # "defaulted by pydantic-settings"; this field exists for discoverability
+    # (e.g. an admin/health endpoint) and documentation, not as the live
+    # source of truth.
+    advisor_model_tier: str = Field(default="dev", alias="ADVISOR_MODEL_TIER")
+
     # Embeddings
     embedding_model: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
@@ -295,8 +415,12 @@ class AdvisorSettings(BaseSettings):
     embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
 
     # MLflow
+    # Default matches advisor.yaml observability.mlflow.tracking_uri (the
+    # mlflow_tracking_server container listens on 5025). Prefer
+    # resolve_mlflow_tracking_uri() over reading this field directly: it
+    # applies the env > yaml > default precedence used elsewhere in EA.
     mlflow_tracking_uri: str = Field(
-        default="http://localhost:5000",
+        default=DEFAULT_MLFLOW_TRACKING_URI,
         alias="MLFLOW_TRACKING_URI"
     )
     mlflow_experiment_name: str = Field(
@@ -318,7 +442,7 @@ class AdvisorSettings(BaseSettings):
         alias="ADVISOR_DATA_PATH"
     )
     advisor_cache_dir: Path = Field(
-        default=Path("./data/cache"),
+        default_factory=lambda: resolve_advisor_data_root() / "cache",
         alias="ADVISOR_CACHE_DIR"
     )
     advisor_log_level: str = Field(default="INFO", alias="ADVISOR_LOG_LEVEL")
@@ -352,6 +476,139 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
+class ResolvedLLMTierConfig(BaseModel):
+    """The effective per-tier LLM configuration, after resolving overrides."""
+    tier: str
+    models: LLMModelConfig
+    num_ctx: int
+    rag_context_budget_tokens: Optional[int]
+
+
+def resolve_model_tier(config_path: Optional[Path] = None) -> str:
+    """
+    Resolve the active model tier.
+
+    Priority: ``ADVISOR_MODEL_TIER`` env var, then ``llm.tier`` in
+    advisor.yaml, then the ``dev`` default. An unrecognised value in either
+    source is logged and skipped rather than raised, so a typo degrades to
+    the default instead of failing startup.
+    """
+    env_tier = os.environ.get("ADVISOR_MODEL_TIER", "").strip()
+    if env_tier:
+        if env_tier in TIER_PRESETS:
+            return env_tier
+        logger.warning(
+            f"Unknown ADVISOR_MODEL_TIER={env_tier!r} (expected one of "
+            f"{sorted(TIER_PRESETS)}); falling back to llm.tier / default"
+        )
+
+    raw = load_config(config_path) or {}
+    yaml_tier = (raw.get("llm") or {}).get("tier")
+    if yaml_tier:
+        if yaml_tier in TIER_PRESETS:
+            return yaml_tier
+        logger.warning(
+            f"Unknown llm.tier={yaml_tier!r} in advisor.yaml (expected one of "
+            f"{sorted(TIER_PRESETS)}); falling back to default"
+        )
+
+    return DEFAULT_MODEL_TIER
+
+
+def resolve_mlflow_tracking_uri(config_path: Optional[Path] = None) -> str:
+    """
+    Resolve the MLflow tracking URI from one source of truth.
+
+    Priority: ``MLFLOW_TRACKING_URI`` env var (checked via ``os.environ``
+    directly so an unset var never masquerades as a setting), then
+    ``observability.mlflow.tracking_uri`` in advisor.yaml, then
+    ``DEFAULT_MLFLOW_TRACKING_URI``.
+    """
+    env_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    if env_uri:
+        return env_uri
+
+    raw = load_config(config_path) or {}
+    yaml_uri = ((raw.get("observability") or {}).get("mlflow") or {}).get("tracking_uri")
+    if yaml_uri and str(yaml_uri).strip():
+        return str(yaml_uri).strip()
+
+    return DEFAULT_MLFLOW_TRACKING_URI
+
+
+def resolve_llm_tier_config(config_path: Optional[Path] = None) -> ResolvedLLMTierConfig:
+    """
+    Resolve the effective per-slot models, ``num_ctx``, and RAG context
+    budget for the active tier.
+
+    Per-slot model resolution order (highest wins):
+      1. ``OLLAMA_MODEL`` / ``OLLAMA_CODE_MODEL`` env vars, if actually
+         present in the environment (checked via ``os.environ`` directly,
+         not the AdvisorSettings default, so an unset var never masquerades
+         as an override). ``OLLAMA_MODEL`` overrides the query/conversation
+         slots; ``OLLAMA_CODE_MODEL`` overrides code/maintenance. Neither
+         touches ``planning``, which stays a dedicated slot (see CLAUDE.md
+         rule 16) driven only by yaml/tier resolution below.
+      2. A slot explicitly present in advisor.yaml's ``llm.models`` block
+         (read from the *raw* YAML, so a value that only came from a class
+         default never counts as an operator override).
+      3. The resolved tier's preset model for that slot.
+      4. ``LLMModelConfig``'s own class default (only reachable for ``dev``,
+         whose preset leaves models alone).
+    """
+    tier = resolve_model_tier(config_path)
+    preset = TIER_PRESETS[tier]
+
+    raw = load_config(config_path) or {}
+    raw_models: Dict[str, Any] = ((raw.get("llm") or {}).get("models")) or {}
+
+    resolved: Dict[str, Any] = LLMModelConfig().model_dump()
+    if preset["models"]:
+        resolved.update(preset["models"])
+    resolved.update({k: v for k, v in raw_models.items() if k in resolved})
+
+    # `planning` is deliberately excluded from OLLAMA_MODEL's scope: it's a
+    # dedicated, separately-tuned model slot (see CLAUDE.md rule 16 —
+    # get_planning_llm() pins qwen2.5-coder:32b for narrative/refinement
+    # quality, independent of the RAG query model). This checkout's own
+    # .env sets OLLAMA_MODEL=llama3.1:8b, which was harmless while the alias
+    # was dead code — silently downgrading advisor.yaml's chosen planning
+    # model the moment the alias started working would be a real regression,
+    # not a "keep it working" change.
+    ollama_model_env = os.environ.get("OLLAMA_MODEL", "").strip()
+    ollama_code_model_env = os.environ.get("OLLAMA_CODE_MODEL", "").strip()
+    if ollama_model_env:
+        for slot in ("query", "conversation"):
+            resolved[slot] = ollama_model_env
+    if ollama_code_model_env:
+        for slot in ("code", "maintenance"):
+            resolved[slot] = ollama_code_model_env
+
+    return ResolvedLLMTierConfig(
+        tier=tier,
+        models=LLMModelConfig(**resolved),
+        num_ctx=preset["num_ctx"],
+        rag_context_budget_tokens=preset["rag_context_budget_tokens"],
+    )
+
+
+_llm_tier_config: Optional[ResolvedLLMTierConfig] = None
+
+
+def get_llm_tier_config(config_path: Optional[Path] = None, force_refresh: bool = False) -> ResolvedLLMTierConfig:
+    """Return the cached resolved tier config, logging it once on first resolution."""
+    global _llm_tier_config
+    if _llm_tier_config is None or force_refresh:
+        _llm_tier_config = resolve_llm_tier_config(config_path)
+        cfg = _llm_tier_config
+        logger.info(
+            "LLM tier resolved: tier={} models={} num_ctx={} rag_context_budget_tokens={}".format(
+                cfg.tier, cfg.models.model_dump(), cfg.num_ctx, cfg.rag_context_budget_tokens
+            )
+        )
+    return _llm_tier_config
+
+
 def get_full_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     Get full configuration including all nested configs.
@@ -382,6 +639,15 @@ def get_full_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
         "logging": LoggingConfig(**config.get("logging", {})),
     }
 
+    # Apply the resolved model tier on top of the yaml-parsed llm/rag blocks:
+    # per-slot models, num_ctx, and the RAG context token budget. See
+    # resolve_llm_tier_config()'s docstring for the override precedence.
+    tier_cfg = get_llm_tier_config(config_path)
+    full_config["llm"].tier = tier_cfg.tier
+    full_config["llm"].models = tier_cfg.models
+    full_config["llm"].num_ctx = tier_cfg.num_ctx
+    full_config["rag"].context.budget_tokens = tier_cfg.rag_context_budget_tokens
+
     return full_config
 
 
@@ -399,6 +665,14 @@ __all__ = [
     "settings",
     "load_config",
     "get_full_config",
+    "resolve_advisor_data_root",
+    "ensure_writable_dir",
+    "DEFAULT_MODEL_TIER",
+    "TIER_PRESETS",
+    "ResolvedLLMTierConfig",
+    "resolve_model_tier",
+    "resolve_llm_tier_config",
+    "get_llm_tier_config",
     "DataSourceConfig",
     "VectorStoreConfig",
     "PgVectorConfig",

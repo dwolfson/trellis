@@ -62,7 +62,7 @@ class TestTheApiPathIsReachable:
 
         with patch.object(adapter, "get_config", lambda: _cfg(enabled=True)), \
              patch.object(adapter, "_run_prefect_step_api", fake_api), \
-             patch.object(adapter, "re_survey_flow", return_value={"via": "local"}):
+             patch.object(adapter.run_surveyor_step_task, "fn", return_value={"via": "local"}):
             out = adapter.run_prefect_step("repo", "s", "repo_health", {})
 
         assert called.get("yes") == "repo_health"
@@ -72,7 +72,7 @@ class TestTheApiPathIsReachable:
         with patch.object(adapter, "get_config", lambda: _cfg(enabled=False)), \
              patch.object(adapter, "_run_prefect_step_api",
                           side_effect=AssertionError("must not be called")), \
-             patch.object(adapter, "re_survey_flow", return_value={"via": "local"}):
+             patch.object(adapter.run_surveyor_step_task, "fn", return_value={"via": "local"}):
             assert adapter.run_prefect_step("repo", "s", "repo_health", {}) == {"via": "local"}
 
     def test_a_cancelled_run_does_not_fall_back_to_local(self):
@@ -87,7 +87,7 @@ class TestTheApiPathIsReachable:
 
         with patch.object(adapter, "get_config", lambda: _cfg(enabled=True)), \
              patch.object(adapter, "_run_prefect_step_api", cancelled), \
-             patch.object(adapter, "re_survey_flow",
+             patch.object(adapter.run_surveyor_step_task, "fn",
                           side_effect=AssertionError("must not fall back for a cancellation")):
             with pytest.raises(adapter.PrefectFlowRunCancelled):
                 adapter.run_prefect_step("repo", "s", "repo_health", {})
@@ -100,7 +100,7 @@ class TestTheApiPathIsReachable:
 
         with patch.object(adapter, "get_config", lambda: _cfg(enabled=True)), \
              patch.object(adapter, "_run_prefect_step_api", boom), \
-             patch.object(adapter, "re_survey_flow", return_value={"via": "local"}):
+             patch.object(adapter.run_surveyor_step_task, "fn", return_value={"via": "local"}):
             assert adapter.run_prefect_step("repo", "s", "repo_health", {}) == {"via": "local"}
 
     def test_the_fallback_names_the_exception_type(self, caplog):
@@ -111,7 +111,7 @@ class TestTheApiPathIsReachable:
 
         with patch.object(adapter, "get_config", lambda: _cfg(enabled=True)), \
              patch.object(adapter, "_run_prefect_step_api", boom), \
-             patch.object(adapter, "re_survey_flow", return_value={"via": "local"}):
+             patch.object(adapter.run_surveyor_step_task, "fn", return_value={"via": "local"}):
             adapter.run_prefect_step("repo", "s", "repo_health", {})
 
         assert "ValueError" in caplog.text

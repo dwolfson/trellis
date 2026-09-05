@@ -23,7 +23,55 @@ from advisor.cli.agent_session import AgentInteractiveSession
 console = Console()
 
 
-@click.command()
+class DefaultCommandGroup(click.Group):
+    """A group whose unrecognised first argument falls through to `ask`.
+
+    `egeria-advisor` was a single command taking a free-text query, and the
+    2026-09-04 login work needs it to also carry `login` and `logout`
+    subcommands. Turning it into a plain `click.Group` would break
+    `egeria-advisor "how do I create a glossary?"` — the query would be read as
+    an unknown command — and every script and doc that spells it that way.
+
+    So: named subcommands win, and *anything else* (a bare question, or a
+    leading option like `-i`) is handed to `ask`, which is the old command
+    unchanged. The precedence matters and is the one sharp edge: a query whose
+    first word is literally `login` would be taken as the subcommand. That is
+    the right trade — the subcommand names are two rare words, and
+    `egeria-advisor ask "login ..."` says the other thing explicitly.
+    """
+
+    #: Never treat these as a query, whatever follows them.
+    _PASSTHROUGH = ("--help", "-h", "--version")
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and args[0] in self._PASSTHROUGH:
+                raise
+            return "ask", self.get_command(ctx, "ask"), args
+
+    def parse_args(self, ctx, args):
+        # `click.Group` with no subcommand prints help; here a bare option
+        # like `-i` or a lone question must reach `ask` instead. Only a
+        # genuinely empty invocation falls through to the group's own help.
+        if args and args[0] not in self._PASSTHROUGH and args[0] not in self.commands:
+            args = ["ask", *args]
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=DefaultCommandGroup, invoke_without_command=False)
+@click.version_option(version='0.1.0', prog_name='egeria-advisor')
+def cli() -> None:
+    """Egeria Advisor — AI-powered assistance for pyegeria.
+
+    Ask a question directly (`egeria-advisor "what is a governance zone?"`),
+    or use a subcommand. `login` caches an Egeria session so that live calls
+    run as you rather than as the deployment's service account.
+    """
+
+
+@cli.command("ask")
 @click.argument('query', required=False)
 @click.option(
     '--interactive', '-i',
@@ -76,8 +124,24 @@ console = Console()
     is_flag=True,
     help='Use conversational agent mode (with conversation history)'
 )
-@click.version_option(version='0.1.0', prog_name='egeria-advisor')
-def cli(
+@click.option(
+    '--user',
+    'user_id',
+    default=None,
+    help='Egeria user id that owns any plan/report drafts and documents this '
+         'session creates (chat-driven creation lands in this user\'s '
+         'namespace instead of the shared one). Not required — since '
+         '2026-09-04 the CLI has a cached login (`egeria-advisor login`) and '
+         'defaults to whoever is signed in; --user overrides the namespace '
+         'without changing whose Egeria token live calls use. With neither, '
+         'this is the shared namespace, same as an anonymous web request. '
+         'Deliberately does NOT fall back to the EGERIA_USER/.env '
+         'service-account setting (advisor.config.settings.egeria_user) — '
+         'that identity is a live-Egeria-call fallback only and is '
+         'explicitly excluded from owning artifacts (see advisor/auth.py\'s '
+         'module docstring).'
+)
+def ask(
     query: Optional[str],
     interactive: bool,
     context: Optional[str],
@@ -88,7 +152,8 @@ def cli(
     track: bool,
     feedback: bool,
     debug: bool,
-    agent: bool
+    agent: bool,
+    user_id: Optional[str]
 ):
     """
     Egeria Advisor - AI-powered assistance for pyegeria
@@ -138,22 +203,41 @@ def cli(
         'agent_mode': agent,
     }
     
+    from advisor.request_context import using_user
+    from advisor.cli import session as cli_session
+
+    # The cached login supplies the identity when --user was not given. Best
+    # effort by design: asking a question answered from the local corpus needs
+    # no Egeria, so a lapsed session must not block it — the commands that do
+    # need one say so themselves (see cli/session.py). `egeria_credentials` is
+    # threaded into the live-Egeria call sites reachable from here so they run
+    # as the signed-in person rather than the .env service account.
+    user_id, egeria_credentials = cli_session.resolve_identity(user_id)
+    options['egeria_credentials'] = egeria_credentials
+
     try:
         # If agent mode is requested, automatically enable interactive
         if agent and not interactive and not query:
             interactive = True
-        
-        if interactive:
-            # Start interactive mode
-            start_interactive(options)
-        elif query:
-            # Handle direct query
-            direct_query(query, options)
-        else:
-            # No query provided, show help
-            ctx = click.get_current_context()
-            click.echo(ctx.get_help())
-            sys.exit(0)
+
+        # Ambient identity for the whole session (see --user's help text):
+        # any plan/report draft or document the chat/agent path creates
+        # underneath this call — however many function calls deep, per
+        # advisor/request_context.py's module docstring — lands in
+        # user_id's namespace instead of the shared one. None (no --user and
+        # no cached login) behaves exactly like an anonymous web request.
+        with using_user(user_id):
+            if interactive:
+                # Start interactive mode
+                start_interactive(options)
+            elif query:
+                # Handle direct query
+                direct_query(query, options)
+            else:
+                # No query provided, show help
+                ctx = click.get_current_context()
+                click.echo(ctx.get_help())
+                sys.exit(0)
     
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/yellow]")
@@ -232,7 +316,20 @@ def direct_query(query: str, options: dict):
             result = rag.query(
                 user_query=query,
                 include_context=True,
-                track_metrics=options.get('track_metrics', True)
+                track_metrics=options.get('track_metrics', True),
+                # The cached login, when there is one. Same dict shape a
+                # signed-in web request produces ({user_id, password: "",
+                # token}), so every live-Egeria call site downstream builds its
+                # pyegeria client with `apply_token` and Egeria's provenance
+                # records the person rather than the .env service account.
+                # None when nothing is signed in — the pre-existing anonymous
+                # behaviour, unchanged.
+                # `egeria_authenticated` is deliberately left at its default:
+                # the CLI has always passed True, live paths fall back to the
+                # service account when no credentials are supplied, and
+                # flipping it to False for an unsigned-in CLI would newly
+                # refuse live-data questions that work today.
+                egeria_credentials=options.get('egeria_credentials'),
             )
     except Exception as e:
         console.print(f"[red]✗ Query failed:[/red] {e}")
@@ -346,6 +443,71 @@ def start_interactive(options: dict):
     # Start interactive session
     session = InteractiveSession(rag, options, console)
     session.run()
+
+
+# ---------------------------------------------------------------------------
+# login / logout — the CLI's cached session (2026-09-04)
+# ---------------------------------------------------------------------------
+
+@cli.command("login")
+@click.option(
+    "--user", "user_id", default=None,
+    help="Egeria user id to sign in as. Prompted for if omitted; defaults to "
+         "the .env EGERIA_USER for convenience on a single-user box.",
+)
+def login_command(user_id: Optional[str]) -> None:
+    """Sign in to Egeria and cache the session for later commands.
+
+    The password is **prompted for, never taken as an argument** — an argument
+    would land in the shell history, in `ps` output and in any process
+    accounting the box keeps. It is exchanged for an Egeria bearer token once
+    and then discarded; what gets written to disk is this app's session JWT
+    (mode 0600, under $XDG_CONFIG_HOME/trellis/egeria-advisor/), never the
+    password.
+
+    Egeria's tokens last an hour, so this is a session, not a stored
+    credential: when it lapses, commands that need Egeria say so in one line.
+    """
+    from advisor.auth import login_with_password
+    from advisor.cli import session as cli_session
+
+    if not user_id:
+        from advisor.config import settings
+        user_id = click.prompt("Egeria user id", default=settings.egeria_user or None)
+    password = click.prompt("Password", hide_input=True)
+
+    egeria_token = login_with_password(user_id, password)
+    del password
+    if not egeria_token:
+        # One message for three causes (bad credentials, Egeria unreachable,
+        # pyegeria missing) because `login_with_password` cannot distinguish
+        # them and guessing would be worse than naming all three.
+        console.print(
+            "[red]✗ Sign-in failed.[/red] Check the user id and password, and that the "
+            "Egeria platform in .env (EGERIA_VIEW_SERVER_URL) is reachable."
+        )
+        sys.exit(1)
+
+    record = cli_session.save_login(user_id, egeria_token)
+    when = f" until {record.expires_at_local:%H:%M}" if record.expires_at_local else ""
+    console.print(f"[green]✓ Signed in as {user_id}[/green]{when}")
+    console.print(f"[dim]Session cached at {record.path} (mode 0600)[/dim]")
+
+
+@cli.command("logout")
+def logout_command() -> None:
+    """Forget the cached session.
+
+    Local only, and honestly so: there is no server-side session to revoke —
+    the Egeria bearer token inside the cached JWT stays valid at the platform
+    until its own expiry. Deleting the file is the whole of what logout can do.
+    """
+    from advisor.cli import session as cli_session
+
+    if cli_session.clear_session():
+        console.print("[green]✓ Signed out.[/green]")
+    else:
+        console.print("[dim]Not signed in — nothing to do.[/dim]")
 
 
 @click.command("web")

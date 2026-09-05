@@ -45,11 +45,21 @@ class OllamaClient:
         """
         config = get_full_config()
         llm_config = config.get("llm")
-        
-        self.base_url = base_url or llm_config.base_url
+
+        # Precedence: explicit argument, then the environment (OLLAMA_BASE_URL is
+        # the deployment's word — in a container it names host.docker.internal or
+        # the ollama service), then advisor.yaml's llm.base_url. The yaml used to
+        # win over the environment, so the trevor container talked to its own
+        # localhost:11434 where nothing listens (2026-09-04).
+        import os as _os
+        self.base_url = base_url or _os.environ.get("OLLAMA_BASE_URL", "").strip() or llm_config.base_url
         self.default_model = model or llm_config.models.query
         self.timeout = timeout or llm_config.parameters.timeout
-        
+        # Resolved from the active model tier (advisor/config.py TIER_PRESETS)
+        # — passed as the Ollama `num_ctx` option on every generate/chat call
+        # so a model is never loaded at its full default context window.
+        self.num_ctx = llm_config.num_ctx
+
         # Get default parameters
         self.default_params = {
             "temperature": llm_config.parameters.temperature,
@@ -129,19 +139,20 @@ class OllamaClient:
                 "temperature": temperature or self.default_params["temperature"],
                 "top_p": self.default_params["top_p"],
                 "top_k": self.default_params["top_k"],
-                "repeat_penalty": self.default_params["repeat_penalty"]
+                "repeat_penalty": self.default_params["repeat_penalty"],
+                "num_ctx": self.num_ctx
             }
         }
-        
+
         if system:
             payload["system"] = system
-        
+
         if max_tokens:
             payload["options"]["num_predict"] = max_tokens
-        
+
         # Add any additional options
         payload["options"].update(kwargs)
-        
+
         logger.debug(f"Generating with model: {model}")
         logger.debug(f"Prompt length: {len(prompt)} chars")
         
@@ -227,6 +238,7 @@ class OllamaClient:
                 "top_p": self.default_params["top_p"],
                 "top_k": self.default_params["top_k"],
                 "repeat_penalty": self.default_params["repeat_penalty"],
+                "num_ctx": self.num_ctx,
             },
         }
         if system:
@@ -270,6 +282,7 @@ class OllamaClient:
                 "top_p": self.default_params["top_p"],
                 "top_k": self.default_params["top_k"],
                 "repeat_penalty": self.default_params["repeat_penalty"],
+                "num_ctx": self.num_ctx,
             },
         }
         if max_tokens:
@@ -327,7 +340,8 @@ class OllamaClient:
                 "temperature": temperature or self.default_params["temperature"],
                 "top_p": self.default_params["top_p"],
                 "top_k": self.default_params["top_k"],
-                "repeat_penalty": self.default_params["repeat_penalty"]
+                "repeat_penalty": self.default_params["repeat_penalty"],
+                "num_ctx": self.num_ctx
             }
         }
         
@@ -407,10 +421,11 @@ class OllamaClient:
                 "temperature": temperature or self.default_params["temperature"],
                 "top_p": self.default_params["top_p"],
                 "top_k": self.default_params["top_k"],
-                "repeat_penalty": self.default_params["repeat_penalty"]
+                "repeat_penalty": self.default_params["repeat_penalty"],
+                "num_ctx": self.num_ctx
             }
         }
-        
+
         if max_tokens:
             payload["options"]["num_predict"] = max_tokens
         

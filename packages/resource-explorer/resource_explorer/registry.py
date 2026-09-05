@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -14,6 +15,40 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from sqlalchemy import create_engine
+
+log = logging.getLogger(__name__)
+
+
+def current_user_id() -> str:
+    """The signed-in caller's user id, or `''` for shared/service work.
+
+    The registry's single answer to "whose row is this". It reads RE's one
+    identity ContextVar (`a2a_auth.current_caller`), set by the web
+    `_identity_middleware`, by the A2A middleware, and by the CLI's
+    `cli.session.activate()`.
+
+    **Scoping lives here, in the registry layer, and not in the routes** —
+    the plan's isolation matrix says so in as many words, and the reason is
+    that a route is exactly the place a new endpoint forgets to do it. A
+    method that takes `user_id=None` and resolves it here cannot be called
+    without scoping; a route that has to remember can.
+
+    `''` is the shared/legacy bucket: every row written before user scoping
+    existed, plus anything a service-account path writes. It is a real value
+    with a real meaning, not a null-shaped "unknown".
+    """
+    try:
+        from resource_explorer.a2a_auth import caller
+    except Exception:  # pragma: no cover - import cycle safety only
+        return ""
+    identity = caller()
+    if identity is None or identity.auth_source == "anonymous":
+        return ""
+    return identity.user_id or ""
+
+
+#: The shared/legacy bucket every scoped read falls back to.
+SHARED_USER_ID = ""
 
 
 class ProjectStatus(str, Enum):
@@ -471,8 +506,79 @@ class ProjectRegistry:
         except Exception:
             return set()
 
+    def _add_user_id_to_keyed_table(
+        self, conn, table: str, *, columns: str,
+        column_names: "tuple[str, ...]", pk: "tuple[str, ...]",
+    ) -> None:
+        """Add `user_id` to a table whose PRIMARY KEY must widen to include it.
+
+        The registry's usual convention — `CREATE TABLE IF NOT EXISTS` with the
+        new shape, then `ALTER TABLE ... ADD COLUMN` for existing databases —
+        is not enough for these two tables, and the reason is easy to miss:
+        `ADD COLUMN` leaves the OLD two-column primary key in place. The
+        column would appear, the code would write it, and the second user to
+        touch a resource would get a duplicate-key error (Postgres) or silently
+        overwrite the first (an `ON CONFLICT` naming the old key). The schema
+        would look migrated and the isolation would not exist.
+
+        So the key is widened too, per backend:
+
+        * **Postgres** — `DROP CONSTRAINT <table>_pkey` then `ADD PRIMARY KEY`.
+          Named by convention, and `IF EXISTS` covers a database where it was
+          created some other way.
+        * **SQLite** — no `DROP CONSTRAINT`, so the table is rebuilt: create
+          the new shape under a temp name, copy every row (existing rows get
+          `user_id = ''`, the shared/legacy bucket), drop, rename. Safe here
+          because both tables are small, one row per resource, and the whole
+          thing runs inside the caller's transaction.
+
+        A no-op when `user_id` is already present, which is every run after the
+        first and every freshly-created database.
+        """
+        existing = self._get_table_columns(conn, table)
+        if not existing or "user_id" in existing:
+            return
+
+        pk_sql = ", ".join(pk)
+        carried = [c for c in column_names if c != "user_id" and c in existing]
+        if conn.is_postgres:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_pkey")
+            conn.execute(f"ALTER TABLE {table} ADD PRIMARY KEY ({pk_sql})")
+        else:
+            tmp = f"{table}__user_id_migration"
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            conn.execute(f"CREATE TABLE {tmp} ({columns}, PRIMARY KEY ({pk_sql}))")
+            cols = ", ".join(carried)
+            conn.execute(f"INSERT INTO {tmp} ({cols}) SELECT {cols} FROM {table}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
+        log.info("registry: added user_id to %s and widened its primary key", table)
+
+    def _search_path_schema(self) -> str:
+        """Schema named by the connection URL's `options=-csearch_path=<name>`
+        query parameter; `resource_explorer` when the URL does not pin one."""
+        from urllib.parse import parse_qs, unquote, urlsplit
+        opts = parse_qs(urlsplit(self.database_url).query).get("options", [])
+        for opt in opts:
+            for part in unquote(opt).split():
+                if part.startswith("-csearch_path="):
+                    name = part.split("=", 1)[1].split(",")[0].strip().strip('"')
+                    if name and name.replace("_", "").isalnum():
+                        return name
+        return "resource_explorer"
+
     def _init_schema(self) -> None:
         with self._conn() as conn:
+            if self.database_url.startswith("postgresql"):
+                # A fresh database has no `resource_explorer` schema, and the
+                # connection URL pins search_path to it, so every CREATE TABLE
+                # below fails with "no schema has been selected to create in"
+                # (found on trevor's first deployment, 2026-09-04). The vector
+                # store already guards its schema the same way (trellis-vectorstore
+                # pg.py); the registry now does too. The schema name is whatever
+                # search_path resolves to for this connection.
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._search_path_schema()}"')
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     slug TEXT PRIMARY KEY,
@@ -738,6 +844,14 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_contributor_stats_slug "
                 "ON project_contributor_stats(project_slug, period_start)"
             )
+            # `user_id` (2026-09-04, plan §4 — "RE's conversation memory, keyed
+            # by session_id with no owner, gains user_id the same way"). The
+            # plan's isolation matrix is explicit that history is read only by
+            # its owner while RAG retrieval stays shared, because the corpus is
+            # shared by design and a person's own questions are not.
+            #
+            # No primary-key change needed here: the key is a surrogate id, so
+            # this is a plain ADD COLUMN.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -746,12 +860,21 @@ class ProjectRegistry:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     project_slug TEXT DEFAULT '',
+                    user_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 )
             """)
+            if "user_id" not in self._get_table_columns(conn, "conversation_history"):
+                conn.execute(
+                    "ALTER TABLE conversation_history ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_session "
                 "ON conversation_history(session_id, turn_idx)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conv_user "
+                "ON conversation_history(user_id, session_id)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_dependencies (
@@ -1300,6 +1423,15 @@ class ProjectRegistry:
                     verdict        TEXT NOT NULL,   -- 'accepted' | 'rejected' | 'retyped'
                     retyped_to     TEXT NOT NULL DEFAULT '',
                     note           TEXT NOT NULL DEFAULT '',
+                    -- Who recorded this verdict (2026-09-04, plan §4). Read by
+                    -- workflows/curate.owner_of as the local mirror of the
+                    -- element's Egeria `Ownership`, so an authorization
+                    -- decision can still be made when Egeria is unreachable
+                    -- and for a proposal that has not been materialized yet.
+                    -- '' is the shared/legacy bucket: every verdict recorded
+                    -- before this column existed, curatable by any signed-in
+                    -- user (see may_curate).
+                    decided_by     TEXT NOT NULL DEFAULT '',
                     created_at     TEXT NOT NULL
                 )
             """)
@@ -1343,6 +1475,11 @@ class ProjectRegistry:
                     "ALTER TABLE architecture_component_verdicts ADD COLUMN "
                     "verdict_target TEXT NOT NULL DEFAULT 'component'"
                 )
+            if "decided_by" not in existing_verdicts:
+                conn.execute(
+                    "ALTER TABLE architecture_component_verdicts ADD COLUMN "
+                    "decided_by TEXT NOT NULL DEFAULT ''"
+                )
             # New table: architecture_materialized_blueprints — parallel in
             # shape to architecture_materialized_components (Decision 4), but
             # keyed by (entity_type, entity_slug, perspective, cluster_name)
@@ -1364,6 +1501,31 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_blueprints_scope "
                 "ON architecture_materialized_blueprints(entity_type, entity_slug, perspective, cluster_name)"
+            )
+            # New table: architecture_materialized_ports — same parallel shape
+            # again, this time for PortMaterializer's temporary SolutionPort
+            # workaround (Backlog.md item 8 / egeria-python ISSUE-85:
+            # SolutionArchitect has no create_solution_port, confirmed live
+            # against the actual OpenAPI spec — no create endpoint anywhere).
+            # Keyed by (entity_type, entity_slug, scope_locator, port_name)
+            # rather than scope_locator alone, since one component can
+            # legitimately have more than one port (e.g. an HTTP port and a
+            # metrics port on the same deployed service).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_materialized_ports (
+                    id              TEXT PRIMARY KEY,
+                    entity_type     TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    scope_locator   TEXT NOT NULL,
+                    port_name       TEXT NOT NULL,
+                    qualified_name  TEXT NOT NULL,
+                    guid            TEXT NOT NULL,
+                    materialized_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_ports_scope "
+                "ON architecture_materialized_ports(entity_type, entity_slug, scope_locator, port_name)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
@@ -1773,20 +1935,35 @@ class ProjectRegistry:
             """)
             # Personal "do I want this in front of me right now" view filter
             # — deliberately separate from repo_dispositions (a canonical
-            # judgment about the resource). Global for now (no per-person
-            # auth exists in this codebase yet — see repo_dispositions'
-            # decided_by comment for the same constraint), but its own table
-            # so a user_id column can be added later without touching
-            # disposition's model (D4).
+            # judgment about the resource). Its own table precisely so a
+            # `user_id` column could be added later without touching
+            # disposition's model (D4) — **and it has been** (2026-09-04, plan
+            # §4): the row is now per person, and the primary key carries
+            # `user_id` because two people hiding the same repo are two facts,
+            # not one that overwrites the other.
+            #
+            # `''` is the shared/legacy bucket: every row written before this
+            # change, and anything an unauthenticated path writes. Reads take
+            # the caller's own row when there is one and fall back to `''`, so
+            # nobody's existing view filters vanished when the column appeared.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_working_set (
                     entity_type TEXT NOT NULL,
                     entity_slug TEXT NOT NULL,
+                    user_id     TEXT NOT NULL DEFAULT '',
                     hidden      INTEGER NOT NULL DEFAULT 0,
                     updated_at  TEXT NOT NULL,
-                    PRIMARY KEY (entity_type, entity_slug)
+                    PRIMARY KEY (entity_type, entity_slug, user_id)
                 )
             """)
+            self._add_user_id_to_keyed_table(
+                conn, "resource_working_set",
+                columns="entity_type TEXT NOT NULL, entity_slug TEXT NOT NULL, "
+                        "user_id TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0, "
+                        "updated_at TEXT NOT NULL",
+                column_names=("entity_type", "entity_slug", "user_id", "hidden", "updated_at"),
+                pk=("entity_type", "entity_slug", "user_id"),
+            )
             # Egeria Project context — the "uber intent" from
             # docs/discovery-automate-project-context-plan.md Part 5. Always
             # say "Egeria Project" in code/UI — RE's own Project class above
@@ -1802,18 +1979,37 @@ class ProjectRegistry:
             # the same as never having answered). One row per resource —
             # upsert, not append-only, since there's only ever one *current*
             # context (mirrors resource_working_set's exact shape above).
+            # `user_id` for the same reason and on the same terms as
+            # resource_working_set above (2026-09-04, plan §4): the Egeria
+            # Project a person is working under is *their* answer, and two
+            # people surveying one repo under two different Projects is a
+            # legitimate state rather than a conflict to resolve by last-write.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS entity_egeria_project_context (
                     entity_type                   TEXT NOT NULL,
                     entity_slug                   TEXT NOT NULL,
+                    user_id                        TEXT NOT NULL DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'unset',
                     egeria_project_guid            TEXT DEFAULT '',
                     egeria_project_qualified_name  TEXT DEFAULT '',
                     free_text_name                 TEXT DEFAULT '',
                     decided_at                     TEXT DEFAULT '',
-                    PRIMARY KEY (entity_type, entity_slug)
+                    PRIMARY KEY (entity_type, entity_slug, user_id)
                 )
             """)
+            self._add_user_id_to_keyed_table(
+                conn, "entity_egeria_project_context",
+                columns="entity_type TEXT NOT NULL, entity_slug TEXT NOT NULL, "
+                        "user_id TEXT NOT NULL DEFAULT '', "
+                        "status TEXT NOT NULL DEFAULT 'unset', "
+                        "egeria_project_guid TEXT DEFAULT '', "
+                        "egeria_project_qualified_name TEXT DEFAULT '', "
+                        "free_text_name TEXT DEFAULT '', decided_at TEXT DEFAULT ''",
+                column_names=("entity_type", "entity_slug", "user_id", "status",
+                              "egeria_project_guid", "egeria_project_qualified_name",
+                              "free_text_name", "decided_at"),
+                pk=("entity_type", "entity_slug", "user_id"),
+            )
             # Investigations — the framing step ahead of Scouting
             # (docs/investigation-framing-design.md §1). An Investigation is
             # one body of work: the context every other analysis runs inside,
@@ -1993,6 +2189,343 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_entity "
                 "ON notification_subscriptions(entity_type, entity_slug, analysis_id)"
             )
+
+            # ── the run queue (docs/runtime-architecture-plan.md §2, step 2b) ──
+            #
+            # One row per backgrounded unit of work. Before this, a `web`
+            # request spawned a `threading.Thread` and returned; the run then
+            # existed only as a live thread in whichever uvicorn process
+            # happened to serve the request, and as an `activity_log` row
+            # claiming "running" with the owner's pid buried in `detail`.
+            # That is what `run_reconciler.py` judges *after the fact*. This
+            # table is the same ownership question asked *before* the work
+            # starts: a claim, not a forensic reconstruction.
+            #
+            # Deliberately a NEW table rather than more columns on
+            # `activity_log`. `activity_log` is the user-facing narrative of
+            # everything that has happened — catalog writes, RFAs, scout
+            # entries — and only a minority of its rows are queueable work.
+            # Hanging state/claimed_by/heartbeat_at off all of them would put
+            # queue semantics on rows that can never be claimed, and would
+            # make "what is queued" a filtered scan of the largest table here.
+            # The two stay joined by `result_ref`, which holds the
+            # activity_log id the UI already polls — so the frontend contract
+            # (POST returns an activity_id, poll GET /api/activity/{id}) is
+            # unchanged by the queue existing.
+            #
+            # `claimed_by` is the human-readable "hostname:pid" the plan asks
+            # for; `runner` is the machine-readable
+            # `run_reconciler.process_identity()` (pid + process start time)
+            # that reconciliation actually tests for liveness. Two fields
+            # because pid alone is not an identity — pids are reused, which is
+            # exactly the trap `run_reconciler._is_alive` documents.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    id            TEXT PRIMARY KEY,
+                    kind          TEXT NOT NULL,
+                    target        TEXT NOT NULL DEFAULT '{}',
+                    requested_by  TEXT NOT NULL DEFAULT '',
+                    state         TEXT NOT NULL DEFAULT 'queued',
+                    claimed_by    TEXT NOT NULL DEFAULT '',
+                    runner        TEXT NOT NULL DEFAULT '',
+                    enqueued_at   TEXT NOT NULL,
+                    claimed_at    TEXT NOT NULL DEFAULT '',
+                    heartbeat_at  TEXT NOT NULL DEFAULT '',
+                    started_at    TEXT NOT NULL DEFAULT '',
+                    finished_at   TEXT NOT NULL DEFAULT '',
+                    error         TEXT NOT NULL DEFAULT '',
+                    result_ref    TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            # The claim's own ORDER BY, so a queue with a long terminal
+            # history does not scan it to find the oldest queued row.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_state_enqueued "
+                "ON runs(state, enqueued_at)"
+            )
+            # Per-user fairness reads this on every claim attempt.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_requested_by_state "
+                "ON runs(requested_by, state)"
+            )
+            # GET /api/runs/{id} joins back from the activity id the UI holds.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
+            )
+
+    # ── the run queue ─────────────────────────────────────────────────────────
+    #
+    # Row-level SQL only. The claim loop, the heartbeat and the dispatch to a
+    # workflow function live in resource_explorer/run_queue.py — the same split
+    # egeria_outbox.py keeps from claim_due_outbox_elements() above.
+
+    #: Every state a `runs` row can be in. queued -> claimed -> running ->
+    #: (succeeded | failed | cancelled). `claimed` and `running` are separate on
+    #: purpose: a claim is taken in one transaction and the work starts after
+    #: it, so a row stuck in `claimed` says "a worker took this and died before
+    #: it began", which is a different fact from "it died mid-run".
+    RUN_STATES = ("queued", "claimed", "running", "succeeded", "failed", "cancelled")
+
+    #: The kinds the queue knows how to execute. Not a foreign key to anything —
+    #: run_queue.py's dispatch table is the real registry of handlers, and a row
+    #: whose kind has no handler fails loudly rather than sitting queued for ever.
+    RUN_KINDS = (
+        "analysis_run",
+        "survey_definition_run",
+        "scouting_scan",
+        "stage_batch",
+        "discovery_expand",
+    )
+
+    #: States that occupy a user's one fairness slot.
+    _RUN_ACTIVE_STATES = ("claimed", "running")
+
+    def enqueue_run(
+        self,
+        kind: str,
+        target: dict | None = None,
+        *,
+        requested_by: str = "",
+        result_ref: str = "",
+        run_id: str | None = None,
+        now: str | None = None,
+    ) -> str:
+        """Add one unit of work to the queue and return its id.
+
+        `requested_by` is the user id the run is attributed to. Since RE
+        adopted trellis-auth (2026-09-04, plan §4) it is a real signed-in user
+        id on every person-initiated path — `run_queue.requested_by()` reads
+        it from the request/CLI caller. `""` now means the worker role's own
+        service-account work (bootstrap heal, resync, outbox drain), which is
+        the one bucket claim_next_run() exempts from per-user fairness.
+        """
+        if kind not in self.RUN_KINDS:
+            raise ValueError(f"unknown run kind {kind!r} — expected one of {list(self.RUN_KINDS)}")
+        run_id = run_id or str(uuid.uuid4())
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO runs (id, kind, target, requested_by, state,
+                                     enqueued_at, result_ref)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?)""",
+                (run_id, kind, json.dumps(target or {}), requested_by, now, result_ref),
+            )
+        return run_id
+
+    def claim_next_run(
+        self,
+        claimed_by: str,
+        runner: dict | None = None,
+        *,
+        kinds: "list[str] | None" = None,
+        now: str | None = None,
+    ) -> dict | None:
+        """Take the oldest queued row this worker is allowed to run, or None.
+
+        **Concurrency.** Select-and-mark happen in one transaction, and on
+        Postgres the SELECT carries `FOR UPDATE SKIP LOCKED` so a second
+        claimer skips the row a first claimer has locked instead of blocking
+        on it and then claiming it a moment later. Exactly the shape
+        claim_due_outbox_elements() uses, and for the same reason: SQLite has
+        neither clause but serialises writers itself, so the transaction alone
+        is enough there.
+
+        **Per-user fairness.** A user with a run already `claimed` or `running`
+        does not get a second one; their next row waits.
+
+        The rule is scoped to a NON-EMPTY `requested_by`, and **as of
+        2026-09-04 that exemption finally means what it was written to mean.**
+        Before trellis-auth landed, every row was attributed to `""`, so the
+        exemption covered the entire queue and the fairness rule was inert —
+        applying it to that bucket would have collapsed the queue to one run at
+        a time for everybody, a visible regression against per-route threads.
+        Now `run_queue.requested_by()` returns the signed-in user, so the rule
+        applies to real people and `""` is left holding only what it should:
+        **the worker's own service-account runs.** No change was needed here
+        the moment real ids appeared, which is what the hook was for.
+        """
+        now = now or datetime.now(timezone.utc).isoformat()
+        sql = (
+            "SELECT r.id FROM runs r WHERE r.state = 'queued' "
+            # NOT EXISTS rather than a join: Postgres refuses FOR UPDATE over
+            # the nullable side of an outer join (the same trap
+            # claim_due_outbox_elements documents), and this has to keep
+            # working against the real backend, not only against SQLite.
+            "  AND (r.requested_by = '' OR NOT EXISTS ("
+            "        SELECT 1 FROM runs busy WHERE busy.requested_by = r.requested_by "
+            f"        AND busy.state IN ({','.join('?' * len(self._RUN_ACTIVE_STATES))}))) "
+        )
+        params: list = list(self._RUN_ACTIVE_STATES)
+        if kinds:
+            sql += f"  AND r.kind IN ({','.join('?' * len(kinds))}) "
+            params.extend(kinds)
+        sql += "ORDER BY r.enqueued_at ASC, r.id ASC LIMIT 1"
+
+        with self._conn() as conn:
+            if conn.is_postgres:
+                sql += " FOR UPDATE SKIP LOCKED"
+            row = conn.execute(sql, tuple(params)).fetchone()
+            if row is None:
+                return None
+            run_id = row["id"]
+            conn.execute(
+                """UPDATE runs SET state='claimed', claimed_by=?, runner=?,
+                                   claimed_at=?, heartbeat_at=?
+                   WHERE id = ? AND state = 'queued'""",
+                (claimed_by, json.dumps(runner or {}), now, now, run_id),
+            )
+            claimed = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(claimed) if claimed else None
+
+    def mark_run_running(self, run_id: str, *, now: str | None = None) -> None:
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE runs SET state='running', started_at=?, heartbeat_at=? WHERE id=?",
+                (now, now, run_id),
+            )
+
+    def heartbeat_run(self, run_id: str, *, now: str | None = None) -> bool:
+        """Refresh a claimed/running row's heartbeat. False when the row is no
+        longer active — which is how a heartbeat thread learns its run was
+        reconciled or cancelled out from under it and stops."""
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE runs SET heartbeat_at=? WHERE id=? AND state IN "  # noqa: S608
+                f"({','.join('?' * len(self._RUN_ACTIVE_STATES))})",
+                (now, run_id, *self._RUN_ACTIVE_STATES),
+            )
+            return bool(getattr(cur, "rowcount", 0))
+
+    def finish_run(
+        self,
+        run_id: str,
+        state: str,
+        *,
+        error: str = "",
+        result_ref: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        """Write a terminal state. `result_ref` is left alone when not given —
+        the enqueueing route usually set it already."""
+        if state not in ("succeeded", "failed", "cancelled"):
+            raise ValueError(f"{state!r} is not a terminal run state")
+        now = now or datetime.now(timezone.utc).isoformat()
+        sql = "UPDATE runs SET state=?, finished_at=?, error=?"
+        params: list = [state, now, error]
+        if result_ref is not None:
+            sql += ", result_ref=?"
+            params.append(result_ref)
+        sql += " WHERE id=?"
+        params.append(run_id)
+        with self._conn() as conn:
+            conn.execute(sql, tuple(params))
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_runs(
+        self,
+        *,
+        state: str | None = None,
+        kind: str | None = None,
+        requested_by: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        sql = "SELECT * FROM runs"
+        clauses, params = [], []
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if requested_by is not None:
+            clauses.append("requested_by = ?")
+            params.append(requested_by)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY enqueued_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def cancel_queued_run(self, run_id: str, *, now: str | None = None) -> bool:
+        """Cancel a row that has NOT been claimed yet. Returns False otherwise.
+
+        A claimed or running row is deliberately not cancellable here: it owns a
+        real Python thread inside some worker process, and Python threads cannot
+        be interrupted. Pretending otherwise would write `cancelled` over work
+        that is still running and still writing findings — the same
+        answer-shaped-non-answer `run_reconciler.py` exists to remove. If that
+        worker dies, reconciliation resolves the row as failed with the reason;
+        if it lives, the run finishes normally.
+        """
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE runs SET state='cancelled', finished_at=?, "
+                "error='cancelled before it was claimed' "
+                "WHERE id=? AND state='queued'",
+                (now, run_id),
+            )
+            return bool(getattr(cur, "rowcount", 0))
+
+    def set_activity_runner(self, entry_id: str, runner: dict) -> None:
+        """Merge `_runner` into an activity entry's `detail`, leaving the rest
+        of it alone.
+
+        Called when a queue worker actually starts the work, not when a route
+        enqueued it. The distinction is the whole point: before the queue, the
+        process that handled the request was the process that ran the survey, so
+        recording the enqueuer's pid was recording the owner. Now they are
+        different processes, and stamping the web server would make restarting
+        the web server look like every in-flight run had been interrupted.
+
+        A merge rather than an overwrite because `detail` already carries the
+        run's own join keys (`analysis_id`, `survey_definition_ref`) that other
+        readers depend on.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT detail FROM activity_log WHERE id = ?", (entry_id,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                detail = json.loads(row["detail"] or "{}") or {}
+            except (TypeError, ValueError):
+                # An unparseable detail is someone else's format, not ours to
+                # replace — recording ownership must never destroy content.
+                return
+            if not isinstance(detail, dict):
+                return
+            detail["_runner"] = runner
+            conn.execute(
+                "UPDATE activity_log SET detail = ? WHERE id = ?",
+                (json.dumps(detail), entry_id),
+            )
+
+    def stale_active_runs(self, cutoff_iso: str) -> list[dict]:
+        """Claimed/running rows whose heartbeat is older than `cutoff_iso`.
+
+        Candidates for reconciliation, not conclusions: whether each one is
+        actually dead is decided by pid liveness in run_reconciler.py, never by
+        the heartbeat alone. A worker paused by a slow Egeria call is late, not
+        gone.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM runs WHERE state IN "  # noqa: S608
+                f"({','.join('?' * len(self._RUN_ACTIVE_STATES))}) "
+                f"AND heartbeat_at <> '' AND heartbeat_at < ? "
+                f"ORDER BY enqueued_at ASC",
+                (*self._RUN_ACTIVE_STATES, cutoff_iso),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
@@ -2261,6 +2794,7 @@ class ProjectRegistry:
         self, entity_type: str, entity_slug: str, scope_locator: str,
         verdict: str, retyped_to: str = "", note: str = "",
         verdict_target: str = "component",
+        decided_by: str | None = None,
     ) -> dict:
         """A curator's accept/reject/retype call on one proposed architecture
         component (docs/Backlog.md "take architecture results into Curate").
@@ -2303,12 +2837,17 @@ class ProjectRegistry:
             "note": note,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "verdict_target": verdict_target,
+            # Stamped here rather than passed in, for the same reason every
+            # other user_id in this module is: a call site that has to remember
+            # is a call site that will not.
+            "decided_by": current_user_id() if decided_by is None else decided_by,
         }
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO architecture_component_verdicts
-                   (id, entity_type, entity_slug, scope_locator, verdict, retyped_to, note, created_at, verdict_target)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, entity_type, entity_slug, scope_locator, verdict, retyped_to, note,
+                    created_at, verdict_target, decided_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
         return entry
@@ -2481,6 +3020,69 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO architecture_materialized_blueprints
                    (id, entity_type, entity_slug, perspective, cluster_name, qualified_name, guid, materialized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def get_materialized_port(
+        self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,
+    ) -> dict | None:
+        """Whether a real Egeria SolutionPort already exists for this
+        (scope_locator, port_name), or None. Byte-for-byte the same shape
+        as get_materialized_component/get_materialized_blueprint —
+        PortMaterializer's own module docstring covers why this is a
+        temporary workaround (Backlog.md item 8 / ISSUE-85: no
+        create_solution_port anywhere)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=? AND port_name=?""",
+                (entity_type, entity_slug, scope_locator, port_name),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_materialized_ports(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{f"{scope_locator}::{port_name}": row} for every port this resource
+        has ever materialized — mirrors get_materialized_blueprints' shape,
+        same "no scope_locator of its own" reasoning applied to
+        disambiguating multiple ports on one component instead."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return {f"{r['scope_locator']}::{r['port_name']}": dict(r) for r in rows}
+
+    def record_materialized_port(
+        self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,
+        qualified_name: str, guid: str,
+    ) -> dict:
+        """Record that (scope_locator, port_name) now has a real Egeria
+        SolutionPort. Keyed as a natural key via delete-then-insert, not
+        appended — same "nothing append-only about does this exist in
+        Egeria" reasoning as record_materialized_component/_blueprint."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "scope_locator": scope_locator,
+            "port_name": port_name,
+            "qualified_name": qualified_name,
+            "guid": guid,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM architecture_materialized_ports
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=? AND port_name=?""",
+                (entity_type, entity_slug, scope_locator, port_name),
+            )
+            conn.execute(
+                """INSERT INTO architecture_materialized_ports
+                   (id, entity_type, entity_slug, scope_locator, port_name, qualified_name, guid, materialized_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
@@ -2984,7 +3586,7 @@ class ProjectRegistry:
         "resource_working_set", "entity_egeria_project_context",
         "working_set_members", "notification_subscriptions",
         "architecture_component_verdicts", "architecture_materialized_components",
-        "architecture_materialized_blueprints",
+        "architecture_materialized_blueprints", "architecture_materialized_ports",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,
@@ -4520,8 +5122,17 @@ class ProjectRegistry:
         role: str,
         content: str,
         resource_slug: str | None = None,
+        *,
+        user_id: str | None = None,
     ) -> None:
-        """Append a single turn (user or assistant) to the conversation log."""
+        """Append a single turn (user or assistant) to the conversation log.
+
+        Stamped with the caller (plan §4). The plan's isolation matrix is
+        explicit that conversation history is read only by its owner while RAG
+        retrieval stays shared: the corpus is shared by design, a person's own
+        questions are not.
+        """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             next_idx = (
                 conn.execute(
@@ -4530,27 +5141,45 @@ class ProjectRegistry:
                 ).fetchone()[0]
             )
             conn.execute(
-                "INSERT INTO conversation_history (session_id, turn_idx, role, content, project_slug, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, next_idx, role, content, resource_slug or "", datetime.utcnow().isoformat()),
+                "INSERT INTO conversation_history (session_id, turn_idx, role, content, "
+                "project_slug, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, next_idx, role, content, resource_slug or "", user_id,
+                 datetime.utcnow().isoformat()),
             )
 
-    def load_turns(self, session_id: str, limit: int = 40) -> list[dict]:
-        """Return up to `limit` most-recent turns for a session, in chronological order."""
+    def load_turns(
+        self, session_id: str, limit: int = 40, *, user_id: str | None = None,
+    ) -> list[dict]:
+        """Up to `limit` most-recent turns for a session, in chronological order.
+
+        Scoped to the caller plus the `''` bucket. `''` covers every turn
+        written before this column existed *and* an unauthenticated CLI
+        session; excluding it would make a person's own history disappear the
+        first time they signed in, which reads as data loss rather than as
+        privacy.
+
+        Note the ordering is over `turn_idx`, so a session mixing owners still
+        replays in order. It should not mix owners — `session_id` is minted per
+        person — but the scoping filter must not be what depends on that.
+        """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT role, content, project_slug FROM conversation_history "
-                "WHERE session_id = ? ORDER BY turn_idx DESC LIMIT ?",
-                (session_id, limit),
+                "WHERE session_id = ? AND user_id IN (?, ?) ORDER BY turn_idx DESC LIMIT ?",
+                (session_id, user_id, SHARED_USER_ID, limit),
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    def list_sessions(self) -> list[dict]:
-        """Return a summary of all stored sessions (id, turn count, last activity)."""
+    def list_sessions(self, *, user_id: str | None = None) -> list[dict]:
+        """Summary of this caller's stored sessions (id, turn count, last activity)."""
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT session_id, COUNT(*) as turns, MAX(created_at) as last_at "
-                "FROM conversation_history GROUP BY session_id ORDER BY last_at DESC"
+                "FROM conversation_history WHERE user_id IN (?, ?) "
+                "GROUP BY session_id ORDER BY last_at DESC",
+                (user_id, SHARED_USER_ID),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -4747,24 +5376,52 @@ class ProjectRegistry:
     # exists yet), architected as its own table so a user_id column can be
     # added later without touching disposition's model.
 
-    def set_working_set_hidden(self, entity_type: str, entity_slug: str, hidden: bool) -> None:
+    def set_working_set_hidden(
+        self, entity_type: str, entity_slug: str, hidden: bool,
+        *, user_id: str | None = None,
+    ) -> None:
+        """Stamp this view preference with the caller (plan §4).
+
+        `user_id=None` means "whoever is signed in", resolved here rather than
+        by the caller — see `current_user_id`. A route cannot forget to scope
+        a write it never spells out.
+        """
         entity_slug = self._normalize_slug(entity_slug)
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO resource_working_set (entity_type, entity_slug, hidden, updated_at)
-                       VALUES (?, ?, ?, ?)
-                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                """INSERT INTO resource_working_set
+                       (entity_type, entity_slug, user_id, hidden, updated_at)
+                       VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug, user_id) DO UPDATE SET
                        hidden = excluded.hidden, updated_at = excluded.updated_at""",
-                (entity_type, entity_slug, int(hidden), datetime.utcnow().isoformat()),
+                (entity_type, entity_slug, user_id, int(hidden),
+                 datetime.utcnow().isoformat()),
             )
 
-    def is_working_set_hidden(self, entity_type: str, entity_slug: str) -> bool:
+    def is_working_set_hidden(
+        self, entity_type: str, entity_slug: str, *, user_id: str | None = None,
+    ) -> bool:
+        """This caller's view preference, falling back to the shared/legacy row.
+
+        Two rows can exist for one resource — the caller's own and the `''`
+        bucket written before scoping existed. The caller's own wins; the
+        shared one is what keeps a pre-existing filter working for the person
+        who set it, rather than silently un-hiding everything they had hidden
+        the moment they signed in for the first time.
+        """
         entity_slug = self._normalize_slug(entity_slug)
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT hidden FROM resource_working_set WHERE entity_type = ? AND entity_slug = ?",
-                (entity_type, entity_slug),
-            ).fetchone()
+            rows = conn.execute(
+                "SELECT user_id, hidden FROM resource_working_set "
+                "WHERE entity_type = ? AND entity_slug = ? AND user_id IN (?, ?)",
+                (entity_type, entity_slug, user_id, SHARED_USER_ID),
+            ).fetchall()
+        if not rows:
+            return False
+        by_user = {r["user_id"]: r for r in rows}
+        row = by_user.get(user_id) or by_user.get(SHARED_USER_ID)
         return bool(row["hidden"]) if row else False
 
     # ── Investigations (docs/investigation-framing-design.md §1) ──────────
@@ -5255,36 +5912,59 @@ class ProjectRegistry:
         egeria_project_guid: str = "",
         egeria_project_qualified_name: str = "",
         free_text_name: str = "",
+        user_id: str | None = None,
     ) -> dict:
+        """Record the Egeria Project this caller is working under (plan §4).
+
+        Scoped to the caller: two people can survey one repo under two
+        different Egeria Projects, and before this column that was a
+        last-write-wins collision nobody could see.
+        """
         entity_slug = self._normalize_slug(entity_slug)
+        user_id = current_user_id() if user_id is None else user_id
         decided_at = datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO entity_egeria_project_context
-                       (entity_type, entity_slug, status, egeria_project_guid,
+                       (entity_type, entity_slug, user_id, status, egeria_project_guid,
                         egeria_project_qualified_name, free_text_name, decided_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug, user_id) DO UPDATE SET
                        status = excluded.status,
                        egeria_project_guid = excluded.egeria_project_guid,
                        egeria_project_qualified_name = excluded.egeria_project_qualified_name,
                        free_text_name = excluded.free_text_name,
                        decided_at = excluded.decided_at""",
                 (
-                    entity_type, entity_slug, status, egeria_project_guid,
+                    entity_type, entity_slug, user_id, status, egeria_project_guid,
                     egeria_project_qualified_name, free_text_name, decided_at,
                 ),
             )
-        return self.get_project_context(entity_type, entity_slug)
+        return self.get_project_context(entity_type, entity_slug, user_id=user_id)
 
-    def get_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+    def get_project_context(
+        self, entity_type: str, entity_slug: str, *, user_id: str | None = None,
+    ) -> dict | None:
+        """This caller's context row, falling back to the shared/legacy one.
+
+        Still returns None (not a default-shaped dict) when nothing has ever
+        been decided by anyone, so callers can keep distinguishing "no row yet"
+        from a row whose status happens to be `unset` — see this table's own
+        comment in `_init_schema`.
+        """
         entity_slug = self._normalize_slug(entity_slug)
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM entity_egeria_project_context WHERE entity_type = ? AND entity_slug = ?",
-                (entity_type, entity_slug),
-            ).fetchone()
-        return dict(row) if row else None
+            rows = conn.execute(
+                "SELECT * FROM entity_egeria_project_context "
+                "WHERE entity_type = ? AND entity_slug = ? AND user_id IN (?, ?)",
+                (entity_type, entity_slug, user_id, SHARED_USER_ID),
+            ).fetchall()
+        if not rows:
+            return None
+        by_user = {r["user_id"]: r for r in rows}
+        row = by_user.get(user_id) or by_user.get(SHARED_USER_ID)
+        return dict(row) if row is not None else None
 
     def has_assigned_egeria_project(self, entity_type: str, entity_slug: str) -> bool:
         """The single, correct gate for "should this resource's survey results be

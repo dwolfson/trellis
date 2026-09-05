@@ -337,6 +337,36 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
     ]
 
 
+def disambiguate_shared_check_names(annotations) -> int:
+    """Give keyless annotations whose `check_name` is emitted by more than one
+    analysis step an `item_key` naming their step, so the published
+    qualifiedNames stay distinct.
+
+    Found on trevor 2026-09-04: four steps (SecretScan, ContributionProvenance,
+    SlaContent, TelemetryScan) each emit one keyless `scan_summary`; their
+    readers look the row up by (kind, check_name), so the check_name must stay
+    `scan_summary` and the step is the natural key. Only the shared case is
+    touched: a check_name emitted by a single step keeps the exact name it has
+    always had, so nothing already published is renamed. Returns how many
+    annotations were stamped.
+    """
+    steps_by_check: dict[str, set[str]] = {}
+    for ann in annotations:
+        check = getattr(ann, "check_name", "") or ""
+        if check and not (getattr(ann, "item_key", "") or ""):
+            steps_by_check.setdefault(check, set()).add(getattr(ann, "analysis_step", "") or "")
+    shared = {c for c, steps in steps_by_check.items() if len(steps) > 1}
+    stamped = 0
+    for ann in annotations:
+        check = getattr(ann, "check_name", "") or ""
+        if check in shared and not (getattr(ann, "item_key", "") or "") and hasattr(ann, "item_key"):
+            step = getattr(ann, "analysis_step", "") or ""
+            if step:
+                ann.item_key = step
+                stamped += 1
+    return stamped
+
+
 def assert_unique_qualified_names(prefix: str, annotations) -> None:
     """Raise if two annotations in one run would publish the same identity.
 
@@ -354,6 +384,7 @@ def assert_unique_qualified_names(prefix: str, annotations) -> None:
     Raised rather than logged, and raised BEFORE anything is written: a partial
     publish is harder to reason about than a refused one.
     """
+    disambiguate_shared_check_names(annotations)
     seen: dict[str, int] = {}
     for i, ann in enumerate(annotations):
         qn = annotation_qualified_name(prefix, i, ann)

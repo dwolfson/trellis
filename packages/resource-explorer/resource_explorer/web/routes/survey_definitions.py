@@ -508,129 +508,74 @@ async def list_candidates(
         raise _map_reader_executor_errors(exc)
 
 
-def _execute_survey_definition_sync(entity_type: str, slug: str, body: SurveyDefinitionRunRequest) -> dict:
-    """The actual run — plain sync function (no FastAPI/asyncio coupling) so
-    it's trivially callable from a daemon thread with its own fresh registry
-    connection, matching projects.py's _run_scouting_scan_sync precedent.
-    Raises SurveyDefinitionExecutorError/SurveyDefinitionReaderError on a
-    reader/executor-level failure — the caller decides how to surface that
-    (an HTTPException for the old synchronous path; an errored activity
-    entry for the background path below)."""
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.survey_definition_executor import run_survey_definition
+# The run itself and the activity-recording wrapper live in
+# resource_explorer/workflows/survey_definition.py now (step 2b), so the queue
+# worker records a run in exactly the shape a route-spawned thread used to.
+from resource_explorer.workflows.survey_definition import (  # noqa: E402
+    SurveyDefinitionRunParams,
+    execute_and_record_definition as _execute_and_record_definition,
+    run_definition as _run_definition,
+)
 
-    registry = ProjectRegistry()
-    result = run_survey_definition(
-        entity_type,
-        slug,
-        registry=registry,
+
+def _params(body: "SurveyDefinitionRunRequest") -> SurveyDefinitionRunParams:
+    return SurveyDefinitionRunParams(
         survey_definition_ref=body.survey_definition_ref,
         refresh_definition=body.refresh_definition,
         db_user=body.db_user,
         db_pwd=body.db_pwd,
     )
 
-    report_guid = result.get("egeria_report_guid", "")
-    if report_guid:
-        from resource_explorer.config import get_config
-        portal_url = get_config().egeria.portal_url.rstrip("/")
-        result["egeria_portal_report_url"] = f"{portal_url}/tech-catalog?guid={report_guid}"
 
-    return result
+def _execute_survey_definition_sync(entity_type: str, slug: str,
+                                    body: "SurveyDefinitionRunRequest") -> dict:
+    """Thin adapter kept for this module's callers and tests."""
+    return _run_definition(entity_type, slug, _params(body))
 
 
 def _run_survey_definition_background(
-    entity_type: str, slug: str, body: SurveyDefinitionRunRequest, activity_id: str,
+    entity_type: str, slug: str, body: "SurveyDefinitionRunRequest", activity_id: str,
 ) -> None:
-    """Runs in a daemon thread — nothing here returns to an HTTP response.
-    Mirrors projects.py's _run_scouting_scan_background precedent, generalized
-    to any Survey Definition: the ONE activity entry the route created up
-    front (status='running') gets its terminal status/summary written back
-    via registry.update_activity_status(), with the full structured result
-    (steps report, egeria_report_guid, portal URL, errors — everything the
-    run modal renders) JSON-encoded into that same entry's `detail` field.
-    No separate result-store needed, and — unlike an in-memory dict — this
-    survives a server restart same as any other activity entry; the frontend
-    just needs to json.parse() `detail` once the poll sees a terminal status."""
-    import json
-
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
-    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
-
-    # Embedded in `detail` on every terminal path (success, reader/executor
-    # error, and unexpected crash) — see registry.get_survey_definition_last_
-    # activity(), which scans activity_log for exactly this key to compute
-    # each candidate's last-run badge. summary alone isn't reliable for this:
-    # it does contain the ref for the *initial* 'running' row (see the route
-    # below), but this call always overwrites summary on the terminal row, so
-    # by the time anything queries a completed run, the ref only survives if
-    # it's also in detail.
-    ref = body.survey_definition_ref
-
-    registry = ProjectRegistry()
-    try:
-        result = _execute_survey_definition_sync(entity_type, slug, body)
-    except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        registry.update_activity_status(
-            activity_id, "error", summary=str(exc),
-            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
-        )
-        return
-    except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
-        log.exception("Survey Definition run background thread crashed for %s/%s", entity_type, slug)
-        registry.update_activity_status(
-            activity_id, "error", summary=f"Survey Definition run crashed: {exc}",
-            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
-        )
-        return
-
-    errors = result.get("errors") or []
-    summary = f"Completed with {len(errors)} error(s)" if errors else "Survey Definition run complete"
-    result["survey_definition_ref"] = ref
-    registry.update_activity_status(activity_id, "error" if errors else "ok", summary=summary, detail=json.dumps(result))
+    _execute_and_record_definition(entity_type, slug, _params(body), activity_id)
 
 
 @router.post("/{entity_type}/{slug}/run")
-async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyDefinitionRunRequest) -> dict:
-    """Fire-and-forget (background thread), not synchronous — a real,
-    live-reported gap: this used to block the whole HTTP request for the
-    entire survey duration, with only a spinner and no way to tell whether a
-    multi-step/multi-minute survey (e.g. Coarse Profile Survey's zipball
-    download+profile, or a 17-step Repo Full Survey) was still running or
-    had hung. Mirrors projects.py's run_scouting_scan precedent exactly,
-    generalized to any Survey Definition/resource type: returns an
-    activity_id immediately; the frontend polls GET /api/activity/{id}
-    until it's terminal, then reads the full run result back out of that
-    entry's own `detail` field (see _run_survey_definition_background)."""
-    import threading
+async def run_survey_definition_route(entity_type: str, slug: str,
+                                      body: SurveyDefinitionRunRequest) -> dict:
+    """Queue a Survey Definition run against one resource.
+
+    **Enqueues; does not run.** Before step 2b this spawned a daemon thread
+    (itself a fix for an earlier version that blocked the whole HTTP request for
+    a 17-step survey's entire duration). The response is unchanged — an
+    activity_id immediately; the frontend polls GET /api/activity/{id} until it
+    is terminal, then reads the full run result out of that entry's `detail`.
+
+    Note what is NOT recorded here any more: the *web* process's identity. The
+    run executes in a `worker` process, so stamping this process as the owner
+    would be a precise-looking wrong answer — restarting the web server would
+    then mark a run interrupted while a worker was still driving it. The queue
+    row records the real owner at claim time, and run_queue.execute_run stamps
+    the same identity onto this activity entry when the work actually starts.
+    """
+    import json
 
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_queue import requested_by
 
     registry = ProjectRegistry()
-    # Who owns this run, recorded up front. The work happens in a daemon
-    # thread in THIS process, so if the process dies the thread vanishes with
-    # no chance to write a terminal status — and the row would claim "running"
-    # for ever. Recording the owner lets that be resolved precisely later
-    # rather than guessed at by age; see resource_explorer/run_reconciler.py.
-    import json
-
-    from resource_explorer.run_reconciler import process_identity
-
     activity_id = log_survey(
         registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
         entity_location="", intent="assessment", status="running",
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
-        detail=json.dumps({"_runner": process_identity(),
-                           "survey_definition_ref": body.survey_definition_ref}),
+        detail=json.dumps({"survey_definition_ref": body.survey_definition_ref}),
     )
-
-    t = threading.Thread(
-        target=_run_survey_definition_background,
-        args=(entity_type, slug, body, activity_id),
-        daemon=True, name="resource-explorer-survey-def-run",
+    run_id = registry.enqueue_run(
+        "survey_definition_run",
+        {"entity_type": entity_type, "slug": slug, "params": _params(body).to_dict()},
+        result_ref=activity_id, requested_by=requested_by(),
     )
-    t.start()
+    log.info("enqueued survey_definition_run %s for %s/%s (activity %s)",
+             run_id, entity_type, slug, activity_id)
 
-    return {"status": "started", "activity_id": activity_id}
+    return {"status": "started", "activity_id": activity_id, "run_id": run_id}

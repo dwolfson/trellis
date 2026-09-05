@@ -21,7 +21,7 @@ import numpy as np
 from pathlib import Path
 import json
 
-from advisor.config import settings, get_full_config
+from advisor.config import settings, get_full_config, ensure_writable_dir
 
 
 class EmbeddingGenerator:
@@ -50,7 +50,7 @@ class EmbeddingGenerator:
         self.model_name = model_name or embedding_config.model
         self.batch_size = batch_size or embedding_config.batch_size
         self.cache_dir = cache_dir or Path(settings.advisor_cache_dir) / "embeddings"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_writable_dir(self.cache_dir, "ADVISOR_CACHE_DIR")
 
         # Determine device with universal GPU detection
         if device is None:

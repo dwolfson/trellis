@@ -26,6 +26,14 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
 
+def _extended_feedback_path() -> Path:
+    """Path to the extended-feedback JSONL log, under the resolved writable
+    advisor data root (ADVISOR_DATA_PATH) rather than a bare relative
+    ``data/`` path — see advisor.config.resolve_advisor_data_root()."""
+    from advisor.config import resolve_advisor_data_root
+    return resolve_advisor_data_root() / "feedback" / "feedback_extended.jsonl"
+
+
 _STATIC = Path(__file__).parent / "static"
 _SPEC_FILES = [
     Path(__file__).parent.parent / "configdata" / "report_specs" / "plain_spec_question_specs_batch1.json",
@@ -55,6 +63,80 @@ app.add_middleware(
     allow_credentials=True,
 )
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
+
+
+def _install_login_required_middleware() -> None:
+    """Install `trellis_auth.LoginRequiredMiddleware` — the shared login policy.
+
+    **Ordering matters and is the reason this is a function rather than two
+    inline lines.** Starlette applies `add_middleware` in reverse order: the
+    *last* one added is the *outermost*. `_user_context_middleware` below is
+    registered by its decorator at import time, after this call, so it ends up
+    outside this one — which is what we want spelled out explicitly, because
+    the requirement reads the other way round in prose ("install the login gate
+    ahead of the user-context middleware", i.e. it must run *before* a handler
+    does, not before the context middleware in the stack).
+
+    The user-context middleware being outermost is harmless and slightly
+    useful: it sets the ContextVar from whatever token is present and resets it
+    in `finally`, so even a request this gate rejects leaves no identity behind.
+    Nothing downstream of a 401 ever runs, so no handler can act on a
+    half-authenticated context.
+
+    Registered before the CORS middleware would be wrong in the other
+    direction — a cross-origin 401 must still carry its CORS headers or the
+    browser reports an opaque network error instead of "please sign in". CORS
+    is added above, therefore ends up outside this, therefore decorates the
+    401. That is the arrangement, and `test_login_required_middleware.py`
+    pins it.
+    """
+    from trellis_auth import LoginRequiredMiddleware
+    from advisor.auth import _base_config, get_policy
+
+    app.add_middleware(
+        LoginRequiredMiddleware,
+        config=_base_config(),
+        policy=get_policy(),
+    )
+
+
+_install_login_required_middleware()
+
+
+@app.middleware("http")
+async def _user_context_middleware(request: Request, call_next):
+    """
+    Sets advisor.request_context's per-request ContextVar from this
+    request's JWT (via advisor.auth.get_current_user), for every request —
+    so any code reached from a route handler, no matter how many plain
+    function calls deep (rag_system → plan_elicitor/report_spec_elicitor →
+    the agents, in particular — see request_context.py's module docstring),
+    can recover the signed-in user's identity without it being threaded
+    through every intervening signature. Reset in `finally` so a handler
+    that raises can't leak identity into whatever runs next.
+
+    Mirrors the `user_id = None if not user or user.get("anonymous") else
+    user.get("user_id") or user.get("sub")` extraction every namespaced
+    route already does explicitly (those explicit computations still win —
+    this only supplies the ambient default for code that doesn't have a
+    `Request` to ask).
+    """
+    from advisor.auth import get_current_user
+    from advisor.request_context import set_current_user, reset_current_user
+
+    user = None
+    try:
+        user = get_current_user(request)
+    except Exception:  # pragma: no cover - get_current_user itself never raises; defensive only
+        logger.debug("_user_context_middleware: get_current_user failed", exc_info=True)
+    user_id = None if not user or user.get("anonymous") else (user.get("user_id") or user.get("sub"))
+    role = (user or {}).get("role")
+    token = set_current_user(user_id, role)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_user(token)
+
 
 from advisor.web.admin import router as _admin_router
 app.include_router(_admin_router)
@@ -336,39 +418,59 @@ class PortalTokenRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def auth_login(req: LoginRequest) -> Dict[str, Any]:
-    """Validate Egeria credentials and return a JWT."""
-    from advisor.auth import validate_egeria_credentials, create_access_token
+    """Exchange Egeria credentials for a session JWT.
+
+    The password is used exactly once, here, to obtain an Egeria bearer token;
+    it is never stored and never signed into the JWT (contract change
+    2026-09-04 — see advisor/auth.py and docs/runtime-architecture-plan.md §4).
+    """
+    from advisor.auth import login_with_password, create_access_token
     if not req.username or not req.password:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="username and password required")
-    ok = await asyncio.get_event_loop().run_in_executor(
-        None, validate_egeria_credentials, req.username, req.password
+    egeria_token = await asyncio.get_event_loop().run_in_executor(
+        None, login_with_password, req.username, req.password
     )
-    if not ok:
+    if not egeria_token:
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Invalid credentials or Egeria is unreachable.")
-    token = create_access_token(
-        user_id=req.username,
-        egeria_user=req.username,
-        egeria_password=req.password,
-    )
+    token = create_access_token(user_id=req.username, egeria_token=egeria_token)
     return {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
 
 
 @app.post("/api/auth/portal")
 async def auth_portal(req: PortalTokenRequest) -> Dict[str, Any]:
-    """Exchange a Portal-issued short-lived token for a local JWT."""
-    from advisor.auth import exchange_portal_token, create_access_token
+    """Exchange a Portal-issued short-lived token for a local session JWT.
+
+    The Portal has already logged the user into Egeria and its JWT carries the
+    resulting bearer token: {sub, role, display_name, egeria_token, exp}. We
+    validate that under the shared secret and re-sign it as our own session —
+    no Egeria round-trip on this path beyond the optional cheap validation
+    below, and no password anywhere.
+    """
+    from advisor.auth import exchange_portal_token, create_access_token, validate_egeria_token
     payload = exchange_portal_token(req.portal_token)
-    egeria_user = payload.get("egeria_user", "")
-    egeria_password = payload.get("egeria_password", "")
-    if not egeria_user:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="Portal token missing egeria_user.")
+    egeria_user = payload.get("sub", "")
+    egeria_token = payload.get("egeria_token", "")
+
+    # Optional liveness check: the token was minted by someone else, so confirm
+    # it still works before wrapping a session around it. Deliberately NOT a
+    # gate — a briefly unreachable Egeria degrades SSO to "signed in, live
+    # features will fail on use", which is what a self-minted token does too.
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, validate_egeria_token, egeria_token
+    )
+    if not ok:
+        logger.warning(
+            f"auth: Portal token for {egeria_user!r} did not validate against Egeria; "
+            "issuing the session anyway (live calls may 401)"
+        )
+
     token = create_access_token(
         user_id=egeria_user,
-        egeria_user=egeria_user,
-        egeria_password=egeria_password,
+        egeria_token=egeria_token,
+        role=payload.get("role", "user"),
+        display_name=payload.get("display_name") or egeria_user,
     )
     return {"access_token": token, "token_type": "bearer", "egeria_user": egeria_user}
 
@@ -380,10 +482,17 @@ async def auth_me(request: Request) -> Dict[str, Any]:
     user = get_current_user(request)
     if user is None:
         return {"authenticated": False}
+    user_id = user.get("user_id") or user.get("sub", "")
     return {
         "authenticated": True,
-        "user_id": user.get("sub", ""),
-        "egeria_user": user.get("egeria_user", ""),
+        "user_id": user_id,
+        # `egeria_user` kept as a response key for the existing UI; since
+        # 2026-09-04 the JWT identifies the user by `sub`/`user_id` and carries
+        # their Egeria bearer token rather than a separate egeria_user/password
+        # pair, so the two are the same identity.
+        "egeria_user": user_id,
+        "role": user.get("role", "user"),
+        "display_name": user.get("display_name") or user_id,
     }
 
 
@@ -402,6 +511,24 @@ async def auth_defaults() -> Dict[str, Any]:
     retrieve it before ever logging in."""
     from advisor.config import settings
     return {"username": settings.egeria_user}
+
+
+@app.get("/api/auth/policy")
+async def auth_policy() -> Dict[str, Any]:
+    """The active login policy, so the SPA can decide how to present the form.
+
+    Public, deliberately: the browser needs this *before* it holds a token, and
+    it discloses nothing an unauthenticated caller cannot already learn by
+    making one request and reading the 401. With `login_required` true the SPA
+    shows a non-dismissible login overlay instead of starting up into a page
+    whose every panel is a failed fetch.
+    """
+    from advisor.auth import get_policy
+    policy = get_policy()
+    return {
+        "login_required": policy.require_login and not policy.anonymous_read,
+        "anonymous_read": policy.anonymous_read,
+    }
 
 
 @app.post("/api/query")
@@ -583,39 +710,53 @@ async def system_status() -> Dict[str, Any]:
 
 
 @app.post("/api/plans/import")
-async def import_plan(body: Dict[str, Any]) -> Dict[str, Any]:
+async def import_plan(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Import an externally-written Dr.Egeria/LGCI markdown document as a new
     managed plan in inbox. Detects whether the content is already LGCI-structured
     or a bare Dr.Egeria command file and wraps the latter automatically.
+
+    Written into the signed-in user's namespace (docs/runtime-architecture-plan.md
+    §4); an anonymous request keeps today's shared namespace.
     """
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
     title = (body.get("title") or "").strip() or None
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     dm = get_doc_manager()
     try:
-        doc_id = dm.import_document(content, title=title)
+        doc_id = dm.import_document(content, title=title, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
 
 
 @app.get("/api/plans")
-async def list_plans() -> Dict[str, Any]:
-    """Return inbox, outbox, and trash plan document lists, annotated with active draft IDs."""
+async def list_plans(request: Request) -> Dict[str, Any]:
+    """Return inbox, outbox, and trash plan document lists, annotated with active draft IDs.
+
+    A signed-in user sees the shared namespace plus their own; a curator
+    role (admin/curator) sees every namespace. Anonymous sees shared only.
+    """
     from advisor.governance_docs import get_doc_manager
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import list_visible_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
-    inbox = dm.list_inbox()
-    outbox = dm.list_outbox()
-    trash = dm.list_trash()
+    inbox = dm.list_inbox(requester_user_id=user_id, requester_role=role)
+    outbox = dm.list_outbox(requester_user_id=user_id, requester_role=role)
+    trash = dm.list_trash(requester_user_id=user_id, requester_role=role)
 
     # Build doc_id → draft_id map for plans that have an active refine/generate draft
     doc_to_draft: Dict[str, str] = {}
-    for d in get_draft_manager().list_drafts():
+    for d in list_visible_drafts(user_id=user_id, role=role):
         if d.get("doc_id") and d.get("phase") in ("generate", "refine", "template_offer"):
             doc_to_draft[d["doc_id"]] = d["draft_id"]
 
@@ -626,12 +767,21 @@ async def list_plans() -> Dict[str, Any]:
 
 
 @app.get("/api/plans/{doc_id}")
-async def get_plan(doc_id: str) -> Dict[str, Any]:
-    """Return the content of a plan document by doc_id (inbox, outbox, or trash)."""
+async def get_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Return the content of a plan document by doc_id (inbox, outbox, or trash).
+
+    Ownership-checked: a namespaced plan belonging to another user comes
+    back as 404 (never 403) unless the requester is a curator.
+    """
     from fastapi import HTTPException
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
-    content = dm.load(doc_id, include_trash=True)
+    content = dm.load(doc_id, include_trash=True, requester_user_id=user_id,
+                       requester_role=role, enforce_ownership=True)
     if content is None:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
     folder = dm.folder_of(doc_id) or "outbox"
@@ -895,11 +1045,22 @@ async def save_plan_as_template(doc_id: str, body: Dict[str, Any]) -> Dict[str, 
 
 
 @app.delete("/api/plans/{doc_id}")
-async def delete_plan(doc_id: str) -> Dict[str, Any]:
-    """Move a plan document from inbox or outbox to trash (saves a version first). Reversible."""
+async def delete_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Move a plan document from inbox or outbox to trash (saves a version first). Reversible.
+
+    Ownership-checked: 404 (not 403) for a namespaced plan that isn't the
+    requester's own, unless the requester is a curator.
+    """
     from advisor.governance_docs import get_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_doc_manager()
+    visible = dm.load(doc_id, requester_user_id=user_id, requester_role=role, enforce_ownership=True)
+    if visible is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
     ok = dm.delete(doc_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
@@ -934,30 +1095,42 @@ async def purge_plan(doc_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/drafts")
-async def list_drafts() -> Dict[str, Any]:
-    """Return active planning session drafts."""
-    from advisor.governance_draft import get_draft_manager
-    return {"drafts": get_draft_manager().list_drafts()}
+async def list_drafts(request: Request) -> Dict[str, Any]:
+    """Return active planning session drafts visible to the requester:
+    shared + their own namespace, or every namespace for a curator role."""
+    from advisor.governance_draft import list_visible_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    return {"drafts": list_visible_drafts(user_id=user_id, role=role)}
 
 
 @app.get("/api/drafts/{draft_id}")
-async def get_draft(draft_id: str) -> Dict[str, Any]:
+async def get_draft(request: Request, draft_id: str) -> Dict[str, Any]:
     """Return a single draft spec by ID (for the Plan Canvas).
 
     Self-heals doc_id via resolve_live_doc_id() before returning — every
     frontend consumer of this endpoint (Plan Canvas's open(), the Active
     Drafts sidebar) gets a repaired pointer automatically, with no
     frontend-side staleness handling required.
+
+    Ownership-checked: 404 (not 403) for a draft in another user's
+    namespace, unless the requester is a curator.
     """
     from fastapi import HTTPException
-    from advisor.governance_draft import get_draft_manager
-    dm = get_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    from advisor.governance_draft import resolve_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
-    resolved = dm.resolve_live_doc_id(draft_id, spec=spec)
-    if resolved != spec.get("doc_id"):
-        spec["doc_id"] = resolved
+    dm, spec = resolved
+    resolved_doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
+    if resolved_doc_id != spec.get("doc_id"):
+        spec["doc_id"] = resolved_doc_id
     return spec
 
 
@@ -970,17 +1143,21 @@ async def patch_draft_commands(request: Request, draft_id: str, body: Dict[str, 
     returned to the caller instead of being silently dropped. resort=False is
     required here specifically: this endpoint fires on every drag-reorder, and
     re-sorting by priority would silently undo a manual reorder.
+
+    Ownership-checked like GET /api/drafts/{draft_id} above.
     """
     from fastapi import HTTPException
     from advisor.auth import get_current_user
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import resolve_draft
     from advisor.plan_validator import validate_commands
     user = get_current_user(request)
     edited_by = (user or {}).get("sub")
-    dm = get_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    dm, spec = resolved
     warnings: List[str] = []
     if "commands" in body:
         fixed_commands, spec["answers"], warnings = validate_commands(
@@ -1035,28 +1212,41 @@ async def patch_draft_commands(request: Request, draft_id: str, body: Dict[str, 
 
 
 @app.delete("/api/drafts/{draft_id}")
-async def delete_draft(draft_id: str) -> Dict[str, str]:
-    """Discard a planning session draft."""
-    from advisor.governance_draft import get_draft_manager
-    deleted = get_draft_manager().delete(draft_id)
+async def delete_draft(request: Request, draft_id: str) -> Dict[str, str]:
+    """Discard a planning session draft. Ownership-checked (see GET above)."""
+    from advisor.governance_draft import resolve_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
+        return {"status": "not_found"}
+    dm, _spec = resolved
+    deleted = dm.delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
 # ── Report Spec Document / Draft endpoints ──────────────────────────────────────
 
 @app.get("/api/reports/docs")
-async def list_report_docs() -> Dict[str, Any]:
-    """Return inbox, outbox, and trash report spec document lists, annotated with active draft IDs."""
+async def list_report_docs(request: Request) -> Dict[str, Any]:
+    """Return inbox, outbox, and trash report spec document lists, annotated
+    with active draft IDs. Namespace-scoped like GET /api/plans."""
     from advisor.report_spec_docs import get_report_spec_doc_manager
-    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_draft import list_visible_report_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_report_spec_doc_manager()
-    inbox = dm.list_inbox()
-    outbox = dm.list_outbox()
-    trash = dm.list_trash()
+    inbox = dm.list_inbox(requester_user_id=user_id, requester_role=role)
+    outbox = dm.list_outbox(requester_user_id=user_id, requester_role=role)
+    trash = dm.list_trash(requester_user_id=user_id, requester_role=role)
 
     # Build doc_id -> draft_id map for active report drafts
     doc_to_draft: Dict[str, str] = {}
-    for d in get_report_draft_manager().list_drafts():
+    for d in list_visible_report_drafts(user_id=user_id, role=role):
         if d.get("doc_id") and d.get("phase") in ("generate", "refine"):
             doc_to_draft[d["doc_id"]] = d["draft_id"]
 
@@ -1067,12 +1257,20 @@ async def list_report_docs() -> Dict[str, Any]:
 
 
 @app.get("/api/reports/docs/{doc_id}")
-async def get_report_doc(doc_id: str) -> Dict[str, Any]:
-    """Return the content of a report spec document by doc_id (inbox, outbox, or trash)."""
+async def get_report_doc(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Return the content of a report spec document by doc_id (inbox, outbox, or trash).
+
+    Ownership-checked like GET /api/plans/{doc_id}.
+    """
     from fastapi import HTTPException
     from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
     dm = get_report_spec_doc_manager()
-    content = dm.load(doc_id, include_trash=True)
+    content = dm.load(doc_id, include_trash=True, requester_user_id=user_id,
+                       requester_role=role, enforce_ownership=True)
     if content is None:
         raise HTTPException(status_code=404, detail=f"Report spec {doc_id!r} not found")
     folder = dm.folder_of(doc_id) or "outbox"
@@ -1096,20 +1294,24 @@ async def export_report_doc(doc_id: str) -> Response:
 
 
 @app.post("/api/reports/specs/import")
-async def import_report_spec(body: Dict[str, Any]) -> Dict[str, Any]:
+async def import_report_spec(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Import an externally-written Report Spec markdown document as a new
-    managed spec in inbox. Mirrors POST /api/plans/import.
+    managed spec in inbox. Mirrors POST /api/plans/import (namespaced to
+    the signed-in user; anonymous keeps the shared namespace).
     """
     from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.auth import get_current_user
     from fastapi import HTTPException
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
     title = (body.get("title") or "").strip() or None
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     dm = get_report_spec_doc_manager()
     try:
-        doc_id = dm.import_document(content, title=title)
+        doc_id = dm.import_document(content, title=title, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
@@ -1216,10 +1418,18 @@ async def restore_report_doc_version(doc_id: str, version_file: str) -> Dict[str
 
 
 @app.delete("/api/reports/docs/{doc_id}")
-async def delete_report_doc(doc_id: str) -> Dict[str, str]:
-    """Soft delete a report spec document."""
+async def delete_report_doc(request: Request, doc_id: str) -> Dict[str, str]:
+    """Soft delete a report spec document. Ownership-checked (see GET above)."""
     from advisor.report_spec_docs import get_report_spec_doc_manager
-    deleted = get_report_spec_doc_manager().delete(doc_id)
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    dm = get_report_spec_doc_manager()
+    visible = dm.load(doc_id, requester_user_id=user_id, requester_role=role, enforce_ownership=True)
+    if visible is None:
+        return {"status": "not_found"}
+    deleted = dm.delete(doc_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
@@ -1240,21 +1450,29 @@ async def purge_report_doc(doc_id: str) -> Dict[str, str]:
 
 
 @app.get("/api/reports/drafts")
-async def list_report_drafts() -> List[Dict[str, Any]]:
-    """List all active report drafts."""
-    from advisor.report_draft import get_report_draft_manager
-    return get_report_draft_manager().list_drafts()
+async def list_report_drafts(request: Request) -> List[Dict[str, Any]]:
+    """List active report drafts visible to the requester (see GET /api/drafts)."""
+    from advisor.report_draft import list_visible_report_drafts
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    return list_visible_report_drafts(user_id=user_id, role=role)
 
 
 @app.get("/api/reports/drafts/{draft_id}")
-async def get_report_draft(draft_id: str) -> Dict[str, Any]:
-    """Get report spec draft details by draft_id."""
+async def get_report_draft(request: Request, draft_id: str) -> Dict[str, Any]:
+    """Get report spec draft details by draft_id. Ownership-checked (see GET /api/drafts/{id})."""
     from fastapi import HTTPException
-    from advisor.report_draft import get_report_draft_manager
-    spec = get_report_draft_manager().load(draft_id)
-    if spec is None:
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Report draft {draft_id!r} not found")
-    return spec
+    return resolved[1]
 
 
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -1263,16 +1481,25 @@ _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 async def discover_draft_schema_internal(
     draft_id: str, egeria_credentials: Optional[Dict[str, str]] = None
 ) -> List[Dict[str, str]]:
-    """Internal helper to dynamically retrieve the schema for a draft report specification."""
-    from advisor.report_draft import get_report_draft_manager
+    """Internal helper to dynamically retrieve the schema for a draft report specification.
+
+    Ownership-checked via the ambient request context (advisor.request_context):
+    resolves draft_id across the shared root and every namespace exactly like
+    the direct REST routes do, honouring the requester's own visibility
+    (own namespace + shared, or every namespace for a curator role) — a
+    draft namespaced to a different user is treated as not found here too.
+    """
+    from advisor.report_draft import resolve_report_draft
     from advisor.report_spec_parser import register_report_spec, parse_report_spec_markdown
     from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
     from advisor.report_pipeline import get_report_pipeline
+    from advisor.request_context import current_user
     from pyegeria.egeria_tech_client import EgeriaTech
     import time
 
-    dm = get_report_draft_manager()
-    draft = dm.load(draft_id)
+    _requester = current_user() or {}
+    resolved = resolve_report_draft(draft_id, user_id=_requester.get("user_id"), role=_requester.get("role"))
+    draft = resolved[1] if resolved else None
     if not draft:
         logger.warning(f"Draft {draft_id} not found for schema discovery")
         return []
@@ -1306,8 +1533,8 @@ async def discover_draft_schema_internal(
         logger.error(f"Failed to read Egeria connection info: {exc}")
         return []
 
-    if not all((conn.get("view_server"), conn.get("platform_url"),
-                conn.get("user_id"), conn.get("user_pwd"))):
+    from advisor.report_pipeline import _conn_is_complete
+    if not _conn_is_complete(conn):
         logger.warning("Egeria connection is not fully configured; skipping schema discovery")
         return []
 
@@ -1321,7 +1548,8 @@ async def discover_draft_schema_internal(
             user_id=conn["user_id"],
             user_pwd=conn["user_pwd"]
         )
-        client.create_egeria_bearer_token()
+        from advisor.auth import apply_token
+        apply_token(client, conn.get("token"))
         
         # Speculative Discovery: query Egeria using client at depth 5
         schema_data = client.get_report_spec_schema(
@@ -1356,19 +1584,31 @@ async def get_report_draft_schema(request: Request, draft_id: str) -> List[Dict[
 
 
 @app.delete("/api/reports/drafts/{draft_id}")
-async def delete_report_draft(draft_id: str) -> Dict[str, str]:
-    """Discard an active report spec draft."""
-    from advisor.report_draft import get_report_draft_manager
-    deleted = get_report_draft_manager().delete(draft_id)
+async def delete_report_draft(request: Request, draft_id: str) -> Dict[str, str]:
+    """Discard an active report spec draft. Ownership-checked (see GET /api/drafts/{id})."""
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
+        return {"status": "not_found"}
+    dm, _spec = resolved
+    deleted = dm.delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
 
 
 @app.post("/api/reports/drafts/builder")
-async def create_report_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a blank report spec draft for builder canvas entry point."""
+async def create_report_builder_draft(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a blank report spec draft for builder canvas entry point.
+    Namespaced to the signed-in user; anonymous keeps the shared namespace."""
     from advisor.report_draft import get_report_draft_manager
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     title = (body.get("title") or "Untitled Report").strip()
-    dm = get_report_draft_manager()
+    dm = get_report_draft_manager(user_id)
     spec = dm.create(
         title=title,
         original_query=f"[builder] {title}",
@@ -1549,14 +1789,24 @@ async def edit_spec_by_id(doc_id: str) -> Dict[str, Any]:
 
 
 @app.patch("/api/reports/drafts/{draft_id}/columns")
-async def patch_report_draft_columns(draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
-    """Update columns and metadata in a report draft (called by Report Canvas edits)."""
+async def patch_report_draft_columns(request: Request, draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+    """Update columns and metadata in a report draft (called by Report Canvas edits).
+
+    Ownership-checked: resolves draft_id across the shared root and every
+    namespace via resolve_report_draft() — a draft namespaced to another
+    user comes back as 404 (never 403) unless the requester is a curator,
+    matching every other draft/document route.
+    """
     from fastapi import HTTPException
-    from advisor.report_draft import get_report_draft_manager
-    dm = get_report_draft_manager()
-    spec = dm.load(draft_id)
-    if spec is None:
+    from advisor.report_draft import resolve_report_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
+    role = (user or {}).get("role")
+    resolved = resolve_report_draft(draft_id, user_id=user_id, role=role)
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    dm, spec = resolved
     
     if "columns" in body:
         spec["columns"] = body["columns"]
@@ -1609,16 +1859,20 @@ async def list_actions() -> Dict[str, Any]:
 
 
 @app.post("/api/drafts/builder")
-async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
+async def create_builder_draft(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new blank draft in builder mode (Plan Editor entry point).
 
     Body: {title: str, perspective?: str}
     Returns the draft spec with builder_mode=true and an empty command list.
+    Namespaced to the signed-in user; anonymous keeps the shared namespace.
     """
     from advisor.governance_draft import create_builder_draft as _create_builder_draft
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
     title = (body.get("title") or "Untitled Plan").strip()
     perspective = body.get("perspective")
-    return _create_builder_draft(title, perspective)
+    return _create_builder_draft(title, perspective, user_id=user_id)
 
 
 @app.get("/api/plan-templates")
@@ -1838,9 +2092,9 @@ async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
         # Also write the full record including response_text to an extended JSONL
         try:
             import json as _json
-            from pathlib import Path
-            ext_path = Path("data/feedback/feedback_extended.jsonl")
-            ext_path.parent.mkdir(parents=True, exist_ok=True)
+            from advisor.config import ensure_writable_dir
+            ext_path = _extended_feedback_path()
+            ensure_writable_dir(ext_path.parent, "ADVISOR_DATA_PATH")
             from datetime import datetime as _dt
             record = {
                 "timestamp": _dt.utcnow().isoformat(),
@@ -1875,8 +2129,7 @@ async def list_perspectives() -> Dict[str, Any]:
 async def feedback_extended() -> Dict[str, Any]:
     """Return all extended feedback records (with response_text, triage_status, etc.)."""
     import json as _json
-    from pathlib import Path
-    path = Path("data/feedback/feedback_extended.jsonl")
+    path = _extended_feedback_path()
     records = []
     if path.exists():
         for line in path.read_text().splitlines():
@@ -1891,9 +2144,8 @@ async def feedback_extended() -> Dict[str, Any]:
 async def update_feedback_record(idx: int, body: Dict[str, Any]) -> Dict[str, Any]:
     """Update triage_status or analysis_comments on a feedback record by line index."""
     import json as _json
-    from pathlib import Path
     from fastapi import HTTPException
-    path = Path("data/feedback/feedback_extended.jsonl")
+    path = _extended_feedback_path()
     if not path.exists():
         raise HTTPException(status_code=404, detail="No feedback records")
     lines = path.read_text().splitlines()

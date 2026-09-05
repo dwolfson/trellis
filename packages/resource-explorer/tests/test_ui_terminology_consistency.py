@@ -102,15 +102,27 @@ def test_stage_survey_lists_are_scoped_by_both_filters():
     So the fetch must send both. This asserts the call site still does, because
     dropping either silently restores one of those two failures — neither of
     which errors, and both of which just show a plausible wrong list.
+
+    UPDATED 2026-09-03 (commit 6c402e8, "RE: Full Survey no longer duplicated
+    into every stage"): the separate unscoped `survey_kind: 'automate_full'`
+    cross-stage fetch this test used to also pin is gone, by design — the
+    original reasoning for it ("Full Survey would otherwise vanish from the
+    UI") was wrong: Automate's own Surveys sub-tab already lists every Survey
+    Definition catalog-wide, independent of this fetch. Live-verified: Full
+    Survey is absent from Assessment/Analysis/Discovery's own lists now,
+    still present (as RepoFullSurvey) in Automate's listing. This test was
+    never updated to match — fixed here, not reverting the intentional
+    change.
     """
     src = INDEX.read_text()
     assert "const _candParams = { phase: intent, survey_kind: intent };" in src, (
         "the Survey Definition candidates fetch no longer sends both phase and "
         "survey_kind — see this test's docstring for what each one gets wrong alone"
     )
-    assert "survey_kind: 'automate_full'" in src, (
-        "cross-stage surveys (Full Survey) belong to no single stage and are "
-        "fetched separately; without this they vanish from every stage's tab"
+    assert "survey_kind: 'automate_full'" not in src, (
+        "a cross-stage automate_full fetch is back — Full Survey should only be "
+        "reachable from Automate's own Surveys tab, not merged into every stage "
+        "(see commit 6c402e8's live-verified reasoning)"
     )
 
 

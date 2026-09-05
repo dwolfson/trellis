@@ -92,6 +92,19 @@ class PgVectorStore(_SharedPgVectorStore):
     EA has never had one; tables are always unqualified/public.
     """
 
+    def create_collection(self, collection_name: str, drop_if_exists: bool = False,
+                          description: str | None = None) -> str:
+        """Create (or recreate) a collection table.
+
+        `description` is accepted for compatibility with EA's ingestion callers
+        (advisor/ingest.py, data_prep/cli_indexer.py, scripts/ingest_*.py), which
+        have passed it since before the store moved to trellis-vectorstore; the
+        shared store dropped the parameter and every ingest path then failed
+        with TypeError (trevor, 2026-09-04). The value is not persisted — the
+        collection registry in advisor/collection_config.py owns descriptions.
+        """
+        return super().create_collection(collection_name, drop_if_exists=drop_if_exists)
+
     def __init__(
         self,
         host: Optional[str] = None,

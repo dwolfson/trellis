@@ -22,6 +22,12 @@ class OllamaBackend:
         self._client = ollama.Client(host=cfg.base_url)
         self._model = cfg.model
         self._temperature = cfg.temperature
+        # Resolved from the active model tier (resource_explorer/config.py
+        # TIER_PRESETS) — passed as the Ollama `num_ctx` option on every
+        # chat call so a model is never loaded at its full default context
+        # window. An explicit num_ctx in **kwargs still wins (dict union
+        # below keeps kwargs last).
+        self._num_ctx = cfg.num_ctx
 
     def complete(self, prompt: str, system: str = "", **kwargs) -> str:
         messages = []
@@ -31,7 +37,7 @@ class OllamaBackend:
         response = self._client.chat(
             model=self._model,
             messages=messages,
-            options={"temperature": self._temperature, **kwargs},
+            options={"temperature": self._temperature, "num_ctx": self._num_ctx, **kwargs},
         )
         return response["message"]["content"]
 
@@ -44,7 +50,7 @@ class OllamaBackend:
             model=self._model,
             messages=messages,
             stream=True,
-            options={"temperature": self._temperature, **kwargs},
+            options={"temperature": self._temperature, "num_ctx": self._num_ctx, **kwargs},
         ):
             yield chunk["message"]["content"]
 

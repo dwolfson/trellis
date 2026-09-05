@@ -8,6 +8,7 @@ from resource_explorer.surveyors.survey_definition_executor import (
     register_adapter,
 )
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinition, StepLink, SurveyStep
+from resource_explorer.surveyors.survey_report import ClassificationAnnotation, assert_unique_qualified_names
 
 
 def _fake_reader(survey_def, candidates=None):
@@ -552,3 +553,84 @@ class TestGuardEvaluationInTheLocalLoop:
         downstream_runner.assert_called_once()
         statuses = {s["step"]: s for s in result["steps"]}
         assert statuses["Step::Downstream"]["status"] == "ok"
+
+
+def test_annotations_from_two_definitions_sharing_a_step_get_distinct_provenance():
+    """A step authored into more than one Survey Definition — e.g.
+    `repo_secret_scan`, included by both
+    docs/dr-egeria/survey-definitions/repo-survey-definition-compliance.md
+    and repo-survey-definition-full.md — must not collide when its own
+    surveyor emits a keyless summary annotation once per run (SecretScanSurveyor's
+    `scan_summary`, secret_scan.py).
+
+    Regression for the live collision reproduced 2026-09-04: publishing
+    refused with "Two annotations would publish the same qualifiedName
+    'Annotation::egeria_python_git::<ts>::scan_summary'" because both
+    definitions' runs contributed an identically-shaped, keyless annotation.
+    `_stamp_definition_provenance` (survey_definition_executor.py) now stamps
+    every keyless annotation with the Survey Definition's own qualified_name
+    at the point its step's output is collected, so the two runs' annotations
+    carry distinct, provenance-bearing item_keys instead.
+    """
+
+    def shared_step_runner(entity, registry, **_):
+        # Mirrors SecretScanSurveyor.run()'s real shape: one keyless
+        # check_name="scan_summary" ClassificationAnnotation per call.
+        return {"annotations": [
+            ClassificationAnnotation(
+                check_name="scan_summary",
+                summary="No matches against the vendored ruleset.",
+                analysis_step="SecretScan",
+            )
+        ]}
+
+    adapter = ResourceTypeAdapter(
+        entity_type="fake_shared",
+        technology_type="Fake Tech Shared",
+        re_analysis_steps={"repo_secret_scan": shared_step_runner},
+        get_entity=lambda registry, slug: object(),
+        publish=MagicMock(return_value="report-guid-shared"),
+    )
+    register_adapter(adapter)
+
+    def make_def(qn: str) -> SurveyDefinition:
+        return SurveyDefinition(
+            process_guid=f"proc-{qn}",
+            display_name=qn,
+            qualified_name=qn,
+            supported_technology_type="Fake Tech Shared",
+            steps=[
+                SurveyStep(
+                    guid="s1", display_name="SecretScan", qualified_name="Step::SecretScan",
+                    executes_at="resource-explorer", re_analysis_step="repo_secret_scan",
+                ),
+            ],
+        )
+
+    registry = _fake_registry()
+
+    collected_outputs = []
+
+    def capture_publish(entity, step_outputs, surveyed_at, registry):
+        collected_outputs.extend(step_outputs)
+        return "report-guid-shared"
+
+    adapter.publish = capture_publish
+    registry.has_assigned_egeria_project.return_value = True
+
+    for qn in ("GovActionProcess::Compliance", "GovActionProcess::Full"):
+        survey_def = make_def(qn)
+        reader = _fake_reader(survey_def)
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+        executor.run(entity_type="fake_shared", slug="my-fake-shared", survey_definition_ref=qn)
+
+    all_annotations = [
+        ann for output in collected_outputs for ann in output.get("annotations", [])
+    ]
+    assert len(all_annotations) == 2
+
+    item_keys = {ann.item_key for ann in all_annotations}
+    assert item_keys == {"GovActionProcess::Compliance", "GovActionProcess::Full"}
+
+    # The actual publish-time guard: must not raise on the merged set.
+    assert_unique_qualified_names("egeria_python_git", all_annotations)

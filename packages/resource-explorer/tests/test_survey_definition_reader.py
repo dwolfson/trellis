@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from resource_explorer.surveyors.survey_definition_reader import (
@@ -460,6 +462,95 @@ class TestFindCandidateProcessGuidsByQuestions:
         fake.get_scoped_elements = lambda scope_guid, **_kw: "No elements found"
         reader = _reader_with_fake_classification_explorer(fake)
         assert reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository") == []
+
+
+class _FakeClock:
+    """A shared mutable clock, not a finite scripted sequence — the code
+    under test (and its own upstream helpers, e.g. resolve_question_guid's
+    caching) call time.monotonic() an unknown/unstable number of times, so a
+    fixed-length iter([...]) is fragile: run out early and next() raises
+    StopIteration, silently swallowed by find_candidate_process_guids_by_
+    questions' own broad except, and the test just sees zero warnings with
+    no hint why. A clock that's simply read (never exhausts) and explicitly
+    advanced only where the test cares (inside the fake's get_scoped_elements)
+    sidesteps that entirely."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class TestSlowCallInstrumentation:
+    """2026-09-04, after a real stuck-server incident with no way to tell
+    'slow' from 'hung': a get_scoped_elements call over 5s, or the whole
+    sequential loop over 10s, must log a WARNING naming which question and
+    how long — the diagnostic this incident needed and didn't have. Asserts
+    against the module's `log` object directly (mocked) rather than caplog,
+    to sidestep this suite's own logging setup/propagation config entirely —
+    the point under test is "did .warning() get called with the right
+    message", not how a handler downstream renders it."""
+
+    def test_a_single_slow_call_logs_a_warning_naming_the_question(self):
+        import time as time_module
+
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        clock = _FakeClock()
+        fake = _FakeClassificationExplorer(guid_by_name={"Q1": "q1-guid"})
+        fake.get_scoped_elements = lambda scope_guid, **_kw: (clock.advance(6.0), [])[1]
+        reader = _reader_with_fake_classification_explorer(fake)
+
+        with patch.object(time_module, "monotonic", clock.monotonic), \
+             patch.object(sdr, "log") as mock_log:
+            reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+
+        assert mock_log.warning.call_count == 1
+        args = mock_log.warning.call_args[0]
+        assert "Q1" in args and 6.0 in args
+
+    def test_a_fast_call_logs_nothing(self):
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid"},
+            scoped_elements_by_guid={"q1-guid": []},
+        )
+        reader = _reader_with_fake_classification_explorer(fake)
+        with patch.object(sdr, "log") as mock_log:
+            reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        mock_log.warning.assert_not_called()
+
+    def test_the_total_loop_duration_is_logged_when_slow_even_if_no_single_call_is(self):
+        """The interesting aggregate case a per-call check alone would miss:
+        three calls at 4s each (under the 5s per-call threshold, so none of
+        them individually warn) still sum to 12s, over the 10s loop
+        threshold — and that total is real information a per-call-only
+        check would silently lose."""
+        import time as time_module
+
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        clock = _FakeClock()
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid", "Q2": "q2-guid", "Q3": "q3-guid"},
+        )
+        fake.get_scoped_elements = lambda scope_guid, **_kw: (clock.advance(4.0), [])[1]
+        reader = _reader_with_fake_classification_explorer(fake)
+
+        with patch.object(time_module, "monotonic", clock.monotonic), \
+             patch.object(sdr, "log") as mock_log:
+            reader.find_candidate_process_guids_by_questions(["Q1", "Q2", "Q3"], "Git Repository")
+
+        # No per-call warning (each call is 4s, under the 5s threshold) — only
+        # the loop-total warning (12s, over the 10s threshold) fires.
+        assert mock_log.warning.call_count == 1
+        args = mock_log.warning.call_args[0]
+        assert 3 in args and 12.0 in args
 
 
 def test_missing_node_for_linked_guid_is_rejected():

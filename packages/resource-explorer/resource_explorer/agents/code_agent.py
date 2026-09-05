@@ -31,12 +31,14 @@ class CodeAgent(BaseExplorerAgent):
             return self._run_agent(prompt)
         except Exception:
             from resource_explorer.vector_store_pg import MultiCollectionStore
-            from resource_explorer.prompt_templates import build_rag_prompt
+            from resource_explorer.prompt_templates import build_context, build_rag_prompt
             from resource_explorer.llm_client import get_llm
             results = MultiCollectionStore().search(query, collections)
             if not results:
                 return "I couldn't find relevant code for that query in the indexed repositories."
-            context = "\n\n---\n\n".join(
-                f"[{r.collection} | score={r.score:.2f}]\n{r.text}" for r in results
+            context = build_context(
+                results,
+                self.config.rag.budget_tokens,
+                formatter=lambda r: f"[{r.collection} | score={r.score:.2f}]\n{r.text}",
             )
             return get_llm().complete(build_rag_prompt(query, context, slug))

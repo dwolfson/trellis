@@ -77,27 +77,47 @@ class EgeriaPublisher:
         timeout: int | None = None,
         registry: "ProjectRegistry | None" = None,
         zone_names: list[str] | None = None,
+        identity: "Any | None" = None,
     ) -> None:
+        # Who this publish runs as. `None` means "resolve from the caller when
+        # `_connect` runs" — deliberately deferred rather than captured here,
+        # because a publisher is routinely built at the top of a CLI command or
+        # a route and used further down, and the identity that matters is the
+        # one in force at the call, not at construction.
+        self._identity = identity
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
         self._registry = registry
+        #: What `_stamp_governance` last managed to set, per element GUID.
+        #: Read by `publish()` to warn when a publish left an element
+        #: unowned or outside the draft zone.
+        self.last_governance: dict = {}
         self._asset_maker = None
         self._discovery = None
         self._automated_curation = None
         self._external_references = None
         self._metadata_expert = None
-        # Zone names: caller-supplied > config default > []
+        # Zone names: caller-supplied > RE's draft zone.
+        #
+        # **Changed 2026-09-04 (plan §4, "one zone per app").** This used to
+        # fall back to `egeria.default_catalog_zones`, which is empty on every
+        # checkout — so everything RE published landed in the view server's
+        # default zones with nothing distinguishing "surveyed, not yet
+        # reviewed" from "curated". Now an unreviewed publish goes to the
+        # draft zone and `curate accept` promotes it (see
+        # `workflows/curate.promote_to_publish_zones`). `default_catalog_zones`
+        # is still honoured as the *publish* target — see
+        # `egeria_identity.publish_zones` — which is the question it was
+        # actually asking.
         if zone_names is not None:
             self.zone_names = zone_names
         else:
-            try:
-                from resource_explorer.config import get_config
-                self.zone_names = get_config().egeria.default_catalog_zones
-            except Exception:
-                self.zone_names = []
+            from resource_explorer.egeria_identity import draft_zone
+
+            self.zone_names = [draft_zone()]
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -131,6 +151,13 @@ class EgeriaPublisher:
             # Best-effort and deliberately not fatal — see the method's docstring.
             self._publish_homepage_reference(result, asset_guid)
             report_guid = self._create_survey_report(result, asset_guid)
+            # Ownership + draft zone, on both elements this publish is
+            # responsible for, before the annotations are written. Ordered
+            # this way deliberately: the classification is what makes the
+            # element *this person's draft*, and a reader who catches the
+            # catalogue mid-publish should see an owned draft rather than an
+            # unowned element in the deployment's normal zones.
+            self._stamp_governance(asset_guid, report_guid)
             link_counts = self._create_annotations(result, report_guid)
         # Best-effort, deliberately outside the guard_linkage block above —
         # this is local bookkeeping for the Survey Results dashboards'
@@ -183,6 +210,23 @@ class EgeriaPublisher:
                 f"published — see the outbox enqueue cap)"
             )
 
+        # Governance: an element published without its Ownership or its draft
+        # zone is *published* but not *governed* — it has no owner to curate it
+        # and it is not held out of the deployment's normal zones. Silence
+        # about that would be the "we never measured this looks like we
+        # measured nothing" failure, so it gets its own sentence in the same
+        # summary the counts appear in.
+        governance_warning = ""
+        ungoverned = [
+            guid for guid, outcome in (getattr(self, "last_governance", {}) or {}).items()
+            if not (outcome.get("ownership") and outcome.get("zone_membership"))
+        ]
+        if ungoverned:
+            governance_warning = (
+                f" (⚠ Ownership/ZoneMembership NOT set on {len(ungoverned)} element(s) — "
+                f"published but unowned and outside the draft zone)"
+            )
+
         link_warning = ""
         failed_or_skipped = link_counts.get("links_failed", 0) + link_counts.get("links_skipped", 0)
         if failed_or_skipped:
@@ -216,6 +260,7 @@ class EgeriaPublisher:
                         f" annotations"
                         f" → {(report_guid or 'no-guid')[:12]}…"
                         f"{annotation_types_warning}{link_warning}{cap_warning}"
+                        f"{governance_warning}"
                     ),
                     items=[
                         {
@@ -263,40 +308,73 @@ class EgeriaPublisher:
 
     # ── connection ────────────────────────────────────────────────────────────
 
+    def resolve_identity(self):
+        """The `EgeriaIdentity` this publish runs as. Resolved once, at connect.
+
+        Precedence: an identity handed to the constructor (the worker, which
+        knows whose run it is executing), then the signed-in caller from RE's
+        one identity ContextVar, then the service account.
+
+        The service-account fallback is deliberate and narrow. A publish
+        reached from a route or the CLI always has a caller by the time it gets
+        here, because both are gated. What still lands here with none is the
+        worker's own background work (the outbox drain re-publishing a queued
+        annotation), and attributing *that* to the platform's integration
+        identity is correct, not a hole.
+        """
+        if self._identity is not None:
+            return self._identity
+        from resource_explorer.egeria_identity import caller_credentials
+
+        self._identity = caller_credentials()
+        return self._identity
+
     def _connect(self) -> None:
         if not self.platform_url:
             raise EgeriaConnectionError(
                 "EGERIA_PLATFORM_URL is not set. "
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
+        identity = self.resolve_identity()
+        # A signed-in person's clients are built with THEIR id and
+        # authenticated with THEIR bearer token, so Egeria's own provenance
+        # records the person rather than `erinoverview` (plan §4,
+        # "Attribution: Egeria already records who did it"). A service-account
+        # identity keeps the previous behaviour exactly — same user id, same
+        # password, same `create_egeria_bearer_token` — which is what
+        # `apply_identity` does when the identity has no token.
+        if identity.is_person:
+            self.user_id = identity.user_id
         try:
-            from pyegeria import AssetMaker, AutomatedCuration, ExternalReferences
+            from pyegeria import AssetMaker, AutomatedCuration, CollectionManager, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
             from pyegeria.omvs.metadata_expert import MetadataExpert
+
+            from resource_explorer.egeria_identity import apply_identity
 
             self._asset_maker = AssetMaker(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._asset_maker.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._asset_maker, identity)
 
             self._discovery = DataDiscovery(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._discovery.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._discovery, identity)
 
             # Used only by _catalog_sub_resources() (D6) — template-based
             # FileFolder/DataFile creation for worthy sub-resources.
             self._automated_curation = AutomatedCuration(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._automated_curation, identity)
 
             # Used only by _publish_homepage_reference() — catalogs the
             # project's external website and links it to the library element.
             self._external_references = ExternalReferences(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._external_references.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._external_references, identity)
 
             # Used only by the annotation-linking-plan Phase 2 second pass in
             # _create_annotations() — the only client that can create a bare
@@ -306,7 +384,25 @@ class EgeriaPublisher:
             self._metadata_expert = MetadataExpert(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._metadata_expert.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._metadata_expert, identity)
+
+            # 2026-09-04, real bug: egeria_outbox.py's _create_collection_
+            # membership() (used to enqueue+attach blueprint members and
+            # other collection-membership relationships) requires a
+            # 'collection_manager' client — but _default_clients() below
+            # (the one the SCHEDULED outbox drain actually uses) never
+            # constructed one, so every collection_membership row it drains
+            # fails with "This element needs the 'collection_manager'
+            # client" — confirmed live in the server log, the same 3 rows
+            # failing on every 15-minute drain cycle, never once succeeding.
+            # egeria_investigation_publisher.py already had the right
+            # recipe (CollectionManager + create_egeria_bearer_token) for
+            # its own, different call site — this gives EgeriaPublisher
+            # (and therefore the scheduled drain) the same client.
+            self._collection_manager = CollectionManager(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            apply_identity(self._collection_manager, identity)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -441,6 +537,51 @@ class EgeriaPublisher:
         log.info("Created SourceControlLibrary GUID %s for %s", guid, result.resource_slug)
         self._cache_asset_guid(result.resource_slug, guid)
         return guid
+
+    # ── ownership and zones ───────────────────────────────────────────────────
+
+    def _stamp_governance(self, *element_guids: str) -> dict:
+        """`Ownership` and `ZoneMembership` on everything this publish created.
+
+        Plan §4: everything trellis publishes gets `Ownership` set to the
+        publishing user's `UserIdentity`, and one draft zone per app until a
+        curator accepts it. Ownership is *curation by default* — the owner is
+        the resource's default curator, with no separate grant, which is what
+        `workflows/curate.may_curate` reads.
+
+        Best-effort, and reported rather than raised: the survey report and its
+        annotations are already real by the time this runs, so a classification
+        that did not land is a governance gap to fix, not a reason to tell the
+        user their publish failed. The result is folded into the publish
+        summary the same way `annotation_types_warning` is, so it is visible in
+        the Activity tab rather than only in a log line.
+        """
+        from resource_explorer.egeria_identity import stamp_published
+
+        identity = self.resolve_identity()
+        owner = identity.user_id
+        results: dict[str, dict] = {}
+        client = None
+        for guid in element_guids:
+            if not guid:
+                continue
+            if client is None:
+                from resource_explorer.egeria_identity import classification_client
+
+                try:
+                    client = classification_client(identity)
+                except Exception as exc:
+                    log.warning(
+                        "Could not build a classification client — Ownership/"
+                        "ZoneMembership not set for this publish: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+                    return {}
+            results[guid] = stamp_published(
+                guid, owner, identity=identity, client=client, zones=self.zone_names,
+            )
+        self.last_governance = results
+        return results
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:
         if self._registry:

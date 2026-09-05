@@ -1,16 +1,63 @@
 """Prefect Client Adapter — dispatches flow runs to the Prefect API or runs them locally."""
 from __future__ import annotations
 
+import os
+
+# Belt-and-braces guard against the ephemeral-server leak found 2026-09-04
+# (see PrefectConfig.enabled's docstring in config.py): 13 orphaned
+# `prefect.server.api.server:create_app` subprocess servers, days old,
+# reparented to launchd. Root cause is Prefect's own client, not RE's
+# fallback logic — `prefect.client.get_client()` starts an ephemeral
+# in-process subprocess server whenever PREFECT_SERVER_EPHEMERAL_ENABLED is
+# true and no PREFECT_API_URL is reachable, and nothing shuts that
+# subprocess down. Prefect's shipped default profile (profiles.toml,
+# `active = "ephemeral"`) sets PREFECT_SERVER_EPHEMERAL_ENABLED=true unless
+# an operator's own ~/.prefect/profiles.toml overrides it — so this must be
+# forced in-process, not just left to PrefectConfig.enabled defaulting to
+# False.
+#
+# Verified against the installed Prefect version (3.8.1):
+# prefect/settings/models/server/ephemeral.py — field `enabled`, env alias
+# `PREFECT_SERVER_EPHEMERAL_ENABLED` (also accepts the older
+# `PREFECT_SERVER_ALLOW_EPHEMERAL_MODE` spelling) — defaults to False in the
+# settings model itself, but the shipped "ephemeral" profile overrides that
+# default via profiles.toml, and env vars take priority over profile
+# settings in Prefect's settings-source order (see
+# prefect/settings/base.py's settings_customise_sources — env sources are
+# checked before ProfileSettingsTomlLoader). setdefault() so an operator who
+# deliberately wants ephemeral-server behavior can still override it via
+# their own environment.
+#
+# Must run before `import prefect` (below) — Prefect reads its settings at
+# import/first-use time.
+os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
+
 import asyncio
 import logging
-import nest_asyncio
 from typing import Any
 from prefect.client import get_client
 from resource_explorer.config import get_config
-from resource_explorer.prefect.flows import re_survey_flow
+from resource_explorer.prefect.flows import run_surveyor_step_task
 
-# Enable nested event loops if running inside another async loop (e.g. Uvicorn/FastAPI)
-nest_asyncio.apply()
+# `import nest_asyncio` + `nest_asyncio.apply()` used to sit here, described as
+# "enable nested event loops if running inside another async loop (e.g.
+# Uvicorn/FastAPI)". Removed 2026-09-04 with the shared-pool refactor, on two
+# grounds:
+#
+# 1. It is not what makes this module work. Every sync/async bridge in RE now
+#    hands the coroutine to a thread with its own fresh loop
+#    (resource_explorer/concurrency.py), which needs no loop re-entrancy at all.
+# 2. It was redundant regardless. pyegeria declares nest-asyncio as its own
+#    dependency and applies it at package import
+#    (pyegeria/view/mermaid_utilities.py:20, reached from pyegeria/__init__.py),
+#    so the global patch is in effect for any process that touches pyegeria
+#    whether or not this module is imported — meaning RE's copy never changed
+#    the outcome, only who appeared to be responsible for it.
+#
+# The cross-loop hazard behind the 2026-09-03/04 incident lives in pyegeria's
+# async-client construction and is NOT claimed fixed by this (see
+# docs/process-model.md §1.3); this removes RE's own redundant global patch,
+# nothing more.
 
 
 class PrefectFlowRunCancelled(Exception):
@@ -122,13 +169,17 @@ def run_prefect_step(
 
             if loop and loop.is_running():
                 # Already inside an event loop (a FastAPI request thread): asyncio.run
-                # cannot nest, so hand the coroutine to a worker thread with its own loop.
-                from concurrent.futures import ThreadPoolExecutor
-                with ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        lambda: asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
-                    )
-                    return future.result()
+                # cannot nest, so hand the coroutine to a worker thread with its own
+                # loop. This used to construct `ThreadPoolExecutor()` with NO
+                # max_workers — the only one of the six bridge sites with no cap at
+                # all. It now uses the one bounded shared pool per process
+                # (resource_explorer/concurrency.py).
+                from resource_explorer.concurrency import run_sync
+
+                return run_sync(
+                    lambda: asyncio.run(
+                        _run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
+                )
             else:
                 return asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
         except PrefectFlowRunCancelled:
@@ -148,9 +199,24 @@ def run_prefect_step(
                 type(e).__name__, e, exc_info=True,
             )
 
-    # Fallback/Local Run: run flow directly in-process
-    # This still records the flow and task runs locally if Prefect is configured.
-    return re_survey_flow(
+    # Fallback/Local Run: call the step's underlying function directly, NOT
+    # through `re_survey_flow` (a Prefect `@flow`). Found 2026-09-04: invoking
+    # the flow-wrapped version here still enters Prefect's flow engine, which
+    # itself calls `get_client()` to record flow-run state — with no
+    # PREFECT_API_URL configured, that used to succeed only because the
+    # ephemeral-server fallback silently started a subprocess server (the
+    # exact leak this module now guards against at import time). With that
+    # guard in place, calling the `@flow` here would raise instead of running
+    # locally — defeating the entire point of this fallback branch, which is
+    # reached whenever Prefect is disabled OR unreachable and must keep
+    # working with zero Prefect server, ephemeral or real.
+    #
+    # `run_surveyor_step_task.fn` is Prefect's own way to reach the
+    # undecorated function (same pattern `run_planned_step_task` already uses
+    # to call it from inside `re_survey_definition_flow` — see
+    # prefect/flows.py) — this runs the step as a plain Python call, no
+    # Prefect engine involved at all.
+    return run_surveyor_step_task.fn(
         entity_type=entity_type,
         slug=slug,
         step_name=step_name,

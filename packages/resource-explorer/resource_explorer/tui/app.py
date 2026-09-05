@@ -283,13 +283,13 @@ class ProjectExplorerApp(App):
         # turns have context even when streamed via the RAGSystem path.
         try:
             from beeai_framework.backend.message import UserMessage, AssistantMessage
-            import asyncio, concurrent.futures
+            import asyncio
+            from resource_explorer.concurrency import run_sync
             async def _add_to_memory():
                 mem = self._conv._get_agent().memory
                 await mem.add(UserMessage(query))
                 await mem.add(AssistantMessage(accumulated))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                ex.submit(lambda: asyncio.run(_add_to_memory())).result(timeout=5)
+            run_sync(lambda: asyncio.run(_add_to_memory()), timeout=5)
         except Exception:
             pass  # memory update is best-effort
 

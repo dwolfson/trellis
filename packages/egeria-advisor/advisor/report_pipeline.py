@@ -388,6 +388,13 @@ class QuestionSpecIndex:
 _question_index = QuestionSpecIndex()
 
 
+def _conn_is_complete(conn: Dict[str, Any]) -> bool:
+    """A usable pyegeria connection has a server, a platform URL, a user id, and
+    either a bearer token (signed-in caller) or a password (service account)."""
+    return bool(conn.get("view_server") and conn.get("platform_url") and conn.get("user_id")
+                and (conn.get("token") or conn.get("user_pwd")))
+
+
 class ReportPipeline:
     """
     Pipeline for discovering and executing Egeria reports via MCP.
@@ -437,6 +444,10 @@ class ReportPipeline:
                 "platform_url": conn["platform_url"],
                 "user_id": creds["user_id"],
                 "user_pwd": creds["password"],
+                # Signed-in caller: Egeria bearer token from the app JWT (the
+                # password is never carried since 2026-09-04); anonymous or
+                # background caller: empty, and user_pwd is the service account.
+                "token": creds.get("token", ""),
             }
         except Exception:
             return {}
@@ -453,7 +464,7 @@ class ReportPipeline:
             return
         self._egeria_specs_tried = True  # don't retry on failure
         conn = self._read_pyegeria_connection()
-        if not all(conn.values()):
+        if not _conn_is_complete(conn):
             logger.debug("ReportPipeline: incomplete Egeria connection config — skipping spec refresh")
             return
         try:
@@ -465,7 +476,8 @@ class ReportPipeline:
                 user_id=conn["user_id"],
                 user_pwd=conn["user_pwd"],
             )
-            client.create_egeria_bearer_token(conn["user_id"], conn["user_pwd"])
+            from advisor.auth import apply_token
+            apply_token(client, conn.get("token"))
             refreshed = load_egeria_report_specs(client)
             if refreshed:
                 _question_index.invalidate()
@@ -629,9 +641,23 @@ class ReportPipeline:
         from pyegeria import exec_report_spec
 
         conn = self._read_pyegeria_connection(egeria_credentials=egeria_credentials)
-        if not all((conn.get("view_server"), conn.get("platform_url"),
-                    conn.get("user_id"), conn.get("user_pwd"))):
+        if not _conn_is_complete(conn):
             raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
+        if conn.get("token") and not conn.get("user_pwd"):
+            # pyegeria's exec_report_spec builds its own client from user/user_pass
+            # and has no way to accept a bearer token (egeria-python
+            # PYEGERIA_ISSUES.md ISSUE-86). Until that lands, this one read path
+            # runs as the service account, and Egeria's provenance for the
+            # report execution records the service account rather than the
+            # signed-in user. Attribution loss only; the caller's identity still
+            # scopes everything the app itself stores.
+            logger.warning(
+                "ReportPipeline: exec_report_spec cannot take a bearer token (ISSUE-86); "
+                "running report %r as the service account on behalf of %s",
+                report_name, conn.get("user_id"))
+            from advisor.auth import resolve_egeria_credentials
+            svc = resolve_egeria_credentials(None)
+            conn = {**conn, "user_id": svc["user_id"], "user_pwd": svc["password"], "token": ""}
 
         params: Dict[str, Any] = {
             "search_string": search_string,

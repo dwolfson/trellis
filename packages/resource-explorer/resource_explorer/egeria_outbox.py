@@ -343,13 +343,22 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
 
 def _default_clients():
     """The repo publisher's own connected clients — one client path, not a
-    second one to keep in step with it."""
+    second one to keep in step with it.
+
+    2026-09-04: was missing collection_manager (EgeriaPublisher._connect()
+    didn't build one at all until this same fix added it) — every scheduled
+    drain of a collection_membership row (blueprint member attachment among
+    them) failed with "This element needs the 'collection_manager' client,
+    which the drain was not given", confirmed live, same 3 rows failing on
+    every 15-minute cycle. Blueprints materialized fine (a different outbox
+    kind); their members never actually got attached."""
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
     publisher = EgeriaPublisher()
     publisher._connect()
     return (
-        OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert),
+        OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert,
+                      collection_manager=publisher._collection_manager),
         publisher._find_element_guid,
     )
 

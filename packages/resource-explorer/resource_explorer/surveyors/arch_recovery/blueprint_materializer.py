@@ -52,9 +52,9 @@ needed. Confirmed live against the real platform (post
 repository level), a different thing from the content-maturity axis
 `contentStatus` represents; the design doc's own wording ("ContentStatus =
 Draft") names the field this now sends, not the instance status.
-`ComponentMaterializer`'s own equivalent gap (still `NewElementRequestBody`
-with no `contentStatus`) is not fixed here — out of scope for this module,
-tracked as its own follow-up in the plan.
+`ComponentMaterializer` carried the identical gap (`NewElementRequestBody` with
+no `contentStatus`) — fixed the same day, same fix, in that module directly
+(`materializer.py`) rather than here, since it's out of scope for this module.
 
 **Idempotency, not a create-blind path.** Same reasoning as
 `ComponentMaterializer`: a repeat "accepted" call for the same
@@ -115,7 +115,13 @@ class BlueprintMaterializer:
         user_password: str | None = None,
         timeout: int | None = None,
         registry: "ProjectRegistry | None" = None,
+        identity=None,
     ) -> None:
+        # Whose materialization this is. Resolved at `_connect` rather than
+        # here (see `resolve_identity`) — a materializer is built in one place
+        # and used in another, and the identity that matters is the one in
+        # force when Egeria is actually written to.
+        self._identity = identity
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
@@ -125,20 +131,40 @@ class BlueprintMaterializer:
         self._solution_architect = None
         self._automated_curation = None
 
+    def resolve_identity(self):
+        """The `EgeriaIdentity` this materialization runs as.
+
+        Constructor-supplied first (the worker knows whose run it executes),
+        then the signed-in caller, then the service account. Curate is gated
+        on a signed-in owner or curator before it reaches here, so the
+        fallback is for background re-materialization only.
+        """
+        if self._identity is not None:
+            return self._identity
+        from resource_explorer.egeria_identity import caller_credentials
+
+        self._identity = caller_credentials()
+        return self._identity
+
     def _connect(self) -> None:
         if not self.platform_url:
             raise BlueprintMaterializationError(
                 "EGERIA_PLATFORM_URL is not set. "
                 "Add it to your .env file or pass platform_url= to BlueprintMaterializer."
             )
+        identity = self.resolve_identity()
+        if identity.is_person:
+            self.user_id = identity.user_id
         try:
             from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
+            from resource_explorer.egeria_identity import apply_identity
+
             self._solution_architect = SolutionArchitect(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._solution_architect.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._solution_architect, identity)
 
             # Used only for the qualifiedName idempotency check
             # (get_guid_for_name) — same helper ComponentMaterializer uses,
@@ -146,7 +172,7 @@ class BlueprintMaterializer:
             self._automated_curation = AutomatedCuration(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._automated_curation, identity)
         except ImportError as exc:
             raise BlueprintMaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."

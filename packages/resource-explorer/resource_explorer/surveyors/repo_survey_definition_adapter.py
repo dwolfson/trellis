@@ -2676,6 +2676,30 @@ def _architecture_recovery_results(
         [c["surveyed_at"] for c in all_components] + [o["surveyed_at"] for o in run_outcomes.values()],
         default="",
     )
+
+    # Component -> candidate blueprint(s) backlink (2026-09-03, Curate
+    # redesign item 5 — "jump from a component to its candidate
+    # blueprints"). Deliberately derived here rather than trusted from
+    # Component.blueprint (ir.py) — that field is single-valued, set once
+    # per clustering() call, so a component proposed into a "logical"
+    # blueprint AND a "physical" blueprint would only ever show whichever
+    # perspective's clustering pass ran last, silently losing the other.
+    # Scanning every blueprint's own `members` list for this component's
+    # scope_locator is correct regardless of how many perspectives claim
+    # it, and needs no persist-time fix — the blueprints list is already
+    # the source of truth clustering.py itself writes.
+    blueprints = _candidate_blueprints_results(registry, slug)
+    scope_to_blueprints: dict[str, list[dict]] = {}
+    for bp in blueprints:
+        for member_slug in bp["members"]:
+            scope = slug_to_path.get(member_slug)
+            if not scope:
+                continue
+            scope_to_blueprints.setdefault(scope, []).append(
+                {"perspective": bp["perspective"], "cluster_name": bp["cluster_name"]})
+    for c in displayed:
+        c["candidate_blueprints"] = scope_to_blueprints.get(c["path"], [])
+
     return {
         # Carried so the renderer can call the curator-verdict endpoints
         # (/api/curate/component-verdicts/repo/{slug}) without a second
@@ -2714,7 +2738,7 @@ def _architecture_recovery_results(
         # and materialization state. Read once here so the frontend's Curate
         # tab doesn't need a second route; Analysis's read-only rendering of
         # this same payload simply doesn't render this key.
-        "blueprints": _candidate_blueprints_results(registry, slug),
+        "blueprints": blueprints,
         "raw_component_count": sum(1 for c in all_components if not c.get("structural")),
         "structural_node_count": sum(1 for c in all_components if c.get("structural")),
         "run_outcomes": run_outcomes,
@@ -2763,6 +2787,20 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
     Verdict/materialized state merged on via curate.py's own key shape
     (`f"{perspective}::{cluster_name}"`) so the frontend never has to
     recompute that join.
+
+    Each blueprint also carries `member_status`/`child_status` (2026-09-03,
+    the Curate redesign's item 5 — "list the proposed components and
+    indicate if they have been approved") — resolved here rather than left
+    for the frontend to join, so a curator sees a member's verdict without
+    a second round trip. `member_status` entries are per component slug
+    (verdict/materialized looked up via the SAME scope_locator map
+    `_architecture_recovery_results` builds — deliberately its own copy of
+    that walk, per this module's established "small helper duplicated once
+    is safer than a cross-function coupling" reasoning); `child_status`
+    entries are per nested blueprint name (a child shares its parent's
+    perspective — clustering.py's `rollup()` never nests across
+    perspectives — so its verdict/materialized lookup reuses the same
+    `f"{perspective}::{name}"` key shape as the parent's).
     """
     from resource_explorer.surveyors.arch_recovery.persist import BLUEPRINT_KIND
 
@@ -2781,12 +2819,32 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
             by_key[key] = {"row": r, "detail": detail}
 
     verdicts = registry.get_component_verdicts("repo", slug)
-    materialized = registry.get_materialized_blueprints("repo", slug)
+    materialized_components = registry.get_materialized_components("repo", slug)
+    materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
+    slug_to_scope = _blueprint_slug_to_scope_map(registry, slug)
 
     blueprints = []
     for (perspective, name), entry in sorted(by_key.items()):
         r, detail = entry["row"], entry["detail"]
         vkey = f"{perspective}::{name}"
+        member_status = []
+        for member_slug in (detail.get("members") or []):
+            scope = slug_to_scope.get(member_slug, "")
+            member_status.append({
+                "slug": member_slug,
+                "scope_locator": scope,
+                "verdict": _verdict_view(verdicts.get(scope)) if scope else None,
+                "materialized": (_materialized_view(materialized_components.get(scope))
+                                 if scope else None),
+            })
+        child_status = []
+        for child_name in (detail.get("children") or []):
+            ckey = f"{perspective}::{child_name}"
+            child_status.append({
+                "cluster_name": child_name,
+                "verdict": _verdict_view(verdicts.get(ckey)),
+                "materialized": _materialized_view(materialized_blueprints.get(ckey)),
+            })
         blueprints.append({
             "perspective": perspective,
             "cluster_name": name,
@@ -2796,16 +2854,45 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
             "composed_into": detail.get("composed_into"),
             "size": detail.get("size", 0),
             "members": detail.get("members") or [],
+            "member_status": member_status,
             "children": detail.get("children") or [],
+            "child_status": child_status,
             "parent": detail.get("parent", ""),
             "oversized": bool(detail.get("oversized")),
             "target_size": detail.get("target_size"),
             "run_scope": detail.get("run_scope", ""),
             "surveyed_at": r.get("surveyed_at", ""),
             "verdict": _verdict_view(verdicts.get(vkey)),
-            "materialized": _materialized_view(materialized.get(vkey)),
+            "materialized": _materialized_view(materialized_blueprints.get(vkey)),
         })
     return blueprints
+
+
+def _blueprint_slug_to_scope_map(registry, slug: str) -> dict[str, str]:
+    """component slug -> scope_locator, for every currently-live
+    architecture_recovery component finding — byte-for-byte the same walk
+    `curate.py`'s `_slug_to_scope_map` does, and `_architecture_recovery_
+    results`' own `slug_to_path` local does. A third copy rather than an
+    import, per this module's established reasoning (materializer.py's
+    `_find_element_guid` docstring): a small, self-contained lookup
+    duplicated once is safer than a new cross-module coupling for one
+    caller. THE fix for the plan's identity-mismatch trap: clustering keys
+    a blueprint's members by component slug; verdicts/materialization are
+    keyed by scope_locator — looking a slug up directly in
+    get_materialized_component()/get_component_verdicts() without this map
+    first silently finds nothing for every member.
+    """
+    out: dict[str, str] = {}
+    for scope in registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"):
+        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+                if r["check_name"] == "component"]
+        if not rows:
+            continue
+        latest = max(rows, key=lambda r: r["surveyed_at"])
+        detail = _json_or_empty(latest.get("detail_json"))
+        if detail.get("slug"):
+            out[detail["slug"]] = scope
+    return out
 
 
 

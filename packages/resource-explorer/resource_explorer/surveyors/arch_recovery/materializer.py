@@ -87,7 +87,13 @@ class ComponentMaterializer:
         user_password: str | None = None,
         timeout: int | None = None,
         registry: "ProjectRegistry | None" = None,
+        identity=None,
     ) -> None:
+        # Whose materialization this is. Resolved at `_connect` rather than
+        # here (see `resolve_identity`) — a materializer is built in one place
+        # and used in another, and the identity that matters is the one in
+        # force when Egeria is actually written to.
+        self._identity = identity
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
@@ -97,20 +103,40 @@ class ComponentMaterializer:
         self._solution_architect = None
         self._automated_curation = None
 
+    def resolve_identity(self):
+        """The `EgeriaIdentity` this materialization runs as.
+
+        Constructor-supplied first (the worker knows whose run it executes),
+        then the signed-in caller, then the service account. Curate is gated
+        on a signed-in owner or curator before it reaches here, so the
+        fallback is for background re-materialization only.
+        """
+        if self._identity is not None:
+            return self._identity
+        from resource_explorer.egeria_identity import caller_credentials
+
+        self._identity = caller_credentials()
+        return self._identity
+
     def _connect(self) -> None:
         if not self.platform_url:
             raise MaterializationError(
                 "EGERIA_PLATFORM_URL is not set. "
                 "Add it to your .env file or pass platform_url= to ComponentMaterializer."
             )
+        identity = self.resolve_identity()
+        if identity.is_person:
+            self.user_id = identity.user_id
         try:
             from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
+            from resource_explorer.egeria_identity import apply_identity
+
             self._solution_architect = SolutionArchitect(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._solution_architect.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._solution_architect, identity)
 
             # Used only for the qualifiedName idempotency check
             # (get_guid_for_name) — same helper EgeriaPublisher uses, same
@@ -118,7 +144,7 @@ class ComponentMaterializer:
             self._automated_curation = AutomatedCuration(
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+            apply_identity(self._automated_curation, identity)
         except ImportError as exc:
             raise MaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -198,6 +224,14 @@ class ComponentMaterializer:
             "class": "SolutionComponentProperties",
             "qualifiedName": qualified_name,
             "displayName": name,
+            # Backlog.md item 6 / blueprint_materializer.py's own docstring
+            # (2026-09-03): the same Draft-status gap BlueprintMaterializer
+            # had, fixed the same way — contentStatus is a plain field on
+            # ReferenceableProperties, settable inside properties on the
+            # existing NewElementRequestBody. architecture-recovery.md §10
+            # Phase 2's "All at ContentStatus = Draft" now holds for
+            # components too, not just blueprints.
+            "contentStatus": "DRAFT",
         }
         # Confidence and perspective are evidence ABOUT the proposal, not
         # properties of the real element a curator just decided is real —
@@ -229,8 +263,36 @@ class ComponentMaterializer:
         if not guid or not _UUID_RE.match(guid):
             raise MaterializationError(f"Egeria returned no usable GUID for the new SolutionComponent (got {guid!r})")
 
+        # Ownership + the **draft** zone, like every other element RE creates.
+        # Promotion into the publish zones is `workflows.curate.
+        # promote_to_publish_zones`, called by the accept path immediately
+        # after this.
+        #
+        # **Changed after a live failure, 2026-09-04.** This first wrote the
+        # publish zones directly, on the reasoning that a materialized
+        # component *is* the accepted outcome and should start where accepted
+        # elements belong. Egeria disagreed, in as many words:
+        #
+        #     OMAG-SERVER-SECURITY-403-005 User erinoverview is not authorized
+        #     to change the zone membership for element ... from
+        #     [egeria-runtime] to [egeria-runtime]
+        #
+        # The security connector refuses a *no-op* zone change, so the accept
+        # path's promotion then 403'd on an element that was already where it
+        # belonged. One rule is both simpler and what the plan actually asks
+        # for: **everything RE creates is born in the draft zone, and
+        # acceptance is what moves it.** That makes the transition real and
+        # observable rather than something one code path skips.
+        from resource_explorer.egeria_identity import draft_zone, stamp_published
+
+        identity = self.resolve_identity()
+        governance = stamp_published(
+            guid, identity.user_id, identity=identity, zones=[draft_zone()],
+        )
+
         if self._registry:
             self._registry.record_materialized_component(
                 entity_type, entity_slug, scope_locator, qualified_name, guid,
             )
-        return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+        return {"status": "materialized", "guid": guid, "qualified_name": qualified_name,
+                "governance": governance}

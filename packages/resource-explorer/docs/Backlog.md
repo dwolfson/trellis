@@ -247,10 +247,24 @@ materialized guid `809025b5-cca9-4e9a-a2f7-3a5104138f67`, independently re-queri
 the same. Both checks: `properties.contentStatus` round-trips as `"DRAFT"` correctly;
 `elementHeader.status` stays `"ACTIVE"` (a different, unrelated instance-status axis).
 `BlueprintMaterializer` now sends `contentStatus: "DRAFT"` — architecture-recovery.md §10 Phase
-2's "All at ContentStatus = Draft" is achieved for blueprints. `ComponentMaterializer`'s
-identical gap (still `NewElementRequestBody` with no `contentStatus`) is NOT fixed — separate,
-still-open follow-up. One new regression test (`test_content_status_draft`), 21/21 passing in
-`test_blueprint_materializer.py`.
+2's "All at ContentStatus = Draft" is achieved for blueprints. One new regression test
+(`test_content_status_draft`), 21/21 passing in `test_blueprint_materializer.py`.
+
+**GUID note (2026-09-04):** the platform was redeployed with a full repository-store wipe the
+same day this was verified. The three GUIDs above (`1c6550a9-...`, `8755a5ac-...`,
+`809025b5-...`) are historical — valid as of the verification date, not resolvable against the
+platform after the wipe. The finding itself (`contentStatus` round-trips correctly via
+`properties`, no separate request-body class needed) is a property of the API/pyegeria fix, not
+of that instance, and stands unaffected.
+
+**`ComponentMaterializer`'s identical gap fixed the same day, same fix.** `materializer.py`'s
+`materialize()` now sends `contentStatus: "DRAFT"` too — same field, same mechanism, no separate
+investigation needed since the pyegeria fix (odpi/egeria-python#337) already covers both element
+kinds. Live-verified through the real Curate UI accept endpoint (`POST
+/api/curate/component-verdicts/repo/sqlglot`, `scope_locator: "sqlglotc"`), materialized guid
+`08a5ab3d-7862-43a8-a6bc-b5edbc768215`, independently re-queried and confirmed
+`properties.contentStatus == "DRAFT"`. One new regression test (`test_content_status_draft`),
+`test_component_materializer.py`.
 
 **Also found and fixed in the same window, unrelated to Egeria**: a genuinely stale
 `resource-explorer web` process (pid 74923/74921, running 20+ hours, holding no listening port —
@@ -260,6 +274,232 @@ Its background scheduler thread does start independently of the HTTP bind (confi
 `web/app.py`'s `_lifespan`), so this was briefly a real second outbox drainer — no damage found,
 since every kind currently enqueued is convergent under double-processing and wires (the one
 non-convergent kind) are deferred out of the outbox entirely.
+
+**7. `benchmarks`-style directories are proposed as unclassified components — no naming-
+convention type/exclusion pass exists — found 2026-09-03, reviewing Phase C's Curate UI against
+`sqlglot`, deferred by explicit project-owner choice ("neither now").** `benchmarks` has only
+coupling evidence (`connective-orchestrator`, 60%, dispersed fan-out) — no code marker fires, so
+it's genuinely unclassified, not mistyped. Nothing in `code_markers.py`/the coupling classifier
+maps a directory literally named `benchmarks`/`tests`/`examples`/`scripts` to a distinct type or
+excludes it from being proposed as an architecture component at all — a real, reasonable gap,
+larger than a quick fix (touches detector design: is a benchmark harness a component that
+happens to be untyped, or a different KIND of thing that shouldn't be proposed as one?). Not
+scoped further here.
+
+**8. `SolutionArchitect` has no `create_solution_port` — real Egeria SolutionPort materialization
+is blocked at the SERVER, confirmed live, not just unmeasured on the client side — found
+2026-09-03, scoping the port/wire work named in the Curate redesign conversation.** Checked the
+installed pyegeria and the canonical `egeria-python` checkout's `.http` ground truth first
+(`Egeria-api-solution-architect.http`): `link_solution_component_port`/`link_solution_port_
+delegation` (attach an *existing* port) and their detach counterparts exist; no `create_solution_
+port` method and no `POST .../solution-ports` endpoint anywhere. `.http` files can mislead in
+either direction though (a real precedent named by `egeria-python-65`: 3 relationship types
+looked unbuilt from `.http` alone and turned out to have zero real live endpoint, but a 4th that
+looked the same way did) — so this went to a live check once the platform came back up from the
+redeploy: `GET /v3/api-docs` against the real `qs-view-server` (2.39MB spec), every path
+containing "port" enumerated — **30 POST paths, all attach/detach, zero creation endpoints,
+anywhere in the entire live spec** (not just solution-architect — checked a generic
+process-ports attach under a different service too). Definitive: this is a confirmed Egeria
+Server gap, not a client-side omission pyegeria could paper over. No `SolutionPortProperties`
+model exists either, so the generic fallback (`MetadataExpert.create_metadata_element`,
+`NewOpenMetadataElementRequestBody` — confirmed live to be a real, reachable route,
+`/servers/{serverName}/api/open-metadata/{urlMarker}/metadata-elements`). Reported to
+`egeria-python-65` for their tracker (`PYEGERIA_ISSUES.md` ISSUE-85, PR #340). Separate and NOT
+blocked: `SolutionLinkingWire`'s OMVS-layer methods are already implemented and working in
+pyegeria, exposed via Dr.Egeria's `Link Solution Components` command (not a missing "wire"
+command as first thought — `egeria-python-65` corrected this after checking the actual
+processor code).
+
+**Correction, same day: `SolutionPortProperties` DOES exist** (this entry originally said it
+didn't — an earlier search filtered out anything with "solution" in the name and never actually
+checked). The live OpenAPI spec's `components/schemas` documents `SolutionPortProperties`
+(`direction` enum field) even with no create endpoint — the server genuinely understands the
+type, it just can't be created through a convenience wrapper. **Project-owner instruction,
+2026-09-04: build a temporary workaround via the generic route now, using `SolutionPort` (the
+right type — same `DesignModelElement` branch as `SolutionComponent`, confirmed via
+`SolutionComponentPort`'s live typedef), not the classic `Port`/`PortImplementation`/`PortAlias`
+family first suggested (ruled out: its attach relationship `ProcessPort` requires the owning end
+to be typed `Process`, a different branch entirely — no way to attach a classic Port to a
+`SolutionComponent`).** Built and live-verified end to end: `port_materializer.py`'s
+`PortMaterializer`, mirroring `BlueprintMaterializer`'s shape exactly so it's a clean swap once
+pyegeria ships a real `create_solution_port` — same idempotency-first structure, same
+`{"status", "guid", "qualified_name"}` return contract. Live probe (create → attach via the real
+`link_solution_component_port` → verify via `get_anchored_element_graph`'s `relationships` list
+→ delete both) confirmed the whole path works, including one real wrong turn caught and fixed:
+the `direction` enum's registered type is `SolutionPortDirection` with values
+`UNKNOWN`/`INPUT`/`OUTPUT`/`INOUT`/`OUTIN`/`OTHER` — a first attempt guessed `typeName: "PortType"`
+/ `symbolicName: "Input"` from the OpenAPI schema's toString-derived enum listing, which is
+actually the *classic* `Port.portType` enum's shape, and failed `OMAG-COMMON-400-032`. Full trail
+in memory note `reference_egeria_dedup_and_link_patterns` (including the
+`get_metadata_element_by_guid` `properties`-is-always-`None` trap — real key is
+`elementProperties.propertyValueMap`/`propertiesAsStrings` — positive-controlled against a real
+seeded element before trusting it on the throwaway). New `architecture_materialized_ports`
+registry table + accessor trio (mirrors `architecture_materialized_blueprints`'s shape, keyed by
+(scope_locator, port_name) since one component can have more than one port). 22 new tests (17
+materializer, 5 registry round-trip) — `MetadataExpert`-mocked, plus one that validates the real
+create body against pyegeria's actual `NewOpenMetadataElementRequestBody` model. Not built in
+this pass: any route/UI wiring, or the "which ports come from which component's deployment
+evidence" mapping — this is the create capability only, matching the project owner's own framing
+("if you need... try doing it").
+
+**9. Minor, measured-not-fixed: `_candidate_blueprints_results` and `_architecture_recovery_
+results` each build their own slug→scope_locator map independently** (the same duplication-by-
+design pattern this codebase already uses elsewhere — `materializer.py`'s `_find_element_guid`
+docstring gives the same "small helper duplicated once is safer than cross-module coupling"
+reasoning). Measured against `egeria_workspaces_git` (109 components, 39 blueprints, its own
+Backlog-recorded largest fixture): 0.544s for the full `_architecture_recovery_results` call,
+including both walks. Not slow enough to be worth threading a shared map through two functions
+that are each deliberately self-contained and independently testable — noted here as a measured
+fact, not acted on, so a future session doesn't re-measure it from scratch if it comes up again.
+
+**10. `survey_definition_cache` has no staleness check — found and fixed live, 2026-09-04,
+right after Egeria's redeploy (full re-seed, fresh metadata store).** `survey_definition_
+executor.py`'s `_resolve_process_guid` trusts a cached `process_guid` unconditionally when
+`refresh_definition` isn't explicitly requested (the default) — no check that the cached GUID
+still resolves. Confirmed live: a cached row from 2026-08-09 pointed at a GovernanceActionProcess
+GUID that 404s post-redeploy (`GET .../metadata-elements/{guid}` → gone), while the real Survey
+Definitions exist fine under fresh GUIDs (`find_candidate_process_guids('Git Repository')`
+returned all 10 `Repo*` processes correctly). All 29 cached rows predated the redeploy by weeks,
+so cleared the whole table rather than individually verify each — it's a pure performance cache
+(self-repopulates via `find_candidate_process_guids` on next use), not a source of truth, so
+clearing has no data-loss risk. **Not fixed at the code level** — `_resolve_process_guid` still
+has no staleness check, so this can recur after any future full re-seed; worth a real fix
+(verify-before-trust, or a TTL) if platform re-seeds become routine rather than rare.
+
+**11. Survey Results Dashboards — Security Overview's Discovery placement, project-owner decision
+2026-09-04: "both."** A dashboard's stage placement is derived (never hand-authored) from its
+input analyses' own catalog intents, and `security_overview` genuinely spans Discovery
+(`license_classification`, `repo_conventions`) and Assessment (`security_scan`, `ci_quality`,
+`cve_scan`, `secret_scan`, and 5 more) — so it correctly shows under both, and the Assessment-tier
+inputs correctly report "not run" under Discovery, since Discovery doesn't trigger Assessment-tier
+work. Not a bug, but a real UX rough edge: someone who's only done Discovery-tier work sees a
+mostly-empty security card. Decided: do both — (a) reframe the copy shown under Discovery
+specifically ("Discovery-tier signals below are current; the rest needs Assessment" rather than a
+flat "not run yet" that reads as a gap), and (b) split out a lean Discovery-tier security teaser
+(license/conventions only) alongside the full Assessment-only picture. **Built 2026-09-04**:
+`renderSecurityOverviewDashboard(dashboard, stage)` now branches on the requesting stage — under
+Discovery it shows only the two Discovery-tier tiles (License, Disclosure policy) with the
+reframed copy and no detail dump underneath; under Assessment (or any other caller) the full
+scorecard renders exactly as before. `stage` is threaded down from `_loadSurveyResultsPanel`'s
+own request param through `renderSurveyResultsPanel`, not re-derived — the same value the server
+was already asked for.
+
+**12. Dashboard trend charts — real feature, cheap because the plumbing already exists.**
+Every `AnalysisKindResults` already carries a `trend_reader` (`GET /{slug}/analyses/{analysis_id}
+/trend` already serves raw JSON, already consumed by Understanding's charts) — `SURVEY_RESULT_
+DASHBOARDS` currently only renders single-snapshot `grouped_cards`/`custom` views, never a trend.
+Extending dashboards to also chart each input's trend (matching `loadRepoSurveyHistoryChart`'s
+existing client-side chart-building convention) is wiring existing infrastructure together, not
+building new plumbing. Not scoped or built yet — named here so the next pass doesn't have to
+rediscover that the hard part is already done.
+
+**13. Detailed survey data reachable from chat — corrected scope, 2026-09-04 (an earlier claim
+in this session that chat has "zero access to structured findings" was wrong).** Chat already
+does real structured-findings access for repos via `context_compile.py`'s `compile_context()`:
+resolves the question catalog's `analysis_ids` for the actual query asked (ranked by relevance,
+not just catalog position), pulls each analysis's *stored results* (not RAG text), and packs them
+into the prompt with explicit gap-reporting for anything unrun — confirmed this is exactly how
+chat correctly listed failing CVEs when asked. The real gap, checked directly: `get_questions
+("database")`/`get_questions("filesystem")` both return **0** — the question catalog is
+repo-only (51 questions), so `compile_context`'s hardcoded `resource_type="repo"` isn't a bug,
+it correctly reflects there being nothing to pass through for the other two resource types yet.
+Chat for a database/filesystem resource currently falls back to plain RAG search only (confirmed
+fail-soft, not broken — `_compiled_evidence`'s own docstring: "any problem here returns nothing
+and the agent proceeds... searching collections itself"). **Scope for closing this**: (a) small
+code change — thread `resource_type` through `compile_context`/`_compiled_evidence` instead of
+the repo hardcode (mechanical, `get_questions` already accepts the param); (b) the real work —
+author database and filesystem question catalogs mirroring the repo catalog's 51 entries, which
+needs real domain knowledge about what DB/FS surveys actually produce, not a quick generation
+pass. (b) is the actual size of this item; (a) is nearly free once (b) exists. Not started.
+Placeholder, same conversation: chat can already surface findings like failing CVEs in an answer
+— project owner noted (not yet scoped) that these could feed an RFA and/or a generated detailed
+report (e.g. a "Security Details" report) rather than living only in a chat transcript. Logged
+for later design, not attempted here.
+
+**Deferred, project-owner decision 2026-08-31: "We are deferring work on DB/FS until all the
+Repo work is complete."** Applies directly to (b) above — do not start authoring database/
+filesystem question catalogs, or any other DB/FS-specific feature work, until Repo work is
+signaled complete. Surfacing a DB/FS gap for the backlog (as this item already does) is fine;
+starting to build it is not.
+
+**14. "Run all &lt;Stage&gt;" — built 2026-09-04, direct feedback: "make it first and separate so
+a user can easily just select that and be confident that all the surveys are being run."** Not a
+re-labeling of the existing per-stage Egeria Survey Definitions (`RepoScoutingSurvey`/
+`RepoDiscoverySurvey`/`RepoAssessmentSurvey`/`RepoAnalysisSurvey`) — measured 2026-09-04 those
+cover 3/3, 5/7, 8/14, and 7/10 of each stage's individual `analysis_catalog.yaml` entries
+respectively, so pinning one under a "Run all" label would silently under-run three of the four
+stages. New `POST /{slug}/analyses/stage/{stage}/run` (`projects.py`) instead derives the full
+`step_keys` set live from every local `AnalysisKind` entry tagged that intent (via
+`REPO_ANALYSIS_STEP_MAP`), excluding `action` entries (`ingest`/`publish`/`profile` — same
+exclusion the scheduler already applies), then runs them as one `SurveyOrchestrator.run(steps=…)`
+call via the adapter's existing `run_batch` primitive (previously only reachable from
+`survey_definition_executor.py`). Self-maintaining as entries are added to a stage — no drift risk
+the way a fixed Survey Definition has. A visually-distinct amber button, pinned above the regular
+card grid, in Scouting/Discovery/Assessment/Analysis (`_runAllStageHtml`/`_runStageBatch` in
+`index.html`). 5 new tests (`tests/test_stage_batch_run_route.py`), full suite green.
+**Caught only by live browser testing, not by any Python test or `node --check`**: the button's
+`onclick` attribute was double-quoted around `JSON.stringify()`'s own double-quoted output,
+silently truncating the handler to `onclick="_runStageBatch("` — the button rendered fine and
+looked clickable; nothing happened on click. Every other `JSON.stringify`-into-`onclick` call site
+in the file already single-quotes for exactly this reason; this one didn't follow the convention.
+Fixed, plus a regression test pinning the single-quoted form (`node --check` parses the JS fine
+either way — it can't see what a `<button onclick>` attribute's exact string content does at
+click time, only whether the surrounding script is syntactically valid). Live-verified end to end
+after the fix on a real repo: POST fired, toast showed correct step/analysis counts, run
+completed.
+
+**15. Sub-Resources tab moved from Assessment to Analysis — built 2026-09-04, direct feedback.**
+`sub_resource_survey` is catalog-tagged `intent: analysis` ("produces a structural recommendation,
+not an evaluation against criteria") but its only interactive UI (select/catalog) lived in
+Assessment's own sub-tab since 2026-08-13 — a placement artifact of the Scouting workflow redesign
+plan, not design intent. The Analysis-tab card was a dead end: a bare Run button with no selection
+affordance. Moved the whole sub-tab (view container, nav entry, dispatch) to Analysis; backend
+routes (`/api/projects/{slug}/sub-resources*`) are resource-type-generic and needed no changes.
+`docs/assessment-sub-resource-cataloging.md` keeps its old filename — the content moved, the name
+didn't (not worth a doc rename for this).
+
+**16. Curate blueprint accept blocked until every member is materialized, with a one-click fix —
+built 2026-09-04, direct feedback:** accepting a proposed blueprint could fail on unpublished
+member components (an existing, deliberate partial-accept design — Decision 2, "accepting a
+blueprint does not implicitly accept or materialize its members" — not a bug), but the UI gave no
+warning before the click and no easy recovery after. `_curateBlueprintRow` now computes each
+member/child's real Egeria-materialized status (via the same `materialized.guid` check
+`memberVerdictBadgeInline`'s ⬡ glyph already uses) *before* rendering the Accept control: when
+anything is unmet, the Accept button is disabled with an explicit message naming which components,
+and a "📤 Publish missing component(s) & accept" button (`_curatePublishMissingComponents`) does
+the previously-manual workflow — accept each unmet member individually (materializing it), then
+re-submit the blueprint verdict — in one click, reporting any individual failures rather than
+swallowing them. Nested-blueprint children are surfaced but not auto-cascaded (a child has its own
+members that may need the same treatment first) — still reached via the existing jump-to-blueprint
+link. **Deliberately left the backend's permissive partial-accept (Decision 2) unchanged** — the
+UI now defaults to blocking the common accidental case, but the API still allows a genuinely
+intentional partial accept (e.g. a child that will never materialize because it was rejected) if
+called directly.
+
+**17. Stale-Egeria-pointer scan-and-clear is now scheduled — built 2026-09-04, after the
+2026-09-04 full repository-store wipe.** The human-driven recovery path (`EgeriaResync.scan()`/
+`.apply()`, Admin > 🔄 Egeria Alignment) worked exactly as designed — but nothing ran it until
+someone remembered to; the wipe sat with 60 stale asset GUIDs, 1,040 orphaned publish claims, 4
+stale investigation GUIDs, and 58 stale contexts until manually triggered. `egeria_resync.py`
+gains `scan_and_clear()` + a background scheduler (`start_scheduler`/`stop_scheduler`, wired into
+`web/app.py`'s lifespan alongside `bootstrap`'s Dr.Egeria-definition healing, same 600s interval,
+same never-block-startup/never-die-on-exception discipline). Automates only
+`SAFE_SCHEDULED_STEPS` — `clear_stale_assets`, `clear_orphan_publish_claims`,
+`clear_stale_investigations`, `clear_stale_contexts` — a strict subset of `REPAIR_STEPS` chosen
+because every one of them verifies live before writing (never guesses — a lookup failure is
+`undetermined`, never cleared), costs no real time, and never needs a human decision. Deliberately
+excludes anything `EXPENSIVE_STEPS` (archive-downloading republishes) or `needs_decision`
+(Egeria Project bindings — RE genuinely cannot guess which Project a resource should join), with
+an explicit defense-in-depth check in `scan_and_clear()` itself (not just inherited from the
+constant) refusing to apply either kind even if a future finding's step name happened to collide.
+Live-verified against the real post-wipe registry: manually ran the same four steps first (60
+assets/1,040 claims/4 investigations/58 contexts cleared, independently re-scanned to confirm —
+not just trusted the apply response), which surfaced a genuine, expected downstream consequence
+worth recording here too: 59 repos went from "published" to `unpublishable` because the
+`all-current-repos` investigation's own Egeria Project binding was itself stale and got correctly
+cleared — those repos were inheriting publish-eligibility through it. That's a real
+`needs_decision` item (bind or create an Egeria Project), not something `scan_and_clear()` should
+or does attempt. 11 new tests (`test_egeria_resync_scheduler.py`).
 
 **Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
 the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
@@ -2587,6 +2827,14 @@ Consequences beyond the empty tab:
 Sequencing note: write these **after** the Purpose subset measurement (item 6 above), not before. If Purpose
 turns out not to discriminate, the CSV schema changes — and authoring two new question sets against a schema
 that is about to change is the expensive order to do this in.
+
+**Deferred, project-owner decision 2026-08-31: "We are deferring work on DB/FS until all the
+Repo work is complete."** Authoring `database_questions`/`filesystem_questions` is exactly the
+DB/FS-specific work this applies to — do not start it until Repo work is signaled complete. The
+silent-failure fix (an explicit not-authored signal instead of an empty list) is a small,
+resource-type-agnostic correctness fix and isn't itself DB/FS feature work — it can proceed
+independently if picked up. See also item 13 above (chat/`compile_context` scope), same
+deferral.
 
 ---
 
