@@ -46,7 +46,13 @@ class OllamaClient:
         config = get_full_config()
         llm_config = config.get("llm")
 
-        self.base_url = base_url or llm_config.base_url
+        # Precedence: explicit argument, then the environment (OLLAMA_BASE_URL is
+        # the deployment's word — in a container it names host.docker.internal or
+        # the ollama service), then advisor.yaml's llm.base_url. The yaml used to
+        # win over the environment, so the trevor container talked to its own
+        # localhost:11434 where nothing listens (2026-09-04).
+        import os as _os
+        self.base_url = base_url or _os.environ.get("OLLAMA_BASE_URL", "").strip() or llm_config.base_url
         self.default_model = model or llm_config.models.query
         self.timeout = timeout or llm_config.parameters.timeout
         # Resolved from the active model tier (advisor/config.py TIER_PRESETS)
