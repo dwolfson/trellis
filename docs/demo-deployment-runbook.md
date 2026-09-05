@@ -142,6 +142,11 @@ a plain CLI command dies.
   trellis side is waiting on this.
 - pyegeria's stdio MCP server needs `mcp>=2.0` but declares `mcp>=0.1` (ISSUE-91); trellis pins
   `mcp>=2.0.0` since 8441efb. Symptom if it regresses: "No response from MCP server" at EA start.
+  The flip side: agentstack-sdk (RE's A2A role) still imports mcp 1.x's `streamablehttp_client`, so
+  `resource_explorer/_mcp_compat.py` installs that name over mcp 2's `streamable_http_client` and must
+  be imported before any `agentstack_sdk` import. Drop the shim once agentstack-sdk supports mcp 2.
+- pyegeria floor is 6.1.10 in all three packages (ISSUE-86 token support; report runs are attributed to
+  the signed-in user). Keep the quickstart's pyegeria-web/jupyter images on the same version.
 
 ## Docker Desktop variant (Linux or Mac), for visibility
 

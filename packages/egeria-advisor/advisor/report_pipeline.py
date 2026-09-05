@@ -643,21 +643,10 @@ class ReportPipeline:
         conn = self._read_pyegeria_connection(egeria_credentials=egeria_credentials)
         if not _conn_is_complete(conn):
             raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
-        if conn.get("token") and not conn.get("user_pwd"):
-            # pyegeria's exec_report_spec builds its own client from user/user_pass
-            # and has no way to accept a bearer token (egeria-python
-            # PYEGERIA_ISSUES.md ISSUE-86). Until that lands, this one read path
-            # runs as the service account, and Egeria's provenance for the
-            # report execution records the service account rather than the
-            # signed-in user. Attribution loss only; the caller's identity still
-            # scopes everything the app itself stores.
-            logger.warning(
-                "ReportPipeline: exec_report_spec cannot take a bearer token (ISSUE-86); "
-                "running report %r as the service account on behalf of %s",
-                report_name, conn.get("user_id"))
-            from advisor.auth import resolve_egeria_credentials
-            svc = resolve_egeria_credentials(None)
-            conn = {**conn, "user_id": svc["user_id"], "user_pwd": svc["password"], "token": ""}
+        # pyegeria >= 6.1.10 (ISSUE-86): exec_report_spec accepts the caller's
+        # bearer token, so a signed-in user's report runs -- and its Egeria
+        # provenance -- are theirs, not the service account's.
+        bearer = conn.get("token") or None
 
         params: Dict[str, Any] = {
             "search_string": search_string,
@@ -684,6 +673,7 @@ class ReportPipeline:
                 view_url=conn["platform_url"],
                 user=conn["user_id"],
                 user_pass=conn["user_pwd"],
+                token=bearer,
             )
         except ValueError as e:
             # Unknown report, unsupported output_format, or missing action —

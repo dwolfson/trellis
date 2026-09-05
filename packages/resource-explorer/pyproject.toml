@@ -116,7 +116,7 @@ dependencies = [
     # live platform through the client. Note pyegeria moved MetadataExpert from
     # pyegeria.omvs.metadata_explorer to pyegeria.omvs.metadata_expert in this
     # release; RE is unaffected because it imports from the top-level package.
-    "pyegeria>=6.1.5",
+    "pyegeria>=6.1.10",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
