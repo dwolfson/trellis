@@ -132,6 +132,32 @@ a plain CLI command dies.
   are run against it.
 - EA phase-1 ingestion: `pyegeria` and `pyegeria_cli` collections ingest zero files (open task).
 
+## Docker Desktop variant (Linux or Mac), for visibility
+
+The same compose files run under Docker Desktop; what changes is where inference runs and which engine
+the `docker` command talks to.
+
+- **Two engines, one CLI.** Starting Docker Desktop makes `desktop-linux` the active context, so every
+  `docker`/`docker compose` command silently addresses the Desktop VM until you switch back. Decide which
+  engine hosts the stack and pin it: `docker context use desktop-linux` for Desktop, `docker context use
+  default` for the native engine, and check `docker context show` before anything else when both are
+  installed. On 2026-09-04 a briefly started Desktop made the native stack look as if it had been replaced.
+- **No GPU inside the Desktop VM** (Linux and Mac alike), so inference stays on the host: native Ollama
+  listening on `0.0.0.0:11434` and the `docker-compose.ollama-host.yaml` overlay. `host.docker.internal`
+  resolves inside Desktop containers without `extra_hosts`; the overlay sets it anyway.
+- **VM sizing.** Desktop's VM gets a fraction of the host by default (trevor's showed 12 CPUs / 32 GB);
+  the Egeria demo core needs about 8 GB and the two trellis apps another 5 GB, so give the VM at least
+  24 GB and most of the cores in Desktop's settings. CPU-only work inside the VM is slower than native;
+  a CPU inference probe that took 2 minutes natively did not finish in 40 inside the VM.
+- **Volumes and data.** Named volumes and the Postgres data live inside the VM, not in the host's
+  `/var/lib/docker`; a stack built on the native engine and one built under Desktop do not share images,
+  volumes or networks. Bind mounts (`runtime-volumes/`, the Kafka data dir) are host paths and work the
+  same, with the same uid 65532 write requirement for Kafka.
+- **Ports** are published through Desktop's proxy on the host; the native engine binds them directly.
+  Running both engines with the same published ports at once fails on the second one to start.
+- Everything else, sections 2 to 7, is identical: same repos, same `make images`, same network creation,
+  same `./quick-start-local`, same trellis overlay command with `--env-file .env`, same verification.
+
 ## Dev profile on a laptop
 
 Infra and Egeria in Docker as today (`shared-infra` + quickstart), Ollama native, apps native:
