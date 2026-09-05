@@ -93,6 +93,20 @@ def _pgvector_reachable() -> bool:
 _PGVECTOR_AVAILABLE = _pgvector_reachable()
 
 
+# The test suite must never CLAIM rows from the shared registry's run queue.
+# `tests/test_process_roles.py` calls `run_worker()` for real, and the worker
+# role starts a queue-claim loop — pointed, by default, at the same Postgres
+# several sessions and the developer's own running server share. A unit test
+# that picked up someone's queued architecture survey and executed it would be
+# a genuinely destructive accident, and an intermittent one.
+#
+# Set here rather than per-test so it cannot be forgotten by the next test that
+# starts a worker. The run-queue tests that DO need consumption turn it back on
+# for the single call they are asserting about (see test_run_queue.py).
+# Enqueueing, reading and reconciling are unaffected — only claiming.
+os.environ.setdefault("EXPLORER_RUN_QUEUE_ENABLED", "false")
+
+
 def _egeria_reachable() -> bool:
     """Same posture as _pgvector_reachable() — a real Egeria platform is an
     external dependency this test suite must run without. Only checks basic
@@ -258,6 +272,28 @@ def pg_registry(pg_test_schema):
     return ProjectRegistry(database_url=url)
 
 
+# RE requires login as of 2026-09-04 (docs/runtime-architecture-plan.md §4),
+# and `LoginRequiredMiddleware` 401s every `/api/` route without a token. The
+# ~300 route tests in this suite predate that and are about route behaviour,
+# not about authentication — so the gate is off for the suite by default and
+# the tests that ARE about it turn it back on for exactly the app object they
+# assert against (`test_login_and_identity.py`, which reloads
+# `resource_explorer.web.app` under the policy it wants).
+#
+# The same shape as `EXPLORER_RUN_QUEUE_ENABLED` above, and for the same
+# reason: a cross-cutting behaviour that would otherwise have to be defeated,
+# identically, in every one of three hundred fixtures. Set at import rather
+# than in a fixture because the policy is resolved once, when the middleware is
+# constructed at `web/app.py` import — which happens the first time any test
+# module imports the app, before any fixture has run.
+os.environ.setdefault("EXPLORER_REQUIRE_LOGIN", "false")
+
+# A JWT secret for the whole session, so a test that mints a token and a test
+# that verifies one agree. Without it `auth.jwt_secret()` derives one from the
+# hostname and logs a warning per process — correct behaviour, noisy here.
+os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
+
+
 @pytest.fixture(autouse=True)
 def ephemeral_prefect(monkeypatch):
     """Force Prefect to run flows in-process, ignoring any configured server.
@@ -300,9 +336,40 @@ def ephemeral_prefect(monkeypatch):
     first — was tested and falsified: it predicts a deterministic failure under
     `-p no:randomly`, and two fixed-order runs disagreed. See Backlog.
     """
-    from prefect.settings import PREFECT_API_URL, temporary_settings
+    from prefect.settings import (
+        PREFECT_API_URL,
+        PREFECT_SERVER_EPHEMERAL_ENABLED,
+        temporary_settings,
+    )
 
     for var in ("PREFECT_API_URL", "PREFECT_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    with temporary_settings({PREFECT_API_URL: None}):
+    # resource_explorer/__init__.py forces PREFECT_SERVER_EPHEMERAL_ENABLED=false
+    # process-wide (2026-09-04 fix for a real leak — see its docstring): 13
+    # orphaned `prefect.server.api.server:create_app` subprocess servers were
+    # found on this machine, spawned exactly the way this fixture's own docstring
+    # describes ("Prefect's client... loads that from `.env`") whenever no real
+    # API was reachable. That guard is correct for the *app*, but this fixture's
+    # actual job — proving Prefect's own flow-engine orchestration (topological
+    # order, guards, joins; see test_prefect_survey_flow.py) — genuinely needs
+    # a Prefect API to talk to, and ephemeral is the only sane one in a test.
+    #
+    # This must be an explicit `temporary_settings` update, NOT an env var
+    # (`monkeypatch.setenv` alone does not work here — found live 2026-09-04
+    # debugging why this exact fixture still failed after adding it).
+    # `prefect.context` bakes a frozen `GLOBAL_SETTINGS_CONTEXT` at its own
+    # *first import*, reading the environment as it stood then — which, in
+    # this suite, is already after `resource_explorer/__init__.py`'s
+    # `os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")` ran
+    # (package import happens at collection, before any test body). Every
+    # later `temporary_settings(...)` call derives its settings via
+    # `context.settings.copy_with_update(updates=...)` — copying from that
+    # already-frozen base and applying only the keys named in `updates`, never
+    # re-reading `os.environ` for the rest — so an env var set after Prefect's
+    # first import cannot reach this field at all; only passing it in
+    # `updates` (as done below) can.
+    with temporary_settings({
+        PREFECT_API_URL: None,
+        PREFECT_SERVER_EPHEMERAL_ENABLED: True,
+    }):
         yield

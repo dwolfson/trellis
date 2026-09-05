@@ -27,7 +27,41 @@ def log_survey(
     detail: str = "",
     items: list[dict] | None = None,
     annotations: list[dict] | None = None,
+    runner: dict | None = None,
 ) -> str:
+    """Write a survey activity entry.
+
+    `runner` closes docs/process-model.md's Finding F5. `log_analysis_run` has
+    taken a `runner` since 2026-08-30; this function did not, so callers that
+    wanted to record ownership had to hand-encode `{"_runner": ...}` into
+    `detail` themselves (survey_definitions.py did) and callers that did not
+    think to — the scouting scan — left rows with no owner at all, reconciled by
+    `run_reconciler`'s six-hour age heuristic instead of by pid liveness. Same
+    field, same reader (`run_reconciler.owner_of`), now the same parameter.
+
+    It is merged into `detail` rather than replacing it, so a caller can pass
+    both its own JSON detail and an owner. Pass it only for a 'running' row: the
+    terminal `update_activity_status()` rewrites `detail` and drops it, which is
+    correct — a terminal row is never a reconciliation candidate.
+
+    **Who is the runner is not always the caller.** Since the run queue landed,
+    a route that enqueues work is not the process that will execute it, and
+    stamping itself would be worse than stamping nothing. Those callers leave
+    this unset; `run_queue.execute_run` records the real owner via
+    `registry.set_activity_runner` when the work actually starts.
+    """
+    if runner is not None:
+        import json as _json
+
+        try:
+            merged = _json.loads(detail or "{}") or {}
+        except (TypeError, ValueError):
+            merged = {}
+        if not isinstance(merged, dict):
+            merged = {}
+        merged["_runner"] = runner
+        detail = _json.dumps(merged)
+
     entry_id = str(uuid.uuid4())
     registry.write_activity(ActivityEntry(
         id=entry_id,

@@ -29,6 +29,8 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
+from advisor.request_context import UNSET, resolve_user_id
+
 
 # ---------------------------------------------------------------------------
 # Config loading
@@ -67,6 +69,56 @@ def _slug(title: str) -> str:
     s = re.sub(r"[^\w\s-]", "", s)
     s = re.sub(r"[\s_-]+", "_", s)
     return s[:60].strip("_")
+
+
+# ---------------------------------------------------------------------------
+# Per-user namespacing — docs/design/SESSION_AND_INTERACTION_STATE.md's
+# "Storage layout" target: `~/egeria-plans/users/{user_id}/{inbox,outbox,
+# trash,versions}/`, sibling to the shared root above (not under it), so an
+# anonymous/shared-namespace document tree is untouched by a signed-in user's
+# writes. See docs/runtime-architecture-plan.md §4.
+# ---------------------------------------------------------------------------
+
+def _safe_user_id(user_id: str) -> str:
+    """Filesystem-safe rendering of a user id — defends the users/ tree
+    against path traversal from a hostile/malformed JWT `sub` claim."""
+    return re.sub(r"[^A-Za-z0-9_.@-]", "_", user_id)[:100]
+
+
+def _user_paths(shared_paths: Dict[str, Path], user_id: str) -> Dict[str, Path]:
+    """Return the namespaced path set for user_id, sibling to shared_paths'
+    base (shared_paths["inbox"].parent), creating directories as needed."""
+    base = shared_paths["inbox"].parent / "users" / _safe_user_id(user_id)
+    paths = {
+        "inbox":    base / "inbox",
+        "outbox":   base / "outbox",
+        "trash":    base / "trash",
+        "versions": base / "versions",
+    }
+    for p in paths.values():
+        p.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
+#: Roles that see every user's namespace, not just their own + shared.
+#: The Portal only issues "admin"/"user" today (`demo_auth_handler.py`);
+#: "curator" is accepted too since docs/runtime-architecture-plan.md §4
+#: names a `GovernanceRole`-backed curator as the eventual source, with the
+#: JWT `role` claim as "the bridge until then".
+_CURATOR_ROLES = {"admin", "curator"}
+
+
+def _is_curator_role(role: Optional[str]) -> bool:
+    return (role or "").lower() in _CURATOR_ROLES
+
+
+def _list_namespaced_user_ids(shared_paths: Dict[str, Path]) -> List[str]:
+    """Every user_id with an existing namespace directory, for curator
+    (admin-role) visibility and cross-namespace lookup."""
+    users_dir = shared_paths["inbox"].parent / "users"
+    if not users_dir.is_dir():
+        return []
+    return sorted(p.name for p in users_dir.iterdir() if p.is_dir())
 
 
 def _doc_id(path: Path) -> str:
@@ -230,13 +282,86 @@ def strip_outcome_sections(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 class DocumentManager:
-    """Manages Plan Document files across inbox / outbox / trash folders."""
+    """Manages Plan Document files across inbox / outbox / trash folders.
+
+    Namespacing (docs/runtime-architecture-plan.md §4): a single instance
+    still serves every caller (the module-level singleton, `get_doc_manager()`)
+    — there is no per-user instance. Namespacing happens at two seams instead:
+
+      * `create()`/`import_document()` take an optional `user_id` and write
+        into that user's `users/{user_id}/...` tree instead of the shared
+        root when given.
+      * every doc_id-keyed method (`load`, `folder_of`, `move_to_outbox`, …)
+        resolves doc_id by searching the shared root first, then every
+        existing per-user namespace (`_locate()`), and operates on whichever
+        root it's actually found in — so a namespaced document keeps working
+        through the full inbox/outbox/versions/trash lifecycle (execute,
+        fork, retry, …) with no changes needed in the callers (rag_system.py,
+        governance_plan_agent.py, plan_elicitor.py) that only ever call
+        `get_doc_manager().load(doc_id)`/`.move_to_outbox(doc_id, ...)`/etc.
+        Those callers stay on the shared-only default (no `user_id` passed),
+        exactly like before.
+
+      Ownership-checked reads: `load()` and `list_inbox/outbox/trash()`
+      accept optional `requester_user_id`/`requester_role`. When passed
+      (the direct REST routes do; internal engine callers don't), a document
+      that lives in *another* user's namespace is treated as not found
+      (404, not 403 — matches the session store's own rule) unless the
+      requester's role is curator (`"admin"`/`"curator"` — see
+      `_is_curator_role()`).
+    """
 
     def __init__(self) -> None:
         self._paths = _load_paths()
         for p in self._paths.values():
             p.mkdir(parents=True, exist_ok=True)
         self._migrate_archived_to_trash()
+
+    # ------------------------------------------------------------------
+    # Namespace resolution
+    # ------------------------------------------------------------------
+
+    def _owner_of_root(self, root_paths: Dict[str, Path]) -> Optional[str]:
+        """None for the shared root, else the user_id owning root_paths."""
+        if root_paths is self._paths:
+            return None
+        users_dir = self._paths["inbox"].parent / "users"
+        try:
+            rel = root_paths["inbox"].relative_to(users_dir)
+            return rel.parts[0]
+        except ValueError:
+            return None
+
+    def _all_roots(self) -> List[Dict[str, Path]]:
+        """Shared root first, then every existing per-user namespace root."""
+        roots = [self._paths]
+        for uid in _list_namespaced_user_ids(self._paths):
+            roots.append(_user_paths(self._paths, uid))
+        return roots
+
+    def _locate(self, doc_id: str, folders) -> Optional[tuple]:
+        """Search shared then namespaced roots' given folders for doc_id.md.
+
+        Returns (root_paths, folder, path) for the first match, or None.
+        """
+        for root_paths in self._all_roots():
+            for folder in folders:
+                p = root_paths[folder] / f"{doc_id}.md"
+                if p.exists():
+                    return root_paths, folder, p
+        return None
+
+    @staticmethod
+    def _visible(owner: Optional[str], requester_user_id: Optional[str],
+                 requester_role: Optional[str]) -> bool:
+        """Shared-namespace items (owner None) are always visible. A
+        namespaced item is visible to its own owner or to a curator role
+        (`_is_curator_role`) — an anonymous requester (`requester_user_id`
+        None) sees only the shared namespace, matching `_anonymous_rag_mode`.
+        """
+        if owner is None:
+            return True
+        return owner == requester_user_id or _is_curator_role(requester_role)
 
     def _migrate_archived_to_trash(self) -> None:
         """
@@ -261,20 +386,37 @@ class DocumentManager:
     # CRUD
     # ------------------------------------------------------------------
 
-    def create(self, title: str, content: str) -> str:
+    def create(self, title: str, content: str, user_id: Optional[str] = UNSET) -> str:
         """
         Write a new plan document to inbox/.
 
+        user_id, when given, writes into that user's namespace
+        (`users/{user_id}/inbox/`) instead of the shared root — see the
+        class docstring. Every other doc_id-keyed method finds it there
+        regardless (`_locate` searches shared + all namespaces), so no
+        caller needs to remember which root a document lives in.
+
+        When user_id is not passed at all (the chat/elicitation creation
+        path's `get_doc_manager().create(title, content)` — no third
+        argument), it defaults to `advisor.request_context.current_user_id()`
+        — the signed-in user for whatever request is in flight, or None
+        (shared namespace) for an anonymous request or a call with no
+        ambient request context (e.g. a background job). Pass `user_id=None`
+        explicitly to force the shared namespace regardless of context.
+
         Returns the doc_id (filename stem) for subsequent operations.
         """
+        user_id = resolve_user_id(user_id)
+        root_paths = _user_paths(self._paths, user_id) if user_id else self._paths
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         doc_id = f"{ts}_{_slug(title)}"
-        path = self._paths["inbox"] / f"{doc_id}.md"
+        path = root_paths["inbox"] / f"{doc_id}.md"
         path.write_text(content, encoding="utf-8")
         logger.info(f"DocumentManager: created {path}")
         return doc_id
 
-    def import_document(self, content: str, title: Optional[str] = None) -> str:
+    def import_document(self, content: str, title: Optional[str] = None,
+                         user_id: Optional[str] = None) -> str:
         """
         Import externally-written Dr.Egeria/LGCI markdown as a new managed plan
         in inbox/, exactly like a generated plan.
@@ -314,7 +456,7 @@ class DocumentManager:
                 f"{content}\n"
             )
 
-        doc_id = self.create(final_title, final_content)
+        doc_id = self.create(final_title, final_content, user_id=user_id)
         logger.info(f"DocumentManager: imported external document as {doc_id!r}")
         return doc_id
 
@@ -329,7 +471,9 @@ class DocumentManager:
             return m.group(1).strip()
         return None
 
-    def load(self, doc_id: str, include_trash: bool = False) -> Optional[str]:
+    def load(self, doc_id: str, include_trash: bool = False,
+             requester_user_id: Optional[str] = None, requester_role: Optional[str] = None,
+             enforce_ownership: bool = False) -> Optional[str]:
         """
         Load a plan document by doc_id from inbox or outbox (the "live" folders).
 
@@ -338,22 +482,34 @@ class DocumentManager:
         that need to detect and surface a trashed document (e.g. the Editor's
         "this plan was deleted" banner).
 
-        Returns the markdown content, or None if not found.
+        Searches the shared root and every per-user namespace (`_locate`).
+        Pass enforce_ownership=True (the direct REST GET route does) to have
+        a document in someone else's namespace come back as None — same
+        shape as "not found", never a 403, to avoid confirming another
+        user's doc_id exists. Internal engine callers (execute/validate/
+        fork/...) don't pass these and see every namespace unfiltered, same
+        as before this change — they already require login at the route
+        level and aren't the read surface this gates.
+
+        Returns the markdown content, or None if not found (or not visible).
         """
         folders = ("inbox", "outbox", "trash") if include_trash else ("inbox", "outbox")
-        for folder in folders:
-            path = self._paths[folder] / f"{doc_id}.md"
-            if path.exists():
-                return path.read_text(encoding="utf-8")
-        logger.warning(f"DocumentManager: doc_id {doc_id!r} not found")
-        return None
+        loc = self._locate(doc_id, folders)
+        if loc is None:
+            logger.warning(f"DocumentManager: doc_id {doc_id!r} not found")
+            return None
+        root_paths, _folder, path = loc
+        if enforce_ownership and not self._visible(
+            self._owner_of_root(root_paths), requester_user_id, requester_role
+        ):
+            logger.warning(f"DocumentManager: doc_id {doc_id!r} not visible to {requester_user_id!r}")
+            return None
+        return path.read_text(encoding="utf-8")
 
     def load_outbox(self, doc_id: str) -> Optional[str]:
-        """Load a plan document from the outbox only."""
-        path = self._paths["outbox"] / f"{doc_id}.md"
-        if path.exists():
-            return path.read_text(encoding="utf-8")
-        return None
+        """Load a plan document from the outbox only (any namespace)."""
+        loc = self._locate(doc_id, ("outbox",))
+        return loc[2].read_text(encoding="utf-8") if loc else None
 
     def update(self, doc_id: str, content: str, edited_by: Optional[str] = None) -> bool:
         """
@@ -366,18 +522,20 @@ class DocumentManager:
         resolved values post-execution) that aren't a user-initiated edit.
         Returns True on success.
         """
-        path = self._paths["inbox"] / f"{doc_id}.md"
-        if not path.exists():
+        loc = self._locate(doc_id, ("inbox",))
+        if loc is None:
             logger.warning(f"DocumentManager.update: {doc_id!r} not in inbox")
             return False
+        root_paths, _folder, path = loc
         if edited_by:
             content = touch_edit_header(content, edited_by)
-        self._save_version(doc_id, path.read_text(encoding="utf-8"), new_content=content)
+        self._save_version(doc_id, path.read_text(encoding="utf-8"), new_content=content, root_paths=root_paths)
         path.write_text(content, encoding="utf-8")
         logger.info(f"DocumentManager: updated {path}")
         return True
 
-    def _save_version(self, doc_id: str, content: str, new_content: Optional[str] = None) -> None:
+    def _save_version(self, doc_id: str, content: str, new_content: Optional[str] = None,
+                       root_paths: Optional[Dict[str, Path]] = None) -> None:
         """
         Write a timestamped backup of doc_id to versions/.
 
@@ -385,11 +543,15 @@ class DocumentManager:
         with — used to compute a short, best-effort "what changed" note
         (describe_changes()) stored as a leading HTML comment in the version
         file. Omit it when there's nothing meaningful to diff against (e.g.
-        backing up before a delete).
+        backing up before a delete). root_paths defaults to the shared root
+        (this method's original behaviour) — callers that resolved a
+        namespaced document via `_locate` pass its root_paths through so the
+        version lands in the same namespace as the document it backs up.
         """
+        root_paths = root_paths or self._paths
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ver_path = self._paths["versions"] / f"{original_doc_id}_v{ts}.md"
+        ver_path = root_paths["versions"] / f"{original_doc_id}_v{ts}.md"
         try:
             final = content
             if new_content is not None:
@@ -400,10 +562,16 @@ class DocumentManager:
         except Exception as exc:
             logger.warning(f"DocumentManager: version save failed: {exc}")
 
+    def _versions_root_for(self, doc_id: str) -> Dict[str, Path]:
+        """Which root's versions/ a doc_id's backups belong in: wherever the
+        live document (any folder) currently lives, else the shared root."""
+        loc = self._locate(doc_id, ("inbox", "outbox", "trash"))
+        return loc[0] if loc else self._paths
+
     def list_versions(self, doc_id: str) -> List[Dict[str, str]]:
         """Return version metadata for a given doc_id, newest first."""
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        versions_dir = self._paths["versions"]
+        versions_dir = self._versions_root_for(doc_id)["versions"]
         entries = []
         for md in sorted(versions_dir.glob(f"{original_doc_id}_v*.md"), reverse=True):
             # Extract the timestamp portion from the filename stem
@@ -427,7 +595,7 @@ class DocumentManager:
     def load_version(self, doc_id: str, version_file: str) -> Optional[str]:
         """Load content from a specific version file (the version_note comment, if any, stripped)."""
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        ver_path = self._paths["versions"] / version_file
+        ver_path = self._versions_root_for(doc_id)["versions"] / version_file
         if ver_path.exists() and ver_path.stem.startswith(original_doc_id):
             content = ver_path.read_text(encoding="utf-8")
             return _VERSION_NOTE_RE.sub('', content, count=1)
@@ -441,21 +609,23 @@ class DocumentManager:
         Whatever currently exists for this doc_id (in any folder) is saved as a
         version first. Returns True on success.
         """
+        root_paths = self._versions_root_for(doc_id)
         content = self.load_version(doc_id, version_file)
         if content is None:
             return False
 
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        inbox_path = self._paths["inbox"] / f"{original_doc_id}.md"
+        inbox_path = root_paths["inbox"] / f"{original_doc_id}.md"
 
         # Save whatever currently exists as a version before overwriting, and
         # remove it from wherever it was living (inbox/outbox/trash) — restoring
-        # a version always lands the document back in inbox.
+        # a version always lands the document back in inbox, in the same
+        # namespace it was already in.
         for folder in ("inbox", "outbox", "trash"):
             for name in (doc_id, original_doc_id):
-                existing = self._paths[folder] / f"{name}.md"
+                existing = root_paths[folder] / f"{name}.md"
                 if existing.exists():
-                    self._save_version(name, existing.read_text(encoding="utf-8"), new_content=content)
+                    self._save_version(name, existing.read_text(encoding="utf-8"), new_content=content, root_paths=root_paths)
                     existing.unlink()
 
         inbox_path.write_text(content, encoding="utf-8")
@@ -509,7 +679,7 @@ class DocumentManager:
             )
 
         new_content = _replace_title(stripped, new_title) + appendix
-        new_doc_id = self.create(new_title, new_content)
+        new_doc_id = self.create(new_title, new_content, user_id=self._owner_of_root(self._versions_root_for(doc_id)))
         logger.info(
             f"DocumentManager: forked {doc_id!r} (version={version_file}) -> {new_doc_id!r} "
             f"({len(known_objects)} known object(s) carried forward)"
@@ -540,7 +710,7 @@ class DocumentManager:
         stripped = strip_outcome_sections(source_content)
 
         new_content = _replace_title(stripped, new_title)
-        new_doc_id = self.create(new_title, new_content)
+        new_doc_id = self.create(new_title, new_content, user_id=self._owner_of_root(self._versions_root_for(doc_id)))
         logger.info(f"DocumentManager: saved {doc_id!r} as new plan {new_doc_id!r} (no history carried)")
         return new_doc_id
 
@@ -550,15 +720,16 @@ class DocumentManager:
 
         Returns the new outbox doc_id on success, or None on failure.
         """
-        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
-        if not inbox_path.exists():
+        loc = self._locate(doc_id, ("inbox",))
+        if loc is None:
             logger.warning(f"DocumentManager.move_to_outbox: {doc_id!r} not in inbox")
             return None
+        root_paths, _folder, inbox_path = loc
         original = inbox_path.read_text(encoding="utf-8")
         final = original.rstrip() + "\n\n---\n\n" + outcome_content.strip() + "\n"
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         outbox_doc_id = f"{doc_id}_executed_{ts}"
-        outbox_path = self._paths["outbox"] / f"{outbox_doc_id}.md"
+        outbox_path = root_paths["outbox"] / f"{outbox_doc_id}.md"
         outbox_path.write_text(final, encoding="utf-8")
         inbox_path.unlink()
         logger.info(f"DocumentManager: moved {doc_id} to outbox as {outbox_doc_id}")
@@ -575,10 +746,11 @@ class DocumentManager:
         for the second and later runs, so the new section is always
         "## Outcome (Run N)" where N counts existing "## Outcome" headers + 1.
         """
-        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
-        if not outbox_path.exists():
+        loc = self._locate(doc_id, ("outbox",))
+        if loc is None:
             logger.warning(f"DocumentManager.append_rerun_outcome: {doc_id!r} not in outbox")
             return False
+        root_paths, _folder, outbox_path = loc
 
         original = outbox_path.read_text(encoding="utf-8")
 
@@ -594,7 +766,7 @@ class DocumentManager:
             )
 
         final = original.rstrip() + "\n\n---\n\n" + section + "\n"
-        self._save_version(doc_id, original, new_content=final)
+        self._save_version(doc_id, original, new_content=final, root_paths=root_paths)
         outbox_path.write_text(final, encoding="utf-8")
         logger.info(f"DocumentManager: appended re-run outcome (run {run_number}) to {doc_id}")
         return True
@@ -606,19 +778,20 @@ class DocumentManager:
         Returns the new inbox doc_id on success, or None on failure. Fails if the inbox
         already has a file with that name (would overwrite a different plan).
         """
-        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
-        if not outbox_path.exists():
+        loc = self._locate(doc_id, ("outbox",))
+        if loc is None:
             logger.warning(f"DocumentManager.move_to_inbox: {doc_id!r} not in outbox")
             return None
+        root_paths, _folder, outbox_path = loc
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        inbox_path = self._paths["inbox"] / f"{original_doc_id}.md"
+        inbox_path = root_paths["inbox"] / f"{original_doc_id}.md"
         if inbox_path.exists():
             logger.warning(f"DocumentManager.move_to_inbox: {original_doc_id!r} already exists in inbox")
             return None
         content = outbox_path.read_text(encoding="utf-8")
         # Strip the outcome section (everything from the separator before ## Outcome onward)
         stripped = strip_outcome_sections(content)
-        self._save_version(original_doc_id, content, new_content=stripped + "\n")
+        self._save_version(original_doc_id, content, new_content=stripped + "\n", root_paths=root_paths)
         inbox_path.write_text(stripped + "\n", encoding="utf-8")
         outbox_path.unlink()
         logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox as {original_doc_id}")
@@ -628,17 +801,27 @@ class DocumentManager:
     # Listing
     # ------------------------------------------------------------------
 
-    def list_inbox(self) -> List[Dict[str, str]]:
-        """Return metadata for all documents in inbox/, newest first."""
-        return self._list_folder("inbox")
+    def list_inbox(self, requester_user_id: Optional[str] = None,
+                    requester_role: Optional[str] = None) -> List[Dict[str, str]]:
+        """Metadata for all documents in inbox/, newest first.
 
-    def list_outbox(self) -> List[Dict[str, str]]:
-        """Return metadata for all documents in outbox/, newest first."""
-        return self._list_folder("outbox")
+        No requester_user_id (the original, no-args call every existing
+        caller uses): shared root only — unchanged behaviour. With one:
+        shared + the requester's own namespace, plus every namespace when
+        requester_role is a curator role — each entry tagged with "owner"
+        (None for shared).
+        """
+        return self._list_folder("inbox", requester_user_id, requester_role)
 
-    def list_trash(self) -> List[Dict[str, str]]:
-        """Return metadata for all documents in trash/, newest first."""
-        return self._list_folder("trash")
+    def list_outbox(self, requester_user_id: Optional[str] = None,
+                     requester_role: Optional[str] = None) -> List[Dict[str, str]]:
+        """Metadata for all documents in outbox/, newest first. See list_inbox()."""
+        return self._list_folder("outbox", requester_user_id, requester_role)
+
+    def list_trash(self, requester_user_id: Optional[str] = None,
+                    requester_role: Optional[str] = None) -> List[Dict[str, str]]:
+        """Metadata for all documents in trash/, newest first. See list_inbox()."""
+        return self._list_folder("trash", requester_user_id, requester_role)
 
     def delete(self, doc_id: str) -> bool:
         """
@@ -649,34 +832,35 @@ class DocumentManager:
         exists in trash with this doc_id, it is overwritten (its own content
         was already versioned when it was first trashed).
         """
-        for folder in ("inbox", "outbox"):
-            path = self._paths[folder] / f"{doc_id}.md"
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                self._save_version(doc_id, content)
-                trash_path = self._paths["trash"] / f"{doc_id}.md"
-                trash_path.write_text(content, encoding="utf-8")
-                path.unlink()
-                logger.info(f"DocumentManager: moved {doc_id} to trash")
-                return True
-        return False
+        loc = self._locate(doc_id, ("inbox", "outbox"))
+        if loc is None:
+            return False
+        root_paths, _folder, path = loc
+        content = path.read_text(encoding="utf-8")
+        self._save_version(doc_id, content, root_paths=root_paths)
+        trash_path = root_paths["trash"] / f"{doc_id}.md"
+        trash_path.write_text(content, encoding="utf-8")
+        path.unlink()
+        logger.info(f"DocumentManager: moved {doc_id} to trash")
+        return True
 
     def restore_from_trash(self, doc_id: str) -> bool:
         """
         Restore a document from trash/ back to its correct folder (outbox or inbox).
         A version snapshot of the trash copy is saved first.
         """
-        trash_path = self._paths["trash"] / f"{doc_id}.md"
-        if not trash_path.exists():
+        loc = self._locate(doc_id, ("trash",))
+        if loc is None:
             logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} not in trash")
             return False
+        root_paths, _folder, trash_path = loc
         dest_folder = "outbox" if "_executed_" in doc_id else "inbox"
-        dest_path = self._paths[dest_folder] / f"{doc_id}.md"
+        dest_path = root_paths[dest_folder] / f"{doc_id}.md"
         if dest_path.exists():
             logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} already exists in {dest_folder}")
             return False
         content = trash_path.read_text(encoding="utf-8")
-        self._save_version(doc_id, content)
+        self._save_version(doc_id, content, root_paths=root_paths)
         dest_path.write_text(content, encoding="utf-8")
         trash_path.unlink()
         logger.info(f"DocumentManager: restored {doc_id} from trash to {dest_folder}")
@@ -688,28 +872,38 @@ class DocumentManager:
         prior snapshots (including the one saved at delete time) remain
         available even after a purge.
         """
-        trash_path = self._paths["trash"] / f"{doc_id}.md"
-        if not trash_path.exists():
+        loc = self._locate(doc_id, ("trash",))
+        if loc is None:
             logger.warning(f"DocumentManager.purge: {doc_id!r} not in trash")
             return False
-        trash_path.unlink()
+        loc[2].unlink()
         logger.info(f"DocumentManager: purged {doc_id} from trash")
         return True
 
-    def _list_folder(self, folder: str) -> List[Dict[str, str]]:
-        folder_path = self._paths[folder]
+    def _list_folder(self, folder: str, requester_user_id: Optional[str] = None,
+                      requester_role: Optional[str] = None) -> List[Dict[str, str]]:
+        roots = [(None, self._paths)]
+        if requester_user_id is not None:
+            for uid in _list_namespaced_user_ids(self._paths):
+                if self._visible(uid, requester_user_id, requester_role):
+                    roots.append((uid, _user_paths(self._paths, uid)))
         entries = []
-        for md in sorted(folder_path.glob("*.md"), reverse=True):
-            content = md.read_text(encoding="utf-8", errors="replace")
-            title = self._extract_title(content)
-            status = self._extract_status(content)
-            entries.append({
-                "doc_id": md.stem,
-                "title": title,
-                "status": status,
-                "folder": folder,
-                "path": str(md),
-            })
+        for owner, root_paths in roots:
+            folder_path = root_paths[folder]
+            for md in sorted(folder_path.glob("*.md"), reverse=True):
+                content = md.read_text(encoding="utf-8", errors="replace")
+                title = self._extract_title(content)
+                status = self._extract_status(content)
+                entry = {
+                    "doc_id": md.stem,
+                    "title": title,
+                    "status": status,
+                    "folder": folder,
+                    "path": str(md),
+                }
+                if requester_user_id is not None:
+                    entry["owner"] = owner
+                entries.append(entry)
         return entries
 
     # ------------------------------------------------------------------
@@ -746,11 +940,10 @@ class DocumentManager:
         return self._paths["trash"]
 
     def folder_of(self, doc_id: str) -> Optional[str]:
-        """Return which folder (inbox/outbox/trash) currently holds doc_id, or None."""
-        for folder in ("inbox", "outbox", "trash"):
-            if (self._paths[folder] / f"{doc_id}.md").exists():
-                return folder
-        return None
+        """Return which folder (inbox/outbox/trash) currently holds doc_id,
+        searching the shared root and every per-user namespace, or None."""
+        loc = self._locate(doc_id, ("inbox", "outbox", "trash"))
+        return loc[1] if loc else None
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +954,10 @@ _doc_manager: Optional[DocumentManager] = None
 
 
 def get_doc_manager() -> DocumentManager:
+    """The single shared-root instance (DocumentManager namespaces per-call,
+    not per-instance — see the class docstring). `create()`/`import_document()`
+    default their own `user_id` argument from `advisor.request_context`'s
+    ambient identity when not given explicitly — see those methods."""
     global _doc_manager
     if _doc_manager is None:
         _doc_manager = DocumentManager()

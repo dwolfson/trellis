@@ -1,7 +1,51 @@
 # Session & Interaction State Design
 
-**Status:** Design only — not yet implemented. Captures the diagnosis and target
-design from a review conversation (Jul 2026) before surgery begins.
+**Status:** implemented 2026-09-04 with a Postgres store; see
+docs/runtime-architecture-plan.md §4. Captures the diagnosis and target
+design from a review conversation (Jul 2026) that the implementation below
+follows, with one correction from the plan doc (Postgres, not in-memory —
+see "Session store" below) and a bounded scope for the storage-layout
+section (drafts and the direct-write REST entry points for governance
+plans/report specs were namespaced and ownership-checked in the first pass;
+the chat/elicitation-driven document creation path — rag_system.py →
+plan_elicitor.py/report_spec_elicitor.py → governance_plan_agent.py/
+report_spec_agent.py — still wrote to the shared namespace, since threading
+a user_id through that whole pipeline explicitly was out of scope for that
+pass).
+
+**Closed, same day (2026-09-04):** the chat/elicitation gap above, plus the
+report-draft `/columns` PATCH route and `discover_draft_schema_internal`
+(both flagged in the same pass as still using the shared-only manager), are
+now namespaced too — **without** threading `user_id` through the
+elicitation call chain. `advisor/request_context.py` adds a
+`contextvars.ContextVar` carrying the signed-in identity; a small
+`_user_context_middleware` in `advisor/web/app.py` sets it once per request
+from `advisor.auth.get_current_user(request)` and resets it in `finally`
+(so a request that raises can't leak identity into the next one on the same
+worker). The four manager factories/methods that the elicitation path calls
+with no `user_id` argument — `DocumentManager.create()`/`import_document()`
+(`governance_docs.py`), `ReportSpecDocumentManager.create()`
+(`report_spec_docs.py`), `get_draft_manager()` (`governance_draft.py`), and
+`get_report_draft_manager()` (`report_draft.py`) — now default that argument
+from `request_context.current_user_id()` via an `UNSET` sentinel (plain
+`None` remains a valid *explicit* value, meaning "shared namespace
+regardless of context" — used by every REST route already computing an
+explicit `user_id` for an anonymous request). `create_builder_draft()`
+forwards the same way. An anonymous request (or any call with no ambient
+request/CLI context — a background job) still resolves to `None` → shared
+namespace, unchanged from before. The report-draft `/columns` PATCH route
+now resolves ownership via `resolve_report_draft()` (404, never 403, for a
+draft namespaced to a different user, matching every other draft/document
+route) instead of the shared-only manager; `discover_draft_schema_internal`
+does the same. The CLI (`advisor/cli/main.py`, `advisor/cli/plans.py`) has
+no `Request` to read, so it gets the identical mechanism via a
+`with request_context.using_user(user_id):` context manager around the
+whole invocation, driven by a new `--user` option on each — optional, no
+default (the CLI has no login/session of its own to default it from, and
+deliberately does *not* fall back to the `EGERIA_USER`/`.env`
+service-account setting, which is excluded from artifact ownership by
+design — see `advisor/auth.py`'s module docstring). Tests:
+`tests/unit/test_request_context_namespacing.py`.
 
 ## Problem 1: Plan/report mode confusion (confirmed root cause)
 
@@ -165,32 +209,60 @@ equivalent helpers in `report_draft.py`/`report_spec_docs.py`), just
 parameterized by `user_id`. These stop being process-wide singletons and
 become per-user instances (or a small cache keyed by `user_id`).
 
-### Session store — new, small, in-memory
+### Session store — implemented as Postgres, not in-memory
 
-The app runs single-process today (`uvicorn advisor.web.app:app`, no worker
-flag), so a simple in-memory store is sufficient for now:
+**Correction from the original design (docs/runtime-architecture-plan.md
+§4):** this section originally proposed a simple in-memory
+`Dict[str, SessionState]`, reasoning that the app ran single-process
+(`uvicorn advisor.web.app:app`, no worker flag) so a plain dict TTL-evicted
+in-process would be sufficient, with Redis or sticky routing flagged only
+as a hypothetical future need "if this app ever moves to multi-worker or
+multi-instance deployment." The plan doc's revision made that correction
+explicit up front — "Session store is Postgres-backed from the start
+because a request can land on any web worker" — rather than building the
+in-memory version and migrating later: a request landing on a different
+worker than the one that created a session is exactly the failure mode an
+in-memory dict cannot survive, and there was no reason to build something
+known to need replacing.
 
-```python
-SessionState = {
-    "user_id": str,
-    "active_draft_id": Optional[str],
-    "mode": str,           # "idle" | "draft" | "report_modal"
-    "last_seen": float,
-}
-SESSIONS: Dict[str, SessionState]   # keyed by session_id, TTL-evicted
+**What was built instead:** `advisor/session_state.py`, backed by a new
+`advisor_sessions` table in the existing `ConsolidatedDBManager`/pgvector
+Postgres instance (`advisor/db_consolidated.py` — same database
+(`egeria_advisor`) and connection pool every other Postgres-backed store in
+this app already uses, DDL added alongside `query_metrics` et al.):
+
+```sql
+CREATE TABLE advisor_sessions (
+    session_id   VARCHAR(100) PRIMARY KEY,
+    user_id      VARCHAR(100),
+    created_at   DOUBLE PRECISION NOT NULL,
+    last_seen_at DOUBLE PRECISION NOT NULL,
+    state        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at   DOUBLE PRECISION NOT NULL
+);
 ```
 
-`session_id` is minted **client-side** as a UUID and stored in
-`sessionStorage` (not `localStorage`) — this is already the right
-primitive, since `sessionStorage` is tab-scoped and dies on tab close,
-matching the desired session lifetime. Sent as a header (`X-Session-Id`) on
-every request. No cookie/CORS complexity needed since JWT already handles
-auth.
+`state` holds the same shape the original design proposed
+(`active_draft_id`, `mode`, ...) — this module stores and returns it
+without interpreting it. `get`/`upsert`/`touch`/`expire` are the CRUD
+surface; `get_for_owner(session_id, requester_user_id)` adds the
+404-not-403 ownership check (a session created under one user is not
+readable by another, and this cannot be used to enumerate other users'
+session_ids — see its docstring). Expiry tracks the owning JWT's own `exp`
+(Egeria's bearer token caps out around 1 hour — see `advisor/auth.py`),
+not an independent session TTL, so a session can't outlive the credential
+that authenticated it. Cleanup is `sweep_expired()`, invoked at low
+probability from `touch()`/`upsert()` (`maybe_sweep()`) — EA still has no
+worker role to own a scheduled job, so sweeping piggybacks on ordinary
+request traffic exactly as the plan doc specified ("a sweeper the web app
+runs lazily (on access, not a thread)") rather than a background thread.
 
-If this app ever moves to multi-worker or multi-instance deployment, the
-in-memory dict would need to move to Redis or the deployment would need
-sticky routing on `session_id`. Not needed for the current single-process
-deployment.
+`session_id` is still minted **client-side** as a UUID and stored in
+`sessionStorage` (not `localStorage`) — this part of the original design is
+unchanged and still the right primitive, since `sessionStorage` is
+tab-scoped and dies on tab close, matching the desired session lifetime.
+Sent as a header (`X-Session-Id`) on every request. No cookie/CORS
+complexity needed since JWT already handles auth.
 
 ### Routing fix
 

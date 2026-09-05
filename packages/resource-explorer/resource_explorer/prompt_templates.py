@@ -1,6 +1,76 @@
 """Prompt templates for each agent and the general RAG pipeline."""
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable, Iterable
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+
+def _estimate_tokens(text: str) -> int:
+    """
+    Cheap token-count approximation: ~4 characters per token.
+
+    Not a real tokenizer call — good enough for a context-budget cutoff, not
+    for anything that needs an exact count. Mirrors egeria-advisor's
+    ``advisor/rag_retrieval.py::_estimate_tokens`` — see
+    docs/runtime-architecture-plan.md §5: prompt tokens is the lever for
+    time-to-first-token, and the demo tiers' RAG context budget is
+    expressed in (approximate) tokens for that reason.
+    """
+    return max(1, len(text) // 4)
+
+
+def build_context(
+    results: Iterable[Any],
+    budget_tokens: int | None,
+    formatter: Callable[[Any], str] | None = None,
+) -> str:
+    """
+    Join retrieved SearchResult-like objects into one context string,
+    stopping early once ``budget_tokens`` would be exceeded.
+
+    ``results`` must already be ranked highest-score-first (true of every
+    caller here — MultiCollectionStore.search sorts by score descending);
+    this function only ever stops early, never reorders, so whichever
+    budget is active keeps the highest-ranked chunks and drops the
+    lowest-ranked ones.
+
+    ``budget_tokens=None`` (the ``dev`` tier — resource_explorer/config.py
+    TIER_PRESETS) means today's unbounded behaviour: every result is
+    joined, unchanged. An int applies the approximate token budget.
+
+    ``formatter`` defaults to a result's plain ``.text``; callers that want
+    to include metadata (e.g. code_agent's ``[collection | score=...]``
+    prefix) pass their own.
+    """
+    fmt = formatter or (lambda r: r.text)
+    parts: list[str] = []
+    total_tokens = 0
+
+    results = list(results)
+    for i, result in enumerate(results, 1):
+        part = fmt(result)
+        if budget_tokens is not None:
+            part_tokens = _estimate_tokens(part)
+            if total_tokens + part_tokens > budget_tokens:
+                log.warning(
+                    "RAG context token budget (%s) reached at %s/%s results (~%s tokens so far)",
+                    budget_tokens, i, len(results), total_tokens,
+                )
+                break
+            total_tokens += part_tokens
+        parts.append(part)
+
+    context = "\n\n---\n\n".join(parts)
+    log.debug(
+        "Assembled RAG context token estimate (4 chars/token approximation): ~%s tokens%s",
+        _estimate_tokens(context),
+        f", budget={budget_tokens}" if budget_tokens is not None else "",
+    )
+    return context
+
 
 def build_rag_prompt(query: str, context: str, resource_slug: str | None = None) -> str:
     scope = f" about the **{resource_slug}** project" if resource_slug else ""

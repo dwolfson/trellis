@@ -1,10 +1,15 @@
 """Pydantic settings — loaded from config/explorer.yaml + .env overrides."""
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
+from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 # The package's own .env, resolved absolutely. env_file used to be the bare
 # relative string ".env", which pydantic-settings resolves against the
@@ -65,10 +70,67 @@ class PgVectorConfig(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+# --- Model tiers ------------------------------------------------------------
+#
+# runtime-architecture-plan.md §5 / commit 1dede05: neither RE nor Egeria
+# Advisor set Ollama's `num_ctx`, so a model loaded at its full default
+# context window (131k for llama3.1:8b, ~22 GB) regardless of what a task
+# actually needed. A tier resolves, per machine profile, the Ollama model,
+# the `num_ctx` ceiling, and the RAG retrieval context budget (the measured
+# time-to-first-token lever — see the plan's "Target environments and what
+# was measured" section).
+#
+# This mirrors egeria-advisor/advisor/config.py's TIER_PRESETS /
+# resolve_model_tier / resolve_llm_tier_config — same tier names, same
+# num_ctx/budget values, same override precedence — so the two apps
+# converge rather than drift (see trellis/CLAUDE.md), and a future
+# extraction of this table into a shared trellis-* package is mechanical.
+# The one structural difference: RE has a single Ollama model slot (no
+# separate query/code/planning models), so each preset carries a flat
+# `model` instead of EA's per-slot `models` dict.
+#
+# `dev`'s "model" entry is intentionally None: dev keeps today's
+# behaviour — whatever OllamaConfig.model already resolved to (its class
+# default, or an explicit LLM__OLLAMA__MODEL env override) — not a fixed
+# preset value. Likewise `rag_context_budget_tokens: None` for dev means no
+# new token-based RAG cutoff is introduced; build_context() joins every
+# retrieved chunk unchanged, exactly as it does today.
+DEFAULT_MODEL_TIER = "dev"
+
+TIER_PRESETS: dict[str, dict[str, Any]] = {
+    "dev": {
+        "num_ctx": 32768,
+        "rag_context_budget_tokens": None,
+        "model": None,
+    },
+    "demo-gpu": {
+        "num_ctx": 8192,
+        "rag_context_budget_tokens": 2000,
+        "model": "llama3.1:8b",
+    },
+    "demo-cpu": {
+        # RE has one model slot (no separate code model the way EA does),
+        # so demo-cpu and demo-gpu differ only in intent/documentation here,
+        # not in value — both run the one 8B model. Kept as its own preset
+        # rather than aliased to demo-gpu so a future per-slot RE model
+        # split doesn't have to re-derive the CPU-safe choice from scratch.
+        "num_ctx": 8192,
+        "rag_context_budget_tokens": 2000,
+        "model": "llama3.1:8b",
+    },
+}
+
+
 class OllamaConfig(BaseSettings):
     base_url: str = "http://localhost:11434"
     model: str = "llama3.1:8b"
     temperature: float = 0.1
+    # Resolved from the active model tier (see TIER_PRESETS /
+    # resolve_llm_tier_config below) inside get_config() — not meant to be
+    # set directly. Passed as the `num_ctx` Ollama option on every
+    # generate/chat call (resource_explorer/llm_client.py).
+    tier: str = DEFAULT_MODEL_TIER
+    num_ctx: int = TIER_PRESETS[DEFAULT_MODEL_TIER]["num_ctx"]
 
 
 class OpenAIConfig(BaseSettings):
@@ -98,6 +160,12 @@ class RAGConfig(BaseSettings):
     top_k: int = 10
     min_score: float = 0.15
     max_collections_per_query: int = 3
+    # Resolved from the active model tier inside get_config(). None (the
+    # `dev` tier) means retrieved chunks are joined unchanged, as before
+    # this feature existed; an int is a token budget (approximate — see
+    # resource_explorer/prompt_templates.py's `_estimate_tokens`) that
+    # build_context() truncates retrieved chunks to, highest-ranked first.
+    budget_tokens: Optional[int] = None
 
 
 class CacheConfig(BaseSettings):
@@ -225,15 +293,27 @@ class KrokiConfig(BaseSettings):
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
-    # Default True as of 2026-08-26, once run_prefect_step's API path was
-    # verified live against a real local server + worker (see
-    # tests/test_prefect_dispatch.py's module docstring for the three fixed
-    # faults). Safe with no server running — an unreachable PREFECT_API_URL
-    # falls back to running the step locally in-process, same as enabled=False
-    # always has, just with one warning-level log line and connection-attempt
-    # overhead per executes_at: prefect step. Steps that don't declare
-    # executes_at: prefect are unaffected regardless (see route_local_steps).
-    enabled: bool = Field(default=True, alias="PREFECT_ENABLED")
+    # Default False as of 2026-09-04 (was True 2026-08-26 – 2026-09-04). The
+    # True default leaked: 13 orphaned `prefect.server.api.server:create_app`
+    # subprocess servers were found on this machine, reparented to launchd,
+    # days old. Cause was NOT run_prefect_step's own fallback (that path is
+    # fine — an unreachable PREFECT_API_URL falls back to running the step
+    # locally in-process). It was Prefect's *own* client: when enabled=True
+    # and no reachable API is configured, `prefect.client.get_client()`
+    # itself starts an ephemeral subprocess server rather than raising —
+    # and nothing in RE ever shuts that subprocess down, so every process
+    # that ever dispatched a `prefect step` with Prefect enabled and no real
+    # server up left one behind. See prefect_adapter.py, which additionally
+    # forces `PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process as a second,
+    # independent guard against this regardless of this default.
+    #
+    # Enable this only in a deployment where a compose service actually
+    # provides Prefect — egeria-workspaces'
+    # optional-associated-runtimes/prefect — and set both PREFECT_ENABLED=true
+    # and PREFECT_API_URL explicitly to that service's address. Steps that
+    # don't declare executes_at: prefect are unaffected regardless of this
+    # setting (see route_local_steps).
+    enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
     # Route steps that explicitly declare executes_at="resource-explorer" through
     # Prefect as well. Off by default, and deliberately its own setting rather
@@ -338,6 +418,120 @@ class ArtifactTreeSettings(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+class RuntimeConfig(BaseSettings):
+    """Process-role runtime settings — see docs/process-model.md and
+    docs/runtime-architecture-plan.md §2.
+
+    sync_pool_size bounds the ONE shared thread pool per process that
+    bridges sync pyegeria/BeeAI calls into async code
+    (resource_explorer/concurrency.py). It replaced six ad hoc pools, one
+    of which was constructed with no max_workers at all. 8 matches the
+    old per-batch ceiling (_GUID_RESOLVE_WORKERS in
+    surveyors/survey_definition_reader.py) — these are reads against one
+    Egeria server, and the goal is to stop waiting in series, not to
+    load-test someone else's platform.
+
+    embed_worker decides whether the FastAPI lifespan runs the worker
+    role in-process (background loops in a daemon thread). It defaults
+    True so `make dev` and an existing .env keep behaving exactly as
+    they did when the loops were started from the lifespan directly.
+    `resource-explorer web --no-embed-worker` sets it to False for this
+    process; leader election (resource_explorer/leader_election.py) is
+    what makes it safe to leave on with --workers N.
+    """
+    sync_pool_size: int = Field(default=8, alias="EXPLORER_SYNC_POOL_SIZE")
+    embed_worker: bool = Field(default=True, alias="EXPLORER_EMBED_WORKER")
+
+    model_config = _ENV_FILE_CONFIG
+
+
+class ResolvedLLMTierConfig(BaseModel):
+    """The effective Ollama model, num_ctx, and RAG context budget after
+    resolving the active tier against any explicit override. See
+    TIER_PRESETS above and resolve_llm_tier_config()'s docstring."""
+    tier: str
+    model: str
+    num_ctx: int
+    rag_context_budget_tokens: Optional[int]
+
+
+def resolve_model_tier() -> str:
+    """
+    Resolve the active model tier.
+
+    Priority: ``EXPLORER_MODEL_TIER`` env var, then the ``dev`` default. An
+    unrecognised value is logged and skipped rather than raised, so a typo
+    degrades to the default instead of failing startup.
+
+    (Unlike egeria-advisor, RE has no runtime YAML config loader —
+    configdata/explorer.yaml is not read at runtime — so there is no
+    ``llm.tier`` yaml fallback to check here; the env var and the default
+    are the only two sources.)
+    """
+    env_tier = os.environ.get("EXPLORER_MODEL_TIER", "").strip()
+    if env_tier:
+        if env_tier in TIER_PRESETS:
+            return env_tier
+        log.warning(
+            "Unknown EXPLORER_MODEL_TIER=%r (expected one of %s); falling back to default",
+            env_tier, sorted(TIER_PRESETS),
+        )
+    return DEFAULT_MODEL_TIER
+
+
+def resolve_llm_tier_config() -> ResolvedLLMTierConfig:
+    """
+    Resolve the effective Ollama model, ``num_ctx``, and RAG context budget
+    for the active tier.
+
+    Model resolution order (highest wins):
+      1. ``LLM__OLLAMA__MODEL`` env var, if actually present in the
+         environment (checked via ``os.environ`` directly, not the
+         pydantic-resolved value, so an unset var never masquerades as an
+         override — matches egeria-advisor's OLLAMA_MODEL precedence
+         check in resolve_llm_tier_config()).
+      2. The resolved tier's preset model.
+      3. ``OllamaConfig``'s own class default (only reachable for ``dev``,
+         whose preset leaves the model alone).
+    """
+    tier = resolve_model_tier()
+    preset = TIER_PRESETS[tier]
+
+    explicit_model = os.environ.get("LLM__OLLAMA__MODEL", "").strip()
+    if explicit_model:
+        model = explicit_model
+    elif preset["model"]:
+        model = preset["model"]
+    else:
+        model = OllamaConfig.model_fields["model"].default
+
+    return ResolvedLLMTierConfig(
+        tier=tier,
+        model=model,
+        num_ctx=preset["num_ctx"],
+        rag_context_budget_tokens=preset["rag_context_budget_tokens"],
+    )
+
+
+_llm_tier_config: ResolvedLLMTierConfig | None = None
+
+
+def get_llm_tier_config(force_refresh: bool = False) -> ResolvedLLMTierConfig:
+    """Return the cached resolved tier config, logging it once on first
+    resolution. Call sites (web/app.py's lifespan, worker.py's run_worker())
+    that want a startup log line regardless of import-order timing should
+    call this explicitly rather than relying on the lazy first-call log."""
+    global _llm_tier_config
+    if _llm_tier_config is None or force_refresh:
+        _llm_tier_config = resolve_llm_tier_config()
+        cfg = _llm_tier_config
+        log.info(
+            "LLM tier resolved: tier=%s model=%s num_ctx=%s rag_context_budget_tokens=%s",
+            cfg.tier, cfg.model, cfg.num_ctx, cfg.rag_context_budget_tokens,
+        )
+    return _llm_tier_config
+
+
 class ExplorerConfig(BaseSettings):
     pgvector: PgVectorConfig = Field(default_factory=PgVectorConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -353,6 +547,7 @@ class ExplorerConfig(BaseSettings):
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILES,
@@ -369,4 +564,12 @@ def get_config() -> ExplorerConfig:
     global _config
     if _config is None:
         _config = ExplorerConfig()
+        # Apply the resolved model tier on top of the pydantic-parsed llm/rag
+        # blocks: Ollama model, num_ctx, and the RAG context token budget.
+        # See resolve_llm_tier_config()'s docstring for override precedence.
+        tier_cfg = get_llm_tier_config()
+        _config.llm.ollama.tier = tier_cfg.tier
+        _config.llm.ollama.model = tier_cfg.model
+        _config.llm.ollama.num_ctx = tier_cfg.num_ctx
+        _config.rag.budget_tokens = tier_cfg.rag_context_budget_tokens
     return _config

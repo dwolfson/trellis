@@ -43,6 +43,29 @@ _DEFAULT_PASSWORD = "secret"
 # hours — matches D3's "Survey Definitions change rarely but not never").
 _QUESTION_GUID_CACHE_TTL_SECONDS = 3600
 _CANDIDATES_CACHE_TTL_SECONDS = 300
+# 2026-09-04, found live via the new SIGUSR1 thread dump (cli/main.py) while
+# chasing the stuck-server incident: get_guid_for_name() is a SYNC pyegeria
+# call that internally does asyncio.get_event_loop().run_until_complete(...)
+# — but resolve_question_guid() is itself called from a background
+# ThreadPoolExecutor worker (warm_question_guid_cache() at startup, and
+# find_candidate_process_guids_by_questions()'s own pool), a thread with no
+# running loop of its own. Caught, live, 6 worker threads still blocked in
+# selectors.select() 15+ seconds after starting, all in the exact same
+# get_guid_for_name -> nest_asyncio -> select() frame — consistent with a
+# cross-thread/cross-event-loop asyncio hazard (a client/connection object
+# created against one loop, used from a different one), not simple Egeria
+# slowness — a direct curl to the platform's own origin endpoint at the same
+# moment returned in 18ms. pyegeria's own httpx.Timeout (30s) evidently
+# doesn't bound this path either. That deeper cross-loop issue is NOT fixed
+# here — it needs its own investigation, likely in how pyegeria's async
+# client is constructed/reused across threads, out of scope for tonight's
+# instrumentation pass. What IS fixed: the call is now wrapped in its own
+# single-purpose thread with a hard join timeout, so a hang like this
+# degrades to resolve_question_guid's existing "not found" contract (already
+# every other failure mode's behavior) instead of blocking the calling
+# thread — and everything that pools these calls (warm_question_guid_cache,
+# find_candidate_process_guids_by_questions) — forever.
+_QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15
 _question_guid_cache: dict[str, tuple[float, str | None]] = {}
 _candidates_cache: dict[tuple, tuple[float, list]] = {}
 _fetch_cache: dict[str, tuple[float, object]] = {}  # process_guid -> (cached_at, SurveyDefinition)
@@ -445,19 +468,63 @@ class SurveyDefinitionReader:
         if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
             return cached[1]
 
-        guid: str | None = None
-        try:
-            client = self._connect_classification_explorer()
-            guid = _as_guid(client.get_guid_for_name(
-                question_display_name,
-                property_name=["displayName"],
-                type_name="GlossaryTerm",
-            ))
-        except Exception as exc:
-            log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
-
+        guid = self._lookup_question_guid(question_display_name)
         _question_guid_cache[question_display_name] = (now, guid)
         return guid
+
+    def _lookup_question_guid(self, question_display_name: str) -> str | None:
+        """The uncached Egeria lookup, bounded. Never raises.
+
+        Split out of resolve_question_guid so the batch path
+        (_resolve_question_guids) can submit THIS as leaf work to the
+        shared pool without one pooled task opening a pool of its own —
+        the nesting that made the old code a pool of up to 8 workers each
+        constructing its own one-worker pool.
+
+        The bound stays (docs/process-model.md §1.3): pyegeria's
+        get_guid_for_name is a SYNC call that internally does
+        asyncio.get_event_loop().run_until_complete(...), and on
+        2026-09-03/04 six worker threads were caught, live, still blocked
+        in that frame 15+ seconds in while a direct curl to the same
+        platform returned in 18ms. run_sync abandons rather than joins the
+        worker on timeout, for the reason the old shutdown(wait=False) did:
+        waiting for a thread that is stuck inside Egeria's client would
+        reintroduce the exact hang this exists to avoid.
+
+        What changed with the shared pool: an abandoned worker now holds a
+        slot in a bounded pool instead of taking a throwaway pool with it.
+        concurrency.stuck_worker_count() is where that shows up.
+        """
+        from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+        from resource_explorer.concurrency import run_sync
+
+        try:
+            client = self._connect_classification_explorer()
+        except Exception as exc:
+            log.debug("resolve_question_guid(%r) failed to connect: %s",
+                      question_display_name, exc)
+            return None
+
+        def _call():
+            return client.get_guid_for_name(
+                question_display_name,
+                property_name=["displayName"], type_name="GlossaryTerm",
+            )
+
+        try:
+            return _as_guid(run_sync(
+                _call, timeout=_QUESTION_GUID_CALL_TIMEOUT_SECONDS))
+        except _FutureTimeoutError:
+            log.warning(
+                "resolve_question_guid(%r) did not return within %ss — "
+                "treating as not-found rather than blocking; see "
+                "_QUESTION_GUID_CALL_TIMEOUT_SECONDS' comment",
+                question_display_name, _QUESTION_GUID_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
+        return None
 
     def warm_question_guid_cache(self, questions: list[str] | None = None) -> dict:
         """Resolve question GUIDs ahead of the first request. Never raises.
@@ -607,7 +674,7 @@ class SurveyDefinitionReader:
             g = self.resolve_question_guid(questions[0])
             return [(questions[0], g)] if g else []
 
-        from concurrent.futures import ThreadPoolExecutor
+        from resource_explorer.concurrency import submit_all
 
         # Resolve the FIRST question on this thread, then pool the rest.
         #
@@ -623,10 +690,62 @@ class SurveyDefinitionReader:
         first, rest = questions[0], questions[1:]
         guids = [self.resolve_question_guid(first)]
 
-        with ThreadPoolExecutor(max_workers=min(self._GUID_RESOLVE_WORKERS,
-                                                len(rest))) as pool:
-            guids.extend(pool.map(self.resolve_question_guid, rest))
+        # The ONE shared pool per process, not a private
+        # ThreadPoolExecutor(max_workers=8) — and submitting the cached
+        # wrapper's LEAF work rather than resolve_question_guid itself, so a
+        # pooled task never re-enters the pool. Concurrency is now the shared
+        # pool's size (EXPLORER_SYNC_POOL_SIZE, default 8, which is what
+        # _GUID_RESOLVE_WORKERS was) rather than a per-call ceiling.
+        futures = submit_all(self._resolve_one_pooled, rest)
+
+        # Bounded overall, not per-future: the pool is shared and its size is
+        # not len(rest), so a later future legitimately waits behind earlier
+        # ones and a flat 15s each would time out healthy work. The budget is
+        # the per-call bound plus one call's worth per queued batch of
+        # pool_size — enough for the queue to drain at full speed, not enough
+        # for a stuck worker to hold the caller indefinitely.
+        from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+        from resource_explorer.concurrency import pool_size
+
+        width = max(1, pool_size() or 1)
+        budget = _QUESTION_GUID_CALL_TIMEOUT_SECONDS * (
+            1 + (len(rest) + width - 1) // width)
+        deadline = time.monotonic() + budget
+        for fut in futures:
+            try:
+                guids.append(fut.result(timeout=max(0.0, deadline - time.monotonic())))
+            except _FutureTimeoutError:
+                fut.cancel()
+                log.warning(
+                    "question-GUID batch exceeded its %ss budget — the "
+                    "remaining lookups contribute no scoping (same "
+                    "degrade-to-not-found contract as a single timeout)",
+                    budget,
+                )
+                guids.append(None)
+            except Exception as exc:
+                log.debug("pooled question-GUID resolve failed: %s", exc)
+                guids.append(None)
         return [(q, g) for q, g in zip(questions, guids) if g]
+
+    def _resolve_one_pooled(self, question_display_name: str) -> str | None:
+        """resolve_question_guid's cache handling, minus the pool hop.
+
+        Runs ON a shared-pool thread (submitted by _resolve_question_guids),
+        so it must be leaf work: it calls the Egeria lookup directly instead
+        of going back through run_sync. The per-call timeout still applies —
+        it is enforced by the caller's own wait in _resolve_question_guids,
+        which is bounded by the same pool that would have been blocked
+        anyway.
+        """
+        now = time.monotonic()
+        cached = _question_guid_cache.get(question_display_name)
+        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+            return cached[1]
+        guid = self._lookup_question_guid(question_display_name)
+        _question_guid_cache[question_display_name] = (now, guid)
+        return guid
 
     def find_candidate_process_guids_by_questions(
         self, questions: list[str], technology_type: str, survey_kind: str | None = None,
@@ -673,12 +792,35 @@ class SurveyDefinitionReader:
         by_guid: dict[str, dict] = {}
         try:
             client = self._connect_classification_explorer()
+            # Sequential, one Egeria round trip per question — unlike the GUID
+            # resolution above, not pooled (2026-09-04: not changing that here,
+            # it's a real perf project of its own, not a "minor" instrumentation
+            # pass). What WAS missing: any visibility into whether a slow
+            # candidates load is "Egeria is just slow today" or "something is
+            # actually stuck" — this request has no distinguishing signal from
+            # the outside; a hung server and a loaded one look identical from a
+            # pending fetch(). get_scoped_elements() takes no timeout kwarg of
+            # its own to override here (it forwards **kwargs, but pyegeria's own
+            # request layer isn't verified to honor a shorter one reliably, so
+            # not attempted) — logging the actual per-call and total duration is
+            # the honest, low-risk fix: next time this is slow, the log says by
+            # how much and which question, rather than a guess from wall-clock
+            # browser timing.
+            loop_started = time.monotonic()
             for question_text, question_guid in question_guids:
+                call_started = time.monotonic()
                 results = client.get_scoped_elements(
                     question_guid,
                     page_size=1000,
                     body={"class": "ResultsRequestBody", "metadataElementTypeName": "GovernanceActionProcess"},
                 )
+                call_elapsed = time.monotonic() - call_started
+                if call_elapsed > 5.0:
+                    log.warning(
+                        "get_scoped_elements for question %r took %.1fs (guid=%s) — "
+                        "slow Egeria response, not necessarily stuck",
+                        question_text, call_elapsed, question_guid,
+                    )
                 if isinstance(results, str):
                     continue  # pyegeria returns a string ("No elements found") when empty
                 for el in results or []:
@@ -707,6 +849,14 @@ class SurveyDefinitionReader:
                         }
                     elif question_text not in existing["matched_questions"]:
                         existing["matched_questions"].append(question_text)
+            loop_elapsed = time.monotonic() - loop_started
+            if loop_elapsed > 10.0:
+                log.warning(
+                    "find_candidate_process_guids_by_questions: %d sequential "
+                    "get_scoped_elements call(s) took %.1fs total for technology_type=%r "
+                    "survey_kind=%r",
+                    len(question_guids), loop_elapsed, technology_type, survey_kind,
+                )
         except Exception as exc:
             log.debug("find_candidate_process_guids_by_questions failed: %s", exc)
             return []

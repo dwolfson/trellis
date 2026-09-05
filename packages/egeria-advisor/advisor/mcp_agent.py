@@ -55,6 +55,26 @@ def _resolve_server_env(name: str, env: Dict[str, str]) -> Dict[str, str]:
     return resolved
 
 
+def _resolve_server_command(name: str, command: Optional[str], args: List[str]) -> tuple:
+    """
+    Resolve the actual command/args to launch server `name`'s subprocess with.
+
+    Only "pyegeria" gets special handling today — see
+    advisor.mcp_config.resolve_pyegeria_mcp_command() for the full
+    ADVISOR_PYEGERIA_MCP_COMMAND / current-interpreter / config-file
+    resolution order. Every other server (and pyegeria itself, when that
+    resolver falls through to `None`) keeps using config/mcp_servers.json's
+    command/args unchanged, exactly as before.
+    """
+    if name != "pyegeria":
+        return command, args
+    from advisor.mcp_config import resolve_pyegeria_mcp_command
+    resolved = resolve_pyegeria_mcp_command()
+    if resolved is None:
+        return command, args
+    return resolved[0], list(resolved[1])
+
+
 def _resolve_tool_timeout(default: int) -> int:
     """
     ADVISOR_MCP_TOOL_TIMEOUT env var overrides config/mcp_servers.json's
@@ -120,9 +140,12 @@ class MCPConfig:
         
         servers = {}
         for name, server_data in data.get("mcpServers", {}).items():
+            resolved_command, resolved_args = _resolve_server_command(
+                name, server_data.get("command"), server_data.get("args", [])
+            )
             servers[name] = MCPServerConfig(
-                command=server_data.get("command"),
-                args=server_data.get("args", []),
+                command=resolved_command,
+                args=resolved_args,
                 env=_resolve_server_env(name, server_data.get("env", {})),
                 url=server_data.get("url"),
                 transport=server_data.get("transport", "stdio"),
@@ -155,9 +178,12 @@ class MCPConfig:
         """
         servers = {}
         for name, server_data in data.get("mcpServers", {}).items():
+            resolved_command, resolved_args = _resolve_server_command(
+                name, server_data.get("command"), server_data.get("args", [])
+            )
             servers[name] = MCPServerConfig(
-                command=server_data.get("command"),
-                args=server_data.get("args", []),
+                command=resolved_command,
+                args=resolved_args,
                 env=_resolve_server_env(name, server_data.get("env", {})),
                 url=server_data.get("url"),
                 transport=server_data.get("transport", "stdio"),

@@ -7,6 +7,7 @@ appropriate pgvector collections based on collection configuration.
 """
 
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import fnmatch
@@ -25,6 +26,31 @@ from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
 from advisor.ingest import CodeIngester
 from loguru import logger
+
+
+@dataclass
+class IngestResult:
+    """Outcome of ingesting one collection.
+
+    `files`/`chunks` are what actually landed. `candidates` is how many files
+    matched `patterns` under the resolved source paths *before* ingestion, so
+    a zero can be told apart from "nothing to ingest". `reason` is set whenever
+    files == 0 and says why — the summary prints it instead of a bare
+    "Files: 0" (trevor, 2026-09-04: pyegeria/pyegeria_cli reported 0 of
+    280/100 estimated files with no explanation).
+    """
+    collection: str
+    files: int = 0
+    chunks: int = 0
+    candidates: int = 0
+    patterns: List[str] = field(default_factory=list)
+    reason: Optional[str] = None
+    skipped: bool = False  # True when nothing was attempted (exists / dry-run / no paths)
+
+    def __iter__(self):
+        # Backwards compatible with the old `files, chunks = ingest_collection(...)`
+        yield self.files
+        yield self.chunks
 
 
 def get_repos_dir() -> Path:
@@ -117,11 +143,43 @@ def count_files(paths: List[Path], patterns: List[str]) -> int:
     return count
 
 
+def existing_chunk_count(vector_store, collection_name: str) -> Optional[int]:
+    """How many rows the collection's table already holds, or None if the
+    table does not exist.
+
+    Two traps this deliberately avoids (both bit trevor on 2026-09-04):
+
+    * `collection_name in vector_store.list_collections()` compares the
+      *collection* name with *table* names. `pyegeria_drE` is stored as the
+      table `pyegeria_dre` (see _TABLE_NAME_MAP in advisor/vector_store_pg.py),
+      so that check never matched drE — and always matched `pyegeria` and
+      `pyegeria_cli`. `collection_exists()` resolves the mapping.
+    * Existence alone says nothing about content. The web app's startup hook
+      (advisor/web/app.py `_startup` -> `provision_schema()`) creates every
+      collection table *empty* the moment the container starts, so on a fresh
+      deployment the tables already exist before the first ingest runs. An
+      empty table must be ingested into, not reported as "already exists".
+    """
+    if not vector_store.collection_exists(collection_name):
+        return None
+    stats = vector_store.get_collection_stats(collection_name) or {}
+    return int(stats.get("num_entities") or 0)
+
+
+def _record_ingest_time(collection_name: str, files: int, chunks: int) -> None:
+    """Record completion so the admin page can show "last indexed"; best effort."""
+    try:
+        from advisor.web.admin import record_ingest_time
+        record_ingest_time(collection_name, files=files, chunks=chunks, source="ingest_script")
+    except Exception:
+        pass
+
+
 def ingest_collection(
     collection: CollectionMetadata,
     force: bool = False,
     dry_run: bool = False
-) -> Tuple[int, int]:
+) -> IngestResult:
     """
     Ingest a single collection.
     
@@ -131,42 +189,72 @@ def ingest_collection(
         dry_run: Don't actually ingest, just show what would be done
         
     Returns:
-        Tuple of (files_processed, chunks_created)
+        IngestResult (unpacks as (files_processed, chunks_created) for old callers)
     """
     logger.info("=" * 60)
     logger.info(f"Ingesting Collection: {collection.name}")
     logger.info("=" * 60)
+
+    result = IngestResult(collection=collection.name)
     
     # Get source paths
     source_paths = get_collection_source_paths(collection)
     if not source_paths:
-        logger.error(f"No valid source paths found for {collection.name}")
-        return 0, 0
+        result.reason = (
+            f"no source paths found under {get_repos_dir()} for "
+            f"{collection.source_repo} {collection.source_paths} — run scripts/clone_repos.py"
+        )
+        result.skipped = True
+        logger.error(f"No valid source paths found for {collection.name}: {result.reason}")
+        return result
     
     # Get file patterns
     patterns = get_file_patterns(collection)
+    result.patterns = patterns
     
     # Count files
     file_count = count_files(source_paths, patterns)
+    result.candidates = file_count
     logger.info(f"Source paths: {len(source_paths)}")
     logger.info(f"File patterns: {patterns}")
     logger.info(f"Estimated files: {file_count}")
+
+    if file_count == 0:
+        result.reason = (
+            f"0 candidate files matched patterns {patterns} under "
+            f"{[str(p) for p in source_paths]}"
+        )
+        result.skipped = True
+        logger.error(f"{collection.name}: {result.reason}")
+        return result
     
     if dry_run:
+        result.reason = "dry run — no ingestion performed"
+        result.skipped = True
         logger.info("DRY RUN - No ingestion performed")
-        return 0, 0
+        return result
     
-    # Check if collection exists
+    # Check whether the collection already holds data
     vector_store = get_vector_store()
     vector_store.connect()  # Ensure connected
-    
-    if collection.name in vector_store.list_collections():
+
+    existing = existing_chunk_count(vector_store, collection.name)
+    if existing is not None and existing > 0:
         if not force:
-            logger.warning(f"Collection {collection.name} already exists. Use --force to re-ingest.")
-            return 0, 0
-        else:
-            logger.info(f"Dropping existing collection: {collection.name}")
-            vector_store.delete_collection(collection.name)
+            result.reason = (
+                f"collection already holds {existing} chunks; skipped "
+                f"(use --force to drop and re-ingest)"
+            )
+            result.skipped = True
+            logger.warning(f"Collection {collection.name} {result.reason}")
+            return result
+        logger.info(f"Dropping existing collection: {collection.name} ({existing} chunks)")
+        vector_store.delete_collection(collection.name)
+    elif existing == 0:
+        logger.info(
+            f"Collection {collection.name} exists but is empty (auto-provisioned at "
+            f"app startup) — ingesting into it"
+        )
     
     # Create collection
     logger.info(f"Creating collection: {collection.name}")
@@ -202,7 +290,7 @@ def ingest_collection(
         
         if source_path.is_file():
             # Single file
-            files, chunks = ingester.ingest_file(source_path)
+            files, chunks, _ = ingester.ingest_file(source_path)
             total_files += files
             total_chunks += chunks
         else:
@@ -215,6 +303,19 @@ def ingest_collection(
                 )
                 total_files += files
                 total_chunks += chunks
+
+    result.files = total_files
+    result.chunks = total_chunks
+
+    if total_files == 0:
+        failures = getattr(ingester, "failure_summary", lambda: "")()
+        result.reason = (
+            f"0 of {file_count} candidate files matching {patterns} were ingested — "
+            f"{failures or 'no per-file errors were recorded (check the log above)'}"
+        )
+        logger.error(f"{collection.name}: {result.reason}")
+    elif getattr(ingester, "failed_files", None):
+        logger.warning(f"{collection.name}: {ingester.failure_summary()}")
     
     # Create index after ingestion
     if total_chunks > 0:
@@ -227,18 +328,13 @@ def ingest_collection(
     
     logger.info(f"✓ Ingested {total_files} files, {total_chunks} chunks into {collection.name}")
 
-    # Record completion time so the admin page can show "last indexed"
-    if total_chunks > 0 and not dry_run:
-        try:
-            from advisor.web.admin import record_ingest_time
-            record_ingest_time(collection.name, files=total_files, chunks=total_chunks, source="ingest_script")
-        except Exception:
-            pass
+    if total_chunks > 0:
+        _record_ingest_time(collection.name, total_files, total_chunks)
 
-    return total_files, total_chunks
+    return result
 
 
-def ingest_phase1(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple[int, int]]:
+def ingest_phase1(force: bool = False, dry_run: bool = False) -> Dict[str, IngestResult]:
     """
     Ingest Phase 1 (Python) collections.
     
@@ -247,7 +343,7 @@ def ingest_phase1(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple
         dry_run: Don't actually ingest
         
     Returns:
-        Dict mapping collection name to (files, chunks) tuple
+        Dict mapping collection name to IngestResult
     """
     logger.info("=" * 60)
     logger.info("Ingesting Phase 1 Collections (Python)")
@@ -257,13 +353,12 @@ def ingest_phase1(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple
     collections = get_phase1_collections()
     
     for collection in collections:
-        files, chunks = ingest_collection(collection, force=force, dry_run=dry_run)
-        results[collection.name] = (files, chunks)
+        results[collection.name] = ingest_collection(collection, force=force, dry_run=dry_run)
     
     return results
 
 
-def ingest_phase2(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple[int, int]]:
+def ingest_phase2(force: bool = False, dry_run: bool = False) -> Dict[str, IngestResult]:
     """
     Ingest Phase 2 (Java/Docs/Workspaces) collections.
     
@@ -272,7 +367,7 @@ def ingest_phase2(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple
         dry_run: Don't actually ingest
         
     Returns:
-        Dict mapping collection name to (files, chunks) tuple
+        Dict mapping collection name to IngestResult
     """
     logger.info("=" * 60)
     logger.info("Ingesting Phase 2 Collections (Java/Docs/Workspaces)")
@@ -282,13 +377,12 @@ def ingest_phase2(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple
     collections = get_phase2_collections()
     
     for collection in collections:
-        files, chunks = ingest_collection(collection, force=force, dry_run=dry_run)
-        results[collection.name] = (files, chunks)
+        results[collection.name] = ingest_collection(collection, force=force, dry_run=dry_run)
     
     return results
 
 
-def ingest_all(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple[int, int]]:
+def ingest_all(force: bool = False, dry_run: bool = False) -> Dict[str, IngestResult]:
     """
     Ingest all enabled collections.
     
@@ -297,7 +391,7 @@ def ingest_all(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple[in
         dry_run: Don't actually ingest
         
     Returns:
-        Dict mapping collection name to (files, chunks) tuple
+        Dict mapping collection name to IngestResult
     """
     logger.info("=" * 60)
     logger.info("Ingesting All Enabled Collections")
@@ -307,18 +401,19 @@ def ingest_all(force: bool = False, dry_run: bool = False) -> Dict[str, Tuple[in
     collections = get_enabled_collections()
     
     for collection in collections:
-        files, chunks = ingest_collection(collection, force=force, dry_run=dry_run)
-        results[collection.name] = (files, chunks)
+        results[collection.name] = ingest_collection(collection, force=force, dry_run=dry_run)
     
     return results
 
 
-def show_ingestion_summary(results: Dict[str, Tuple[int, int]]):
+def show_ingestion_summary(results: Dict[str, IngestResult]):
     """
     Show ingestion summary.
-    
-    Args:
-        results: Dict mapping collection name to (files, chunks) tuple
+
+    A collection that ingested zero files is never printed as a bare
+    "Files: 0" — its `reason` (skipped because it already holds data, no
+    source paths, no candidate files, or every candidate file failed) is
+    printed alongside, so the operator can tell a legitimate skip from a bug.
     """
     logger.info("\n" + "=" * 60)
     logger.info("Ingestion Summary")
@@ -327,16 +422,35 @@ def show_ingestion_summary(results: Dict[str, Tuple[int, int]]):
     total_files = 0
     total_chunks = 0
     
-    for collection_name, (files, chunks) in results.items():
+    for collection_name, result in results.items():
         logger.info(f"{collection_name}:")
-        logger.info(f"  Files: {files}")
-        logger.info(f"  Chunks: {chunks}")
-        total_files += files
-        total_chunks += chunks
+        logger.info(f"  Files: {result.files}")
+        logger.info(f"  Chunks: {result.chunks}")
+        if result.files == 0:
+            logger.info(f"  Candidate files: {result.candidates}")
+            logger.warning(f"  Why zero: {result.reason or 'unknown — no reason recorded'}")
+        total_files += result.files
+        total_chunks += result.chunks
     
     logger.info("-" * 60)
     logger.info(f"Total Files: {total_files}")
     logger.info(f"Total Chunks: {total_chunks}")
+
+
+def exit_code_for(results: Dict[str, IngestResult]) -> int:
+    """Non-zero only when nothing at all was ingested (and it wasn't a dry run).
+
+    Individual zero-file collections are reported with their reason but do
+    not fail the run — a collection legitimately skipped because it already
+    holds data must not turn a successful phase into exit 1.
+    """
+    if not results:
+        return 1
+    if all(r.skipped and r.reason and r.reason.startswith("dry run") for r in results.values()):
+        return 0
+    if sum(r.files for r in results.values()) == 0:
+        return 1
+    return 0
 
 
 def main():
@@ -375,12 +489,11 @@ def main():
             logger.error(f"Collection not found: {args.collection}")
             sys.exit(1)
         
-        files, chunks = ingest_collection(
+        results = {collection.name: ingest_collection(
             collection,
             force=args.force,
             dry_run=args.dry_run
-        )
-        results = {collection.name: (files, chunks)}
+        )}
     elif args.phase == "1":
         results = ingest_phase1(force=args.force, dry_run=args.dry_run)
     elif args.phase == "2":
@@ -391,10 +504,15 @@ def main():
     # Show summary
     show_ingestion_summary(results)
     
-    # Check for failures
-    if any(files == 0 for files, chunks in results.values()):
-        logger.warning("Some collections had no files ingested")
-        sys.exit(1)
+    # Zero-file collections have already been explained in the summary; only
+    # a run that ingested nothing at all is a failure.
+    zero = [name for name, r in results.items() if r.files == 0]
+    if zero:
+        logger.warning(f"Collections with no files ingested: {', '.join(zero)} (see 'Why zero' above)")
+    code = exit_code_for(results)
+    if code != 0:
+        logger.error("Nothing was ingested by this run")
+    sys.exit(code)
 
 
 if __name__ == "__main__":

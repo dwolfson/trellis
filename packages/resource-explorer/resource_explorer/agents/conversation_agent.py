@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 
 import asyncio
-import concurrent.futures
 
 from resource_explorer.agents.base import BaseExplorerAgent
 
@@ -140,8 +139,9 @@ class ConversationAgent(BaseExplorerAgent):
 
             try:
                 asyncio.get_running_loop()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    ex.submit(lambda: asyncio.run(_inject())).result(timeout=10)
+                from resource_explorer.concurrency import run_sync
+
+                run_sync(lambda: asyncio.run(_inject()), timeout=10)
             except RuntimeError:
                 asyncio.run(_inject())
         except Exception:
@@ -267,7 +267,8 @@ class ConversationAgent(BaseExplorerAgent):
 
         try:
             asyncio.get_running_loop()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                return ex.submit(lambda: asyncio.run(_inner())).result()
+            from resource_explorer.concurrency import run_sync
+
+            return run_sync(lambda: asyncio.run(_inner()))
         except RuntimeError:
             return asyncio.run(_inner())

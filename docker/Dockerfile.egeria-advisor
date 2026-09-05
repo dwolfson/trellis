@@ -1,0 +1,146 @@
+# syntax=docker/dockerfile:1
+#
+# trellis/egeria-advisor — one image, arm64 and amd64, used unchanged by the
+# dev profile (as a build artifact) and by the demo profile (as the running
+# container). See docs/runtime-architecture-plan.md §1/§2 and docs/packaging.md.
+#
+# Build context is the repo root (a uv workspace) — see
+# docker/Dockerfile.resource-explorer's header comment for why.
+#
+#   docker buildx build -f docker/Dockerfile.egeria-advisor -t trellis/egeria-advisor:local .
+#
+# CPU-only PyTorch, deliberately: see docker/Dockerfile.resource-explorer's
+# header comment (packages/egeria-advisor/docs/design/RUNTIME_AND_HARDWARE.md
+# §4a measured ONNX 4-7x SLOWER than PyTorch CPU for this model on this
+# hardware — EA's own ONNX path, embeddings_onnx.py, stays switched off and
+# out of this image). LLM inference is Ollama over the network
+# (OLLAMA_BASE_URL), never in-process.
+
+ARG PYTHON_VERSION=3.13
+
+# ---- builder --------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.9.13 /uv /uvx /usr/local/bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON=python${PYTHON_VERSION} \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+COPY packages/resource-explorer/pyproject.toml packages/resource-explorer/pyproject.toml
+COPY packages/egeria-advisor/pyproject.toml packages/egeria-advisor/pyproject.toml
+COPY packages/trellis-microflow/pyproject.toml packages/trellis-microflow/pyproject.toml
+COPY packages/trellis-vectorstore/pyproject.toml packages/trellis-vectorstore/pyproject.toml
+COPY packages/trellis-artifact-tree/pyproject.toml packages/trellis-artifact-tree/pyproject.toml
+COPY packages/trellis-context/pyproject.toml packages/trellis-context/pyproject.toml
+COPY packages/trellis-querycache/pyproject.toml packages/trellis-querycache/pyproject.toml
+COPY packages/trellis-auth/pyproject.toml packages/trellis-auth/pyproject.toml
+
+# Dependency layer, cache-mounted. No torch swap here yet — see the swap
+# step below the source COPY, and docker/Dockerfile.resource-explorer's
+# matching comment, for why it has to run AFTER every `uv sync` in this
+# stage, not before or between.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+COPY packages/egeria-advisor packages/egeria-advisor
+COPY packages/trellis-microflow packages/trellis-microflow
+COPY packages/trellis-vectorstore packages/trellis-vectorstore
+COPY packages/trellis-artifact-tree packages/trellis-artifact-tree
+COPY packages/trellis-context packages/trellis-context
+COPY packages/trellis-querycache packages/trellis-querycache
+COPY packages/trellis-auth packages/trellis-auth
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --package egeria-advisor
+
+# Same CPU-only torch swap as the resource-explorer image, as the LAST
+# dependency step in this stage — see that Dockerfile's matching comment
+# for why: `uv sync --no-install-package <name>` doesn't keep these out
+# under --frozen, and running the swap before the `uv sync --package
+# egeria-advisor` above gets silently undone by that sync re-resolving
+# against the frozen lock.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        torch torchvision triton \
+        nvidia-cublas nvidia-cuda-cupti nvidia-cuda-nvrtc nvidia-cuda-runtime \
+        nvidia-cudnn-cu13 nvidia-cufft nvidia-cufile nvidia-curand \
+        nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 nvidia-nccl-cu13 \
+        nvidia-nvjitlink nvidia-nvshmem-cu13 nvidia-nvtx \
+    && uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==2.13.0" "torchvision==0.28.0"
+# torchvision reinstalled alongside torch, ABI-matched — see
+# docker/Dockerfile.resource-explorer's matching comment for the live
+# failure ("operator torchvision::nms does not exist") this avoids.
+
+# Pre-download the embedding model — EA's embeddings.py has no
+# local_files_only guard (unlike RE's), so a missing cache means a live
+# HuggingFace Hub call at first use; HF_HUB_OFFLINE=1 in the runtime stage
+# makes that a hard failure instead of a silent network dependency, which
+# is exactly why the model has to be baked in here.
+ENV HF_HOME=/app/.cache/huggingface
+RUN --mount=type=cache,target=/app/.cache/huggingface \
+    "${UV_PROJECT_ENVIRONMENT}/bin/python" -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+    && mkdir -p /app/hf-cache && cp -r /app/.cache/huggingface/. /app/hf-cache/
+
+# ---- runtime ----------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+RUN groupadd --gid 1000 trellis && \
+    useradd --uid 1000 --gid trellis --shell /bin/bash --create-home trellis && \
+    apt-get update && apt-get install -y --no-install-recommends curl git && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HOST=0.0.0.0 \
+    PORT=8880 \
+    # Container-friendly defaults — override per deployment. See
+    # docker/Dockerfile.resource-explorer's matching block; same
+    # shared-infra services, EA's own env var names
+    # (advisor/config.py's AdvisorSettings).
+    PGVECTOR_HOST=egeria-shared-postgres \
+    PGVECTOR_PORT=5442 \
+    EGERIA_PLATFORM_URL=https://egeria-main:9443 \
+    OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+COPY --from=builder --chown=trellis:trellis /app/.venv /app/.venv
+COPY --from=builder --chown=trellis:trellis /app/hf-cache /app/.cache/huggingface
+COPY --chown=trellis:trellis packages/egeria-advisor packages/egeria-advisor
+COPY --chown=trellis:trellis packages/trellis-microflow packages/trellis-microflow
+COPY --chown=trellis:trellis packages/trellis-vectorstore packages/trellis-vectorstore
+COPY --chown=trellis:trellis packages/trellis-artifact-tree packages/trellis-artifact-tree
+COPY --chown=trellis:trellis packages/trellis-context packages/trellis-context
+COPY --chown=trellis:trellis packages/trellis-querycache packages/trellis-querycache
+COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
+COPY --chown=trellis:trellis docker/entrypoint-egeria-advisor.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Writable runtime data for the non-root user: caches, feedback, per-user
+# document namespaces, cloned survey checkouts. Mount a volume here in
+# compose; a named volume inherits this ownership on first use.
+RUN mkdir -p /app/data && chown trellis:trellis /app/data
+ENV ADVISOR_DATA_PATH=/app/data
+USER trellis
+
+EXPOSE 8880
+
+# EA's /health is a pure liveness check ({"status": "ok"}, no DB touch) —
+# unlike RE, EA has no separate /health/ready route, so this is the only
+# health route there is (advisor/web/app.py:321-323).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT}/health" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["web"]

@@ -56,6 +56,23 @@ const Auth = (() => {
 
   // ── UI helpers ───────────────────────────────────────────────────────────
 
+  // Whether the server requires a signed-in user. Fetched once from the public
+  // /api/auth/policy route at init; assumed true until then, because assuming
+  // "login optional" and being wrong means starting the app into a page where
+  // every panel is a failed fetch — the broken page this is here to prevent.
+  let loginRequired = true;
+
+  async function loadPolicy() {
+    try {
+      const r = await fetch('/api/auth/policy');
+      if (!r.ok) return;
+      const data = await r.json();
+      loginRequired = data.login_required !== false;
+    } catch {
+      // Server unreachable — keep the safe default (login required).
+    }
+  }
+
   function showLogin(message) {
     const overlay = document.getElementById('login-overlay');
     if (!overlay) return;
@@ -68,6 +85,10 @@ const Auth = (() => {
   }
 
   function hideLogin() {
+    // When the server requires login, the overlay is not dismissible: hiding it
+    // would reveal a shell whose every API call 401s. Dismissing is only a
+    // choice in the dev-only TRELLIS_ANONYMOUS_READ mode, where reads work.
+    if (loginRequired && !isAuthenticated()) return;
     const overlay = document.getElementById('login-overlay');
     if (overlay) overlay.classList.add('hidden');
     const msg = document.getElementById('login-message');
@@ -263,6 +284,16 @@ const Auth = (() => {
     // Wire up logout button
     document.getElementById('logout-btn')?.addEventListener('click', doLogout);
 
+    // Deferred app start, for the login-required case below: registered here,
+    // BEFORE the sidebar-refresh listener, because listeners fire in
+    // registration order and `loadReports`/`loadPlans`/`loadDrafts` expect the
+    // app to have been started. `once` — a later re-login must not start it
+    // twice. The flag is what makes this a no-op on every other path.
+    let appStartDeferred = false;
+    document.addEventListener('ea:authenticated', () => {
+      if (appStartDeferred) onReady && onReady();
+    }, { once: true });
+
     // After login, refresh Egeria-dependent sidebar sections
     document.addEventListener('ea:authenticated', () => {
       updateUserDisplay();
@@ -274,20 +305,33 @@ const Auth = (() => {
     // Start portal SSO listener
     listenForPortalMessage();
 
-    // Check URL fragment first (portal opened in new tab)
-    const fromPortal = await checkUrlFragment();
+    // Ask the server whether login is required before deciding what to do with
+    // an unauthenticated visitor. Runs alongside the Portal fragment check
+    // rather than before it, so the SSO path pays nothing for it.
+    const [, fromPortal] = await Promise.all([loadPolicy(), checkUrlFragment()]);
 
-    // Already have a valid token (or just got one from portal)
+    // Already have a valid token (or just got one from portal — the Portal
+    // exchange route is public, so an embedded Advisor never sees this form).
     if (isAuthenticated()) {
       updateUserDisplay();
       onReady && onReady();
       return;
     }
 
-    // No valid token — start the app anyway (anonymous RAG mode), but show login overlay.
-    // The login overlay is dismissible so users can access knowledge features immediately.
-    onReady && onReady();
+    // No valid token. When the server requires login (the default since
+    // 2026-09-04), show the form and do NOT start the app: every panel it
+    // would populate is a 401, which is exactly the broken page this replaces.
+    // `ea:authenticated` starts it once sign-in succeeds.
     await prefillLoginDefaults();
+    if (loginRequired) {
+      appStartDeferred = true;
+      showLogin('Sign in with your Egeria user id to continue.');
+      return;
+    }
+
+    // Dev-only anonymous-read mode: reads work without a token, so start the
+    // app and leave the (dismissible) overlay up for whoever wants to sign in.
+    onReady && onReady();
     showLogin();
   }
 

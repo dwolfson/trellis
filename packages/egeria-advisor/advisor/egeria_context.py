@@ -62,11 +62,18 @@ class EgeriaContext:
         self._conn: dict | None = None
         self._conn_loaded = False
         self._mcp_config_path = mcp_config_path
-        # The authenticated caller's {user_id, password}; None falls back to the
-        # .env-backed service account (see advisor.auth.resolve_egeria_credentials).
-        # This instance is created fresh per call site (not a shared singleton),
-        # so it's safe to hold this on self for the instance's lifetime.
+        # The authenticated caller's {user_id, password, token}; None falls back
+        # to the .env-backed service account (see
+        # advisor.auth.resolve_egeria_credentials). Since 2026-09-04 a signed-in
+        # request carries `token` (an Egeria bearer token) and an empty
+        # `password`; the service-account fallback is the reverse. This instance
+        # is created fresh per call site (not a shared singleton), so it's safe
+        # to hold this on self for the instance's lifetime.
         self._egeria_credentials = egeria_credentials
+        # The bearer token for this instance's requests, resolved alongside the
+        # connection in _load_connection(). Empty means "authenticate the client
+        # from its own configured credentials" (the service-account path).
+        self._egeria_token: str = ""
         self._actor_mgr  = None
         self._project_mgr = None
         self._gov_officer = None
@@ -87,10 +94,17 @@ class EgeriaContext:
         authenticated caller (self._egeria_credentials) via
         advisor.auth.resolve_egeria_credentials, which itself falls back to the
         .env-backed service account when no per-request credentials are given.
+
+        For a signed-in caller `user_pwd` is empty by design — the session JWT
+        carries an Egeria bearer token instead (2026-09-04), stashed here on
+        self._egeria_token and applied by _make_client() via
+        trellis_auth.apply_token. The conn dict keeps its exact four keys
+        because callers splat it into pyegeria client constructors.
         """
         from advisor.auth import resolve_egeria_credentials
         from advisor.mcp_config import get_pyegeria_platform_config
         creds = resolve_egeria_credentials(self._egeria_credentials)
+        self._egeria_token = creds.get("token", "")
 
         conn = get_pyegeria_platform_config(self._mcp_config_path)
         view_server = conn["view_server"]
@@ -119,7 +133,12 @@ class EgeriaContext:
             return None
         try:
             client = cls(**conn)
-            client.create_egeria_bearer_token(conn["user_id"], conn["user_pwd"])
+            # Signed-in caller: reuse their Egeria bearer token so Egeria's own
+            # provenance records the person, not the service account. Anonymous/
+            # background caller: no token, so authenticate from the client's own
+            # configured credentials (the .env service account) as before.
+            from advisor.auth import apply_token
+            apply_token(client, self._egeria_token)
             return client
         except Exception as exc:
             logger.debug(f"EgeriaContext: client init failed [{cls.__name__}]: {exc}")

@@ -6,10 +6,14 @@ environment or any config file. Each app resolves its own settings (EA's
 env vars, RE's own config) into one of these and hands it over — the same
 split `trellis-querycache` and `trellis-vectorstore` use for their configs.
 
-Deliberately NOT here: whether an app requires login at all, and where its
-config files live. Those are policy/location decisions each app makes for
-itself (see `docs/trellis-auth-extraction.md` §4) — this dataclass only
-carries the mechanism's inputs.
+Deliberately NOT here: where an app's config files live. That is a location
+decision each app makes for itself (see `docs/trellis-auth-extraction.md`
+§4) — this dataclass only carries the mechanism's inputs.
+
+**Whether an app requires login is no longer on that list** (decided
+2026-09-04): it is one shared policy, `trellis_auth.policy.AuthPolicy`, and
+`resolve_policy()` is the single deliberate place this package reads the
+environment. `AuthConfig` itself still never does.
 """
 from __future__ import annotations
 

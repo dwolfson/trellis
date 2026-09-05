@@ -2,7 +2,7 @@
 
 **Resource Explorer** discovers, understands, and catalogs information resources — Git repositories, PostgreSQL databases, and file systems — using [Egeria](https://egeria-project.org/) as the central metadata catalog.
 
-> Successor to [Project Explorer](https://github.com/LF-AI/project-explorer). Egeria-first architecture; Egeria is optional for RAG-only use.
+> Successor to [Project Explorer](https://github.com/LF-AI/project-explorer). Egeria-first architecture; Egeria is **required** — it is both the catalog of record and, since 2026-09-04, the identity provider you sign in against.
 
 ---
 

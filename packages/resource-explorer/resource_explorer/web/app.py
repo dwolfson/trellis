@@ -1,8 +1,9 @@
 """FastAPI application — query and project management web interface."""
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,90 +11,66 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
-from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
 
 
-def _reconcile_orphaned_runs() -> None:
-    try:
-        from resource_explorer.run_reconciler import reconcile
+def _embed_worker_enabled() -> bool:
+    """Whether this web process also runs the worker role in-process.
 
-        result = reconcile()
-        if result["resolved"]:
-            log.info("reconciled %s orphaned run(s) at startup; %s left alone",
-                     result["resolved"], result["left_alone"])
-    except Exception as exc:
-        # Startup must not fail because bookkeeping did.
-        log.warning("orphaned-run reconciliation skipped: %s", exc)
-
-
-@asynccontextmanager
-def _warm_survey_definition_cache() -> None:
-    """Resolve question GUIDs in the background, so the first click does not.
-
-    survey_definition_reader's caches are in-process dicts that die with the
-    process, so after every restart the FIRST person to open a survey phase pays
-    to resolve that phase's questions against Egeria. Measured 2026-09-01: every
-    phase 0.1-0.2s warm, and Dan reported a cold phase at over ten seconds —
-    with the timings looking random precisely because phases with disjoint
-    question sets each pay separately.
-
-    83381f1 made that cold path 6.8x faster by resolving through a thread pool
-    rather than in series. It stopped the round trips queueing; it did not stop
-    them happening. This moves them off the interactive path entirely.
-
-    In a DAEMON THREAD, never awaited: startup must not wait on Egeria, which
-    may legitimately not be up yet — the platform often starts after this
-    process. The thread's own failures are swallowed by warm_question_guid_cache,
-    which is best-effort by construction; if the warm does not happen, the first
-    request resolves exactly as it does today. This changes WHEN the lookup
-    happens, never WHAT it concludes.
+    Read from the environment/config rather than passed in, because with
+    `--workers N` uvicorn re-imports this module in each child process —
+    a value the CLI held in a local would never reach them.
+    `resource-explorer web` sets EXPLORER_EMBED_WORKER explicitly from
+    its --embed-worker/--no-embed-worker flag; the default is True so
+    `make dev`, an existing .env, and a bare
+    `uvicorn resource_explorer.web.app:app` all keep the behaviour they
+    had when the loops were started from this lifespan directly.
     """
-    import threading
+    raw = os.environ.get("EXPLORER_EMBED_WORKER")
+    if raw is not None:
+        return raw.strip().lower() not in ("0", "false", "no", "off", "")
+    try:
+        from resource_explorer.config import get_config
 
-    def _run() -> None:
-        try:
-            from resource_explorer.surveyors.survey_definition_reader import (
-                SurveyDefinitionReader,
-            )
-
-            SurveyDefinitionReader().warm_question_guid_cache()
-        except Exception as exc:  # never let an optimisation take the server down
-            log.debug("survey-definition cache warm skipped: %s", exc)
-
-    threading.Thread(target=_run, name="survey-cache-warm", daemon=True).start()
+        return bool(get_config().runtime.embed_worker)
+    except Exception:
+        return True
 
 
 async def _lifespan(app: FastAPI):
-    # A Survey Definition run lives in a daemon thread in THIS process, so a
-    # restart kills it with no chance to write a terminal status and its
-    # activity row claims "running" for ever. Anything left running by a
-    # process that is provably gone is resolved here, at the one moment we can
-    # be certain those threads are not coming back. Never raises and never
-    # blocks: it fails safe, leaving alone anything it cannot judge.
-    #
-    # Supersedes an earlier, less careful version of this same idea
-    # (ProjectRegistry.reconcile_orphaned_running_activity(), briefly on this
-    # branch) that treated every 'running' row as orphaned on any startup —
-    # wrong given multiple RE processes routinely share one database; it
-    # would have falsely killed a peer's still-live run. Removed in favor of
-    # this ownership-based (pid + process-start-time) version.
-    _reconcile_orphaned_runs()
-    start_scheduler()
-    # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
-    # check immediately (covers a restart alongside the reset) then periodically
-    # (covers the common dev case where only the Egeria container is recycled
-    # while this process keeps running). Never blocks startup: the initial check
-    # happens inside the monitor thread, and it fails open when Egeria is
-    # unreachable — see resource_explorer/bootstrap.py.
-    start_bootstrap_monitor()
-    _warm_survey_definition_cache()
+    """Serve HTTP. Start background loops only when asked to embed one.
+
+    Until 2026-09-04 this function started five things itself — the
+    scheduler, the bootstrap monitor, the Egeria resync scanner, a
+    survey-definition cache warm, and a one-shot orphaned-run
+    reconciliation — which made the web server the only way to run any
+    of them, and made N uvicorn workers mean N copies of each. They live
+    in resource_explorer/worker.py now (docs/runtime-architecture-plan.md
+    §2); this lifespan starts a thread only if EXPLORER_EMBED_WORKER says
+    to, and even then leader election decides whether that thread's loops
+    actually fire. See docs/process-model.md.
+    """
+    from resource_explorer.config import get_llm_tier_config
+
+    get_llm_tier_config()  # logs the resolved tier/model/num_ctx/budget once
+
+    worker_stop = None
+    if _embed_worker_enabled():
+        from resource_explorer.worker import start_embedded_worker
+
+        _thread, worker_stop = start_embedded_worker()
+        log.info("embedded worker role started in this web process")
+    else:
+        log.info(
+            "no embedded worker in this web process (EXPLORER_EMBED_WORKER "
+            "disabled) — background loops require `resource-explorer worker`"
+        )
     yield
-    stop_bootstrap_monitor()
+    if worker_stop is not None:
+        worker_stop.set()
 
 
 # Configure logging at import, so `uvicorn resource_explorer.web.app:app` run
@@ -110,8 +87,85 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+@app.middleware("http")
+async def _identity_middleware(request, call_next):
+    """Publish the signed-in caller for the duration of this request.
+
+    Sets `a2a_auth.current_caller` — RE's **one** identity ContextVar, already
+    set by the A2A middleware for agent traffic and by `use_identity()` for the
+    CLI. Everything downstream (the publisher, the materializers, the run
+    queue's `requested_by`, the registry's user scoping) asks that one
+    question, so it does not matter which door a call came through.
+
+    Reset in `finally`, so a handler that raises cannot leak an identity into
+    whatever the worker thread serves next — the failure mode that makes a
+    ContextVar-based identity worth writing carefully.
+
+    Deliberately tolerant of an absent/invalid token: rejecting is
+    `LoginRequiredMiddleware`'s job, and it runs outside this. A request that
+    reaches here without a token is on the public allowlist, and the right
+    thing to publish for it is "nobody".
+    """
+    from resource_explorer.a2a_auth import current_caller
+
+    from resource_explorer.auth import get_current_user, identity_from_claims
+
+    # Unguarded, deliberately: `get_current_user` already returns None rather
+    # than raising for an absent, malformed or forged token — that IS the
+    # tolerance this needs. A broad `except` here would additionally swallow a
+    # genuine bug in identity resolution and serve the request as nobody,
+    # which is the "we never measured this looks exactly like we measured
+    # nothing" failure applied to authorization.
+    claims = get_current_user(request)
+    identity = identity_from_claims(claims) if claims is not None else None
+
+    reset = current_caller.set(identity)
+    try:
+        return await call_next(request)
+    finally:
+        current_caller.reset(reset)
+
+
+def _install_login_required_middleware() -> None:
+    """Install `trellis_auth.LoginRequiredMiddleware` — the shared login policy.
+
+    **Ordering, measured rather than assumed.** Starlette's `add_middleware`
+    does `user_middleware.insert(0, ...)` and the stack is then built by
+    iterating `reversed(...)`, so the **last** middleware added ends up
+    **outermost**. Verified empirically against this checkout's Starlette
+    (two probe middlewares, the second-added logged first) rather than read
+    off a docstring — the two readings are one `reversed()` apart and the
+    wrong one puts the login gate inside the thing it is meant to gate.
+
+    Hence the order in this file, bottom to top of the stack:
+
+        CORS  (added last  → outermost)
+          └── LoginRequiredMiddleware   (this)
+                └── _identity_middleware (added first → innermost)
+                      └── routes
+
+    * The login gate is outside `_identity_middleware`, so a rejected request
+      never sets an identity at all.
+    * CORS is outside the login gate, so a cross-origin 401 still carries its
+      CORS headers. Without that the browser reports an opaque network error
+      instead of "please sign in", and the login form never appears — the
+      exact broken page this whole change exists to prevent.
+    """
+    from trellis_auth import LoginRequiredMiddleware
+
+    from resource_explorer.auth import auth_config, get_policy
+
+    app.add_middleware(
+        LoginRequiredMiddleware, config=auth_config(), policy=get_policy(),
+    )
+
+
+_install_login_required_middleware()
+
+# Added last, therefore outermost — see `_install_login_required_middleware`.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+app.include_router(auth_routes.router, prefix="/api/auth", tags=["auth"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(databases.router, prefix="/api/databases", tags=["databases"])
@@ -139,6 +193,7 @@ app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
 app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
+app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

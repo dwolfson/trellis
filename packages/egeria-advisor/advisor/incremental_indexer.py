@@ -261,9 +261,13 @@ class IncrementalIndexer:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         
-        # Initialize components
+        # Initialize components. db_path is unused by FileTracker (it tracks
+        # state in Postgres now, not sqlite — see FileTracker.__init__'s
+        # docstring), but resolve it through the same writable-data-root
+        # helper as everything else rather than a bare relative "data" default.
+        from advisor.config import resolve_advisor_data_root
         config = get_full_config()
-        db_path = Path(config.get("data_dir", "data")) / "index_state.db"
+        db_path = Path(config.get("data_dir") or resolve_advisor_data_root()) / "index_state.db"
         self.tracker = FileTracker(db_path)
         self.vector_store = get_vector_store()
         self.embedding_generator = get_embedding_generator()

@@ -188,6 +188,88 @@ def reconcile(registry: "ProjectRegistry | None" = None, *, now=None) -> dict:
     }
 
 
+def reconcile_runs(
+    registry: "ProjectRegistry | None" = None,
+    *,
+    now=None,
+    ignore_heartbeat: bool = False,
+) -> dict:
+    """Fail `runs` rows whose claiming process is provably gone.
+
+    The run-queue counterpart of `reconcile()` above, and deliberately the same
+    judgement rather than a second one: a missed heartbeat makes a row a
+    *candidate*, and only `_is_alive()` returning a definite False makes it a
+    failure. A worker parked in a slow Egeria call is late, not dead, and the
+    plan's own rule is that the pid-liveness check stays the source of truth
+    for "dead" — the heartbeat is a cheap filter in front of it, not a verdict.
+
+    `ignore_heartbeat=True` skips that filter and tests every claimed/running
+    row. Used at worker startup: the filter exists to keep the periodic sweep
+    cheap, and at startup the previous process's abandoned claims may well have
+    heartbeated seconds before they died.
+
+    Fails safe the same way: a row whose owner cannot be determined is left
+    alone and counted, because "I cannot tell" must never resolve to "it is
+    dead".
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = registry or ProjectRegistry()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    if ignore_heartbeat:
+        rows = registry.list_runs(state="claimed", limit=1000)
+        rows += registry.list_runs(state="running", limit=1000)
+    else:
+        from resource_explorer.run_queue import (
+            HEARTBEAT_INTERVAL_SECONDS,
+            STALE_AFTER_INTERVALS,
+        )
+
+        cutoff = now - timedelta(
+            seconds=HEARTBEAT_INTERVAL_SECONDS * STALE_AFTER_INTERVALS
+        )
+        rows = registry.stale_active_runs(cutoff.isoformat())
+
+    resolved, left_alone, still_running = [], [], []
+    for row in rows:
+        owner = _as_dict(row.get("runner"))
+        alive = _is_alive(owner) if owner else None
+        if alive is True:
+            still_running.append(row["id"])
+            continue
+        if alive is False:
+            resolved.append(row)
+            continue
+        # No owner recorded, or identity unverifiable. Unlike the activity-log
+        # reconciler there is no age fallback here: every row in this table was
+        # claimed by a process that recorded its identity at claim time, so a
+        # missing owner means something wrote the row by hand, and guessing
+        # about it is exactly what that reconciler's `_ORPHAN_AGE` exists to
+        # avoid doing lightly.
+        left_alone.append(row["id"])
+
+    for row in resolved:
+        last_beat = row.get("heartbeat_at") or row.get("claimed_at") or "unknown"
+        error = (
+            f"claimed by {row.get('claimed_by') or 'an unidentified worker'}, "
+            f"whose process is no longer running (last heartbeat {last_beat}). "
+            "Whatever it wrote before it stopped is kept; whether it completed "
+            "is not known."
+        )
+        registry.finish_run(row["id"], "failed", error=error)
+        log.info("reconciled stale run %s (%s): %s", row["id"], row.get("kind"), error)
+
+    return {
+        "resolved": len(resolved),
+        "still_running": len(still_running),
+        "left_alone": len(left_alone),
+        "resolved_ids": [r["id"] for r in resolved],
+    }
+
+
 def _age_of(ts, now: datetime):
     """How long ago `ts` was, or None when it cannot be read.
 

@@ -12,6 +12,50 @@ Resource Explorer discovers, surveys, and catalogs information resources using E
 uv run resource-explorer web     # → http://localhost:8810
 ```
 
+## Signing in
+
+Resource Explorer asks you to sign in before it shows anything. Use your **Egeria user id and
+password** — Egeria is the identity provider, and there is no separate Resource Explorer account.
+
+Your password is used once, to get an Egeria token, and is never stored. From then on every read
+and write RE makes runs *as you*: Egeria's own provenance records your user id, and anything you
+publish is owned by you.
+
+**Sessions last about an hour**, because that is how long Egeria's tokens last — and they all end
+when the Egeria platform restarts. When yours lapses the sign-in panel reappears; sign in again
+and carry on. Opening Resource Explorer from inside the Egeria Portal skips this entirely: the
+Portal hands over the token it already holds.
+
+The header shows who you are signed in as; the ⏻ button next to it signs you out.
+
+### From the terminal
+
+The CLI caches a session so you are not asked on every command:
+
+```bash
+uv run resource-explorer login              # prompts for your password
+uv run resource-explorer logout
+```
+
+Commands that read local data — `list`, `ask`, `runs list`, a plain `survey` — work without one.
+Commands that reach Egeria — `survey --publish`, `egeria-recheck`, `curate materialize`,
+`analysis run --publish` — need a live session and say so in one line if you do not have one:
+
+```
+session expired at 14:07, run `resource-explorer login`
+```
+
+## What "owned by you" means
+
+Everything you publish to Egeria carries an **owner** — you — and lands in a *draft zone*
+(`resource-explorer-draft`) rather than in the catalogue's normal zones. Two consequences:
+
+- **You can curate what you own.** Accepting, rejecting or materializing your own findings needs
+  no extra permission. Curating *someone else's* needs a curator or admin role.
+- **Accepting publishes it properly.** When you accept a finding, the element moves out of the
+  draft zone into the deployment's normal zones. That move is what "accept" actually does in
+  Egeria — it is not just a note in Resource Explorer.
+
 ---
 
 ## Layout
@@ -247,6 +291,9 @@ Check **Show resolved** at the top of the drawer to see deferred/reassigned/comp
 ## CLI reference
 
 ```bash
+# Sign in (needed by anything that writes to Egeria)
+uv run resource-explorer login
+
 # Survey a repo
 uv run resource-explorer survey my-repo
 

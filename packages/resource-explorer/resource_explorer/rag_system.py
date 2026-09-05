@@ -8,7 +8,7 @@ from resource_explorer.collection_router import CollectionRouter
 from resource_explorer.config import get_config
 from resource_explorer.llm_client import get_llm
 from resource_explorer.vector_store_pg import MultiCollectionStore
-from resource_explorer.prompt_templates import build_rag_prompt
+from resource_explorer.prompt_templates import build_context, build_rag_prompt
 from resource_explorer.query_cache import QueryCache
 from resource_explorer.query_processor import QueryIntent, QueryProcessor
 from resource_explorer.registry import ProjectRegistry
@@ -148,7 +148,7 @@ class RAGSystem:
             return
 
         chunk_refs = [f"{r.collection}:{r.id}" for r in results]
-        context = "\n\n---\n\n".join(r.text for r in results)
+        context = build_context(results, self.config.rag.budget_tokens)
         prompt = build_rag_prompt(query, context, resource_slug)
 
         full_response: list[str] = []
@@ -171,7 +171,7 @@ class RAGSystem:
         if not results:
             return "I don't have enough information in the indexed content to answer that.", []
         chunk_refs = [f"{r.collection}:{r.id}" for r in results]
-        context = "\n\n---\n\n".join(r.text for r in results)
+        context = build_context(results, self.config.rag.budget_tokens)
         prompt = build_rag_prompt(query, context, resource_slug)
         return self.llm.complete(prompt), chunk_refs
 

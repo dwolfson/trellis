@@ -17,12 +17,87 @@ from typing import Optional
 import typer
 from rich.console import Console
 
+# Module level only for the `serve` command's default port, which Typer
+# evaluates at import time. a2a_role imports nothing heavier than stdlib at
+# module scope, so this costs the CLI nothing on any other command.
+from resource_explorer.a2a_role import DEFAULT_A2A_PORT
+
 app = typer.Typer(
     name="resource-explorer",
     help="Scout, survey, and catalog information resources using Egeria.",
     rich_markup_mode="rich",
 )
 console = Console()
+
+
+# ── sign in / sign out ───────────────────────────────────────────────────────
+#
+# `docs/runtime-architecture-plan.md` §4: Egeria is the identity provider, its
+# bearer tokens last an hour, and every one of them dies when the platform
+# restarts. A CLI that prompted on every command would be unusable and one
+# that stored the password would undo the point of the token contract — so the
+# password is exchanged once, here, and what lands on disk is this app's
+# session JWT (mode 0600). See `resource_explorer/cli/session.py`.
+
+
+@app.command(name="login")
+def login_command(
+    user: Optional[str] = typer.Option(
+        None, "--user", help="Egeria user id (prompted for if omitted)"),
+):
+    """Sign in to Egeria and cache the session for later commands.
+
+    The password is **prompted for, never taken as an argument** — an argument
+    lands in the shell history, in `ps` output, and in whatever process
+    accounting the box keeps. It is exchanged for an Egeria bearer token once
+    and then discarded.
+
+    Commands that reach Egeria (`survey --publish`, `egeria-reset`,
+    `egeria-recheck`, `curate materialize`, `analysis run --publish`,
+    `runs enqueue`) use this session; read-only commands keep working without
+    one.
+    """
+    from resource_explorer.auth import login_with_password
+    from resource_explorer.cli import session as cli_session
+
+    if not user:
+        from resource_explorer.config import get_config
+
+        user = typer.prompt("Egeria user id", default=get_config().egeria.user_id or None)
+    password = typer.prompt("Password", hide_input=True)
+
+    egeria_token = login_with_password(user, password)
+    del password
+    if not egeria_token:
+        # One message for three causes (bad credentials, Egeria unreachable,
+        # pyegeria missing): `login_with_password` cannot tell them apart, and
+        # guessing one would be worse than naming all three.
+        console.print(
+            "[red]✗ Sign-in failed.[/red] Check the user id and password, and that the "
+            "Egeria platform in .env (EGERIA_PLATFORM_URL/EGERIA_VIEW_SERVER) is reachable."
+        )
+        raise typer.Exit(1)
+
+    record = cli_session.save_login(user, egeria_token)
+    when = f" until {record.expires_at_local:%H:%M}" if record.expires_at_local else ""
+    console.print(f"[green]✓ Signed in as {user}[/green]{when}")
+    console.print(f"[dim]Session cached at {record.path} (mode 0600)[/dim]")
+
+
+@app.command(name="logout")
+def logout_command():
+    """Forget the cached session.
+
+    Local only, and honestly so: there is no server-side session to revoke —
+    the Egeria bearer token inside the cached JWT stays valid at the platform
+    until its own expiry. Deleting the file is the whole of what logout can do.
+    """
+    from resource_explorer.cli import session as cli_session
+
+    if cli_session.clear_session():
+        console.print("[green]✓ Signed out[/green] [dim](cached session removed)[/dim]")
+    else:
+        console.print("[dim]Nothing to do — no cached session.[/dim]")
 
 
 @app.command()
@@ -315,15 +390,155 @@ def tui():
     run()
 
 
+def _install_stack_dump(label: str) -> None:
+    """On-demand thread dump, not continuous polling.
+
+    Added 2026-09-04 to the `web` command after a real incident: the
+    server stopped responding, a request that should take seconds hung
+    for 35+ seconds, and there was no way to tell "genuinely stuck" from
+    "slow" without guessing. faulthandler.dump_traceback_later() would
+    dump every N seconds unconditionally, which is noise on a healthy
+    process doing real (slow) work. register(SIGUSR1) is the standard
+    low-overhead pattern instead: costs nothing while idle, and
+    `kill -USR1 <pid>` writes every thread's exact Python stack frame to
+    this process's stderr — the actual "what is it doing", not a theory
+    reconstructed from timing.
+
+    Factored out of `web` so `worker` gets the identical instrumentation
+    rather than a second copy that drifts: docs/runtime-architecture-
+    plan.md §2 makes "every process answers SIGUSR1 with a thread dump"
+    a rule, not a patch on one command.
+    """
+    import faulthandler
+    import signal
+
+    # faulthandler writes to the real stderr file descriptor, so both calls
+    # raise io.UnsupportedOperation when stderr is not a real file — a captured
+    # stream under a test runner, or a container that redirected it oddly.
+    # Instrumentation must never be the reason a role fails to start, so this
+    # degrades to "no thread dump" rather than taking the process down.
+    try:
+        faulthandler.enable()
+    except Exception as exc:
+        console.print(f"[dim]thread dumps unavailable in this {label} process ({exc})[/dim]")
+        return
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        console.print(
+            f"[dim]Stuck? kill -USR1 {os.getpid()} dumps every thread's stack "
+            f"to this {label} process's stderr.[/dim]"
+        )
+    # SIGUSR1 doesn't exist on Windows — faulthandler.enable() alone
+    # (fatal-signal dumps) still applies; just no on-demand trigger.
+
+
+@app.command()
+def worker(
+    shutdown_timeout: float = typer.Option(
+        15.0, help="Seconds to allow for a graceful stop before exiting anyway"),
+):
+    """Run the background worker role: scheduler (run-due + Egeria outbox
+    drain + RFA reconciliation), bootstrap monitor, Egeria resync,
+    orphaned-run reconciliation and the survey-definition cache warm.
+
+    Each loop is gated on its own Postgres advisory lock, so running this
+    alongside a `web --embed-worker` process (or a second worker) is safe:
+    whoever wins a loop's lock runs it and the others log `standby` and
+    retry. See docs/process-model.md for the keys and the loop inventory.
+    """
+    import signal
+    import threading
+
+    from resource_explorer.observability.logging_setup import configure_logging
+    from resource_explorer.worker import run_worker
+
+    configure_logging()
+    console.print("[cyan]Starting worker role[/cyan]")
+    _install_stack_dump("worker")
+
+    stop_event = threading.Event()
+
+    def _request_stop(signum, _frame) -> None:
+        # Bounded shutdown, same reason `web` passes uvicorn
+        # timeout_graceful_shutdown=10: during the incident SIGTERM was
+        # ignored for 8+ seconds and needed a kill -9. run_worker joins
+        # its supervisors within shutdown_timeout and returns regardless;
+        # the loops are daemon threads, so anything still stuck goes with
+        # the process rather than holding it open.
+        console.print(f"[yellow]signal {signum} — stopping worker[/yellow]")
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    run_worker(embedded=False, stop_event=stop_event,
+               shutdown_timeout=shutdown_timeout)
+    console.print("[green]worker stopped[/green]")
+
+
 @app.command()
 def web(
     host: str = typer.Option("127.0.0.1", help="Bind host"),
     port: int = typer.Option(8810, help="Bind port"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)"),
+    embed_worker: bool = typer.Option(
+        True, "--embed-worker/--no-embed-worker",
+        help="Run the worker role's background loops inside this web process "
+             "(default: on, so `make dev` stays one command). Turn it off when "
+             "a separate `resource-explorer worker` owns them."),
+    workers: int = typer.Option(
+        1, "--workers", help="uvicorn worker processes (ignored with --reload)"),
 ):
     """Start the web UI (FastAPI + HTML frontend with Plotly charts and markdown)."""
+
     import uvicorn
     console.print(f"[cyan]Starting web UI at http://{host}:{port}[/cyan]")
+
+    # Whether this process also runs the worker role. Set in the
+    # environment, not passed as an argument, because with --workers N
+    # uvicorn re-imports the app in child processes that never see this
+    # function's locals — web/app.py's _embed_worker_enabled() reads it
+    # there. Also inherited by --reload's reloaded child.
+    os.environ["EXPLORER_EMBED_WORKER"] = "true" if embed_worker else "false"
+    if embed_worker:
+        console.print(
+            "[dim]Worker role embedded in this process. Background loops are "
+            "leader-elected, so a second RE process stands by rather than "
+            "double-firing.[/dim]"
+        )
+        if workers > 1:
+            console.print(
+                "[yellow]--workers %d with --embed-worker: each uvicorn worker "
+                "starts the worker role and advisory locks decide which one "
+                "actually runs each loop. That works, but the losers hold three "
+                "idle supervisor threads and a registry connection apiece. Prefer "
+                "--no-embed-worker plus a separate `resource-explorer worker` "
+                "process.[/yellow]" % workers
+            )
+    else:
+        console.print(
+            "[dim]No embedded worker: background loops need a separate "
+            "`resource-explorer worker` process.[/dim]"
+        )
+
+    # Instrumentation added 2026-09-04, after a real incident: the server
+    # stopped responding, a request that should take seconds hung for 35+
+    # seconds, and SIGTERM was ignored for 8+ seconds before a kill -9 was
+    # needed. There was no way to tell "genuinely stuck" from "slow" without
+    # guessing — this closes that gap two ways.
+    #
+    # 1. On-demand thread dump — see _install_stack_dump, shared with the
+    #    `worker` command.
+    _install_stack_dump("web")
+
+    # 2. A bounded graceful shutdown. uvicorn's own default is to wait
+    #    indefinitely for in-flight requests/threads on SIGTERM — which is
+    #    exactly why the kill -9 was needed instead. This does NOT fix
+    #    whatever caused a thread to be slow (see the log-based instrumentation
+    #    in survey_definition_reader.py's find_candidate_process_guids_by_
+    #    questions for that half), it just guarantees SIGTERM/Ctrl-C always
+    #    actually exits within 10s.
+    #
     # Configure before the server starts, and hand uvicorn a matching config so
     # server and application lines share one format and one destination. Without
     # log_config, uvicorn installs its own non-propagating handlers and its
@@ -331,34 +546,98 @@ def web(
     from resource_explorer.observability.logging_setup import (
         configure_logging, uvicorn_log_config)
     configure_logging()
-    uvicorn.run("resource_explorer.web.app:app", host=host, port=port, reload=reload,
-                log_config=uvicorn_log_config())
+    # workers and reload are mutually exclusive in uvicorn (reload wins and
+    # warns); pass workers only when it can actually take effect.
+    extra = {} if (reload or workers <= 1) else {"workers": workers}
+    try:
+        uvicorn.run("resource_explorer.web.app:app", host=host, port=port, reload=reload,
+                    log_config=uvicorn_log_config(), timeout_graceful_shutdown=10,
+                    **extra)
+    finally:
+        # uvicorn's timeout_graceful_shutdown bounds the SERVER; it does
+        # nothing about a shared-pool worker stuck in pyegeria, which the
+        # interpreter would otherwise join for ever on the way out. Same
+        # reason the worker command does this — see concurrency.py's
+        # "Abandoned workers" section.
+        from resource_explorer.concurrency import shutdown as _pool_shutdown
+
+        _pool_shutdown(wait=False)
 
 
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", help="Bind host"),
-    port: int = typer.Option(8100, help="Base port"),
-    all_agents: bool = typer.Option(False, "--all", help="Start all 6 specialist agents on consecutive ports"),
+    port: int = typer.Option(DEFAULT_A2A_PORT, help="Bind port — ONE port for every agent"),
+    base_port: Optional[int] = typer.Option(
+        None, "--base-port",
+        help="DEPRECATED alias for --port. Agents no longer occupy consecutive ports."),
+    all_agents: bool = typer.Option(
+        False, "--all",
+        help="DEPRECATED and ignored — every agent is always served."),
+    shutdown_timeout: float = typer.Option(
+        10.0, help="Seconds to allow for a graceful stop before exiting anyway"),
 ):
-    """Start the AgentStack A2A server (exposes agents to beeai.dev platform).
+    """Run the `a2a` process role: every agent on ONE port, behind a bearer token.
 
-    Without --all: orchestrator only on PORT (routes by intent, general RAG fallback).
+    Layout (see packages/resource-explorer/docs/a2a.md):
 
-    With --all: starts all 6 agents on consecutive ports:
-      PORT+0  orchestrator
-      PORT+1  statistics
-      PORT+2  code search
-      PORT+3  documentation
-      PORT+4  health
-      PORT+5  compare
+      /                                    orchestrator — the default agent
+      /.well-known/agents.json             index of all seven agents + auth scheme
+      /.well-known/agent-card.json         the orchestrator's A2A card
+      /whoami                              who your token says you are
+      /agents/<name>/                      one of stats, code, docs, health,
+                                           compare, integration, orchestrator
+      /agents/<name>/v1/message:send       its A2A REST endpoint
+      /agents/<name>/jsonrpc/              its A2A JSON-RPC endpoint
+
+    Every call needs `Authorization: Bearer <token>` — either a trellis app JWT
+    or a raw Egeria bearer token. Cards and the index are readable without one.
+    `A2A_ALLOW_ANONYMOUS=true` restores the pre-2026-09-04 no-auth behaviour for
+    local development, and says so loudly at startup.
+
+    Replaces the one-port-per-agent layout (8080-8086, no authentication) per
+    docs/runtime-architecture-plan.md §2.
     """
-    from resource_explorer.agentstack_server import run as agentstack_run
+    import signal
+    import threading
+
+    from resource_explorer.a2a_role import run_a2a
+    from resource_explorer.observability.logging_setup import configure_logging
+
+    if base_port is not None:
+        console.print(
+            "[yellow]--base-port is deprecated: every agent is now served on a "
+            "single port with path routing, so there is no base to offset from. "
+            f"Using it as --port ({base_port}). Switch to --port.[/yellow]"
+        )
+        port = base_port
     if all_agents:
-        console.print(f"[cyan]Starting all Resource Explorer agents (base port {port})...[/cyan]")
-    else:
-        console.print(f"[cyan]Starting Resource Explorer orchestrator on {host}:{port}[/cyan]")
-    agentstack_run(host=host, port=port, all_agents=all_agents)
+        console.print(
+            "[yellow]--all is deprecated and ignored: every agent is always "
+            "served, on this one port under /agents/<name>.[/yellow]"
+        )
+
+    configure_logging()
+    console.print(
+        f"[cyan]Starting Resource Explorer a2a role on {host}:{port}[/cyan]\n"
+        f"[dim]Discovery: http://{host}:{port}/.well-known/agents.json[/dim]"
+    )
+    _install_stack_dump("a2a")
+
+    stop_event = threading.Event()
+
+    def _request_stop(signum, _frame) -> None:
+        # Bounded shutdown, same contract as `worker`: SIGTERM was ignored for
+        # 8+ seconds during the 2026-09-03 incident and needed a kill -9.
+        console.print(f"[yellow]signal {signum} — stopping a2a role[/yellow]")
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    run_a2a(host=host, port=port, stop_event=stop_event,
+            shutdown_timeout=shutdown_timeout)
+    console.print("[green]a2a role stopped[/green]")
 
 
 def _resolve_slugs(registry, slugs, all_projects: bool, top_level: bool):
@@ -898,6 +1177,17 @@ def survey(
     if not targets:
         raise typer.Exit(1)
 
+    # A publish writes to Egeria on behalf of a person, so it needs one. A
+    # bare `survey` prints a markdown report from local data and deliberately
+    # does not — gating it would make the cheapest, most-used command depend
+    # on a live platform for no reason (plan §4, "read-only commands keep
+    # working without").
+    identity = None
+    if publish:
+        from resource_explorer.cli import session as cli_session
+
+        identity = cli_session.require_and_activate(console)
+
     batch = len(targets) > 1
 
     # Build Egeria client once (if needed) and reuse across projects
@@ -1157,8 +1447,14 @@ def egeria_reports(
     Reads from the local registry by default (no Egeria connection needed).
     Use --full to fetch and display all annotations from Egeria for the latest survey.
     """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.egeria_reader import EgeriaReader, EgeriaReaderError
+
+    # `--full` is the branch that actually reaches Egeria; without it this is a
+    # registry read and stays usable with no session (and with no platform).
+    if full:
+        cli_session.require_and_activate(console)
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -2164,8 +2460,14 @@ def egeria_recheck(
       resource-explorer egeria-recheck --dry-run
       resource-explorer egeria-recheck --entity-type repo --entity-type database
     """
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.egeria_linkage import recheck_all_linkages
     from resource_explorer.registry import ProjectRegistry
+
+    # Every GUID this checks is read from the live platform, so it needs a
+    # session — and reading as the person rather than as the service account
+    # matters here: a GUID this user cannot see is stale *for them*.
+    cli_session.require_and_activate(console)
 
     registry = ProjectRegistry()
     types = list(entity_type) if entity_type else None
@@ -2215,6 +2517,14 @@ def egeria_recheck(
         console.print("[yellow]Could not verify (not marked stale):[/yellow]")
         for row in error_rows:
             console.print(f"  {row['entity_type']}/{row['slug']}: {row['detail'][:200]}")
+
+
+# The workflow and run-queue command groups (plan §3's CLI parity) live in
+# their own module — cli/main.py is already 2,300 lines, and the new commands
+# are a coherent group rather than more of the same list.
+from resource_explorer.cli import runs_commands as _runs_commands  # noqa: E402
+
+_runs_commands.register(app)
 
 
 if __name__ == "__main__":
