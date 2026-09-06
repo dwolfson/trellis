@@ -1,6 +1,8 @@
 # Extending context compilation to Egeria Advisor
 
-**Written:** 2026-09-06. **Status:** design proposal, nothing built.
+**Written:** 2026-09-06. **Status:** design agreed, nothing built. The six questions this
+document opened were ruled on the same day — see §9. Two of them were answered by rejecting
+the options as posed rather than choosing among them.
 
 The project owner asked that RE's context compilation be extended to Egeria Advisor "as
 appropriate." This document is mostly about the *as appropriate* — where the boundary falls and
@@ -98,7 +100,8 @@ other names. **EA has zero references to `trellis_context`** (verified by grep a
 | `collection_router.py`, `feedback_collector.py` | Scoring engine and perspective-keyed feedback. | Already identified in `context-compilation-design.md` §5 as the packer's weight function and its tuning signal. Unchanged by this document. |
 
 Whether `build_context()` is replaced by the shared packer or left in place for plain RAG answers
-is the single largest scoping call in this document. It is **not** settled here — see §9 Q1.
+was the single largest scoping call in this document. Settled 2026-09-06: it stays out
+permanently, and `build_context()` is fixed rather than deleted — see §9.
 
 ---
 
@@ -245,7 +248,8 @@ depends on who listed most recently. A report-spec compile (§3 item 2) reads th
 design does not create the problem and does not solve it, but a compiled context keyed as "shared"
 while reading a registry whose contents depend on the last caller would *cache* the problem, which
 is worse than having it. Report-spec compiles are therefore per-user regardless of source, until
-that registry is scoped. Flagged as §9 Q6.
+that registry is scoped. Ruled 2026-09-06: ship the per-user compile, log the registry as a
+pyegeria issue rather than fixing it first — see §9.
 
 **Why not per-user for everything.** Because the shared material is the expensive material.
 Per-user keying of corpus-derived candidates multiplies the store by the user count while every
@@ -435,8 +439,9 @@ that, one at a time and measured.
   shared instance and is unchanged.
 - **Not migrating EA's drafts into Postgres.** The filesystem namespacing works and is orthogonal.
   This design reads drafts; it does not rehome them.
-- **Not resolving the EA-adopts-Investigation question.** See §9 Q2 — it is now a genuinely open
-  question again rather than a settled proposal, and this design does not need it resolved.
+- **Not adopting RE's Investigation, and not introducing a compile container at all.** Resolved
+  2026-09-06 (§9): the draft/plan/spec is the unit. This was listed as a non-goal while the
+  question was open; the ruling makes it a decision rather than an omission.
 - **Not touching EA's `cache/` directory.** Despite the name, it is ingestion-pipeline output.
 
 ### Corrections to existing documents
@@ -449,7 +454,8 @@ Recorded here rather than by editing those files, since several sessions are liv
    identity, a Postgres `advisor_sessions` table with `user_id`/`expires_at`, and per-user draft
    namespacing. §17's argument — that EA should adopt RE's Investigation *rather than grow a
    parallel session concept* — was overtaken by events: EA grew one. Whether Investigation is still
-   the right compile unit is §9 Q2, but the premise no longer holds.
+   the right compile unit is settled in §9 (it is the draft/plan/spec, not a container),
+   but the premise behind §17's argument no longer holds either way.
 2. **EA's `CLAUDE.md` query-flow diagram places `QueryCache` inside `RAGSystem`**, checked before
    the query processor. In the code the cache is constructed and consulted in
    `advisor/rag_retrieval.py` (lines 62 and ~108) at the *retrieval* layer.
@@ -474,45 +480,57 @@ Recorded here rather than by editing those files, since several sessions are liv
 
 ---
 
-## 9. Open questions for the project owner
+## 9. Decisions
 
-Separated from everything above, which is settled by code or by prior ruling.
+Ruled on 2026-09-06. These were the open questions; the reasoning that led to each is kept so a
+later reader can see what the ruling rested on, and re-open it if the ground moves.
 
-**Q1 — Does plain RAG Q&A stay outside the compiler permanently, or only for now?**
-§3 argues it should stay out: one source, no sections, nothing for a manifest to say. The counter-
-argument is uniformity — one context path is easier to reason about than two. This is the largest
-scoping call in the document and it decides whether `build_context()` is eventually deleted.
-*Recommendation: stay out; revisit only if a second source is ever mixed into a RAG answer.*
+**Decision (project owner, 2026-09-06):** Plain RAG Q&A stays outside the compiler
+**permanently** — one source, one section, and nothing a manifest could say that "min_score 0.30
+returned nothing" does not. Revisit only on a named trigger: **a RAG answer that mixes a second
+source.** Separately, and against how this question was originally framed, `build_context()` is
+**not** deleted. It is the right packer for the one-source case; fixing it (§7 step 0) and keeping
+it is the outcome, and deletion would only follow if the compiler subsumed plain RAG, which it
+does not.
 
-**Q2 — What is EA's compile unit, now that EA has sessions?**
-`context-compilation-design.md` §17 proposed EA adopt RE's Investigation, on the premise that EA
-had no session concept to build on. It now has one. Three live options: keep Investigation as the
-proposal stands; use `advisor_sessions.session_id`; or use the existing draft/plan/spec as the unit
-and skip a container entirely. This also decides §17's unresolved sub-question of *write*
-ownership of RE's Investigation table by EA.
+**Decision (project owner, 2026-09-06):** EA has **no compile unit** — the existing
+draft/plan/spec *is* the unit, and no container is introduced. All three options as posed were
+rejected, on grounds that are facts rather than preferences: EA has zero references to RE's
+Investigation, so there is no write path to build on, and adding one is the cross-app runtime
+coupling §8 lists as a non-goal; `advisor_sessions.session_id` expires with the JWT that made it
+(1–8 h) while a plan draft is a durable file under `~/egeria-plans/users/{user_id}/`, so the
+lifetimes do not match. The work object is already durable, per-user and ownership-checked. This
+makes §17's unresolved sub-question about EA writing RE's Investigation table **moot rather than
+answered**: EA never touches it.
 
-**Q3 — Is per-user compiled context ever persisted, and if so where?**
-§6 recommends compile-fresh and no cache until measurement says otherwise. If it is later
-persisted, it lands in EA's `public` schema (`db_consolidated.py` self-provisions) and inherits
-`advisor_sessions`' expiry discipline — but the retention question for a per-user artifact derived
-from token-scoped Egeria reads deserves an explicit ruling, not a default.
+**Decision (project owner, 2026-09-06):** Compiled context is **not persisted**, and the rule is
+sharper than a retention policy: **cache the shared sections, never persist the identity-scoped
+ones.** That falls straight out of §4's split — the corpus-derived material is both the expensive
+part and the safely-cacheable part, while a context assembled under one user's Egeria
+authorization is a disclosure surface whose caching buys nothing, since the identity-scoped
+sections are the cheap ones. With that rule there is no retention question to answer.
 
-**Q4 — Which EA model sizes the budget?**
-`ContextSpec.target_model` is identity-bearing, and EA runs three models with different windows.
-Does an EA spec pin a model, or does the caller supply one per compile as RE's API does with
-`budget`? A pinned model makes the cache key stable; a caller-supplied one makes one spec serve
-the whole roster.
+**Decision (project owner, 2026-09-06):** An EA `ContextSpec` pins a **model slot**, not a model
+and not a caller-supplied value — again rejecting both options as posed. EA already resolves
+models per slot (`query`, `conversation`, `code`, `maintenance`, `planning`) through
+`resolve_llm_tier_config()`, which resolves `num_ctx` and the RAG budget for the active tier at
+the same time. Pinning a model would break the tier system, since `dev` / `demo-gpu` / `demo-cpu`
+resolve different models per slot; a caller-supplied model makes the cache key unstable. So: the
+spec pins the slot, the tier resolves the model and the budget at compile time, and
+`ContextSpec.identity()` folds in the **resolved** model — one spec serves the whole roster while
+the key stays correct, because a different tier genuinely packs differently.
 
-**Q5 — Where does EA's authored spec source live?**
-§19's house pattern is *human-authored source of record → generated artifact → validator*, and it
-holds three times already (Dr.Egeria compact JSON, RE's question CSV, EA's report specs as
-Dr.Egeria markdown). EA's `ContextSpec`s should follow it — but authored as Dr.Egeria markdown
-alongside the report specs, or as a spreadsheet alongside RE's question matrix? Consistency pulls
-both ways.
+**Decision (project owner, 2026-09-06):** EA's `ContextSpec`s are authored as **Dr.Egeria
+markdown, alongside the report specs**, not as a spreadsheet alongside RE's question matrix. A
+`ContextSpec` is the same kind of object as a report spec — declarative, carrying the
+identity-vs-tuning partition — rather than the large enumerable dataset that makes a spreadsheet
+right for RE's questions. Consistency within EA wins over consistency across the two apps here,
+and markdown leaves open the spec living in Egeria as a governance artifact, which a spreadsheet
+would close.
 
-**Q6 — Should pyegeria's report-spec registry be scoped before EA compiles over it?**
-`register_report_spec()` mutates process-global state whose contents depend on which user listed
-their inbox most recently (§2, §4). §3's report-spec compile can be built safely around it by
-forcing that compile per-user, which is what this design proposes — but that is a workaround for
-a shared-mutable-global, and the underlying issue sits in EA's coupling to pyegeria, not in the
-compiler. Fix first, or accept the workaround and revisit?
+**Decision (project owner, 2026-09-06):** pyegeria's process-global report-spec registry is
+**not fixed first**. The per-user report-spec compile ships as designed; the registry is logged as
+a pyegeria issue and revisited when a fix lands, per this workspace's standing rule that pyegeria
+gaps are recorded in `PYEGERIA_ISSUES.md` rather than fixed in place. Blocking an EA feature on an
+upstream fix in a dependency is the wrong direction, and per-user scoping is correct on its own
+merits rather than only as a workaround.
