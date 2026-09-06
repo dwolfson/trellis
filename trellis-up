@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# Start Resource Explorer and/or Egeria Advisor, natively or in containers.
+#
+# The equivalent of egeria-workspaces' quick-start-local, for this repo. It
+# deliberately does NOT reimplement what already works: the native path runs
+# the Makefile's re-web/ea-web/dev targets, and the container path drives the
+# trellis compose overlay that lives in egeria-workspaces-fs. What this adds
+# is the part neither of those does -- getting the secrets right before
+# anything starts, and saying what is missing instead of failing later.
+#
+# Why the secrets matter enough to warrant a script: both apps derive a JWT
+# secret from the hostname when none is configured. That is not an error and
+# nothing logs a failure -- sessions simply stop being portable, and under
+# Docker the hostname is per-container, so every restart silently invalidates
+# every session. Two separate instances of exactly this were found on
+# 2026-09-06: RE read its secrets in a way that bypassed .env entirely, and EA
+# read ADVISOR_JWT_SECRET while the compose overlay set TRELLIS_JWT_SECRET.
+# Both are fixed; this script exists so the configuration cannot silently go
+# missing again.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RE_ENV="$REPO_ROOT/packages/resource-explorer/.env"
+EA_ENV="$REPO_ROOT/packages/egeria-advisor/.env"
+
+# The compose overlay and the Portal's own .env both live in egeria-workspaces-fs.
+# Sibling of this repo, or of its parent -- the same two layouts the egeria-advisor
+# path resolvers accept. $EGERIA_WORKSPACES_FS overrides.
+_find_workspaces() {
+  local c
+  for c in "${EGERIA_WORKSPACES_FS:-}" \
+           "$REPO_ROOT/../egeria-workspaces-fs" \
+           "$REPO_ROOT/../../egeria-workspaces-fs"; do
+    [ -n "$c" ] && [ -d "$c" ] && { (cd "$c" && pwd); return 0; }
+  done
+  return 1
+}
+WORKSPACES="$(_find_workspaces || true)"
+COMPOSE_OVERLAY="${WORKSPACES:+$WORKSPACES/compose-configs/optional-associated-runtimes/trellis/docker-compose.yaml}"
+PORTAL_ENV="${WORKSPACES:+$WORKSPACES/compose-configs/egeria-quickstart/.env}"
+
+MODE=native
+WANT_RE=1
+WANT_EA=1
+CHECK_ONLY=0
+INIT_SECRETS=1
+
+usage() {
+  cat <<'USAGE'
+Usage: ./trellis-up [OPTIONS]
+
+  Starts Resource Explorer (8810) and Egeria Advisor (8880).
+
+Which apps:
+  --re                Resource Explorer only.
+  --ea                Egeria Advisor only.
+                      Default is both.
+
+How:
+  --native            Run as host processes via the Makefile (default).
+  --container         Run the trellis compose overlay from egeria-workspaces-fs.
+                      Needs images: `make images` builds them for the host arch.
+
+Other:
+  --check             Run the preflight checks and exit without starting
+                      anything. Reports what is missing rather than starting
+                      something that will half-work.
+  --no-init-secrets   Do not create missing JWT secrets. The apps still start;
+                      they derive a per-hostname secret, so sessions will not
+                      survive a move or a container restart.
+  -h, --help          This text.
+
+Secrets:
+  A missing TRELLIS_JWT_SECRET is generated once and written to BOTH packages'
+  .env files with the same value -- both apps read that name, and a session is
+  only portable between them if it matches. Existing values are never
+  overwritten.
+
+  TRELLIS_PORTAL_SECRET is only needed if this deployment accepts the Egeria
+  Portal's SSO handoff. It must equal the Portal's EGERIA_ADVISOR_SSO_SECRET,
+  so this script copies that value if it can find the Portal's .env, and
+  otherwise leaves it alone and says so -- generating one unilaterally would
+  produce a secret that silently fails to verify.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --re) WANT_EA=0 ;;
+    --ea) WANT_RE=0 ;;
+    --native) MODE=native ;;
+    --container) MODE=container ;;
+    --check) CHECK_ONLY=1 ;;
+    --no-init-secrets) INIT_SECRETS=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+say()  { printf '[trellis-up] %s\n' "$*"; }
+warn() { printf '[trellis-up] WARNING: %s\n' "$*" >&2; }
+die()  { printf '[trellis-up] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- secrets ---
+
+# Read KEY's value from a .env, ignoring comments. Empty output means "not set
+# or set empty" -- both of which this script treats as absent, because an empty
+# secret is exactly the case that silently falls through to the derivation.
+env_get() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  sed -n "s/^[[:space:]]*${key}=//p" "$file" | tail -1 | sed 's/[[:space:]]*$//'
+}
+
+env_set() {
+  local file="$1" key="$2" val="$3"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  if grep -qE "^[[:space:]]*${key}=" "$file"; then
+    # Replace in place. Portable across BSD/GNU sed via a temp file rather
+    # than -i, whose argument differs between them.
+    awk -v k="$key" -v v="$val" \
+      'BEGIN{FS=OFS="="} $1 ~ "^[[:space:]]*"k"$" {print k"="v; next} {print}' \
+      "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+}
+
+gen_secret() { openssl rand -hex 32; }
+
+init_secrets() {
+  local existing="" src=""
+  for f in "$RE_ENV" "$EA_ENV"; do
+    local v; v="$(env_get "$f" TRELLIS_JWT_SECRET)"
+    if [ -n "$v" ]; then existing="$v"; src="$f"; break; fi
+  done
+
+  if [ -n "$existing" ]; then
+    say "TRELLIS_JWT_SECRET: already set (from $(basename "$(dirname "$src")")/.env)"
+  else
+    existing="$(gen_secret)"
+    say "TRELLIS_JWT_SECRET: generated"
+  fi
+
+  # Write to both regardless of which one had it: a value present in only one
+  # .env is the bug, not the fix. Sessions are portable between the two apps
+  # only when both resolve the same secret.
+  local wrote=0
+  for f in "$RE_ENV" "$EA_ENV"; do
+    if [ "$(env_get "$f" TRELLIS_JWT_SECRET)" != "$existing" ]; then
+      env_set "$f" TRELLIS_JWT_SECRET "$existing"; wrote=1
+    fi
+  done
+  [ "$wrote" = 1 ] && say "  written to both packages' .env" || true
+
+  # Portal secret: copied, never invented.
+  local portal; portal="$(env_get "$RE_ENV" TRELLIS_PORTAL_SECRET)"
+  [ -n "$portal" ] || portal="$(env_get "$EA_ENV" TRELLIS_PORTAL_SECRET)"
+  [ -n "$portal" ] || portal="$(env_get "$EA_ENV" ADVISOR_PORTAL_SECRET)"
+  if [ -n "$portal" ]; then
+    say "TRELLIS_PORTAL_SECRET: already set"
+  elif [ -n "$PORTAL_ENV" ] && [ -f "$PORTAL_ENV" ] \
+       && [ -n "$(env_get "$PORTAL_ENV" EGERIA_ADVISOR_SSO_SECRET)" ]; then
+    portal="$(env_get "$PORTAL_ENV" EGERIA_ADVISOR_SSO_SECRET)"
+    for f in "$RE_ENV" "$EA_ENV"; do env_set "$f" TRELLIS_PORTAL_SECRET "$portal"; done
+    say "TRELLIS_PORTAL_SECRET: copied from the Portal's EGERIA_ADVISOR_SSO_SECRET"
+  else
+    say "TRELLIS_PORTAL_SECRET: not set — Portal SSO stays off (the tile reads"
+    say "  'Not configured'). To enable it, set the SAME value here and as"
+    say "  EGERIA_ADVISOR_SSO_SECRET in egeria-quickstart/.env."
+  fi
+}
+
+# --------------------------------------------------------------- preflight ---
+
+port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+reachable() {  # url label  -> 0 if something answers at all
+  curl -sk -o /dev/null --max-time 4 "$1" 2>/dev/null
+}
+
+preflight() {
+  local problems=0
+
+  # Egeria is not optional any more: since 2026-09-04 it is the identity
+  # provider, so login fails without it even though RAG queries would not.
+  local egeria_url="${EGERIA_PLATFORM_URL:-$(env_get "$RE_ENV" EGERIA_PLATFORM_URL)}"
+  egeria_url="${egeria_url:-https://localhost:9443}"
+  if reachable "$egeria_url"; then
+    say "Egeria     $egeria_url  reachable"
+  else
+    warn "Egeria     $egeria_url  NOT reachable — both apps require it to sign in"
+    problems=$((problems+1))
+  fi
+
+  local pg_host pg_port
+  pg_host="$(env_get "$RE_ENV" PGVECTOR_HOST)"; pg_host="${pg_host:-localhost}"
+  pg_port="$(env_get "$RE_ENV" PGVECTOR_PORT)"; pg_port="${pg_port:-5442}"
+  if nc -z "$pg_host" "$pg_port" >/dev/null 2>&1; then
+    say "Postgres   $pg_host:$pg_port  reachable"
+  else
+    warn "Postgres   $pg_host:$pg_port  NOT reachable — registry and vector store"
+    problems=$((problems+1))
+  fi
+
+  if reachable "http://localhost:11434/api/tags"; then
+    say "Ollama     localhost:11434  reachable"
+  else
+    warn "Ollama     localhost:11434  NOT reachable — LLM answers will fail"
+    problems=$((problems+1))
+  fi
+
+  # Ports: only a problem for the app we are about to start.
+  [ "$WANT_RE" = 1 ] && port_busy 8810 && { warn "port 8810 already in use (RE). \`make ps\` shows what holds it."; problems=$((problems+1)); }
+  [ "$WANT_EA" = 1 ] && port_busy 8880 && { warn "port 8880 already in use (EA). \`make ps\` shows what holds it."; problems=$((problems+1)); }
+
+  if [ "$MODE" = container ]; then
+    docker info >/dev/null 2>&1 || { warn "docker is not available"; problems=$((problems+1)); }
+    [ -n "$COMPOSE_OVERLAY" ] && [ -f "$COMPOSE_OVERLAY" ] \
+      || { warn "compose overlay not found — set EGERIA_WORKSPACES_FS to the egeria-workspaces-fs checkout"; problems=$((problems+1)); }
+  fi
+
+  return "$problems"
+}
+
+# -------------------------------------------------------------------- run ---
+
+say "mode: $MODE   apps: $( [ "$WANT_RE" = 1 ] && printf 'RE '; [ "$WANT_EA" = 1 ] && printf 'EA' )"
+[ -n "$WORKSPACES" ] && say "egeria-workspaces-fs: $WORKSPACES" || say "egeria-workspaces-fs: not found (container mode and Portal-secret copying unavailable)"
+
+# --check must not mutate anything: a check that writes is not a check, and
+# .env is the file a user would least expect a dry run to touch.
+if [ "$CHECK_ONLY" = 1 ]; then
+  for f in "$RE_ENV" "$EA_ENV"; do
+    v="$(env_get "$f" TRELLIS_JWT_SECRET)"
+    [ -n "$v" ] && say "TRELLIS_JWT_SECRET: set in $(basename "$(dirname "$f")")/.env" \
+                || say "TRELLIS_JWT_SECRET: MISSING in $(basename "$(dirname "$f")")/.env — a run without --no-init-secrets would write one"
+  done
+elif [ "$INIT_SECRETS" = 1 ]; then
+  init_secrets
+else
+  say "secrets: skipped (--no-init-secrets)"
+fi
+
+set +e; preflight; PROBLEMS=$?; set -e
+
+if [ "$CHECK_ONLY" = 1 ]; then
+  [ "$PROBLEMS" -eq 0 ] && say "check: all clear" || say "check: $PROBLEMS problem(s) above"
+  exit 0
+fi
+[ "$PROBLEMS" -gt 0 ] && warn "$PROBLEMS preflight problem(s) — starting anyway; see above if something misbehaves"
+
+if [ "$MODE" = container ]; then
+  [ -f "$COMPOSE_OVERLAY" ] || die "compose overlay not found; set EGERIA_WORKSPACES_FS"
+  services=""
+  [ "$WANT_RE" = 1 ] && services="$services resource-explorer-web resource-explorer-worker"
+  [ "$WANT_EA" = 1 ] && services="$services egeria-advisor"
+  say "docker compose -f $COMPOSE_OVERLAY up -d$services"
+  # shellcheck disable=SC2086
+  exec docker compose -f "$COMPOSE_OVERLAY" up -d $services
+fi
+
+cd "$REPO_ROOT"
+if [ "$WANT_RE" = 1 ] && [ "$WANT_EA" = 1 ]; then exec make dev
+elif [ "$WANT_RE" = 1 ]; then exec make re-web
+else exec make ea-web
+fi

@@ -13,7 +13,8 @@ RE_WEB_URL := http://localhost:8810
 EA_WEB_URL := http://localhost:8880
 
 .PHONY: help sync re re-web re-worker ea ea-web dev ps test test-re test-ea lint fmt \
-        prefect-up prefect-down re-resync re-resync-apply re-sweep
+        prefect-up prefect-down re-resync re-resync-apply re-sweep \
+        up up-re up-ea up-container check
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## /{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -43,6 +44,30 @@ dev: ## Start both web UIs concurrently; Ctrl-C stops both
 	( uv run --package resource-explorer resource-explorer web 2>&1 | sed -u 's/^/[RE] /' ) & \
 	( uv run --package egeria-advisor egeria-advisor-web 2>&1 | sed -u 's/^/[EA] /' ) & \
 	wait
+
+## Start-up
+# ./trellis-up wraps the targets above with the two things they do not do:
+# it makes sure a shared TRELLIS_JWT_SECRET exists in BOTH packages' .env
+# (absent one, each app derives a secret from its hostname -- no error, just
+# sessions that do not survive a restart or move), and it says up front when
+# Egeria, Postgres or Ollama is unreachable rather than letting the app fail
+# later. `dev`/`re-web`/`ea-web` above remain the direct route when the
+# environment is already known-good.
+
+up: ## Preflight, ensure secrets, then start both apps natively
+	./trellis-up
+
+up-re: ## Same, Resource Explorer only
+	./trellis-up --re
+
+up-ea: ## Same, Egeria Advisor only
+	./trellis-up --ea
+
+up-container: ## Start both via the trellis compose overlay in egeria-workspaces-fs (needs `make images`)
+	./trellis-up --container
+
+check: ## Preflight only -- report what is missing, start nothing, write nothing
+	./trellis-up --check
 
 # `make ps` — what is actually running, in one command.
 #
