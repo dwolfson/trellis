@@ -29,8 +29,11 @@ def resolve_advisor_data_root() -> Path:
     incremental-index state, etc. This is a *different* concern from
     ``AdvisorSettings.advisor_data_path``/``_egeria_python_path_from_yaml``,
     which resolves the (read-only) egeria-python *source* checkout used by
-    the data-prep pipeline — the two happen to share the ``ADVISOR_DATA_PATH``
-    env var name, but this function is never used for that lookup.
+    the data-prep pipeline. Those two shared the ``ADVISOR_DATA_PATH`` env var
+    name until 2026-09-06 — setting it for either meaning silently redirected
+    the other — and the source checkout now answers to
+    ``ADVISOR_EGERIA_PYTHON_PATH`` instead. ``ADVISOR_DATA_PATH`` means only
+    the writable root, which is what this function resolves.
 
     Priority: ``ADVISOR_DATA_PATH`` env var if explicitly set (checked via
     ``os.environ`` directly, matching ``resolve_mlflow_tracking_uri()``'s
@@ -437,9 +440,23 @@ class AdvisorSettings(BaseSettings):
     )
 
     # Advisor
+    # The read-only egeria-python *source* checkout used by the data-prep
+    # pipeline. Renamed 2026-09-06: this used to answer to ADVISOR_DATA_PATH,
+    # the same env var resolve_advisor_data_root() reads for Advisor's
+    # *writable* state root — so setting it for either meaning silently
+    # redirected the other, sending the embedding cache, feedback logs and
+    # index state into a source checkout. One name, two unrelated concerns;
+    # they are now two names. ADVISOR_DATA_PATH keeps the writable-root
+    # meaning (its ./data default is the one in use); the source checkout is
+    # ADVISOR_EGERIA_PYTHON_PATH. Deliberately NO back-compat alias for the
+    # old name: accepting ADVISOR_DATA_PATH here would rebuild the collision
+    # this split exists to remove. The break is safe in practice because the
+    # only .env.example value ever shipped for it pointed at a path that does
+    # not exist on any machine, so nothing was resolving through it anyway;
+    # unset, the YAML/`~/localGit/egeria-python` default applies as before.
     advisor_data_path: Path = Field(
         default_factory=_egeria_python_path_from_yaml,
-        alias="ADVISOR_DATA_PATH"
+        alias="ADVISOR_EGERIA_PYTHON_PATH",
     )
     advisor_cache_dir: Path = Field(
         default_factory=lambda: resolve_advisor_data_root() / "cache",
