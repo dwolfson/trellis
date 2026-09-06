@@ -17,6 +17,7 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -120,10 +121,15 @@ class CommandKeywordIndex:
         """Find the Dr-Egeria-Templates directory.
 
         Checked in decreasing preference. This repo's own bundled copy
-        (examples/templates/) comes first — it's version-controlled as part
-        of egeria-advisor and kept in sync by the dr-egeria-command-sync
+        (<repo>/config/dr-egeria-templates/) comes first — it's version-controlled as part
+        of the trellis repo and kept in sync by the dr-egeria-command-sync
         skill's explicit sync step, so it doesn't depend on any sibling
         checkout existing at a hardcoded path on this machine.
+
+        Moved 2026-09-06 from packages/egeria-advisor/examples/templates to
+        the repo-level config/. These templates are a runtime input to this
+        index and to agents/tools.py, not an example library, and the sync
+        script's destination moved with them rather than gaining a copy.
 
         The old `data/repos/egeria-workspaces/exchange-quickstart/...` and
         `egeria-workspaces-fs/exchange-quickstart/...` paths were dropped —
@@ -135,9 +141,22 @@ class CommandKeywordIndex:
         see the dr-egeria-command-sync skill's references/repo_paths.md.
         """
         candidates = [
-            Path(__file__).parent.parent / "examples" / "templates",
-            Path("/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs") / "templates",
+            Path(__file__).parent.parent.parent.parent / "config" / "dr-egeria-templates",
         ]
+        # Sibling egeria-workspaces-fs checkout, either alongside this repo
+        # (<parent>/egeria-workspaces-fs/templates) or alongside this repo's
+        # parent (<grandparent>/egeria-workspaces-fs/templates) — covers both
+        # the flat "trellis and egeria-workspaces-fs are siblings" layout and
+        # dwolfson's own "trellis is one level deeper" layout. EGERIA_ROOT_PATH
+        # / PYEGERIA_ROOT_PATH (same env vars advisor/agents/tools.py's
+        # _templates_root() honours) take priority over both when set.
+        env_root = os.environ.get("EGERIA_ROOT_PATH") or os.environ.get("PYEGERIA_ROOT_PATH")
+        if env_root:
+            candidates.append(Path(env_root).expanduser() / "templates")
+        # __file__ = <repo>/packages/egeria-advisor/advisor/command_keyword_index.py
+        repo_root = Path(__file__).parent.parent.parent.parent
+        candidates.append(repo_root.parent / "egeria-workspaces-fs" / "templates")
+        candidates.append(repo_root.parent.parent / "egeria-workspaces-fs" / "templates")
         # Try pyegeria config
         try:
             import pyegeria.core.config as cfg

@@ -24,9 +24,16 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
+# Repo-level config/ (2026-09-06): report specs moved out of the package to
+# <repo>/config/report_specs/, shared across the workspace rather than owned by
+# EA. Before the move there were two copies under advisor/configdata/ — a
+# report_specs/ subdir and a bare file — and generate_question_specs.py wrote
+# the bare one while this list preferred the subdir, so a regeneration updated
+# a file the registry did not read. One home now; no fallback, because a
+# fallback is what let them drift apart unnoticed.
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent
 _REGISTRY_CANDIDATES = [
-    Path(__file__).parent / "configdata" / "report_specs" / "report_specs_annotated.json",
-    Path(__file__).parent / "configdata" / "report_specs_annotated.json",
+    _REPO_ROOT / "config" / "report_specs" / "report_specs_annotated.json",
 ]
 
 # Common industry terminology that doesn't textually match Egeria's own type name.

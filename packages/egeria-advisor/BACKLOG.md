@@ -187,7 +187,7 @@ buttons generically, similar to how `renderIntentClarification()` already render
 `advisor/egeria_type_registry.py` (added to fix Act's element-type extraction dropping the
 second word of multi-word type names — "external references" → "External" instead of
 "ExternalReference") is currently built from the 75 distinct `target_type` values in
-`config/report_specs/report_specs_annotated.json` — a static, bundled list that's correct but
+`config/report_specs/report_specs_annotated.json` (repo root) — a static, bundled list that's correct but
 only covers types that have a Dr.Egeria create template. It works without a live Egeria
 connection (the exact scenario that surfaced this bug — Egeria was unreachable at the time),
 but real Egeria has hundreds of open metadata types, most without a Dr.Egeria template.
