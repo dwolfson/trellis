@@ -63,6 +63,57 @@ and code that moved on; the fix is to find out which, per row. If a test needs E
 skip when unreachable, the way `requires_pgvector` already does elsewhere in this workspace,
 rather than fail.
 
+---
+
+## Deployment portability
+
+### DP-1 — checked-in `configdata/mcp_servers.json` hardcodes one developer's Mac paths; breaks `dr-egeria` MCP on every other machine
+
+**Status:** `open` · **Priority:** high · found 2026-09-06 while configuring EA against a local
+Quickstart deployment on a Linux box ("hedwig").
+
+Both MCP server entries in `advisor/configdata/mcp_servers.json` — a file checked into the repo,
+not a per-machine `.env` — hardcode absolute Mac paths:
+
+```
+"command": "/Users/dwolfson/localGit/egeria-python/.venv/bin/python"
+```
+
+`pyegeria`'s entry survives on other machines by accident: `advisor/mcp_config.py`'s
+`resolve_pyegeria_mcp_command()` has special-case logic that resolves it to the current
+interpreter when `pyegeria` is importable there, silently overriding the JSON. `dr-egeria` has no
+equivalent fallback and fails outright:
+
+```
+Failed to connect to MCP server dr-egeria: [Errno 2] No such file or directory: '/Users/dwolfson/localGit/egeria-python/.venv/bin/python'
+```
+
+Confirmed live on a Linux checkout where the equivalent real paths exist under
+`/home/dwolfson/localGit/egeria-v6/egeria-python/.venv/bin/python` and
+`.../egeria-v6/egeria-workspaces/compose-configs/egeria-quickstart/PyegeriaWebHandler/mcp_server.py`
+— the JSON's `-fs`-suffixed workspace name (`egeria-workspaces-fs`) doesn't even match this
+machine's checkout name (`egeria-workspaces`), so this isn't just an OS path-separator
+difference; it's a different checkout layout entirely.
+
+**Effect:** Dr.Egeria command/template execution over MCP is unavailable on any machine other
+than the one whose Mac paths happen to be baked in. Core RAG Q&A and report execution are
+unaffected — both go through the `pyegeria` MCP connection, which self-heals via the fallback
+above.
+
+**Fix shape:** give `dr-egeria` the same machine-relative resolution `pyegeria` already has in
+`mcp_config.py`, rather than hand-editing the checked-in JSON per machine — editing it to one
+box's paths would just break it on whatever deployment it's currently correct for.
+
+Related, found the same session: `resource_explorer/auth.py`'s `RE_JWT_SECRET`/
+`TRELLIS_JWT_SECRET` lookup reads raw `os.environ` with no `load_dotenv()` anywhere in that
+package, so a value that only exists in RE's `.env` is silently invisible to it (must be a real
+exported env var) — the same *documented-but-not-actually-.env-backed* shape as this item, in the
+sibling app. Not filed as its own entry here since it lives in `resource-explorer`, not
+`egeria-advisor`; see `packages/resource-explorer/docs/Backlog.md` if it isn't already tracked
+there.
+
+---
+
 ## Intent Button Redesign
 
 See also `egeria-workspaces-fs/BACKLOG.md` IB-1 through IB-7 for the full item list.
