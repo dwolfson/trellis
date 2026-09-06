@@ -160,7 +160,20 @@ def _auth_cfg() -> Dict[str, Any]:
 
 
 def _jwt_secret() -> str:
-    secret = os.environ.get("ADVISOR_JWT_SECRET", "") or _auth_cfg().get("jwt_secret", "")
+    # ADVISOR_JWT_SECRET wins, then the workspace-wide TRELLIS_JWT_SECRET,
+    # then advisor.yaml. The TRELLIS_* form is not decoration: the trellis
+    # compose overlay sets TRELLIS_JWT_SECRET on all three services precisely
+    # so a session minted by one container stays valid in another, and until
+    # 2026-09-06 EA did not read it -- so every EA container fell through to
+    # the per-HOSTNAME derivation below, which in Docker is per-container.
+    # The stated purpose of that env var was defeated silently, and on this
+    # dev box .env carried a TRELLIS_JWT_SECRET that nothing consumed.
+    # resource_explorer/auth.py resolves RE_* then TRELLIS_* the same way.
+    secret = (
+        os.environ.get("ADVISOR_JWT_SECRET", "")
+        or os.environ.get("TRELLIS_JWT_SECRET", "")
+        or _auth_cfg().get("jwt_secret", "")
+    )
     if not secret:
         # Fallback: derive from machine ID for single-host deployments.
         # This means tokens survive process restart but NOT machine migration.
@@ -171,8 +184,10 @@ def _jwt_secret() -> str:
 
 
 def _portal_secret() -> str:
+    # Same precedence shape as _jwt_secret above, and as RE's portal_secret().
     return (
         os.environ.get("ADVISOR_PORTAL_SECRET", "")
+        or os.environ.get("TRELLIS_PORTAL_SECRET", "")
         or _auth_cfg().get("portal", {}).get("shared_secret", "")
     )
 
