@@ -1750,11 +1750,13 @@ JSON:"""
 
         Switching tiers is safe rather than a trade-off, and that was measured
         rather than assumed (2026-08-28, all four template roots on this
-        machine — `examples/templates`, egeria-workspaces' two, and
-        egeria-python's sample-data):
+        machine — the trellis copy, egeria-workspaces' two, and
+        egeria-python's sample-data; the trellis copy was
+        `packages/egeria-advisor/examples/templates` when measured and moved
+        to `config/dr-egeria-templates` on 2026-09-06, same content):
 
           * every basic template has an advanced counterpart (325/325 in
-            `examples/templates`, 0 missing anywhere);
+            the trellis copy, 0 missing anywhere);
           * advanced is a strict superset of basic — no field exists in basic
             and not in advanced, anywhere;
           * the *required* set is identical in every one of the 325 pairs, so

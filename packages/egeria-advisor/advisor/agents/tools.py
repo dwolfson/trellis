@@ -161,7 +161,7 @@ def _templates_root() -> Path | None:
       2. {pyegeria_root}/templates                       (lower-case fallback)
       3. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/Templates/Dr-Egeria-Templates
       4. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/templates
-      5. {project_root}/examples/templates               (project-local copy, basic/advanced layout)
+      5. {repo_root}/config/dr-egeria-templates          (repo-level copy, basic/advanced layout)
     """
     import os
 
@@ -189,9 +189,12 @@ def _templates_root() -> Path | None:
         if found:
             return found
 
-    # Project-local copy: {project_root}/examples/templates (basic/ + advanced/ layout).
+    # Repo-level copy: <repo>/config/dr-egeria-templates (basic/ + advanced/).
+    # Moved 2026-09-06 out of packages/egeria-advisor/examples/templates —
+    # these are a runtime input to the command keyword index, not an example
+    # library, and the sync from egeria-python now targets the repo-level path.
     project_root = Path(__file__).parent.parent.parent
-    local = project_root / "examples" / "templates"
+    local = project_root.parent.parent / "config" / "dr-egeria-templates"
     if local.is_dir():
         return local
 

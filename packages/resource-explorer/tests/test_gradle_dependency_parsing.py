@@ -322,10 +322,28 @@ def test_the_real_egeria_checkout_yields_dependencies(tmp_path):
     present, zero results means the parser has regressed to the state that
     motivated it.
     """
+    import os
     from pathlib import Path
-    root = Path("/Users/dwolfson/localGit/egeria-v6/egeria")
-    if not (root / "build.gradle").exists():  # pragma: no cover
-        pytest.skip("no local egeria checkout")
+
+    # Was a single hardcoded /Users/dwolfson path, so this check could only
+    # ever run on one machine — everywhere else it skipped, which reads as a
+    # pass. Same env-override-then-sibling idiom the egeria-advisor path
+    # resolvers use: EGERIA_CHECKOUT wins, else a sibling of the repo root
+    # (both the "egeria beside trellis" and "beside trellis's parent"
+    # layouts), else skip.
+    repo_root = Path(__file__).resolve().parents[3]
+    candidates = []
+    env_root = os.environ.get("EGERIA_CHECKOUT", "").strip()
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates += [repo_root.parent / "egeria", repo_root.parent.parent / "egeria"]
+
+    root = next((c for c in candidates if (c / "build.gradle").exists()), None)
+    if root is None:  # pragma: no cover
+        pytest.skip(
+            "no egeria checkout found (set EGERIA_CHECKOUT, or place one beside "
+            f"{repo_root.parent}); tried: {[str(c) for c in candidates]}"
+        )
 
     deps = [d for d in DependencyParser().parse(root, "egeria_git")
             if d["source_file"].startswith("build.gradle")]

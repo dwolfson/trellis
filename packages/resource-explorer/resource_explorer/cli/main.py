@@ -2005,7 +2005,7 @@ def filesystem_register(
     
     Example:
         resource-explorer filesystem register my-data \
-            --local-path /Users/dwolfson/localGit/data \
+            --local-path /path/to/local/data \
             --canonical-path file://shared-nfs/data \
             --name "Shared Data Mount" \
             --group egeria

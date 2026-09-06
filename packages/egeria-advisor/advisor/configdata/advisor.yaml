@@ -20,9 +20,14 @@ egeria_user_perspectives:
 data_sources:
   # Must match the checkout that scripts/clone_repos.py / ingest_collections.py use
   # (data/repos/egeria-python), so this path and the vector store stay in sync.
-  egeria_python_path: /home/dwolfson/localGit/egeria-v6/egeria-advisor/data/repos/egeria-python
+  # Left unset here — config.py's _egeria_python_path_from_yaml() falls back to
+  # ~/localGit/egeria-python (portable across machines) when this key is absent.
+  # Uncomment and set an absolute path only to override that default.
+  # egeria_python_path: /path/to/egeria-python
   # Annotated report specs (question_spec populated by generate_question_specs.py)
   # Loaded into pyegeria MCP server via PYEGERIA_USER_REPORT_SPECS_DIR env var
+  # Repo-level (moved 2026-09-06), i.e. <repo>/config/report_specs — resolved
+  # absolutely by advisor.mcp_config.resolve_report_specs_dir().
   report_specs_dir: config/report_specs
   include_patterns:
     - "*.py"

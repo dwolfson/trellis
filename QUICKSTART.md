@@ -100,10 +100,16 @@ survey much.
 ### 5. Run
 
 ```bash
+make up         # preflight + shared JWT secret + start both   ← start here
 make re-web     # Resource Explorer → http://localhost:8810
 make ea-web     # Egeria Advisor    → http://localhost:8880
 make dev        # both at once; Ctrl-C stops both
 ```
+
+Prefer `make up` on a fresh box: it generates the shared `TRELLIS_JWT_SECRET` both apps need
+(without it, sessions silently stop surviving restarts) and tells you if Egeria, Postgres or
+Ollama is not up, instead of letting the app fail later. `make check` runs those checks and
+starts nothing.
 
 `make help` lists every target.
 

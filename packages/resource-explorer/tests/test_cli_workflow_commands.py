@@ -170,13 +170,20 @@ class TestCurateCommand:
         monkeypatch.setenv("RE_JWT_SECRET", "cli-curate-test-secret")
         import jwt as _jwt
 
+        from resource_explorer import auth as re_auth
         from resource_explorer.cli import session as cli_session
 
+        # jwt_secret() reads through a cached BaseSettings instance (see
+        # auth.py's _AuthSecretsConfig) — without resetting it here, a test
+        # running after this fixture set RE_JWT_SECRET would keep seeing this
+        # value instead of its own.
+        re_auth.reset_auth_secrets_cache()
         egeria_token = _jwt.encode({"sub": "dan", "exp": 9999999999}, "irrelevant",
                                    algorithm="HS256")
         cli_session.save_login("dan", egeria_token)
         yield
         cli_session.activate(None)
+        re_auth.reset_auth_secrets_cache()
 
     def test_without_a_session_it_exits_2_and_names_the_fix(self, runner, registry,
                                                             tmp_path, monkeypatch):

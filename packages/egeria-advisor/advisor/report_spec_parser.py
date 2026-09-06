@@ -7,6 +7,7 @@ Parses Markdown report specs using Dr. Egeria UniversalExtractor conventions:
 """
 from __future__ import annotations
 
+import os
 import sys
 import json
 import re
@@ -18,16 +19,21 @@ from loguru import logger
 try:
     import md_processing
 except ImportError:
-    workspace_root = Path(__file__).parent.parent
-    egeria_python = workspace_root.parent / "egeria-python"
-    if egeria_python.exists():
-        sys.path.insert(0, str(egeria_python))
-    else:
-        for path in ("/Users/dwolfson/localGit/egeria-python", "~/localGit/egeria-python"):
-            p = Path(path).expanduser()
-            if p.exists():
-                sys.path.insert(0, str(p))
-                break
+    # __file__ = <repo>/packages/egeria-advisor/advisor/report_spec_parser.py
+    repo_root = Path(__file__).parent.parent.parent.parent
+    candidates = []
+    env_root = os.environ.get("EGERIA_PYTHON_PATH")
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates += [
+        repo_root.parent / "egeria-python",       # sibling of <repo>'s parent (dwolfson's layout)
+        repo_root.parent.parent / "egeria-python",  # sibling of <repo>'s grandparent
+        Path("~/localGit/egeria-python").expanduser(),
+    ]
+    for p in candidates:
+        if p.exists():
+            sys.path.insert(0, str(p))
+            break
 
 try:
     from md_processing.v2.extraction import UniversalExtractor
