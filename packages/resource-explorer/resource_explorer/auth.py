@@ -38,8 +38,11 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from starlette.requests import Request
 
+from resource_explorer.config import _ENV_FILE_CONFIG
 from trellis_auth import AuthConfig
 from trellis_auth import apply_token  # re-exported for live call sites
 from trellis_auth import create_access_token as _create_access_token
@@ -67,6 +70,7 @@ __all__ = [
     "identity_from_claims",
     "jwt_secret",
     "login_with_password",
+    "reset_auth_secrets_cache",
     "reset_policy_cache",
     "validate_egeria_token",
 ]
@@ -109,6 +113,74 @@ RE_PUBLIC_PATHS = (
 # Secrets and connection — RE's own resolution, never trellis_auth's
 # ---------------------------------------------------------------------------
 
+class _AuthSecretsConfig(BaseSettings):
+    """`.env`-aware source for the four auth env vars below.
+
+    This module used to read all four straight from `os.environ`, bypassing
+    pydantic-settings (and therefore `.env`) entirely — the only settings in
+    the package that did. That is exactly the bug shape `config.py` documents
+    twice over (`_ENV_FILES`'s own comment, ~line 14): a value set only in
+    `.env` was silently invisible, no error, just a fallback (a derived
+    per-host JWT secret, or Portal SSO silently and wrongly "disabled").
+    Found live 2026-09-06 on an install where the operator set RE_JWT_SECRET
+    in `.env`, restarted, and the log still said neither var was set.
+
+    Reusing `config.py`'s `_ENV_FILE_CONFIG` (same `_ENV_FILES` tuple, same
+    `extra="ignore"`) rather than inventing a second mechanism — this is the
+    nested-BaseSettings pattern every other alias-based setting in the
+    package already uses, fixed there 2026-08-10 for exactly this reason.
+    `load_dotenv()` was considered and rejected: it would be a second,
+    parallel way of reading `.env` alongside pydantic-settings' own, and
+    this package has already been bitten twice (see `_ENV_FILES`'s comment)
+    by two answers to "how does `.env` get read" drifting apart.
+
+    Deliberately NOT one field per secret with `AliasChoices("RE_X",
+    "TRELLIS_X")`: pydantic-settings resolves an `AliasChoices` field
+    independently *per source* (env vars, then dotenv, ...) and then picks
+    the highest-priority source that produced any value at all — so a real
+    `TRELLIS_JWT_SECRET` env var would outrank an `RE_JWT_SECRET` set only in
+    `.env`, silently inverting the RE-wins-over-TRELLIS precedence this
+    module has always documented. Two plain fields, combined by the
+    `X or Y` below, keep that precedence explicit in the code instead of
+    implicit in alias-resolution order — same shape the raw `os.environ`
+    version used, just backed by a source that also reads `.env`.
+
+    Cached at module scope (`_auth_secrets()` below) rather than
+    instantiated per call: `auth_config()` runs on every authenticated
+    request (`get_current_user`, `decode_token`, ...), and re-reading `.env`
+    off disk that often would trade a bypassed-`.env` bug for a per-request
+    file read. `reset_auth_secrets_cache()` exists so tests can vary the
+    environment, same pattern as `reset_policy_cache()`.
+    """
+    re_jwt_secret: str = Field(default="", alias="RE_JWT_SECRET")
+    trellis_jwt_secret: str = Field(default="", alias="TRELLIS_JWT_SECRET")
+    re_portal_secret: str = Field(default="", alias="RE_PORTAL_SECRET")
+    trellis_portal_secret: str = Field(default="", alias="TRELLIS_PORTAL_SECRET")
+    # Kept as a raw string, not `int`: an unparsable RE_JWT_TTL_HOURS must
+    # fall back to 8, not raise at settings-construction time. Parsed in
+    # `_jwt_ttl_hours()` below, matching the try/except the raw-os.environ
+    # version already had.
+    jwt_ttl_hours_raw: str = Field(default="", alias="RE_JWT_TTL_HOURS")
+
+    model_config = _ENV_FILE_CONFIG
+
+
+_auth_secrets_cache: Optional[_AuthSecretsConfig] = None
+
+
+def _auth_secrets() -> _AuthSecretsConfig:
+    global _auth_secrets_cache
+    if _auth_secrets_cache is None:
+        _auth_secrets_cache = _AuthSecretsConfig()
+    return _auth_secrets_cache
+
+
+def reset_auth_secrets_cache() -> None:
+    """Drop the cached auth secrets — for tests that vary the environment."""
+    global _auth_secrets_cache
+    _auth_secrets_cache = None
+
+
 def jwt_secret() -> str:
     """The HS256 secret RE signs its own session JWTs with.
 
@@ -122,7 +194,8 @@ def jwt_secret() -> str:
     is the right trade for a single-host dev checkout and is loudly logged so
     a real deployment sets the variable.
     """
-    secret = os.environ.get("RE_JWT_SECRET") or os.environ.get("TRELLIS_JWT_SECRET") or ""
+    secrets = _auth_secrets()
+    secret = secrets.re_jwt_secret or secrets.trellis_jwt_secret
     if secret:
         return secret
     import hashlib
@@ -142,11 +215,12 @@ def jwt_secret() -> str:
 
 def portal_secret() -> str:
     """The shared HS256 secret the Egeria Portal signs its SSO tokens with."""
-    return os.environ.get("RE_PORTAL_SECRET") or os.environ.get("TRELLIS_PORTAL_SECRET") or ""
+    secrets = _auth_secrets()
+    return secrets.re_portal_secret or secrets.trellis_portal_secret
 
 
 def _jwt_ttl_hours() -> int:
-    raw = os.environ.get("RE_JWT_TTL_HOURS", "").strip()
+    raw = _auth_secrets().jwt_ttl_hours_raw.strip()
     try:
         return max(1, int(raw)) if raw else 8
     except ValueError:

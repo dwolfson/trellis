@@ -45,13 +45,20 @@ def _resolve_server_env(name: str, env: Dict[str, str]) -> Dict[str, str]:
     """
     if name != "pyegeria":
         return env
-    from advisor.mcp_config import get_pyegeria_platform_config
+    from advisor.mcp_config import get_pyegeria_platform_config, resolve_report_specs_dir
     conn = get_pyegeria_platform_config()
     resolved = dict(env)
     if conn["platform_url"]:
         resolved["EGERIA_VIEW_SERVER_URL"] = conn["platform_url"]
     if conn["view_server"]:
         resolved["EGERIA_VIEW_SERVER"] = conn["view_server"]
+    # config/mcp_servers.json's PYEGERIA_USER_REPORT_SPECS_DIR ships as a
+    # relative "config/report_specs" so the JSON stays portable; resolve it
+    # to an absolute path here for the same reason EGERIA_VIEW_SERVER_URL is
+    # patched above — the subprocess doesn't share this process's cwd.
+    report_specs_dir = resolve_report_specs_dir()
+    if report_specs_dir:
+        resolved["PYEGERIA_USER_REPORT_SPECS_DIR"] = report_specs_dir
     return resolved
 
 

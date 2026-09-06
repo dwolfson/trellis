@@ -161,12 +161,14 @@ class QuestionSpecIndex:
     # selected perspective (or "any"). A hint that re-ranks, never a gate.
     _PERSPECTIVE_BOOST = 0.08
 
-    # Paths relative to the egeria-advisor project root.
+    # Paths relative to the egeria-advisor project root. Report specs moved to
+    # the repo-level config/ on 2026-09-06, hence the ../../ — see
+    # advisor/mcp_config.py::resolve_report_specs_dir().
     # Add new per-perspective or per-domain JSON files here; no other code change needed.
     _JSON_SOURCES = [
-        "advisor/configdata/report_specs/report_specs_annotated.json",
-        "advisor/configdata/report_specs/plain_spec_question_specs_batch1.json",
-        "advisor/configdata/report_specs/developer_question_specs.json",
+        "../../config/report_specs/report_specs_annotated.json",
+        "../../config/report_specs/plain_spec_question_specs_batch1.json",
+        "../../config/report_specs/developer_question_specs.json",
     ]
 
     def __init__(self, project_root: Optional[str] = None) -> None:

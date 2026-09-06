@@ -13,7 +13,7 @@ Usage:
     python scripts/generate_question_specs.py
     python scripts/generate_question_specs.py --dry-run
     python scripts/generate_question_specs.py --resume
-    python scripts/generate_question_specs.py --output config/report_specs_annotated.json
+    python scripts/generate_question_specs.py --output ../../config/report_specs/report_specs_annotated.json
     python scripts/generate_question_specs.py --spec "Glossary-DrE-Basic"
 """
 
@@ -33,7 +33,7 @@ from loguru import logger
 # --- Configuration ---
 
 SPECS_INPUT = Path("data/repos/egeria-python/config/report_specs.json")  # unrelated repo, not moved
-SPECS_OUTPUT = Path(__file__).parent.parent / "advisor" / "configdata" / "report_specs_annotated.json"
+SPECS_OUTPUT = Path(__file__).parent.parent.parent.parent / "config" / "report_specs" / "report_specs_annotated.json"
 CONFIG_PATH = Path(__file__).parent.parent / "advisor" / "configdata" / "advisor.yaml"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "llama3.1:8b"

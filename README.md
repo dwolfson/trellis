@@ -161,10 +161,19 @@ A root `Makefile` wraps the common `uv run --package ...` invocations below — 
 for the full list. The two most useful:
 
 ```bash
+make up        # preflight, ensure a shared JWT secret, then start both
+make check     # preflight only — reports what is missing, starts nothing
 make re-web    # Resource Explorer web UI → http://localhost:8810
 make ea-web    # Egeria Advisor web UI    → http://localhost:8880
 make dev       # both, concurrently, in one terminal — Ctrl-C stops both
 ```
+
+`make up` wraps `make dev` with the two things it does not do: it makes sure a shared
+`TRELLIS_JWT_SECRET` exists in both packages' `.env` (without one, each app derives a secret
+from its hostname — no error, but sessions do not survive a restart or a container recreate),
+and it reports up front when Egeria, Postgres or Ollama is unreachable. `./trellis-up --help`
+covers the rest: `--re` / `--ea` to start one, `--container` for the compose overlay. Once the
+environment is known-good, the targets below remain the direct route.
 
 Anything not covered by a target (arbitrary CLI subcommands) still works via
 `make re CMD="..."` / `make ea CMD="..."`, or the raw `uv run --package ...` form documented

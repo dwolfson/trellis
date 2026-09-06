@@ -129,3 +129,48 @@ def resolve_pyegeria_mcp_command() -> Optional[Tuple[str, List[str]]]:
         "configured command/args"
     )
     return None
+
+
+def resolve_report_specs_dir() -> Optional[str]:
+    """
+    Resolve an absolute path for the pyegeria MCP server's
+    ``PYEGERIA_USER_REPORT_SPECS_DIR`` env var (annotated report specs —
+    ``question_spec`` populated by ``scripts/generate_question_specs.py``).
+
+    config/mcp_servers.json ships this as a relative ``config/report_specs``
+    (see the "pyegeria" server's env block) so the JSON stays portable, but
+    the value the MCP subprocess actually needs is absolute — it is spawned
+    with its own cwd, not necessarily this process's. Same idiom as
+    resolve_pyegeria_mcp_command(): check os.environ directly, not a
+    settings default, so an unset var never masquerades as an override.
+
+    Priority:
+      1. ``PYEGERIA_USER_REPORT_SPECS_DIR`` env var, if set — an operator's
+         explicit override, expanded (``~``) and returned as-is.
+      2. ``<repo>/config/report_specs``, resolved to an absolute path — the
+         directory actually shipped in this repo, shared workspace-wide rather
+         than owned by EA (see advisor/configdata/advisor.yaml's
+         ``data_sources.report_specs_dir`` for the same relative location).
+      3. ``None`` if neither resolves to an existing directory — callers
+         should fall back to config/mcp_servers.json's configured value
+         unchanged, same as resolve_pyegeria_mcp_command()'s ``None`` case.
+    """
+    env_val = os.environ.get("PYEGERIA_USER_REPORT_SPECS_DIR", "").strip()
+    if env_val:
+        resolved = str(Path(env_val).expanduser())
+        logger.info(f"PYEGERIA_USER_REPORT_SPECS_DIR resolved from env: {resolved}")
+        return resolved
+
+    # <repo>/config/report_specs — moved out of the package 2026-09-06.
+    default_dir = Path(__file__).parent.parent.parent.parent / "config" / "report_specs"
+    if default_dir.is_dir():
+        resolved = str(default_dir.resolve())
+        logger.info(f"PYEGERIA_USER_REPORT_SPECS_DIR resolved to repo default: {resolved}")
+        return resolved
+
+    logger.info(
+        "PYEGERIA_USER_REPORT_SPECS_DIR: no env override and "
+        f"{default_dir} does not exist — falling back to config/mcp_servers.json's "
+        "configured value unchanged"
+    )
+    return None

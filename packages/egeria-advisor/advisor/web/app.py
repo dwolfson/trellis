@@ -35,9 +35,11 @@ def _extended_feedback_path() -> Path:
 
 
 _STATIC = Path(__file__).parent / "static"
+# Repo-level config/ since 2026-09-06 (moved out of advisor/configdata/).
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
 _SPEC_FILES = [
-    Path(__file__).parent.parent / "configdata" / "report_specs" / "plain_spec_question_specs_batch1.json",
-    Path(__file__).parent.parent / "configdata" / "report_specs" / "report_specs_annotated.json",
+    _REPO_ROOT / "config" / "report_specs" / "plain_spec_question_specs_batch1.json",
+    _REPO_ROOT / "config" / "report_specs" / "report_specs_annotated.json",
 ]
 
 def _cors_origin_regex() -> str:

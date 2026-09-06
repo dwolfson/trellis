@@ -1,36 +1,36 @@
 {
   "mcpServers": {
     "dr-egeria": {
-      "command": "/Users/dwolfson/localGit/egeria-python/.venv/bin/python",
+      "command": "<path-to-egeria-python-checkout>/.venv/bin/python",
       "args": [
-        "/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs/compose-configs/egeria-quickstart/PyegeriaWebHandler/mcp_server.py"
+        "<path-to-egeria-workspaces-fs-checkout>/compose-configs/egeria-quickstart/PyegeriaWebHandler/mcp_server.py"
       ],
       "env": {
         "EGERIA_USER": "erinoverview",
         "EGERIA_USER_PASSWORD": "secret",
         "EGERIA_VIEW_SERVER": "qs-view-server",
         "EGERIA_VIEW_SERVER_URL": "https://localhost:9443",
-        "EGERIA_ROOT_PATH": "/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs/exchange-quickstart",
+        "EGERIA_ROOT_PATH": "<path-to-egeria-workspaces-fs-checkout>/exchange-quickstart",
         "EGERIA_INBOX_PATH": "loading-bay/dr-egeria-inbox",
         "EGERIA_OUTBOX_PATH": "distribution-hub/dr-egeria-outbox"
       },
       "enabled": true,
-      "description": "Dr. Egeria MCP server — Dr. Egeria command execution (dr_egeria_run_block, egeria_execute_command, egeria_list_commands, egeria_refresh_specs, egeria_list_glossaries, egeria_list_collections) plus report tools (overridden by pyegeria server)"
+      "description": "Dr. Egeria MCP server (egeria-workspaces-fs PyegeriaWebHandler/mcp_server.py) - dr_egeria_run_block, egeria_execute_command, egeria_list_commands, egeria_refresh_specs, egeria_list_glossaries, egeria_list_collections, plus report tools (overridden by the pyegeria server, which connects last). NOT the same server as pyegeria.core.mcp_server: that one exposes report tools only, which is what egeria-advisor CLAUDE.md rule 24 is about. This one still exposes the full Dr.Egeria command surface. command/args and EGERIA_ROOT_PATH are host-specific - point them at a real egeria-workspaces-fs checkout, or leave the placeholders and set enabled=false if you have none."
     },
     "pyegeria": {
-      "command": "/Users/dwolfson/localGit/egeria-python/.venv/bin/python",
+      "command": "python3",
       "args": [
-        "/Users/dwolfson/localGit/egeria-python/pyegeria/core/mcp_server.py"
+        "-m", "pyegeria.core.mcp_server"
       ],
       "env": {
         "EGERIA_USER": "erinoverview",
         "EGERIA_VIEW_SERVER": "qs-view-server",
         "EGERIA_PASSWORD": "secret",
         "EGERIA_VIEW_SERVER_URL": "https://localhost:9443",
-        "PYEGERIA_USER_REPORT_SPECS_DIR": "/Users/dwolfson/localGit/egeria-v6/trellis/config/report_specs"
+        "PYEGERIA_USER_REPORT_SPECS_DIR": "config/report_specs"
       },
       "enabled": true,
-      "description": "PyEgeria MCP server — report discovery and execution (list_reports, find_report_specs, run_report, describe_report). Connects last so its tool definitions win over dr-egeria's for shared tool names."
+      "description": "PyEgeria MCP server — report discovery and execution (list_reports, find_report_specs, run_report, describe_report). Connects last so its tool definitions win over dr-egeria's for shared tool names. The command/args and PYEGERIA_USER_REPORT_SPECS_DIR here are only the last-resort fallback — advisor.mcp_config.resolve_pyegeria_mcp_command()/resolve_report_specs_dir() (see advisor/mcp_agent.py::_resolve_server_command/_resolve_server_env) resolve the actual interpreter and an absolute report-specs path at load time, so this file never needs host-specific edits for a normal checkout."
     },
     "_example_remote_sse": {
       "transport": "sse",
