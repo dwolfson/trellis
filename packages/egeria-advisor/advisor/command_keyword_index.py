@@ -155,8 +155,14 @@ class CommandKeywordIndex:
             candidates.append(Path(env_root).expanduser() / "templates")
         # __file__ = <repo>/packages/egeria-advisor/advisor/command_keyword_index.py
         repo_root = Path(__file__).parent.parent.parent.parent
-        candidates.append(repo_root.parent / "egeria-workspaces-fs" / "templates")
-        candidates.append(repo_root.parent.parent / "egeria-workspaces-fs" / "templates")
+        # Both checkout names, because they are both real. This machine
+        # calls it `egeria-workspaces-fs`; the Linux box ("hedwig") calls it
+        # `egeria-workspaces`, which is what EA BACKLOG DP-1 records — an
+        # earlier version of this list tried only the `-fs` form and so
+        # would have missed the very machine that motivated the fix.
+        for parent in (repo_root.parent, repo_root.parent.parent):
+            for ws in ("egeria-workspaces-fs", "egeria-workspaces"):
+                candidates.append(parent / ws / "templates")
         # Try pyegeria config
         try:
             import pyegeria.core.config as cfg

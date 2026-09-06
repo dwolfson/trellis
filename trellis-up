@@ -28,9 +28,15 @@ EA_ENV="$REPO_ROOT/packages/egeria-advisor/.env"
 # path resolvers accept. $EGERIA_WORKSPACES_FS overrides.
 _find_workspaces() {
   local c
+  # Both names are real checkouts: this repo's reference machine uses
+  # `egeria-workspaces-fs`, the Linux box uses `egeria-workspaces` (EA
+  # BACKLOG DP-1). Trying only the `-fs` form would miss the machine the
+  # portability work was for.
   for c in "${EGERIA_WORKSPACES_FS:-}" \
            "$REPO_ROOT/../egeria-workspaces-fs" \
-           "$REPO_ROOT/../../egeria-workspaces-fs"; do
+           "$REPO_ROOT/../egeria-workspaces" \
+           "$REPO_ROOT/../../egeria-workspaces-fs" \
+           "$REPO_ROOT/../../egeria-workspaces"; do
     [ -n "$c" ] && [ -d "$c" ] && { (cd "$c" && pwd); return 0; }
   done
   return 1
@@ -228,7 +234,10 @@ preflight() {
 # -------------------------------------------------------------------- run ---
 
 say "mode: $MODE   apps: $( [ "$WANT_RE" = 1 ] && printf 'RE '; [ "$WANT_EA" = 1 ] && printf 'EA' )"
-[ -n "$WORKSPACES" ] && say "egeria-workspaces-fs: $WORKSPACES" || say "egeria-workspaces-fs: not found (container mode and Portal-secret copying unavailable)"
+# Label it neutrally: the directory is called egeria-workspaces-fs on some
+# machines and egeria-workspaces on others, so printing a fixed name beside
+# a resolved path can state the wrong one.
+[ -n "$WORKSPACES" ] && say "workspaces checkout: $WORKSPACES" || say "workspaces checkout: not found (container mode and Portal-secret copying unavailable)"
 
 # --check must not mutate anything: a check that writes is not a check, and
 # .env is the file a user would least expect a dry run to touch.
