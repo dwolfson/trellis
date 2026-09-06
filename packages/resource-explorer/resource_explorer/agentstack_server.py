@@ -34,6 +34,7 @@ from uuid import uuid4
 from typing import Any
 
 from a2a.types import AgentSkill, Message, Part, TaskState, TaskStatus, TextPart
+from resource_explorer import _mcp_compat  # noqa: F401  -- must precede agentstack_sdk (mcp 2.x rename)
 from agentstack_sdk.server import Server
 from agentstack_sdk.server.context import RunContext
 

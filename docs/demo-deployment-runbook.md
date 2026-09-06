@@ -1,5 +1,9 @@
 # Demo deployment runbook — trellis on a Linux box with a GPU
 
+> The general guide for all three configurations (demo, Mac developer, Linux developer) is
+> [deploying-trellis-with-quickstart.md](deploying-trellis-with-quickstart.md); this file is the
+> verbatim trevor sequence it refers to.
+
 What worked on trevor (Pop!_OS 24.04, i7-10700K, RTX 2070 SUPER) on 2026-09-04, written so it can be
 repeated. It is the plan's **demo profile** (`docs/runtime-architecture-plan.md` §1) with one variation
 for a box whose GPU is used by a **host-native Ollama**: the apps run as containers, inference runs on the
@@ -133,6 +137,20 @@ a plain CLI command dies.
 - `jdbcMaximumPoolSize` in the `.http` config builders only reaches the platform when those builders
   are run against it.
 - EA phase-1 ingestion: `pyegeria` and `pyegeria_cli` collections ingest zero files (open task).
+- Platform addressing: the trellis containers reach Egeria as `https://host.docker.internal:9443`,
+  not by its `egeria_network` name, because the platform image's baked-in certificate names only
+  `localhost` and `host.docker.internal`. Switching to the container name would only work with TLS
+  verification off. Decision 2026-09-05: deferred; a SAN request is filed with Egeria alongside the
+  token-lifetime request. The intra-platform round trip that caused the `HttpConnectTimeoutException`
+  bursts was fixed separately in egeria-workspaces (#482, `egeriaLocalEndpoint`), so nothing on the
+  trellis side is waiting on this.
+- pyegeria's stdio MCP server needs `mcp>=2.0` but declares `mcp>=0.1` (ISSUE-91); trellis pins
+  `mcp>=2.0.0` since 8441efb. Symptom if it regresses: "No response from MCP server" at EA start.
+  The flip side: agentstack-sdk (RE's A2A role) still imports mcp 1.x's `streamablehttp_client`, so
+  `resource_explorer/_mcp_compat.py` installs that name over mcp 2's `streamable_http_client` and must
+  be imported before any `agentstack_sdk` import. Drop the shim once agentstack-sdk supports mcp 2.
+- pyegeria floor is 6.1.10 in all three packages (ISSUE-86 token support; report runs are attributed to
+  the signed-in user). Keep the quickstart's pyegeria-web/jupyter images on the same version.
 
 ## Docker Desktop variant (Linux or Mac), for visibility
 

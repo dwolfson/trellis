@@ -152,6 +152,7 @@ def build_app(
     Split from `run_a2a` so tests can drive the whole routing and auth surface
     through a `TestClient` without a socket.
     """
+    from resource_explorer import _mcp_compat  # noqa: F401  -- must precede agentstack_sdk (mcp 2.x rename)
     from agentstack_sdk.server.app import create_app
     from agentstack_sdk.server.store.memory_context_store import InMemoryContextStore
     from fastapi import FastAPI
