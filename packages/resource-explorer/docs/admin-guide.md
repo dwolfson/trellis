@@ -114,9 +114,15 @@ with an **Egeria user id and password**; RE exchanges the password for an Egeria
 and issues its own session JWT carrying that token. No password is ever stored or signed into a
 token.
 
+Set these in `.env` (like every other RE setting) or as real exported process env vars — a real
+env var still wins over `.env` either way. `RE_JWT_SECRET`/`RE_PORTAL_SECRET` each have a
+`TRELLIS_*`-named alternative (`TRELLIS_JWT_SECRET`/`TRELLIS_PORTAL_SECRET`) for a compose overlay
+that feeds in the app-agnostic name instead; the `RE_*` name wins if both are set.
+
 ```bash
-# Required in any deployment. Without it RE derives a per-host secret and logs a warning —
-# workable on a single-box checkout, but sessions do not survive a move to another machine.
+# Required in any deployment. Without it (neither RE_JWT_SECRET nor TRELLIS_JWT_SECRET) RE
+# derives a per-host secret and logs a warning — workable on a single-box checkout, but
+# sessions do not survive a move to another machine.
 RE_JWT_SECRET=<a long random string>
 
 # Only if this deployment accepts Portal SSO. Must match the Portal's own shared secret.

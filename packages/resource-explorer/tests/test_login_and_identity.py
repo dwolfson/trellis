@@ -47,9 +47,16 @@ def _auth_env(monkeypatch):
     monkeypatch.delenv("TRELLIS_REQUIRE_LOGIN", raising=False)
     from resource_explorer import auth as re_auth
 
+    # reset_auth_secrets_cache() alongside reset_policy_cache(): jwt_secret()/
+    # portal_secret() now read through a cached BaseSettings instance (so
+    # `.env` works — see auth.py's _AuthSecretsConfig), and without dropping
+    # that cache here every test after the first would see whichever
+    # RE_JWT_SECRET/RE_PORTAL_SECRET the first test happened to set.
     re_auth.reset_policy_cache()
+    re_auth.reset_auth_secrets_cache()
     yield
     re_auth.reset_policy_cache()
+    re_auth.reset_auth_secrets_cache()
 
 
 def _app_under(monkeypatch, **env):
@@ -72,6 +79,7 @@ def _app_under(monkeypatch, **env):
     from resource_explorer import auth as re_auth
 
     re_auth.reset_policy_cache()
+    re_auth.reset_auth_secrets_cache()
     import resource_explorer.web.app as web_app
 
     return importlib.reload(web_app).app
@@ -99,6 +107,7 @@ def _restore_shared_app():
     import resource_explorer.web.app as web_app
 
     re_auth.reset_policy_cache()
+    re_auth.reset_auth_secrets_cache()
     importlib.reload(web_app)
 
 
