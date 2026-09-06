@@ -284,7 +284,7 @@ Minimum edits:
 |---|---|
 | both | `TRELLIS_JWT_SECRET=<one value shared by both files>` so sessions survive restarts (`RE_JWT_SECRET` / `ADVISOR_JWT_SECRET` per app also work) |
 | RE | `GITHUB_TOKEN`; `EGERIA_PLATFORM_URL=https://localhost:9443`, `EGERIA_VIEW_SERVER=qs-view-server`, `EGERIA_USER=erinoverview`, `EGERIA_USER_PASSWORD=secret`; `LLM__OLLAMA__BASE_URL=http://localhost:11434` |
-| EA | `EGERIA_VIEW_SERVER_URL=https://localhost:9443`, `EGERIA_VIEW_SERVER=qs-view-server`, `EGERIA_USER` / `EGERIA_PASSWORD`; `OLLAMA_BASE_URL=http://localhost:11434`; `ADVISOR_DATA_PATH` to where EA's corpus should live |
+| EA | `EGERIA_VIEW_SERVER_URL=https://localhost:9443`, `EGERIA_VIEW_SERVER=qs-view-server`, `EGERIA_USER` / `EGERIA_PASSWORD`; `OLLAMA_BASE_URL=http://localhost:11434`; `ADVISOR_DATA_PATH` for EA's **writable** state (cache, feedback, index — default `./data`), and `ADVISOR_EGERIA_PYTHON_PATH` for the **read-only** egeria-python checkout its data-prep pipeline ingests. These were one env var until 2026-09-06, so setting it for either meaning silently redirected the other |
 | optional | `ADVISOR_PORTAL_SECRET` / `RE_PORTAL_SECRET` equal to the QuickStart's `EGERIA_ADVISOR_SSO_SECRET` for tile handoff; `EXPLORER_MODEL_TIER` / `ADVISOR_MODEL_TIER` (default `dev`) |
 
 Postgres defaults (`localhost:5442`, database `egeria_advisor`, user `egeria_advisor`, password
@@ -373,7 +373,7 @@ Keys the apps read, grouped by concern. `<APP>_` forms override the shared `TREL
 |---|---|---|---|
 | Session signing secret | `RE_JWT_SECRET` or `TRELLIS_JWT_SECRET` | `ADVISOR_JWT_SECRET` or `TRELLIS_JWT_SECRET` | `TRELLIS_JWT_SECRET` |
 | Session lifetime | `RE_JWT_TTL_HOURS` (default 8; Egeria's token caps it at 1 h) | same mechanism | inherited |
-| Portal handoff secret | `RE_PORTAL_SECRET` or `TRELLIS_PORTAL_SECRET` | `ADVISOR_PORTAL_SECRET` | `ADVISOR_PORTAL_SECRET` (fed to both) |
+| Portal handoff secret | `RE_PORTAL_SECRET` or `TRELLIS_PORTAL_SECRET` | `ADVISOR_PORTAL_SECRET` or `TRELLIS_PORTAL_SECRET` | `ADVISOR_PORTAL_SECRET` (fed to both) |
 | Login policy | `TRELLIS_REQUIRE_LOGIN` (default true), `TRELLIS_ANONYMOUS_READ` (dev only), `RE_PUBLIC_PATHS` | same, `TRELLIS_PUBLIC_PATHS` | defaults |
 | Egeria platform | `EGERIA_PLATFORM_URL`, `EGERIA_VIEW_SERVER`, `EGERIA_USER`, `EGERIA_USER_PASSWORD`, `PYEGERIA_TIMEOUT_SECONDS` | `EGERIA_VIEW_SERVER_URL`, `EGERIA_VIEW_SERVER`, `EGERIA_USER`, `EGERIA_PASSWORD` | set in compose; service account from `EGERIA_USER` / `EGERIA_USER_PASSWORD` |
 | Ollama | `LLM__OLLAMA__BASE_URL`, `LLM__OLLAMA__MODEL` | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_CODE_MODEL` | `TRELLIS_MODEL_GENERAL`, `TRELLIS_MODEL_CODE`, plus the overlay choice |
@@ -395,7 +395,7 @@ in the shared Postgres.
 | Symptom | Cause and fix |
 |---|---|
 | Every API call returns 401 | Login is required. Sign in in the browser, or run the app's `login` command for the CLI. |
-| Sessions vanish on every restart | No shared signing secret: set `TRELLIS_JWT_SECRET` (both app `.env` files, or the compose `.env`). The apps warn once at start when they fall back to a derived secret. |
+| Sessions vanish on every restart | No shared signing secret: set `TRELLIS_JWT_SECRET` (both app `.env` files, or the compose `.env`), or run `./trellis-up`, which generates one into both. Each app warns once when it falls back to a derived secret — grep a log for `deriving a per-host secret`. EA gained that warning on 2026-09-06; before then it derived silently, so an unset secret on EA looked like nothing at all. |
 | Portal tile says "Not configured" | `EGERIA_ADVISOR_SSO_SECRET` (QuickStart) and `ADVISOR_PORTAL_SECRET` (trellis) differ or are unset. |
 | EA start shows `No response from MCP server` | The pyegeria MCP server failed at import; the usual cause is an mcp package below 2.0 (pyegeria declares too loose a floor). Trellis pins `mcp>=2.0`; re-run `uv sync`. |
 | Reports fail with `User ... is not recognized` in the platform log | The view server cannot read the user directory. Check `/deployments/secrets` inside `quickstart-egeria-main` has the `.omsecrets` files; if it is empty, restart that container (a Docker Desktop bind mount went stale after the host directory was rewritten). |

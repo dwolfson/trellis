@@ -176,8 +176,29 @@ def _jwt_secret() -> str:
     )
     if not secret:
         # Fallback: derive from machine ID for single-host deployments.
-        # This means tokens survive process restart but NOT machine migration.
+        # This means tokens survive process restart but NOT machine migration
+        # -- and under Docker the hostname is per-container, so it does not
+        # survive a container recreate either.
+        #
+        # Warn once per process. Until 2026-09-06 this branch was silent,
+        # while docs/deploying-trellis-with-quickstart.md's troubleshooting
+        # table told operators that "the apps warn once at start when they
+        # fall back to a derived secret" -- true of RE, whose jwt_secret()
+        # has done this for a while, and not of EA. Silence here is the
+        # reason a TRELLIS_JWT_SECRET sitting unread in .env went unnoticed:
+        # there was nothing to see. Same warn-once shape as
+        # resource_explorer/auth.py's _DERIVED_SECRET_WARNED, because this
+        # runs on every request that touches auth.
         import hashlib
+        global _DERIVED_SECRET_WARNED
+        if not _DERIVED_SECRET_WARNED:
+            _DERIVED_SECRET_WARNED = True
+            logger.warning(
+                "auth: none of ADVISOR_JWT_SECRET, TRELLIS_JWT_SECRET or "
+                "advisor.yaml's auth.jwt_secret is set - deriving a per-host "
+                "secret. Sessions will not survive a move to another machine, "
+                "nor a container recreate."
+            )
         machine = os.environ.get("HOSTNAME", "egeria-advisor-local")
         secret = hashlib.sha256(f"egeria-advisor-{machine}".encode()).hexdigest()
     return secret
@@ -223,6 +244,7 @@ _EA_PUBLIC_PATHS = (
 
 _policy_cache = None
 _deprecation_warned = False
+_DERIVED_SECRET_WARNED = False
 
 
 def _warn_retired_yaml_keys() -> None:
