@@ -104,6 +104,29 @@ above.
 `mcp_config.py`, rather than hand-editing the checked-in JSON per machine — editing it to one
 box's paths would just break it on whatever deployment it's currently correct for.
 
+**Update 2026-09-06, from a second session working a live containerised EA deployment (not
+touched here — relayed cross-session):**
+
+- **Both hardcoded fields matter, not just `command`.** `args` also points at
+  egeria-workspaces' `PyegeriaWebHandler/mcp_server.py`, and the `env` block carries
+  `EGERIA_ROOT_PATH` under `/Users/dwolfson/` plus `EGERIA_VIEW_SERVER_URL=https://localhost:9443`
+  — wrong inside a container regardless of any path fix, since `localhost` there means the
+  container itself, not the host running Egeria.
+- **A config-only fix cannot work in the demo/container profile at all.** Verified inside
+  `trellis-ea-web`: `pyegeria` is importable (`True`), `dr_egeria_md` is **not** (`False`), `mcp`
+  is `2.1.1`, and `mcp_server.py` isn't in the image. So the real fix needs either shipping the
+  script plus `dr_egeria_md` into the image, or making the entry skip cleanly when its command is
+  unresolvable — right now EA emits a hard error at every container start regardless.
+- **No env override exists for the config file's location** — `egeria_context.py`, `auth.py`,
+  `perspective_manager.py`, and `mcp_agent.py` each independently build
+  `Path(__file__).parent/"configdata"/"mcp_servers.json"`, so there's no way to point a
+  deployment at an alternate file without also touching all four call sites.
+- Confirms the earlier read on impact: EA still reports "MCP agent pre-warmed on startup" and
+  the `pyegeria`-server report tools keep working; only Dr.Egeria command execution from EA chat
+  is unavailable.
+- **Offer standing from that session:** a running containerised EA is available there to test
+  any candidate fix, including rebuilding the image from a branch.
+
 Related, found the same session: `resource_explorer/auth.py`'s `RE_JWT_SECRET`/
 `TRELLIS_JWT_SECRET` lookup reads raw `os.environ` with no `load_dotenv()` anywhere in that
 package, so a value that only exists in RE's `.env` is silently invisible to it (must be a real
