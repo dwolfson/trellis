@@ -21,7 +21,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -31,9 +31,7 @@ from loguru import logger
 # imports (advisor.rag_system imports `_intent_meta` this way).
 from advisor.web.shared import (
     _STATIC,
-    _get_rag,
-    QueryRequest,
-    _intent_meta,
+    _intent_meta,  # noqa: F401 -- unused in this module, kept importable: advisor.rag_system imports it from here
     _BROWSER_FORMATS,
     _catalog_formats,
     _load_report_catalog,
@@ -147,6 +145,18 @@ app.include_router(_auth_router)
 from advisor.web.feedback import router as _feedback_router
 app.include_router(_feedback_router)
 
+from advisor.web.query import router as _query_router
+app.include_router(_query_router)
+
+from advisor.web.plan_templates import router as _plan_templates_router
+app.include_router(_plan_templates_router)
+
+from advisor.web.sessions import router as _sessions_router
+app.include_router(_sessions_router)
+
+from advisor.web.templates import router as _templates_router
+app.include_router(_templates_router)
+
 # ── routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -157,146 +167,6 @@ async def index() -> FileResponse:
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
-
-
-@app.post("/api/query")
-async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
-    """Process a natural-language query and return the response dict."""
-    from advisor.auth import get_current_user, get_egeria_credentials
-    current_user = get_current_user(request)
-    egeria_authenticated = current_user is not None
-    egeria_credentials = get_egeria_credentials(request)
-
-    user_query = req.query.strip()
-    # Append search filter tag so the report pipeline can extract it
-    if req.search_string and req.search_string.strip() not in ("", "*"):
-        user_query += f" filter:'{req.search_string.strip()}'"
-    # Append output format tag when explicitly set (e.g. from the report modal dropdown)
-    if req.output_format:
-        user_query += f" fmt:'{req.output_format.strip()}'"
-
-    try:
-        rag = _get_rag()
-        # Run the blocking RAG query in a thread-pool executor so FastAPI's
-        # event loop is not blocked during MCP / LLM calls.  Inside the
-        # executor thread, asyncio.get_event_loop().is_running() is False, so
-        # _run_async() inside the pipeline uses asyncio.run() directly —
-        # cleaner than the nested-thread approach used when called on-loop.
-        loop = asyncio.get_event_loop()
-        user_id = current_user.get("sub") if current_user else None
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                rag.query,
-                user_query=user_query,
-                include_context=True,
-                track_metrics=True,
-                query_type_override=req.intent_override or None,
-                perspective=req.perspective or None,
-                page_size=req.page_size or None,
-                draft_id=req.draft_id or None,
-                context=req.context or None,
-                egeria_authenticated=egeria_authenticated,
-                session_id=req.session_id or None,
-                user_id=user_id,
-                egeria_credentials=egeria_credentials,
-            ),
-        )
-    except Exception as exc:
-        logger.error(f"Query failed: {exc}")
-        result = {
-            "query": req.query,
-            "response": f"Sorry, an error occurred: {exc}",
-            "query_type": "general",
-            "routing_agent": "error",
-            "sources": [],
-            "num_sources": 0,
-            "retrieval_time": 0.0,
-            "generation_time": 0.0,
-            "avg_relevance_score": 0.0,
-            "context_length": 0,
-        }
-
-    query_type = result.get("query_type", "general")
-    result["intent"] = _intent_meta(query_type)
-    return result
-
-
-@app.post("/api/query/stream")
-async def query_stream_endpoint(request: Request, req: QueryRequest) -> StreamingResponse:
-    """
-    Streaming variant of /api/query — returns Server-Sent Events.
-
-    Event sequence:
-      data: {"type":"start","query":"..."}
-      data: {"type":"token","text":"..."}   (repeated, only for LLM-generation paths)
-      data: {"type":"done","result":{...}}
-      data: [DONE]
-    """
-    from advisor.auth import get_current_user, get_egeria_credentials
-    current_user = get_current_user(request)
-    egeria_authenticated = current_user is not None
-    egeria_credentials = get_egeria_credentials(request)
-
-    user_query = req.query.strip()
-    if req.search_string and req.search_string.strip() not in ("", "*"):
-        user_query += f" filter:'{req.search_string.strip()}'"
-    if req.output_format:
-        user_query += f" fmt:'{req.output_format.strip()}'"
-
-    loop = asyncio.get_event_loop()
-    rag  = _get_rag()
-
-    async def event_gen():
-        # Bridge sync generator → async generator via asyncio.Queue so the
-        # event loop stays unblocked while the worker thread produces tokens.
-        q: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=256)
-
-        user_id = current_user.get("sub") if current_user else None
-        def producer() -> None:
-            try:
-                for chunk in rag.query_stream(
-                    user_query=user_query,
-                    include_context=True,
-                    query_type_override=req.intent_override or None,
-                    perspective=req.perspective or None,
-                    page_size=req.page_size or None,
-                    draft_id=req.draft_id or None,
-                    context=req.context or None,
-                    egeria_authenticated=egeria_authenticated,
-                    session_id=req.session_id or None,
-                    user_id=user_id,
-                    egeria_credentials=egeria_credentials,
-                ):
-                    loop.call_soon_threadsafe(q.put_nowait, chunk)
-            except Exception as exc:
-                logger.error(f"query_stream producer error: {exc}", exc_info=True)
-                err = json.dumps({"type": "error", "message": str(exc)})
-                loop.call_soon_threadsafe(q.put_nowait, f"data: {err}\n\n")
-            finally:
-                loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
-
-        import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = loop.run_in_executor(executor, producer)
-
-        while True:
-            item = await q.get()
-            if item is None:
-                break
-            yield item
-
-        await future
-        executor.shutdown(wait=False)
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # disable nginx buffering
-        },
-    )
 
 
 @app.get("/api/reports")
@@ -1503,40 +1373,6 @@ async def create_builder_draft(request: Request, body: Dict[str, Any]) -> Dict[s
     return _create_builder_draft(title, perspective, user_id=user_id)
 
 
-@app.get("/api/plan-templates")
-async def list_plan_templates() -> Dict[str, Any]:
-    """Return available plan templates."""
-    from advisor.plan_templates import get_template_manager
-    return {"templates": get_template_manager().list_templates()}
-
-
-@app.delete("/api/plan-templates/{name}")
-async def delete_plan_template(name: str) -> Dict[str, str]:
-    """Delete a plan template by name."""
-    from urllib.parse import unquote
-    from advisor.plan_templates import get_template_manager
-    deleted = get_template_manager().delete(unquote(name))
-    return {"status": "ok" if deleted else "not_found"}
-
-
-@app.get("/api/sessions")
-async def list_sessions() -> Dict[str, Any]:
-    """Return planning session transcript metadata (newest first)."""
-    from advisor.session_logger import get_session_logger
-    return {"sessions": get_session_logger().list_sessions()}
-
-
-@app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> Dict[str, Any]:
-    """Return the full transcript for a planning session."""
-    from fastapi import HTTPException
-    from advisor.session_logger import get_session_logger
-    entries = get_session_logger().load_session(session_id)
-    if not entries:
-        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
-    return {"session_id": session_id, "entries": entries}
-
-
 @app.get("/api/templates/Column/fields")
 async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the fields configuration for a Report Column card in the canvas."""
@@ -1582,97 +1418,6 @@ async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
                 "multi_select": True
             }
         ]
-    }
-
-
-@app.get("/api/templates/{command_name}/fields")
-async def get_template_fields(request: Request, command_name: str, level: str = "basic") -> Dict[str, Any]:
-    """Return template field metadata for a Dr.Egeria command at the given template level.
-
-    Requires login — the valid-values enrichment below performs live Egeria reads
-    and must be attributable to the signed-in user, not a shared service account.
-    """
-    from advisor.auth import require_egeria_user, get_egeria_credentials
-    require_egeria_user(request)
-    egeria_credentials = get_egeria_credentials(request)
-    from urllib.parse import unquote
-    from advisor.agents.tools import _templates_root, _normalise
-    from advisor.agents.dr_egeria_agent import parse_template
-
-    action = unquote(command_name)
-    root   = _templates_root()
-    if root is None:
-        return {"fields": [], "level": level}
-
-    level_dir = root / level
-    if not level_dir.is_dir():
-        level_dir = root / "basic"
-
-    query_norm = _normalise(action)
-    words      = [_normalise(w) for w in action.split() if len(w) > 3]
-
-    best_score = 0
-    best_file  = None
-    for md_file in sorted(level_dir.rglob("*.md")):
-        stem_norm = _normalise(md_file.stem)
-        score = 0
-        if query_norm == stem_norm:           score = 50
-        elif query_norm in stem_norm:         score = 40
-        elif stem_norm in query_norm:         score = 35
-        elif words:
-            hits = sum(1 for w in words if w in stem_norm)
-            if hits == len(words):            score = 30
-            elif hits > 0:                    score = 20 + hits
-        if score > best_score:
-            best_score = score
-            best_file  = md_file
-
-    if best_file is None or best_score == 0:
-        return {"fields": [], "level": level}
-
-    try:
-        template = parse_template(str(best_file))
-    except Exception:
-        return {"fields": [], "level": level}
-
-    # Enrich valid_values for known field patterns with live Egeria data
-    zone_values: list[str] = []
-    tech_type_values: list[str] = []
-    for a in template["attributes"]:
-        name_low = a["name"].lower()
-        if not a.get("valid_values") and "zone" in name_low:
-            if not zone_values:
-                try:
-                    from advisor.egeria_context import EgeriaContext
-                    zone_values = EgeriaContext(egeria_credentials=egeria_credentials).list_governance_zones()
-                except Exception:
-                    pass
-            if zone_values:
-                a["valid_values"] = zone_values
-        elif not a.get("valid_values") and "deployed implementation type" in name_low:
-            if not tech_type_values:
-                try:
-                    from advisor.egeria_context import EgeriaContext
-                    tech_type_values = EgeriaContext(egeria_credentials=egeria_credentials).list_technology_types()
-                except Exception:
-                    pass
-            if tech_type_values:
-                a["valid_values"] = tech_type_values
-
-    return {
-        "level": level,
-        "fields": [
-            {
-                "name":               a["name"],
-                "required":           a["required"],
-                "type":               a["type"],
-                "description":        a.get("description", ""),
-                "valid_values":       a.get("valid_values", []),
-                "default_value":      a.get("default_value", ""),
-                "alternative_labels": a.get("alternative_labels", []),
-            }
-            for a in template["attributes"]
-        ],
     }
 
 
