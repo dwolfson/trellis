@@ -136,7 +136,9 @@ a plain CLI command dies.
   Costs several cores; Egeria-side.
 - `jdbcMaximumPoolSize` in the `.http` config builders only reaches the platform when those builders
   are run against it.
-- EA phase-1 ingestion: `pyegeria` and `pyegeria_cli` collections ingest zero files (open task).
+- ~~EA phase-1 ingestion: `pyegeria` and `pyegeria_cli` collections ingest zero files~~ — fixed.
+  Measured on pop-os 2026-09-06 with pyegeria 6.1.10: phase 1 ingests 431 files / 8,779 chunks
+  (`pyegeria` 281 files / 7,737 chunks, `pyegeria_cli` 100 / 554, `pyegeria_drE` 50 / 488).
 - Platform addressing: the trellis containers reach Egeria as `https://host.docker.internal:9443`,
   not by its `egeria_network` name, because the platform image's baked-in certificate names only
   `localhost` and `host.docker.internal`. Switching to the container name would only work with TLS
@@ -162,6 +164,15 @@ the `docker` command talks to.
   engine hosts the stack and pin it: `docker context use desktop-linux` for Desktop, `docker context use
   default` for the native engine, and check `docker context show` before anything else when both are
   installed. On 2026-09-04 a briefly started Desktop made the native stack look as if it had been replaced.
+  On 2026-09-07 the same thing happened again on trevor *without anyone starting Desktop by hand* — it is
+  installed but not systemd-enabled, and the desktop session launched it, flipping the context mid-task.
+  Note the failure mode: the wrong engine reports **emptiness, not an error**. `docker images` lists
+  nothing and `docker inspect <container>` answers `no such object` for a container that is up and
+  healthy on the other engine, so any check reading that output passes or fails for the wrong reason.
+  `docker context use default` does not protect a script against a flip that happens after it runs —
+  force it per-process with `export DOCKER_CONTEXT=default`. The worst form, seen on trevor earlier the
+  same day, is both engines running shared-infra at once with the demo's data split across them and only
+  one holding the published ports; `docker ps` looks normal in either context.
 - **No GPU inside the Desktop VM** (Linux and Mac alike), so inference stays on the host: native Ollama
   listening on `0.0.0.0:11434` and the `docker-compose.ollama-host.yaml` overlay. `host.docker.internal`
   resolves inside Desktop containers without `extra_hosts`; the overlay sets it anyway.
