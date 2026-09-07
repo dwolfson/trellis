@@ -30,11 +30,9 @@ from loguru import logger
 # `advisor.web.app.<name>` keeps resolving for existing external lazy
 # imports (advisor.rag_system imports `_intent_meta` this way).
 from advisor.web.shared import (
-    _extended_feedback_path,
     _STATIC,
     _get_rag,
     QueryRequest,
-    FeedbackRequest,
     _intent_meta,
     _BROWSER_FORMATS,
     _catalog_formats,
@@ -145,6 +143,9 @@ app.include_router(_admin_router)
 
 from advisor.web.auth import router as _auth_router
 app.include_router(_auth_router)
+
+from advisor.web.feedback import router as _feedback_router
+app.include_router(_feedback_router)
 
 # ── routes ─────────────────────────────────────────────────────────────────────
 
@@ -1693,111 +1694,9 @@ async def get_governance_zones(request: Request) -> Dict[str, Any]:
         return {"zones": [], "count": 0, "error": str(exc)}
 
 
-@app.post("/api/feedback")
-async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
-    """Record 👍/😐/👎 feedback."""
-    try:
-        from advisor.feedback_collector import get_feedback_collector
-        fc = get_feedback_collector()
-        if req.vote > 0:
-            rating = "positive"
-        elif req.vote == 0:
-            rating = "neutral"
-        else:
-            rating = "negative"
-        fc.record_feedback(
-            query=req.query,
-            query_type=req.query_type,
-            collections_searched=[],
-            response_length=len(req.response_text or ""),
-            rating=rating,
-            perspective=req.perspective or None,
-            routing_agent=req.routing_agent or None,
-            feedback_text=req.intent_override or None,  # repurpose for intent label until schema expanded
-            user_comment=req.intent_override,
-        )
-        # Also write the full record including response_text to an extended JSONL
-        try:
-            import json as _json
-            from advisor.config import ensure_writable_dir
-            ext_path = _extended_feedback_path()
-            ensure_writable_dir(ext_path.parent, "ADVISOR_DATA_PATH")
-            from datetime import datetime as _dt
-            record = {
-                "timestamp": _dt.utcnow().isoformat(),
-                "query": req.query,
-                "query_type": req.query_type,
-                "vote": req.vote,
-                "rating": rating,
-                "perspective": req.perspective,
-                "intent_override": req.intent_override,
-                "routing_agent": req.routing_agent,
-                "response_text": req.response_text,
-                "triage_status": "new",
-                "analysis_comments": "",
-            }
-            with open(ext_path, "a") as f:
-                f.write(_json.dumps(record) + "\n")
-        except Exception as exc:
-            logger.warning(f"Extended feedback write failed: {exc}")
-    except Exception as exc:
-        logger.warning(f"Feedback recording failed: {exc}")
-    return {"status": "ok"}
-
-
 @app.get("/api/perspectives")
 async def list_perspectives() -> Dict[str, Any]:
     """Return available perspectives (live from Egeria or CSV fallback)."""
     from advisor.perspective_manager import get_all
     return {"perspectives": get_all()}
 
-
-@app.get("/api/feedback/extended")
-async def feedback_extended() -> Dict[str, Any]:
-    """Return all extended feedback records (with response_text, triage_status, etc.)."""
-    import json as _json
-    path = _extended_feedback_path()
-    records = []
-    if path.exists():
-        for line in path.read_text().splitlines():
-            try:
-                records.append(_json.loads(line))
-            except Exception:
-                pass
-    return {"records": records, "total": len(records)}
-
-
-@app.patch("/api/feedback/extended/{idx}")
-async def update_feedback_record(idx: int, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Update triage_status or analysis_comments on a feedback record by line index."""
-    import json as _json
-    from fastapi import HTTPException
-    path = _extended_feedback_path()
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="No feedback records")
-    lines = path.read_text().splitlines()
-    if idx < 0 or idx >= len(lines):
-        raise HTTPException(status_code=404, detail=f"Record {idx} not found")
-    try:
-        record = _json.loads(lines[idx])
-    except Exception:
-        raise HTTPException(status_code=500, detail="Corrupt record")
-    allowed = {"triage_status", "analysis_comments"}
-    for k, v in body.items():
-        if k in allowed:
-            record[k] = v
-    lines[idx] = _json.dumps(record)
-    path.write_text("\n".join(lines) + "\n")
-    return {"status": "ok", "record": record}
-
-
-@app.get("/api/feedback/analysis")
-async def feedback_analysis() -> Dict[str, Any]:
-    """Return feedback statistics plus gap analysis."""
-    from advisor.feedback_collector import get_feedback_collector
-    fc = get_feedback_collector()
-    return {
-        "stats": fc.get_feedback_stats(),
-        "gaps": fc.get_gap_analysis(),
-        "improvements": fc.get_routing_improvements(),
-    }
