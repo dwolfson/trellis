@@ -37,11 +37,7 @@ Secrets the trellis `.env` needs, and where each comes from:
   GPU, and starting it flips the active `docker context` so every command silently talks to the VM.
   `sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`,
   `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, then re-login. If Desktop is
-  installed, `systemctl --user mask docker-desktop` and always `docker context use default`.
-  **mask, not disable** — `disable` only prevents systemd auto-start and does not stop an
-  interactive launch. On trevor 2026-09-07 Desktop was `disabled`, `AutoStart: false`, with no XDG
-  autostart entry, and was running regardless; it had flipped the context and misdirected a build.
-  `mask` makes a start attempt fail with `Unit docker-desktop.service is masked`.
+  installed, `systemctl --user disable docker-desktop` and always `docker context use default`.
 - NVIDIA: the proprietary driver (Pop!_OS: `system76-driver-nvidia`) plus `nvidia-container-toolkit`
   and `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
   `docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L` must list the card.

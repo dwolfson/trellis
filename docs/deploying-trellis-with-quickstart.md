@@ -339,11 +339,7 @@ these changes.
 
 - Use native Docker Engine (`docker-ce`) rather than Docker Desktop for Linux: Desktop's VM cannot
   see the GPU, and starting it flips the active `docker context` (§2.7). If both are installed,
-  `systemctl --user mask docker-desktop` and `docker context use default`. Use **mask**, not
-  `disable`: `disable` only stops systemd auto-starting it, and says nothing about an interactive
-  launch. Observed on a demo box 2026-09-07 — Desktop was already `disabled`, with `AutoStart:
-  false` and no XDG autostart entry, and was running anyway, having flipped the context mid-task.
-  `mask` refuses outright (`Unit docker-desktop.service is masked`).
+  `systemctl --user disable docker-desktop` and `docker context use default`.
 - NVIDIA: the proprietary driver plus `nvidia-container-toolkit`; then
   `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
   `docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L` must list the card. This matters only if
