@@ -33,8 +33,17 @@ def _known_auth_config(monkeypatch):
         "jwt_secret": "test-jwt-secret",
         "portal": {"shared_secret": "test-portal-secret"},
     })
-    monkeypatch.delenv("ADVISOR_JWT_SECRET", raising=False)
-    monkeypatch.delenv("ADVISOR_PORTAL_SECRET", raising=False)
+    # Both names for each secret. _jwt_secret()/_portal_secret() gained a
+    # TRELLIS_* fallback on 2026-09-06 so EA honours the workspace-wide secret
+    # the trellis compose overlay sets; clearing only the ADVISOR_* name then
+    # stopped isolating these tests. This checkout's own .env sets
+    # TRELLIS_PORTAL_SECRET, and EA calls load_dotenv(), so the real value
+    # reached _portal_secret() and the fixture's "test-portal-secret" no longer
+    # verified the token it had just signed -- InvalidSignatureError, on a
+    # machine-dependent value.
+    for var in ("ADVISOR_JWT_SECRET", "TRELLIS_JWT_SECRET",
+                "ADVISOR_PORTAL_SECRET", "TRELLIS_PORTAL_SECRET"):
+        monkeypatch.delenv(var, raising=False)
     # The login policy is process-cached (advisor.auth.get_policy); clear it
     # around every test so one that varies TRELLIS_*/ADVISOR_* env cannot leak
     # its policy into the next.
