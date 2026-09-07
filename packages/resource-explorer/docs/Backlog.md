@@ -3464,24 +3464,46 @@ Broader arch/clustering/interfaces/mermaid suite: 507 passed, 9 skipped.
 
 ---
 
-#### RE has no login at all, and its identity is inconsistent across 26 sites
+#### RE's identity is still inconsistent across 14 sites (was: "RE has no login at all")
 
-Project-owner decision, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
-(ultimately) to support multi-user."*
+**Status update, 2026-09-07** (TC-8, `packages/egeria-advisor/BACKLOG.md`): three of this entry's
+four parts are done, all landed 2026-09-04. This section previously described all four as open;
+corrected here, verified by reading the code rather than assumed from the original entry.
 
-`/api/egeria/whoami` returns `get_config().egeria.user_id` and the comment above it says it is
-*"deliberately NOT a login mechanism"* — so the header's "Connected as: erinoverview" is cosmetic.
-Identity is read from `os.getenv("EGERIA_USER", …)` at **26 sites**, each building its own pyegeria
-client, with four different fallbacks (4x `_DEFAULT_USER`, 3x `"steward"`, 3x `"erinoverview"`,
-1x `""`), so **which identity an RE operation acts as depends on which module built the client**.
+- **`trellis-auth` extraction** — done. `packages/trellis-auth/` exists; both `advisor/auth.py`
+  and `resource_explorer/auth.py` import it for the app-neutral JWT/Portal-SSO pieces.
+- **A login UI in RE's SPA** — done. A real `#login-overlay` form is in
+  `resource_explorer/web/static/index.html`, and `LoginRequiredMiddleware` is installed in
+  `web/app.py`. "Connected as: erinoverview" is no longer cosmetic for a signed-in user.
+- **A declared service identity for unattended runs** (surveys/schedulers have no signed-in
+  user) — done, and it's a real, deliberately-labeled mechanism, not a fallback that quietly
+  reused the same path as a signed-in person: `resource_explorer/egeria_identity.py`'s
+  `EgeriaIdentity(is_service_account=True)`, sourced from `get_config().egeria.user_id`/
+  `user_password` (a configured account, matching the design doc's requirement that this be
+  distinct from EA's SS-4 fallback removal). `run_queue.py::_run_as_requester` documents the
+  policy directly: a queued run with a `requested_by` sets `current_caller` to that person (so
+  `Ownership` on anything it publishes is attributed correctly); a row with no `requested_by`
+  — "the worker's own service-account work" — runs with no caller at all and falls through to
+  this same service identity. Covers bootstrap heal, resync, and the outbox drain by name in
+  that function's own docstring.
+- **Still open: collapsing RE's identity call-sites onto the authenticated identity.** Down from
+  26 to **14** remaining `os.getenv("EGERIA_USER", …)` sites (`rfa_egeria_sync.py`,
+  `surveyors/egeria_reader.py`, `surveyors/survey_definition_reader.py`,
+  `surveyors/egeria_publisher.py`, `surveyors/database/database_surveyor.py`,
+  `surveyors/database/bootstrap_data_classes.py`,
+  `surveyors/database/egeria_database_surveyor.py`,
+  `surveyors/arch_recovery/materializer.py`,
+  `surveyors/arch_recovery/blueprint_materializer.py`,
+  `surveyors/arch_recovery/port_materializer.py`,
+  `surveyors/filesystem/egeria_filesystem_surveyor.py`, `web/routes/egeria.py` (×2),
+  `cli/main.py`), still with four different fallback literals (`_DEFAULT_USER`, `"steward"`,
+  `"erinoverview"`, `""`). Each of these builds its own pyegeria client directly rather than
+  going through `egeria_identity.py`'s resolution — the actual remaining work this entry
+  originally flagged.
 
-Full reasoning and the recommendation to extract `trellis-auth` rather than build a second login:
-`docs/trellis-auth-extraction.md` at the Trellis root. Four parts, and the package is the smallest:
-the extraction; a login UI in RE's SPA (it has never had one); collapsing the 26 sites onto the
-authenticated identity; and **the design question that should be settled first** — what RE does when
-nobody is logged in, since surveys and schedulers run unattended and a scheduled survey has no user.
-That needs a declared service identity, which is a legitimate configured account and NOT the same as
-the silent fallback EA's SS-4 decision removes.
+Full background: `docs/trellis-auth-extraction.md` at the Trellis root (its own status line and
+"still to do" lists are themselves stale as of this update — same three items, not corrected
+there yet).
 
 ---
 
