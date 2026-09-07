@@ -331,7 +331,11 @@ class MLflowConfig(BaseModel):
 class PhoenixConfig(BaseModel):
     """Phoenix Arize configuration."""
     enabled: bool = False
-    collector_endpoint: str = "http://localhost:6006"
+    # OTLPSpanExporter's `endpoint` kwarg is used verbatim, with no auto-append
+    # of the OTLP traces path the way OTEL_EXPORTER_OTLP_ENDPOINT does -- the
+    # collector's HTTP receiver listens on /v1/traces, not on / (matches
+    # resource_explorer.config.PhoenixConfig's default, TC-4/BACKLOG.md).
+    collector_endpoint: str = "http://localhost:6006/v1/traces"
     trace_all_queries: bool = False
 
 

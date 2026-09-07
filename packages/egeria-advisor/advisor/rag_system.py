@@ -72,6 +72,9 @@ class RAGSystem:
 
     def __init__(self):
         """Initialize RAG system."""
+        from advisor.phoenix_client import init_phoenix
+        init_phoenix()
+
         self.llm_client = get_ollama_client()
         self.retriever = get_rag_retriever()
         self.query_processor = get_query_processor()
