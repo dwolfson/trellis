@@ -124,6 +124,17 @@ COPY --chown=trellis:trellis packages/trellis-artifact-tree packages/trellis-art
 COPY --chown=trellis:trellis packages/trellis-context packages/trellis-context
 COPY --chown=trellis:trellis packages/trellis-querycache packages/trellis-querycache
 COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
+# Repo-level config/ — Dr.Egeria templates and the annotated report specs.
+# Both used to live inside packages/egeria-advisor (examples/templates and
+# advisor/configdata/report_specs) and so were copied with the package. They
+# moved to <repo>/config on 2026-09-06 (ce3bcab), which put them outside
+# everything this image copies, and nothing failed loudly:
+#   * command_keyword_index draws 188 of its 333 entries from the templates;
+#     without them it silently falls back to catalog-only.
+#   * resolve_report_specs_dir() finds nothing, so pyegeria's own 325 specs
+#     are served unaugmented by trellis's three annotated files.
+# Found on a containerised EA by a peer testing something else entirely.
+COPY --chown=trellis:trellis config config
 COPY --chown=trellis:trellis docker/entrypoint-egeria-advisor.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
