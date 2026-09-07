@@ -127,6 +127,37 @@ touched here — relayed cross-session):**
 - **Offer standing from that session:** a running containerised EA is available there to test
   any candidate fix, including rebuilding the image from a branch.
 
+**Update 2026-09-07 — both fixes verified in a container on pop-os, not yet merged to main:**
+
+- `ea/dr-egeria-mcp-resolution` (`4251f58`) — the dr-egeria MCP defect itself. In-container:
+  `dr-egeria` is now disabled with a logged reason instead of failing; zero
+  "Failed to connect"/"Failed to initialize"/`Errno 2` occurrences at startup, down from two
+  every time. `pyegeria` still resolves and connects, MCP agent still pre-warms, EA healthy,
+  Portal advisor tile green. (That box has the non-`-fs` sibling checkout this entry's "different
+  checkout layout" note called out — `_workspaces_checkout()` resolves to
+  `/home/dwolfson/localGit/v6.1/egeria-workspaces` there.)
+- `fix/ea-image-carries-repo-config` (`501ce84`) — a second, quieter half of the same problem,
+  found while testing the first: the 2026-09-06 `config/` → repo-root move (landed on `main` as
+  part of the reorg pulled into this checkout) left the EA Docker image not copying the new
+  location, so a containerised EA had been silently running with 44% of its Dr.Egeria command
+  index missing — `CommandKeywordIndex` 145 (catalog only, `template_root: None`) instead of the
+  full 333 (`catalog: 145, template: 188`) — smaller, not broken, nothing logged. Fixed by copying
+  `config/` into the image.
+- **Two corrections to the update above, from the same session, worth recording as a methodology
+  note as much as a factual one — both came from inferring an outcome from a missing file instead
+  of checking the running system:**
+  - "Two blockers" (`mcp_server.py` absent + `dr_egeria_md` unimportable) were actually **one**:
+    `dr_egeria_md.py` is a local sibling of `mcp_server.py` inside `PyegeriaWebHandler/`, not a
+    PyPI package, so the missing workspaces checkout removes both together. A containerised
+    `dr-egeria` is therefore achievable (mount a checkout, set `EGERIA_WORKSPACES`), not
+    structurally impossible as first stated.
+  - "Report specs missing entirely from the image" was wrong — `run_find_report_specs()` returns
+    325 in the container from pyegeria's own generated specs; `PYEGERIA_USER_REPORT_SPECS_DIR`
+    only augments those. The real gap was just trellis's three annotated files.
+- Neither branch has landed on `main` as of this update (not present in this checkout's `git log
+  --all`) — status stays `open` until merged; downgrade to `done` once `4251f58`/`501ce84` (or
+  their PRs) land.
+
 Related, found the same session: `resource_explorer/auth.py`'s `RE_JWT_SECRET`/
 `TRELLIS_JWT_SECRET` lookup reads raw `os.environ` with no `load_dotenv()` anywhere in that
 package, so a value that only exists in RE's `.env` is silently invisible to it (must be a real
