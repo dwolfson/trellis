@@ -6,6 +6,7 @@ High-level agent for managing multiple MCP servers and coordinating tool executi
 
 import asyncio
 import json
+import shutil
 import logging
 import os
 from pathlib import Path
@@ -23,6 +24,22 @@ from advisor.mcp_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_dr_egeria_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Replace dr-egeria's placeholder EGERIA_ROOT_PATH with a real one.
+
+    config/mcp_servers.json ships a placeholder rather than one developer's
+    absolute path; unresolved, the subprocess starts against a directory that
+    does not exist. Left alone when nothing resolves, so the caller's
+    disable-on-unresolvable check still sees the placeholder.
+    """
+    from advisor.mcp_config import resolve_egeria_root_path
+    root = resolve_egeria_root_path()
+    if root:
+        env = dict(env)
+        env["EGERIA_ROOT_PATH"] = root
+    return env
 
 
 def _resolve_server_env(name: str, env: Dict[str, str]) -> Dict[str, str]:
@@ -43,6 +60,8 @@ def _resolve_server_env(name: str, env: Dict[str, str]) -> Dict[str, str]:
     behavior correct for any other future server while ensuring "pyegeria" always
     gets the resolved connection.
     """
+    if name == "dr-egeria":
+        return _resolve_dr_egeria_env(env)
     if name != "pyegeria":
         return env
     from advisor.mcp_config import get_pyegeria_platform_config, resolve_report_specs_dir
@@ -66,20 +85,26 @@ def _resolve_server_command(name: str, command: Optional[str], args: List[str]) 
     """
     Resolve the actual command/args to launch server `name`'s subprocess with.
 
-    Only "pyegeria" gets special handling today — see
+    "pyegeria" and "dr-egeria" both get resolved here — see
     advisor.mcp_config.resolve_pyegeria_mcp_command() for the full
     ADVISOR_PYEGERIA_MCP_COMMAND / current-interpreter / config-file
     resolution order. Every other server (and pyegeria itself, when that
     resolver falls through to `None`) keeps using config/mcp_servers.json's
     command/args unchanged, exactly as before.
     """
-    if name != "pyegeria":
-        return command, args
-    from advisor.mcp_config import resolve_pyegeria_mcp_command
-    resolved = resolve_pyegeria_mcp_command()
-    if resolved is None:
-        return command, args
-    return resolved[0], list(resolved[1])
+    if name == "pyegeria":
+        from advisor.mcp_config import resolve_pyegeria_mcp_command
+        resolved = resolve_pyegeria_mcp_command()
+        if resolved is None:
+            return command, args
+        return resolved[0], list(resolved[1])
+    if name == "dr-egeria":
+        from advisor.mcp_config import resolve_dr_egeria_mcp_command
+        resolved = resolve_dr_egeria_mcp_command()
+        if resolved is None:
+            return command, args
+        return resolved[0], list(resolved[1])
+    return command, args
 
 
 def _resolve_tool_timeout(default: int) -> int:
@@ -99,6 +124,54 @@ def _resolve_tool_timeout(default: int) -> int:
         except ValueError:
             logger.warning(f"Invalid ADVISOR_MCP_TOOL_TIMEOUT={raw!r}, using default {default}")
     return default
+
+
+def _build_servers(raw: Dict[str, Any]) -> Dict[str, "MCPServerConfig"]:
+    """Turn a raw ``mcpServers`` block into MCPServerConfigs.
+
+    Shared by MCPConfig.from_file and .from_dict, which each used to build
+    this inline. They had already drifted once: the "never spawn a command
+    that is not there" guard was added to from_file only, so a dict-sourced
+    config still launched an unresolved placeholder. One builder now, so a
+    change to resolution or guarding cannot apply to only half the callers.
+    """
+    servers: Dict[str, MCPServerConfig] = {}
+    for name, server_data in (raw or {}).items():
+        resolved_command, resolved_args = _resolve_server_command(
+            name, server_data.get("command"), server_data.get("args", [])
+        )
+        enabled = server_data.get("enabled", True)
+        # config/mcp_servers.json carries placeholders for host-specific
+        # paths, and a resolver that finds nothing leaves them in place.
+        # Launching one produces `[Errno 2] No such file or directory:
+        # '<path-to-...>'` every startup -- EA BACKLOG DP-1's symptom with a
+        # different bogus path. Disable instead, and log why, so startup
+        # degrades to "that server is off" rather than a connection error.
+        if (
+            enabled
+            and server_data.get("transport", "stdio") == "stdio"
+            and resolved_command
+            and not shutil.which(resolved_command)
+            and not Path(resolved_command).exists()
+        ):
+            logger.warning(
+                f"MCP server {name!r} disabled: command {resolved_command!r} does not "
+                "exist. If this is a placeholder, set the matching resolver's env var "
+                "(ADVISOR_PYEGERIA_MCP_COMMAND / ADVISOR_DR_EGERIA_MCP_COMMAND / "
+                "EGERIA_WORKSPACES) or edit configdata/mcp_servers.json."
+            )
+            enabled = False
+        servers[name] = MCPServerConfig(
+            command=resolved_command,
+            args=resolved_args,
+            env=_resolve_server_env(name, server_data.get("env", {})),
+            url=server_data.get("url"),
+            transport=server_data.get("transport", "stdio"),
+            headers=server_data.get("headers", {}),
+            enabled=enabled,
+            description=server_data.get("description", ""),
+        )
+    return servers
 
 
 class MCPConfig:
@@ -145,21 +218,7 @@ class MCPConfig:
         with open(path, 'r') as f:
             data = json.load(f)
         
-        servers = {}
-        for name, server_data in data.get("mcpServers", {}).items():
-            resolved_command, resolved_args = _resolve_server_command(
-                name, server_data.get("command"), server_data.get("args", [])
-            )
-            servers[name] = MCPServerConfig(
-                command=resolved_command,
-                args=resolved_args,
-                env=_resolve_server_env(name, server_data.get("env", {})),
-                url=server_data.get("url"),
-                transport=server_data.get("transport", "stdio"),
-                headers=server_data.get("headers", {}),
-                enabled=server_data.get("enabled", True),
-                description=server_data.get("description", "")
-            )
+        servers = _build_servers(data.get("mcpServers", {}))
 
         settings = data.get("settings", {})
 
@@ -183,21 +242,8 @@ class MCPConfig:
         Returns:
             MCPConfig instance
         """
-        servers = {}
-        for name, server_data in data.get("mcpServers", {}).items():
-            resolved_command, resolved_args = _resolve_server_command(
-                name, server_data.get("command"), server_data.get("args", [])
-            )
-            servers[name] = MCPServerConfig(
-                command=resolved_command,
-                args=resolved_args,
-                env=_resolve_server_env(name, server_data.get("env", {})),
-                url=server_data.get("url"),
-                transport=server_data.get("transport", "stdio"),
-                headers=server_data.get("headers", {}),
-                enabled=server_data.get("enabled", True),
-                description=server_data.get("description", "")
-            )
+        servers = _build_servers(data.get("mcpServers", {}))
+
         
         settings = data.get("settings", {})
         
