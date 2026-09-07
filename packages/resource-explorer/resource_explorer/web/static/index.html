@@ -2207,8 +2207,16 @@ function showCuratePane() {
 // session token's claims and IS an authenticated fact. '' still means "we do
 // not know" — a signed-out browser — and must not be replaced by a
 // plausible-looking name.
+//
+// Prefer display_name over user_id/sub (2026-09-07): on the direct-login path
+// user_id IS the Egeria username (human-readable, display_name unset) so the
+// fallback is unchanged there, but on the Portal SSO handoff path user_id/sub
+// is deliberately the Portal account's real GUID (see trellis_sso.py's
+// make_portal_sso_token) — showing that instead of the persona's display_name
+// read as "signed in as <GUID>".
 function _currentUserLabel() {
-  return (typeof Auth !== 'undefined' && Auth.getUser()?.user_id) || '';
+  const user = typeof Auth !== 'undefined' ? Auth.getUser() : null;
+  return user?.display_name || user?.user_id || user?.sub || '';
 }
 
 // ── identity indicator ────────────────────────────────────────────────────
@@ -2222,7 +2230,10 @@ function _currentUserLabel() {
 async function loadWhoami() {
   const badge = document.getElementById('whoami-badge');
   const user = (typeof Auth !== 'undefined' && Auth.getUser()) || null;
-  const userId = user?.user_id || user?.sub || '';
+  // Prefer display_name over user_id/sub (2026-09-07) — see _currentUserLabel()'s
+  // comment above: on the Portal SSO handoff path user_id/sub is the Portal
+  // account's real GUID, not anything human-readable.
+  const userId = user?.display_name || user?.user_id || user?.sub || '';
   if (userId) {
     badge.textContent = `🔑 Signed in as: ${userId}`;
     badge.dataset.userId = userId;

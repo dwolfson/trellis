@@ -2498,6 +2498,53 @@ Full context: `docs/egeria-integration.md`, section 6, and open questions A6–A
 
 ---
 
+#### Investigations carry no zone, and their local classification never reaches Egeria at all
+
+**Found 2026-09-07** answering a question about whether investigation type (Personal/Study vs.
+Task/Campaign) drives governance-zone placement. It doesn't — and tracing why turned up a gap
+one step earlier than zones.
+
+**No zone assignment exists for investigations, period.** Zone handling lives entirely in
+`egeria_publisher.py` (survey/asset publishing) — every published asset gets `ZoneMembership`
+set to one flat draft zone (`resource-explorer-draft`, created once at worker startup) regardless
+of type, promoted to `EXPLORER_PUBLISH_ZONES` only via a separate manual "curate accept" step
+(the "one zone per app" model, decided 2026-09-04). `egeria_investigation_publisher.py` — which
+creates the Egeria `Project` and its `Folio`/`WorkingSet` `Collection`s for an investigation — has
+no `ZoneMembership` anywhere in it. Read in full to confirm.
+
+**The classification a zone decision would need to key off isn't reaching Egeria either.**
+`registry.py` already models exactly this: `PROJECT_CLASSIFICATIONS = ("PersonalProject", "Task",
+"StudyProject", "Campaign")`, captured on `create_investigation()` and stored per-investigation
+(`registry.py:5441`, `:5445`). But `egeria_investigation_publisher.py::promote()` builds the
+Egeria `Project` with a hardcoded `"typeName": "Project"` and never reads
+`inv.get("project_classification")` (around line 141-148) — so Egeria never learns whether a
+given investigation is Personal or a Campaign. The distinction lives only in RE's local row.
+
+**So this is two pieces of work, not one, and the first blocks the second:**
+
+1. **Push `project_classification` into the Egeria `Project` on promote.** Concrete, well-scoped
+   — `promote()` already has `inv` and builds `properties` right there; needs the classification
+   applied (as `typeName` if Egeria models these as `Project` subtypes the way `Folio`/`WorkingSet`
+   are `Collection` subtypes — matching `_create_typed_collection`'s existing pattern — or as an
+   initial classification, whichever `ProjectProperties`/pyegeria actually supports; unconfirmed,
+   check before building). Until this lands, part 2 has nothing to key off.
+2. **Classification → zone mapping.** Larger and more speculative — which zones, and "the user's
+   own zone" implies per-user zones, which `docs/egeria-integration.md`'s zone section already
+   flagged as a possible future need without designing it. Not structurally forbidden: Egeria's
+   own `0424 Governance Zones` type doc describes `ZoneMembership` as a general element
+   classification (not Asset-restricted) — "an element may belong to many Governance Zones" — so
+   attaching it to a `Project` isn't ruled out by the type system. Needs a real design pass before
+   building: which classifications map to which zones, whether "more public" for Task/Campaign
+   means the existing publish zones or something new, and how this interacts with the existing
+   draft-zone/curate-accept model that asset publishing already uses for a related but distinct
+   purpose.
+
+Full context: this conversation, 2026-09-07; `docs/investigation-framing-design.md` §1 (defines
+the classifications, says nothing about zones); `docs/egeria-integration.md` (zone section, for
+the per-user-zone flag).
+
+---
+
 ### Analysis & surveyors
 
 #### DONE 2026-08-31 — Survey Results dashboards covered only 14 of 29 analyses; now covers all 25 findings-producing ones
