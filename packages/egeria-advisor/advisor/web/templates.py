@@ -1,33 +1,78 @@
 """
 Dr.Egeria command-template API routes for Egeria Advisor.
 
-Extracted from `app.py` (TC-5, BACKLOG.md — router-per-domain refactor,
-slice 3). Fully self-contained — no dependency on `advisor.web.shared`.
-
-**Deliberately partial.** The "templates" group is two routes in app.py's
-original docstring (`GET /api/templates/Column/fields`, `GET
-/api/templates/{command_name}/fields`), but only the second moved here.
-`Column/fields` calls `discover_draft_schema_internal()`, which is reports/
-draft-schema business logic still living in app.py's not-yet-extracted
-reports section (`_SCHEMA_CACHE` + `discover_draft_schema_internal`, used by
-both `GET /api/reports/drafts/{draft_id}/schema` and this one templates
-route). Moving `Column/fields` here now would mean either duplicating that
-logic or reaching back into app.py from a "smaller" router than the thing
-it depends on — reversed from how every other slice has gone. Left with
-reports (TC-5's last, largest slice) instead, where it belongs alongside
-`discover_draft_schema_internal`.
+Extracted from `app.py` (TC-5, BACKLOG.md — router-per-domain refactor).
+`GET /api/templates/{command_name}/fields` moved in slice 3, fully
+self-contained. `GET /api/templates/Column/fields` was deliberately left
+behind at the time — it calls `discover_draft_schema_internal()`, reports-
+domain business logic that still lived in app.py's not-yet-extracted
+reports section — and moved here in slice 6 once `advisor/web/reports.py`
+existed to import that helper from.
 
 Endpoints:
+  GET /api/templates/Column/fields         → field config for a Report
+                                              Column card in the canvas
   GET /api/templates/{command_name}/fields → template field metadata for a
                                               Dr.Egeria command
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
+from loguru import logger
+
+from advisor.web.reports import discover_draft_schema_internal
 
 router = APIRouter()
+
+
+@router.get("/api/templates/Column/fields")
+async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return the fields configuration for a Report Column card in the canvas."""
+    valid_keys = []
+    if draft_id:
+        try:
+            schema_data = await discover_draft_schema_internal(draft_id)
+            valid_keys = [item["attribute_path"] for item in schema_data if "attribute_path" in item]
+        except Exception as e:
+            logger.warning(f"Failed to auto-populate Column Key valid_values: {e}")
+
+    return {
+        "fields": [
+            {
+                "name": "Name",
+                "required": True,
+                "description": "Column display name (e.g. Display Name)",
+                "valid_values": []
+            },
+            {
+                "name": "Key",
+                "required": True,
+                "description": "Egeria attribute property key (e.g. display_name)",
+                "valid_values": valid_keys
+            },
+            {
+                "name": "Apply formatting",
+                "required": False,
+                "description": "How to style this column's value (leave blank for plain text)",
+                "valid_values": ["", "bulleted-list", "code", "date", "True"]
+            },
+            {
+                "name": "Detail Spec",
+                "required": False,
+                "description": "Associated detail spec name for nested/drill-down reporting",
+                "valid_values": []
+            },
+            {
+                "name": "Output types",
+                "required": False,
+                "description": "Which output modes include this column",
+                "valid_values": ["ALL", "REPORT", "LIST", "TABLE", "MERMAID", "DICT", "FORM", "JSON"],
+                "multi_select": True
+            }
+        ]
+    }
 
 
 @router.get("/api/templates/{command_name}/fields")
