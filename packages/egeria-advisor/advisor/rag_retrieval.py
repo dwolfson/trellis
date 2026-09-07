@@ -15,6 +15,7 @@ from advisor.embeddings import get_embedding_generator
 from advisor.config import get_full_config
 from advisor.multi_collection_store import get_multi_collection_store
 from advisor.query_cache import get_query_cache
+from advisor.retrieval_outcome import RetrievalOutcome
 
 
 def _estimate_tokens(text: str) -> int:
@@ -71,6 +72,12 @@ class RAGRetriever:
         # token count would exceed this, keeping the highest-ranked chunks.
         self.rag_context_budget_tokens = rag_config.context.budget_tokens
 
+        # Set by retrieve(), consulted by build_context() when results is
+        # empty — distinguishes *why* there is nothing to build context from
+        # (below threshold / empty collection / never ingested / store
+        # unreachable). See advisor/retrieval_outcome.py.
+        self._last_outcome: Optional[RetrievalOutcome] = None
+
         mode = "multi-collection" if use_multi_collection else "single-collection"
         cache_status = "with caching" if enable_cache else "no cache"
         logger.info(f"Initialized RAG retriever ({mode}, {cache_status}): top_k={self.top_k}, min_score={self.min_score}")
@@ -103,6 +110,11 @@ class RAGRetriever:
         top_k = top_k or self.top_k
         min_score = min_score or self.min_score
 
+        # Reset every call — a stale outcome from a previous query must
+        # never be attributed to this one's (possibly different) empty
+        # result. build_context() only consults this when results is empty.
+        self._last_outcome = None
+
         logger.info(f"Retrieving context for query: {query[:100]}...")
 
         # Check cache first
@@ -117,40 +129,79 @@ class RAGRetriever:
                 logger.info(f"Retrieved {len(cached_results)} results from cache")
                 return cached_results
 
-        # Use multi-collection search if enabled
-        if self.use_multi_collection and self.multi_store:
-            logger.debug("Using multi-collection search with intelligent routing")
-            
-            # Search with routing
-            multi_result = self.multi_store.search_with_routing(
-                query=query,
-                top_k=top_k,
-                min_score=min_score,
-                filters=filters,
-                intent=intent,
-                boosted_collections=boosted_collections,
-                feedback_adjustments=feedback_adjustments
-            )
-            
-            results = multi_result.results
-            
-            # Log routing info
-            logger.info(f"Searched collections: {multi_result.collections_searched}")
-            logger.debug(f"Collection scores: {multi_result.collection_scores}")
-            
-        else:
-            logger.debug("Using single-collection search")
-            
-            # Generate query embedding
-            query_embedding = self.embedding_gen.generate_embedding(query)
+        collections_searched: List[str] = []
 
-            # Search vector store
-            results = self.vector_store.search(
-                collection_name="code_elements",
-                query_embedding=query_embedding,
-                top_k=top_k,
-                filters=filters
+        # Use multi-collection search if enabled
+        try:
+            if self.use_multi_collection and self.multi_store:
+                logger.debug("Using multi-collection search with intelligent routing")
+
+                # Search with routing
+                multi_result = self.multi_store.search_with_routing(
+                    query=query,
+                    top_k=top_k,
+                    min_score=min_score,
+                    filters=filters,
+                    intent=intent,
+                    boosted_collections=boosted_collections,
+                    feedback_adjustments=feedback_adjustments
+                )
+
+                results = multi_result.results
+                collections_searched = list(multi_result.collections_searched)
+
+                # Log routing info
+                logger.info(f"Searched collections: {multi_result.collections_searched}")
+                logger.debug(f"Collection scores: {multi_result.collection_scores}")
+
+                # search_with_routing() catches each collection's own search
+                # exception internally (so a broken collection cannot take
+                # the whole query down) and records it in multi_result.errors
+                # instead of raising. If EVERY searched collection failed,
+                # that failure must not be reported as "the corpus has
+                # nothing" — it is a fact about the store, not the corpus.
+                if (
+                    not results
+                    and collections_searched
+                    and multi_result.errors
+                    and set(multi_result.errors) >= set(collections_searched)
+                ):
+                    detail = "; ".join(
+                        f"{name}: {err}" for name, err in multi_result.errors.items()
+                    )
+                    self._last_outcome = RetrievalOutcome.store_unreachable(
+                        detail, tuple(collections_searched)
+                    )
+                    logger.error(
+                        f"All searched collections failed — treating as store "
+                        f"unreachable, not as an empty corpus: {detail}"
+                    )
+                    return []
+
+            else:
+                logger.debug("Using single-collection search")
+
+                # Generate query embedding
+                query_embedding = self.embedding_gen.generate_embedding(query)
+
+                collections_searched = ["code_elements"]
+                # Search vector store
+                results = self.vector_store.search(
+                    collection_name="code_elements",
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                    filters=filters
+                )
+        except Exception as exc:
+            # Single-collection search (and query-embedding generation)
+            # raise directly rather than swallowing, unlike the
+            # multi-collection path above — either way, a connection
+            # failure here is a fact about us, never about the corpus.
+            logger.error(f"Retrieval failed — vector store unreachable: {exc}")
+            self._last_outcome = RetrievalOutcome.store_unreachable(
+                str(exc), tuple(collections_searched)
             )
+            return []
 
         # Log scores for debugging
         if results:
@@ -166,6 +217,9 @@ class RAGRetriever:
 
         logger.info(f"Retrieved {len(filtered_results)} results (filtered from {len(results)})")
 
+        if not filtered_results:
+            self._last_outcome = self._diagnose_empty(results, collections_searched, min_score)
+
         # Cache the results for future queries
         if self.enable_cache and self.cache and filtered_results:
             self.cache.set(
@@ -177,6 +231,53 @@ class RAGRetriever:
             )
         
         return filtered_results
+
+    def _diagnose_empty(
+        self,
+        raw_results: List[Any],
+        collections_searched: List[str],
+        min_score: float,
+    ) -> RetrievalOutcome:
+        """Why `filtered_results` came back empty, once the store itself was
+        reachable and answered. `raw_results` is what came back *before* the
+        final `min_score` cut (see the two call sites in `retrieve()`).
+
+        - raw_results non-empty  -> case 1: below threshold.
+        - raw_results empty      -> case 2 vs case 3, disambiguated by
+          whether any searched collection has ever been ingested
+          (`ingest_log`). If checking that itself fails, that failure is
+          just as much a "fact about us" as the original search failing,
+          so it is reported the same way rather than guessed at.
+        """
+        if raw_results:
+            return RetrievalOutcome.below_threshold(min_score, tuple(collections_searched))
+
+        try:
+            ingested = self._any_collection_ingested(collections_searched)
+        except Exception as exc:
+            logger.error(f"Could not determine ingestion status: {exc}")
+            return RetrievalOutcome.store_unreachable(str(exc), tuple(collections_searched))
+
+        if not ingested:
+            return RetrievalOutcome.never_ingested(tuple(collections_searched))
+        return RetrievalOutcome.collection_empty(tuple(collections_searched))
+
+    @staticmethod
+    def _any_collection_ingested(collections: List[str]) -> bool:
+        """True if `ingest_log` (advisor/db_consolidated.py) has a row for
+        any of these collections — i.e. ingestion has run at least once.
+        Raises on a DB problem rather than swallowing it, so the caller can
+        tell "never ingested" apart from "could not check"."""
+        if not collections:
+            return False
+
+        from advisor.db_consolidated import get_db_manager
+
+        db_manager = get_db_manager()
+        placeholders = ", ".join(["%s"] * len(collections))
+        sql = f"SELECT collection_name FROM ingest_log WHERE collection_name IN ({placeholders})"
+        rows = db_manager.execute_query(sql, tuple(collections))
+        return bool(rows)
 
     async def retrieve_async(
         self,
@@ -226,10 +327,23 @@ class RAGRetriever:
             format_style: "detailed" or "compact"
 
         Returns:
-            Formatted context string
+            Formatted context string. When `results` is empty this is one of
+            the four distinguishing messages built from `self._last_outcome`
+            (set by the `retrieve()` call that normally precedes this one) —
+            never the single collapsed "No relevant code found." that used to
+            cover all four. See advisor/retrieval_outcome.py.
         """
         if not results:
-            return "No relevant code found."
+            outcome = getattr(self, "_last_outcome", None)
+            if outcome is None:
+                # build_context() was called directly, bypassing retrieve()
+                # (e.g. get_file_context(), or a caller with its own result
+                # list) — there is no diagnosis to consult. Say that,
+                # rather than silently reporting one of the four specific
+                # causes as if it were known.
+                outcome = RetrievalOutcome.unknown()
+            logger.info(f"No context to build ({outcome.reason}): {outcome.message}")
+            return outcome.message
 
         context_parts = []
         total_length = 0

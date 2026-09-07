@@ -1742,6 +1742,15 @@ class RAGSystem:
             "avg_relevance_score": avg_relevance_score,
             "context_length": len(context),
         }
+        # Additive: when retrieval found nothing, expose *why* as structured
+        # data (not just folded into the prompt text) so a UI or API
+        # consumer can render the distinction directly rather than relying
+        # on the LLM to have faithfully relayed it. None on the (overwhelmingly
+        # common) non-empty path — no existing consumer reads this key today.
+        # See advisor/retrieval_outcome.py.
+        last_outcome = getattr(self.retriever, "_last_outcome", None)
+        if last_outcome is not None:
+            result["context_diagnosis"] = last_outcome.as_dict()
         logger.info(f"Generated response: {len(response)} chars from {len(sources)} sources")
         return result
 

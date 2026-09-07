@@ -316,6 +316,13 @@ class TestRagContextBudget:
         # the assembled context should not wildly overshoot it.
         assert _estimate_tokens(context) <= budget
 
-    def test_empty_results_returns_placeholder(self):
+    def test_empty_results_with_no_diagnosis_says_unknown(self):
+        # _make_retriever() bypasses __init__/retrieve(), so there is no
+        # RetrievalOutcome to consult — build_context() must say the cause
+        # is unknown rather than silently reasserting the old collapsed
+        # "No relevant code found." (see advisor/retrieval_outcome.py and
+        # tests/unit/test_retrieval_outcome.py for the four real cases).
         retriever = _make_retriever(budget_tokens=2000)
-        assert retriever.build_context([]) == "No relevant code found."
+        context = retriever.build_context([])
+        assert context != "No relevant code found."
+        assert "could not be determined" in context
