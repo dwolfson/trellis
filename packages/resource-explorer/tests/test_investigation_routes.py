@@ -104,6 +104,201 @@ def test_purposes_are_served_not_hardcoded_in_the_spa(client):
     ]
 
 
+def test_classifications_are_served_not_hardcoded_in_the_spa(client):
+    """Same rule as `/purposes`, for the same reason.
+
+    These are Egeria's own `ProjectKind` subtypes and go to Egeria as type
+    names. A copy in the SPA is the frontend/backend mirror that has drifted
+    twice in this codebase — and here drift means offering a classification
+    Egeria will reject, or hiding one it accepts.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    r = client.get("/api/investigations/classifications")
+    assert r.status_code == 200
+    body = r.json()
+    assert [c["name"] for c in body["classifications"]] == list(
+        ProjectRegistry.PROJECT_CLASSIFICATIONS)
+    assert "Experiment" in [c["name"] for c in body["classifications"]]
+    # Every entry carries the prose the dropdown renders, so the SPA never has
+    # to invent a label for a value it does not recognise.
+    assert all(c["label"] and c["description"] for c in body["classifications"])
+
+
+def test_the_hypothesis_requirement_is_served_not_inferred(client):
+    """The SPA shows the hypothesis field off `requires_hypothesis`, not off a
+    second copy of the rule that says "Experiment". If a sixth classification
+    ever needs one, the flag carries it and the frontend needs no change."""
+    r = client.get("/api/investigations/classifications")
+    needs = {c["name"]: c["requires_hypothesis"] for c in r.json()["classifications"]}
+    assert needs["Experiment"] is True
+    assert not any(v for k, v in needs.items() if k != "Experiment")
+
+
+def test_ad_hoc_is_a_binding_not_a_sixth_classification(client):
+    """The structural decision this phase turns on.
+
+    "Ad-hoc" is the ABSENCE of an Egeria Project, not a kind of one. Egeria has
+    no `adHoc` classification, so a value like that in the classification column
+    would be sent as a type name and rejected — or worse, dropped. It belongs on
+    its own axis, which is also where the nullable `egeria_project_guid` already
+    lived.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    body = client.get("/api/investigations/classifications").json()
+    names = [c["name"] for c in body["classifications"]]
+    assert not any(n.lower().replace("-", "") == "adhoc" for n in names), (
+        "ad-hoc must not appear as a classification — it is not an Egeria type")
+    assert [b["name"] for b in body["bindings"]] == [
+        ProjectRegistry.BINDING_EGERIA, ProjectRegistry.BINDING_LOCAL]
+
+
+def test_an_experiment_without_a_hypothesis_is_refused(client):
+    """Egeria's Experiment is "a project testing a hypothesis (documented in
+    the hypothesis attribute)". Creating one with an empty hypothesis publishes
+    a classification whose entire point is missing — the same absence-reads-as-
+    presence failure, in a catalog description rather than a metric."""
+    r = client.post("/api/investigations/", json={
+        "display_name": "Hypothesis-free", "project_classification": "Experiment"})
+    assert r.status_code == 400
+    assert "hypothesis" in r.json()["detail"].lower()
+
+
+def test_a_hypothesis_on_a_non_experiment_is_refused_rather_than_dropped(client):
+    """The other direction, and the less obvious one.
+
+    `_initial_classifications` only sends `hypothesis` for Experiment, so a
+    hypothesis on a Task would be stored locally and silently vanish at publish
+    time. Refusing is better than accepting a value we know we will discard.
+    """
+    r = client.post("/api/investigations/", json={
+        "display_name": "Task with a theory", "project_classification": "Task",
+        "hypothesis": "this will be dropped"})
+    assert r.status_code == 400
+    assert "only meaningful for" in r.json()["detail"]
+
+
+def test_an_experiment_carries_its_hypothesis_all_the_way_into_egeria(made):
+    """Collected, stored, and actually SENT — the Phase 1 defect in miniature.
+
+    A required field that reaches the database and not the create body is the
+    same bug the classification itself had.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Does caching help", project_classification="Experiment",
+               hypothesis="Warm source cache cuts survey wall-clock by >50%")
+    assert inv["hypothesis"] == "Warm source cache cuts survey wall-clock by >50%"
+
+    pm = _StubPM()
+    EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    sent = pm.calls[0][3]["initialClassifications"]["Experiment"]
+    assert sent["class"] == "ExperimentProperties"
+    assert sent["hypothesis"] == "Warm source cache cuts survey wall-clock by >50%"
+
+
+def test_the_publishers_hypothesis_list_matches_the_registrys(made):
+    """Two copies of one rule, in modules that cannot import each other's
+    intent. Pinned rather than trusted: if the registry ever requires a
+    hypothesis for a second classification and the publisher is not taught, the
+    value would be collected, validated, stored — and dropped at the body."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as pub
+
+    assert tuple(pub._HYPOTHESIS_CLASSIFICATIONS) == tuple(
+        ProjectRegistry.HYPOTHESIS_REQUIRED_FOR)
+
+
+def test_an_ad_hoc_investigation_is_not_promoted_by_accident(made):
+    """`local` is a decision, not a not-yet. Promoting one anyway would
+    overturn it silently and leave the row bound while still flagged local."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Just Looking", egeria_binding="local")
+    assert inv["egeria_binding"] == "local"
+
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert pm.calls == [], "nothing may be written to Egeria for an ad-hoc investigation"
+    assert not res.ok
+    assert any("ad-hoc" in e for e in res.errors)
+
+
+def test_binding_an_egeria_project_moves_the_investigation_off_ad_hoc(made):
+    """Asking for a Project IS the decision that this is no longer ad-hoc.
+
+    Without this, a promoted investigation would hold a GUID and still claim to
+    want none — a contradiction nothing downstream could resolve.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Changed My Mind", egeria_binding="local")
+    reg = ProjectRegistry()
+    after = reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "g-1",
+        "egeria_project_qualified_name": "Project::X"})
+    assert after["egeria_binding"] == "egeria"
+
+
+def test_unbinding_does_not_silently_make_an_investigation_ad_hoc(made):
+    """The reverse is NOT symmetric, on purpose. Losing or clearing a binding
+    is not the same as deciding to stay local, and only the second is a choice
+    somebody made — recording it as one would invent an intent."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Unbind Me")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "g-2"})
+    after = reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "unset", "egeria_project_guid": ""})
+    assert after["egeria_binding"] == "egeria", (
+        "unbinding must not be read as choosing ad-hoc")
+
+
+def test_existing_investigations_backfill_to_egeria_not_ad_hoc(made):
+    """A judgement, stated where it is made.
+
+    Before this column existed, ad-hoc was not a choice anyone could make —
+    every investigation was headed for Egeria whether or not it had arrived.
+    Defaulting old rows to `local` would invent a deliberate decision nobody
+    took and hide them from anything keying on the binding.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry()
+    inv = made(display_name="Legacy Row")
+    with reg._conn() as conn:
+        # Simulate a row written before the column existed.
+        conn.execute("UPDATE investigations SET egeria_binding = NULL WHERE slug = ?",
+                     (inv["slug"],))
+        row = conn.execute(
+            "SELECT egeria_binding FROM investigations WHERE slug = ?",
+            (inv["slug"],)).fetchone()
+    assert row["egeria_binding"] is None
+    # The publisher must read a NULL binding as 'egeria', not refuse it as local.
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    assert res.project_guid, "a pre-existing row must still be promotable"
+
+
 def test_an_investigation_starts_local_with_no_egeria_write(made):
     """§1's third starting mode, and the structural decision behind it.
 

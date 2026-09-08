@@ -856,6 +856,44 @@ If it recurs, capture the assertion text — not a `tail` of the run, which buri
 Prefect's teardown logging.
 
 
+**`test_a_loop_that_loses_the_election_is_never_started` races a live Egeria call.**
+Found 2026-09-07: passed in one full run and failed in the next, on a working tree whose
+changes could not reach it (`worker.py` unmodified; no import path from the changed
+modules). That pattern reads as "you broke it" and is worth the two minutes to disprove.
+
+**The behaviour under test is correct.** `started == []` holds, and the `standby` line
+*is* logged — `worker.py:295`. The test does a fixed `time.sleep(0.2)` and then asserts
+`"standby" in caplog.text`. Polling for the condition instead of sleeping past it measured
+the line appearing at **1.13s**, against the 0.20s the test allows.
+
+The variance is not in our code. `run_worker` calls `_ensure_draft_zone()`, which makes a
+**real Egeria call** on startup — the captured log carries
+`draft-zone bootstrap: {'status': 'exists', ...}` — so how long the worker takes to reach
+the standby branch tracks how busy the platform is. The failing run followed a session that
+had been creating and deleting Projects against that same platform.
+
+So it is a genuine flake, and specifically a **fixed-sleep race against network latency** —
+not the shared-checkout hazard the two entries above describe, and not reproducible by
+running it alone on a quiet platform.
+
+Fixes, by cost:
+
+1. **Poll instead of sleeping.** Wait for `"standby" in caplog.text` (or for the loop's own
+   start/standby decision) with a generous ceiling, rather than sleeping a fixed 0.2s and
+   asserting once. Removes the dependence on Egeria's latency entirely, and keeps the test
+   fast in the common case.
+2. **Stub `_ensure_draft_zone` in the test**, as it already stubs `_reconcile_orphaned_runs`
+   and `_warm_survey_definition_cache`. Cheapest, and arguably what the test meant — a unit
+   test of leader election should not be talking to Egeria at all. Leaves any other
+   startup-latency source unaddressed.
+3. **Leave it.** It fails roughly when the platform is under load, which is exactly when
+   somebody is most likely to misread it as their own regression.
+
+(2) then (1) is the natural pair. Not done here because the file belongs to no current
+change and a concurrent session was mid-edit in the same package — see the git rules in the
+repo `CLAUDE.md`.
+
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step

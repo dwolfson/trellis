@@ -56,23 +56,34 @@ def _create_typed_collection(cm, type_name: str, display_name: str,
 _UNCLASSIFIED = "Project"
 
 
-def _initial_classifications(classification: str) -> dict:
+def _initial_classifications(classification: str, hypothesis: str = "") -> dict:
     """The `initialClassifications` entry for one Project classification.
 
     Egeria's shape is `{"<Name>": {"class": "<Name>Properties"}}` — confirmed
     against pyegeria's own functional test for `create_project`
-    (`tests/functional-tests/test_project_manager_omvs.py`, PersonalProject).
-    The properties class name is the classification name plus `Properties` for
-    all five of Campaign / Task / PersonalProject / StudyProject / Experiment
-    (`OpenMetadataType.java`, model 0130).
+    (`tests/functional-tests/test_project_manager_omvs.py`, PersonalProject),
+    and all five verified live 2026-09-07. The properties class name is the
+    classification name plus `Properties` for every one of Campaign / Task /
+    PersonalProject / StudyProject / Experiment (`OpenMetadataType.java`,
+    model 0130).
 
-    `Experiment` additionally carries `hypothesis`, which is the attribute the
-    classification exists for. It is not populated here because RE does not
-    collect one yet — see `docs/investigation-classification-and-zoning-design.md`
-    §1.4, which makes collecting it a precondition of offering `Experiment` in
-    the first place.
+    `Experiment` additionally carries `hypothesis` — *"a project conducting an
+    experiment that is testing a hypothesis (documented in the hypothesis
+    attribute)"*. Sending the classification without it would publish an
+    Experiment whose defining property is empty, so the registry requires one
+    at create time and it is passed through here.
     """
-    return {classification: {"class": f"{classification}Properties"}}
+    props: dict = {"class": f"{classification}Properties"}
+    if hypothesis and classification in _HYPOTHESIS_CLASSIFICATIONS:
+        props["hypothesis"] = hypothesis
+    return {classification: props}
+
+
+#: Kept local rather than imported from the registry so this module stays
+#: usable with any registry-shaped object, which is how the tests drive it.
+#: Mirrors `ProjectRegistry.HYPOTHESIS_REQUIRED_FOR`; the invariant that the
+#: two agree is pinned by a test rather than left to be noticed.
+_HYPOTHESIS_CLASSIFICATIONS = ("Experiment",)
 
 
 def _confirm_classification(pm, project_guid: str, expected: str) -> "str | None":
@@ -214,6 +225,18 @@ class EgeriaInvestigationPublisher:
                 "creating a second one for the same body of work"
             )
             return res
+        # Ad-hoc means "no Egeria Project, by choice" (registry.BINDING_LOCAL).
+        # Promoting one anyway would silently overturn a decision somebody made
+        # — and the row would end up bound while still flagged local. The
+        # caller is not blocked, only made to say so: changing the binding is a
+        # one-field edit, and then this promotes normally.
+        if (inv.get("egeria_binding") or "egeria") == "local":
+            res.errors.append(
+                "this investigation is ad-hoc — it was created with no Egeria "
+                "Project on purpose. Change its binding to 'egeria' first if it "
+                "should have one."
+            )
+            return res
 
         try:
             pm, cm = self._managers()
@@ -274,7 +297,8 @@ class EgeriaInvestigationPublisher:
                     "the investigation and promote again."
                 )
                 return res
-            body["initialClassifications"] = _initial_classifications(classification)
+            body["initialClassifications"] = _initial_classifications(
+                classification, inv.get("hypothesis") or "")
             res.classification_requested = classification
 
         try:

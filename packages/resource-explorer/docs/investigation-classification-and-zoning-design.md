@@ -1,6 +1,6 @@
 # Investigation classification and zoning — design & plan
 
-**Status: design. Phase 1 is built and live-verified (2026-09-07); Phases 2–6 are not.** Extends
+**Status: design. Phases 1 and 2 are built and live-verified (2026-09-07); Phases 3–6 are not.** Extends
 `docs/investigation-framing-design.md` §1 (the Investigation record) and §6a
 (promotion). Does not supersede it; that document still governs membership,
 Purpose, and the local-first/promotable shape. This one covers two things it
@@ -89,17 +89,25 @@ the schema already models as a nullable `egeria_project_guid`
 (`investigation-framing-design.md` §1 calls that "the single most important
 structural decision here").
 
-**Two columns, one control.** The create form shows one dropdown with six
-entries; underneath it writes two fields:
+**Two columns.** `project_classification` keeps Egeria's vocabulary;
+`egeria_binding` carries `local` (ad-hoc) or `egeria`.
 
-| UI choice | `project_classification` | `egeria_binding` |
-|---|---|---|
-| Ad-hoc | `StudyProject` (kept, unused until promoted) | `local` |
-| Study | `StudyProject` | `egeria` |
-| Task | `Task` | `egeria` |
-| Campaign | `Campaign` | `egeria` |
-| Personal | `PersonalProject` | `egeria` |
-| Experiment | `Experiment` | `egeria` |
+**On the form these are two controls, not one — changed during implementation
+(2026-09-07), and worth recording as a change rather than quietly building
+something else.** The design above specified a single six-entry dropdown, with
+"Ad-hoc" as one of its entries writing `StudyProject` + `local` underneath. That
+is fewer clicks and matches how the proposal described it. It was built as two
+selects instead, for one reason that only became obvious while writing the form:
+
+> A single list **cannot express "an ad-hoc Personal investigation"**, or an
+> ad-hoc Experiment. It forces every ad-hoc row to be a `StudyProject`, which
+> re-imports the conflation this whole section exists to remove — one axis
+> silently deciding the other.
+
+So the form asks "what shape of work is this?" and "where does it live?"
+separately, which is what the two columns already say. The cost is one extra
+control; the benefit is that the ten combinations are all reachable and neither
+axis has to stand in for the other.
 
 Keeping the classification on an ad-hoc row (rather than nulling it) matches
 what the schema comment at `registry.py:2046` already says about this column:
@@ -508,12 +516,43 @@ classified", since a changed payload shape looks identical. `elementHeader.guid`
 is the sentinel that separates them, and `_StrangePayloadPM` in the tests pins
 the distinction.
 
-**Phase 2 — vocabulary.** (`Experiment` is already de-risked: Phase 1's live
-check created and confirmed one, so Egeria accepts `ExperimentProperties` as an
-initial classification.) Add `Experiment` to `PROJECT_CLASSIFICATIONS` plus
-a `hypothesis` field required when it is chosen. Add the `egeria_binding`
-column and split ad-hoc onto it. Rewrite the `StudyProject`-default docstring
-to say *accurate* rather than *least committal*. UI: one six-entry dropdown.
+**Phase 2 — vocabulary. ✅ Done 2026-09-07.** `Experiment` added to
+`PROJECT_CLASSIFICATIONS` with `HYPOTHESIS_REQUIRED_FOR`; `hypothesis` is
+required for it and **refused for everything else** (a hypothesis on a `Task`
+would be stored and then silently discarded at publish time, which is worse
+than being told). `egeria_binding` column added with `BINDING_LOCAL` /
+`BINDING_EGERIA`, ad-hoc split onto it. The `StudyProject` docstring now says
+*accurate* rather than *least committal*.
+
+**Live-checked:** the `hypothesis` attribute round-trips inside
+`ExperimentProperties` — sent, read back identical, deleted, 50 Projects before
+and after. So the classification and its defining attribute are both confirmed
+end to end, not just the classification.
+
+Three decisions worth finding later:
+
+* **Promoting an ad-hoc investigation is refused, not silently allowed.**
+  `local` is a decision, not a not-yet; promoting anyway would overturn it and
+  leave the row bound while still flagged local.
+* **Binding a GUID moves the row off `local`, but unbinding does NOT move it
+  back.** Asking for a Project is a choice; losing or clearing a binding is not
+  the opposite choice, and recording it as one would invent an intent.
+* **Existing rows backfill to `egeria`, not `local`.** Before the column
+  existed, ad-hoc was not a choice anyone could make — every investigation was
+  headed for Egeria whether or not it had arrived. `local` would invent a
+  deliberate decision nobody took. A NULL binding therefore reads as `egeria`
+  everywhere, and a test pins that specific direction.
+
+**The vocabulary is now served, not hardcoded in the SPA** —
+`GET /api/investigations/classifications` returns the five classifications with
+Egeria's own definitions as their descriptions, a `requires_hypothesis` flag per
+entry, and the two bindings. The dropdown, the descriptions and the
+show-the-hypothesis-field rule are all built from it. This follows `/purposes`,
+which exists for exactly this reason: a copy in the frontend is the mirror that
+drifts, and here drift means offering a classification Egeria will reject or
+hiding one it accepts.
+
+Ten tests, each guard made to fail on purpose.
 
 **Phase 3 — local visibility.** `created_by` on `investigations`, backfilled
 to shared; filter `list_investigations()` and the reads that join through it.

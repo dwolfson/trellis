@@ -9775,6 +9775,12 @@ async function deleteCurateNote(noteId, entityType, slug) {
 const _CURRENT_INVESTIGATION_KEY = 're_current_investigation';
 let _investigations = [];
 let _investigationPurposes = [];
+// Served, not hardcoded — same reason as _investigationPurposes. The Project
+// classifications are Egeria's own types and the labels/descriptions are
+// Egeria's own prose; a copy here is the frontend/backend mirror that has
+// drifted twice in this codebase.
+let _investigationClassifications = [];
+let _investigationBindings = [];
 // 'active' | 'manage' — Manage lists every investigation regardless of status
 // with Resume/Suspend/Close controls. This exists because Close used to be a
 // one-way door: it hid the investigation from every list with no reopen route,
@@ -9831,12 +9837,15 @@ async function loadInvestigationsPanel() {
     // which sub-tab is active, and Active filters client-side down to the same
     // non-closed set the server's default already returns — one fetch, one
     // source of truth, instead of the two lists drifting.
-    const [invs, purp] = await Promise.all([
+    const [invs, purp, kinds] = await Promise.all([
       fetch('/api/investigations/?include_closed=true').then(r => r.json()),
       fetch('/api/investigations/purposes').then(r => r.json()),
+      fetch('/api/investigations/classifications').then(r => r.json()),
     ]);
     _investigations = Array.isArray(invs) ? invs : [];
     _investigationPurposes = (purp && purp.purposes) || [];
+    _investigationClassifications = (kinds && kinds.classifications) || [];
+    _investigationBindings = (kinds && kinds.bindings) || [];
   } catch (e) {
     view.innerHTML = `<div class="p-4 text-sm text-rose-400">Could not load investigations: ${_esc(String(e))}</div>`;
     return;
@@ -9972,20 +9981,39 @@ function _renderInvestigationsActiveTab() {
       </div>
       <div class="mb-2">${purposeBoxes}</div>
       <div class="mb-1 text-xs text-slate-500">
-        Kind — what shape of work this is. Carried onto the Egeria Project if this is ever
-        promoted, so it does not have to be asked again.
+        Kind — what shape of work this is. These are Egeria's own Project classifications,
+        carried onto the Egeria Project when this is promoted, so it is not asked again.
       </div>
-      <select id="inv-classification" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
-        <option value="StudyProject">Study — investigating something, no commitment yet</option>
-        <option value="Task">Task — one bounded piece of work</option>
-        <option value="PersonalProject">Personal — my own exploration</option>
-        <option value="Campaign">Campaign — a programme spanning several efforts</option>
+      <select id="inv-classification" onchange="_onInvClassificationChange()"
+              class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        ${_investigationClassifications.map(c => `
+          <option value="${_esc(c.name)}"${c.name === 'StudyProject' ? ' selected' : ''}>${_esc(c.label)} — ${_esc(c.description)}</option>
+        `).join('')}
+      </select>
+      <div id="inv-hypothesis-wrap" class="mb-2 hidden">
+        <input id="inv-hypothesis" placeholder="Hypothesis being tested (required for an Experiment)"
+               class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+        <div class="text-[11px] text-slate-500 mt-1">
+          Egeria's Experiment classification exists to record this. Without it the classification
+          would be published with its point missing, so it is required rather than optional.
+        </div>
+      </div>
+      <div class="mb-1 text-xs text-slate-500">
+        Where it lives — a separate question from the kind. Ad-hoc is not a kind of project;
+        it is the absence of one, and Egeria has no such type.
+      </div>
+      <select id="inv-binding" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        ${_investigationBindings.map(b => `
+          <option value="${_esc(b.name)}"${b.name === 'egeria' ? ' selected' : ''}>${_esc(b.label)} — ${_esc(b.description)}</option>
+        `).join('')}
       </select>
       <div></div>
       <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
       <div class="text-[11px] text-slate-500 mt-2">
-        Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
-        the record carries a nullable project GUID so that stays a fill-in rather than a migration.
+        The local row is created either way, with a nullable project GUID. Choosing
+        "Create in Egeria" records the intent; the Egeria Project itself is created by the
+        "create in Egeria →" action on the investigation, so a failure there never loses the
+        investigation. An ad-hoc one can be changed to Egeria later.
       </div>
     </div>`;
 }
@@ -10061,6 +10089,26 @@ function _focusInvestigationPurposes() {
   if (first) { first.focus(); first.scrollIntoView({block: 'center'}); }
 }
 
+// The hypothesis field appears only for classifications that require one,
+// driven by the served `requires_hypothesis` flag rather than by comparing
+// against a hardcoded "Experiment" here — a second copy of that rule in the
+// frontend is what drifts when a sixth classification arrives.
+//
+// It is CLEARED when hidden, not merely hidden: a value left in a hidden input
+// would be posted and rejected by the server ("hypothesis is only meaningful
+// for ['Experiment']"), and the user would see an error about a field they
+// cannot see.
+function _onInvClassificationChange() {
+  const sel = document.getElementById('inv-classification');
+  const wrap = document.getElementById('inv-hypothesis-wrap');
+  const field = document.getElementById('inv-hypothesis');
+  if (!sel || !wrap) return;
+  const chosen = _investigationClassifications.find(c => c.name === sel.value);
+  const needs = !!(chosen && chosen.requires_hypothesis);
+  wrap.classList.toggle('hidden', !needs);
+  if (!needs && field) field.value = '';
+}
+
 async function _createInvestigation() {
   const name = (document.getElementById('inv-name')?.value || '').trim();
   if (!name) { showToast('Name is required', 'error'); return; }
@@ -10073,6 +10121,8 @@ async function _createInvestigation() {
         description: (document.getElementById('inv-desc')?.value || '').trim(),
         purposes,
         project_classification: document.getElementById('inv-classification')?.value || 'StudyProject',
+        egeria_binding: document.getElementById('inv-binding')?.value || 'egeria',
+        hypothesis: (document.getElementById('inv-hypothesis')?.value || '').trim(),
       }),
     });
     if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }

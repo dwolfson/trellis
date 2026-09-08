@@ -2048,6 +2048,13 @@ class ProjectRegistry:
                     -- later does not have to ask again for something the user
                     -- already decided.
                     project_classification         TEXT DEFAULT 'StudyProject',
+                    -- The second axis (see EGERIA_BINDINGS): whether this
+                    -- investigation has, or is meant to have, an Egeria
+                    -- Project. `local` is the ad-hoc case.
+                    egeria_binding                 TEXT DEFAULT 'egeria',
+                    -- Experiment's defining attribute. Empty for every other
+                    -- classification, and required for that one.
+                    hypothesis                     TEXT DEFAULT '',
                     egeria_project_status          TEXT DEFAULT 'unset',
                     egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
@@ -2066,6 +2073,16 @@ class ProjectRegistry:
                 ("egeria_project_status", "TEXT DEFAULT 'unset'"),
                 ("egeria_free_text_name", "TEXT DEFAULT ''"),
                 ("project_classification", "TEXT DEFAULT 'StudyProject'"),
+                # Backfills to 'egeria' rather than 'local', and that is a
+                # judgement worth stating. Before this column existed, ad-hoc
+                # was not a choice anyone could make: every investigation was
+                # headed for Egeria eventually, whether or not it had got
+                # there. Defaulting the existing rows to 'local' would invent a
+                # deliberate decision nobody took and would hide them from
+                # anything that keys on the binding. 'egeria' says what was
+                # actually true of them.
+                ("egeria_binding", "TEXT DEFAULT 'egeria'"),
+                ("hypothesis", "TEXT DEFAULT ''"),
             ]:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
@@ -5434,20 +5451,77 @@ class ProjectRegistry:
         "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
     )
 
-    #: §1 mode 2's classifications. StudyProject is the default because it is
-    #: the least committal — an investigation that turns out to be a Campaign
-    #: can be re-classified, but starting everything as a Campaign would assert
-    #: a scale nobody chose.
-    PROJECT_CLASSIFICATIONS = ("PersonalProject", "Task", "StudyProject", "Campaign")
+    #: §1 mode 2's classifications — Egeria's own, mirrored exactly, because
+    #: they are sent as `initialClassifications` on the Project and a value
+    #: Egeria does not know would be rejected at that boundary. All five
+    #: `ProjectKind` subtypes from `OpenMetadataType.java` (model 0130), each
+    #: with Egeria's own definition:
+    #:
+    #:   PersonalProject  an informal project an individual created to help
+    #:                    them organize their own work
+    #:   StudyProject     a focused analysis of a topic, person, object or
+    #:                    situation
+    #:   Task             a self-contained, short activity, typically for one
+    #:                    or two people
+    #:   Campaign         a long-term strategic initiative implemented through
+    #:                    multiple related projects
+    #:   Experiment       a project testing a hypothesis, recorded in the
+    #:                    `hypothesis` attribute — see HYPOTHESIS_REQUIRED_FOR
+    #:
+    #: StudyProject is the default because it is **accurate** for most RE
+    #: investigations, not because it is the least committal. (It read as the
+    #: latter until 2026-09-07, which quietly encouraged reading it as "no
+    #: commitment yet" — a meaning Egeria's StudyProject does not carry. The
+    #: no-commitment case is `BINDING_LOCAL` below, which is a different axis.)
+    PROJECT_CLASSIFICATIONS = (
+        "PersonalProject", "Task", "StudyProject", "Campaign", "Experiment",
+    )
+
+    #: Classifications whose defining attribute must be supplied with them.
+    #: `Experiment` exists to record a hypothesis; creating one with an empty
+    #: hypothesis publishes a classification with its whole point missing —
+    #: the catalog-description form of "we did not measure this" rendered as a
+    #: measurement. See docs/investigation-classification-and-zoning-design.md §1.4.
+    HYPOTHESIS_REQUIRED_FOR = ("Experiment",)
+
+    #: Whether this investigation has, or is meant to have, an Egeria Project.
+    #:
+    #: This is a SECOND axis, deliberately not folded into
+    #: `project_classification`. "Ad-hoc" — investigate something without
+    #: committing to it — is not a kind of project Egeria has; it is the
+    #: absence of a Project, which this schema already models as a nullable
+    #: `egeria_project_guid`. Putting `adHoc` in the classification column
+    #: would put a non-type in a column whose values are sent to Egeria as
+    #: types, and it would be silently dropped or rejected there.
+    #:
+    #: The column records *intent*, which the GUID alone cannot: a promotion
+    #: that has not run yet and one that will never run look identical from a
+    #: null GUID, and only one of them is a deliberate choice.
+    BINDING_LOCAL = "local"      # ad-hoc: no Egeria Project, by choice
+    BINDING_EGERIA = "egeria"    # has one, or is meant to
+    EGERIA_BINDINGS = (BINDING_LOCAL, BINDING_EGERIA)
 
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
                              project_classification: str = "StudyProject",
+                             egeria_binding: str = "egeria",
+                             hypothesis: str = "",
                              egeria_project_guid: str = "",
                              egeria_project_qualified_name: str = "") -> dict:
-        """Create one investigation. `purposes` is validated against
-        ProjectCharter.purposes' vocabulary rather than accepting free text —
-        an unrecognised purpose would silently fail to rank anything later."""
+        """Create one investigation.
+
+        Every vocabulary here is validated rather than accepting free text.
+        `purposes` because an unrecognised purpose would silently fail to rank
+        anything later; `project_classification` because it is sent to Egeria
+        as a type name; `egeria_binding` because it decides whether anything is
+        sent at all.
+
+        `hypothesis` is required for the classifications in
+        `HYPOTHESIS_REQUIRED_FOR` and refused for the others — an `Experiment`
+        without one asserts a classification whose entire point is missing,
+        and a hypothesis on a `Task` would be silently discarded at publish
+        time, which is worse than being told.
+        """
         import json as _json
         import re as _re
         purposes = purposes or []
@@ -5461,6 +5535,22 @@ class ProjectRegistry:
                 f"unknown classification {project_classification!r}; "
                 f"valid: {list(self.PROJECT_CLASSIFICATIONS)}"
             )
+        if egeria_binding not in self.EGERIA_BINDINGS:
+            raise ValueError(
+                f"unknown egeria_binding {egeria_binding!r}; "
+                f"valid: {list(self.EGERIA_BINDINGS)}"
+            )
+        hypothesis = (hypothesis or "").strip()
+        if project_classification in self.HYPOTHESIS_REQUIRED_FOR and not hypothesis:
+            raise ValueError(
+                f"{project_classification} requires a hypothesis — it is the "
+                "attribute the classification exists to record"
+            )
+        if hypothesis and project_classification not in self.HYPOTHESIS_REQUIRED_FOR:
+            raise ValueError(
+                f"hypothesis is only meaningful for "
+                f"{list(self.HYPOTHESIS_REQUIRED_FOR)}, not {project_classification!r}"
+            )
         base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
         slug, n = base, 1
         while self.get_investigation(slug):
@@ -5471,11 +5561,13 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO investigations
                    (slug, display_name, description, purposes_json,
-                    project_classification, egeria_project_guid,
+                    project_classification, egeria_binding, hypothesis,
+                    egeria_project_guid,
                     egeria_project_qualified_name, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (slug, display_name, description, _json.dumps(purposes),
-                 project_classification, egeria_project_guid,
+                 project_classification, egeria_binding, hypothesis,
+                 egeria_project_guid,
                  egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)
@@ -5761,9 +5853,17 @@ class ProjectRegistry:
 
     def update_investigation(self, slug: str, *, display_name: str | None = None,
                              description: str | None = None,
-                             purposes: list[str] | None = None) -> dict | None:
-        """Rename or re-describe an investigation. The slug never changes —
-        members, the Egeria binding and inherited context rows reference it."""
+                             purposes: list[str] | None = None,
+                             hypothesis: str | None = None) -> dict | None:
+        """Rename, re-describe, or refine the hypothesis. The slug never
+        changes — members, the Egeria binding and inherited context rows
+        reference it.
+
+        Changing the *classification* is deliberately NOT here: it can move an
+        investigation between visibility regimes and is a flow with a report,
+        not an UPDATE (design §5). Sharpening an Experiment's hypothesis is a
+        different thing — it stays within one classification.
+        """
         import json as _json
         inv = self.get_investigation(slug)
         if not inv:
@@ -5772,6 +5872,19 @@ class ProjectRegistry:
             bad = [p for p in purposes if p not in self.VALID_PURPOSES]
             if bad:
                 raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+        if hypothesis is not None:
+            hypothesis = hypothesis.strip()
+            cls = inv.get("project_classification")
+            if cls not in self.HYPOTHESIS_REQUIRED_FOR:
+                raise ValueError(
+                    f"hypothesis is only meaningful for "
+                    f"{list(self.HYPOTHESIS_REQUIRED_FOR)}, not {cls!r}"
+                )
+            if not hypothesis:
+                raise ValueError(
+                    f"{cls} requires a hypothesis — clearing it would leave the "
+                    "classification asserting something with its point missing"
+                )
         with self._conn() as conn:
             if display_name is not None:
                 conn.execute("UPDATE investigations SET display_name = ? WHERE slug = ?",
@@ -5782,6 +5895,9 @@ class ProjectRegistry:
             if purposes is not None:
                 conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
                              (_json.dumps(purposes), slug))
+            if hypothesis is not None:
+                conn.execute("UPDATE investigations SET hypothesis = ? WHERE slug = ?",
+                             (hypothesis, slug))
             conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
                          (datetime.utcnow().isoformat(), slug))
         return self.get_investigation(slug)
@@ -5791,7 +5907,16 @@ class ProjectRegistry:
 
         Takes the same context shape the publish path speaks, so nothing
         downstream has to learn a new one.
+
+        **Binding a GUID also moves `egeria_binding` off `local`.** Asking for
+        an Egeria Project IS the decision that this is no longer ad-hoc, and
+        leaving the flag behind would produce a row that has a Project and
+        claims not to want one — a contradiction nothing downstream could
+        resolve. The reverse is not symmetric: unbinding does NOT set it back
+        to `local`, because losing or clearing a binding is not the same as
+        deciding to stay local, and only the second is a choice somebody made.
         """
+        guid = ctx.get("egeria_project_guid", "")
         with self._conn() as conn:
             conn.execute(
                 """UPDATE investigations
@@ -5799,11 +5924,16 @@ class ProjectRegistry:
                        egeria_project_qualified_name = ?, egeria_free_text_name = ?,
                        updated_at = ?
                    WHERE slug = ?""",
-                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
+                (ctx.get("status", "unset"), guid,
                  ctx.get("egeria_project_qualified_name", ""),
                  ctx.get("free_text_name", ""),
                  datetime.utcnow().isoformat(), slug),
             )
+            if guid:
+                conn.execute(
+                    "UPDATE investigations SET egeria_binding = ? WHERE slug = ?",
+                    (self.BINDING_EGERIA, slug),
+                )
         return self.get_investigation(slug)
 
     def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
