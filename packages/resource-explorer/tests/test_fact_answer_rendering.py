@@ -701,5 +701,10 @@ class TestArchitectureDiagramRendersAPicture:
         # The diagram block specifically, not just some other try/catch
         # elsewhere in this large function.
         diagram_start = fn.index("f.value.mermaid")
-        nearby = fn[diagram_start:diagram_start + 1500]
+        # 2026-09-08: the success branch grew a "shown: ... also on file: ..."
+        # perspective note (the detect/coupling split), pushing `catch`
+        # further from the window's start than before -- widened rather than
+        # tightened, since the guarantee this pins is about ordering, not a
+        # specific byte distance.
+        nearby = fn[diagram_start:diagram_start + 2200]
         assert "catch" in nearby

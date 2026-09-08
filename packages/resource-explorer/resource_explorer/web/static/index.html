@@ -11234,6 +11234,21 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
             `overflow:auto;background:#020617;border:1px solid #1e293b;border-radius:6px;` +
             `padding:8px;margin:4px 0;">${svg}</div>`
           );
+          // Two perspectives can exist (repo_arch_detect's structural view,
+          // repo_arch_coupling's clustered one — 2026-09-08, see
+          // _architecture_diagram_results' docstring for the live bug this
+          // caught: the two disagreed on component counts because nothing
+          // said which one a reader was looking at). Naming the one shown
+          // and what else is on file is the minimum so a reader isn't
+          // silently handed one of two answers with no sign the other
+          // exists — not a picker yet, just honesty about what "the"
+          // diagram is.
+          if (f.value.perspective) {
+            lines.push(`\n  <span class="text-slate-500">shown: ${_esc(f.value.perspective)}` +
+              ((f.value.other_perspectives_available || []).length
+                ? ` · also on file: ${_esc(f.value.other_perspectives_available.join(', '))}`
+                : '') + `</span>`);
+          }
         } else {
           // Same degrade-gracefully posture as renderAllDbViewsMermaid: one
           // diagram failing must not blank the rest of the chat answer, and
@@ -11381,6 +11396,10 @@ function _summariseFactValue(value) {
   const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes',
     'summary', 'depth', 'source_kind',
     'caption', 'mermaid', 'char_count', 'exceeds_renderer_limit', 'projection_depth',
+    // 'perspective'/'other_perspectives_available' joined 2026-09-08 with the
+    // detect/coupling diagram split — rendered as the "shown: ... also on
+    // file: ..." line in the diagram block itself, not as bullets here.
+    'perspective', 'other_perspectives_available',
     ..._factProseKeys(value), ..._factFindingArrayKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {

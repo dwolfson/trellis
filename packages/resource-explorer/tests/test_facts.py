@@ -167,6 +167,18 @@ class TestProvenance:
 
         assert FactLayer._provenance_for({"detail": {"source": "egeria"}}) == PROVENANCE_EGERIA
 
+    def test_a_recovered_diagram_is_marked_as_a_proposal_too(self):
+        """architecture_diagram draws its picture from the same detector
+        proposal architecture_recovery's `components` describes, but its own
+        value shape carries `mermaid`, not `components` -- so the check above
+        silently missed it. Caught live 2026-09-08 against
+        egeria-workspaces_git: the rendered diagram carried no "(proposed by
+        a detector, not yet validated)" caveat (index.html,
+        `f.provenance === 'recovered'`) because this function never saw it
+        as recovered at all -- it reported PROVENANCE_MEASURED, the same tag
+        an established fact gets."""
+        assert FactLayer._provenance_for({"mermaid": "graph TD\n a --> b"}) == PROVENANCE_RECOVERED
+
 
 class TestQuestionsTabWiring:
     """Clicking a catalogued question must not become an LLM prompt.

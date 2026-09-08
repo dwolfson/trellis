@@ -239,6 +239,30 @@ analyses:
     checks:
       - project_maturity
 
+  # `check_name` here is NOT a check in the pass/fail sense the rest of this
+  # section uses — it names which of two independent survey steps' component
+  # sets the row's diagram was rendered from (repo_arch_detect's structural
+  # view vs. repo_arch_coupling's import/co-change clustered one). Listed
+  # under `analyses` rather than `whole_analysis_only` because that vocabulary
+  # is real and queryable, not because a diagram decomposes into per-check
+  # verdicts. Added 2026-09-08 alongside the fix for the bug this silence
+  # caused: both steps wrote under the identical literal check_name
+  # "architecture_diagram", making the two diagrams indistinguishable and
+  # letting a reader silently pick whichever ran last — see
+  # arch_recovery/persist.py::_persist_diagram's docstring and
+  # repo_survey_definition_adapter.py::_architecture_diagram_results for the
+  # live discrepancy this caused (85 vs. 12 components) and the fix. Rows
+  # surveyed before this fix carry the literal check_name
+  # "architecture_diagram" (not listed as a check here — it predates the
+  # vocabulary this file exists to document, and _architecture_diagram_
+  # results falls back to it only for that historical data).
+  architecture_diagram:
+    findings_kind: architecture_diagram
+    source: surveyors/arch_recovery/persist.py:_persist_diagram
+    checks:
+      - detect
+      - coupling
+
 # Analyses with no per-check decomposition — they answer as a whole, so a
 # question joins to the analysis id directly and there is nothing finer to
 # name. Listed explicitly so "absent from this file" is never ambiguous
@@ -249,11 +273,6 @@ whole_analysis_only:
   # collapse per-component findings into one statement. Decomposing it back
   # into checks would undo the step.
   - architecture_summary
-  # Same reasoning, same shape: one finding per resource, a fixed check_name
-  # ("architecture_diagram", arch_recovery/persist.py's _persist_diagram) --
-  # a diagram is not decomposable into pass/fail checks any more than a
-  # summary sentence is.
-  - architecture_diagram
   - repository_health
   - dependency_analysis
   - language_file_classification

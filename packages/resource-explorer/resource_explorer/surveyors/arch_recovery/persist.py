@@ -563,7 +563,7 @@ def persist_ir(
     _persist_blueprints(registry, slug, cluster_sets, surveyed_at, run_scope)
 
     _persist_diagram(registry, slug, components, ports or [], wires or [],
-                     surveyed_at, run_scope)
+                     surveyed_at, run_scope, run_label)
 
     _persist_decisions(registry, slug, notes or [], surveyed_at, run_label, run_scope)
 
@@ -735,7 +735,7 @@ def clustering_target() -> int:
 
 def _persist_diagram(registry, slug: str, components: list[Component],
                      ports: list[dict], wires: list[dict],
-                     surveyed_at: str, run_scope: str) -> None:
+                     surveyed_at: str, run_scope: str, run_label: str) -> None:
     """Render the proposal as Mermaid and store it, once per run.
 
     **Why this is written at analysis time rather than at read time.** Under
@@ -752,6 +752,23 @@ def _persist_diagram(registry, slug: str, components: list[Component],
     curator nothing, and publishing one would imply a proposal exists where the
     run in fact found none. The component-count metric above already records
     that outcome, and it is the row designed to carry it.
+
+    `run_label` distinguishes WHICH perspective this diagram renders —
+    `repo_arch_detect` and `repo_arch_coupling` both call this (via
+    `persist_ir`) with their own, genuinely different component sets
+    (structural/deployment detection with ports+wires, vs. import/co-change
+    clustered boundaries with neither), and until 2026-09-08 both wrote under
+    the identical `check_name="architecture_diagram"` with no way to tell
+    them apart — `upsert_finding` is insert-only, so the rows just
+    accumulated, and a reader taking "the latest" got whichever step
+    happened to run last, silently discarding the other's diagram. Found live
+    against egeria-workspaces_git: the chat-typed answer and the
+    clicked-question answer disagreed on component counts (85 vs. 12) because
+    they were, without either path or the project owner knowing it, reading
+    two different diagrams. Stamped into `check_name` (not `detail`) so it is
+    queryable per check_registry.yaml's own convention, matching the
+    `{run_label}_component_count` metric name this same run already writes
+    above.
     """
     if not components:
         return
@@ -772,8 +789,8 @@ def _persist_diagram(registry, slug: str, components: list[Component],
     registry.upsert_finding(
         slug, DIAGRAM_KIND,
         [{
-            "check_name": "architecture_diagram",
-            "label": "Diagram",
+            "check_name": run_label,
+            "label": f"Diagram ({run_label})",
             "summary": caption,
             # Not a confidence claim. The diagram asserts nothing of its own —
             # it renders claims that each carry their own confidence, which is

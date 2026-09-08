@@ -12,23 +12,32 @@ shape `_renderEnvelopeMarkdown` (index.html) actually consumes — `mermaid`,
 from __future__ import annotations
 
 from resource_explorer.surveyors.repo_survey_definition_adapter import (
+    ANALYSIS_KINDS,
     _architecture_diagram_headline,
     _architecture_diagram_results,
 )
 
 
 class _Reg:
+    """`query_findings_all_runs`, not `query_findings` — the reader switched
+    2026-09-08 to see both perspectives' rows even when they were surveyed at
+    different times, which `query_findings`'s "only the single latest
+    surveyed_at across the whole kind" would silently drop one of."""
+
     def __init__(self, rows):
         self._rows = rows
 
-    def query_findings(self, slug, kind):
+    def query_findings_all_runs(self, slug, kind, scope_locator):
         assert kind == "architecture_diagram"
+        assert scope_locator == ""
         return self._rows
 
 
 def _row(caption="3 component(s) shown at depth 2.", mermaid="graph TD\n  a --> b",
-         char_count=None, exceeds=False, surveyed_at="2026-09-08T00:00:00"):
+         char_count=None, exceeds=False, surveyed_at="2026-09-08T00:00:00",
+         check_name="coupling"):
     return {
+        "check_name": check_name,
         "summary": caption,
         "surveyed_at": surveyed_at,
         "detail_json": {
@@ -43,7 +52,20 @@ def _row(caption="3 component(s) shown at depth 2.", mermaid="graph TD\n  a --> 
 class TestResultsReadBack:
     def test_never_run_reports_its_own_empty_state(self):
         r = _architecture_diagram_results(_Reg([]), "acme-widget")
-        assert r["state"] == "never_run"
+        assert r["_status"]["state"] == "never_run"
+
+    def test_never_run_is_not_content(self):
+        """Regression: the first version of this reader put `state`/`message`
+        at the top level, which facts.py's `_has_content` does NOT recognise
+        as envelope-only metadata -- combined with `live_read=True`, that made
+        a genuinely-absent diagram report MEASURED with a fake headline
+        instead of falling through to the real never-run gate. Caught live
+        2026-09-08 by TestAgainstRealCatalog (test_facts.py) against a
+        nonexistent repo, across every catalogued question at once."""
+        from resource_explorer.facts import _has_content
+
+        r = _architecture_diagram_results(_Reg([]), "acme-widget")
+        assert _has_content(r) is False
 
     def test_a_persisted_diagram_round_trips(self):
         r = _architecture_diagram_results(_Reg([_row()]), "acme-widget")
@@ -72,6 +94,55 @@ class TestResultsReadBack:
         assert r["mermaid"] == "graph TD\n  a --> b"
 
 
+class TestTwoPerspectives:
+    """Regression for the live bug found 2026-09-08 against
+    egeria-workspaces_git: repo_arch_detect and repo_arch_coupling each
+    persist their own diagram, and before this fix both wrote under the
+    identical check_name -- a reader taking "the latest" got whichever step
+    happened to run last, and the chat-typed answer (RAG, reading something
+    else entirely) disagreed with it: 85 components vs. 12."""
+
+    def test_coupling_is_preferred_when_both_are_present(self):
+        rows = [
+            _row(check_name="detect", caption="detect view", mermaid="graph TD\n  d"),
+            _row(check_name="coupling", caption="coupling view", mermaid="graph TD\n  c"),
+        ]
+        r = _architecture_diagram_results(_Reg(rows), "acme-widget")
+        assert r["caption"] == "coupling view"
+        assert r["perspective"] == "coupling"
+        assert r["other_perspectives_available"] == ["detect"]
+
+    def test_detect_answers_alone_when_coupling_has_not_run(self):
+        rows = [_row(check_name="detect", caption="detect view")]
+        r = _architecture_diagram_results(_Reg(rows), "acme-widget")
+        assert r["perspective"] == "detect"
+        assert r["other_perspectives_available"] == []
+
+    def test_pre_fix_legacy_rows_still_answer(self):
+        """Data surveyed before 2026-09-08 was written under the literal
+        check_name "architecture_diagram" (no run_label). It must not go
+        never-run just because the vocabulary changed under it."""
+        rows = [_row(check_name="architecture_diagram", caption="legacy view")]
+        r = _architecture_diagram_results(_Reg(rows), "acme-widget")
+        assert r["caption"] == "legacy view"
+        assert r["perspective"] == "architecture_diagram"
+
+    def test_each_perspective_keeps_its_own_latest_run(self):
+        """Two independent steps need not share a surveyed_at (the exact
+        reason query_findings_all_runs exists, per its own docstring) --
+        picking "coupling" must not accidentally pick an OLD coupling row
+        over a newer detect one; each perspective's own latest wins before
+        the preference order chooses between perspectives."""
+        rows = [
+            _row(check_name="coupling", caption="old coupling", surveyed_at="2026-08-01T00:00:00"),
+            _row(check_name="coupling", caption="new coupling", surveyed_at="2026-09-08T00:00:00"),
+            _row(check_name="detect", caption="newer detect", surveyed_at="2026-09-08T12:00:00"),
+        ]
+        r = _architecture_diagram_results(_Reg(rows), "acme-widget")
+        assert r["caption"] == "new coupling"  # coupling still preferred over detect
+        assert r["perspective"] == "coupling"
+
+
 class TestHeadline:
     def test_never_run_has_no_headline(self):
         assert _architecture_diagram_headline(_Reg([]), "acme-widget") is None
@@ -94,3 +165,28 @@ class TestHeadline:
         row = _row(caption="")
         h = _architecture_diagram_headline(_Reg([row]), "acme-widget")
         assert h["label"] == "Architecture diagram"
+
+
+class TestLiveRead:
+    """Regression for a real bug found live 2026-09-08 against
+    egeria-workspaces_git: two persisted architecture_diagram rows existed
+    and _architecture_diagram_results read them fine directly, but the
+    question-catalog click path still said "I can't answer that yet ...
+    Run: repo_arch_detect, repo_arch_coupling."
+
+    Cause: repo_arch_detect/repo_arch_coupling running gets recorded under
+    analysis_id "architecture_recovery" (that AnalysisKind's own id), never
+    under "architecture_diagram" -- so FactLayer.fact()'s run-attribution
+    gate (`facts.py`, keyed by analysis_id) never sees this id as having
+    run, and reports NEVER_RUN even with real rows sitting in the table.
+    `live_read=True` is the documented escape hatch for exactly this shape
+    (see AnalysisKindResults.live_read's own docstring, and api_structure's
+    2026-09-02 precedent) -- it tells FactLayer.fact() to read the table
+    first and only fall through to the run-attribution gate if genuinely
+    empty. Losing this flag on a future edit reintroduces the exact bug a
+    live registry query caught, silently, since query_findings still
+    returns data either way -- this test is what would have caught it."""
+
+    def test_architecture_diagram_is_declared_live_read(self):
+        kind = ANALYSIS_KINDS["architecture_diagram"]
+        assert kind.results.live_read is True
