@@ -48,6 +48,11 @@ REPOS = {
         "url": "https://github.com/odpi/egeria-workspaces.git",
         "collections": ["egeria_workspaces"],
         "phase": 2
+    },
+    "egeria-trellis": {
+        "url": "https://github.com/odpi/egeria-trellis.git",
+        "collections": ["trellis"],
+        "phase": 2
     }
 }
 

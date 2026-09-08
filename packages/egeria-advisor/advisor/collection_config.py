@@ -414,6 +414,57 @@ EGERIA_TEMPLATES_COLLECTION = CollectionMetadata(
 )
 
 
+# Phase 2c: Trellis itself — Resource Explorer, Egeria Advisor, and the shared
+# packages both apps sit on, so EA can answer questions about its own and RE's
+# codebase the same way it already answers questions about pyegeria/egeria.
+_DEFAULT_TRELLIS_TERMS = [
+    "trellis", "resource explorer", "resource-explorer", "egeria advisor",
+    "egeria-advisor", "survey definition", "survey", "canary", "bootstrap",
+    "leader election", "advisory lock", "worker role", "run queue",
+    "investigation", "governance zone", "draft zone", "reconciler",
+    "trellis-auth", "trellis-context", "trellis-querycache",
+    "trellis-artifact-tree", "portal sso", "login required", "admin panel",
+    "vector collection", "pgvector", "ingest", "clone_repos",
+]
+
+TRELLIS_COLLECTION = CollectionMetadata(
+    name="trellis",
+    description=(
+        "Trellis monorepo — Resource Explorer and Egeria Advisor apps, "
+        "their shared packages (trellis-auth, trellis-context, "
+        "trellis-querycache, trellis-artifact-tree), Dr.Egeria template "
+        "config, and design/backlog docs"
+    ),
+    source_repo="https://github.com/odpi/egeria-trellis.git",
+    source_paths=["."],
+    content_type=ContentType.MIXED,
+    language=Language.MIXED,
+    domain_terms=_get_collection_domain_terms("trellis", _DEFAULT_TRELLIS_TERMS),
+    related_collections=["pyegeria", "egeria_workspaces"],
+    include_patterns=["*.py", "*.md", "*.html", "*.js", "*.yaml", "*.yml"],
+    # Mirrors egeria_workspaces' exclusions plus this repo's own generated/
+    # vendored/state directories: .venv (uv-managed per-package envs),
+    # data/ (each app's own runtime cache/feedback/repos — see admin.py's
+    # _DATA_DIR fix above for why this must never recurse into itself),
+    # uv.lock (huge, not prose), coverage/build artifacts.
+    exclude_patterns=[
+        "**/node_modules/**", "**/.git/**", "**/venv/**", "**/.venv/**",
+        "**/__pycache__/**", "**/.pytest_cache/**", "**/data/**",
+        "**/dist/**", "**/build/**", "**/*.egg-info/**", "**/htmlcov/**",
+    ],
+    priority=8,
+    enabled=True,
+    # Large mixed monorepo, so same chunk sizing as egeria_workspaces (its
+    # closest structural analogue: also source_paths=["."] over a whole repo)
+    # -- content_type differs (MIXED here, not EXAMPLES: trellis is mostly
+    # real application source, not deployment examples).
+    chunk_size=1536,
+    chunk_overlap=300,
+    min_score=0.38,
+    default_top_k=6,
+)
+
+
 # Collection registry
 ALL_COLLECTIONS: Dict[str, CollectionMetadata] = {
     "pyegeria": PYEGERIA_COLLECTION,
@@ -426,6 +477,7 @@ ALL_COLLECTIONS: Dict[str, CollectionMetadata] = {
     "egeria_general": EGERIA_GENERAL_COLLECTION,
     "egeria_workspaces": EGERIA_WORKSPACES_COLLECTION,
     "egeria_templates": EGERIA_TEMPLATES_COLLECTION,
+    "trellis": TRELLIS_COLLECTION,
 }
 
 
@@ -454,11 +506,12 @@ def get_phase1_collections() -> List[CollectionMetadata]:
 
 
 def get_phase2_collections() -> List[CollectionMetadata]:
-    """Get Phase 2 (Java + Docs + Workspaces) collections."""
+    """Get Phase 2 (Java + Docs + Workspaces + Trellis) collections."""
     return [
         EGERIA_JAVA_COLLECTION,
         EGERIA_DOCS_COLLECTION,
         EGERIA_WORKSPACES_COLLECTION,
+        TRELLIS_COLLECTION,
     ]
 
 
