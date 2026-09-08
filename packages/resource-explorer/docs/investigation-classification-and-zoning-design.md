@@ -13,6 +13,14 @@ about Egeria below was read out of the Egeria 6 source in
 in each case, because two of the findings are the opposite of what the type
 model suggests.
 
+**§3.3 was rewritten later the same day after the project owner corrected it.**
+The original claimed zone security lists could only be seeded from a config file
+and that per-user zones were infeasible; there is a Security Officer API that
+writes them at runtime. The underlying error is worth keeping in view: the
+source was read correctly and the *running system* was not consulted, so a
+checked-in config file stood in for live state — and it turned out not even to
+match it. Everything in §3.3 is now read from the live platform.
+
 ---
 
 ## 0. Summary of the findings that shape the design
@@ -252,77 +260,175 @@ zoneMembership = ["resource-explorer-private", "<creator userId>"]
 One shared secured zone, and the per-user part is carried by the userId
 string. No per-user configuration at any scale.
 
-### 3.3 Where the security list lives — and why this answers "can we create a personal zone?"
+### 3.3 Creating a private zone — corrected 2026-09-07
 
-Asked directly: **can RE create a personal zone for a user who does not have
-one, and assign them to it?** The answer is in two halves and they differ.
+**An earlier version of this section said the `associatedSecurityList` could
+only come from the deployment's `.omsecrets` file, that RE could therefore
+create only a "decorative" zone, and that per-user zones were infeasible. All
+three were wrong.** The correction came from the project owner pointing at
+pyegeria's `security_officer` module; everything below was then verified live
+and read-only against the running platform.
 
-**The `GovernanceZone` metadata element: yes.** RE already does this —
-`egeria_identity.ensure_draft_zone_exists()`, leader-elected and one-shot from
-`worker.py:231`. Creating another one per user is mechanically easy.
+**There is a write API, and it targets exactly the store the check reads.**
 
-**The enforcement: no, and this is the important half.**
-`getAssociatedSecurityListForZone` (line 911) reads *only* from
-`secretsStoreConnectorMap` — the platform's `SecretsStoreConnector`. It never
-consults open metadata. The `associatedSecurityList` that makes a zone
-*secured* lives in the deployment's `.omsecrets` file, under
-`secretsCollections.userDirectory.securityAccessControls`:
+    SecurityOfficer.set_security_access_control(platform_name, body)
+      -> POST /platforms/{guid}/security-access-control
+      -> OpenMetadataPlatformSecurityVerifier.setSecurityAccessControl(...)
+      -> userSecurityConnector.setSecurityAccessControl(...)
 
-```yaml
-      security:
-        controlDisplayName: Security Zone
-        controlTypeName: GovernanceZone
-        associatedSecurityList:
-          DEFAULT:
-            - securityManager
-            - governanceEngine
-            - integrationConnector
+and `getAssociatedSecurityListForZone` reads that same connector. The body is
+the shape the file uses, because the file is a *seed* for the store rather than
+the store itself:
+
+```json
+{"class": "SecurityAccessControlRequestBody",
+ "securityAccessControl": {
+   "controlName": "resource-explorer-private",
+   "controlTypeName": "GovernanceZone",
+   "associatedSecurityList": {"DEFAULT": ["..."]}}}
 ```
 
-(`egeria-workspaces-fs/compose-configs/egeria-freshstart/secrets/egeria-user-directory.omsecrets`,
-lines 697–735.)
+**Read live, so this is not a reading of the source.** Against
+`qs-view-server`, platform `Quickstart OMAG Server Platform`:
 
-There is no Egeria API that writes this. So **a zone RE creates at runtime is
-decorative** — it exists as a catalog element, has no security list, and is
-therefore *ignored* by the check. An element zoned into it would look private
-in every UI and be readable by everyone. That is strictly worse than no zone,
-because it manufactures the exact false reassurance this whole section is
-guarding against.
+| control | what the live store holds |
+|---|---|
+| `egeria-runtime` | `READ: [openMetadataMember, allUsers]`, `DEFAULT: [runtimeManager, omagspcatnpa, defaultplatformnpa, lemmiestage, garygeeke, peterprofile]` |
+| `security` | a long `DEFAULT` list of teams and service accounts |
+| `digital-products` | **no `associatedSecurityList` at all** — unsecured |
+| `resource-explorer-private` | `None` — does not exist yet, and can be created |
 
-**Which is why per-user zones are the wrong answer and are not needed.** The
-`userId.equals(zoneName)` shortcut exists precisely so private content does
-not require a zone per person. The design therefore is:
+Two things fall out of that table beyond the main correction.
 
-- **One** secured zone, `resource-explorer-private`, added once to the
-  deployment's `.omsecrets` at install time, with an `associatedSecurityList`
-  granting a group **nobody holds** — so the zone denies universally and the
-  userId entry is the only key.
-- Every private element carries `["resource-explorer-private", "<userId>"]`.
-- Adding a user requires **nothing**. There is no per-user zone to create, no
-  assignment step, and no question of "does this user have a personal zone
-  yet" — the answer is always yes, because their userId is the zone.
+* **The live store differed from the file I had been reading — and that was
+  not config drift, it was me reading the wrong file.** I read
+  `compose-configs/**egeria-freshstart**/secrets/` and probed the running
+  **quickstart** platform. Two different environments, so of course they
+  disagreed. Retracted rather than left standing: an unexplained "the running
+  config does not match the repo" would send the next reader hunting a drift
+  that does not exist. The real lesson is narrower and duller — check which
+  environment you are in before comparing a file to a platform. §3.3a is what
+  that check produced.
+* **§8's `digital-products` observation is independently confirmed** — the live
+  quickstart store really does hold that zone with no `associatedSecurityList`,
+  so the check ignores it. Reached from the running platform rather than from a
+  file's indentation, which is the evidence the original observation lacked.
 
-Two cautions on the security list's contents:
+**Who may write one.** `setSecurityAccessControl` is gated by
+`validateUserAsOperatorForPlatform`, which tests membership of the
+`platform-services` control: `serverOperator`, `infrastructureTeam`,
+`devOpsTeam`, `dataManagementTeam`, `securityTeam`, `serverAdministrator`,
+`runtimeManager`, `metadataArchitect`, `platform`.
 
-- Do **not** grant `instanceOwnersGroup`. `isUserAnOwner()` (line 1260)
-  returns **true when the element has no `Ownership` classification at all**
-  — "if no ownership classification is assigned to the element, then the user
-  is considered to be an owner." RE does stamp Ownership, but a single
-  unstamped element would then be readable by anyone. Same fail-open shape;
-  don't build on it.
-- Do **not** grant `openMetadataMember` (which the broad READ lists use) —
-  that is effectively everyone.
+Read live **against quickstart**: `erinoverview` — the account RE already runs
+as — holds four of them (`dataManagementTeam`, `metadataArchitect`,
+`serverAdministrator`, `serverOperator`), as do `garygeeke`, `peterprofile` and
+`lemmiestage`. **That is a fact about quickstart, not about Egeria** — see
+§3.3a, which is the difference between "Phase 5 works here" and "Phase 5 ships".
 
-**If per-user zones are ever genuinely wanted** — e.g. to set per-user
-`otherProperties.defaultZones` / `publishZones`, which `getZonesForUser()`
-reads for new elements — it means writing the `.omsecrets` file. Feasible
-without a restart: `SecretsStoreConnector` line 169 computes
-`refreshTimeInterval * 60 * 1000`, so the freshstart config's
-`refreshTimeInterval: 10` is **ten minutes**, and the store re-reads on its
-own. But that file also holds `clearPassword` entries for every account on
-the platform, and giving RE write access to it is a trust escalation well out
-of proportion to the feature. **Recommend against; use the shared-zone design
-above.**
+**So: can we create a personal zone for a user who has none, and assign them to
+it? Yes.** `set_security_access_control` with
+`associatedSecurityList: {"DEFAULT": ["<userId>"]}` creates a working, enforced,
+per-user zone at runtime. Naming individual users in a security list is already
+the established pattern here — `lemmiestage`, `garygeeke` and `peterprofile` sit
+in `egeria-runtime`'s own `DEFAULT` list.
+
+**Which leaves a real design choice rather than a constraint.** Two workable
+shapes:
+
+1. **One shared secured zone + the userId shortcut.**
+   `zoneMembership = ["resource-explorer-private", "<userId>"]`. One control
+   created once; adding a user needs nothing, because `validateZoneAccess`
+   returns true on `userId.equals(zoneName)` before consulting any list.
+2. **A zone per user.** `set_security_access_control` per person, with the user
+   named in `DEFAULT`. More faithful to how the rest of the deployment expresses
+   access, inspectable through the Security Officer API, and extensible — a
+   personal zone can later be shared with a named colleague, which (1) cannot
+   express at all.
+
+**Recommendation: (1) first, with (2) available.** (1) has no per-user
+provisioning step and therefore no per-user failure mode, which matters because
+a personal zone that silently failed to be created is precisely the fail-open
+case §3.4 describes. (2) becomes worth building the first time somebody wants to
+share a private investigation with one named person, and nothing in (1)
+forecloses it.
+
+**The trap in (1) is unchanged and still load-bearing:** the userId entry only
+ever *grants*. Denial needs at least one zone the platform recognises as
+secured, or `securedZoneCount` stays 0 and everyone falls through to `return
+true`. Whichever shape is chosen, `resource-explorer-private` must exist as a
+real control with a real list, and that list must not contain a broad group —
+not `openMetadataMember` (effectively everyone), and not `instanceOwnersGroup`,
+because `isUserAnOwner` returns **true when an element has no `Ownership`
+classification at all**.
+
+### 3.3a Quickstart is not freshstart — and Phase 5 must be designed for the empty one
+
+Raised by the project owner, and it is the difference between a feature that
+works on this machine and one that ships. **Everything measured in §3.3 was read
+from the running quickstart platform** (`docker ps` confirms
+`quickstart-egeria-main`), which preloads the Coco Pharmaceuticals directory.
+Freshstart preloads almost none of it.
+
+Counting the two seed directories:
+
+| | quickstart (`coco-user-directory`) | freshstart (`egeria-user-directory`) |
+|---|---:|---:|
+| user accounts | 318 | 73 |
+| security access controls | 36 | 11 |
+| **GovernanceZone controls** | **23** | **3** (`egeria-runtime`, `digital-products`, `security`) |
+| `erinoverview` present | yes | **no** |
+| humans holding `serverOperator` | several | **none** |
+
+So under freshstart:
+
+* **RE's default account does not exist.** `erinoverview` is a Coco Pharma demo
+  persona. Freshstart creates its users at runtime through its own Egeria-backed
+  admin (`/api/admin/egeria-users` — see
+  `egeria-workspaces-fs/compose-configs/ENVIRONMENT_DIVERGENCE.md`), and none of
+  them is granted `serverOperator` by default.
+* **The zone RE wants does not exist and neither do 20 others.** Whatever Phase 5
+  needs, it has to create.
+* **There is an operator identity, but it is a service account.** The runtime
+  volume's directory defines a `serverOperator` SecurityRole whose members are
+  `platform` and `rover` (a `DIGITAL` account) — not a human, and not the account
+  RE is configured with. (The runtime volume and the compose-config seed have
+  themselves diverged: the seed's `bootstrap` has no `securityGroups` at all,
+  the runtime one has ten. Read the runtime volume when asking what is true of a
+  running freshstart.)
+
+**And there is no permissive fallback.** `OpenMetadataSecurityConnector`'s base
+`validateUserAsOperatorForPlatform` does nothing but
+`throwUnauthorizedPlatformAccess`. The only way through is real membership. So on
+a stock freshstart, `set_security_access_control` fails for every human account —
+which is correct behaviour, and is a genuine bootstrap ordering problem, because
+operator rights are themselves granted *through* the same store.
+
+#### What this means for Phase 5
+
+1. **Zone provisioning is a deployment concern with an RE fallback, not an RE
+   feature.** RE should attempt to create `resource-explorer-private` once
+   (leader-elected, like `ensure_draft_zone_exists`), and when it is not an
+   operator, say so precisely — naming the control it wanted, the groups that
+   would authorise it, and that an operator must run the one-line grant — rather
+   than failing quietly or crashing.
+2. **"Could not create the zone" must disable private investigations, loudly.**
+   This is the fail-open case from §3.4 wearing its most dangerous costume: if
+   the control does not exist, `zoneMembership = ["resource-explorer-private",
+   "<userId>"]` is an *unrecognised* zone, therefore ignored, therefore visible
+   to everyone — while RE's own UI says private, because Phase 3's filter is
+   local and works regardless. The two halves must not be able to disagree
+   silently: if the zone is not confirmed present, private investigations must
+   either refuse to publish or be labelled as RE-only-private.
+3. **Freshstart needs a documented setup step**, and it belongs in
+   `egeria-workspaces-fs` alongside the rest of the freshstart configuration:
+   grant RE's service account `serverOperator` (or add it to `platform-services`'
+   list), after which RE provisions its own zone. That is one line of deployment
+   config — much less than the cross-repo change the pre-correction §3.3 claimed,
+   but not nothing, and it is the reason this section exists.
+4. **Test on freshstart before calling Phase 5 done.** Quickstart's 23 preloaded
+   zones and 318 users make almost anything work. The environment that proves the
+   feature is the empty one.
 
 ### 3.4 Fail-open, and why anchoring is the answer
 
@@ -627,13 +733,37 @@ one intact.
 the `Anchors` classification actually carries `zoneMembership` through, live.
 *Prerequisite for Phase 5 being safe; independently valuable for lineage.*
 
-**Phase 5 — zoning.** Requires a deployment change first: add
-`resource-explorer-private` to the `.omsecrets` `securityAccessControls` with
-a security list nobody holds. Then zone Personal/Experiment investigations as
-`["resource-explorer-private", "<creator userId>"]` and Task/Campaign/Study
-into `publish_zones()`. **Gate on the live two-user denial test** in §3.4 —
-if a second user can still read a private SurveyReport, the phase is not
-done, regardless of what the code does.
+**Phase 5 — zoning.** Create `resource-explorer-private` through
+`SecurityOfficer.set_security_access_control`, in the same one-shot
+leader-elected shape `ensure_draft_zone_exists` already uses — and, unlike that
+one, **verify the control reads back**, because a zone element without a control
+is the decorative case. Then zone Personal/Experiment investigations as
+`["resource-explorer-private", "<creator userId>"]` and Task/Campaign/Study into
+`publish_zones()`.
+
+*No cross-repo change is needed on quickstart, where RE's account is already a
+platform operator — that was the correction in §3.3. On **freshstart** it needs
+one line of deployment config to grant RE's account `serverOperator`, and until
+that lands the zone cannot be created at all: see §3.3a, including why "could not
+create the zone" has to disable private publishing loudly rather than proceed.*
+
+**Gate on the live two-user denial test** in §3.4. This is not a formality: the
+whole design turns on `validateZoneAccess` returning *false* for somebody else,
+and a zoning scheme never observed to deny anyone is not known to work — the
+same trap as Phase 1's read-back, which returned "could not tell" on every call
+while passing all five of its tests. Non-operator accounts exist for exactly
+this: `calliequartile`, `tanyatidie` and `faithbroker` are all real users with
+no platform-services group. Publish a SurveyReport from a private investigation
+as one user, then read it as one of them, and require the read to FAIL before
+calling the phase done.
+
+Also decide, before writing the code, whether "private" follows the
+classification or a separate flag — §7's open question. Phase 5 is where that
+becomes load-bearing, because it decides what Phase 6 has to move.
+
+**And run it on freshstart, not only quickstart.** Quickstart's 23 preloaded
+zones and 318 users make almost anything work; the environment that proves the
+feature is the empty one.
 
 **Phase 6 — reclassification.** The flow in §5, with the tightening direction
 built verify-then-report.
@@ -675,14 +805,23 @@ built verify-then-report.
 
 ## 8. Observation for `egeria-workspaces-fs` (not changed here)
 
-In `compose-configs/egeria-freshstart/secrets/egeria-user-directory.omsecrets`,
-the `digital-products` zone's `READ:` and `DEFAULT:` keys sit at the same
-indent as `otherProperties` rather than nested under an
-`associatedSecurityList:` key, as they correctly are for `egeria-runtime` and
-`security` immediately above and below it. As written, that zone has no
-`associatedSecurityList` at all, so `getAssociatedSecurityListForZone` returns
-null and the zone is **ignored** — unsecured. Its own `description` says
-"This is an unsecured governance zone", so the outcome may well be intended;
-but the presence of the two keys suggests someone meant them to bind, and the
-config reads as if they do. Flagged rather than changed, since the correct
-resolution depends on which of the two was meant.
+The `digital-products` zone's `READ:` and `DEFAULT:` keys sit at the same indent
+as `otherProperties` rather than nested under an `associatedSecurityList:` key,
+as they correctly are for `egeria-runtime` and `security` immediately above and
+below it. As written, that zone has no `associatedSecurityList` at all, so
+`getAssociatedSecurityListForZone` returns null and the zone is **ignored** —
+unsecured.
+
+**In both environments**, checked after §3.3a made the distinction matter:
+`compose-configs/egeria-freshstart/secrets/egeria-user-directory.omsecrets` and
+`compose-configs/egeria-quickstart/secrets/coco-user-directory.omsecrets` carry
+the identical shape. And it is not merely a reading of the files — the live
+quickstart store returns `digital-products` with no `associatedSecurityList` key
+at all, so the indentation really does reach the connector this way.
+
+Its own `description` says "This is an unsecured governance zone", so the
+outcome may well be intended; but the presence of the two keys suggests someone
+meant them to bind, and the config reads as if they do. Flagged rather than
+changed, since the correct resolution depends on which of the two was meant —
+and now with live evidence of the effect rather than an inference from
+whitespace.
