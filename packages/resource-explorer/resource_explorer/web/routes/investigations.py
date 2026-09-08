@@ -49,6 +49,12 @@ class InvestigationUpdate(BaseModel):
     hypothesis: str | None = None
 
 
+class ReclassifyRequest(BaseModel):
+    project_classification: str
+    #: Required when moving TO Experiment and it has none already.
+    hypothesis: str = ""
+
+
 class EgeriaProjectBinding(BaseModel):
     """The same context shape the publish path already speaks, so folding the
     session-wide control into the investigation teaches nothing downstream a
@@ -357,6 +363,41 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{slug}/reclassify")
+async def reclassify_investigation(slug: str, req: ReclassifyRequest) -> dict:
+    """Change the classification, moving the Egeria elements with it.
+
+    The owner's point 7. Not a PATCH, because visibility follows the
+    classification: this can move an investigation between visibility regimes,
+    which is several Egeria writes that fail independently, so it answers with a
+    per-element report rather than the updated row.
+
+    Read `still_public` before `ok`. On a tightening it names elements that
+    should be private and are not — the one outcome a person must not miss, and
+    the one that RE's own screens cannot show them, because Phase 3's filter is
+    local and will happily render the investigation as private regardless.
+    """
+    from resource_explorer.surveyors.investigation_reclassifier import (
+        InvestigationReclassifier,
+    )
+
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+
+    # In a thread for the same reason promote is: pyegeria's synchronous methods
+    # drive their own event loop and raise inside a running one. `asyncio.to_thread`
+    # copies the context, so `current_user_id()` still resolves — measured
+    # 2026-09-08, and a raw thread would NOT (see test_private_zoning).
+    import asyncio
+
+    result = await asyncio.to_thread(
+        InvestigationReclassifier(reg).reclassify, slug,
+        req.project_classification, req.hypothesis,
+    )
+    return result.as_dict()
 
 
 @router.post("/{slug}/relink-members")

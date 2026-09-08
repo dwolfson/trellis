@@ -6132,6 +6132,55 @@ class ProjectRegistry:
                          (datetime.utcnow().isoformat(), slug))
         return self.get_investigation(slug)
 
+    def set_investigation_classification(self, slug: str, classification: str, *,
+                                         hypothesis: str = "") -> dict | None:
+        """Change an investigation's classification. LOCAL ONLY.
+
+        Deliberately not exposed through `update_investigation`, and deliberately
+        not the whole operation. Because visibility follows the classification
+        (`PRIVATE_CLASSIFICATIONS`), changing it can move the investigation
+        between visibility regimes — which is several Egeria writes that fail
+        independently. `surveyors/investigation_reclassifier` is the flow that
+        owns that, and it calls this LAST, once Egeria already holds the new
+        state.
+
+        Calling this directly changes what RE shows without changing what Egeria
+        serves. That is legitimate for a purely local investigation and a bug
+        anywhere else, which is why the reclassifier is the intended caller.
+
+        The hypothesis rules match `create_investigation`: required when moving
+        TO a classification that needs one, cleared when moving away from it —
+        a hypothesis left on a `Task` would be stored and then silently dropped
+        at publish time.
+        """
+        inv = self.get_investigation(slug)
+        if not inv:
+            return None
+        if classification not in self.PROJECT_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown classification {classification!r}; "
+                f"valid: {list(self.PROJECT_CLASSIFICATIONS)}")
+        hypothesis = (hypothesis or "").strip()
+        if classification in self.HYPOTHESIS_REQUIRED_FOR:
+            hypothesis = hypothesis or (inv.get("hypothesis") or "").strip()
+            if not hypothesis:
+                raise ValueError(
+                    f"{classification} requires a hypothesis — it is the attribute "
+                    "the classification exists to record")
+        else:
+            # Cleared rather than carried: it is meaningless on the new
+            # classification and `_initial_classifications` would not send it,
+            # so keeping it would be a stored value that silently never reaches
+            # Egeria.
+            hypothesis = ""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE investigations SET project_classification = ?, hypothesis = ?, "
+                "updated_at = ? WHERE slug = ?",
+                (classification, hypothesis, datetime.utcnow().isoformat(), slug),
+            )
+        return self.get_investigation(slug)
+
     def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
         """Bind (or unbind) an investigation to an Egeria Project.
 

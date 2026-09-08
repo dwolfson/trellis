@@ -954,6 +954,34 @@ between "refuse" and "allow" on a control that is genuinely settling) but
 surprising if someone hits it.
 
 
+### Private zoning — the one thing users will hit
+
+**An investigation promoted into the publish zones cannot be made private again.**
+Not "needs care" — cannot. Moving an element out of a zone requires
+`AccessOperation.PUBLISH` on its ORIGINAL zones, and `egeria-runtime`'s security
+list does not include RE's Egeria account. Confirmed live 2026-09-08:
+`OPEN-METADATA-SECURITY-403-005`. The reclassifier reports it precisely and
+refuses to change the classification, so nothing lies — but the work stays
+public.
+
+The reverse direction is fine: RE can move out of its own private zone because
+the `userId` entry satisfies the PUBLISH check.
+
+So privacy is effectively a decision to make **before promotion**. Options if
+that turns out to bite:
+
+1. **Grant RE's account PUBLISH on the publish zones** — a deployment change
+   (`associatedSecurityList`, `PUBLISH` or `DEFAULT` key), and the one that makes
+   the feature symmetric. It also widens what RE can do to elements it did not
+   create, which is why it is not the automatic answer.
+2. **Have an operator do the move.** `garygeeke` and `peterprofile` hold the
+   rights; this is what unstuck the test elements. Fine for a rare correction,
+   not a workflow.
+3. **Surface it at creation** — say plainly, when a shared investigation is
+   promoted, that it cannot be made private afterwards. Cheapest, and honest.
+
+Nothing decided; the owner should pick. (3) is worth doing regardless.
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
