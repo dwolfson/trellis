@@ -10731,9 +10731,13 @@ const _QUESTION_STATUS_LEGEND = [
 ];
 
 function _questionStatusLegendHtml() {
-  return `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
+  // `divide-x` (Tailwind) draws the separator itself between flex children
+  // rather than this having to place '|' characters by hand — automatically
+  // skips before the first item, and each item's own `px-2` gives the rule
+  // room to breathe instead of butting against the text on both sides.
+  return `<div class="flex flex-wrap items-center divide-x divide-slate-700 text-[10px] text-slate-500">
     ${_QUESTION_STATUS_LEGEND.map(s =>
-      `<span class="inline-flex items-center gap-1" title="${_esc(s.label)}">
+      `<span class="inline-flex items-center gap-1 px-2 first:pl-0" title="${_esc(s.label)}">
          <span class="${s.color}">${s.icon}</span>${_esc(s.label)}
        </span>`).join('')}
   </div>`;
