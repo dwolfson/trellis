@@ -968,10 +968,47 @@ exists to prevent, reproduced inside the code meant to prevent it. Unreadable
 members are now reported and block a tightening; a loosening still proceeds,
 because there the failure direction is safe.
 
-Sixteen tests, every guard made to fail on purpose — including one that had to
-be strengthened first: the lateral-change test started in `egeria-runtime`, which
-*is* `publish_zones()`, so a wrongly-applied re-zone would have been a no-op and
-invisible.
+**Completed 2026-09-08 with the Egeria metadata half.** The first version moved
+zones and the local row but never changed the Egeria Project's own kind
+classification — §5 lists declassify/classify as steps 1 and 2, and only the
+zones had been built. So an investigation promoted as `Task` and reclassified to
+`PersonalProject` had correct visibility and a Project still claiming to be a
+Task. `_move_kind_classification` now swaps it, after the zones, and a failure
+there is reported as a **metadata inconsistency rather than an exposure** —
+visibility went first and is correct.
+
+**The `Investigation` marker is safe by construction.** The project owner added
+an Egeria classification called `Investigation` (2026-09-08) as an orthogonal
+marker that coexists with the kind and does not drive zones. The swap removes
+the **old kind by name**, gated on `PROJECT_CLASSIFICATIONS`, so the marker —
+along with `Anchors`, `Ownership` and `ZoneMembership` — survives. Verified
+live: `['Task']` -> `['PersonalProject']` with `anchor`, `ownership` and
+`zoneMembership` all still present afterwards.
+
+**Two bugs the live run found here too:**
+
+*The read-back was asking the wrong client.*
+`MetadataExpert.get_metadata_element_by_guid` returns the raw element shape;
+`_confirm_classification` was measured against
+`ProjectManager.get_project_by_guid`'s `elementHeader.projectKinds`. Reading with
+the wrong one made the check return "could not tell" on **every** call —
+correctly refusing to guess, and checking nothing. The third time in this feature
+that a verification step has been the thing that was broken.
+
+*The old classification was never removed*, so the Project carried BOTH kinds
+and a check that only asked "is the new one present?" passed.
+`declassify_metadata_element` raises when its Optional `body` is omitted
+(pyegeria, logged as ISSUE-93 rather than patched); the body is now passed, and
+the swap additionally asserts the OLD kind is gone rather than only that the new
+one arrived.
+
+Twenty-one tests, every guard made to fail on purpose — including three that had
+to be strengthened first: the lateral-change test started in `egeria-runtime`,
+which *is* `publish_zones()`, so a wrongly-applied re-zone would have been a
+no-op and invisible; the marker-safety test read the source and passed a sabotage
+run that stripped every classification; and the fakes accepted a `None` body,
+which made them more forgiving than the system they stand for, so removing the
+ISSUE-93 workaround passed. All three now model what was measured.
 
 ---
 

@@ -80,6 +80,10 @@ class ReclassificationResult:
     #: [{"guid", "reason"}] — reports that could not be moved. On a tightening
     #: these are STILL PUBLIC and the caller must be told so plainly.
     reports_unmovable: list[dict] = field(default_factory=list)
+    #: Whether the Egeria Project's KIND classification was swapped and read
+    #: back. Separate from `project_rezoned`: zones are visibility, this is
+    #: metadata, and they fail independently.
+    egeria_kind_changed: bool = False
     #: Whether the local classification was updated. False on any Egeria
     #: failure during a tightening — see the module docstring on ordering.
     local_applied: bool = False
@@ -113,6 +117,7 @@ class ReclassificationResult:
             "to_classification": self.to_classification,
             "direction": self.direction,
             "project_rezoned": self.project_rezoned,
+            "egeria_kind_changed": self.egeria_kind_changed,
             "reports_moved": self.reports_moved,
             "reports_unmovable": self.reports_unmovable,
             "local_applied": self.local_applied,
@@ -175,6 +180,100 @@ class InvestigationReclassifier:
             # unverified rather than counted as moved.
             return False, "could not read the zones back to confirm the change"
         return True, ""
+
+    def _move_kind_classification(self, guid: str, from_kind: str, to_kind: str,
+                                  hypothesis: str) -> tuple[bool, str]:
+        """Swap the Project's KIND classification in Egeria.
+
+        `(moved, reason)`. Zones are handled separately and first — this is the
+        metadata half, and a failure here is an inconsistency (Egeria says Task,
+        RE says PersonalProject) rather than a leak.
+
+        **Only the kind is touched.** The old classification is removed by name,
+        and only when it is one of `PROJECT_CLASSIFICATIONS`. Everything else on
+        the Project survives untouched: `Anchors`, `Ownership`, `ZoneMembership`,
+        and in particular the **`Investigation` marker** the project owner added
+        (2026-09-08) — that is an orthogonal marker meaning "this Project is an
+        investigation", it coexists with the kind, and it must not be disturbed
+        by a change of kind. A blanket "remove the classifications" would have
+        taken it with them.
+
+        Verified by reading `elementHeader.projectKinds` back, the same measured
+        shape `egeria_investigation_publisher._confirm_classification` uses.
+        """
+        from resource_explorer.surveyors.egeria_investigation_publisher import (
+            _confirm_classification, _initial_classifications,
+        )
+
+        try:
+            from pyegeria import ProjectManager
+            from pyegeria.omvs.metadata_expert import MetadataExpert
+
+            from resource_explorer.config import get_config
+            from resource_explorer.egeria_identity import apply_identity, caller_credentials
+
+            cfg = get_config().egeria
+            identity = caller_credentials()
+            me = MetadataExpert(cfg.view_server, cfg.platform_url,
+                                cfg.user_id, cfg.user_password)
+            # A ProjectManager as well, ONLY for the read-back. The two clients
+            # return different payload shapes for the same element:
+            # `MetadataExpert.get_metadata_element_by_guid` gives the raw form
+            # (`classifications`, `elementGUID`, ...) while
+            # `ProjectManager.get_project_by_guid` gives the
+            # `elementHeader.projectKinds` form that `_confirm_classification`
+            # was measured against. Reading with the wrong one made the check
+            # report "could not tell" on every call — correctly refusing to
+            # guess, but checking nothing. Found live 2026-09-08.
+            pm = ProjectManager(cfg.view_server, cfg.platform_url,
+                                cfg.user_id, cfg.user_password)
+            for client in (me, pm):
+                apply_identity(client, identity)
+        except Exception as exc:
+            return False, f"could not reach Egeria: {type(exc).__name__}: {exc}"
+
+        from resource_explorer.registry import ProjectRegistry
+
+        if from_kind and from_kind in ProjectRegistry.PROJECT_CLASSIFICATIONS:
+            try:
+                # The explicit body is REQUIRED despite the parameter being
+                # declared Optional: pyegeria calls `.model_dump()` on it
+                # unconditionally, so omitting it raises
+                # `AttributeError: 'NoneType' object has no attribute
+                # 'model_dump'` and the classification is silently left in
+                # place. Measured live 2026-09-08 and logged as an upstream
+                # issue rather than patched here, per this repo's standing rule.
+                me.declassify_metadata_element(
+                    guid, from_kind, {"class": "MetadataSourceRequestBody"})
+            except Exception as exc:
+                # Not fatal on its own: the old kind may already be absent (an
+                # investigation promoted before Phase 1 carries none at all), and
+                # the add below is what actually matters.
+                log.info("could not remove the %s classification from %s (it may not "
+                         "be there): %s", from_kind, guid, exc)
+        props = _initial_classifications(to_kind, hypothesis)[to_kind]
+        try:
+            me.classify_metadata_element(guid, to_kind, {
+                "class": "NewClassificationRequestBody", "properties": props})
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+        confirmed = _confirm_classification(pm, guid, to_kind)
+        if confirmed == to_kind:
+            # The OLD kind must also be gone. Egeria happily carries both, and
+            # `_confirm_classification` only asks whether the new one is
+            # present — so without this a failed declassify would report
+            # success over a Project claiming to be two kinds at once. Seen
+            # live before the declassify body was fixed.
+            still = _confirm_classification(pm, guid, from_kind)
+            if from_kind and still == from_kind:
+                return False, (f"the {to_kind} classification was added but "
+                               f"{from_kind} is still there — the Project now carries "
+                               "both kinds")
+            return True, ""
+        if confirmed == "":
+            return False, f"Egeria does not carry the {to_kind} classification after the change"
+        return False, "could not read the classification back to confirm the change"
 
     def _target_zones(self, direction: str, owner: str) -> list[str]:
         from resource_explorer.egeria_identity import private_zones, publish_zones
@@ -324,6 +423,20 @@ class InvestigationReclassifier:
                 res.reports_moved.append(guid)
             else:
                 res.reports_unmovable.append({"guid": guid, "reason": why})
+
+        # The metadata half, after the zones. Order matters: zones are the
+        # safety property and go first, so a failure here leaves the
+        # visibility correct and only the classification stale.
+        moved, why = self._move_kind_classification(
+            project_guid, res.from_classification, to_classification,
+            hypothesis or (inv.get("hypothesis") or ""))
+        res.egeria_kind_changed = moved
+        if not moved:
+            res.errors.append(
+                f"the Egeria Project still carries {res.from_classification!r} rather "
+                f"than {to_classification!r}: {why}. Visibility was handled "
+                "separately and is correct; this is a metadata inconsistency, not an "
+                "exposure.")
 
         # Local last, and only when Egeria actually holds the new state. On a
         # tightening, applying it anyway would make RE claim private over
