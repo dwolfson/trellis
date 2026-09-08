@@ -10888,7 +10888,8 @@ async function _answerQuestionInChat(question) {
       `/api/analyses/facts/${encodeURIComponent(slug)}/answer?question=${encodeURIComponent(question)}`);
     if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
     const env = await res.json();
-    appendMessage('assistant', await _renderEnvelopeMarkdown(env, slug, { question, msgId }), { id: msgId, question });
+    const factWrap = appendMessage('assistant', await _renderEnvelopeMarkdown(env, slug, { question, msgId }), { id: msgId, question });
+    _appendFactAnswerFooter(factWrap, env);
   } catch (e) {
     appendMessage('assistant', `Could not answer that: ${String(e.message || e)}`);
   } finally {
@@ -10913,6 +10914,12 @@ async function _chatReplaceAnswer(msgId, slug) {
     if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
     const env = await res.json();
     body.innerHTML = marked.parse(await _renderEnvelopeMarkdown(env, slug, { question, msgId }));
+    // Re-running an answer replaces the BODY, so the previous footer is still
+    // attached to the wrapper and now describes a stale set of measurements.
+    // Drop it and rebuild from the new envelope.
+    const reWrap = body.parentElement;
+    reWrap?.querySelectorAll('[data-fact-footer]').forEach(el => el.remove());
+    _appendFactAnswerFooter(reWrap, env);
     document.getElementById('messages')?.scrollTo(0, document.getElementById('messages').scrollHeight);
   } catch (e) {
     showToast('error', `Could not refresh the answer: ${_esc(e.message || String(e))}`, 6000);
@@ -13319,6 +13326,87 @@ function _evidenceSummaryHtml(data, slug, question) {
       </button>
       <div id="${uid}" class="hidden mt-1">${_compiledEvidenceHtml(data, slug, question)}</div>
     </div>`;
+}
+
+// The fact path's counterpart to `_evidenceSummaryHtml`.
+//
+// A measurement-composed answer has no retrieved corpus sections, so "evidence
+// used — N section(s)" is meaningless for it. What it DOES have is the
+// measurements it was composed from, and those are the equivalent thing: what
+// was consulted, when, and by which analysis.
+//
+// Known and unknown are counted separately and shown separately, because the
+// difference is the whole point of the fact layer — "we measured this and it
+// was empty" and "nothing has measured this" are different answers, and a
+// footer that merged them would undo the distinction the envelope exists to
+// preserve.
+function _measurementsSummaryHtml(env) {
+  const facts = (env || {}).facts || [];
+  if (!facts.length) return '';
+  const known = facts.filter(f => f.is_known);
+  const unknown = facts.filter(f => !f.is_known);
+  const uid = `mv-${++_chatResultsSeq}`;
+  const row = (f) => `
+    <div class="py-1 border-b border-slate-800/60 last:border-0">
+      <div class="flex items-baseline gap-2">
+        <span class="font-mono text-[10px] ${f.is_known ? 'text-cyan-400' : 'text-slate-500'}">${_esc(f.analysis_id || '?')}</span>
+        <span class="text-[10px] ${f.is_known ? 'text-slate-400' : 'text-amber-500/80'}">${_esc(f.state || (f.is_known ? 'measured' : 'never run'))}</span>
+        ${f.last_run_at ? `<span class="text-[10px] text-slate-600 ml-auto">${_esc(f.last_run_at)}</span>` : ''}
+      </div>
+      ${f.headline ? `<div class="text-[11px] text-slate-300 mt-0.5">${_esc(f.headline)}</div>` : ''}
+      ${f.provenance ? `<div class="text-[10px] text-slate-500">${_esc(f.provenance)}</div>` : ''}
+      ${!f.is_known && f.note ? `<div class="text-[10px] text-slate-500 italic">${_esc(f.note)}</div>` : ''}
+    </div>`;
+  return `<div class="mt-2 pt-2 border-t border-slate-700/50">
+      <button onclick="document.getElementById('${uid}').classList.toggle('hidden')"
+              class="text-[10px] text-slate-500 hover:text-cyan-400 transition-colors">
+        📎 measurements used — ${known.length} measured${unknown.length ? `, ${unknown.length} not established` : ''}
+      </button>
+      <div id="${uid}" class="hidden mt-1 pl-2 border-l border-slate-700">
+        ${known.map(row).join('')}
+        ${unknown.length ? `<div class="text-[10px] text-slate-500 mt-1 mb-0.5">Not established — nothing has measured these:</div>${unknown.map(row).join('')}` : ''}
+      </div>
+    </div>`;
+}
+
+// The footer under a fact-composed answer: measurements, then the same three
+// vote buttons a RAG answer gets.
+//
+// Both were missing entirely until 2026-09-08 — the two answer paths render
+// through different code, and only the streaming one appended a footer. So an
+// answer you got by CLICKING a catalogued question could not be rated, while
+// the identical question typed into the box could. The feedback corpus was
+// therefore silently biased toward typed questions, which is exactly the sort
+// of gap that never shows up as an error.
+function _appendFactAnswerFooter(wrap, env) {
+  if (!wrap || !env) return;
+  const ev = _measurementsSummaryHtml(env);
+  if (ev) {
+    const d = document.createElement('div');
+    d.innerHTML = ev;
+    // Marked so a re-run can find and remove the STALE footer before adding
+    // the new one. Without the marker the re-run path's cleanup selector
+    // matches nothing and the message ends up with two footers describing
+    // different measurement sets — the older one indistinguishable from the
+    // current answer's.
+    if (d.firstElementChild) {
+      d.firstElementChild.setAttribute('data-fact-footer', '');
+      wrap.appendChild(d.firstElementChild);
+    }
+  }
+  // `query_hash` comes from the server (facts.py::_query_hash) rather than
+  // being computed here, so a vote lands under the SAME key the query path
+  // uses for the same question text.
+  if (env.query_hash) {
+    const fb = document.createElement('div');
+    fb.className = 'mt-1.5 flex gap-2';
+    fb.setAttribute('data-fact-footer', '');
+    fb.innerHTML = `
+      <button onclick="recordFeedback('${env.query_hash}', 1, this)" title="Helpful" class="text-xs text-slate-500 hover:text-green-400 transition-colors">👍</button>
+      <button onclick="recordFeedback('${env.query_hash}', 0, this)" title="Partially correct — right idea, but incomplete or partly off" class="text-xs text-slate-500 hover:text-amber-400 transition-colors">😐</button>
+      <button onclick="recordFeedback('${env.query_hash}', -1, this)" title="Not helpful" class="text-xs text-slate-500 hover:text-red-400 transition-colors">👎</button>`;
+    wrap.appendChild(fb);
+  }
 }
 
 async function sendQuery() {
