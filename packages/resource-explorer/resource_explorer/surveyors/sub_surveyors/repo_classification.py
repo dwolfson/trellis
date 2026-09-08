@@ -166,7 +166,13 @@ class RepoClassificationSurveyor(BaseSurveyor):
 
         findings = [{
             "check_name": "repo_role",
-            "label": report.primary_role,
+            # Not report.primary_role: `summary` already leads with it
+            # ("documentation (also tutorial...) — architecture recovery:
+            # run"), so that was rendering as "**documentation** —
+            # documentation (also tutorial...)" — the same word twice, the
+            # first copy adding nothing. A fixed, generic label describes
+            # what this finding IS rather than repeating the value it holds.
+            "label": "Role",
             "summary": summary,
             "confidence": 60,
             "detail": {"roles": roles, "notes": report.notes},
@@ -184,11 +190,23 @@ class RepoClassificationSurveyor(BaseSurveyor):
                        # a run needs no special state.
                        **({"result_status": gate_status} if gate_status else {})},
         }]
+        # `label: item.kind` on these four loops, not the outcome/fixed word
+        # ("not-found"/"confirms"/item.outcome) they used to carry: with
+        # several artifacts checked per repo, a bold header repeating the
+        # same near-constant word ("in-repo", "in-repo", "in-repo", ...)
+        # tells a reader nothing they could not already see, while `kind`
+        # (readme/api-reference/deployment/...) — the one field that
+        # actually differs per bullet — sat buried mid-sentence instead.
+        # `summary` drops its own leading "{kind}: " for the same reason:
+        # once kind is the label, repeating it there was the same word
+        # twice again, one level down (confirmed live 2026-09-07: "**in-
+        # repo** — readme: in-repo — README.md" on a documentation repo,
+        # every one of three artifact bullets bold-headed "in-repo").
         for item in report.missing:
             findings.append({
                 "check_name": f"expected_{item.kind}",
-                "label": "not-found",
-                "summary": f"{item.kind}: expected for a {report.primary_role}, not located "
+                "label": item.kind,
+                "summary": f"expected for a {report.primary_role}, not located "
                            f"in-repo, in a sibling repo, or on the doc site",
                 "confidence": 60,
                 "detail": {"kind": item.kind, "expected": True},
@@ -196,8 +214,8 @@ class RepoClassificationSurveyor(BaseSurveyor):
         for item in report.found:
             findings.append({
                 "check_name": f"expected_{item.kind}",
-                "label": item.outcome,
-                "summary": f"{item.kind}: {item.outcome} — {item.evidence}",
+                "label": item.kind,
+                "summary": f"{item.outcome} — {item.evidence}",
                 "confidence": 60,
                 "detail": {"kind": item.kind, "evidence": item.evidence, "date": item.date},
             })
@@ -215,8 +233,8 @@ class RepoClassificationSurveyor(BaseSurveyor):
         for item in report.confirmations:
             findings.append({
                 "check_name": f"confirmed_{item.kind}",
-                "label": "confirms",
-                "summary": f"{item.kind}: absent, as expected for a {report.primary_role} "
+                "label": item.kind,
+                "summary": f"absent, as expected for a {report.primary_role} "
                            f"— supports the role rather than counting against it",
                 "confidence": 60,
                 "detail": {"kind": item.kind},
@@ -224,8 +242,8 @@ class RepoClassificationSurveyor(BaseSurveyor):
         for item in report.unexpected:
             findings.append({
                 "check_name": f"unexpected_{item.kind}",
-                "label": item.outcome,
-                "summary": f"{item.kind}: {item.outcome} — present though not expected "
+                "label": item.kind,
+                "summary": f"{item.outcome} — present though not expected "
                            f"for a {report.primary_role}",
                 "confidence": 60,
                 "detail": {"kind": item.kind, "outcome": item.outcome},
