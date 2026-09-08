@@ -11315,7 +11315,24 @@ function _factFindingLines(value) {
 
 function _summariseFactValue(value) {
   if (!value || typeof value !== 'object') return '';
+  // 'summary'/'depth'/'source_kind' joined the administrative skip list
+  // 2026-09-07, confirmed against exactly one analysis (architecture_summary
+  // -- repo_survey_definition_adapter.py's `_architecture_summary_results`
+  // is the only results reader returning these as TOP-LEVEL keys; `depth`
+  // appears elsewhere only nested inside per-component array items, which
+  // this loop's Object.entries never reaches). Reported live: a repo with
+  // little classified structure filled the 6-field cap with "summary: ...",
+  // "depth: suitability", "source_kind: architecture_recovery" -- three
+  // fields already covered by f.headline (architecture_summary always
+  // defines one whenever this value exists) or meaningless without survey-
+  // internals context -- crowding out `documented`/`protocols`/`third_party`,
+  // the fields that would have actually answered "what does this serve".
+  // The dedicated Analysis-tab metrics panel (_renderMetricsResults) reads
+  // the same value directly, not through this function, so it still shows
+  // every field -- this only trims what chat's one-line-plus-bullets answer
+  // repeats or cannot use.
   const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes',
+    'summary', 'depth', 'source_kind',
     ..._factProseKeys(value), ..._factFindingArrayKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {
