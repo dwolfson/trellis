@@ -67,4 +67,31 @@ MLflow is reachable, experiment `compiled_vs_rag` with one run per condition.
 
 ## Runs
 
-*(none yet)*
+### full-20260908 — 3 repos × 52 questions × 2 conditions = 312 rows, 0 errors
+
+Answerer `llama3.1:8b`, tier `dev`, no perspectives; judge `qwen2.5:32b`. Results in
+`data/experiments/compiled_vs_rag/results.jsonl`; MLflow experiment `compiled_vs_rag`, runs
+`full-20260908-compiled` / `full-20260908-rag`.
+
+| metric | compiled | rag |
+|---|---:|---:|
+| answers_question (0–2) | 1.03 | 0.56 |
+| cites_evidence | 26% | 0% |
+| claims_missing_result | 0% | 0% |
+| acknowledges_limits | 39% | 19% |
+| unsupported_claims (mean) | 1.13 | 1.17 |
+| latency, median | 11.6 s | 10.2 s |
+
+Paired per (repo, question): compiled scored higher on `answers_question` in 80 pairs, lower in 16,
+tied in 60; mean difference +0.46 on a 0–2 scale. The direction held on every repo
+(egeria_python_git 0.98 vs 0.81, kafka 1.00 vs 0.40, docling 1.10 vs 0.48) and on every
+answering kind, including `human` (1.10 vs 0.48) and `gap` (1.00 vs 0.22), where the compiled
+condition's advantage is that it says what is missing. Replayability: the agent's compile id equalled
+the reference compile's id in 156 of 156 compiled rows.
+
+**Read with the caveats above.** One answering model, one judge, one afternoon. Two things to
+check by hand before believing the numbers: (1) `claims_missing_result` never fired in either
+condition, which is either good news or a rubric that cannot detect it — sample the RAG rows for
+analyses listed as gaps and see whether the judge missed any; (2) the 16 pairs where RAG scored
+higher, to learn what the packed evidence displaced. Unsupported claims did not improve, so the
+compiler changes what the model can say, not how disciplined it is about saying more.
