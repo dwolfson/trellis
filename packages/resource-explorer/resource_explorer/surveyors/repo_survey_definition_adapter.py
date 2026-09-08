@@ -2433,6 +2433,114 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
         return {"state": "", "detail": ""}
 
 
+def _architecture_verdict_coverage(registry, slug: str) -> dict:
+    """How much of what's been proposed has actually been curator-reviewed —
+    `docs/curated-architecture-answers-design.md` §6 item 1, the first piece
+    of that design to ship.
+
+    The gap this closes: every architecture chat answer (component list,
+    summary, diagram) reads identically whether zero components have ever
+    been looked at by a curator or all of them have — `_verdict_view` above
+    is already merged onto each component `_architecture_recovery_results`
+    returns, but nothing rolled that up into a number a reader could see
+    without counting bullets themselves. "Query egeria or the curator
+    results" (project owner, 2026-09-08) is exactly this: verdicts are
+    already the curator's own record, just never counted.
+
+    One `get_component_verdicts` call — already paid for by
+    `_architecture_recovery_results` — covers BOTH `verdict_target` values
+    (component and blueprint verdicts share one table, see that method's
+    own docstring in registry.py), so this needs no second query for
+    blueprints, only a second set of scope keys to check it against.
+
+    Blueprint totals are read via `query_findings_all_runs` on
+    `BLUEPRINT_KIND`, not the single-latest-surveyed_at `query_findings` —
+    `_persist_blueprints` is called from `persist_ir`, which both
+    `repo_arch_detect` and `repo_arch_coupling` invoke independently (their
+    own component sets, their own clustering pass, not guaranteed to share
+    a `surveyed_at`) — the same reason `_architecture_diagram_results` had
+    to switch off `query_findings` in the 2026-09-08 fix one commit before
+    this one. Deduped per (perspective, label): two perspectives can
+    legitimately both propose a blueprint, and only the latest row for each
+    should count, not every run that ever wrote one.
+    """
+    from resource_explorer.surveyors.arch_recovery.persist import BLUEPRINT_KIND
+
+    verdicts = registry.get_component_verdicts("repo", slug)
+
+    def _bucket(scope_keys: set, target: str) -> dict:
+        total = len(scope_keys)
+        accepted = rejected = retyped = 0
+        for key in scope_keys:
+            v = verdicts.get(key)
+            if not v or v.get("verdict_target", "component") != target:
+                continue
+            verdict = v.get("verdict")
+            if verdict == "accepted":
+                accepted += 1
+            elif verdict == "rejected":
+                rejected += 1
+            elif verdict == "retyped":
+                # A retype IS a curator decision (they looked, and corrected
+                # the type) — counted toward `reviewed`, not folded into
+                # `accepted`, since "retyped" is a real third outcome
+                # `COMPONENT_VERDICTS` names and collapsing it would hide
+                # that a correction happened, not just an acceptance.
+                retyped += 1
+        reviewed = accepted + rejected + retyped
+        return {"total": total, "accepted": accepted, "rejected": rejected,
+                "retyped": retyped, "reviewed": reviewed,
+                "pending": total - reviewed}
+
+    component_scopes = set(
+        registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"))
+
+    bp_rows = [r for r in (registry.query_findings_all_runs(slug, BLUEPRINT_KIND, "") or [])
+               if r.get("check_name") == "candidate_blueprint"]
+    latest_bp_by_key: dict[str, dict] = {}
+    for r in bp_rows:
+        detail = _json_or_empty(r.get("detail_json"))
+        # Matches record_blueprint_verdict's own scope_locator convention
+        # (web/routes/curate.py) exactly — this key must join against the
+        # SAME string a verdict was recorded under, or every blueprint
+        # verdict silently reads as pending regardless of what a curator
+        # actually decided.
+        key = f"{detail.get('perspective', '')}::{r.get('label', '')}"
+        if key not in latest_bp_by_key or r.get("surveyed_at", "") >= latest_bp_by_key[key].get("surveyed_at", ""):
+            latest_bp_by_key[key] = r
+    blueprint_scopes = set(latest_bp_by_key)
+
+    return {
+        "components": _bucket(component_scopes, "component"),
+        "blueprints": _bucket(blueprint_scopes, "blueprint"),
+    }
+
+
+def _architecture_verdict_coverage_sentence(coverage: dict) -> str:
+    """The prose form of `_architecture_verdict_coverage`'s dict — kept
+    separate so a caller wanting the raw numbers (e.g. a future UI badge)
+    isn't forced to parse a sentence back apart. Omits a clause entirely
+    for zero-total (nothing proposed of that kind at all) rather than
+    reporting "0 of 0 reviewed", which states nothing."""
+    clauses = []
+    for kind_name, bucket in (("component", coverage.get("components", {})),
+                              ("blueprint", coverage.get("blueprints", {}))):
+        total = bucket.get("total", 0)
+        if not total:
+            continue
+        reviewed = bucket.get("reviewed", 0)
+        parts = []
+        if bucket.get("accepted"):
+            parts.append(f"{bucket['accepted']} accepted")
+        if bucket.get("rejected"):
+            parts.append(f"{bucket['rejected']} rejected")
+        if bucket.get("retyped"):
+            parts.append(f"{bucket['retyped']} retyped")
+        detail = f" ({', '.join(parts)})" if parts else ""
+        clauses.append(f"{reviewed} of {total} {_plural(kind_name, total)} reviewed{detail}")
+    return "; ".join(clauses)
+
+
 def _verdict_view(row: dict | None) -> dict | None:
     """The subset of an architecture_component_verdicts row a component card
     needs — None when no curator has ruled on this component yet, so a
@@ -2700,6 +2808,8 @@ def _architecture_recovery_results(
     for c in displayed:
         c["candidate_blueprints"] = scope_to_blueprints.get(c["path"], [])
 
+    _verdict_coverage = _architecture_verdict_coverage(registry, slug)
+
     return {
         # Carried so the renderer can call the curator-verdict endpoints
         # (/api/curate/component-verdicts/repo/{slug}) without a second
@@ -2756,6 +2866,18 @@ def _architecture_recovery_results(
             if partial and scoped else ""
         ),
         "surveyed_at": surveyed_at,
+        # docs/curated-architecture-answers-design.md §6 item 1: how much of
+        # what's above has actually been curator-reviewed, not just
+        # proposed. Deliberately NOT named `*_detail` — `_factProseKeys`
+        # (index.html) would promote it to REPLACE `f.headline`
+        # ("N components recovered") outright as the chat answer
+        # (`proseAnswer || f.headline`, and `||` picks proseAnswer
+        # unconditionally once non-empty) rather than adding to it. The
+        # sentence form is spliced into `_architecture_recovery_headline`'s
+        # own label below instead, so both survive in one string — same
+        # reasoning as `_architecture_diagram_results`' caption a few
+        # functions down.
+        "verdict_coverage": _verdict_coverage,
     }
 
 
@@ -2919,7 +3041,16 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
         return {"label": f"Unverified — {', '.join(result['unverified'])} could not read this repo",
                 "status": "warn"}
     n = result["component_count"]
-    return {"label": f"{n} {_plural('component', n)} recovered", "status": "info" if n else "warn"}
+    label = f"{n} {_plural('component', n)} recovered"
+    # docs/curated-architecture-answers-design.md §6 item 1 — stated even
+    # when nothing has been reviewed ("0 of 109 reviewed"), on purpose: that
+    # IS the information the design doc's gap was about. Sentence omits its
+    # own clause when a bucket's total is 0, so a repo with no blueprints
+    # proposed doesn't get a "0 of 0 blueprints reviewed" non-statement.
+    coverage_sentence = _architecture_verdict_coverage_sentence(result.get("verdict_coverage", {}))
+    if coverage_sentence:
+        label = f"{label} — {coverage_sentence}"
+    return {"label": label, "status": "info" if n else "warn"}
 
 
 #: Preference order for which perspective's diagram answers by default when
@@ -3004,8 +3135,24 @@ def _architecture_diagram_results(registry, slug: str) -> dict:
             detail = json.loads(detail)
         except Exception:  # noqa: BLE001
             detail = {}
+
+    # docs/curated-architecture-answers-design.md §6 item 1. Appended to
+    # `caption` itself (which is also this fact's `headline`/answer text via
+    # _architecture_diagram_headline below) rather than added as its own
+    # `*_detail` key: `_factProseKeys` (index.html) would promote a second
+    # `*_detail` string to the chat answer OUTRIGHT REPLACING the headline
+    # (`proseAnswer || f.headline`, and `||` picks proseAnswer unconditionally
+    # once non-empty) — the component-count description would silently drop
+    # out of the visible answer, leaving only the coverage clause. One string
+    # is the only way both survive.
+    coverage_sentence = _architecture_verdict_coverage_sentence(
+        _architecture_verdict_coverage(registry, slug))
+    caption = row.get("summary", "")
+    if coverage_sentence:
+        caption = f"{caption} — {coverage_sentence}." if caption else f"{coverage_sentence}."
+
     return {
-        "caption": row.get("summary", ""),
+        "caption": caption,
         "surveyed_at": row.get("surveyed_at", ""),
         "mermaid": detail.get("mermaid", ""),
         "char_count": detail.get("char_count", 0),

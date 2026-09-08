@@ -22,15 +22,35 @@ class _Reg:
     """`query_findings_all_runs`, not `query_findings` — the reader switched
     2026-09-08 to see both perspectives' rows even when they were surveyed at
     different times, which `query_findings`'s "only the single latest
-    surveyed_at across the whole kind" would silently drop one of."""
+    surveyed_at across the whole kind" would silently drop one of.
 
-    def __init__(self, rows):
+    Also stubs the calls `_architecture_verdict_coverage` makes (same day's
+    follow-on, docs/curated-architecture-answers-design.md §6 item 1) —
+    every diagram read now also checks curator-verdict coverage to append to
+    its caption. Empty by default (no verdicts, nothing clustered), so
+    existing caption assertions in this file are unaffected unless a test
+    opts in via `verdicts=`/`blueprint_rows=`."""
+
+    def __init__(self, rows, verdicts=None, blueprint_rows=(), component_scopes=()):
         self._rows = rows
+        self._verdicts = verdicts or {}
+        self._blueprint_rows = list(blueprint_rows)
+        self._component_scopes = list(component_scopes)
 
     def query_findings_all_runs(self, slug, kind, scope_locator):
-        assert kind == "architecture_diagram"
         assert scope_locator == ""
+        if kind == "architecture_blueprints":
+            return self._blueprint_rows
+        assert kind == "architecture_diagram"
         return self._rows
+
+    def get_component_verdicts(self, entity_type, entity_slug):
+        return self._verdicts
+
+    def query_finding_scopes(self, slug, kind, check_name=None):
+        if kind == "architecture_recovery" and check_name == "component":
+            return self._component_scopes
+        return []
 
 
 def _row(caption="3 component(s) shown at depth 2.", mermaid="graph TD\n  a --> b",
