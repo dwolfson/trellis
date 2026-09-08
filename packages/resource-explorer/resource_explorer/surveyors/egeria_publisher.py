@@ -170,7 +170,22 @@ class EgeriaPublisher:
             # element *this person's draft*, and a reader who catches the
             # catalogue mid-publish should see an owned draft rather than an
             # unowned element in the deployment's normal zones.
-            self._stamp_governance(asset_guid, report_guid)
+            # The asset and the report are stamped DIFFERENTLY when the
+            # resource is private, and conflating them is a real bug this
+            # nearly shipped with.
+            #
+            # The asset is `SourceControlLibrary::<github_url>` — ONE per repo,
+            # shared by every investigation that references it. Zoning it
+            # private would hide a public repository from everyone else in the
+            # catalog because one person put it in a personal investigation:
+            # design §3.6, "an investigation zones what it produced, never what
+            # it references". A privacy feature that deletes other people's
+            # access is a data-loss feature.
+            #
+            # The report IS produced by this investigation, so it takes the
+            # private zones, and its annotations inherit them by anchor.
+            self._stamp_governance(report_guid)
+            self._stamp_governance(asset_guid, produced=False)
             link_counts = self._create_annotations(result, report_guid)
         # Best-effort, deliberately outside the guard_linkage block above —
         # this is local bookkeeping for the Survey Results dashboards'
@@ -620,7 +635,7 @@ class EgeriaPublisher:
             + (status.get("remedy") or "See Admin → Egeria for the zone's status.")
         )
 
-    def _stamp_governance(self, *element_guids: str) -> dict:
+    def _stamp_governance(self, *element_guids: str, produced: bool = True) -> dict:
         """`Ownership` and `ZoneMembership` on everything this publish created.
 
         Plan §4: everything trellis publishes gets `Ownership` set to the
@@ -646,6 +661,16 @@ class EgeriaPublisher:
         # curate authorisation reads, so the real owner would lose control of
         # their own artifact to a service account.
         owner = getattr(self, "_private_owner", "") or identity.user_id
+        zones = self.zone_names
+        if not produced:
+            # A REFERENCED element — the repo's own asset. It is not this
+            # investigation's to hide or to own, however private the
+            # investigation is, so it gets the ordinary treatment: the
+            # deployment's draft zone and the publishing identity.
+            from resource_explorer.egeria_identity import draft_zone
+
+            owner = identity.user_id
+            zones = [draft_zone()]
         results: dict[str, dict] = {}
         client = None
         for guid in element_guids:
@@ -664,9 +689,9 @@ class EgeriaPublisher:
                     )
                     return {}
             results[guid] = stamp_published(
-                guid, owner, identity=identity, client=client, zones=self.zone_names,
+                guid, owner, identity=identity, client=client, zones=zones,
             )
-        self.last_governance = results
+        self.last_governance = {**(self.last_governance or {}), **results}
         return results
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:

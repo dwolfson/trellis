@@ -21,6 +21,8 @@ class InteractiveSession:
         self._confirmed_aliases: set[str] = set()
 
         self.agent = ConversationAgent(resource_slug=resource_slug)
+        # So compiles run on this session's behalf are recorded against it.
+        self.agent.session_id = self.session_id
         self._load_history()
 
     def _load_history(self) -> None:
@@ -40,8 +42,12 @@ class InteractiveSession:
         try:
             from resource_explorer.registry import ProjectRegistry
             registry = ProjectRegistry()
-            registry.append_turn(self.session_id, "user", query, self.resource_slug)
-            registry.append_turn(self.session_id, "assistant", response, self.resource_slug)
+            compiled = getattr(self.agent, "_last_compiled", None)
+            compile_id = getattr(compiled, "compile_id", None) or None
+            registry.append_turn(self.session_id, "user", query, self.resource_slug,
+                                 compile_id=compile_id)
+            registry.append_turn(self.session_id, "assistant", response, self.resource_slug,
+                                 compile_id=compile_id)
         except Exception:
             pass
 

@@ -309,7 +309,14 @@ class TestPersistedAtPublishTime:
         return reg
 
     def _diagrams(self, reg):
-        return [f for f in reg.findings if f["check_name"] == "architecture_diagram"]
+        # NOT check_name == "architecture_diagram" (2026-09-08): check_name
+        # now carries `run_label` ("detect"/"coupling"/the "run" default
+        # these tests' bare `_run()` uses) so the two survey steps' diagrams
+        # are distinguishable — see persist.py::_persist_diagram's docstring.
+        # `kind` is what stayed fixed; that's the real identity of "this is
+        # an architecture_diagram finding" now.
+        from resource_explorer.surveyors.arch_recovery import persist
+        return [f for f in reg.findings if f["kind"] == persist.DIAGRAM_KIND]
 
     def test_a_run_with_components_writes_exactly_one_diagram(self):
         reg = self._run([_c("a"), _c("b")])
@@ -327,7 +334,7 @@ class TestPersistedAtPublishTime:
         same reason."""
         from resource_explorer.surveyors.arch_recovery import persist
         reg = self._run([_c("a")])
-        kinds = {f["kind"] for f in reg.findings if f["check_name"] == "architecture_diagram"}
+        kinds = {f["kind"] for f in self._diagrams(reg)}
         assert kinds == {persist.DIAGRAM_KIND}
         assert persist.KIND not in kinds
 

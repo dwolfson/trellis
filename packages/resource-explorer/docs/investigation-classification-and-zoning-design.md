@@ -1,6 +1,6 @@
 # Investigation classification and zoning — design & plan
 
-**Status: design. Phases 1–3 and 5 are built and live-verified (2026-09-07); Phases 4 and 6 are not.** Extends
+**Status: BUILT. All six phases are implemented and live-verified (2026-09-07/08).** Extends
 `docs/investigation-framing-design.md` §1 (the Investigation record) and §6a
 (promotion). Does not supersede it; that document still governs membership,
 Purpose, and the local-first/promotable shape. This one covers two things it
@@ -554,7 +554,7 @@ the Phase 3 entry in §6 for what shipped.
 
 ---
 
-## 5. Reclassification (proposal point 7)
+## 5. Reclassification (proposal point 7) — **built, Phase 6**
 
 Changing an investigation's classification is **a flow with a report, not an
 UPDATE**. It is up to three Egeria operations, each of which can fail
@@ -590,6 +590,21 @@ partially fails must report `ok = False` and name what is still public.
 
 §3.4's anchoring makes this dramatically simpler: re-zone the Project, and
 anchored artifacts follow. That is another reason to do anchoring first.
+
+**It did, and the prediction held.** Anchoring landed as Phase 4 and the sweep
+here is over Projects and SurveyReports only — a bounded, enumerable set —
+rather than over every annotation ever written. Confirmed live: tightening
+re-zoned one Project and the Folio followed without being touched.
+
+**One thing §5 did not anticipate: the tightening direction can be permanently
+unavailable.** Moving an element OUT of a zone needs `PUBLISH` on its *original*
+zones, and `egeria-runtime`'s security list excludes RE's account. So an
+investigation whose artifacts reached the publish zones cannot be made private by
+RE at all — not "needs a careful sweep", but "cannot". Loosening is unaffected,
+because the `userId` entry in the private zone satisfies the same check. The
+practical consequence is that **privacy is a decision best made before
+promotion**, and the reclassifier says so rather than reporting a bare
+permissions error.
 
 ---
 
@@ -738,10 +753,62 @@ filter does nothing at all. Each guard was made to fail on purpose, including
 dropping each back-reference filter individually while leaving the object-level
 one intact.
 
-**Phase 4 — anchoring.** Anchor investigation-produced artifacts
-(SurveyReports, Annotations, the Folio) to the investigation Project. Verify
-the `Anchors` classification actually carries `zoneMembership` through, live.
-*Prerequisite for Phase 5 being safe; independently valuable for lineage.*
+**Phase 4 — anchoring. ✅ Done 2026-09-08, and it found two live bugs in
+Phase 5.** Annotations are now created with `isOwnAnchor: False` +
+`anchorGUID: <report>`, so they inherit the report's zones instead of carrying
+none.
+
+**Inheritance measured, not inferred.** A child with no zones of its own,
+anchored to a privately-zoned parent, was DENIED to a non-owner and READ by the
+owner. `validateUserForAnchorMemberRead`'s `else` branch — the one an earlier
+draft of this document never read — evaluates `anchorEntity.getClassifications()`
+when the requested element carries none itself.
+
+**§7's open question is answered, and favourably.** Moving a parent from the
+draft zone to private flipped its untouched anchored child from READ to DENIED
+immediately, while the child's own `Anchors` classification still held the
+**stale** copy `['resource-explorer-draft']`. So enforcement reads the LIVE
+anchor and the cached copy is not authoritative: **re-zoning a parent protects
+every anchored child with no sweep.** That removes most of the difficulty §5
+attributes to the tightening direction of reclassification.
+
+**Two bugs in Phase 5 that this exposed, both live for a few hours:**
+
+*Annotations were public.* Measured against real published data: every
+annotation came back `anchorGUID: None` — its own anchor — with **no
+ZoneMembership at all**. `_stamp_governance` only ever stamped the asset and the
+report. So a private investigation's SurveyReport was protected while the
+annotations carrying its actual findings were world-readable. `parentGUID` does
+not anchor; `anchorGUID` does.
+
+*The shared repo asset was being zoned private* — the inverse failure, and the
+worse one. `_stamp_governance(asset_guid, report_guid)` applied one zone list to
+both, and the asset is `SourceControlLibrary::<github_url>`, **one per repo,
+shared by every investigation referencing it**. Publishing a private survey would
+have hidden a public repository from everyone else in the catalog. That is §3.6
+("an investigation zones what it produced, never what it references") violated by
+the code written to implement §3.6. The two are now stamped separately: the
+report takes the private zones and the investigation owner, the asset keeps the
+draft zone and the publishing identity.
+
+Both were found by asking what the *other* elements in a publish look like —
+neither would have been caught by testing the artifact the feature is about.
+
+**And a third, from asking the same question of the investigation itself.** The
+investigation's own Egeria `Project` was never zoned at all, and neither was its
+Folio. Phase 5 protected what a private investigation *produces* and left the
+thing that *names* it — display name, description, purposes, membership —
+readable by everyone. The owner's point 5 is "the project **and** all related
+artifacts"; only the second half had been built. `promote()` now zones the
+Project (refusing loudly, as a publish does, when the zone is not enforced) and
+the Folio is **anchored** to it rather than separately stamped, so it inherits
+and keeps inheriting when the Project is re-zoned.
+
+Three of the four defects in this phase were elements nobody had thought to look
+at, found by enumerating what a publish actually creates rather than by testing
+the feature's headline artifact. That is the general lesson worth carrying: for a
+protection feature, the question is not "is the thing I protected protected" but
+"what else did this operation create".
 
 **Phase 5 — zoning. ✅ Done 2026-09-07, and the live test earned its keep.**
 `ensure_private_zone_exists()` creates the control, reads it back, and gates
@@ -842,8 +909,69 @@ becomes load-bearing, because it decides what Phase 6 has to move.
 zones and 318 users make almost anything work; the environment that proves the
 feature is the empty one.
 
-**Phase 6 — reclassification.** The flow in §5, with the tightening direction
-built verify-then-report.
+**Phase 6 — reclassification. ✅ Done 2026-09-08.**
+`surveyors/investigation_reclassifier.py` — a flow with a per-element report, as
+§5 required.
+
+**Phase 4 shrank this a lot.** The sweep is over Projects and SurveyReports
+only, because Folios and Annotations are anchored and enforcement reads the live
+anchor. Verified live: tightening re-zoned one Project and the Folio followed
+without being touched.
+
+**Live, both directions, on a real promoted investigation:**
+
+```
+Task -> PersonalProject   other: READ   -> DENIED   (project and folio)
+PersonalProject -> Task   other: DENIED -> READ     (project and folio)
+```
+
+**Order is Egeria first, local last, and that is the safety property.** On a
+tightening, recording the classification before Egeria holds it would make every
+RE screen say "private" over artifacts still being served to everyone — Phase 3's
+filter is local and does not consult Egeria. So a tightening that cannot move
+every element leaves the classification alone and says which elements are still
+public. Verified live: with the Project unmovable, `local_applied` stayed False,
+the investigation stayed `Task`, and `still_public` named the Project.
+
+**A real product limit, found by trying it.** Once an element is in
+`egeria-runtime`, RE cannot move it out: `PUBLISH` is checked against the
+*original* zones and that zone's security list excludes RE's account
+(`OPEN-METADATA-SECURITY-403-005`). **So an investigation whose artifacts have
+been promoted to the publish zones cannot be made private again by RE.** The
+reverse works — RE can move out of its own private zone, because the `userId`
+entry satisfies the PUBLISH check. Loosening is therefore always available;
+tightening is available only before promotion. The flow reports this precisely
+rather than as "Egeria said no".
+
+**Two defects the live run found that the stubs did not:**
+
+*`still_public` cried wolf.* It named "the investigation Project" for a
+**local-only** investigation, which has nothing in Egeria at all. A false alarm
+rather than a leak — but a field that exists to be read when non-empty is worth
+nothing if it is sometimes wrong, and this would have taught people to ignore it.
+
+*The zone check refused in a fresh process.* `private_zone_is_enforced()` is
+per-process state filled by the worker bootstrap, so a web or CLI process that
+never ran it refused every tightening while the zone was healthy — a
+self-inflicted outage that reads exactly like the real failure. The same lazy
+"unknown is a question, not an answer" check the publisher already had. Second
+site, same bug.
+
+*And a third, in my own new code, prompted by a test that did not even flag it.*
+The no-silent-success ratchet failed on somebody else's change, which sent me
+looking at my own equivalent: `_report_guids` logged and continued when a
+member's published surveys could not be listed. That is "we could not look"
+rendered as "there was nothing" — a tightening would move what it found, report
+success, apply the classification, and leave that member's reports **public**
+while RE showed the investigation as private. The precise failure this feature
+exists to prevent, reproduced inside the code meant to prevent it. Unreadable
+members are now reported and block a tightening; a loosening still proceeds,
+because there the failure direction is safe.
+
+Sixteen tests, every guard made to fail on purpose — including one that had to
+be strengthened first: the lateral-change test started in `egeria-runtime`, which
+*is* `publish_zones()`, so a wrongly-applied re-zone would have been a no-op and
+invisible.
 
 ---
 

@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 
 
 def _create_typed_collection(cm, type_name: str, display_name: str,
-                             description: str, qualified_name: str = "") -> str:
+                             description: str, qualified_name: str = "",
+                             anchor_guid: str = "") -> str:
     """Create a Collection SUBTYPE (Folio, WorkingSet, ...).
 
     `create_collection`'s convenience parameters build a plain Collection, so the
@@ -37,7 +38,7 @@ def _create_typed_collection(cm, type_name: str, display_name: str,
     # qualifiedName is REQUIRED and is not generated for you once you pass an
     # explicit body — the convenience path supplies one, the body path does not.
     # Egeria rejects the create with OPEN-METADATA-400-004 otherwise.
-    body = {
+    body: dict = {
         "class": "NewElementRequestBody",
         "properties": {
             "class": "CollectionProperties",
@@ -47,6 +48,20 @@ def _create_typed_collection(cm, type_name: str, display_name: str,
             "description": description,
         },
     }
+    if anchor_guid:
+        # Anchored to the investigation's Project, which is what makes the
+        # collection inherit the Project's governance zones instead of carrying
+        # none. Measured 2026-09-08: existing Folios came back `anchorGUID:
+        # None` — their own anchor — with no ZoneMembership, so a private
+        # investigation's collection was world-readable. It holds the
+        # membership list rather than findings, but it names the investigation.
+        #
+        # Inheritance rather than a second `set_zone_membership` call, because
+        # the anchor is one property set at creation and stays correct when the
+        # Project is re-zoned later: enforcement reads the LIVE anchor, not the
+        # copy cached on the child.
+        body["isOwnAnchor"] = False
+        body["anchorGUID"] = anchor_guid
     return cm.create_collection(body=body) or ""
 
 
@@ -165,6 +180,11 @@ class PromotionResult:
     #:   name -> verified present
     classification_requested: str = ""
     classification_confirmed: "str | None" = None
+    #: True only when the private zone was actually applied to the Project.
+    #: False on a shared investigation AND on a private one whose zoning
+    #: failed — the second case also appends to `errors`, which is what
+    #: distinguishes them.
+    private_zoned: bool = False
     collection_guid: str = ""
     resource_list_linked: bool = False
     members_linked: list[str] = field(default_factory=list)
@@ -181,6 +201,7 @@ class PromotionResult:
             "project_qualified_name": self.project_qualified_name,
             "classification_requested": self.classification_requested,
             "classification_confirmed": self.classification_confirmed,
+            "private_zoned": self.private_zoned,
             "collection_guid": self.collection_guid,
             "resource_list_linked": self.resource_list_linked,
             "members_linked": self.members_linked,
@@ -198,6 +219,22 @@ class EgeriaInvestigationPublisher:
         self._registry = registry
         self._pm = project_manager
         self._cm = collection_manager
+
+    @staticmethod
+    def _is_private(inv: dict) -> bool:
+        """Whether this investigation's Egeria elements must be zoned private.
+
+        Keyed on the same `PRIVATE_CLASSIFICATIONS` the registry uses, read off
+        the row rather than re-derived, and requiring a recorded creator —
+        zoning to an empty owner would produce `[private_zone]` alone, which is
+        readable by nobody at all, including the person it belongs to.
+        """
+        from resource_explorer.registry import ProjectRegistry
+
+        return bool(
+            (inv.get("project_classification") or "") in ProjectRegistry.PRIVATE_CLASSIFICATIONS
+            and (inv.get("created_by") or "").strip()
+        )
 
     def _managers(self):
         if self._pm is not None and self._cm is not None:
@@ -327,7 +364,42 @@ class EgeriaInvestigationPublisher:
             res.errors.append("create_project returned no GUID")
             return res
 
-        # 1a. Did the classification actually survive the create?
+        # 1a. Zone the Project itself when the investigation is private.
+        #
+        # Phase 5 zoned the ARTIFACTS a private investigation produces and left
+        # the investigation's own Project public — so its name, description,
+        # purposes and membership were readable by everyone while its surveys
+        # were not. The owner's point 5 is "the project AND all related
+        # artifacts", and the Project is the half that names the work.
+        #
+        # It is also the anchor: the Folio below inherits from it, so this has
+        # to happen before anything is anchored to it.
+        private_owner = (inv.get("created_by") or "") if self._is_private(inv) else ""
+        if private_owner:
+            from resource_explorer.egeria_identity import (
+                private_zone, private_zone_is_enforced, private_zones,
+                set_zone_membership,
+            )
+
+            if not private_zone_is_enforced():
+                # Same refusal as a publish, for the same reason: an unenforced
+                # zone is an ignored zone, which is public. The Project exists
+                # by now, so this is reported rather than raised — but it is an
+                # error, so `ok` is False and the caller is told.
+                res.errors.append(
+                    f"this is a private investigation, but the '{private_zone()}' zone "
+                    "is not confirmed to be enforced, so its Egeria Project could not be "
+                    "made private. It is visible to everyone until the zone is fixed."
+                )
+            elif not set_zone_membership(res.project_guid, private_zones(private_owner)):
+                res.errors.append(
+                    "could not apply the private zone to the Egeria Project — it is "
+                    "visible to everyone until this is fixed."
+                )
+            else:
+                res.private_zoned = True
+
+        # 1b. Did the classification actually survive the create?
         #
         # A returned GUID proves the call worked, not that the body was
         # honoured. Silent loss here is the whole reason for this change, so it
@@ -353,6 +425,7 @@ class EgeriaInvestigationPublisher:
                 cm, "Folio", inv["display_name"],
                 "Everything in scope for this investigation.",
                 qualified_name=f"Folio::Investigation::{investigation_slug}",
+                anchor_guid=res.project_guid,
             )
         except Exception as exc:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
@@ -601,6 +674,7 @@ class EgeriaInvestigationPublisher:
                 cm, "Folio", inv["display_name"],
                 "Everything in scope for this investigation.",
                 qualified_name=f"Folio::Investigation::{investigation_slug}",
+                anchor_guid=project_guid,
             )
         except Exception as exc:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")

@@ -856,6 +856,26 @@ If it recurs, capture the assertion text — not a `tail` of the run, which buri
 Prefect's teardown logging.
 
 
+**`test_a_loop_that_loses_the_election_is_never_started` — FIXED 2026-09-08, and
+the diagnosis below was wrong.** The fix is fix (1): the test now polls for the
+`standby` line instead of sleeping a fixed 0.2s. Six consecutive runs pass.
+
+**What the original diagnosis got wrong.** It blamed `_ensure_draft_zone`'s live
+Egeria call for the latency. Measured after stubbing that call out: `standby`
+still lands at **~1.06s**, against ~1.13s unstubbed. The Egeria call was worth
+about 70ms and was never the cause — the rest of worker startup is, and the
+fixed 0.2s sleep was simply always too short. The test passed only when thread
+scheduling happened to favour it.
+
+The plausible story (a real network call in a unit test, timing that varies with
+platform load, a run that failed right after hammering that platform) fitted
+every observation and was still wrong. It survived because nothing forced it to
+predict something checkable — stubbing the call took two minutes and falsified it
+immediately. `_ensure_draft_zone` is now stubbed anyway, on its own merits: a
+unit test of leader election should not reach Egeria.
+
+*Original entry, kept for the record:*
+
 **`test_a_loop_that_loses_the_election_is_never_started` races a live Egeria call.**
 Found 2026-09-07: passed in one full run and failed in the next, on a working tree whose
 changes could not reach it (`worker.py` unmodified; no import path from the changed
@@ -896,13 +916,19 @@ repo `CLAUDE.md`.
 
 ### Private zoning — what Phase 5 left open
 
-**Anchoring (design Phase 4) is still not built, and Phase 5 shipped without it.**
-RE stamps `ZoneMembership` on each element it publishes. Egeria's `Anchors`
-classification carries `zoneMembership` and propagates it, so anchoring
-investigation artifacts to the investigation's Project would collapse the
-invariant from "is every artifact stamped?" to "is every artifact anchored?" —
-one property, checkable in one query, instead of N chances to leak that grows
-with each new annotation type. Worth doing before the artifact set grows.
+**Anchoring (design Phase 4) is DONE — 2026-09-08.** Annotations now anchor to
+their SurveyReport and inherit its zones. Measured: enforcement reads the LIVE
+anchor, so re-zoning a parent moves every anchored child with no sweep. It found
+two live Phase 5 bugs on the way in (public annotations; the shared repo asset
+being zoned private) — see the design doc's Phase 4 entry.
+
+**Still un-anchored, and worth a look:** the investigation's Folio/WorkingSet
+Collection, and the arch-recovery materializer's SolutionComponents, are each
+their own anchor. The components are stamped directly (correct but N-shaped);
+the Folio is not stamped at all, so a private investigation's collection is
+world-readable — it holds the membership list, not findings, but it does name
+the investigation. Anchoring both to the investigation Project would fold them
+into the same one-property invariant.
 
 **Freshstart has never run this.** Everything was verified on quickstart, whose
 Coco Pharma directory happens to make RE's own account a platform operator. On a
@@ -927,6 +953,34 @@ about whether private publishing is available. Harmless (the disagreement is
 between "refuse" and "allow" on a control that is genuinely settling) but
 surprising if someone hits it.
 
+
+### Private zoning — the one thing users will hit
+
+**An investigation promoted into the publish zones cannot be made private again.**
+Not "needs care" — cannot. Moving an element out of a zone requires
+`AccessOperation.PUBLISH` on its ORIGINAL zones, and `egeria-runtime`'s security
+list does not include RE's Egeria account. Confirmed live 2026-09-08:
+`OPEN-METADATA-SECURITY-403-005`. The reclassifier reports it precisely and
+refuses to change the classification, so nothing lies — but the work stays
+public.
+
+The reverse direction is fine: RE can move out of its own private zone because
+the `userId` entry satisfies the PUBLISH check.
+
+So privacy is effectively a decision to make **before promotion**. Options if
+that turns out to bite:
+
+1. **Grant RE's account PUBLISH on the publish zones** — a deployment change
+   (`associatedSecurityList`, `PUBLISH` or `DEFAULT` key), and the one that makes
+   the feature symmetric. It also widens what RE can do to elements it did not
+   create, which is why it is not the automatic answer.
+2. **Have an operator do the move.** `garygeeke` and `peterprofile` hold the
+   rights; this is what unstuck the test elements. Fine for a rare correction,
+   not a workflow.
+3. **Surface it at creation** — say plainly, when a shared investigation is
+   promoted, that it cannot be made private afterwards. Cheapest, and honest.
+
+Nothing decided; the owner should pick. (3) is worth doing regardless.
 
 ### Architecture recovery
 

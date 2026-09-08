@@ -38,6 +38,8 @@ def _get_or_create_session(session_id: str, resource_slug: str | None):
 
     if session_id not in _sessions:
         agent = ConversationAgent(resource_slug=resource_slug)
+        # So the compile it runs can be recorded against this session.
+        agent.session_id = session_id
         # Hydrate memory from persisted history so context survives restarts
         try:
             from resource_explorer.registry import ProjectRegistry
@@ -56,14 +58,24 @@ def _get_or_create_session(session_id: str, resource_slug: str | None):
     return agent
 
 
-def _persist_turn(session_id: str, query: str, response: str, resource_slug: str | None) -> None:
+def _persist_turn(
+    session_id: str, query: str, response: str, resource_slug: str | None,
+    compile_id: str | None = None,
+) -> None:
+    """Both turns of an exchange, each pointing at the compile that shaped the
+    answer (None when nothing was compiled — see registry's column comment)."""
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
-        registry.append_turn(session_id, "user", query, resource_slug)
-        registry.append_turn(session_id, "assistant", response, resource_slug)
+        registry.append_turn(session_id, "user", query, resource_slug, compile_id=compile_id)
+        registry.append_turn(session_id, "assistant", response, resource_slug, compile_id=compile_id)
     except Exception:
         pass
+
+
+def _compile_id_of(agent) -> str | None:
+    compiled = getattr(agent, "_last_compiled", None)
+    return getattr(compiled, "compile_id", None) or None
 
 
 class QueryRequest(BaseModel):
@@ -112,6 +124,11 @@ def _compiled_payload(agent) -> dict | None:
 
 class FeedbackRequest(BaseModel):
     query_hash: str
+    #: The compile behind the answer being rated, from the done event's
+    #: "compile_id" (or compiled.manifest.compile_id). Optional: a rating
+    #: without it still lands, it just cannot say whether the evidence or the
+    #: model was at fault (context-compilation-design.md §13).
+    compile_id: str | None = None
     # +1 positive, 0 neutral/"partially correct", -1 negative -- same
     # convention EA uses (advisor/web/app.py:131-135). record_feedback()
     # scores these as three explicit states, not a sign test -- see
@@ -228,8 +245,9 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     agent = _get_or_create_session(request.session_id, request.resource_slug)
                     text = agent.handle(request.query, resource_slug=request.resource_slug,
                                         perspectives=request.perspectives)
-                    _persist_turn(request.session_id, request.query, text, request.resource_slug)
                     compiled = _compiled_payload(agent)
+                    _persist_turn(request.session_id, request.query, text, request.resource_slug,
+                                  compile_id=_compile_id_of(agent))
                     loop.call_soon_threadsafe(queue.put_nowait, text)
                     loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled})
                 else:
@@ -240,8 +258,16 @@ async def stream(request: QueryRequest) -> StreamingResponse:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
+        import contextvars
         import threading
-        threading.Thread(target=_producer, daemon=True).start()
+        # Run the producer under a COPY of the request's context, not a bare
+        # thread: the signed-in caller lives in a ContextVar, and a plain
+        # Thread starts with an empty one — so every conversation turn and
+        # every compile recorded from this path was attributed to '' (the
+        # service bucket) while the response itself was correctly scoped.
+        # Found 2026-09-08 by reading the rows back after a live chat turn.
+        ctx = contextvars.copy_context()
+        threading.Thread(target=ctx.run, args=(_producer,), daemon=True).start()
 
         while True:
             item = await queue.get()
@@ -260,6 +286,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     "cached": item.get("cached", False),
                     "chart": chart,
                     "compiled": item.get("compiled"),
+                    "compile_id": ((item.get("compiled") or {}).get("manifest") or {}).get("compile_id"),
                 }
                 # Structured symbol table for code_inventory queries
                 if intent_val == "code_inventory" and request.resource_slug:
@@ -282,6 +309,10 @@ async def stream(request: QueryRequest) -> StreamingResponse:
 @router.post("/feedback")
 async def feedback(request: FeedbackRequest) -> dict:
     from resource_explorer.observability.metrics_collector import MetricsCollector
+    if request.compile_id:
+        MetricsCollector().record_feedback(request.query_hash, request.vote,
+                                           compile_id=request.compile_id)
+        return {"recorded": True, "compile_id": request.compile_id}
     MetricsCollector().record_feedback(request.query_hash, request.vote)
     return {"recorded": True}
 

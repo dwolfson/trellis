@@ -2922,6 +2922,114 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
     return {"label": f"{n} {_plural('component', n)} recovered", "status": "info" if n else "warn"}
 
 
+#: Preference order for which perspective's diagram answers by default when
+#: more than one is on file — "coupling" (import/co-change clustered
+#: boundaries) reads as the more digested view; "detect" (raw
+#: structural/deployment detection) is the fallback; "architecture_diagram"
+#: is the literal check_name legacy rows were written under before
+#: 2026-09-08 (see `_persist_diagram`'s docstring), kept so data surveyed
+#: before this fix still answers instead of silently going never-run.
+_DIAGRAM_PERSPECTIVE_PREFERENCE = ("coupling", "detect", "architecture_diagram")
+
+
+def _architecture_diagram_results(registry, slug: str) -> dict:
+    """The rendered architecture Mermaid diagram, read back.
+
+    Written by `arch_recovery/persist.py::_persist_diagram` under its own
+    `architecture_diagram` kind (deliberately not under `architecture_recovery`
+    — see that module's own comment on why a whole-resource finding there
+    would suppress `context_compile.py`'s fallback). Never read by anything
+    before 2026-09-08: computed and persisted at survey time, alongside the
+    component/coupling findings, but nothing exposed it as an answerable
+    fact or through any UI — added so "how do components relate" has a real
+    visual to point to instead of asking the chat-facts renderer to flatten
+    a graph into bullet text (the same class of bug `architecture_summary`'s
+    fields hit, at a scale — 100+ components — where it would be far worse).
+
+    **Two perspectives, not one.** `repo_arch_detect` and `repo_arch_coupling`
+    each call `_persist_diagram` with their own, genuinely different
+    component sets — found live 2026-09-08 against egeria-workspaces_git,
+    where the chat-typed answer (85 components, from `detect`) and the
+    clicked-question answer (12 components/93 nested, from `coupling`)
+    disagreed, because each path happened to land on a different one of two
+    rows nobody had distinguished. `check_name` now carries `run_label`
+    (`detect`/`coupling`) so both are addressable; this reader picks one by
+    `_DIAGRAM_PERSPECTIVE_PREFERENCE` and reports which, rather than an
+    insertion-order accident deciding it.
+
+    Uses `query_findings_all_runs`, not `query_findings` — the two steps are
+    independent and need not share a `surveyed_at` (the exact reason
+    `query_findings_all_runs` exists at all, per its own docstring and
+    `architecture_recovery`'s reader above): `query_findings`'s "only the
+    single latest surveyed_at, across the whole kind" would silently drop
+    whichever perspective ran earlier, the same failure mode this whole fix
+    is about, one layer down.
+    """
+    rows = registry.query_findings_all_runs(slug, "architecture_diagram", "") or []
+    if not rows:
+        # Nested under `_status`, not top-level `state`/`message` — the first
+        # version of this used the latter, which `_has_content` (facts.py)
+        # does NOT exempt from "this counts as content". Combined with
+        # `live_read=True` on this AnalysisKind, that made a genuinely-absent
+        # diagram report MEASURED with a fake headline instead of falling
+        # through to the real never-run gate — caught by
+        # TestAgainstRealCatalog.test_every_catalogued_question_produces_an_
+        # envelope (test_facts.py) asserting a nonexistent repo answers
+        # nothing, for every catalogued question. `_status` is the envelope
+        # key `_has_content` and `_state_for` both already know to read
+        # (see rag_ingestion/website_ingestion's readers above for the same
+        # pattern) — `state`/`message` was simply the wrong key name.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No architecture diagram yet — run the analysis."}}
+
+    # Latest row per check_name (perspective) — mirrors the pattern
+    # `_persist_decisions`'s own docstring prescribes for the same shape.
+    latest_by_perspective: dict[str, dict] = {}
+    for row in rows:
+        cn = row.get("check_name") or ""
+        if cn not in latest_by_perspective or \
+                row.get("surveyed_at", "") >= latest_by_perspective[cn].get("surveyed_at", ""):
+            latest_by_perspective[cn] = row
+
+    chosen_label = next(
+        (p for p in _DIAGRAM_PERSPECTIVE_PREFERENCE if p in latest_by_perspective),
+        next(iter(latest_by_perspective)),  # any remaining, unrecognised check_name
+    )
+    row = latest_by_perspective[chosen_label]
+    other_perspectives = sorted(p for p in latest_by_perspective if p != chosen_label)
+
+    detail = row.get("detail_json") or row.get("detail") or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            detail = {}
+    return {
+        "caption": row.get("summary", ""),
+        "surveyed_at": row.get("surveyed_at", ""),
+        "mermaid": detail.get("mermaid", ""),
+        "char_count": detail.get("char_count", 0),
+        "exceeds_renderer_limit": detail.get("exceeds_renderer_limit", False),
+        "projection_depth": detail.get("projection_depth"),
+        # Which perspective this is, and what else is on file — not read by
+        # any UI yet, but the whole point of labelling both is that a reader
+        # doesn't have to guess it silently chose one.
+        "perspective": chosen_label,
+        "other_perspectives_available": other_perspectives,
+    }
+
+
+def _architecture_diagram_headline(registry, slug: str) -> dict | None:
+    r = _architecture_diagram_results(registry, slug)
+    if r.get("_status", {}).get("state"):
+        return None  # never run — the card's own empty state
+    # caption() already states the too-large case in its own text (mermaid.py)
+    # — surfaced as `status: warn` here too so the badge agrees with the words
+    # rather than a reader having to notice it only in the sentence.
+    return {"label": r.get("caption") or "Architecture diagram",
+            "status": "warn" if r.get("exceeds_renderer_limit") else "info"}
+
+
 def _website_ingestion_headline(registry, slug: str) -> dict | None:
     """Survey Results dashboard headline. A skip is reported as its own status
     rather than as zero-with-a-warning — "this repo publishes its own site" is a
@@ -3579,6 +3687,32 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _architecture_recovery_results, _architecture_recovery_trend, "custom",
             headline_reader=_architecture_recovery_headline,
+        ),
+    ),
+    # Same declaring steps as architecture_recovery — persist.py's
+    # _persist_diagram runs from persist_ir(), which both call — but its own
+    # AnalysisKind: the diagram is a rendered VIEW of the recovery, not the
+    # recovery's own evidence, and giving it a separate id is what lets a
+    # question ask for "the picture" without also pulling in the full,
+    # possibly 100+-component list that answers a different question.
+    "architecture_diagram": AnalysisKind(
+        "architecture_diagram", ["repo_arch_detect", "repo_arch_coupling"],
+        results=AnalysisKindResults(
+            _architecture_diagram_results, None, "custom",
+            headline_reader=_architecture_diagram_headline,
+            # live_read=True, not the default: `repo_arch_detect`/
+            # `repo_arch_coupling` running gets recorded under analysis_id
+            # "architecture_recovery" (its own AnalysisKind), never under
+            # "architecture_diagram" — no survey run is ever attributed to
+            # THIS id, so FactLayer.fact()'s run-attribution gate reported
+            # NEVER_RUN even with two real rows sitting in the table.
+            # Verified live 2026-09-08 against egeria-workspaces_git: the
+            # question-catalog click path said "I can't answer that yet ...
+            # Run: repo_arch_detect, repo_arch_coupling" while
+            # _architecture_diagram_results(registry, slug) returned real
+            # Mermaid source from a 2026-09-01 run in the same breath — the
+            # exact api_structure precedent this flag's docstring describes.
+            live_read=True,
         ),
     ),
 }

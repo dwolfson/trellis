@@ -500,3 +500,116 @@ def test_a_non_string_owner_is_not_treated_as_private():
     # ...and a whitespace-only owner is no owner either.
     reg = MagicMock(private_owner_for_entity=MagicMock(return_value="   "))
     assert EgeriaPublisher(platform_url="https://fake", registry=reg)._resolve_private_owner("r") == ""
+
+
+# ── Phase 4: anchoring, and what must NOT be zoned ─────────────────────────
+
+def test_annotations_are_anchored_to_their_report():
+    """The leak Phase 5 shipped with, closed by Phase 4.
+
+    Measured live 2026-09-08: every published annotation came back with
+    `anchorGUID: None` — its own anchor — and **no ZoneMembership of its own**.
+    So a private investigation's SurveyReport was zoned while its annotations,
+    which carry the actual findings, were world-readable.
+
+    `parentGUID` alone does not anchor. `isOwnAnchor: False` + `anchorGUID`
+    does, and then `validateUserForAnchorMemberRead`'s else branch evaluates the
+    ANCHOR's classifications for an element carrying none of its own — verified
+    live: the annotation was denied to a non-owner and read by its owner.
+    """
+    from resource_explorer.surveyors.annotation_props import build_annotation_body
+    from resource_explorer.surveyors.survey_report import Annotation, AnnotationType
+
+    ann = Annotation(annotation_type=AnnotationType.CLASSIFICATION,
+                     summary="s", analysis_step="step")
+    body = build_annotation_body(ann, "Annotation::x", "report-guid-1")
+    assert body["isOwnAnchor"] is False
+    assert body["anchorGUID"] == "report-guid-1", (
+        "an annotation that is its own anchor inherits no zones and is public")
+
+
+def test_the_shared_repo_asset_is_never_zoned_private():
+    """§3.6, and the inverse failure to the annotation leak.
+
+    The asset is `SourceControlLibrary::<github_url>` — ONE per repo, shared by
+    every investigation referencing it. Zoning it private would hide a public
+    repository from everyone else because one person added it to a personal
+    investigation. A privacy feature that removes other people's access is a
+    data-loss feature.
+
+    An investigation zones what it PRODUCED (the report, and its annotations by
+    anchor), never what it REFERENCES.
+    """
+    from resource_explorer.egeria_identity import draft_zone, private_zone
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    pub = EgeriaPublisher(platform_url="https://fake", registry=_Reg(owner="alice"))
+    pub._private_owner = "alice"
+    pub.zone_names = [private_zone(), "alice"]
+    seen = {}
+
+    import resource_explorer.egeria_identity as ident
+    real_stamp, real_client = ident.stamp_published, ident.classification_client
+    ident.stamp_published = lambda guid, owner, **kw: seen.setdefault(
+        guid, {"owner": owner, "zones": list(kw.get("zones") or [])})
+    ident.classification_client = lambda *a, **k: object()
+    try:
+        pub._stamp_governance("report-guid")                    # produced
+        pub._stamp_governance("asset-guid", produced=False)     # referenced
+    finally:
+        ident.stamp_published, ident.classification_client = real_stamp, real_client
+
+    assert seen["report-guid"]["zones"] == [private_zone(), "alice"]
+    assert seen["report-guid"]["owner"] == "alice"
+    assert seen["asset-guid"]["zones"] == [draft_zone()], (
+        f"the shared repo asset was zoned {seen['asset-guid']['zones']} — that hides "
+        "a public repo from everyone else")
+    assert seen["asset-guid"]["owner"] != "alice", (
+        "the shared repo asset was handed to one investigation's owner")
+
+
+def test_privacy_resolution_survives_a_thread_that_lost_the_caller(tmp_path):
+    """A raw `threading.Thread` does NOT inherit contextvars, so
+    `current_user_id()` is `''` inside one. `asyncio.to_thread` DOES copy the
+    context — both measured 2026-09-08, prompted by dwolfson-fe hitting the
+    same thing in the chat stream's producer thread, where turns were being
+    written as `''`.
+
+    That is the whole reason `private_owner_for_entity` is unscoped. Surveys run
+    from the queue and the scheduler in raw threads; had this read been
+    caller-scoped it would see no caller, find no private investigation,
+    conclude "not private", and publish into the public zones. Every queued
+    private survey would leak, and nothing would error.
+
+    RE's investigation routes all use `asyncio.to_thread`, so the Phase 3
+    visibility filter keeps the real caller there. This test pins the other
+    half: the protection decision must not depend on having one.
+    """
+    import threading
+
+    from resource_explorer.registry import Project, ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    reg.add(Project(slug="queued-repo", display_name="q",
+                    github_url="https://github.com/o/q", description=""))
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Queued Survey",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "queued-repo")
+
+    from resource_explorer.registry import current_user_id
+
+    box = {}
+
+    def _worker():
+        box["user"] = current_user_id()
+        box["owner"] = reg.private_owner_for_entity("repo", "queued-repo")
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+
+    assert box["user"] == "", "precondition: a raw thread should have lost the caller"
+    assert box["owner"] == "alice", (
+        "a queued survey could not tell the repo was private — it would publish public")

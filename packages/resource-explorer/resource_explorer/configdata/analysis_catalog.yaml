@@ -709,6 +709,35 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: architecture_diagram
+    name: "Architecture Diagram"
+    description: "The Mermaid component diagram rendered from architecture_recovery's findings at survey time (arch_recovery/mermaid.py), plus a caption stating what it does not show. Answers 'how do these components relate' with a picture rather than a flattened field dump — the render is capped at a character limit and says so in its own caption when a repo's candidate count exceeds it, rather than failing silently."
+    resource_types: ["repo"]
+    # NOT modeled on architecture_summary immediately above, despite reading
+    # like the same "consumes existing findings, fetches nothing" shape --
+    # caught by test_analysis_catalog_reader.py on the first attempt at this
+    # entry (2026-09-08), which is exactly what that test exists to catch.
+    # architecture_summary's OWN step (repo_arch_summary) declares empty
+    # requires_resources: it re-summarises what repo_arch_detect/coupling
+    # already wrote, in a separate pass, needing no zipball of its own.
+    # architecture_diagram has no such separate step -- persist.py's
+    # _persist_diagram runs INSIDE repo_arch_detect/repo_arch_coupling
+    # themselves (persist_ir(), which both call), the same fetch-heavy steps
+    # architecture_recovery itself declares. So this is architecture_recovery's
+    # classification, not architecture_summary's -- same steps, same cost.
+    intent: analysis
+    perspectives: ["Architecture", "Consumer"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_profile_refresh
     name: "Refresh Coarse Profile"
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."

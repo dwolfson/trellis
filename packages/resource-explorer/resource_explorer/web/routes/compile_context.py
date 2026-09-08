@@ -32,6 +32,9 @@ class CompileResponse(BaseModel):
     text: str
     manifest: dict
     derivation: list[dict]
+    #: Stable id of this compile (also manifest["compile_id"]); send it back
+    #: with feedback so the rating attaches to the context, not just the answer.
+    compile_id: str = ""
 
 
 @router.post("/compile", response_model=CompileResponse)
@@ -56,4 +59,5 @@ async def compile_endpoint(request: CompileRequest) -> CompileResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return CompileResponse(
         text=compiled.text, manifest=compiled.manifest, derivation=compiled.derivation,
+        compile_id=compiled.compile_id,
     )

@@ -727,7 +727,19 @@ class FactLayer:
             return PROVENANCE_EGERIA
         # Components are proposals a detector made. Saying so is what keeps a
         # recovered partition from being reported as an established one.
-        if (value or {}).get("components") is not None:
+        #
+        # `mermaid` is the same caveat under a second key: architecture_diagram
+        # draws its picture from the exact same detector proposal
+        # architecture_recovery's `components` describes — the project owner's
+        # 2026-09-08 question ("are these accepted/published, or just
+        # proposed?") landed on a real gap here, not a hypothetical one.
+        # Without this, `_renderEnvelopeMarkdown` (index.html) rendered the
+        # diagram with no "(proposed by a detector, not yet validated)"
+        # caveat at all, because `f.provenance === 'recovered'` never matched
+        # a value shaped {mermaid, caption, char_count, ...} with no
+        # `components` key of its own.
+        if (value or {}).get("components") is not None or \
+                (value or {}).get("mermaid") is not None:
             return PROVENANCE_RECOVERED
         return PROVENANCE_MEASURED
 

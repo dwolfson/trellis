@@ -864,10 +864,50 @@ class ProjectRegistry:
                     created_at TEXT NOT NULL
                 )
             """)
-            if "user_id" not in self._get_table_columns(conn, "conversation_history"):
+            existing_ch = self._get_table_columns(conn, "conversation_history")
+            if "user_id" not in existing_ch:
                 conn.execute(
                     "ALTER TABLE conversation_history ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
                 )
+            # compile_id links a turn to the context_compiles row that shaped
+            # the answer (2026-09-08, context-compilation-design.md §13). NULL
+            # means "no compile behind this turn" — the RAG fallback path, an
+            # EXAMPLES intent, or a turn written before the column existed.
+            # Those three are the same absence for every consumer of the link
+            # (there is no compile to join to), so one NULL is honest here where
+            # a sentinel string would invent a distinction nothing can recover.
+            if "compile_id" not in existing_ch:
+                conn.execute(
+                    "ALTER TABLE conversation_history ADD COLUMN compile_id TEXT DEFAULT NULL"
+                )
+            # Every compile the apps run, keyed by a content hash of its inputs
+            # (spec, version, budget, target model, resolved candidates), so the
+            # same inputs land on the same row and `hits` counts the repeats —
+            # which doubles as the replayability measurement the design asks
+            # for (§9): a compile_id that repeats is a compile that replayed.
+            # manifest/derivation are stored verbatim as JSON; feedback and
+            # conversation turns point here rather than carrying copies.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS context_compiles (
+                    compile_id    TEXT PRIMARY KEY,
+                    project_slug  TEXT NOT NULL,
+                    question      TEXT NOT NULL DEFAULT '',
+                    spec_id       TEXT NOT NULL DEFAULT '',
+                    budget        INTEGER NOT NULL DEFAULT 0,
+                    used          INTEGER NOT NULL DEFAULT 0,
+                    manifest      TEXT NOT NULL,
+                    derivation    TEXT NOT NULL,
+                    user_id       TEXT NOT NULL DEFAULT '',
+                    session_id    TEXT NOT NULL DEFAULT '',
+                    hits          INTEGER NOT NULL DEFAULT 1,
+                    created_at    TEXT NOT NULL,
+                    last_seen_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_context_compiles_slug "
+                "ON context_compiles(project_slug, created_at)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_session "
                 "ON conversation_history(session_id, turn_idx)"
@@ -1397,6 +1437,11 @@ class ProjectRegistry:
                     created_at   TEXT NOT NULL
                 )
             """)
+            # See conversation_history.compile_id above for what NULL means.
+            if "compile_id" not in self._get_table_columns(conn, "resource_feedback"):
+                conn.execute(
+                    "ALTER TABLE resource_feedback ADD COLUMN compile_id TEXT DEFAULT NULL"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_feedback_entity "
                 "ON resource_feedback(entity_type, entity_slug)"
@@ -2708,7 +2753,8 @@ class ProjectRegistry:
         return [dict(r) for r in rows]
 
     def add_resource_feedback(
-        self, entity_type: str, entity_slug: str, rating: int | None, category: str, message: str
+        self, entity_type: str, entity_slug: str, rating: int | None, category: str, message: str,
+        *, compile_id: str | None = None,
     ) -> dict:
         from datetime import timezone
         entry = {
@@ -2718,13 +2764,14 @@ class ProjectRegistry:
             "rating": rating,
             "category": category,
             "message": message,
+            "compile_id": compile_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO resource_feedback
-                   (id, entity_type, entity_slug, rating, category, message, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (id, entity_type, entity_slug, rating, category, message, compile_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
         return entry
@@ -3605,7 +3652,7 @@ class ProjectRegistry:
     _PROJECT_SLUG_TABLES: tuple[str, ...] = (
         "project_stats", "project_commits", "project_code_symbols",
         "project_code_relationships", "project_aliases",
-        "project_contributor_stats", "conversation_history",
+        "project_contributor_stats", "conversation_history", "context_compiles",
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
@@ -5163,6 +5210,7 @@ class ProjectRegistry:
         resource_slug: str | None = None,
         *,
         user_id: str | None = None,
+        compile_id: str | None = None,
     ) -> None:
         """Append a single turn (user or assistant) to the conversation log.
 
@@ -5181,10 +5229,73 @@ class ProjectRegistry:
             )
             conn.execute(
                 "INSERT INTO conversation_history (session_id, turn_idx, role, content, "
-                "project_slug, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "project_slug, user_id, created_at, compile_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (session_id, next_idx, role, content, resource_slug or "", user_id,
-                 datetime.utcnow().isoformat()),
+                 datetime.utcnow().isoformat(), compile_id),
             )
+
+    # ── Context compiles ─────────────────────────────────────────────────
+
+    def record_compile(
+        self,
+        compile_id: str,
+        resource_slug: str,
+        question: str,
+        manifest: dict,
+        derivation: list,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        """Persist one compile, or count a repeat of it.
+
+        Same inputs → same compile_id → the existing row's `hits` goes up and
+        `last_seen_at` moves; a new compile_id inserts. The first writer's
+        user/session/timestamp stay on the row: the row describes the compile,
+        and a repeat by someone else is evidence of replay, not a new compile.
+        Returns {"compile_id", "created": bool}.
+        """
+        import json as _json
+        user_id = current_user_id() if user_id is None else user_id
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT compile_id FROM context_compiles WHERE compile_id = ?", (compile_id,)
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "UPDATE context_compiles SET hits = hits + 1, last_seen_at = ? "
+                    "WHERE compile_id = ?",
+                    (now, compile_id),
+                )
+                return {"compile_id": compile_id, "created": False}
+            conn.execute(
+                "INSERT INTO context_compiles (compile_id, project_slug, question, spec_id, "
+                "budget, used, manifest, derivation, user_id, session_id, hits, created_at, "
+                "last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (compile_id, resource_slug, question, str(manifest.get("spec_id", "")),
+                 int(manifest.get("budget", 0) or 0), int(manifest.get("used", 0) or 0),
+                 _json.dumps(manifest, sort_keys=True, default=str),
+                 _json.dumps(derivation, sort_keys=True, default=str),
+                 user_id, session_id or "", now, now),
+            )
+        return {"compile_id": compile_id, "created": True}
+
+    def get_compile(self, compile_id: str) -> dict | None:
+        """One persisted compile, manifest and derivation decoded, or None."""
+        import json as _json
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT compile_id, project_slug, question, spec_id, budget, used, manifest, "
+                "derivation, user_id, session_id, hits, created_at, last_seen_at "
+                "FROM context_compiles WHERE compile_id = ?", (compile_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["manifest"] = _json.loads(d["manifest"])
+        d["derivation"] = _json.loads(d["derivation"])
+        return d
 
     def load_turns(
         self, session_id: str, limit: int = 40, *, user_id: str | None = None,
@@ -6019,6 +6130,55 @@ class ProjectRegistry:
                              (hypothesis, slug))
             conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
                          (datetime.utcnow().isoformat(), slug))
+        return self.get_investigation(slug)
+
+    def set_investigation_classification(self, slug: str, classification: str, *,
+                                         hypothesis: str = "") -> dict | None:
+        """Change an investigation's classification. LOCAL ONLY.
+
+        Deliberately not exposed through `update_investigation`, and deliberately
+        not the whole operation. Because visibility follows the classification
+        (`PRIVATE_CLASSIFICATIONS`), changing it can move the investigation
+        between visibility regimes — which is several Egeria writes that fail
+        independently. `surveyors/investigation_reclassifier` is the flow that
+        owns that, and it calls this LAST, once Egeria already holds the new
+        state.
+
+        Calling this directly changes what RE shows without changing what Egeria
+        serves. That is legitimate for a purely local investigation and a bug
+        anywhere else, which is why the reclassifier is the intended caller.
+
+        The hypothesis rules match `create_investigation`: required when moving
+        TO a classification that needs one, cleared when moving away from it —
+        a hypothesis left on a `Task` would be stored and then silently dropped
+        at publish time.
+        """
+        inv = self.get_investigation(slug)
+        if not inv:
+            return None
+        if classification not in self.PROJECT_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown classification {classification!r}; "
+                f"valid: {list(self.PROJECT_CLASSIFICATIONS)}")
+        hypothesis = (hypothesis or "").strip()
+        if classification in self.HYPOTHESIS_REQUIRED_FOR:
+            hypothesis = hypothesis or (inv.get("hypothesis") or "").strip()
+            if not hypothesis:
+                raise ValueError(
+                    f"{classification} requires a hypothesis — it is the attribute "
+                    "the classification exists to record")
+        else:
+            # Cleared rather than carried: it is meaningless on the new
+            # classification and `_initial_classifications` would not send it,
+            # so keeping it would be a stored value that silently never reaches
+            # Egeria.
+            hypothesis = ""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE investigations SET project_classification = ?, hypothesis = ?, "
+                "updated_at = ? WHERE slug = ?",
+                (classification, hypothesis, datetime.utcnow().isoformat(), slug),
+            )
         return self.get_investigation(slug)
 
     def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:

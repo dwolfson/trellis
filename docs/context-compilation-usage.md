@@ -64,6 +64,15 @@ three things people actually ask.
   `nothing_found` (ran, a real zero), `never_run`, `not_established`, each with
   `last_run_at` and `can_run` where known
 - **`derivation`** — which question, which Purpose matched, which analysis
+- **`compile_id`** (also `manifest.compile_id`) — a content hash of everything
+  the packer saw: spec, version, budget, target model, and every candidate's
+  rungs. Same materialised state → same id, so a repeated id is a compile that
+  replayed. Every compile is persisted in the registry's `context_compiles`
+  table (manifest and derivation as JSON, user, session, `hits`), and both
+  conversation turns and feedback carry the id, so a rating can be traced to
+  the exact context the model was given. Send it back on
+  `POST /api/query/feedback` as `compile_id`; the chat stream's `done` event
+  carries it at top level.
 
 Budget is in **characters**, not tokens. The caller owns the conversion, because
 only it knows which model the context is for.

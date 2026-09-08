@@ -198,6 +198,27 @@ def build_annotation_body(ann, qualified_name: str, report_guid: str) -> dict:
         "class": "NewElementRequestBody",
         "parentGUID": report_guid,
         "parentRelationshipTypeName": "ReportedAnnotation",
+        # ANCHORED to the report, which is what makes an annotation inherit the
+        # report's governance zones. `parentGUID` alone does NOT do this:
+        # measured 2026-09-08 against live annotations, every one came back
+        # `anchorGUID: None` — its own anchor — and with **no ZoneMembership of
+        # its own**. Which means that before this, a private investigation's
+        # SurveyReport was zoned and its annotations, carrying the actual
+        # findings, were world-readable.
+        #
+        # Inheritance is real and was measured, not inferred: a child with no
+        # zones of its own, anchored to a zoned parent, is DENIED to a
+        # non-owner, because `validateUserForAnchorMemberRead`'s else branch
+        # evaluates `anchorEntity.getClassifications()` when the element itself
+        # carries none. And it reads the LIVE anchor, not the copy cached on the
+        # child's own `Anchors` classification — re-zoning the report moves
+        # every annotation under it with no sweep.
+        #
+        # This is preferable to stamping each annotation: one property per
+        # annotation, set at creation, instead of N classification calls that a
+        # later code path can forget.
+        "isOwnAnchor": False,
+        "anchorGUID": report_guid,
         "properties": build_annotation_props(ann, qualified_name),
     }
 

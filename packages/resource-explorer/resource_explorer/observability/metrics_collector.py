@@ -96,9 +96,14 @@ class MetricsCollector:
             # makes, and read through this same open transaction so a table
             # created moments ago is visible.
             if conn.is_postgres:
+                # current_schema() matters: without it the list is the UNION
+                # of every schema's query_log, so a column added in one schema
+                # (production) hides its absence in another (a test schema),
+                # the ALTER is skipped, and the first UPDATE naming it fails.
+                # Seen 2026-09-08 the moment a fourth migration was added.
                 rows = conn.execute(
                     "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'query_log'"
+                    "WHERE table_name = 'query_log' AND table_schema = current_schema()"
                 ).fetchall()
                 existing = {r["column_name"] for r in rows}
             else:
@@ -115,6 +120,10 @@ class MetricsCollector:
             # See docs/context-compilation-design.md §13.
             if "derivation" not in existing:
                 conn.execute("ALTER TABLE query_log ADD COLUMN derivation TEXT DEFAULT '{}'")
+            # The registry's context_compiles row this query's answer came
+            # from; NULL when nothing was compiled or the rater did not say.
+            if "compile_id" not in existing:
+                conn.execute("ALTER TABLE query_log ADD COLUMN compile_id TEXT DEFAULT NULL")
 
             # Migration: add neutral_count to existing chunk_feedback tables
             # (2026-09 — the third, "partially correct" vote, matching EA's
@@ -182,7 +191,7 @@ class MetricsCollector:
         except Exception:
             pass
 
-    def record_feedback(self, query_hash: str, feedback: int) -> None:
+    def record_feedback(self, query_hash: str, feedback: int, *, compile_id: str | None = None) -> None:
         """Record thumbs-up (+1), neutral/"partially correct" (0), or
         thumbs-down (-1) for a query, and update per-chunk scores.
 
@@ -197,10 +206,11 @@ class MetricsCollector:
         with self._conn() as conn:
             # Update query_log feedback column
             conn.execute(
-                """UPDATE query_log SET feedback = ?
+                """UPDATE query_log SET feedback = ?,
+                       compile_id = COALESCE(?, compile_id)
                    WHERE id = (SELECT id FROM query_log WHERE query_hash = ?
                                ORDER BY id DESC LIMIT 1)""",
-                (feedback, query_hash),
+                (feedback, compile_id, query_hash),
             )
             # Look up which chunks were retrieved for this query
             row = conn.execute(

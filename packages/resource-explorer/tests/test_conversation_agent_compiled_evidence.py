@@ -77,3 +77,21 @@ class TestSystemPromptPrefersEvidenceOverSearch:
         prompt = ConversationAgent().system_prompt()
         assert "clarifying question" in prompt
         assert "do not fall back to a broader search" in prompt
+
+
+class TestCompiledEvidenceSwitch:
+    """`compiled_evidence=False` is the experiment's one variable: it must
+    remove the compile and nothing else (scripts/experiment_compiled_vs_rag.py)."""
+
+    def test_off_means_no_compile_and_no_last_compiled(self, monkeypatch):
+        from resource_explorer.agents.conversation_agent import ConversationAgent
+        import resource_explorer.context_compile as cc
+        called = []
+        monkeypatch.setattr(cc, "compile_context", lambda *a, **k: called.append(1))
+        agent = ConversationAgent(resource_slug="x", compiled_evidence=False)
+        assert agent._compiled_evidence("q", "x", None) == []
+        assert called == [] and agent._last_compiled is None
+
+    def test_default_is_on(self):
+        from resource_explorer.agents.conversation_agent import ConversationAgent
+        assert ConversationAgent(resource_slug="x").compiled_evidence is True
