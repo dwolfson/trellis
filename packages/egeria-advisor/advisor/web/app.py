@@ -159,6 +159,62 @@ app.include_router(_plans_router)
 from advisor.web.reports import router as _reports_router
 app.include_router(_reports_router)
 
+
+@app.on_event("startup")
+async def _startup():
+    """Ensure pgvector collection tables exist, then pre-warm the MCP agent
+    in the background so the first report click is fast.
+
+    **Restored 2026-09-07** — lost as an unintended casualty of TC-5 slice 1's
+    bulk line-range deletion (BACKLOG.md), which correctly removed the
+    _get_rag()/models/report-catalog block being moved to shared.py but also
+    swept up this handler and _shutdown below, which were interleaved in the
+    same range and had no replacement anywhere. Confirmed missing from the
+    whole advisor/ package, not just this file — flagged by a peer session
+    that rebuilt and redeployed the container and diffed pre/post-refactor
+    startup behavior. No test caught it: nothing exercises this app's
+    lifespan events, since every TC-5 verification used a bare
+    `TestClient(app, ...)` rather than `with TestClient(app) as client:`.
+    """
+    import threading
+
+    try:
+        from advisor.vector_store_pg import PgVectorStore
+        PgVectorStore().provision_schema()
+    except Exception as exc:
+        logger.warning(f"pgvector schema provisioning failed (queries needing missing collections will error): {exc}")
+
+    def _warm():
+        try:
+            from advisor.report_pipeline import get_report_pipeline
+            get_report_pipeline()._ensure_agent()
+            logger.info("MCP agent pre-warmed on startup")
+        except Exception as exc:
+            logger.warning(f"MCP pre-warm failed (reports will initialize on first use): {exc}")
+
+    threading.Thread(target=_warm, daemon=True).start()
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    """
+    Terminate the MCP agent's subprocess(es) so they don't outlive this
+    process. Without this, every uvicorn --reload restart during development
+    orphans the MCP server subprocess instead of killing it — confirmed live
+    2026-07-10: ~50 orphaned mcp_server.py processes had accumulated over two
+    weeks of iterative development, one per reload, with no shutdown handler
+    ever calling shutdown_mcp_agent() to reap them.
+
+    Restored 2026-09-07 alongside _startup above — see that docstring.
+    """
+    try:
+        from advisor.mcp_agent import shutdown_mcp_agent
+        await shutdown_mcp_agent()
+        logger.info("MCP agent shut down cleanly")
+    except Exception as exc:
+        logger.warning(f"MCP agent shutdown failed: {exc}")
+
+
 # ── routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/")
