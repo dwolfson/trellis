@@ -857,6 +857,13 @@ ingest for an Egeria-sourced artifact, and `feedback` carries no `manifest_id`.)
    `fetched_at` (§10). Additive schema; needs re-ingestion, which is cheap now.
 6. **Manifest id on feedback records** (§13). One column. Without it the signal cannot distinguish
    wrong-evidence-selected from over-compressed from model-reasoned-badly.
+   *(Status, 2026-09-08: **built.** `CompiledContext.compile_id` is a content hash of the packer's
+   inputs; every compile is persisted to `context_compiles` with `hits` counting repeats (the §9
+   replayability check, measured rather than asserted); `conversation_history.compile_id`,
+   `resource_feedback.compile_id` and the metrics store's `query_log.compile_id` carry it; the chat
+   stream and `POST /api/context/compile` return it. Verified live: two identical compiles → one row,
+   `hits = 2`; a chat turn → both turns linked to the compile and attributed to the signed-in user —
+   which also found and fixed the streaming route's thread dropping the caller's identity.)*
 
 ### Phase 2 — the containment tree
 

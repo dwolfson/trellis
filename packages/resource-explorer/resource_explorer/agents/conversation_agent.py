@@ -228,6 +228,7 @@ class ConversationAgent(BaseExplorerAgent):
                 # to reason over, not the whole prompt, and the agent still has
                 # tools for anything the compile could not reach.
                 budget=6000,
+                session_id=getattr(self, "session_id", None),
             )
         except Exception:
             logger.debug("compiled evidence unavailable for %s", slug, exc_info=True)

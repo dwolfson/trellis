@@ -59,6 +59,32 @@ class CompiledContext:
     text: str
     manifest: dict
     derivation: list[dict]
+    #: Content hash of everything the packer saw: spec id and version, budget,
+    #: target model, and every candidate's rungs. Two compiles over the same
+    #: materialised state get the same id, which is the replayability contract
+    #: (context-compilation-design.md §9) made checkable — and the key that
+    #: conversation turns and feedback carry so a rating can be traced back to
+    #: the exact context the model was given (§13). Also present as
+    #: manifest["compile_id"] so callers holding only the manifest have it.
+    compile_id: str = ""
+
+
+def _compile_id(spec, candidates: dict, budget: int) -> str:
+    """blake2b over the packer's inputs, in a canonical order.
+
+    Hashes rung TEXT, not provenance timestamps: a re-read of the same stored
+    result at a later `fetched_at` is the same compile. Provenance still
+    travels in the manifest; it just does not change identity.
+    """
+    import hashlib
+    h = hashlib.blake2b(digest_size=16)
+    h.update(f"{spec.spec_id}|{spec.version}|{budget}|{spec.target_model}|".encode())
+    for key in sorted(candidates):
+        h.update(f"[{key}]".encode())
+        for rung, text in sorted(candidates[key].rungs.items(), key=lambda kv: str(kv[0])):
+            h.update(f"{rung}:".encode())
+            h.update(hashlib.blake2b(str(text).encode(), digest_size=8).digest())
+    return h.hexdigest()
 
 
 #: No single finding may take more than this share of a section's FULL rung.
@@ -343,8 +369,15 @@ def compile_context(
     perspectives: list[str] | None = None,
     budget: int = 8000,
     target_model: str = "",
+    session_id: str | None = None,
 ) -> CompiledContext:
-    """Build, resolve and pack a context for `question` about resource `slug`."""
+    """Build, resolve and pack a context for `question` about resource `slug`.
+
+    Every successful compile is recorded through `registry.record_compile`
+    (fail-soft: a registry without it, or a write that fails, costs the caller
+    nothing but the persistence). `session_id` is the chat/CLI session the
+    compile served, when there is one; it lands on the row, not in the hash.
+    """
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(
@@ -484,9 +517,12 @@ def compile_context(
     from resource_explorer.facts import FactLayer
 
     _facts = FactLayer(registry)
-    return CompiledContext(
+    compile_id = _compile_id(spec, candidates, budget)
+    compiled = CompiledContext(
         text=packed.text(),
+        compile_id=compile_id,
         manifest={
+            "compile_id": compile_id,
             "spec_id": m.spec_id, "budget": m.budget, "used": m.used,
             "headroom": m.headroom, "packed": list(m.packed),
             "dropped": list(m.dropped),
@@ -498,3 +534,13 @@ def compile_context(
         },
         derivation=derivation,
     )
+    record = getattr(registry, "record_compile", None)
+    if callable(record):
+        try:
+            record(compile_id, slug, question, compiled.manifest, compiled.derivation,
+                   session_id=session_id)
+        except Exception:
+            # Persistence is an instrument, not the product: a compile the
+            # caller can use must never be lost to a failed bookkeeping write.
+            log.warning("could not record compile %s for %s", compile_id, slug, exc_info=True)
+    return compiled
