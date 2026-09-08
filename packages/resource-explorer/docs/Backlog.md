@@ -4256,3 +4256,37 @@ turns out to be wrong is not exotic: it is the normal consequence of finding a
 bug in something that already ran. Twice in one day (this, and the 48,581-row
 render) the answer to unbounded output was a hand-written statement against
 live data. That is the part to fix.
+
+---
+
+## `architecture_recovery`'s own chat answer can go never-run despite real findings
+
+Found 2026-09-08 while verifying the new verdict-coverage feature
+(`docs/curated-architecture-answers-design.md` §6 item 1) against
+`egeria-workspaces_git`: `FactLayer.fact(slug, "architecture_recovery")`
+returned `state=never_run` for that repo even though real
+`architecture_recovery` findings exist (persisted 2026-09-01, confirmed via
+direct registry query — 109 components). `egeria_git`, surveyed more
+recently, answers correctly end-to-end
+(`"223 components recovered — 0 of 973 components reviewed; ..."`).
+
+Root cause, confirmed: `registry.get_analysis_last_run("repo",
+"egeria-workspaces_git")` has no `"architecture_recovery"` key at all — the
+same run-attribution gap that made `architecture_diagram` report never-run
+for the same repo before the 2026-09-08 fix (`ANALYSIS_KINDS["
+architecture_diagram"].results.live_read = True`,
+`repo_survey_definition_adapter.py`). `facts.py::fact()` gates non-`live_read`
+analyses on `run.get("last_run_at")` before ever calling their results
+reader — for a repo whose survey predates (or otherwise never wrote) proper
+step-attribution, that gate blocks the answer even though the underlying
+data is real and current.
+
+`_architecture_recovery_results`/`_architecture_recovery_headline` read a
+`project_analysis_findings` table populated at survey time, exactly the
+shape `AnalysisKindResults.live_read`'s own docstring describes (the
+`api_structure` 2026-09-02 precedent, and now `architecture_diagram`) — the
+fix is very likely the same one-line `live_read=True`. Not applied here: this
+is the flagship, most heavily-used analysis in the catalog (many questions'
+`analysis_ids` include it), so changing its run-gating behavior deserves its
+own verification pass across more than one repo, not a same-session
+addition to an unrelated feature. Flagged rather than fixed.
