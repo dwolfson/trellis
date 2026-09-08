@@ -11,8 +11,10 @@ Covers the resolution order:
      in the current interpreter
   3. fall back to the command/args from config/mcp_servers.json unchanged
 
-...and that MCPConfig.from_dict only applies this to the "pyegeria" server,
-leaving every other server's command/args untouched.
+...and that MCPConfig.from_dict applies each resolver only to the server it
+owns, leaving unrelated servers' command/args untouched. Since 2026-09-06
+"dr-egeria" has its own resolver too (resolve_dr_egeria_mcp_command), and a
+server whose resolved command does not exist is disabled rather than spawned.
 """
 import sys
 
@@ -110,16 +112,61 @@ def test_from_dict_overrides_pyegeria_command_when_importable(monkeypatch):
     assert cfg.servers["pyegeria"].args == ["-m", "pyegeria.core.mcp_server"]
 
 
-def test_from_dict_leaves_other_servers_untouched(monkeypatch):
+def test_from_dict_leaves_unrelated_servers_untouched(monkeypatch):
+    """The pyegeria resolver must not leak into servers it does not own.
+
+    This used to assert that on "dr-egeria" — valid while pyegeria was the
+    only server resolved. Since 2026-09-06 dr-egeria has its own resolver
+    (advisor.mcp_config.resolve_dr_egeria_mcp_command), so it is no longer an
+    example of an untouched server; asserting on it here would pin the very
+    behaviour that fix removes. The invariant still matters, so it is
+    asserted against a server neither resolver claims.
+    """
     monkeypatch.delenv("ADVISOR_PYEGERIA_MCP_COMMAND", raising=False)
+    monkeypatch.delenv("ADVISOR_DR_EGERIA_MCP_COMMAND", raising=False)
     monkeypatch.setattr(
         "advisor.mcp_config.importlib.util.find_spec", lambda name: object()
     )
-    cfg = MCPConfig.from_dict(_CONFIG_DICT)
-    assert cfg.servers["dr-egeria"].command == (
-        "/Users/someone/localGit/egeria-python/.venv/bin/python"
-    )
-    assert cfg.servers["dr-egeria"].args == ["/some/other/script.py"]
+    cfg_dict = dict(_CONFIG_DICT)
+    cfg_dict["mcpServers"] = dict(cfg_dict["mcpServers"])
+    cfg_dict["mcpServers"]["some-other-server"] = {
+        # /bin/sh so the "never spawn a command that is not there" guard in
+        # MCPConfig.from_dict does not disable it -- that guard is about
+        # unspawnable commands, and this test is about resolver ownership.
+        "command": "/bin/sh",
+        "args": ["/some/other/script.py"],
+        "enabled": True,
+    }
+    cfg = MCPConfig.from_dict(cfg_dict)
+    assert cfg.servers["some-other-server"].command == "/bin/sh"
+    assert cfg.servers["some-other-server"].args == ["/some/other/script.py"]
+
+
+def test_from_dict_disables_a_server_whose_command_does_not_exist(monkeypatch):
+    """Known-negative for the guard added with dr-egeria's resolver.
+
+    config/mcp_servers.json ships placeholders for host-specific paths; a
+    resolver that finds nothing leaves them in place. Spawning one produces
+    `[Errno 2] No such file or directory: '<path-to-...>'` on every startup —
+    EA BACKLOG DP-1's symptom. Such a server is disabled instead, and the
+    placeholder is left visible so the log names what was wrong.
+    """
+    monkeypatch.delenv("ADVISOR_PYEGERIA_MCP_COMMAND", raising=False)
+    monkeypatch.delenv("ADVISOR_DR_EGERIA_MCP_COMMAND", raising=False)
+    monkeypatch.setattr("advisor.mcp_config._workspaces_checkout", lambda: None)
+    cfg_dict = dict(_CONFIG_DICT)
+    cfg_dict["mcpServers"] = {
+        "placeholder-server": {
+            "command": "<path-to-something>/.venv/bin/python",
+            "args": [],
+            "enabled": True,
+        }
+    }
+    cfg = MCPConfig.from_dict(cfg_dict)
+    assert cfg.servers["placeholder-server"].enabled is False
+    assert "placeholder-server" not in cfg.get_enabled_servers()
+    # left visible rather than blanked, so the warning can name it
+    assert cfg.servers["placeholder-server"].command.startswith("<path-to-")
 
 
 def test_from_dict_falls_back_to_json_command_when_not_importable(monkeypatch):

@@ -174,3 +174,100 @@ def resolve_report_specs_dir() -> Optional[str]:
         "configured value unchanged"
     )
     return None
+
+def _workspaces_checkout() -> Optional[Path]:
+    """Locate an egeria-workspaces checkout, or None.
+
+    Both names are real: the reference machine calls it
+    ``egeria-workspaces-fs``, other machines call it ``egeria-workspaces``
+    (EA BACKLOG DP-1). Checked as a sibling of the trellis repo root and of
+    its parent, matching command_keyword_index.py's template search.
+    """
+    env_root = os.environ.get("EGERIA_WORKSPACES", "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    repo_root = Path(__file__).parent.parent.parent.parent
+    for parent in (repo_root.parent, repo_root.parent.parent):
+        for ws in ("egeria-workspaces-fs", "egeria-workspaces"):
+            candidates.append(parent / ws)
+    for c in candidates:
+        if (c / "compose-configs" / "egeria-quickstart" / "PyegeriaWebHandler").is_dir():
+            return c
+    return None
+
+
+def resolve_dr_egeria_mcp_command() -> Optional[Tuple[str, List[str]]]:
+    """
+    Resolve command + args for the "dr-egeria" MCP server subprocess.
+
+    This is NOT ``pyegeria.core.mcp_server`` — that one exposes report tools
+    only, which is what CLAUDE.md rule 24 is about. This entry points at
+    egeria-workspaces' ``PyegeriaWebHandler/mcp_server.py``, which defines
+    ``dr_egeria_run_block``, ``egeria_execute_command``,
+    ``egeria_list_commands`` and friends. Conflating the two led to this
+    server being disabled once on the theory that its tools had been dropped;
+    they had not.
+
+    config/mcp_servers.json ships placeholders for the two host-specific
+    paths rather than one developer's absolute paths (EA BACKLOG DP-1), so
+    they must be resolved here or the subprocess fails to spawn with
+    ``[Errno 2] No such file or directory``.
+
+    Priority, same os.environ-direct idiom as the other resolvers here:
+
+      1. ``ADVISOR_DR_EGERIA_MCP_COMMAND`` — full argv, JSON array or a
+         shell-split string.
+      2. ``sys.executable`` plus the ``mcp_server.py`` found in a sibling
+         egeria-workspaces checkout. The current interpreter is right for
+         the same reason it is for pyegeria: it already has pyegeria
+         installed, and running the script by path puts its own directory on
+         sys.path so its local ``dr_egeria_md`` import resolves.
+      3. ``None`` — no workspaces checkout found. The caller disables the
+         server rather than spawning the unresolved placeholder.
+    """
+    env_cmd = os.environ.get("ADVISOR_DR_EGERIA_MCP_COMMAND", "").strip()
+    if env_cmd:
+        argv: Optional[List[str]] = None
+        try:
+            parsed = json.loads(env_cmd)
+            if isinstance(parsed, list) and parsed:
+                argv = [str(x) for x in parsed]
+        except json.JSONDecodeError:
+            pass
+        if argv is None:
+            argv = shlex.split(env_cmd)
+        if argv:
+            logger.info(f"dr-egeria MCP command from ADVISOR_DR_EGERIA_MCP_COMMAND: {argv}")
+            return argv[0], argv[1:]
+
+    ws = _workspaces_checkout()
+    if ws is not None:
+        script = ws / "compose-configs" / "egeria-quickstart" / "PyegeriaWebHandler" / "mcp_server.py"
+        if script.is_file():
+            logger.info(f"dr-egeria MCP command resolved to the current interpreter + {script}")
+            return sys.executable, [str(script)]
+
+    logger.info(
+        "dr-egeria MCP: no egeria-workspaces checkout found (set EGERIA_WORKSPACES or "
+        "ADVISOR_DR_EGERIA_MCP_COMMAND) — the server will be disabled rather than "
+        "spawned with an unresolved path"
+    )
+    return None
+
+
+def resolve_egeria_root_path() -> Optional[str]:
+    """Absolute ``EGERIA_ROOT_PATH`` for the dr-egeria MCP subprocess.
+
+    ``EGERIA_ROOT_PATH`` wins if set; otherwise the ``exchange-quickstart``
+    directory of whichever workspaces checkout was found.
+    """
+    env_val = os.environ.get("EGERIA_ROOT_PATH", "").strip()
+    if env_val:
+        return str(Path(env_val).expanduser())
+    ws = _workspaces_checkout()
+    if ws is not None:
+        root = ws / "exchange-quickstart"
+        if root.is_dir():
+            return str(root)
+    return None
