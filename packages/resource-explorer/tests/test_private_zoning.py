@@ -566,3 +566,50 @@ def test_the_shared_repo_asset_is_never_zoned_private():
         "a public repo from everyone else")
     assert seen["asset-guid"]["owner"] != "alice", (
         "the shared repo asset was handed to one investigation's owner")
+
+
+def test_privacy_resolution_survives_a_thread_that_lost_the_caller(tmp_path):
+    """A raw `threading.Thread` does NOT inherit contextvars, so
+    `current_user_id()` is `''` inside one. `asyncio.to_thread` DOES copy the
+    context — both measured 2026-09-08, prompted by dwolfson-fe hitting the
+    same thing in the chat stream's producer thread, where turns were being
+    written as `''`.
+
+    That is the whole reason `private_owner_for_entity` is unscoped. Surveys run
+    from the queue and the scheduler in raw threads; had this read been
+    caller-scoped it would see no caller, find no private investigation,
+    conclude "not private", and publish into the public zones. Every queued
+    private survey would leak, and nothing would error.
+
+    RE's investigation routes all use `asyncio.to_thread`, so the Phase 3
+    visibility filter keeps the real caller there. This test pins the other
+    half: the protection decision must not depend on having one.
+    """
+    import threading
+
+    from resource_explorer.registry import Project, ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    reg.add(Project(slug="queued-repo", display_name="q",
+                    github_url="https://github.com/o/q", description=""))
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Queued Survey",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "queued-repo")
+
+    from resource_explorer.registry import current_user_id
+
+    box = {}
+
+    def _worker():
+        box["user"] = current_user_id()
+        box["owner"] = reg.private_owner_for_entity("repo", "queued-repo")
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+
+    assert box["user"] == "", "precondition: a raw thread should have lost the caller"
+    assert box["owner"] == "alice", (
+        "a queued survey could not tell the repo was private — it would publish public")
