@@ -32,7 +32,7 @@ same shape: a true statement about the mechanism, read as a claim about the worl
 flowchart LR
   subgraph FRONT["Front half — existed as question dispatch"]
     direction LR
-    P["Purpose (why)"] --> Q["Question catalog<br/>41 questions, joined to Egeria's Question terms"]
+    P["Purpose (why)"] --> Q["Question catalog<br/>51 questions, joined to Egeria's Question terms"]
     S["Perspective (whose concerns)"] --> Q
     Q --> A["analysis_ids<br/>29 catalogued analyses"]
   end
@@ -146,7 +146,90 @@ Three artifacts come back together: the **derivation** (why these sections exist
 (what survived the budget, at which rung; and the honest negative answer "ranked below the budget line
 at rung N"), and **gaps, judged** with the vocabulary the fact layer already had.
 
-## 7. Why it is worth having
+## 7. Kinds and sources of context
+
+Retrieval is one source among several. The compiler is indifferent to resolver kind; all it needs
+is the cost tier and whether the resolver may run inline.
+
+| Kind | Where it comes from | How it enters a compile | Fixed or moving? |
+|---|---|---|---|
+| **Stored analysis results** | about 40 catalogued analyses: RE's own surveyors (health, dependencies, security and CVE scans, licences, CHAOSS metrics, architecture recovery, API surface…) plus Egeria-native surveys, merged into one menu at read time | findings table or each analysis's own reader; three rungs derived for free (findings, one line per check, check names). Answers 22 of the 51 catalog questions | materialised; refreshed by the scheduler, never run inside a compile |
+| **Direct Egeria queries** | metadata elements, ownership, zones, survey reports, technology types, via pyegeria as the signed-in user | resolvers; 11 questions are answered this way | live, and as-of-able: Egeria versions and timestamps every element |
+| **Retrieved corpus** | RE: 8 collection types per resource (markdown, Python, Java, JavaScript, Go, SQL, PDFs, web docs). EA: 9 collections over Egeria's code, concepts, types, guides, notebooks and Dr.Egeria templates | pgvector similarity, routed by each app's collection router; the conversation agent's fallback when no analysis answers | re-embedded on refresh; collection drift reported, never auto-enabled |
+| **Registry and activity** | investigations and membership, schedules, activity log, requests-for-action | registry reads; scopes the compile unit and the frontier | moving with use |
+| **Human-provided** | enrichment context, RFA decisions, ratings and manifest edits | 7 questions can only be answered by a person; feedback tunes weights later | arrives whenever people act |
+| **Cross-app** | EA reads RE's code-symbol and relationship tables directly (cross-schema read) | same shape as EA's own symbol store, so its analytics do not change | as fresh as RE's last ingest |
+| **Report specs and governance docs** | Dr.Egeria report specs (semantic search over question specs, then Egeria's own spec finder) and plan documents with inbox / outbox / trash | EA's report pipeline runs the spec against live Egeria and can narrate from its own rows | specs static; results live |
+
+The question catalog records how each of its 51 questions can be answered today: 22 by analysis,
+11 directly from Egeria, 7 by a person, 6 mixed, 1 by chart, 1 partially, and 3 known gaps.
+
+## 8. Relationship to Egeria: vocabulary, source, sink and clock
+
+```mermaid
+flowchart LR
+  subgraph EG["Egeria"]
+    direction TB
+    GT["Glossary terms: Question · Perspective · Purpose"]
+    TT["Technology types and the annotations they produce"]
+    EL["Metadata elements: versioned, timestamped, as-of queries"]
+    PR["Projects: PersonalProject · Task · StudyProject · Campaign"]
+    SR["Survey reports and annotations: Ownership 0445 · Zones 0424"]
+  end
+  subgraph TR["Trellis"]
+    direction TB
+    QC["Question catalog, joined by display name"]
+    AC["Analysis catalog: local + Egeria entries merged at read"]
+    RS["Resolvers, as the signed-in user"]
+    IV["Investigation: the compile unit"]
+    OB["Outbox publisher: stamps requester, owner, draft zone"]
+  end
+  GT -- vocabulary --> QC
+  TT -- vocabulary --> AC
+  EL -- source --> RS
+  PR <-- "same thing, promoted when shared" --> IV
+  OB -- sink --> SR
+  SR -- "history for free" --> EL
+```
+
+- **Vocabulary.** Questions, Perspectives and Purposes are Egeria glossary terms; the catalog joins
+  on the display name, which keeps the question corpus Egeria-native and queryable. The analysis
+  menu merges Egeria's technology types at read time, fail-soft.
+- **Source.** Direct resolvers query Egeria as the user who asked, so what they can see is what the
+  compile contains.
+- **Sink.** Published surveys carry the requester, an Ownership classification and the draft zone, so
+  evidence Trellis produced is attributable and governable like any other metadata.
+- **Clock.** Egeria versions and timestamps elements and answers as-of queries with no history
+  limit. Publishing analysis results buys unlimited history without a second archive, and pinning
+  as-of is what makes a compile replayable.
+
+## 9. Static or dynamic?
+
+A compile reads materialised state and nothing else. That is what makes it deterministic,
+sub-second, and safe to call on every chat turn. Everything that moves the state happens around the
+compile, not inside it:
+
+| What moves the state | Cadence |
+|---|---|
+| Scheduler re-runs analyses on a per-resource schedule | as configured; every run logged |
+| Bootstrap check-and-heal re-runs missing catalog batches | about every 10 minutes while the web role is up |
+| Refresh re-ingests a resource; collection drift is reported, not applied | on demand or scheduled |
+| Queued gaps enqueue the analysis that would change the answer | the worker picks it up; the compile did not wait |
+| Outbox publishes results to Egeria with retry | continuous |
+| People: enrichment, RFA decisions, ratings, manifest edits | whenever they act |
+
+Three grains of recompile with very different costs: **re-pack** (weights, rungs, a section on or
+off; milliseconds, nothing re-fetched), **re-resolve** (as-of, filters, membership; moderate,
+resolvers re-read stored state), **re-gather** (an analysis that has not run; asynchronous, queued,
+not awaited).
+
+Time is explicit, not assumed. `as_of` is a spec parameter and identity-bearing. `fetched_at` and
+`source_timestamp` travel separately, so an old fact and a stale read are distinguishable. A resolver
+that reads a live source at compile time must be declared `current_only`, and a past-as-of compile
+containing one is labelled mixed rather than quietly packed; the resolver-kind registry that would
+carry that tag is not built yet.
+
+## 10. Why it is worth having
 
 - **Gaps become answers.** The prompt names which analyses have not run and which found nothing.
 - **Provenance is a citation contract.** Every span carries where it came from and as of when; an
@@ -173,7 +256,7 @@ varies the size of a result and never its content. Disqualifying for a filter, c
 budget allocator, and a safety property: running out of budget can never drop the one section a
 perspective alone needed.
 
-## 8. Numbers we have
+## 11. Numbers we have
 
 | Measure | Value | Where from |
 |---|---|---|
@@ -182,7 +265,8 @@ perspective alone needed.
 | Sections packed / budget used / dropped / gaps judged | 16 / 3,981 of 4,000 / 0 / 2 | same |
 | Tests over tree, packer and bridge | 164 | repository |
 | Artifacts with trees; nodes; rungs | 16,001; 277,886; 509,989 | `artifact_tree` schema |
-| Questions in the RE catalog, all found among Egeria's Question terms | 41 of 84 | catalog coverage script |
+| Questions in the RE catalog today | 51 | question_catalog.yaml |
+| … at the time of the Egeria join check, all 41 then present were among Egeria's 84 Question terms | 41 / 84 | catalog coverage script |
 | Perspectives; questions carrying four or more | 12; 17 of 41 | investigation-framing measurement |
 | Analyses declared inline / queued | 20 / 9 | analysis catalog |
 | Perspectives reaching zero analyses | 1 (Privacy) | coverage script |
@@ -202,7 +286,7 @@ which produced the current rule: units-per-document decides which unit is cohere
 **None of these numbers says the answers got better.** They are properties of the catalog, the corpus
 and the packer.
 
-## 9. The measurement habit: five claims falsified by running
+## 12. The measurement habit: five claims falsified by running
 
 | Claim | What the run showed |
 |---|---|
@@ -216,11 +300,11 @@ The pattern behind all five is the one in §1. The response was not more care; i
 vocabulary that already separated *ran and found nothing* from *never ran*. Status notes are dated,
 and falsified ones are struck through rather than deleted, because the reasoning is the useful part.
 
-## 10. What is not measured, and the experiments that would settle it
+## 13. What is not measured, and the experiments that would settle it
 
 | Question | Experiment | Metric | Instrument |
 |---|---|---|---|
-| Do compiled-evidence answers beat RAG-only answers? *(unmeasured)* | the 41 catalog questions × a handful of surveyed repos; same model, prompt with and without packed evidence | citation rate, correct gap acknowledgement, unsupported-claim count; RAGAS faithfulness as a second opinion | judge model plus a human sample; MLflow |
+| Do compiled-evidence answers beat RAG-only answers? *(unmeasured)* | the 51 catalog questions × a handful of surveyed repos; same model, prompt with and without packed evidence | citation rate, correct gap acknowledgement, unsupported-claim count; RAGAS faithfulness as a second opinion | judge model plus a human sample; MLflow |
 | Does Perspective weighting help? *(unmeasured)* | ablation: uniform versus perspective weights, per perspective | rating by perspective; rung distribution per section | perspective-dimensioned feedback (the Advisor already collects it) |
 | Are profiler-derived chunk sizes better than hand-picked? *(unmeasured)* | re-embed egeria-docs at derived sizes; run the Advisor's question set against both | retrieval hit rate at k, answer rating | trellis-vectorstore, MLflow |
 | Where is the budget knee? | same questions at 2k / 4k / 8k / 16k characters | quality versus budget; time to first token per tier | manifest headroom, model tiers |
@@ -230,7 +314,7 @@ and falsified ones are struck through rather than deleted, because the reasoning
 Feedback volume today: 10 Resource Explorer ratings and no chunk-level feedback, so the second and
 sixth rows need a collection period. The first and third can run now against materialised state.
 
-## 11. Continuing the work
+## 14. Continuing the work
 
 ```mermaid
 flowchart LR
@@ -261,11 +345,11 @@ flowchart LR
   DONE --> NEXT --> LATER
 ```
 
-Three sequencing rules: protect the curated vocabulary (41 questions, 29 analyses, their tagging), not
+Three sequencing rules: protect the curated vocabulary (51 questions, about 40 analyses, their tagging), not
 the schema; instruments before features; stop investing in agent-side context assembly and convert
 one specialist agent to a resolver at a time, measuring each.
 
-## 12. References and inspirations
+## 15. References and inspirations
 
 1. Lewis et al., *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks*, NeurIPS 2020.
    The baseline both apps started from.
@@ -298,7 +382,7 @@ one specialist agent to a resolver at a time, measuring each.
 Not found in the literature: the replayability contract stated as *same spec + same as-of + same
 materialised state → same context*. If it exists in print it is worth citing; if not, worth writing up.
 
-## 13. For discussion
+## 16. For discussion
 
 - Is the Chat panel the right first surface? The payoff scales with how much it is used; report
   narration in the Advisor may be the higher-traffic path.
