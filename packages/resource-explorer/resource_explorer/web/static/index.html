@@ -10713,6 +10713,32 @@ const _QUESTION_KIND_STATUS = {
   unknown:  { icon: '•', color: 'text-slate-500', label: 'Unclassified' },
 };
 
+// The six distinct icon/color pairings a row can carry — `direct`/
+// `registry`/`chart` share one (cyan ✓), so this is a deduped, ordered
+// view of _QUESTION_KIND_STATUS plus _questionStatus' own two `has_data`-
+// derived states (emerald ✓ / amber ⚠), not a second vocabulary to keep in
+// sync by hand. Requested 2026-09-08 (project owner: the checkmark colors
+// and other symbols had no key) — emerald and cyan both render as a bare
+// "✓" and are only distinguishable by color, which the row itself never
+// explains.
+const _QUESTION_STATUS_LEGEND = [
+  { icon: '✓', color: 'text-emerald-400', label: 'Answered — analysis has run' },
+  { icon: '✓', color: 'text-cyan-400', label: 'Automatic (direct field / registry / chart)' },
+  { icon: '⚠', color: 'text-amber-400', label: 'Not run yet' },
+  { icon: '👤', color: 'text-slate-400', label: 'Needs human input (Enrichment)' },
+  { icon: '○', color: 'text-slate-500', label: 'No surveyor exists yet' },
+  { icon: '•', color: 'text-slate-500', label: 'Unclassified' },
+];
+
+function _questionStatusLegendHtml() {
+  return `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
+    ${_QUESTION_STATUS_LEGEND.map(s =>
+      `<span class="inline-flex items-center gap-1" title="${_esc(s.label)}">
+         <span class="${s.color}">${s.icon}</span>${_esc(s.label)}
+       </span>`).join('')}
+  </div>`;
+}
+
 function _questionStatus(q) {
   if (q.kind in _QUESTION_KIND_STATUS) return _QUESTION_KIND_STATUS[q.kind];
   // analysis | partial | mixed — real answer depends on has_data, computed
@@ -10854,9 +10880,12 @@ function renderScoutingQuestions(data) {
 
   view.innerHTML = _qdSubnavHtml('questions') + `
     <div class="space-y-3">
-      <div>
-        <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
-        <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
+          <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
+        </div>
+        ${_questionStatusLegendHtml()}
       </div>
       <div class="text-[11px] text-slate-500">${answeredCount} / ${questions.length} answered or automatic</div>
       <div class="bg-slate-950 border border-slate-800 rounded p-2">${rows}</div>
