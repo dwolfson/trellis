@@ -44,6 +44,13 @@ dependencies = [
     "tree-sitter>=0.23.0",
     "tree-sitter-java>=0.23.0",
     "nest-asyncio>=1.6.0",
+    # Observability (TC-4, BACKLOG.md) -- client-side instrumentation only;
+    # constructing these does not connect anywhere, so they're safe as base
+    # deps regardless of whether a Phoenix collector is running. Versions
+    # match resource-explorer's pins (packages/resource-explorer/pyproject.toml).
+    "openinference-instrumentation-beeai>=0.1.15",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp>=1.28.0",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +76,10 @@ gpu = [
 onnx-tools = [
     "onnx>=1.15.0",
     "onnxruntime-tools>=1.7.0",  # Model optimization tools
+]
+
+phoenix = [
+    "arize-phoenix>=5.0.0",  # the local collector server itself; matches resource-explorer's extra
 ]
 
 [project.scripts]

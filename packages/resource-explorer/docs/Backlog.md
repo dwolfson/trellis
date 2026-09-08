@@ -856,6 +856,78 @@ If it recurs, capture the assertion text — not a `tail` of the run, which buri
 Prefect's teardown logging.
 
 
+**`test_a_loop_that_loses_the_election_is_never_started` races a live Egeria call.**
+Found 2026-09-07: passed in one full run and failed in the next, on a working tree whose
+changes could not reach it (`worker.py` unmodified; no import path from the changed
+modules). That pattern reads as "you broke it" and is worth the two minutes to disprove.
+
+**The behaviour under test is correct.** `started == []` holds, and the `standby` line
+*is* logged — `worker.py:295`. The test does a fixed `time.sleep(0.2)` and then asserts
+`"standby" in caplog.text`. Polling for the condition instead of sleeping past it measured
+the line appearing at **1.13s**, against the 0.20s the test allows.
+
+The variance is not in our code. `run_worker` calls `_ensure_draft_zone()`, which makes a
+**real Egeria call** on startup — the captured log carries
+`draft-zone bootstrap: {'status': 'exists', ...}` — so how long the worker takes to reach
+the standby branch tracks how busy the platform is. The failing run followed a session that
+had been creating and deleting Projects against that same platform.
+
+So it is a genuine flake, and specifically a **fixed-sleep race against network latency** —
+not the shared-checkout hazard the two entries above describe, and not reproducible by
+running it alone on a quiet platform.
+
+Fixes, by cost:
+
+1. **Poll instead of sleeping.** Wait for `"standby" in caplog.text` (or for the loop's own
+   start/standby decision) with a generous ceiling, rather than sleeping a fixed 0.2s and
+   asserting once. Removes the dependence on Egeria's latency entirely, and keeps the test
+   fast in the common case.
+2. **Stub `_ensure_draft_zone` in the test**, as it already stubs `_reconcile_orphaned_runs`
+   and `_warm_survey_definition_cache`. Cheapest, and arguably what the test meant — a unit
+   test of leader election should not be talking to Egeria at all. Leaves any other
+   startup-latency source unaddressed.
+3. **Leave it.** It fails roughly when the platform is under load, which is exactly when
+   somebody is most likely to misread it as their own regression.
+
+(2) then (1) is the natural pair. Not done here because the file belongs to no current
+change and a concurrent session was mid-edit in the same package — see the git rules in the
+repo `CLAUDE.md`.
+
+
+### Private zoning — what Phase 5 left open
+
+**Anchoring (design Phase 4) is still not built, and Phase 5 shipped without it.**
+RE stamps `ZoneMembership` on each element it publishes. Egeria's `Anchors`
+classification carries `zoneMembership` and propagates it, so anchoring
+investigation artifacts to the investigation's Project would collapse the
+invariant from "is every artifact stamped?" to "is every artifact anchored?" —
+one property, checkable in one query, instead of N chances to leak that grows
+with each new annotation type. Worth doing before the artifact set grows.
+
+**Freshstart has never run this.** Everything was verified on quickstart, whose
+Coco Pharma directory happens to make RE's own account a platform operator. On a
+stock freshstart no human account holds `serverOperator`, so
+`ensure_private_zone_exists` will return `not_authorized` and private
+investigations will refuse to publish — which is the designed-safe behaviour,
+but it means the feature is unusable there until someone grants the right. The
+deployment-side grant belongs in `egeria-workspaces-fs`. See §3.3a of the design.
+
+**Existing private artifacts are not retro-zoned.** Anything published before
+Phase 5 from what is now a private investigation stays in whatever zone it got.
+A backfill would need to enumerate them and re-zone; nothing does that yet, and
+nothing reports how many there are. Worth at least a count, so the gap is
+visible rather than assumed empty.
+
+**The settle window is a per-process belief, not shared state.** Each worker
+process learns the control exists at its own startup. A process that creates the
+control waits `PRIVATE_ZONE_SETTLE_SECONDS`; a process that starts afterwards
+sees it already present and trusts it immediately — correctly, since it predates
+that process. But two processes starting within the same window can disagree
+about whether private publishing is available. Harmless (the disagreement is
+between "refuse" and "allow" on a control that is genuinely settling) but
+surprising if someone hits it.
+
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
@@ -3464,24 +3536,46 @@ Broader arch/clustering/interfaces/mermaid suite: 507 passed, 9 skipped.
 
 ---
 
-#### RE has no login at all, and its identity is inconsistent across 26 sites
+#### RE's identity is still inconsistent across 14 sites (was: "RE has no login at all")
 
-Project-owner decision, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
-(ultimately) to support multi-user."*
+**Status update, 2026-09-07** (TC-8, `packages/egeria-advisor/BACKLOG.md`): three of this entry's
+four parts are done, all landed 2026-09-04. This section previously described all four as open;
+corrected here, verified by reading the code rather than assumed from the original entry.
 
-`/api/egeria/whoami` returns `get_config().egeria.user_id` and the comment above it says it is
-*"deliberately NOT a login mechanism"* — so the header's "Connected as: erinoverview" is cosmetic.
-Identity is read from `os.getenv("EGERIA_USER", …)` at **26 sites**, each building its own pyegeria
-client, with four different fallbacks (4x `_DEFAULT_USER`, 3x `"steward"`, 3x `"erinoverview"`,
-1x `""`), so **which identity an RE operation acts as depends on which module built the client**.
+- **`trellis-auth` extraction** — done. `packages/trellis-auth/` exists; both `advisor/auth.py`
+  and `resource_explorer/auth.py` import it for the app-neutral JWT/Portal-SSO pieces.
+- **A login UI in RE's SPA** — done. A real `#login-overlay` form is in
+  `resource_explorer/web/static/index.html`, and `LoginRequiredMiddleware` is installed in
+  `web/app.py`. "Connected as: erinoverview" is no longer cosmetic for a signed-in user.
+- **A declared service identity for unattended runs** (surveys/schedulers have no signed-in
+  user) — done, and it's a real, deliberately-labeled mechanism, not a fallback that quietly
+  reused the same path as a signed-in person: `resource_explorer/egeria_identity.py`'s
+  `EgeriaIdentity(is_service_account=True)`, sourced from `get_config().egeria.user_id`/
+  `user_password` (a configured account, matching the design doc's requirement that this be
+  distinct from EA's SS-4 fallback removal). `run_queue.py::_run_as_requester` documents the
+  policy directly: a queued run with a `requested_by` sets `current_caller` to that person (so
+  `Ownership` on anything it publishes is attributed correctly); a row with no `requested_by`
+  — "the worker's own service-account work" — runs with no caller at all and falls through to
+  this same service identity. Covers bootstrap heal, resync, and the outbox drain by name in
+  that function's own docstring.
+- **Still open: collapsing RE's identity call-sites onto the authenticated identity.** Down from
+  26 to **14** remaining `os.getenv("EGERIA_USER", …)` sites (`rfa_egeria_sync.py`,
+  `surveyors/egeria_reader.py`, `surveyors/survey_definition_reader.py`,
+  `surveyors/egeria_publisher.py`, `surveyors/database/database_surveyor.py`,
+  `surveyors/database/bootstrap_data_classes.py`,
+  `surveyors/database/egeria_database_surveyor.py`,
+  `surveyors/arch_recovery/materializer.py`,
+  `surveyors/arch_recovery/blueprint_materializer.py`,
+  `surveyors/arch_recovery/port_materializer.py`,
+  `surveyors/filesystem/egeria_filesystem_surveyor.py`, `web/routes/egeria.py` (×2),
+  `cli/main.py`), still with four different fallback literals (`_DEFAULT_USER`, `"steward"`,
+  `"erinoverview"`, `""`). Each of these builds its own pyegeria client directly rather than
+  going through `egeria_identity.py`'s resolution — the actual remaining work this entry
+  originally flagged.
 
-Full reasoning and the recommendation to extract `trellis-auth` rather than build a second login:
-`docs/trellis-auth-extraction.md` at the Trellis root. Four parts, and the package is the smallest:
-the extraction; a login UI in RE's SPA (it has never had one); collapsing the 26 sites onto the
-authenticated identity; and **the design question that should be settled first** — what RE does when
-nobody is logged in, since surveys and schedulers run unattended and a scheduled survey has no user.
-That needs a declared service identity, which is a legitimate configured account and NOT the same as
-the silent fallback EA's SS-4 decision removes.
+Full background: `docs/trellis-auth-extraction.md` at the Trellis root (its own status line and
+"still to do" lists are themselves stale as of this update — same three items, not corrected
+there yet).
 
 ---
 

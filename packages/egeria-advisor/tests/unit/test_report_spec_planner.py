@@ -139,7 +139,7 @@ properties.displayName
 def test_get_report_draft_schema_endpoint(monkeypatch):
     """The route requires a signed-in user and forwards their Egeria credentials
     (token-shaped since 2026-09-04) to the discovery helper."""
-    from advisor.web.app import get_report_draft_schema
+    from advisor.web.reports import get_report_draft_schema
 
     captured = {}
 
@@ -149,7 +149,7 @@ def test_get_report_draft_schema_endpoint(monkeypatch):
         return [{"attribute_path": "guid", "data_type": "string"}]
 
     fake_creds = {"user_id": "test_user", "password": "", "token": "egeria-token"}
-    monkeypatch.setattr("advisor.web.app.discover_draft_schema_internal", mock_discover)
+    monkeypatch.setattr("advisor.web.reports.discover_draft_schema_internal", mock_discover)
     monkeypatch.setattr("advisor.auth.require_egeria_user", lambda request: {"user_id": "test_user"})
     monkeypatch.setattr("advisor.auth.get_egeria_credentials", lambda request: fake_creds)
 
@@ -160,8 +160,8 @@ def test_get_report_draft_schema_endpoint(monkeypatch):
 
 
 def test_discover_draft_schema_internal(monkeypatch):
-    from advisor.web.app import discover_draft_schema_internal
-    
+    from advisor.web.reports import discover_draft_schema_internal
+
     class MockDraftManager:
         def load(self, draft_id):
             return {
@@ -206,7 +206,7 @@ def test_discover_draft_schema_internal(monkeypatch):
 
 
 def test_discover_draft_schema_cache(monkeypatch):
-    from advisor.web.app import discover_draft_schema_internal, _SCHEMA_CACHE
+    from advisor.web.reports import discover_draft_schema_internal, _SCHEMA_CACHE
     import time
     
     # Reset cache

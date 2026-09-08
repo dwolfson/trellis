@@ -560,3 +560,82 @@ class TestSummaryFailureCannotFailARun:
         from resource_explorer.surveyors.survey_report import summarise_annotations
 
         assert summarise_annotations(["a", "b"]) == []
+
+
+class TestAdministrativeFieldsDoNotCrowdOutTheAnswer:
+    """Reported live 2026-09-07 (Dan, asking "What is its internal
+    architecture — what components exist and how do they relate?" on a
+    repo where the detector barely classified anything): the answer was a
+    field dump —
+
+        summary: 1 runnable unit(s); from 107 candidate component(s)
+        depth: suitability
+        source_kind: architecture_recovery
+        component_scopes: 108
+        components: 107
+        component_types: Unclassified: 106; Console Command: 1
+
+    Three of those six lines are administrative/redundant with the headline
+    (`f.headline` for architecture_summary is always defined whenever this
+    value exists — repo_survey_definition_adapter.py's
+    `_architecture_summary_headline`), and `_summariseFactValue`'s 6-field
+    cap meant they crowded out `documented`/`protocols`/`third_party` — the
+    fields that would have actually answered "what does this serve" —
+    before the loop ever reached them.
+
+    `_architecture_summary_results` (repo_survey_definition_adapter.py) is
+    confirmed the ONLY results reader returning `summary`/`depth`/
+    `source_kind` as TOP-LEVEL keys — this is a narrow, checked exclusion,
+    not a guess at what else might be safe to hide. The dedicated Analysis-
+    tab metrics panel (`_renderMetricsResults`) reads the same value
+    directly, not through `_summariseFactValue`, so it is unaffected and
+    still shows every field.
+    """
+
+    _ARCH_SUMMARY_VALUE = {
+        "summary": "1 runnable unit(s); from 107 candidate component(s)",
+        "depth": "suitability",
+        "surveyed_at": "2026-09-07T00:00:00",
+        "source_kind": "architecture_recovery",
+        "component_scopes": 108,
+        "components": 107,
+        "component_types": {"Unclassified": 106, "Console Command": 1},
+        "third_party": 0,
+        "documented": 0,
+        "protocols": {},
+        "operations": 0,
+        "unread_scopes": 0,
+        "interfaces_unread": False,
+        "outcome": "recovered",
+        "outcome_cause": "",
+        "outcome_known_positive": False,
+        "outcome_detail": {"components": 107},
+        "complete": True,
+    }
+
+    def test_administrative_fields_are_excluded_from_the_value_lines(self):
+        node = _node_or_skip()
+        out = _run_js(node, INDEX.read_text(), self._ARCH_SUMMARY_VALUE,
+                       headline="107 candidate components, none documented")
+        assert "summary: " not in out, f"redundant with the headline, should not repeat: {out!r}"
+        assert "depth: " not in out, f"internal config, not part of the answer: {out!r}"
+        assert "source_kind: " not in out, f"internal config, not part of the answer: {out!r}"
+
+    def test_excluding_them_lets_the_real_metrics_through(self):
+        """The whole point: with the three administrative fields gone, the
+        6-field cap now reaches fields that actually say something."""
+        node = _node_or_skip()
+        out = _run_js(node, INDEX.read_text(), self._ARCH_SUMMARY_VALUE,
+                       headline="107 candidate components, none documented")
+        assert "component_types: " in out
+        assert "third_party: 0" in out
+        assert "documented: 0" in out
+
+    def test_the_headline_still_leads(self):
+        """Excluding `summary` from the value dump must not also remove it
+        from consideration as prose -- it was never prose (_factProseKeys
+        does not name it), so the headline is and remains the answer line."""
+        node = _node_or_skip()
+        out = _run_js(node, INDEX.read_text(), self._ARCH_SUMMARY_VALUE,
+                       headline="107 candidate components, none documented")
+        assert out.startswith("107 candidate components, none documented")

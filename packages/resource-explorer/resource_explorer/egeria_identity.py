@@ -59,6 +59,11 @@ __all__ = [
     "current_zones",
     "draft_zone",
     "ensure_draft_zone_exists",
+    "ensure_private_zone_exists",
+    "private_zone",
+    "private_zone_is_enforced",
+    "private_zone_status",
+    "private_zones",
     "identity_for_user",
     "ownership_body",
     "publish_zones",
@@ -77,6 +82,24 @@ __all__ = [
 #: surveyed it. Overridable so a second RE deployment against one Egeria does
 #: not share a draft zone with the first.
 DRAFT_ZONE = "resource-explorer-draft"
+
+#: RE's private zone — the one that actually DENIES.
+#:
+#: Personal and Experiment investigations zone their artifacts as
+#: `[PRIVATE_ZONE, "<creator userId>"]`, and both halves are load-bearing for
+#: opposite reasons (`OpenMetadataAccessSecurityConnector.validateZoneAccess`):
+#:
+#: * the **userId entry grants** — the connector returns true outright on
+#:   `userId.equals(zoneName)`, so the owner gets in with no configuration;
+#: * the **PRIVATE_ZONE entry denies** — for anyone else it is a zone the
+#:   platform recognises as secured, which makes `securedZoneCount > 0` and
+#:   sends them to `return false`.
+#:
+#: A userId on its own denies NOBODY: an unrecognised zone name is *ignored*
+#: (not treated as restrictive), the count stays zero, and the method falls
+#: through to `return true`. Verified live 2026-09-07: a non-owner was denied
+#: with both entries present, and the owner still read the element.
+PRIVATE_ZONE = "resource-explorer-private"
 
 #: Where an accepted element is promoted to.
 #:
@@ -100,6 +123,24 @@ _OWNER_PROPERTY_NAME = "userId"
 def draft_zone() -> str:
     """RE's draft zone name (`EXPLORER_DRAFT_ZONE` overrides)."""
     return (os.environ.get("EXPLORER_DRAFT_ZONE") or "").strip() or DRAFT_ZONE
+
+
+def private_zone() -> str:
+    """RE's private zone name (`EXPLORER_PRIVATE_ZONE` overrides)."""
+    return (os.environ.get("EXPLORER_PRIVATE_ZONE") or "").strip() or PRIVATE_ZONE
+
+
+def private_zones(owner: str) -> list[str]:
+    """The `ZoneMembership` for an element private to `owner`.
+
+    Order is not significant to the connector — it loops the whole list — but
+    the secured zone is first so a human reading the classification sees the
+    restriction before the exception to it.
+    """
+    zones = [private_zone()]
+    if owner:
+        zones.append(owner)
+    return zones
 
 
 def publish_zones() -> list[str]:
@@ -461,6 +502,243 @@ def stamp_published(
 #: Qualified name of RE's draft zone element.
 def _zone_qualified_name(zone: str) -> str:
     return f"GovernanceZone::{zone}"
+
+
+#: How long after WRITING the control before the enforcing connector has it.
+#:
+#: Measured 2026-09-07 against the quickstart platform: a control written at
+#: 02:53:11 was still not enforced 6 minutes later and WAS enforced at 7:03.
+#: The deployment's secrets collection declares `refreshTimeInterval: 10`,
+#: which `SecretsStoreConnector` multiplies by `60 * 1000` — minutes. The
+#: connector reloads on its own timer, so the wait from any given write is
+#: anywhere from ~0 to the full interval.
+#:
+#: Default is deliberately longer than the interval. Being late costs a few
+#: minutes of refused private publishing; being early publishes private work
+#: into a zone that is not yet enforced, which cannot be undone.
+PRIVATE_ZONE_SETTLE_SECONDS = int(os.environ.get("EXPLORER_PRIVATE_ZONE_SETTLE", "720"))
+
+#: Cached result of the last `ensure_private_zone_exists()`. `None` means "not
+#: yet asked", which is deliberately NOT the same as "not enforced" — see
+#: `private_zone_is_enforced`.
+_private_zone_state: Optional[dict] = None
+
+
+def _platform_name() -> str:
+    """The catalogued OMAG Server Platform the Security Officer API addresses.
+
+    `EXPLORER_EGERIA_PLATFORM_NAME` wins. Otherwise the single catalogued
+    `SoftwareServerPlatform`, ignoring the archive's `~{placeholder}~` template
+    entries — a real deployment has one, and if it somehow has several we
+    cannot pick for the operator, so we say so rather than guess.
+    """
+    configured = (os.environ.get("EXPLORER_EGERIA_PLATFORM_NAME") or "").strip()
+    if configured:
+        return configured
+    from pyegeria import EgeriaTech
+
+    from resource_explorer.config import get_config
+
+    egeria = get_config().egeria
+    tech = EgeriaTech(egeria.view_server, egeria.platform_url,
+                      egeria.user_id, egeria.user_password)
+    tech.create_egeria_bearer_token()
+    names = []
+    for el in tech.get_elements("SoftwareServerPlatform", output_format="JSON") or []:
+        name = ((el.get("properties") or {}).get("displayName") or "").strip()
+        if name and not name.startswith("~"):
+            names.append(name)
+    if len(names) == 1:
+        return names[0]
+    raise RuntimeError(
+        f"could not identify the platform to configure: found {names or 'none'}. "
+        "Set EXPLORER_EGERIA_PLATFORM_NAME."
+    )
+
+
+def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:
+    """Create the `SecurityAccessControl` that makes `private_zone()` ENFORCED.
+
+    This is the half that actually denies, and it is a different mechanism from
+    `ensure_draft_zone_exists`. That one creates a `GovernanceZone` *metadata
+    element*, which is documentation: the security connector never reads it. The
+    thing the connector reads is the platform's secrets store, reached through
+    the Security Officer OMVS —
+
+        SecurityOfficer.set_security_access_control
+          -> OpenMetadataPlatformSecurityVerifier.setSecurityAccessControl
+          -> userSecurityConnector.setSecurityAccessControl
+
+    and `getAssociatedSecurityListForZone` reads that same store. A zone element
+    without a control is **decorative**: the connector does not recognise the
+    zone, so it *ignores* it rather than treating it as restrictive, and
+    everything in it is world-readable while looking private.
+
+    **A read-back is not proof of enforcement, and this is the subtle part.**
+    The store and the connector that reads it are not the same thing: the
+    connector reloads on `refreshTimeInterval`. Measured live — a control
+    written at 02:53:11 read back from the store immediately, and a
+    privately-zoned element was still readable by a non-owner **six minutes
+    later**, then denied at seven. So a freshly created control reports
+    `enforced: False` until `PRIVATE_ZONE_SETTLE_SECONDS` has passed. A control
+    that was already there when we first looked predates this process and is
+    treated as settled.
+
+    The security list names a group that nobody holds. That is the whole point:
+    the list must never admit anyone, because access for the owner comes from
+    the `userId`-as-zone-name shortcut instead. Two groups are deliberately NOT
+    used — `openMetadataMember` (effectively everyone) and `instanceOwnersGroup`
+    (whose `isUserAnOwner` returns **true when an element carries no `Ownership`
+    classification at all**, so one unstamped element would be readable by
+    anybody).
+
+    Requires platform-operator rights (`validateUserAsOperatorForPlatform`, whose
+    base implementation only throws — there is no permissive fallback). On the
+    Coco-Pharma-seeded quickstart, RE's own account has them. On a stock
+    freshstart NO human account does, so this returns `not_authorized` with the
+    groups that would grant it, and the caller must treat private publishing as
+    unavailable rather than proceeding. Never raises.
+    """
+    global _private_zone_state
+    import time as _time
+
+    zone = private_zone()
+    try:
+        from pyegeria.omvs.security_officer import SecurityOfficer
+
+        from resource_explorer.config import get_config
+
+        egeria = get_config().egeria
+        identity = identity or service_credentials()
+        client = SecurityOfficer(egeria.view_server, egeria.platform_url,
+                                 egeria.user_id, egeria.user_password)
+        apply_identity(client, identity)
+        platform = _platform_name()
+
+        existing = client.get_security_access_control(platform, zone)
+        if existing and (existing.get("associatedSecurityList") or {}):
+            # Already there when we first looked, so it predates this process
+            # and the connector has had at least as long as we have been up.
+            _private_zone_state = {
+                "status": "exists", "zone": zone, "platform": platform,
+                "control_present": True, "enforced": True,
+                "basis": "control was already present when this process first looked",
+            }
+            return _private_zone_state
+
+        client.set_security_access_control(platform, {
+            "class": "SecurityAccessControlRequestBody",
+            "securityAccessControl": {
+                "controlName": zone,
+                "controlDisplayName": "Resource Explorer — private",
+                "controlTypeName": "GovernanceZone",
+                "description": (
+                    "Elements belonging to a Personal or Experiment investigation "
+                    "in Resource Explorer. Readable only by their creator, whose "
+                    "userId is carried as a second zone on each element. The "
+                    "security list below names a group nobody holds, on purpose: "
+                    "it exists to make this a SECURED zone so that everyone else "
+                    "is denied, not to admit anybody."
+                ),
+                "associatedSecurityList": {"DEFAULT": ["resourceExplorerPrivateNobody"]},
+                "otherProperties": {
+                    "criteria": "Published by resource-explorer from a private investigation.",
+                    "createdBy": "resource-explorer",
+                },
+            },
+        })
+
+        # Read back. A write that returned without raising is not evidence the
+        # control exists — the same lesson as the classification read-back in
+        # `egeria_investigation_publisher`.
+        back = client.get_security_access_control(platform, zone)
+        if not (back and (back.get("associatedSecurityList") or {})):
+            log.error(
+                "egeria: wrote SecurityAccessControl %r but it did not read back with "
+                "a security list — the zone would be IGNORED by the security "
+                "connector, so private publishing stays disabled.", zone)
+            _private_zone_state = {
+                "status": "unconfirmed", "zone": zone, "platform": platform,
+                "control_present": False, "enforced": False,
+                "detail": "the control did not read back with a security list",
+            }
+            return _private_zone_state
+
+        settle_at = _time.time() + PRIVATE_ZONE_SETTLE_SECONDS
+        log.info("egeria: created SecurityAccessControl %r on %r; enforcement expected "
+                 "within %ss once the security connector reloads its secrets store",
+                 zone, platform, PRIVATE_ZONE_SETTLE_SECONDS)
+        _private_zone_state = {
+            "status": "created", "zone": zone, "platform": platform,
+            "control_present": True, "enforced": False,
+            "settle_after": settle_at,
+            "detail": (
+                f"just created; the security connector reloads on its own timer, so "
+                f"enforcement is not assumed for {PRIVATE_ZONE_SETTLE_SECONDS}s. "
+                "Private publishing is refused until then."
+            ),
+        }
+        return private_zone_status()
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        unauthorized = "UserNotAuthorized" in detail or "not authorized" in detail.lower()
+        log.warning(
+            "egeria: could not ensure the private zone %r is enforced — %s. "
+            "Private investigations will NOT publish until this is fixed.", zone, detail)
+        _private_zone_state = {
+            "status": "not_authorized" if unauthorized else "error",
+            "zone": zone, "control_present": False, "enforced": False,
+            "detail": detail,
+            "remedy": (
+                "Writing a security access control needs platform-operator rights. "
+                "Grant RE's Egeria account one of: serverOperator, infrastructureTeam, "
+                "devOpsTeam, dataManagementTeam, securityTeam, serverAdministrator, "
+                "runtimeManager, metadataArchitect, platform — or have an operator "
+                f"create the {zone!r} GovernanceZone security access control."
+            ),
+        }
+        return _private_zone_state
+
+
+def private_zone_is_enforced() -> bool:
+    """Whether the private zone is KNOWN to deny. Defaults to False.
+
+    Four states collapse to False here, and only one of them is "we checked and
+    it does not": never asked, could not ask, confirmed absent, and **present
+    but not yet loaded by the enforcing connector**. That last one is the case a
+    store read-back cannot see, and it is real — measured at seven minutes.
+
+    The asymmetry is deliberate. Guessing True when the control is missing or
+    not yet live means publishing somebody's private work into a zone the
+    connector ignores — world-readable, while every RE screen says private.
+    Guessing False only means private publishing is refused until somebody
+    looks, which is recoverable and visible.
+    """
+    return bool(private_zone_status().get("enforced"))
+
+
+def private_zone_status() -> dict:
+    """What we currently know, for the admin surface.
+
+    `status: "unknown"` when nothing has asked yet — not a synonym for "not
+    enforced", though both refuse a private publish. Resolves `settle_after`
+    into the live `enforced` answer so callers never have to do clock
+    arithmetic to find out whether they may publish.
+    """
+    import time as _time
+
+    if _private_zone_state is None:
+        return {"status": "unknown", "zone": private_zone(), "control_present": False,
+                "enforced": False, "detail": "not checked yet this process"}
+    state = dict(_private_zone_state)
+    settle_after = state.pop("settle_after", None)
+    if settle_after is not None:
+        remaining = max(0, int(settle_after - _time.time()))
+        state["enforced"] = state.get("control_present", False) and remaining == 0
+        state["settling_seconds_remaining"] = remaining
+        if remaining:
+            state["status"] = "settling"
+    return state
 
 
 def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:

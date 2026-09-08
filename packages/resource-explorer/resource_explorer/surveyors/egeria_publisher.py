@@ -118,6 +118,8 @@ class EgeriaPublisher:
             from resource_explorer.egeria_identity import draft_zone
 
             self.zone_names = [draft_zone()]
+        #: Set per-publish by `publish()`. Empty means "not a private resource".
+        self._private_owner = ""
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -130,6 +132,17 @@ class EgeriaPublisher:
         """
         if zone_names is not None:
             self.zone_names = zone_names
+        # Privacy is decided here, before anything is written, and it OVERRIDES
+        # the caller's zone_names rather than deferring to them. A caller that
+        # passes explicit zones is asking where a normal publish should land;
+        # it is not authorising a private resource to be published publicly,
+        # and a private artifact in the wrong zone cannot be un-leaked.
+        self._private_owner = self._resolve_private_owner(result.resource_slug)
+        if self._private_owner:
+            self._require_enforced_private_zone(result.resource_slug)
+            from resource_explorer.egeria_identity import private_zones
+
+            self.zone_names = private_zones(self._private_owner)
         self._connect()
 
         # Everything below depends on the asset GUID RE cached for this project,
@@ -540,6 +553,73 @@ class EgeriaPublisher:
 
     # ── ownership and zones ───────────────────────────────────────────────────
 
+    def _resolve_private_owner(self, resource_slug: str) -> str:
+        """The userId this resource's artifacts belong to, or `""`.
+
+        Unscoped by design — see `ProjectRegistry.private_owner_for_entity`.
+        A registry that cannot answer returns `""`, which means "publish
+        normally"; that is the one place here where a failure defaults to the
+        less protective answer, and it is bounded by the fact that a resource
+        with no private investigation is the overwhelmingly common case. A
+        registry outage that made everything look private would stop every
+        publish in the deployment.
+        """
+        if not self._registry:
+            return ""
+        try:
+            owner = self._registry.private_owner_for_entity("repo", resource_slug)
+            # See the same check in `arch_recovery/materializer._privacy_for`:
+            # the value becomes a zone name, so only a real userId string counts.
+            return owner.strip() if isinstance(owner, str) else ""
+        except Exception as exc:
+            log.warning("could not determine private ownership for %s — publishing "
+                        "normally: %s: %s", resource_slug, type(exc).__name__, exc)
+            return ""
+
+    def _require_enforced_private_zone(self, resource_slug: str) -> None:
+        """Refuse the publish unless the private zone is known to deny.
+
+        This is the loud half of the design. If the `resource-explorer-private`
+        security access control does not exist, the zone name is one the
+        security connector does not recognise — and an unrecognised zone is
+        *ignored*, not treated as restrictive, so `validateZoneAccess` falls
+        through to `return true` and the artifact is world-readable. Meanwhile
+        every RE screen still says "private", because that filter is local and
+        works whether or not Egeria is co-operating.
+
+        Those two halves disagreeing silently, with the reassuring one visible,
+        is the worst outcome available here. So a publish that cannot be made
+        private does not happen at all: refusing is recoverable and obvious,
+        publishing is neither.
+        """
+        from resource_explorer.egeria_identity import (
+            ensure_private_zone_exists, private_zone, private_zone_is_enforced,
+            private_zone_status,
+        )
+
+        if private_zone_is_enforced():
+            return
+        # "Nobody has asked yet" is not "not enforced" — it is a question, and
+        # this is the moment to answer it. The zone state is per-process, and
+        # the bootstrap that populates it runs in the WORKER role; a deployment
+        # that serves the web from a separate process would otherwise refuse
+        # every private publish while the zone was perfectly healthy.
+        # Idempotent and never raises.
+        if private_zone_status().get("status") == "unknown":
+            ensure_private_zone_exists()
+            if private_zone_is_enforced():
+                return
+        status = private_zone_status()
+        raise EgeriaConnectionError(
+            f"'{resource_slug}' belongs to a private investigation, but the "
+            f"'{private_zone()}' governance zone is not confirmed to be enforced "
+            f"({status.get('status')}: {status.get('detail') or 'no detail'}). "
+            "Publishing now would put private artifacts in a zone Egeria ignores, "
+            "which is world-readable while Resource Explorer still shows them as "
+            "private. Nothing was written. "
+            + (status.get("remedy") or "See Admin → Egeria for the zone's status.")
+        )
+
     def _stamp_governance(self, *element_guids: str) -> dict:
         """`Ownership` and `ZoneMembership` on everything this publish created.
 
@@ -559,7 +639,13 @@ class EgeriaPublisher:
         from resource_explorer.egeria_identity import stamp_published
 
         identity = self.resolve_identity()
-        owner = identity.user_id
+        # For a private resource the owner is the INVESTIGATION's creator, not
+        # whoever ran the publish. The worker publishes as the service account,
+        # so taking the publishing identity here would stamp a queued private
+        # survey as owned by `erinoverview` — and `Ownership` is what the
+        # curate authorisation reads, so the real owner would lose control of
+        # their own artifact to a service account.
+        owner = getattr(self, "_private_owner", "") or identity.user_id
         results: dict[str, dict] = {}
         client = None
         for guid in element_guids:

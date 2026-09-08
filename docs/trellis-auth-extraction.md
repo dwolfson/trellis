@@ -1,16 +1,22 @@
 # Trellis-level login — where it should live, and what it costs
 
-**Status:** design note, 2026-08-29; extracted and adopted by EA. **Revised 2026-09-04** — the
-token contract changed (see §6). Prompted by the project owner: *"If RE doesn't have a login,
-it should — we could do this at the Trellis level or in each of EA and RE."*
+**Status:** design note, 2026-08-29; extracted and adopted by EA **and RE**, both 2026-09-04.
+**Corrected 2026-09-07** (`packages/egeria-advisor/BACKLOG.md` TC-8): this doc's §5 item 4, §6
+"Still to do", and §7 "Still to do" all still described work as open that had already landed —
+verified by reading the code, not assumed from the doc. Only §7's `exec_report_spec`
+service-account limitation (pyegeria ISSUE-86) and §5 item 3 (14 of RE's original 26
+`os.getenv("EGERIA_USER", …)` sites still not migrated — see
+`packages/resource-explorer/docs/Backlog.md`) remain genuinely open.
 
 **Recommendation: the Trellis level, as `trellis-auth`, with EA's implementation as the base and RE
-adopting it.** Reasoning below, including the part that argues against a shared package.
+adopting it.** Reasoning below, including the part that argues against a shared package. **This
+happened** — see the per-section corrections below for what actually landed and when.
 
 > **The one thing to read if you read nothing else:** since 2026-09-04 the app JWT carries the
 > user's **Egeria bearer token**, never their password, and `exchange_portal_token` validates the
-> payload the Portal *actually* issues. §6 records the mismatch that was found and fixed. RE has not
-> adopted this package yet, so it inherits the corrected contract with no migration.
+> payload the Portal *actually* issues. §6 records the mismatch that was found and fixed. **RE
+> adopted this package the same day** (corrected 2026-09-07 — this line previously said RE had
+> not), so it inherits the corrected contract with no migration.
 
 ---
 
@@ -113,20 +119,33 @@ reads the environment; each app resolves its own config into a frozen dataclass.
 
 ## 5. What this does NOT cost, and what it does
 
-The package is necessary but **not sufficient** for RE, and the estimate should say so:
+The package is necessary but **not sufficient** for RE, and the estimate should say so. **Status
+as of 2026-09-07: 1, 2, and 4 are done; 3 is partial.**
 
-1. `trellis-auth` extraction — mechanical, EA's code, no behaviour change for EA.
+1. `trellis-auth` extraction — mechanical, EA's code, no behaviour change for EA. **Done**,
+   2026-09-04.
 2. **A login UI in RE's SPA** plus token storage and refresh. RE's frontend has never had one.
+   **Done**, 2026-09-04 — `#login-overlay` in `resource_explorer/web/static/index.html`,
+   `LoginRequiredMiddleware` installed in `web/app.py`.
 3. **Collapsing RE's 26 `os.getenv("EGERIA_USER", …)` sites** onto the authenticated identity, and
    removing four inconsistent fallbacks. This is the part most likely to surface behaviour
-   differences, because today different code paths genuinely act as different users.
+   differences, because today different code paths genuinely act as different users. **Partial**
+   — down to 14 remaining as of 2026-09-07; list in `packages/resource-explorer/docs/Backlog.md`.
 4. A decision RE has not had to make: **what RE does when nobody is logged in.** Its surveys and
    schedulers run unattended, so "require an authenticated identity" cannot mean the same thing it
    means for EA's interactive artifact writes. A scheduled survey has no user — it needs a declared
    service identity, which is a legitimate use of a configured account and is *not* the same as the
-   silent fallback SS-4 removes.
+   silent fallback SS-4 removes. **Done** — `resource_explorer/egeria_identity.py`'s
+   `EgeriaIdentity(is_service_account=True)`, sourced from `get_config().egeria.user_id`/
+   `user_password`. `run_queue.py::_run_as_requester` is where the policy actually lives: a
+   queued run carrying `requested_by` sets `current_caller` to that person (so `Ownership` on
+   anything it publishes is attributed correctly); a row with none — "the worker's own
+   service-account work" (bootstrap heal, resync, the outbox drain) — runs with no caller at all
+   and falls through to this same declared service identity. Distinct from EA's SS-4 fallback
+   removal exactly as this item required: it is a real configured account, not a code-level
+   default that quietly stands in for a missing signed-in user.
 
-Item 4 is the real design question and is worth settling before item 1 is built, because it decides
+Item 4 was the real design question and needed settling before item 1 was built, because it decided
 whether `trellis-auth` needs a first-class notion of a non-interactive principal.
 
 ---
@@ -230,13 +249,14 @@ signed-in user at all.
 
 ### Still to do
 
-`advisor/report_pipeline.py` (`_read_pyegeria_connection` → the `EgeriaTech` build around line 462)
-and `advisor/web/app.py`'s report-preview client (~line 1318) still authenticate from
-`conn["user_pwd"]`, which is now empty for a signed-in user. Each needs the same two-line change
-`advisor/egeria_context.py::_make_client` already has: carry `creds["token"]` alongside the conn
-dict and call `apply_token(client, token)` instead of
-`create_egeria_bearer_token(user_id, user_pwd)`. Until then those two paths fall back to the
-client's own configured (service-account) credentials rather than acting as the signed-in user.
+**Done, corrected 2026-09-07.** Both call sites now carry `creds["token"]` alongside the conn
+dict and call `apply_token(client, token)` right after constructing the `EgeriaTech` client with
+`conn["user_pwd"]` — the same fix `advisor/egeria_context.py::_make_client` already had, matching
+this section's own prescription. `advisor/report_pipeline.py`'s `_read_pyegeria_connection`
+caller does it at what's now line ~481; the report-preview client moved during TC-5's router
+extraction (`packages/egeria-advisor/BACKLOG.md`) and lives in `advisor/web/reports.py`'s
+`discover_draft_schema_internal()` now, not `app.py` — it has the same `apply_token` call there
+too. Neither is silently falling back to service-account credentials for a signed-in user.
 
 ---
 
@@ -312,14 +332,14 @@ Two design choices worth keeping when RE adopts this:
 
 ### Still to do
 
-* **RE adopts the policy.** `trellis-auth` carries it and `session_file` is written to be reused
-  verbatim; RE's own middleware install, `resource-explorer login`/`logout` and its public-path
-  list (its A2A agent cards in particular) are the next step.
-* **A2A paths are not yet in any app's allowlist.** The agent cards and discovery index must be
-  public, and the app that serves them adds them through `TRELLIS_PUBLIC_PATHS` /
-  `extra_public_paths`. Nothing serves them today, so nothing was added; whoever builds the A2A
-  entry point (`runtime-architecture-plan.md` §2) must not forget it, because the failure is a
-  client that cannot discover how to authenticate.
+* **RE adopts the policy.** **Done, corrected 2026-09-07** — `LoginRequiredMiddleware` is
+  installed in `resource_explorer/web/app.py`, `resource-explorer login`/`logout` exist
+  (`cli/main.py`), and `session_file` is reused verbatim.
+* **A2A paths are not yet in any app's allowlist.** **Done, corrected 2026-09-07** —
+  `resource_explorer/a2a_auth.py` allowlists `/.well-known/agents.json`, `/health`, `/healthz`;
+  the per-agent `/.well-known/agent-card.json` and `/agents/<name>/...` paths are served by
+  `a2a_role.py` and readable without a token by the same design (agent cards say how to
+  authenticate — they can't themselves require it first).
 * **`exec_report_spec` still runs as the service account** for signed-in users — pyegeria only
   accepts user/password there (egeria-python ISSUE-86). Unchanged by this pass, and now the only
   remaining path where a signed-in person's Egeria writes are attributed to `erinoverview`.

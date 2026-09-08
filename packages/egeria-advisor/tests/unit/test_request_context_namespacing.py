@@ -412,7 +412,7 @@ def _fake_request_with_user(user_id, role="user", anonymous=False):
 
 
 def test_patch_columns_route_ownership_own_draft_succeeds(report_draft_manager_for_routes, monkeypatch):
-    from advisor.web import app as app_module
+    from advisor.web import reports as reports_module
     import advisor.auth as auth_module
 
     rd = report_draft_manager_for_routes
@@ -422,7 +422,7 @@ def test_patch_columns_route_ownership_own_draft_succeeds(report_draft_manager_f
     request = _fake_request_with_user("alice")
     monkeypatch.setattr(auth_module, "get_current_user", lambda r: r._fake_user)
 
-    result = asyncio.run(app_module.patch_report_draft_columns(
+    result = asyncio.run(reports_module.patch_report_draft_columns(
         request, spec["draft_id"], {"heading": "New Heading"}
     ))
     assert result["status"] == "ok"
@@ -431,7 +431,7 @@ def test_patch_columns_route_ownership_own_draft_succeeds(report_draft_manager_f
 
 
 def test_patch_columns_route_ownership_other_users_draft_is_404(report_draft_manager_for_routes, monkeypatch):
-    from advisor.web import app as app_module
+    from advisor.web import reports as reports_module
     from fastapi import HTTPException
     import advisor.auth as auth_module
 
@@ -443,14 +443,14 @@ def test_patch_columns_route_ownership_other_users_draft_is_404(report_draft_man
     monkeypatch.setattr(auth_module, "get_current_user", lambda r: r._fake_user)
 
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(app_module.patch_report_draft_columns(
+        asyncio.run(reports_module.patch_report_draft_columns(
             request, spec["draft_id"], {"heading": "Hijacked"}
         ))
     assert excinfo.value.status_code == 404
 
 
 def test_patch_columns_route_curator_can_edit_other_users_draft(report_draft_manager_for_routes, monkeypatch):
-    from advisor.web import app as app_module
+    from advisor.web import reports as reports_module
     import advisor.auth as auth_module
 
     rd = report_draft_manager_for_routes
@@ -460,7 +460,7 @@ def test_patch_columns_route_curator_can_edit_other_users_draft(report_draft_man
     request = _fake_request_with_user("admin_carol", role="admin")
     monkeypatch.setattr(auth_module, "get_current_user", lambda r: r._fake_user)
 
-    result = asyncio.run(app_module.patch_report_draft_columns(
+    result = asyncio.run(reports_module.patch_report_draft_columns(
         request, spec["draft_id"], {"heading": "Curator Edit"}
     ))
     assert result["status"] == "ok"
@@ -469,7 +469,7 @@ def test_patch_columns_route_curator_can_edit_other_users_draft(report_draft_man
 def test_discover_draft_schema_internal_honours_ownership(report_draft_manager_for_routes, monkeypatch):
     """A draft namespaced to another user returns [] (not-found shape) —
     never leaks its schema/config to a different signed-in user."""
-    from advisor.web import app as app_module
+    from advisor.web import reports as reports_module
     from advisor.request_context import using_user
 
     rd = report_draft_manager_for_routes
@@ -477,14 +477,14 @@ def test_discover_draft_schema_internal_honours_ownership(report_draft_manager_f
     spec = dm_alice.create(title="Alice's Report", original_query="x")
 
     with using_user("bob"):
-        result = asyncio.run(app_module.discover_draft_schema_internal(spec["draft_id"]))
+        result = asyncio.run(reports_module.discover_draft_schema_internal(spec["draft_id"]))
     assert result == []
 
 
 def test_discover_draft_schema_internal_finds_own_draft(report_draft_manager_for_routes, monkeypatch):
     """Confirms the lookup itself succeeds for the owner (parsing/live-Egeria
     steps are mocked out — this only exercises the ownership resolution)."""
-    from advisor.web import app as app_module
+    from advisor.web import reports as reports_module
     from advisor.request_context import using_user
 
     rd = report_draft_manager_for_routes
@@ -509,7 +509,7 @@ def test_discover_draft_schema_internal_finds_own_draft(report_draft_manager_for
     )
 
     with using_user("alice"):
-        result = asyncio.run(app_module.discover_draft_schema_internal(spec["draft_id"]))
+        result = asyncio.run(reports_module.discover_draft_schema_internal(spec["draft_id"]))
     # parse failure after ownership succeeds -> [] from the except branch,
     # same value as "not found" but for a different, verified reason: the
     # _boom monkeypatch only runs once ownership resolution already found

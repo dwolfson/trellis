@@ -201,7 +201,10 @@ observability:
     auto_log: true
   phoenix:
     enabled: false
-    collector_endpoint: http://localhost:6006
+    # OTLPSpanExporter's `endpoint` is used verbatim, not auto-appended the
+    # way OTEL_EXPORTER_OTLP_ENDPOINT is -- the collector's HTTP receiver is
+    # at /v1/traces, not / (TC-4/BACKLOG.md).
+    collector_endpoint: http://localhost:6006/v1/traces
     trace_all_queries: false
 
 auth:

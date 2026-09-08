@@ -2048,6 +2048,18 @@ class ProjectRegistry:
                     -- later does not have to ask again for something the user
                     -- already decided.
                     project_classification         TEXT DEFAULT 'StudyProject',
+                    -- The second axis (see EGERIA_BINDINGS): whether this
+                    -- investigation has, or is meant to have, an Egeria
+                    -- Project. `local` is the ad-hoc case.
+                    egeria_binding                 TEXT DEFAULT 'egeria',
+                    -- Experiment's defining attribute. Empty for every other
+                    -- classification, and required for that one.
+                    hypothesis                     TEXT DEFAULT '',
+                    -- Whose investigation this is. `SHARED_USER_ID` ('') is a
+                    -- real value meaning shared/legacy, not a null-shaped
+                    -- unknown — same convention as resource_working_set.
+                    -- Decides visibility for the PRIVATE_CLASSIFICATIONS.
+                    created_by                     TEXT DEFAULT '',
                     egeria_project_status          TEXT DEFAULT 'unset',
                     egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
@@ -2066,6 +2078,33 @@ class ProjectRegistry:
                 ("egeria_project_status", "TEXT DEFAULT 'unset'"),
                 ("egeria_free_text_name", "TEXT DEFAULT ''"),
                 ("project_classification", "TEXT DEFAULT 'StudyProject'"),
+                # Backfills to 'egeria' rather than 'local', and that is a
+                # judgement worth stating. Before this column existed, ad-hoc
+                # was not a choice anyone could make: every investigation was
+                # headed for Egeria eventually, whether or not it had got
+                # there. Defaulting the existing rows to 'local' would invent a
+                # deliberate decision nobody took and would hide them from
+                # anything that keys on the binding. 'egeria' says what was
+                # actually true of them.
+                ("egeria_binding", "TEXT DEFAULT 'egeria'"),
+                ("hypothesis", "TEXT DEFAULT ''"),
+                # Backfills to '' — the shared bucket — and that is the least
+                # bad of two bad options, so it is written down rather than
+                # left to look obvious.
+                #
+                # These rows genuinely have no owner: nothing recorded one, so
+                # nothing can recover it. A Personal investigation among them
+                # is therefore visible to everyone, which is uncomfortable —
+                # but it has ALWAYS been visible to everyone, so this changes
+                # nothing about who can see it. The alternative, hiding
+                # ownerless private rows from all callers, would make somebody's
+                # own work vanish from them with no way to get it back, and
+                # would be a NEW loss rather than a persisting one.
+                #
+                # `get_investigation` marks these rows `visibility_note` so the
+                # gap is visible instead of merely tolerated, and a person can
+                # claim one.
+                ("created_by", "TEXT DEFAULT ''"),
             ]:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
@@ -5434,20 +5473,116 @@ class ProjectRegistry:
         "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
     )
 
-    #: §1 mode 2's classifications. StudyProject is the default because it is
-    #: the least committal — an investigation that turns out to be a Campaign
-    #: can be re-classified, but starting everything as a Campaign would assert
-    #: a scale nobody chose.
-    PROJECT_CLASSIFICATIONS = ("PersonalProject", "Task", "StudyProject", "Campaign")
+    #: §1 mode 2's classifications — Egeria's own, mirrored exactly, because
+    #: they are sent as `initialClassifications` on the Project and a value
+    #: Egeria does not know would be rejected at that boundary. All five
+    #: `ProjectKind` subtypes from `OpenMetadataType.java` (model 0130), each
+    #: with Egeria's own definition:
+    #:
+    #:   PersonalProject  an informal project an individual created to help
+    #:                    them organize their own work
+    #:   StudyProject     a focused analysis of a topic, person, object or
+    #:                    situation
+    #:   Task             a self-contained, short activity, typically for one
+    #:                    or two people
+    #:   Campaign         a long-term strategic initiative implemented through
+    #:                    multiple related projects
+    #:   Experiment       a project testing a hypothesis, recorded in the
+    #:                    `hypothesis` attribute — see HYPOTHESIS_REQUIRED_FOR
+    #:
+    #: StudyProject is the default because it is **accurate** for most RE
+    #: investigations, not because it is the least committal. (It read as the
+    #: latter until 2026-09-07, which quietly encouraged reading it as "no
+    #: commitment yet" — a meaning Egeria's StudyProject does not carry. The
+    #: no-commitment case is `BINDING_LOCAL` below, which is a different axis.)
+    PROJECT_CLASSIFICATIONS = (
+        "PersonalProject", "Task", "StudyProject", "Campaign", "Experiment",
+    )
+
+    #: Classifications whose defining attribute must be supplied with them.
+    #: `Experiment` exists to record a hypothesis; creating one with an empty
+    #: hypothesis publishes a classification with its whole point missing —
+    #: the catalog-description form of "we did not measure this" rendered as a
+    #: measurement. See docs/investigation-classification-and-zoning-design.md §1.4.
+    HYPOTHESIS_REQUIRED_FOR = ("Experiment",)
+
+    #: Whether this investigation has, or is meant to have, an Egeria Project.
+    #:
+    #: This is a SECOND axis, deliberately not folded into
+    #: `project_classification`. "Ad-hoc" — investigate something without
+    #: committing to it — is not a kind of project Egeria has; it is the
+    #: absence of a Project, which this schema already models as a nullable
+    #: `egeria_project_guid`. Putting `adHoc` in the classification column
+    #: would put a non-type in a column whose values are sent to Egeria as
+    #: types, and it would be silently dropped or rejected there.
+    #:
+    #: The column records *intent*, which the GUID alone cannot: a promotion
+    #: that has not run yet and one that will never run look identical from a
+    #: null GUID, and only one of them is a deliberate choice.
+    BINDING_LOCAL = "local"      # ad-hoc: no Egeria Project, by choice
+    BINDING_EGERIA = "egeria"    # has one, or is meant to
+    EGERIA_BINDINGS = (BINDING_LOCAL, BINDING_EGERIA)
+
+    #: Classifications whose investigations are visible only to their creator.
+    #: Owner's design, points 5 and 6: Personal and Experiment are the
+    #: creator's; Task, Campaign and Study follow the normal rules.
+    #:
+    #: Visibility follows the CLASSIFICATION rather than a separate flag, which
+    #: is what makes reclassification a visibility change (design §5 / Phase 6).
+    PRIVATE_CLASSIFICATIONS = ("PersonalProject", "Experiment")
+
+    def _may_see_investigation(self, row, user_id: str) -> bool:
+        """Whether `user_id` may see this investigation.
+
+        **This is RE-side visibility, not enforcement.** It decides what RE's
+        own registry hands back; it is not a security boundary and must not be
+        described as one. Two reasons, both worth knowing before relying on it:
+
+        * The service/shared identity (`SHARED_USER_ID`) sees everything,
+          because the worker legitimately acts on a user's behalf without
+          carrying their token — see `egeria_identity`'s module docstring on
+          why a queued run publishes as the service account. With
+          `TRELLIS_ANONYMOUS_READ=true` (a dev-box override, per CLAUDE.md, not
+          a supported mode) an anonymous caller is that identity too.
+        * Nothing here touches Egeria. An artifact already published from a
+          private investigation stays readable in Egeria regardless of what
+          this returns. That is Phase 5's job, and until it lands "private"
+          means "RE does not show it to others", no more.
+
+        A row nobody owns (`created_by == SHARED_USER_ID`) is visible to
+        everyone even when privately classified — see the migration comment.
+        """
+        classification = (row.get("project_classification") or "").strip()
+        if classification not in self.PRIVATE_CLASSIFICATIONS:
+            return True
+        owner = (row.get("created_by") or SHARED_USER_ID)
+        if owner == SHARED_USER_ID:
+            return True          # ownerless: has always been visible to all
+        if user_id == SHARED_USER_ID:
+            return True          # service/shared identity
+        return owner == user_id
 
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
                              project_classification: str = "StudyProject",
+                             egeria_binding: str = "egeria",
+                             hypothesis: str = "",
                              egeria_project_guid: str = "",
                              egeria_project_qualified_name: str = "") -> dict:
-        """Create one investigation. `purposes` is validated against
-        ProjectCharter.purposes' vocabulary rather than accepting free text —
-        an unrecognised purpose would silently fail to rank anything later."""
+        """Create one investigation.
+
+        Every vocabulary here is validated rather than accepting free text.
+        `purposes` because an unrecognised purpose would silently fail to rank
+        anything later; `project_classification` because it is sent to Egeria
+        as a type name; `egeria_binding` because it decides whether anything is
+        sent at all.
+
+        `hypothesis` is required for the classifications in
+        `HYPOTHESIS_REQUIRED_FOR` and refused for the others — an `Experiment`
+        without one asserts a classification whose entire point is missing,
+        and a hypothesis on a `Task` would be silently discarded at publish
+        time, which is worse than being told.
+        """
         import json as _json
         import re as _re
         purposes = purposes or []
@@ -5461,6 +5596,22 @@ class ProjectRegistry:
                 f"unknown classification {project_classification!r}; "
                 f"valid: {list(self.PROJECT_CLASSIFICATIONS)}"
             )
+        if egeria_binding not in self.EGERIA_BINDINGS:
+            raise ValueError(
+                f"unknown egeria_binding {egeria_binding!r}; "
+                f"valid: {list(self.EGERIA_BINDINGS)}"
+            )
+        hypothesis = (hypothesis or "").strip()
+        if project_classification in self.HYPOTHESIS_REQUIRED_FOR and not hypothesis:
+            raise ValueError(
+                f"{project_classification} requires a hypothesis — it is the "
+                "attribute the classification exists to record"
+            )
+        if hypothesis and project_classification not in self.HYPOTHESIS_REQUIRED_FOR:
+            raise ValueError(
+                f"hypothesis is only meaningful for "
+                f"{list(self.HYPOTHESIS_REQUIRED_FOR)}, not {project_classification!r}"
+            )
         base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
         slug, n = base, 1
         while self.get_investigation(slug):
@@ -5471,17 +5622,41 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO investigations
                    (slug, display_name, description, purposes_json,
-                    project_classification, egeria_project_guid,
+                    project_classification, egeria_binding, hypothesis,
+                    created_by, egeria_project_guid,
                     egeria_project_qualified_name, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (slug, display_name, description, _json.dumps(purposes),
-                 project_classification, egeria_project_guid,
+                 project_classification, egeria_binding, hypothesis,
+                 # Resolved here, not taken from the caller — the same reason
+                 # `current_user_id`'s docstring gives: a method that resolves
+                 # it cannot be called without scoping; a route that has to
+                 # remember can forget.
+                 current_user_id(), egeria_project_guid,
                  egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)
 
-    def get_investigation(self, slug: str) -> dict | None:
+    def get_investigation(self, slug: str, *,
+                          user_id: str | None = None) -> dict | None:
+        """One investigation, or `None` if it does not exist **or the caller
+        may not see it**.
+
+        The two collapse into one answer on purpose, and it is the opposite of
+        this codebase's usual rule that absence must be distinguishable from
+        emptiness. Here they must NOT be: a private investigation that answered
+        403 rather than 404 would confirm its existence and leak its name to
+        anyone who guessed a slug — and slugs are derived from display names,
+        so they are guessable. "Not found" is the honest answer to a caller for
+        whom it does not exist.
+
+        **Scoping lives here rather than in the routes**, because every one of
+        the ~15 investigation routes already funnels through this method, and a
+        new route is exactly the place a per-route check gets forgotten. Routes
+        then 404 with no change of their own.
+        """
         import json as _json
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM investigations WHERE slug = ?", (slug,)
@@ -5489,7 +5664,27 @@ class ProjectRegistry:
         if not row:
             return None
         d = dict(row)
+        if not self._may_see_investigation(d, user_id):
+            return None
         d["purposes"] = _json.loads(d.pop("purposes_json") or "[]")
+        # Say what the visibility actually IS, rather than leaving the caller
+        # to re-derive it from classification + created_by. `private` here
+        # means "RE does not show this to other people" — not that Egeria is
+        # withholding anything; see `_may_see_investigation`.
+        owner = d.get("created_by") or SHARED_USER_ID
+        is_private_kind = (d.get("project_classification") or "") in self.PRIVATE_CLASSIFICATIONS
+        d["visibility"] = "private" if (is_private_kind and owner != SHARED_USER_ID) else "shared"
+        d["is_mine"] = bool(owner) and owner == user_id
+        if is_private_kind and owner == SHARED_USER_ID:
+            # Not an error, and not silently fine either: the row predates
+            # ownership being recorded, so it is privately CLASSIFIED and
+            # visible to everyone. Surfaced so it can be claimed rather than
+            # quietly contradicting its own classification.
+            d["visibility_note"] = (
+                "Classified as private, but created before RE recorded who owns "
+                "an investigation — so it is still visible to everyone. Recreate "
+                "it, or an owner can be set, to make it private."
+            )
         # The shape the publish path already speaks, assembled here so callers
         # never rebuild it from the individual columns.
         d["egeria_context"] = {
@@ -5501,10 +5696,18 @@ class ProjectRegistry:
         d["member_count"] = len(self.list_investigation_members(slug))
         return d
 
-    def list_investigations(self, *, include_closed: bool = False) -> list[dict]:
+    def list_investigations(self, *, include_closed: bool = False,
+                            user_id: str | None = None) -> list[dict]:
+        # Resolved once and passed down rather than left to each
+        # get_investigation() call: the answer cannot change mid-list, and a
+        # per-row lookup would invite a future caller to think it could.
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute("SELECT slug FROM investigations ORDER BY created_at DESC").fetchall()
-        out = [self.get_investigation(r["slug"]) for r in rows]
+        # get_investigation() returns None for anything this caller may not
+        # see, so the privacy filter is inherited rather than repeated here —
+        # one predicate, not two that can drift.
+        out = [self.get_investigation(r["slug"], user_id=user_id) for r in rows]
         # Deliberately tests `!= "closed"` rather than `== "open"`: a `suspended`
         # investigation is still reachable through the default (unfiltered) list.
         # `suspended` means paused-but-will-resume, and hiding it here would be
@@ -5665,7 +5868,8 @@ class ProjectRegistry:
         folio = self.investigation_working_set_slug(investigation_slug)
         return self.list_working_set_members(folio) if folio else []
 
-    def find_entity_investigations(self, entity_type: str, entity_slug: str) -> list[dict]:
+    def find_entity_investigations(self, entity_type: str, entity_slug: str,
+                                   *, user_id: str | None = None) -> list[dict]:
         """The reverse of list_investigation_members(): which investigations'
         Folios this entity is in scope for. Folio-only, matching
         list_investigation_members' own reasoning — WorkingSet (per-
@@ -5680,9 +5884,11 @@ class ProjectRegistry:
         centric ("what's in this investigation"), not "which investigations
         is this repo in".
         """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT i.slug AS investigation_slug, i.display_name, i.status,
+                          i.project_classification, i.created_by,
                           wsm.state, wsm.membership_rationale, wsm.added_at
                    FROM working_set_members wsm
                    JOIN working_sets ws ON ws.slug = wsm.working_set_slug
@@ -5693,7 +5899,12 @@ class ProjectRegistry:
                    ORDER BY i.display_name""",
                 (entity_type, entity_slug),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Filtered, because this is entity-CENTRIC: it answers "which
+        # investigations is this repo in", on a page anyone can open. Without
+        # the filter, a shared repo's page would name every private
+        # investigation that happens to include it — the classic leak through a
+        # back reference rather than through the object itself.
+        return [dict(r) for r in rows if self._may_see_investigation(dict(r), user_id)]
 
     def set_investigation_disposition(self, investigation_slug: str, entity_type: str,
                                       entity_slug: str, disposition: str,
@@ -5761,9 +5972,17 @@ class ProjectRegistry:
 
     def update_investigation(self, slug: str, *, display_name: str | None = None,
                              description: str | None = None,
-                             purposes: list[str] | None = None) -> dict | None:
-        """Rename or re-describe an investigation. The slug never changes —
-        members, the Egeria binding and inherited context rows reference it."""
+                             purposes: list[str] | None = None,
+                             hypothesis: str | None = None) -> dict | None:
+        """Rename, re-describe, or refine the hypothesis. The slug never
+        changes — members, the Egeria binding and inherited context rows
+        reference it.
+
+        Changing the *classification* is deliberately NOT here: it can move an
+        investigation between visibility regimes and is a flow with a report,
+        not an UPDATE (design §5). Sharpening an Experiment's hypothesis is a
+        different thing — it stays within one classification.
+        """
         import json as _json
         inv = self.get_investigation(slug)
         if not inv:
@@ -5772,6 +5991,19 @@ class ProjectRegistry:
             bad = [p for p in purposes if p not in self.VALID_PURPOSES]
             if bad:
                 raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+        if hypothesis is not None:
+            hypothesis = hypothesis.strip()
+            cls = inv.get("project_classification")
+            if cls not in self.HYPOTHESIS_REQUIRED_FOR:
+                raise ValueError(
+                    f"hypothesis is only meaningful for "
+                    f"{list(self.HYPOTHESIS_REQUIRED_FOR)}, not {cls!r}"
+                )
+            if not hypothesis:
+                raise ValueError(
+                    f"{cls} requires a hypothesis — clearing it would leave the "
+                    "classification asserting something with its point missing"
+                )
         with self._conn() as conn:
             if display_name is not None:
                 conn.execute("UPDATE investigations SET display_name = ? WHERE slug = ?",
@@ -5782,6 +6014,9 @@ class ProjectRegistry:
             if purposes is not None:
                 conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
                              (_json.dumps(purposes), slug))
+            if hypothesis is not None:
+                conn.execute("UPDATE investigations SET hypothesis = ? WHERE slug = ?",
+                             (hypothesis, slug))
             conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
                          (datetime.utcnow().isoformat(), slug))
         return self.get_investigation(slug)
@@ -5791,7 +6026,16 @@ class ProjectRegistry:
 
         Takes the same context shape the publish path speaks, so nothing
         downstream has to learn a new one.
+
+        **Binding a GUID also moves `egeria_binding` off `local`.** Asking for
+        an Egeria Project IS the decision that this is no longer ad-hoc, and
+        leaving the flag behind would produce a row that has a Project and
+        claims not to want one — a contradiction nothing downstream could
+        resolve. The reverse is not symmetric: unbinding does NOT set it back
+        to `local`, because losing or clearing a binding is not the same as
+        deciding to stay local, and only the second is a choice somebody made.
         """
+        guid = ctx.get("egeria_project_guid", "")
         with self._conn() as conn:
             conn.execute(
                 """UPDATE investigations
@@ -5799,24 +6043,43 @@ class ProjectRegistry:
                        egeria_project_qualified_name = ?, egeria_free_text_name = ?,
                        updated_at = ?
                    WHERE slug = ?""",
-                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
+                (ctx.get("status", "unset"), guid,
                  ctx.get("egeria_project_qualified_name", ""),
                  ctx.get("free_text_name", ""),
                  datetime.utcnow().isoformat(), slug),
             )
+            if guid:
+                conn.execute(
+                    "UPDATE investigations SET egeria_binding = ? WHERE slug = ?",
+                    (self.BINDING_EGERIA, slug),
+                )
         return self.get_investigation(slug)
 
-    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str,
+                                         *, user_id: str | None = None) -> dict | None:
         """The Egeria Project binding a resource inherits from its investigation.
 
         Scoped to the FOLIO — being in scope for a bound investigation is what
         supplies the binding. A disposition WorkingSet's members are all in the
         Folio too, so this covers them without double-counting.
+
+        **Also scoped to the caller**, and this one is easy to miss: the
+        returned shape carries `_inherited_from_name` (the investigation's
+        display name) and the Project's qualifiedName, and it is read on a
+        RESOURCE's page — which anyone can open. A repo sitting in someone's
+        private investigation would otherwise announce that investigation by
+        name to every other user. It also stops one user publishing a shared
+        repo into another user's private Project.
+
+        The worker is unaffected: it runs as the shared identity, which sees
+        everything, so queued surveys still inherit and publish normally.
         """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             row = conn.execute(
                 """SELECT i.slug, i.display_name, i.egeria_project_guid,
-                          i.egeria_project_qualified_name
+                          i.egeria_project_qualified_name,
+                          i.project_classification, i.created_by
                    FROM working_set_members m
                    JOIN working_sets ws ON ws.slug = m.working_set_slug
                    JOIN investigation_resource_lists rl
@@ -5831,9 +6094,11 @@ class ProjectRegistry:
                    ORDER BY i.updated_at DESC""",
                 (entity_type, entity_slug),
             ).fetchall()
-        if not row:
+        visible = [dict(r) for r in row
+                   if self._may_see_investigation(dict(r), user_id)]
+        if not visible:
             return None
-        first = dict(row[0])
+        first = visible[0]
         return {
             "status": "linked",
             "egeria_project_guid": first["egeria_project_guid"],
@@ -5841,8 +6106,69 @@ class ProjectRegistry:
             "free_text_name": "",
             "_inherited_from": first["slug"],
             "_inherited_from_name": first["display_name"],
-            "_ambiguous": len(row) > 1,
+            # Counts only what this caller can SEE. An investigation they may
+            # not see cannot make their view ambiguous, and saying "ambiguous"
+            # while showing one candidate would be an unanswerable prompt.
+            "_ambiguous": len(visible) > 1,
         }
+
+    def private_owner_for_entity(self, entity_type: str, entity_slug: str) -> str:
+        """The userId an entity's artifacts must be zoned to, or `""` for none.
+
+        A resource's artifacts are private when the resource is in scope for a
+        privately-classified investigation (`PRIVATE_CLASSIFICATIONS`) that has
+        a recorded owner. The answer is that owner's userId.
+
+        **Deliberately UNSCOPED — it must see investigations the caller cannot.**
+        This is the exact inverse of `_may_see_investigation`, and getting it
+        backwards is the whole bug:
+
+        * Phase 3's filter hides a private investigation FROM other callers.
+        * This decides whether to PROTECT an artifact, so it must see the
+          private investigation whoever is asking.
+
+        The worker publishes as the service account (`egeria_identity`'s module
+        docstring). If this used the caller-scoped read, a queued survey would
+        find no private investigation, conclude "not private", and publish the
+        artifact into the public zones — a silent leak produced by the privacy
+        machinery itself. So it reads the rows directly rather than going
+        through `get_investigation`, and that is not an oversight.
+
+        Closed investigations still count. Closing one means the work finished,
+        not that its artifacts became public.
+
+        Where a resource is in several private investigations, the oldest
+        owner wins — an arbitrary but STABLE choice, so an artifact does not
+        change zone because an unrelated investigation was created. Multiple
+        owners cannot be expressed in one `Ownership`, and picking the newest
+        would let anyone re-home someone else's artifacts by adding the repo to
+        their own investigation.
+        """
+        # NOT normalised. `working_set_members` stores the slug verbatim, as
+        # `find_entity_investigations` and `inherited_egeria_project_context`
+        # both assume — and `_normalize_slug` turns hyphens into underscores, so
+        # normalising here matched nothing for any repo with a hyphen in its
+        # name, which is most of them. That failure was silent and it failed
+        # OPEN: no owner found means "not private", so the artifacts would have
+        # published into the public zones. Caught by a test, not by review.
+        placeholders = ",".join("?" * len(self.PRIVATE_CLASSIFICATIONS))
+        with self._conn() as conn:
+            row = conn.execute(
+                f"""SELECT i.created_by, i.slug
+                    FROM working_set_members m
+                    JOIN working_sets ws ON ws.slug = m.working_set_slug
+                                         AND ws.collection_kind = 'folio'
+                    JOIN investigation_resource_lists rl
+                      ON rl.working_set_slug = m.working_set_slug
+                    JOIN investigations i ON i.slug = rl.investigation_slug
+                    WHERE m.entity_type = ? AND m.entity_slug = ?
+                      AND m.state <> 'excluded'
+                      AND i.project_classification IN ({placeholders})
+                      AND i.created_by IS NOT NULL AND i.created_by <> ''
+                    ORDER BY i.created_at ASC""",
+                (entity_type, entity_slug, *self.PRIVATE_CLASSIFICATIONS),
+            ).fetchone()
+        return (row["created_by"] if row else "") or ""
 
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:

@@ -104,6 +104,421 @@ def test_purposes_are_served_not_hardcoded_in_the_spa(client):
     ]
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _as(user_id: str):
+    """Run a block as `user_id`. `''` is the shared/service identity."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    reset = current_caller.set(
+        CallerIdentity(user_id=user_id, egeria_token=None, auth_source="app-jwt"))
+    try:
+        yield
+    finally:
+        current_caller.reset(reset)
+
+
+def test_a_personal_investigation_is_hidden_from_everyone_else(made):
+    """The point of Phase 3, and the assertion that has to be seen to FAIL.
+
+    "Alice can see her own" passes under every broken variant of this — a
+    filter that does nothing at all passes it. The load-bearing assertion is
+    that a DIFFERENT user cannot see it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+
+    with _as("alice"):
+        inv = reg.create_investigation("Alice's Notes",
+                                       project_classification="PersonalProject")
+        mine = [i["slug"] for i in reg.list_investigations()]
+    with _as("bob"):
+        theirs = [i["slug"] for i in reg.list_investigations()]
+
+    try:
+        assert inv["slug"] in mine
+        assert inv["slug"] not in theirs, "bob can see alice's personal investigation"
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_a_private_investigation_is_not_found_rather_than_forbidden(made):
+    """404, not 403 — deliberately the OPPOSITE of this codebase's usual rule
+    that absence must be distinguishable from emptiness.
+
+    A 403 confirms the investigation exists and leaks its name to anyone who
+    guesses a slug, and slugs are derived from display names. For a caller who
+    may not see it, "does not exist" is the honest answer.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice's Experiment",
+                                       project_classification="Experiment",
+                                       hypothesis="this is mine alone")
+    try:
+        with _as("bob"):
+            assert reg.get_investigation(inv["slug"]) is None
+        with _as("alice"):
+            assert reg.get_investigation(inv["slug"]) is not None
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_shared_classifications_stay_visible_to_everyone(made):
+    """The other half. Task / Campaign / Study are not private, and a filter
+    that hid them would be as wrong as one that hid nothing."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    made_slugs = []
+    try:
+        for cls in ("Task", "Campaign", "StudyProject"):
+            with _as("alice"):
+                inv = reg.create_investigation(f"Alice {cls}", project_classification=cls)
+            made_slugs.append(inv["slug"])
+        with _as("bob"):
+            seen = {i["slug"] for i in reg.list_investigations()}
+        assert set(made_slugs) <= seen
+    finally:
+        with reg._conn() as conn:
+            for slug in made_slugs:
+                conn.execute("DELETE FROM investigations WHERE slug = ?", (slug,))
+
+
+def test_a_private_investigation_does_not_leak_through_a_resources_own_page(made):
+    """The back-reference leak, which the object-level filter alone misses.
+
+    `find_entity_investigations` is entity-centric — "which investigations is
+    this repo in" — and runs on a page anyone can open. A shared repo inside
+    alice's personal investigation would otherwise announce it by name.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Private Sweep",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "a-shared-repo")
+    try:
+        with _as("bob"):
+            found = reg.find_entity_investigations("repo", "a-shared-repo")
+            assert not any(f["investigation_slug"] == inv["slug"] for f in found), (
+                "a private investigation leaked through the repo's own page")
+        with _as("alice"):
+            found = reg.find_entity_investigations("repo", "a-shared-repo")
+            assert any(f["investigation_slug"] == inv["slug"] for f in found)
+    finally:
+        with reg._conn() as conn:
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists "
+                "WHERE investigation_slug = ?", (inv["slug"],)).fetchall()
+            for r in rows:
+                conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?",
+                             (r["working_set_slug"],))
+                conn.execute("DELETE FROM working_sets WHERE slug = ?", (r["working_set_slug"],))
+            conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?",
+                         (inv["slug"],))
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_a_private_investigations_egeria_binding_is_not_inherited_by_others(made):
+    """The subtler back-reference. `inherited_egeria_project_context` returns
+    `_inherited_from_name` — the investigation's display name — and the
+    Project's qualifiedName, onto a resource anyone can look at. It would also
+    let one user publish a shared repo into another user's private Project."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Bound Private",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "another-shared-repo")
+        reg.set_investigation_egeria_project(inv["slug"], {
+            "status": "linked", "egeria_project_guid": "guid-private",
+            "egeria_project_qualified_name": "Project::Alice::Private"})
+    try:
+        with _as("bob"):
+            assert reg.inherited_egeria_project_context("repo", "another-shared-repo") is None
+        with _as("alice"):
+            ctx = reg.inherited_egeria_project_context("repo", "another-shared-repo")
+            assert ctx and ctx["egeria_project_guid"] == "guid-private"
+    finally:
+        with reg._conn() as conn:
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists "
+                "WHERE investigation_slug = ?", (inv["slug"],)).fetchall()
+            for r in rows:
+                conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?",
+                             (r["working_set_slug"],))
+                conn.execute("DELETE FROM working_sets WHERE slug = ?", (r["working_set_slug"],))
+            conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?",
+                         (inv["slug"],))
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_the_service_identity_still_sees_private_investigations(made):
+    """The worker legitimately acts on a user's behalf without carrying their
+    token (see `egeria_identity`'s module docstring on why a queued run
+    publishes as the service account). If the shared identity were filtered,
+    every queued promotion of a personal investigation would fail with the row
+    apparently missing."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Queued",
+                                       project_classification="PersonalProject")
+    try:
+        with _as(""):
+            assert reg.get_investigation(inv["slug"]) is not None
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_an_ownerless_private_row_stays_visible_and_says_so(made):
+    """Rows written before `created_by` existed have no owner, so nothing can
+    scope them to anyone. They stay visible — which is what they have always
+    been — rather than vanishing from the person who made them. The point is
+    that this is SAID, not silently tolerated: a privately-classified row that
+    everyone can see is a contradiction somebody should be able to act on."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Legacy Personal",
+                                       project_classification="PersonalProject")
+    try:
+        with reg._conn() as conn:
+            conn.execute("UPDATE investigations SET created_by = '' WHERE slug = ?",
+                         (inv["slug"],))
+        with _as("bob"):
+            seen = reg.get_investigation(inv["slug"])
+        assert seen is not None, "an ownerless row must not vanish"
+        assert seen["visibility"] == "shared"
+        assert "visible to everyone" in seen.get("visibility_note", "")
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_visibility_is_reported_not_left_to_be_re_derived(made):
+    """The UI must not recompute `classification in PRIVATE and created_by ==
+    me` for itself — that is a second copy of the rule, in the place least able
+    to be tested."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        priv = reg.create_investigation("Alice Priv2",
+                                        project_classification="PersonalProject")
+        shared = reg.create_investigation("Alice Shared2", project_classification="Task")
+        got = {i["slug"]: i for i in reg.list_investigations()}
+    try:
+        assert got[priv["slug"]]["visibility"] == "private"
+        assert got[priv["slug"]]["is_mine"] is True
+        assert got[shared["slug"]]["visibility"] == "shared"
+    finally:
+        with reg._conn() as conn:
+            for i in (priv, shared):
+                conn.execute("DELETE FROM investigations WHERE slug = ?", (i["slug"],))
+
+
+def test_classifications_are_served_not_hardcoded_in_the_spa(client):
+    """Same rule as `/purposes`, for the same reason.
+
+    These are Egeria's own `ProjectKind` subtypes and go to Egeria as type
+    names. A copy in the SPA is the frontend/backend mirror that has drifted
+    twice in this codebase — and here drift means offering a classification
+    Egeria will reject, or hiding one it accepts.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    r = client.get("/api/investigations/classifications")
+    assert r.status_code == 200
+    body = r.json()
+    assert [c["name"] for c in body["classifications"]] == list(
+        ProjectRegistry.PROJECT_CLASSIFICATIONS)
+    assert "Experiment" in [c["name"] for c in body["classifications"]]
+    # Every entry carries the prose the dropdown renders, so the SPA never has
+    # to invent a label for a value it does not recognise.
+    assert all(c["label"] and c["description"] for c in body["classifications"])
+
+
+def test_the_hypothesis_requirement_is_served_not_inferred(client):
+    """The SPA shows the hypothesis field off `requires_hypothesis`, not off a
+    second copy of the rule that says "Experiment". If a sixth classification
+    ever needs one, the flag carries it and the frontend needs no change."""
+    r = client.get("/api/investigations/classifications")
+    needs = {c["name"]: c["requires_hypothesis"] for c in r.json()["classifications"]}
+    assert needs["Experiment"] is True
+    assert not any(v for k, v in needs.items() if k != "Experiment")
+
+
+def test_ad_hoc_is_a_binding_not_a_sixth_classification(client):
+    """The structural decision this phase turns on.
+
+    "Ad-hoc" is the ABSENCE of an Egeria Project, not a kind of one. Egeria has
+    no `adHoc` classification, so a value like that in the classification column
+    would be sent as a type name and rejected — or worse, dropped. It belongs on
+    its own axis, which is also where the nullable `egeria_project_guid` already
+    lived.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    body = client.get("/api/investigations/classifications").json()
+    names = [c["name"] for c in body["classifications"]]
+    assert not any(n.lower().replace("-", "") == "adhoc" for n in names), (
+        "ad-hoc must not appear as a classification — it is not an Egeria type")
+    assert [b["name"] for b in body["bindings"]] == [
+        ProjectRegistry.BINDING_EGERIA, ProjectRegistry.BINDING_LOCAL]
+
+
+def test_an_experiment_without_a_hypothesis_is_refused(client):
+    """Egeria's Experiment is "a project testing a hypothesis (documented in
+    the hypothesis attribute)". Creating one with an empty hypothesis publishes
+    a classification whose entire point is missing — the same absence-reads-as-
+    presence failure, in a catalog description rather than a metric."""
+    r = client.post("/api/investigations/", json={
+        "display_name": "Hypothesis-free", "project_classification": "Experiment"})
+    assert r.status_code == 400
+    assert "hypothesis" in r.json()["detail"].lower()
+
+
+def test_a_hypothesis_on_a_non_experiment_is_refused_rather_than_dropped(client):
+    """The other direction, and the less obvious one.
+
+    `_initial_classifications` only sends `hypothesis` for Experiment, so a
+    hypothesis on a Task would be stored locally and silently vanish at publish
+    time. Refusing is better than accepting a value we know we will discard.
+    """
+    r = client.post("/api/investigations/", json={
+        "display_name": "Task with a theory", "project_classification": "Task",
+        "hypothesis": "this will be dropped"})
+    assert r.status_code == 400
+    assert "only meaningful for" in r.json()["detail"]
+
+
+def test_an_experiment_carries_its_hypothesis_all_the_way_into_egeria(made):
+    """Collected, stored, and actually SENT — the Phase 1 defect in miniature.
+
+    A required field that reaches the database and not the create body is the
+    same bug the classification itself had.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Does caching help", project_classification="Experiment",
+               hypothesis="Warm source cache cuts survey wall-clock by >50%")
+    assert inv["hypothesis"] == "Warm source cache cuts survey wall-clock by >50%"
+
+    pm = _StubPM()
+    EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    sent = pm.calls[0][3]["initialClassifications"]["Experiment"]
+    assert sent["class"] == "ExperimentProperties"
+    assert sent["hypothesis"] == "Warm source cache cuts survey wall-clock by >50%"
+
+
+def test_the_publishers_hypothesis_list_matches_the_registrys(made):
+    """Two copies of one rule, in modules that cannot import each other's
+    intent. Pinned rather than trusted: if the registry ever requires a
+    hypothesis for a second classification and the publisher is not taught, the
+    value would be collected, validated, stored — and dropped at the body."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as pub
+
+    assert tuple(pub._HYPOTHESIS_CLASSIFICATIONS) == tuple(
+        ProjectRegistry.HYPOTHESIS_REQUIRED_FOR)
+
+
+def test_an_ad_hoc_investigation_is_not_promoted_by_accident(made):
+    """`local` is a decision, not a not-yet. Promoting one anyway would
+    overturn it silently and leave the row bound while still flagged local."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Just Looking", egeria_binding="local")
+    assert inv["egeria_binding"] == "local"
+
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert pm.calls == [], "nothing may be written to Egeria for an ad-hoc investigation"
+    assert not res.ok
+    assert any("ad-hoc" in e for e in res.errors)
+
+
+def test_binding_an_egeria_project_moves_the_investigation_off_ad_hoc(made):
+    """Asking for a Project IS the decision that this is no longer ad-hoc.
+
+    Without this, a promoted investigation would hold a GUID and still claim to
+    want none — a contradiction nothing downstream could resolve.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Changed My Mind", egeria_binding="local")
+    reg = ProjectRegistry()
+    after = reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "g-1",
+        "egeria_project_qualified_name": "Project::X"})
+    assert after["egeria_binding"] == "egeria"
+
+
+def test_unbinding_does_not_silently_make_an_investigation_ad_hoc(made):
+    """The reverse is NOT symmetric, on purpose. Losing or clearing a binding
+    is not the same as deciding to stay local, and only the second is a choice
+    somebody made — recording it as one would invent an intent."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Unbind Me")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "g-2"})
+    after = reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "unset", "egeria_project_guid": ""})
+    assert after["egeria_binding"] == "egeria", (
+        "unbinding must not be read as choosing ad-hoc")
+
+
+def test_existing_investigations_backfill_to_egeria_not_ad_hoc(made):
+    """A judgement, stated where it is made.
+
+    Before this column existed, ad-hoc was not a choice anyone could make —
+    every investigation was headed for Egeria whether or not it had arrived.
+    Defaulting old rows to `local` would invent a deliberate decision nobody
+    took and hide them from anything keying on the binding.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry()
+    inv = made(display_name="Legacy Row")
+    with reg._conn() as conn:
+        # Simulate a row written before the column existed.
+        conn.execute("UPDATE investigations SET egeria_binding = NULL WHERE slug = ?",
+                     (inv["slug"],))
+        row = conn.execute(
+            "SELECT egeria_binding FROM investigations WHERE slug = ?",
+            (inv["slug"],)).fetchone()
+    assert row["egeria_binding"] is None
+    # The publisher must read a NULL binding as 'egeria', not refuse it as local.
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    assert res.project_guid, "a pre-existing row must still be promotable"
+
+
 def test_an_investigation_starts_local_with_no_egeria_write(made):
     """§1's third starting mode, and the structural decision behind it.
 
@@ -168,8 +583,19 @@ def test_members_on_a_missing_investigation_404s(client):
 
 
 class _StubPM:
+    """Egeria's Project side.
+
+    `get_project_by_guid` echoes back whatever `create_project` was asked for,
+    so the default stub models an Egeria that HONOURS the request. The
+    interesting cases are the stubs below that model one that doesn't (
+    `_DroppingPM`) and one that cannot be asked (`_UnreadablePM`) — the
+    publisher has to tell those two apart, because "we didn't check" and "we
+    checked and it's missing" are different facts.
+    """
+
     def __init__(self, guid="proj-1", fail=False):
         self.guid, self.fail, self.calls = guid, fail, []
+        self._applied: list[str] = []
 
     def create_egeria_bearer_token(self):
         pass
@@ -178,7 +604,69 @@ class _StubPM:
         self.calls.append(("create_project", display_name, description, body))
         if self.fail:
             raise RuntimeError("Egeria unreachable")
+        self._applied = list((body or {}).get("initialClassifications") or {})
         return self.guid
+
+    def get_project_by_guid(self, guid, **kw):
+        # The REAL payload shape, measured live 2026-09-07 (see
+        # `_confirm_classification`): an OpenMetadataRootElement whose project
+        # classifications sit under elementHeader.projectKinds, separate from
+        # elementHeader.anchor, and whose `projectKinds` key is OMITTED rather
+        # than null when there is no kind.
+        #
+        # The first version of this stub invented a top-level `classifications`
+        # list. Both it and the code agreed with each other and neither agreed
+        # with Egeria, so all five tests passed against a function that returned
+        # "could not tell" on every real call. A stub is a claim about the other
+        # system; this one is now a measured claim.
+        header = {"guid": guid, "type": {"typeName": "Project"},
+                  "anchor": {"classificationName": "Anchors"}}
+        if self._applied:
+            header["projectKinds"] = [
+                {"class": "ElementClassification", "classificationName": c,
+                 "type": {"typeName": c, "superTypeNames": ["ProjectKind"]}}
+                for c in self._applied
+            ]
+        return {"class": "OpenMetadataRootElement", "elementHeader": header,
+                "properties": {"displayName": "stub"}}
+
+
+class _DroppingPM(_StubPM):
+    """Creates the Project and silently discards the classification.
+
+    This is the failure the whole change exists to catch, and it is exactly
+    what the code did before: `create_project` returns a GUID, everything looks
+    fine, and the classification is gone. Modelled the way Egeria really
+    expresses it — the `projectKinds` key simply is not there.
+    """
+
+    def get_project_by_guid(self, guid, **kw):
+        return {"class": "OpenMetadataRootElement",
+                "elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                  "anchor": {"classificationName": "Anchors"}}}
+
+
+class _UnreadablePM(_StubPM):
+    """The read-back itself fails. Not evidence about the classification."""
+
+    def get_project_by_guid(self, guid, **kw):
+        raise RuntimeError("view server unreachable")
+
+
+class _StrangePayloadPM(_StubPM):
+    """Returns something that is not the shape we know how to read.
+
+    Distinct from `_DroppingPM` on purpose. An absent `projectKinds` key means
+    "no classification" ONLY when the rest of the header is recognisable —
+    measured, because Egeria omits that key rather than nulling it. If the
+    payload shape ever changes, the honest answer is "could not tell", not an
+    accusation that Egeria dropped the classification. Without this test the
+    two are indistinguishable, which is how the first version of the read-back
+    silently reported nothing at all.
+    """
+
+    def get_project_by_guid(self, guid, **kw):
+        return {"someNewEnvelope": {"project": {"guid": guid}}}
 
 
 class _StubCM:
@@ -224,6 +712,166 @@ def test_promotion_replays_the_local_shape_into_egeria(made):
     props = pm.calls[0][3]["properties"]
     assert "Certify" in props["additionalProperties"]["purposes"]
     assert "Certify" not in (props.get("description") or "")
+
+
+def test_the_chosen_classification_actually_reaches_egeria(made):
+    """The bug this phase fixes.
+
+    `project_classification` has been stored (`registry.py`), validated on
+    create and shown in the UI since the feature shipped — and the promote body
+    carried `properties` and nothing else, so every investigation RE ever
+    promoted arrived in Egeria as an unclassified `Project`.
+
+    Asserting on the body is the point: a test that only checked
+    `create_project` was called would have passed for the whole period this was
+    broken.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Classify Me", project_classification="Campaign")
+    pm, cm = _StubPM(), _StubCM()
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=cm
+    ).promote(inv["slug"])
+
+    body = pm.calls[0][3]
+    assert body["initialClassifications"] == {"Campaign": {"class": "CampaignProperties"}}
+    assert res.classification_requested == "Campaign"
+    assert res.classification_confirmed == "Campaign"
+    assert res.ok
+
+
+def test_every_classification_in_the_vocabulary_maps_to_a_properties_class(made):
+    """The `<Name>Properties` convention holds for all of them, so the mapping
+    is derived rather than table-driven. If Egeria ever breaks the convention
+    for a new classification, this is where it shows up — and RE's vocabulary
+    is checked against the publisher's, so adding one to the registry without
+    teaching the publisher cannot pass silently."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher, _initial_classifications,
+    )
+
+    reg = ProjectRegistry()
+    for name in reg.PROJECT_CLASSIFICATIONS:
+        assert _initial_classifications(name) == {name: {"class": f"{name}Properties"}}
+
+    inv = made(display_name="Personal One", project_classification="PersonalProject")
+    pm = _StubPM()
+    EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    assert pm.calls[0][3]["initialClassifications"] == {
+        "PersonalProject": {"class": "PersonalProjectProperties"}
+    }
+
+
+def test_a_classification_egeria_drops_is_reported_not_assumed(made):
+    """A returned GUID proves the call worked, not that the body was honoured.
+
+    This is the failure mode that hid the original bug: everything succeeds and
+    the classification is simply not there. The Project is real and stays
+    bound — the route binds on `project_guid`, not on `ok` — but the promotion
+    is not clean and must not say it is.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Dropped", project_classification="Task")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_DroppingPM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert res.project_guid == "proj-1", "the Project exists and must stay bindable"
+    assert res.classification_confirmed == "", "checked, and genuinely absent"
+    assert not res.ok
+    assert any("does not carry" in e for e in res.errors)
+
+
+def test_an_unverifiable_classification_is_not_reported_as_missing(made):
+    """"We could not check" is a fact about us, not about Egeria.
+
+    Treating a failed read-back as absence would raise a false alarm on every
+    promotion whenever the view server is briefly unreachable; treating it as
+    confirmation would be the original bug wearing a badge. It is neither, and
+    `classification_confirmed is None` is how that is said.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Unverifiable", project_classification="StudyProject")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_UnreadablePM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert res.classification_requested == "StudyProject"
+    assert res.classification_confirmed is None
+    assert res.ok, "an unverifiable read-back is not a failed promotion"
+    assert not any("does not carry" in e for e in res.errors)
+
+
+def test_an_unrecognised_payload_is_could_not_tell_not_a_dropped_classification(made):
+    """The distinction that the first read-back could not make.
+
+    Egeria OMITS `projectKinds` when a Project has no kind, so "the key is not
+    there" is a real answer — but only when the rest of the header is the shape
+    we measured. If the payload changes underneath us, reporting absence would
+    accuse Egeria of a bug that is ours.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Strange Payload", project_classification="Campaign")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_StrangePayloadPM(),
+        collection_manager=_StubCM(),
+    ).promote(inv["slug"])
+
+    assert res.classification_confirmed is None, "unknown shape is not evidence"
+    assert res.ok
+    assert not any("does not carry" in e for e in res.errors)
+
+
+def test_an_unknown_classification_refuses_before_writing_anything(made):
+    """Promoting anyway would recreate the exact defect being fixed — a Project
+    silently without its classification — and leave a real element in Egeria to
+    clean up. `create_project` must not be reached at all.
+
+    Written through the registry rather than the API because `create_investigation`
+    rejects an unknown value; the row can only get into this state by predating
+    the validation or being edited underneath it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Bad Classification")
+    reg = ProjectRegistry()
+    with reg._conn() as conn:
+        conn.execute(
+            "UPDATE investigations SET project_classification = ? WHERE slug = ?",
+            ("Sprint", inv["slug"]),
+        )
+
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert pm.calls == [], "nothing may be written to Egeria on a bad classification"
+    assert not res.project_guid
+    assert not res.ok
+    assert any("Sprint" in e and "not one of" in e for e in res.errors)
 
 
 def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):

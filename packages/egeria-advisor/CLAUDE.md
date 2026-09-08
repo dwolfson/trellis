@@ -34,6 +34,7 @@ Requires Python 3.12+. External services must be running locally:
 - **pgvector** at `localhost:5442` (PostgreSQL with pgvector extension — database: `egeria_advisor`, user: `egeria_advisor`)
 - **Ollama** at `localhost:11434` (LLM inference — see model pull commands below)
 - **MLflow** at `localhost:5025` (optional, for experiment tracking)
+- **Arize Phoenix** (optional, off by default — `observability.phoenix.enabled`) — `pip install -e ".[phoenix]"` then `python -m phoenix.server.main` → `localhost:6006`. Same reachability-guarded init pattern as resource-explorer's (`phoenix_client.py`, TC-4/BACKLOG.md): checks the collector once cheaply and no-ops if nothing's listening, rather than paying an OTLP export timeout per span.
 
 ### First-time database initialization
 
@@ -305,6 +306,7 @@ The **Literate Governance with Context Intelligence (LGCI)** feature allows user
 
 - **PostgreSQL** (`metrics_collector.py` via `ConsolidatedDBManager`, `advisor/db_consolidated.py`) — query latency, collection health, system resources; always active. Not SQLite — it's a separate connection pool into the same `egeria_advisor` Postgres database/instance pgvector uses, holding its own tables (`query_metrics`, `system_metrics`, `collection_health`, `error_log`, etc.) alongside the vector collection tables.
 - **MLflow** (`mlflow_tracking.py`) — experiment tracking; non-blocking background thread
+- **Arize Phoenix** (`phoenix_client.py`, TC-4/BACKLOG.md) — BeeAI/OTel span tracing; off by default (`observability.phoenix.enabled`), initialized once in `RAGSystem.__init__`
 - **FeedbackCollector** — user thumbs up/down tracking from interactive mode
 - **Analytics** (`analytics.py`) — aggregated reporting for quantitative queries
 

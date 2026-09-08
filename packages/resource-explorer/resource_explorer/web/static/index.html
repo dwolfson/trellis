@@ -9775,6 +9775,12 @@ async function deleteCurateNote(noteId, entityType, slug) {
 const _CURRENT_INVESTIGATION_KEY = 're_current_investigation';
 let _investigations = [];
 let _investigationPurposes = [];
+// Served, not hardcoded — same reason as _investigationPurposes. The Project
+// classifications are Egeria's own types and the labels/descriptions are
+// Egeria's own prose; a copy here is the frontend/backend mirror that has
+// drifted twice in this codebase.
+let _investigationClassifications = [];
+let _investigationBindings = [];
 // 'active' | 'manage' — Manage lists every investigation regardless of status
 // with Resume/Suspend/Close controls. This exists because Close used to be a
 // one-way door: it hid the investigation from every list with no reopen route,
@@ -9831,12 +9837,15 @@ async function loadInvestigationsPanel() {
     // which sub-tab is active, and Active filters client-side down to the same
     // non-closed set the server's default already returns — one fetch, one
     // source of truth, instead of the two lists drifting.
-    const [invs, purp] = await Promise.all([
+    const [invs, purp, kinds] = await Promise.all([
       fetch('/api/investigations/?include_closed=true').then(r => r.json()),
       fetch('/api/investigations/purposes').then(r => r.json()),
+      fetch('/api/investigations/classifications').then(r => r.json()),
     ]);
     _investigations = Array.isArray(invs) ? invs : [];
     _investigationPurposes = (purp && purp.purposes) || [];
+    _investigationClassifications = (kinds && kinds.classifications) || [];
+    _investigationBindings = (kinds && kinds.bindings) || [];
   } catch (e) {
     view.innerHTML = `<div class="p-4 text-sm text-rose-400">Could not load investigations: ${_esc(String(e))}</div>`;
     return;
@@ -9935,6 +9944,7 @@ function _renderInvestigationsActiveTab() {
           <div class="text-sm font-medium ${isCur ? 'text-cyan-300' : 'text-slate-200'} truncate">
             ${_esc(i.display_name)} ${isCur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
             ${suspended ? '<span class="text-[10px] text-amber-500">· ⏸ suspended</span>' : ''}
+            ${_investigationVisibilityBadge(i)}
           </div>
           <div class="text-xs text-slate-500 truncate">${_esc(i.description || 'No description')}</div>
           <div class="text-xs text-slate-400 mt-0.5">
@@ -9972,22 +9982,65 @@ function _renderInvestigationsActiveTab() {
       </div>
       <div class="mb-2">${purposeBoxes}</div>
       <div class="mb-1 text-xs text-slate-500">
-        Kind — what shape of work this is. Carried onto the Egeria Project if this is ever
-        promoted, so it does not have to be asked again.
+        Kind — what shape of work this is. These are Egeria's own Project classifications,
+        carried onto the Egeria Project when this is promoted, so it is not asked again.
       </div>
-      <select id="inv-classification" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
-        <option value="StudyProject">Study — investigating something, no commitment yet</option>
-        <option value="Task">Task — one bounded piece of work</option>
-        <option value="PersonalProject">Personal — my own exploration</option>
-        <option value="Campaign">Campaign — a programme spanning several efforts</option>
+      <select id="inv-classification" onchange="_onInvClassificationChange()"
+              class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        ${_investigationClassifications.map(c => `
+          <option value="${_esc(c.name)}"${c.name === 'StudyProject' ? ' selected' : ''}>${_esc(c.label)} — ${_esc(c.description)}</option>
+        `).join('')}
+      </select>
+      <div id="inv-hypothesis-wrap" class="mb-2 hidden">
+        <input id="inv-hypothesis" placeholder="Hypothesis being tested (required for an Experiment)"
+               class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+        <div class="text-[11px] text-slate-500 mt-1">
+          Egeria's Experiment classification exists to record this. Without it the classification
+          would be published with its point missing, so it is required rather than optional.
+        </div>
+      </div>
+      <div class="mb-1 text-xs text-slate-500">
+        Where it lives — a separate question from the kind. Ad-hoc is not a kind of project;
+        it is the absence of one, and Egeria has no such type.
+      </div>
+      <select id="inv-binding" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        ${_investigationBindings.map(b => `
+          <option value="${_esc(b.name)}"${b.name === 'egeria' ? ' selected' : ''}>${_esc(b.label)} — ${_esc(b.description)}</option>
+        `).join('')}
       </select>
       <div></div>
       <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
       <div class="text-[11px] text-slate-500 mt-2">
-        Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
-        the record carries a nullable project GUID so that stays a fill-in rather than a migration.
+        The local row is created either way, with a nullable project GUID. Choosing
+        "Create in Egeria" records the intent; the Egeria Project itself is created by the
+        "create in Egeria →" action on the investigation, so a failure there never loses the
+        investigation. An ad-hoc one can be changed to Egeria later.
       </div>
     </div>`;
+}
+
+// Visibility, read from the server's own answer rather than re-derived here.
+//
+// The rule is "classification is in PRIVATE_CLASSIFICATIONS AND created_by is
+// set AND it is mine" — three conditions across two columns. Recomputing that
+// in the SPA would be a second copy of a security-shaped rule in the one place
+// with no test around it, so `visibility` / `is_mine` / `visibility_note` are
+// served and this only renders them.
+//
+// `visibility_note` is its own state, not a variant of the other two: a row
+// classified private but created before RE recorded owners is visible to
+// everyone, and showing it as plain "shared" would hide a contradiction the
+// person can actually resolve.
+function _investigationVisibilityBadge(i) {
+  if (i.visibility_note) {
+    return `<span class="text-[10px] text-amber-400" title="${_esc(i.visibility_note)}">· ⚠ private kind, visible to all</span>`;
+  }
+  if (i.visibility === 'private') {
+    return i.is_mine
+      ? '<span class="text-[10px] text-violet-400" title="Only you can see this in Resource Explorer.">· 🔒 private</span>'
+      : '<span class="text-[10px] text-violet-400">· 🔒 private</span>';
+  }
+  return '';
 }
 
 // The binding is a property of the investigation, so it is described here
@@ -10061,6 +10114,26 @@ function _focusInvestigationPurposes() {
   if (first) { first.focus(); first.scrollIntoView({block: 'center'}); }
 }
 
+// The hypothesis field appears only for classifications that require one,
+// driven by the served `requires_hypothesis` flag rather than by comparing
+// against a hardcoded "Experiment" here — a second copy of that rule in the
+// frontend is what drifts when a sixth classification arrives.
+//
+// It is CLEARED when hidden, not merely hidden: a value left in a hidden input
+// would be posted and rejected by the server ("hypothesis is only meaningful
+// for ['Experiment']"), and the user would see an error about a field they
+// cannot see.
+function _onInvClassificationChange() {
+  const sel = document.getElementById('inv-classification');
+  const wrap = document.getElementById('inv-hypothesis-wrap');
+  const field = document.getElementById('inv-hypothesis');
+  if (!sel || !wrap) return;
+  const chosen = _investigationClassifications.find(c => c.name === sel.value);
+  const needs = !!(chosen && chosen.requires_hypothesis);
+  wrap.classList.toggle('hidden', !needs);
+  if (!needs && field) field.value = '';
+}
+
 async function _createInvestigation() {
   const name = (document.getElementById('inv-name')?.value || '').trim();
   if (!name) { showToast('Name is required', 'error'); return; }
@@ -10073,6 +10146,8 @@ async function _createInvestigation() {
         description: (document.getElementById('inv-desc')?.value || '').trim(),
         purposes,
         project_classification: document.getElementById('inv-classification')?.value || 'StudyProject',
+        egeria_binding: document.getElementById('inv-binding')?.value || 'egeria',
+        hypothesis: (document.getElementById('inv-hypothesis')?.value || '').trim(),
       }),
     });
     if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }
@@ -10152,9 +10227,27 @@ async function _promoteInvestigation(slug) {
     const later = document.getElementById('inv-next-steps');
     if (later) {
       const missedNow = (r.members_unlinkable || []).length;
+      // The classification, in three distinguishable states — because for the
+      // whole life of this feature it silently was not applied at all, and
+      // nothing on this screen would have said so. `classification_confirmed`
+      // is deliberately tri-state: the name when verified present, `''` when
+      // verified ABSENT (the bug), and null when we could not check. Rendering
+      // the last two the same way would put the reassuring reading on a state
+      // that has not been established.
+      const cReq = r.classification_requested || '';
+      const cGot = r.classification_confirmed;
+      let cLine = '';
+      if (cReq && cGot === cReq) {
+        cLine = `<div class="text-slate-300">Classified as <span class="font-mono">${_esc(cReq)}</span>.</div>`;
+      } else if (cReq && cGot === '') {
+        cLine = `<div class="text-amber-300">Requested the <span class="font-mono">${_esc(cReq)}</span> classification, but Egeria's Project does not carry it. The Project is usable; the classification needs applying separately.</div>`;
+      } else if (cReq) {
+        cLine = `<div class="text-slate-400">Requested the <span class="font-mono">${_esc(cReq)}</span> classification — could not confirm it was applied.</div>`;
+      }
       later.innerHTML = `<div class="text-xs rounded border border-emerald-800 bg-emerald-950/40 p-2 space-y-1">
         <div class="text-emerald-300 font-semibold">Created in Egeria.</div>
         <div class="text-slate-300">Project <span class="font-mono">${_esc((r.project_guid || '').slice(0, 8))}</span>${r.resource_list_linked ? ' · working set linked' : ''} · ${linked} member(s) attached.</div>
+        ${cLine}
         ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be catalogued: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be catalogued"</span>, then re-scan and relink.</div>` : ''}
       </div>`;
     }
@@ -11222,7 +11315,24 @@ function _factFindingLines(value) {
 
 function _summariseFactValue(value) {
   if (!value || typeof value !== 'object') return '';
+  // 'summary'/'depth'/'source_kind' joined the administrative skip list
+  // 2026-09-07, confirmed against exactly one analysis (architecture_summary
+  // -- repo_survey_definition_adapter.py's `_architecture_summary_results`
+  // is the only results reader returning these as TOP-LEVEL keys; `depth`
+  // appears elsewhere only nested inside per-component array items, which
+  // this loop's Object.entries never reaches). Reported live: a repo with
+  // little classified structure filled the 6-field cap with "summary: ...",
+  // "depth: suitability", "source_kind: architecture_recovery" -- three
+  // fields already covered by f.headline (architecture_summary always
+  // defines one whenever this value exists) or meaningless without survey-
+  // internals context -- crowding out `documented`/`protocols`/`third_party`,
+  // the fields that would have actually answered "what does this serve".
+  // The dedicated Analysis-tab metrics panel (_renderMetricsResults) reads
+  // the same value directly, not through this function, so it still shows
+  // every field -- this only trims what chat's one-line-plus-bullets answer
+  // repeats or cannot use.
   const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes',
+    'summary', 'depth', 'source_kind',
     ..._factProseKeys(value), ..._factFindingArrayKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {
@@ -16405,10 +16515,25 @@ async function loadAdminDiscoverySourcesPanel() {
 let _resyncScan = null;
 let _resyncBusy = false;
 
+// The private zone's state, fetched alongside the resync scan.
+//
+// It has to be visible SOMEWHERE a person looks, because its failure is silent
+// from their side: RE keeps showing personal investigations as private (that
+// filter is local and works regardless), while their surveys quietly refuse to
+// reach Egeria. Without this the only signal is a worker log line and an error
+// on a publish they may not attempt for days.
+let _privateZone = null;
+
 async function loadAdminResyncPanel() {
   const view = document.getElementById('admin-resync-view');
   view.innerHTML = _adminSubnavHtml('admin-resync')
     + `<div class="p-6 text-sm text-slate-500">Scanning Egeria…</div>`;
+  // Deliberately not awaited with the scan below: the zone's state is useful
+  // even when the scan fails, and a scan failure must not hide it.
+  fetch('/api/egeria/private-zone')
+    .then(r => r.ok ? r.json() : null)
+    .then(z => { _privateZone = z; if (_resyncScan) renderAdminResyncPanel(); })
+    .catch(() => { _privateZone = null; });
   try {
     const res = await fetch('/api/egeria/resync/scan');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -16419,6 +16544,38 @@ async function loadAdminResyncPanel() {
     return;
   }
   renderAdminResyncPanel();
+}
+
+// Four states, rendered differently on purpose. "Enforced" and "not checked
+// yet" must never look alike: the second is a question nobody has asked, and
+// showing it as healthy is the exact failure this whole feature guards against.
+function _privateZoneCardHtml() {
+  const z = _privateZone;
+  if (!z) return '';
+  const zone = _esc(z.zone || 'private zone');
+  if (z.enforced) {
+    return `<div class="bg-slate-950 border border-emerald-900 rounded p-3 mb-3">
+      <div class="text-xs font-semibold text-emerald-300">🔒 Private zone enforced</div>
+      <div class="text-[11px] text-slate-400 mt-1">Personal and Experiment investigations publish to
+        <span class="font-mono">${zone}</span>, readable only by their creator.</div>
+    </div>`;
+  }
+  const settling = (z.settling_seconds_remaining || 0) > 0;
+  return `<div class="bg-slate-950 border border-amber-900 rounded p-3 mb-3">
+    <div class="text-xs font-semibold text-amber-300">${settling
+      ? '⏳ Private zone settling'
+      : '⚠ Private investigations cannot publish'}</div>
+    <div class="text-[11px] text-slate-300 mt-1">${settling
+      ? `The <span class="font-mono">${zone}</span> control exists but Egeria's security connector
+         has not reloaded it yet (about ${Math.ceil((z.settling_seconds_remaining || 0) / 60)} min).
+         Private publishing is refused until it has — publishing sooner would put private work in a
+         zone nothing is enforcing.`
+      : `The <span class="font-mono">${zone}</span> governance zone is not confirmed to be enforced,
+         so surveys of Personal and Experiment investigations are refused rather than published
+         where everyone could read them.`}</div>
+    ${z.detail ? `<div class="text-[11px] text-slate-500 mt-1">${_esc(z.detail)}</div>` : ''}
+    ${z.remedy ? `<div class="text-[11px] text-cyan-300 mt-1">${_esc(z.remedy)}</div>` : ''}
+  </div>`;
 }
 
 function renderAdminResyncPanel() {
@@ -16442,6 +16599,7 @@ function renderAdminResyncPanel() {
   const findings = d.findings || [];
   const repairable = findings.filter(f => f.repair_step);
   const decisions = findings.filter(f => !f.repair_step);
+  const zoneCard = _privateZoneCardHtml();
 
   const card = (f) => `<div class="bg-slate-950 border border-slate-800 rounded p-3">
     <div class="flex items-start justify-between gap-3">
@@ -16476,6 +16634,7 @@ function renderAdminResyncPanel() {
         Egeria that have fallen behind what RE can now run. Scanning never writes.
       </p>
     </div>
+    ${zoneCard}
 
     <div class="flex flex-wrap items-center gap-3 text-xs">
       <span class="text-slate-300">${d.total || 0} item(s) drifted</span>

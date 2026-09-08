@@ -24,6 +24,13 @@ class MultiCollectionSearchResult:
     total_searched: int = 0
     collections_searched: List[str] = field(default_factory=list)
     routing_strategy: str = "default"
+    #: collection_name -> str(exception) for any collection whose search
+    #: raised (connection failure, etc.). Previously the per-collection
+    #: try/except below swallowed these into a plain empty result list,
+    #: which is exactly how "the store was unreachable" came to look
+    #: identical to "the corpus has nothing" downstream in
+    #: RAGRetriever.build_context() — see advisor/retrieval_outcome.py.
+    errors: Dict[str, str] = field(default_factory=dict)
 
 
 class MultiCollectionStore:
@@ -90,7 +97,8 @@ class MultiCollectionStore:
         # Search collections in parallel for better performance
         all_results: List[Tuple[str, SearchResult]] = []  # (collection_name, result)
         collection_scores: Dict[str, float] = {}
-        
+        collection_errors: Dict[str, str] = {}
+
         def search_collection(collection_name: str) -> Tuple[str, List[SearchResult]]:
             """Search a single collection (for parallel execution)."""
             try:
@@ -98,23 +106,27 @@ class MultiCollectionStore:
                 collection_meta = get_collection(collection_name)
                 collection_top_k = top_k if top_k is not None else (collection_meta.default_top_k if collection_meta else 5)
                 collection_min_score = min_score if min_score is not None else (collection_meta.min_score if collection_meta else 0.0)
-                
+
                 logger.debug(f"Searching {collection_name} with top_k={collection_top_k}, min_score={collection_min_score}")
-                
+
                 results = self.vector_store.search(
                     collection_name=collection_name,
                     query_text=query,
                     top_k=collection_top_k,
                     filters=filters
                 )
-                
+
                 # Filter by collection-specific min_score
                 filtered_results = [r for r in results if r.score >= collection_min_score]
                 return (collection_name, filtered_results)
             except Exception as e:
                 logger.error(f"Error searching collection {collection_name}: {e}")
+                # Recorded (not just logged) so a caller can distinguish "this
+                # collection genuinely has nothing" from "this collection could
+                # not be searched at all" — see MultiCollectionSearchResult.errors.
+                collection_errors[collection_name] = str(e)
                 return (collection_name, [])
-        
+
         # Execute searches in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(len(collection_names), 4)) as executor:
             # Submit all search tasks
@@ -122,30 +134,31 @@ class MultiCollectionStore:
                 executor.submit(search_collection, name): name
                 for name in collection_names
             }
-            
+
             # Collect results as they complete
             for future in as_completed(future_to_collection):
                 collection_name, results = future.result()
-                
+
                 # Track results per collection (already filtered by collection-specific min_score)
                 for result in results:
                     all_results.append((collection_name, result))
-                
+
                 # Calculate average score for this collection
                 if results:
                     avg_score = sum(r.score for r in results) / len(results)
                     collection_scores[collection_name] = avg_score
                     logger.debug(f"Collection {collection_name}: {len(results)} results, avg score: {avg_score:.3f}")
-        
+
         # Merge and re-rank results
         merged_results = self._merge_and_rerank(
             all_results,
             collection_scores,
             top_k=top_k or 5  # Use default if None
         )
-        
+
         return MultiCollectionSearchResult(
             results=merged_results,
+            errors=collection_errors,
             collection_scores=collection_scores,
             total_searched=len(all_results),
             collections_searched=collection_names
@@ -176,7 +189,8 @@ class MultiCollectionStore:
         
         all_results: List[Tuple[str, SearchResult]] = []
         collection_scores: Dict[str, float] = {}
-        
+        collection_errors: Dict[str, str] = {}
+
         for collection_name in collection_names:
             try:
                 # Get collection-specific parameters
@@ -204,8 +218,9 @@ class MultiCollectionStore:
                 
             except Exception as e:
                 logger.error(f"Error searching collection {collection_name}: {e}")
+                collection_errors[collection_name] = str(e)
                 continue
-        
+
         merged_results = self._merge_and_rerank(
             all_results,
             collection_scores,
@@ -214,11 +229,12 @@ class MultiCollectionStore:
         
         return MultiCollectionSearchResult(
             results=merged_results,
+            errors=collection_errors,
             collection_scores=collection_scores,
             total_searched=len(all_results),
             collections_searched=collection_names
         )
-    
+
     def _merge_and_rerank(
         self,
         all_results: List[Tuple[str, SearchResult]],

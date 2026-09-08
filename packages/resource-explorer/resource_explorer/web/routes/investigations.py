@@ -25,7 +25,15 @@ class InvestigationCreate(BaseModel):
     display_name: str
     description: str = ""
     purposes: list[str] = Field(default_factory=list)
+    #: Egeria's own Project classification. Five values; see
+    #: `ProjectRegistry.PROJECT_CLASSIFICATIONS`.
     project_classification: str = "StudyProject"
+    #: The SECOND axis — `local` (ad-hoc: no Egeria Project, by choice) or
+    #: `egeria`. Deliberately not a sixth classification: ad-hoc is the absence
+    #: of a Project, not a kind of one, and Egeria has no such type to send.
+    egeria_binding: str = "egeria"
+    #: Required for `Experiment`, refused for everything else.
+    hypothesis: str = ""
     egeria_project_guid: str = ""
     egeria_project_qualified_name: str = ""
 
@@ -34,6 +42,11 @@ class InvestigationUpdate(BaseModel):
     display_name: str | None = None
     description: str | None = None
     purposes: list[str] | None = None
+    #: Sharpening an Experiment's hypothesis stays within one classification.
+    #: Changing the classification itself is not here — it can move an
+    #: investigation between visibility regimes and needs a flow with a report
+    #: rather than a PATCH (design §5).
+    hypothesis: str | None = None
 
 
 class EgeriaProjectBinding(BaseModel):
@@ -70,6 +83,73 @@ async def list_purposes() -> dict:
     return {"purposes": list(ProjectRegistry.VALID_PURPOSES)}
 
 
+#: Egeria's own definitions, verbatim from `OpenMetadataType.java` (model
+#: 0130). Kept as prose here rather than in the SPA for the same reason
+#: `/purposes` exists: a second copy in the frontend is the mirror that has
+#: drifted twice in this codebase already. The `label` is the short form for a
+#: dropdown; the `description` is Egeria's, so the two cannot disagree.
+_CLASSIFICATION_HELP = {
+    "StudyProject": ("Study",
+                     "A focused analysis of a topic, person, object, or situation."),
+    "Task": ("Task",
+             "A self-contained, short activity, typically for one or two people."),
+    "Campaign": ("Campaign",
+                 "A long-term strategic initiative that is implemented through "
+                 "multiple related projects."),
+    "PersonalProject": ("Personal",
+                        "An informal project created by an individual to help them "
+                        "organize their own work."),
+    "Experiment": ("Experiment",
+                   "A project testing a hypothesis, which is recorded on the "
+                   "project itself."),
+}
+
+
+@router.get("/classifications")
+async def list_classifications() -> dict:
+    """The Project-classification vocabulary, and the separate binding axis.
+
+    Two axes, deliberately, though the UI shows them as one control:
+
+    * `classifications` — Egeria's own `ProjectKind` subtypes, sent as
+      `initialClassifications` when the investigation is promoted. A value
+      Egeria does not know is rejected at that boundary, which is why this list
+      mirrors `OpenMetadataType.java` rather than being RE's own vocabulary.
+    * `bindings` — whether there is an Egeria Project at all. "Ad-hoc" lives
+      here, NOT as a sixth classification, because it is the *absence* of a
+      Project rather than a kind of one. Egeria has no `adHoc` type to send.
+
+    Served rather than hardcoded in the SPA for the same reason `/purposes` is:
+    the frontend copy is what drifts.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    return {
+        "classifications": [
+            {
+                "name": name,
+                "label": _CLASSIFICATION_HELP.get(name, (name, ""))[0],
+                "description": _CLASSIFICATION_HELP.get(name, (name, ""))[1],
+                "requires_hypothesis": name in ProjectRegistry.HYPOTHESIS_REQUIRED_FOR,
+            }
+            for name in ProjectRegistry.PROJECT_CLASSIFICATIONS
+        ],
+        "bindings": [
+            {"name": ProjectRegistry.BINDING_EGERIA,
+             "label": "Create in Egeria",
+             "description": "Gets an Egeria Project, so it can be shared, zoned "
+                            "and found by others."},
+            {"name": ProjectRegistry.BINDING_LOCAL,
+             "label": "Ad-hoc",
+             "description": "Stays local. Nothing is written to Egeria — for "
+                            "looking at something without committing to it. "
+                            "Promotable later."},
+        ],
+        "default_classification": "StudyProject",
+        "default_binding": ProjectRegistry.BINDING_EGERIA,
+    }
+
+
 @router.get("/")
 async def list_investigations(include_closed: bool = False) -> list[dict]:
     return _registry().list_investigations(include_closed=include_closed)
@@ -84,12 +164,19 @@ async def create_investigation(req: InvestigationCreate) -> dict:
             req.display_name.strip(), description=req.description,
             purposes=req.purposes,
             project_classification=req.project_classification,
+            egeria_binding=req.egeria_binding,
+            hypothesis=req.hypothesis,
             egeria_project_guid=req.egeria_project_guid,
             egeria_project_qualified_name=req.egeria_project_qualified_name,
         )
     except ValueError as exc:
-        # An unrecognised purpose is a 400, not a silent drop — a purpose that
-        # does not exist would rank nothing and look like an empty result.
+        # Every vocabulary violation is a 400, not a silent drop. An
+        # unrecognised purpose would rank nothing and look like an empty
+        # result; an unrecognised classification would be rejected at the
+        # Egeria boundary much later, or dropped; an Experiment with no
+        # hypothesis would publish the classification with its point missing.
+        # All three are the same shape — accepting the write and losing the
+        # meaning — so all three refuse here, where the caller can still fix it.
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -266,7 +353,7 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
     try:
         return reg.update_investigation(
             slug, display_name=req.display_name, description=req.description,
-            purposes=req.purposes,
+            purposes=req.purposes, hypothesis=req.hypothesis,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

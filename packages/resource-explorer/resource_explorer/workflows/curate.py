@@ -161,6 +161,29 @@ def promote_to_publish_zones(guid: str) -> dict:
     if already and set(already) == set(zones):
         return {"status": "already_promoted", "guid": guid, "zones": zones}
 
+    # **Never promote a private element into the publish zones.** Accepting a
+    # finding is a curation decision about quality; it is not a decision to
+    # make somebody's personal investigation public, and the two must not be
+    # the same click. Without this, "accept" would be an un-labelled
+    # publish-to-everyone button for exactly the artifacts that most need not
+    # to be.
+    #
+    # Keyed on the zone RE itself applies rather than on re-deriving privacy
+    # from the investigation: the element's own classification is what Egeria
+    # is enforcing, so it is the fact that matters here, and it stays correct
+    # even if the investigation's membership changed after publication.
+    from resource_explorer.egeria_identity import private_zone
+
+    if private_zone() in (already or []):
+        return {
+            "status": "skipped",
+            "reason": ("this element belongs to a private investigation; accepting a "
+                       "finding does not make it public. Reclassify the investigation "
+                       "to share it."),
+            "guid": guid,
+            "zones": already,
+        }
+
     ok = set_zone_membership(guid, zones)
     return {
         "status": "promoted" if ok else "error",

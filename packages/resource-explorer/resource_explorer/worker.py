@@ -256,10 +256,32 @@ def _ensure_draft_zone() -> None:
             log.debug("draft-zone bootstrap: another process holds the lock — skipping")
             return
         try:
-            from resource_explorer.egeria_identity import ensure_draft_zone_exists
+            from resource_explorer.egeria_identity import (
+                ensure_draft_zone_exists, ensure_private_zone_exists,
+            )
 
             outcome = ensure_draft_zone_exists()
             log.info("draft-zone bootstrap: %s", outcome)
+
+            # The private zone, under the same lock and in the same one-shot.
+            # Different mechanism from the draft zone though — that one creates
+            # a GovernanceZone metadata ELEMENT (documentation, which the
+            # security connector never reads); this one creates the
+            # SecurityAccessControl the connector actually enforces. See
+            # `ensure_private_zone_exists`.
+            #
+            # Logged at WARNING when it did not work, because the consequence is
+            # user-visible: private investigations refuse to publish until it
+            # does, which is the deliberate safe direction but needs to be
+            # findable in the log rather than inferred from a refusal later.
+            private = ensure_private_zone_exists()
+            if private.get("enforced"):
+                log.info("private-zone bootstrap: %s", private)
+            else:
+                log.warning(
+                    "private-zone bootstrap: %s — private investigations will NOT "
+                    "publish to Egeria until this is resolved. %s",
+                    private, private.get("remedy") or "")
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("draft-zone bootstrap failed: %s", exc)
         finally:
@@ -356,7 +378,7 @@ def run_worker(
     log.info(
         "worker role starting (embedded=%s): %s leader-elected loop(s) "
         "plus orphaned-run reconciliation, survey-definition cache warm and "
-        "draft-zone bootstrap",
+        "draft/private-zone bootstrap",
         embedded, len(loop_specs()),
     )
 
