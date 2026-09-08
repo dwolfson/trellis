@@ -104,6 +104,226 @@ def test_purposes_are_served_not_hardcoded_in_the_spa(client):
     ]
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _as(user_id: str):
+    """Run a block as `user_id`. `''` is the shared/service identity."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    reset = current_caller.set(
+        CallerIdentity(user_id=user_id, egeria_token=None, auth_source="app-jwt"))
+    try:
+        yield
+    finally:
+        current_caller.reset(reset)
+
+
+def test_a_personal_investigation_is_hidden_from_everyone_else(made):
+    """The point of Phase 3, and the assertion that has to be seen to FAIL.
+
+    "Alice can see her own" passes under every broken variant of this — a
+    filter that does nothing at all passes it. The load-bearing assertion is
+    that a DIFFERENT user cannot see it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+
+    with _as("alice"):
+        inv = reg.create_investigation("Alice's Notes",
+                                       project_classification="PersonalProject")
+        mine = [i["slug"] for i in reg.list_investigations()]
+    with _as("bob"):
+        theirs = [i["slug"] for i in reg.list_investigations()]
+
+    try:
+        assert inv["slug"] in mine
+        assert inv["slug"] not in theirs, "bob can see alice's personal investigation"
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_a_private_investigation_is_not_found_rather_than_forbidden(made):
+    """404, not 403 — deliberately the OPPOSITE of this codebase's usual rule
+    that absence must be distinguishable from emptiness.
+
+    A 403 confirms the investigation exists and leaks its name to anyone who
+    guesses a slug, and slugs are derived from display names. For a caller who
+    may not see it, "does not exist" is the honest answer.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice's Experiment",
+                                       project_classification="Experiment",
+                                       hypothesis="this is mine alone")
+    try:
+        with _as("bob"):
+            assert reg.get_investigation(inv["slug"]) is None
+        with _as("alice"):
+            assert reg.get_investigation(inv["slug"]) is not None
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_shared_classifications_stay_visible_to_everyone(made):
+    """The other half. Task / Campaign / Study are not private, and a filter
+    that hid them would be as wrong as one that hid nothing."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    made_slugs = []
+    try:
+        for cls in ("Task", "Campaign", "StudyProject"):
+            with _as("alice"):
+                inv = reg.create_investigation(f"Alice {cls}", project_classification=cls)
+            made_slugs.append(inv["slug"])
+        with _as("bob"):
+            seen = {i["slug"] for i in reg.list_investigations()}
+        assert set(made_slugs) <= seen
+    finally:
+        with reg._conn() as conn:
+            for slug in made_slugs:
+                conn.execute("DELETE FROM investigations WHERE slug = ?", (slug,))
+
+
+def test_a_private_investigation_does_not_leak_through_a_resources_own_page(made):
+    """The back-reference leak, which the object-level filter alone misses.
+
+    `find_entity_investigations` is entity-centric — "which investigations is
+    this repo in" — and runs on a page anyone can open. A shared repo inside
+    alice's personal investigation would otherwise announce it by name.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Private Sweep",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "a-shared-repo")
+    try:
+        with _as("bob"):
+            found = reg.find_entity_investigations("repo", "a-shared-repo")
+            assert not any(f["investigation_slug"] == inv["slug"] for f in found), (
+                "a private investigation leaked through the repo's own page")
+        with _as("alice"):
+            found = reg.find_entity_investigations("repo", "a-shared-repo")
+            assert any(f["investigation_slug"] == inv["slug"] for f in found)
+    finally:
+        with reg._conn() as conn:
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists "
+                "WHERE investigation_slug = ?", (inv["slug"],)).fetchall()
+            for r in rows:
+                conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?",
+                             (r["working_set_slug"],))
+                conn.execute("DELETE FROM working_sets WHERE slug = ?", (r["working_set_slug"],))
+            conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?",
+                         (inv["slug"],))
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_a_private_investigations_egeria_binding_is_not_inherited_by_others(made):
+    """The subtler back-reference. `inherited_egeria_project_context` returns
+    `_inherited_from_name` — the investigation's display name — and the
+    Project's qualifiedName, onto a resource anyone can look at. It would also
+    let one user publish a shared repo into another user's private Project."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Bound Private",
+                                       project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "another-shared-repo")
+        reg.set_investigation_egeria_project(inv["slug"], {
+            "status": "linked", "egeria_project_guid": "guid-private",
+            "egeria_project_qualified_name": "Project::Alice::Private"})
+    try:
+        with _as("bob"):
+            assert reg.inherited_egeria_project_context("repo", "another-shared-repo") is None
+        with _as("alice"):
+            ctx = reg.inherited_egeria_project_context("repo", "another-shared-repo")
+            assert ctx and ctx["egeria_project_guid"] == "guid-private"
+    finally:
+        with reg._conn() as conn:
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists "
+                "WHERE investigation_slug = ?", (inv["slug"],)).fetchall()
+            for r in rows:
+                conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?",
+                             (r["working_set_slug"],))
+                conn.execute("DELETE FROM working_sets WHERE slug = ?", (r["working_set_slug"],))
+            conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?",
+                         (inv["slug"],))
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_the_service_identity_still_sees_private_investigations(made):
+    """The worker legitimately acts on a user's behalf without carrying their
+    token (see `egeria_identity`'s module docstring on why a queued run
+    publishes as the service account). If the shared identity were filtered,
+    every queued promotion of a personal investigation would fail with the row
+    apparently missing."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Queued",
+                                       project_classification="PersonalProject")
+    try:
+        with _as(""):
+            assert reg.get_investigation(inv["slug"]) is not None
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_an_ownerless_private_row_stays_visible_and_says_so(made):
+    """Rows written before `created_by` existed have no owner, so nothing can
+    scope them to anyone. They stay visible — which is what they have always
+    been — rather than vanishing from the person who made them. The point is
+    that this is SAID, not silently tolerated: a privately-classified row that
+    everyone can see is a contradiction somebody should be able to act on."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Legacy Personal",
+                                       project_classification="PersonalProject")
+    try:
+        with reg._conn() as conn:
+            conn.execute("UPDATE investigations SET created_by = '' WHERE slug = ?",
+                         (inv["slug"],))
+        with _as("bob"):
+            seen = reg.get_investigation(inv["slug"])
+        assert seen is not None, "an ownerless row must not vanish"
+        assert seen["visibility"] == "shared"
+        assert "visible to everyone" in seen.get("visibility_note", "")
+    finally:
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+
+def test_visibility_is_reported_not_left_to_be_re_derived(made):
+    """The UI must not recompute `classification in PRIVATE and created_by ==
+    me` for itself — that is a second copy of the rule, in the place least able
+    to be tested."""
+    from resource_explorer.registry import ProjectRegistry
+    reg = ProjectRegistry()
+    with _as("alice"):
+        priv = reg.create_investigation("Alice Priv2",
+                                        project_classification="PersonalProject")
+        shared = reg.create_investigation("Alice Shared2", project_classification="Task")
+        got = {i["slug"]: i for i in reg.list_investigations()}
+    try:
+        assert got[priv["slug"]]["visibility"] == "private"
+        assert got[priv["slug"]]["is_mine"] is True
+        assert got[shared["slug"]]["visibility"] == "shared"
+    finally:
+        with reg._conn() as conn:
+            for i in (priv, shared):
+                conn.execute("DELETE FROM investigations WHERE slug = ?", (i["slug"],))
+
+
 def test_classifications_are_served_not_hardcoded_in_the_spa(client):
     """Same rule as `/purposes`, for the same reason.
 

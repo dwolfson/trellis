@@ -2055,6 +2055,11 @@ class ProjectRegistry:
                     -- Experiment's defining attribute. Empty for every other
                     -- classification, and required for that one.
                     hypothesis                     TEXT DEFAULT '',
+                    -- Whose investigation this is. `SHARED_USER_ID` ('') is a
+                    -- real value meaning shared/legacy, not a null-shaped
+                    -- unknown — same convention as resource_working_set.
+                    -- Decides visibility for the PRIVATE_CLASSIFICATIONS.
+                    created_by                     TEXT DEFAULT '',
                     egeria_project_status          TEXT DEFAULT 'unset',
                     egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
@@ -2083,6 +2088,23 @@ class ProjectRegistry:
                 # actually true of them.
                 ("egeria_binding", "TEXT DEFAULT 'egeria'"),
                 ("hypothesis", "TEXT DEFAULT ''"),
+                # Backfills to '' — the shared bucket — and that is the least
+                # bad of two bad options, so it is written down rather than
+                # left to look obvious.
+                #
+                # These rows genuinely have no owner: nothing recorded one, so
+                # nothing can recover it. A Personal investigation among them
+                # is therefore visible to everyone, which is uncomfortable —
+                # but it has ALWAYS been visible to everyone, so this changes
+                # nothing about who can see it. The alternative, hiding
+                # ownerless private rows from all callers, would make somebody's
+                # own work vanish from them with no way to get it back, and
+                # would be a NEW loss rather than a persisting one.
+                #
+                # `get_investigation` marks these rows `visibility_note` so the
+                # gap is visible instead of merely tolerated, and a person can
+                # claim one.
+                ("created_by", "TEXT DEFAULT ''"),
             ]:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
@@ -5501,6 +5523,45 @@ class ProjectRegistry:
     BINDING_EGERIA = "egeria"    # has one, or is meant to
     EGERIA_BINDINGS = (BINDING_LOCAL, BINDING_EGERIA)
 
+    #: Classifications whose investigations are visible only to their creator.
+    #: Owner's design, points 5 and 6: Personal and Experiment are the
+    #: creator's; Task, Campaign and Study follow the normal rules.
+    #:
+    #: Visibility follows the CLASSIFICATION rather than a separate flag, which
+    #: is what makes reclassification a visibility change (design §5 / Phase 6).
+    PRIVATE_CLASSIFICATIONS = ("PersonalProject", "Experiment")
+
+    def _may_see_investigation(self, row, user_id: str) -> bool:
+        """Whether `user_id` may see this investigation.
+
+        **This is RE-side visibility, not enforcement.** It decides what RE's
+        own registry hands back; it is not a security boundary and must not be
+        described as one. Two reasons, both worth knowing before relying on it:
+
+        * The service/shared identity (`SHARED_USER_ID`) sees everything,
+          because the worker legitimately acts on a user's behalf without
+          carrying their token — see `egeria_identity`'s module docstring on
+          why a queued run publishes as the service account. With
+          `TRELLIS_ANONYMOUS_READ=true` (a dev-box override, per CLAUDE.md, not
+          a supported mode) an anonymous caller is that identity too.
+        * Nothing here touches Egeria. An artifact already published from a
+          private investigation stays readable in Egeria regardless of what
+          this returns. That is Phase 5's job, and until it lands "private"
+          means "RE does not show it to others", no more.
+
+        A row nobody owns (`created_by == SHARED_USER_ID`) is visible to
+        everyone even when privately classified — see the migration comment.
+        """
+        classification = (row.get("project_classification") or "").strip()
+        if classification not in self.PRIVATE_CLASSIFICATIONS:
+            return True
+        owner = (row.get("created_by") or SHARED_USER_ID)
+        if owner == SHARED_USER_ID:
+            return True          # ownerless: has always been visible to all
+        if user_id == SHARED_USER_ID:
+            return True          # service/shared identity
+        return owner == user_id
+
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
                              project_classification: str = "StudyProject",
@@ -5562,18 +5623,40 @@ class ProjectRegistry:
                 """INSERT INTO investigations
                    (slug, display_name, description, purposes_json,
                     project_classification, egeria_binding, hypothesis,
-                    egeria_project_guid,
+                    created_by, egeria_project_guid,
                     egeria_project_qualified_name, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (slug, display_name, description, _json.dumps(purposes),
                  project_classification, egeria_binding, hypothesis,
-                 egeria_project_guid,
+                 # Resolved here, not taken from the caller — the same reason
+                 # `current_user_id`'s docstring gives: a method that resolves
+                 # it cannot be called without scoping; a route that has to
+                 # remember can forget.
+                 current_user_id(), egeria_project_guid,
                  egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)
 
-    def get_investigation(self, slug: str) -> dict | None:
+    def get_investigation(self, slug: str, *,
+                          user_id: str | None = None) -> dict | None:
+        """One investigation, or `None` if it does not exist **or the caller
+        may not see it**.
+
+        The two collapse into one answer on purpose, and it is the opposite of
+        this codebase's usual rule that absence must be distinguishable from
+        emptiness. Here they must NOT be: a private investigation that answered
+        403 rather than 404 would confirm its existence and leak its name to
+        anyone who guessed a slug — and slugs are derived from display names,
+        so they are guessable. "Not found" is the honest answer to a caller for
+        whom it does not exist.
+
+        **Scoping lives here rather than in the routes**, because every one of
+        the ~15 investigation routes already funnels through this method, and a
+        new route is exactly the place a per-route check gets forgotten. Routes
+        then 404 with no change of their own.
+        """
         import json as _json
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM investigations WHERE slug = ?", (slug,)
@@ -5581,7 +5664,27 @@ class ProjectRegistry:
         if not row:
             return None
         d = dict(row)
+        if not self._may_see_investigation(d, user_id):
+            return None
         d["purposes"] = _json.loads(d.pop("purposes_json") or "[]")
+        # Say what the visibility actually IS, rather than leaving the caller
+        # to re-derive it from classification + created_by. `private` here
+        # means "RE does not show this to other people" — not that Egeria is
+        # withholding anything; see `_may_see_investigation`.
+        owner = d.get("created_by") or SHARED_USER_ID
+        is_private_kind = (d.get("project_classification") or "") in self.PRIVATE_CLASSIFICATIONS
+        d["visibility"] = "private" if (is_private_kind and owner != SHARED_USER_ID) else "shared"
+        d["is_mine"] = bool(owner) and owner == user_id
+        if is_private_kind and owner == SHARED_USER_ID:
+            # Not an error, and not silently fine either: the row predates
+            # ownership being recorded, so it is privately CLASSIFIED and
+            # visible to everyone. Surfaced so it can be claimed rather than
+            # quietly contradicting its own classification.
+            d["visibility_note"] = (
+                "Classified as private, but created before RE recorded who owns "
+                "an investigation — so it is still visible to everyone. Recreate "
+                "it, or an owner can be set, to make it private."
+            )
         # The shape the publish path already speaks, assembled here so callers
         # never rebuild it from the individual columns.
         d["egeria_context"] = {
@@ -5593,10 +5696,18 @@ class ProjectRegistry:
         d["member_count"] = len(self.list_investigation_members(slug))
         return d
 
-    def list_investigations(self, *, include_closed: bool = False) -> list[dict]:
+    def list_investigations(self, *, include_closed: bool = False,
+                            user_id: str | None = None) -> list[dict]:
+        # Resolved once and passed down rather than left to each
+        # get_investigation() call: the answer cannot change mid-list, and a
+        # per-row lookup would invite a future caller to think it could.
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute("SELECT slug FROM investigations ORDER BY created_at DESC").fetchall()
-        out = [self.get_investigation(r["slug"]) for r in rows]
+        # get_investigation() returns None for anything this caller may not
+        # see, so the privacy filter is inherited rather than repeated here —
+        # one predicate, not two that can drift.
+        out = [self.get_investigation(r["slug"], user_id=user_id) for r in rows]
         # Deliberately tests `!= "closed"` rather than `== "open"`: a `suspended`
         # investigation is still reachable through the default (unfiltered) list.
         # `suspended` means paused-but-will-resume, and hiding it here would be
@@ -5757,7 +5868,8 @@ class ProjectRegistry:
         folio = self.investigation_working_set_slug(investigation_slug)
         return self.list_working_set_members(folio) if folio else []
 
-    def find_entity_investigations(self, entity_type: str, entity_slug: str) -> list[dict]:
+    def find_entity_investigations(self, entity_type: str, entity_slug: str,
+                                   *, user_id: str | None = None) -> list[dict]:
         """The reverse of list_investigation_members(): which investigations'
         Folios this entity is in scope for. Folio-only, matching
         list_investigation_members' own reasoning — WorkingSet (per-
@@ -5772,9 +5884,11 @@ class ProjectRegistry:
         centric ("what's in this investigation"), not "which investigations
         is this repo in".
         """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT i.slug AS investigation_slug, i.display_name, i.status,
+                          i.project_classification, i.created_by,
                           wsm.state, wsm.membership_rationale, wsm.added_at
                    FROM working_set_members wsm
                    JOIN working_sets ws ON ws.slug = wsm.working_set_slug
@@ -5785,7 +5899,12 @@ class ProjectRegistry:
                    ORDER BY i.display_name""",
                 (entity_type, entity_slug),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Filtered, because this is entity-CENTRIC: it answers "which
+        # investigations is this repo in", on a page anyone can open. Without
+        # the filter, a shared repo's page would name every private
+        # investigation that happens to include it — the classic leak through a
+        # back reference rather than through the object itself.
+        return [dict(r) for r in rows if self._may_see_investigation(dict(r), user_id)]
 
     def set_investigation_disposition(self, investigation_slug: str, entity_type: str,
                                       entity_slug: str, disposition: str,
@@ -5936,17 +6055,31 @@ class ProjectRegistry:
                 )
         return self.get_investigation(slug)
 
-    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str,
+                                         *, user_id: str | None = None) -> dict | None:
         """The Egeria Project binding a resource inherits from its investigation.
 
         Scoped to the FOLIO — being in scope for a bound investigation is what
         supplies the binding. A disposition WorkingSet's members are all in the
         Folio too, so this covers them without double-counting.
+
+        **Also scoped to the caller**, and this one is easy to miss: the
+        returned shape carries `_inherited_from_name` (the investigation's
+        display name) and the Project's qualifiedName, and it is read on a
+        RESOURCE's page — which anyone can open. A repo sitting in someone's
+        private investigation would otherwise announce that investigation by
+        name to every other user. It also stops one user publishing a shared
+        repo into another user's private Project.
+
+        The worker is unaffected: it runs as the shared identity, which sees
+        everything, so queued surveys still inherit and publish normally.
         """
+        user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             row = conn.execute(
                 """SELECT i.slug, i.display_name, i.egeria_project_guid,
-                          i.egeria_project_qualified_name
+                          i.egeria_project_qualified_name,
+                          i.project_classification, i.created_by
                    FROM working_set_members m
                    JOIN working_sets ws ON ws.slug = m.working_set_slug
                    JOIN investigation_resource_lists rl
@@ -5961,9 +6094,11 @@ class ProjectRegistry:
                    ORDER BY i.updated_at DESC""",
                 (entity_type, entity_slug),
             ).fetchall()
-        if not row:
+        visible = [dict(r) for r in row
+                   if self._may_see_investigation(dict(r), user_id)]
+        if not visible:
             return None
-        first = dict(row[0])
+        first = visible[0]
         return {
             "status": "linked",
             "egeria_project_guid": first["egeria_project_guid"],
@@ -5971,7 +6106,10 @@ class ProjectRegistry:
             "free_text_name": "",
             "_inherited_from": first["slug"],
             "_inherited_from_name": first["display_name"],
-            "_ambiguous": len(row) > 1,
+            # Counts only what this caller can SEE. An investigation they may
+            # not see cannot make their view ambiguous, and saying "ambiguous"
+            # while showing one candidate would be an unanswerable prompt.
+            "_ambiguous": len(visible) > 1,
         }
 
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,

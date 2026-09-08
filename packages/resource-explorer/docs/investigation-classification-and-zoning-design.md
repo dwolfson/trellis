@@ -1,6 +1,6 @@
 # Investigation classification and zoning — design & plan
 
-**Status: design. Phases 1 and 2 are built and live-verified (2026-09-07); Phases 3–6 are not.** Extends
+**Status: design. Phases 1–3 are built (2026-09-07); Phases 4–6 are not.** Extends
 `docs/investigation-framing-design.md` §1 (the Investigation record) and §6a
 (promotion). Does not supersede it; that document still governs membership,
 Purpose, and the local-first/promotable shape. This one covers two things it
@@ -396,7 +396,7 @@ asserts the asset's zones are unchanged.
 
 ---
 
-## 4. RE's own visibility — the half Egeria cannot enforce
+## 4. RE's own visibility — the half Egeria cannot enforce — **built, Phase 3**
 
 Egeria zoning hides nothing inside RE. RE reads its own registry, and the
 `investigations` table today has **no creator column at all** (DDL at
@@ -426,6 +426,15 @@ while defaulting them to public exposes anything that should have been
 personal. Since none were created under a personal/private expectation (the
 feature did not exist), **backfill to shared** and say so in the migration
 comment.
+
+**Built 2026-09-07 — with one correction to the paragraph above.** "None were
+created under a private expectation" was wrong: `PersonalProject` was already
+selectable, so somebody could have made one meaning "mine". The conclusion
+survives anyway, for a better reason than the one given — those rows have
+*always* been visible to everyone, so leaving them visible changes nothing,
+whereas hiding them would be a new loss. They now carry a `visibility_note`
+saying exactly that, so the gap is actionable instead of merely accepted. See
+the Phase 3 entry in §6 for what shipped.
 
 ---
 
@@ -554,10 +563,64 @@ hiding one it accepts.
 
 Ten tests, each guard made to fail on purpose.
 
-**Phase 3 — local visibility.** `created_by` on `investigations`, backfilled
-to shared; filter `list_investigations()` and the reads that join through it.
-*This is the phase that makes "personal" mean anything to a person using RE,
-and it needs no Egeria change at all.*
+**Phase 3 — local visibility. ✅ Done 2026-09-07.** `created_by` on
+`investigations`, stamped from `current_user_id()` in the registry (never taken
+from a caller); `PRIVATE_CLASSIFICATIONS = ("PersonalProject", "Experiment")`;
+one `_may_see_investigation` predicate that every read goes through.
+
+**Scoping went into `get_investigation()` rather than the routes.** All ~15
+investigation routes already funnel through it, so they inherit the filter with
+no change of their own — and `current_user_id`'s own docstring gives the reason:
+"a method that resolves it cannot be called without scoping; a route that has to
+remember can."
+
+**A private investigation returns 404, not 403** — deliberately the opposite of
+this codebase's usual rule that absence must be distinguishable from emptiness.
+A 403 confirms existence and leaks the name to anyone who guesses a slug, and
+slugs are derived from display names.
+
+**Two back-reference leaks the object-level filter alone would have missed**,
+both found by asking where else an investigation is *named*:
+
+* `find_entity_investigations()` is entity-centric — "which investigations is
+  this repo in" — and runs on a page anyone can open. Unfiltered, a shared repo
+  would announce every private investigation containing it.
+* `inherited_egeria_project_context()` returns `_inherited_from_name` (the
+  investigation's display name) and the Project's qualifiedName, again onto a
+  resource page. It would also let one user publish a shared repo into another
+  user's private Project. Its `_ambiguous` flag now counts only what the caller
+  can see, since an invisible investigation cannot make their view ambiguous.
+
+**Two deliberate holes, both documented in the predicate rather than left to be
+discovered:**
+
+* **The shared/service identity sees everything.** The worker legitimately acts
+  on a user's behalf without carrying their token (`egeria_identity`'s module
+  docstring), so a queued promotion of a personal investigation must still find
+  the row. Under `TRELLIS_ANONYMOUS_READ=true` — a dev-box override, not a
+  supported mode — an anonymous caller is that identity too.
+* **Ownerless rows stay visible.** Rows written before `created_by` existed have
+  no owner and nothing can recover one; they have always been visible to
+  everyone, so leaving them visible changes nothing, while hiding them would
+  make somebody's own work vanish with no way back. They carry a
+  `visibility_note` so the contradiction is surfaced rather than tolerated.
+
+**This is visibility, not enforcement, and the code says so.** Nothing here
+touches Egeria: an artifact already published from a private investigation stays
+readable there regardless. That is Phase 5. Until it lands, "private" means "RE
+does not show it to other people", no more — and a filter described as more than
+it is would be the "checks weaker than they look" failure with a privacy label
+on it.
+
+The SPA renders a served `visibility` / `is_mine` / `visibility_note` rather than
+recomputing the rule, which spans two columns and three conditions and would
+otherwise get a second copy in the one place with no test around it.
+
+Eight tests. The load-bearing ones assert **denial** — a second user failing to
+see something — because "the owner can see their own" passes even when the
+filter does nothing at all. Each guard was made to fail on purpose, including
+dropping each back-reference filter individually while leaving the object-level
+one intact.
 
 **Phase 4 — anchoring.** Anchor investigation-produced artifacts
 (SurveyReports, Annotations, the Folio) to the investigation Project. Verify

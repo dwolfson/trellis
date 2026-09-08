@@ -9944,6 +9944,7 @@ function _renderInvestigationsActiveTab() {
           <div class="text-sm font-medium ${isCur ? 'text-cyan-300' : 'text-slate-200'} truncate">
             ${_esc(i.display_name)} ${isCur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
             ${suspended ? '<span class="text-[10px] text-amber-500">· ⏸ suspended</span>' : ''}
+            ${_investigationVisibilityBadge(i)}
           </div>
           <div class="text-xs text-slate-500 truncate">${_esc(i.description || 'No description')}</div>
           <div class="text-xs text-slate-400 mt-0.5">
@@ -10016,6 +10017,30 @@ function _renderInvestigationsActiveTab() {
         investigation. An ad-hoc one can be changed to Egeria later.
       </div>
     </div>`;
+}
+
+// Visibility, read from the server's own answer rather than re-derived here.
+//
+// The rule is "classification is in PRIVATE_CLASSIFICATIONS AND created_by is
+// set AND it is mine" — three conditions across two columns. Recomputing that
+// in the SPA would be a second copy of a security-shaped rule in the one place
+// with no test around it, so `visibility` / `is_mine` / `visibility_note` are
+// served and this only renders them.
+//
+// `visibility_note` is its own state, not a variant of the other two: a row
+// classified private but created before RE recorded owners is visible to
+// everyone, and showing it as plain "shared" would hide a contradiction the
+// person can actually resolve.
+function _investigationVisibilityBadge(i) {
+  if (i.visibility_note) {
+    return `<span class="text-[10px] text-amber-400" title="${_esc(i.visibility_note)}">· ⚠ private kind, visible to all</span>`;
+  }
+  if (i.visibility === 'private') {
+    return i.is_mine
+      ? '<span class="text-[10px] text-violet-400" title="Only you can see this in Resource Explorer.">· 🔒 private</span>'
+      : '<span class="text-[10px] text-violet-400">· 🔒 private</span>';
+  }
+  return '';
 }
 
 // The binding is a property of the investigation, so it is described here
