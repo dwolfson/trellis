@@ -168,8 +168,19 @@ def test_members_on_a_missing_investigation_404s(client):
 
 
 class _StubPM:
+    """Egeria's Project side.
+
+    `get_project_by_guid` echoes back whatever `create_project` was asked for,
+    so the default stub models an Egeria that HONOURS the request. The
+    interesting cases are the stubs below that model one that doesn't (
+    `_DroppingPM`) and one that cannot be asked (`_UnreadablePM`) — the
+    publisher has to tell those two apart, because "we didn't check" and "we
+    checked and it's missing" are different facts.
+    """
+
     def __init__(self, guid="proj-1", fail=False):
         self.guid, self.fail, self.calls = guid, fail, []
+        self._applied: list[str] = []
 
     def create_egeria_bearer_token(self):
         pass
@@ -178,7 +189,69 @@ class _StubPM:
         self.calls.append(("create_project", display_name, description, body))
         if self.fail:
             raise RuntimeError("Egeria unreachable")
+        self._applied = list((body or {}).get("initialClassifications") or {})
         return self.guid
+
+    def get_project_by_guid(self, guid, **kw):
+        # The REAL payload shape, measured live 2026-09-07 (see
+        # `_confirm_classification`): an OpenMetadataRootElement whose project
+        # classifications sit under elementHeader.projectKinds, separate from
+        # elementHeader.anchor, and whose `projectKinds` key is OMITTED rather
+        # than null when there is no kind.
+        #
+        # The first version of this stub invented a top-level `classifications`
+        # list. Both it and the code agreed with each other and neither agreed
+        # with Egeria, so all five tests passed against a function that returned
+        # "could not tell" on every real call. A stub is a claim about the other
+        # system; this one is now a measured claim.
+        header = {"guid": guid, "type": {"typeName": "Project"},
+                  "anchor": {"classificationName": "Anchors"}}
+        if self._applied:
+            header["projectKinds"] = [
+                {"class": "ElementClassification", "classificationName": c,
+                 "type": {"typeName": c, "superTypeNames": ["ProjectKind"]}}
+                for c in self._applied
+            ]
+        return {"class": "OpenMetadataRootElement", "elementHeader": header,
+                "properties": {"displayName": "stub"}}
+
+
+class _DroppingPM(_StubPM):
+    """Creates the Project and silently discards the classification.
+
+    This is the failure the whole change exists to catch, and it is exactly
+    what the code did before: `create_project` returns a GUID, everything looks
+    fine, and the classification is gone. Modelled the way Egeria really
+    expresses it — the `projectKinds` key simply is not there.
+    """
+
+    def get_project_by_guid(self, guid, **kw):
+        return {"class": "OpenMetadataRootElement",
+                "elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                  "anchor": {"classificationName": "Anchors"}}}
+
+
+class _UnreadablePM(_StubPM):
+    """The read-back itself fails. Not evidence about the classification."""
+
+    def get_project_by_guid(self, guid, **kw):
+        raise RuntimeError("view server unreachable")
+
+
+class _StrangePayloadPM(_StubPM):
+    """Returns something that is not the shape we know how to read.
+
+    Distinct from `_DroppingPM` on purpose. An absent `projectKinds` key means
+    "no classification" ONLY when the rest of the header is recognisable —
+    measured, because Egeria omits that key rather than nulling it. If the
+    payload shape ever changes, the honest answer is "could not tell", not an
+    accusation that Egeria dropped the classification. Without this test the
+    two are indistinguishable, which is how the first version of the read-back
+    silently reported nothing at all.
+    """
+
+    def get_project_by_guid(self, guid, **kw):
+        return {"someNewEnvelope": {"project": {"guid": guid}}}
 
 
 class _StubCM:
@@ -224,6 +297,166 @@ def test_promotion_replays_the_local_shape_into_egeria(made):
     props = pm.calls[0][3]["properties"]
     assert "Certify" in props["additionalProperties"]["purposes"]
     assert "Certify" not in (props.get("description") or "")
+
+
+def test_the_chosen_classification_actually_reaches_egeria(made):
+    """The bug this phase fixes.
+
+    `project_classification` has been stored (`registry.py`), validated on
+    create and shown in the UI since the feature shipped — and the promote body
+    carried `properties` and nothing else, so every investigation RE ever
+    promoted arrived in Egeria as an unclassified `Project`.
+
+    Asserting on the body is the point: a test that only checked
+    `create_project` was called would have passed for the whole period this was
+    broken.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Classify Me", project_classification="Campaign")
+    pm, cm = _StubPM(), _StubCM()
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=pm, collection_manager=cm
+    ).promote(inv["slug"])
+
+    body = pm.calls[0][3]
+    assert body["initialClassifications"] == {"Campaign": {"class": "CampaignProperties"}}
+    assert res.classification_requested == "Campaign"
+    assert res.classification_confirmed == "Campaign"
+    assert res.ok
+
+
+def test_every_classification_in_the_vocabulary_maps_to_a_properties_class(made):
+    """The `<Name>Properties` convention holds for all of them, so the mapping
+    is derived rather than table-driven. If Egeria ever breaks the convention
+    for a new classification, this is where it shows up — and RE's vocabulary
+    is checked against the publisher's, so adding one to the registry without
+    teaching the publisher cannot pass silently."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher, _initial_classifications,
+    )
+
+    reg = ProjectRegistry()
+    for name in reg.PROJECT_CLASSIFICATIONS:
+        assert _initial_classifications(name) == {name: {"class": f"{name}Properties"}}
+
+    inv = made(display_name="Personal One", project_classification="PersonalProject")
+    pm = _StubPM()
+    EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    assert pm.calls[0][3]["initialClassifications"] == {
+        "PersonalProject": {"class": "PersonalProjectProperties"}
+    }
+
+
+def test_a_classification_egeria_drops_is_reported_not_assumed(made):
+    """A returned GUID proves the call worked, not that the body was honoured.
+
+    This is the failure mode that hid the original bug: everything succeeds and
+    the classification is simply not there. The Project is real and stays
+    bound — the route binds on `project_guid`, not on `ok` — but the promotion
+    is not clean and must not say it is.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Dropped", project_classification="Task")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_DroppingPM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert res.project_guid == "proj-1", "the Project exists and must stay bindable"
+    assert res.classification_confirmed == "", "checked, and genuinely absent"
+    assert not res.ok
+    assert any("does not carry" in e for e in res.errors)
+
+
+def test_an_unverifiable_classification_is_not_reported_as_missing(made):
+    """"We could not check" is a fact about us, not about Egeria.
+
+    Treating a failed read-back as absence would raise a false alarm on every
+    promotion whenever the view server is briefly unreachable; treating it as
+    confirmation would be the original bug wearing a badge. It is neither, and
+    `classification_confirmed is None` is how that is said.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Unverifiable", project_classification="StudyProject")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_UnreadablePM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert res.classification_requested == "StudyProject"
+    assert res.classification_confirmed is None
+    assert res.ok, "an unverifiable read-back is not a failed promotion"
+    assert not any("does not carry" in e for e in res.errors)
+
+
+def test_an_unrecognised_payload_is_could_not_tell_not_a_dropped_classification(made):
+    """The distinction that the first read-back could not make.
+
+    Egeria OMITS `projectKinds` when a Project has no kind, so "the key is not
+    there" is a real answer — but only when the rest of the header is the shape
+    we measured. If the payload changes underneath us, reporting absence would
+    accuse Egeria of a bug that is ours.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Strange Payload", project_classification="Campaign")
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_StrangePayloadPM(),
+        collection_manager=_StubCM(),
+    ).promote(inv["slug"])
+
+    assert res.classification_confirmed is None, "unknown shape is not evidence"
+    assert res.ok
+    assert not any("does not carry" in e for e in res.errors)
+
+
+def test_an_unknown_classification_refuses_before_writing_anything(made):
+    """Promoting anyway would recreate the exact defect being fixed — a Project
+    silently without its classification — and leave a real element in Egeria to
+    clean up. `create_project` must not be reached at all.
+
+    Written through the registry rather than the API because `create_investigation`
+    rejects an unknown value; the row can only get into this state by predating
+    the validation or being edited underneath it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Bad Classification")
+    reg = ProjectRegistry()
+    with reg._conn() as conn:
+        conn.execute(
+            "UPDATE investigations SET project_classification = ? WHERE slug = ?",
+            ("Sprint", inv["slug"]),
+        )
+
+    pm = _StubPM()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=pm, collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert pm.calls == [], "nothing may be written to Egeria on a bad classification"
+    assert not res.project_guid
+    assert not res.ok
+    assert any("Sprint" in e and "not one of" in e for e in res.errors)
 
 
 def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):

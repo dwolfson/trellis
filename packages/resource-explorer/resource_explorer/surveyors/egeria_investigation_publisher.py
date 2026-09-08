@@ -50,11 +50,110 @@ def _create_typed_collection(cm, type_name: str, display_name: str,
     return cm.create_collection(body=body) or ""
 
 
+#: `Project` is a valid `Project Type` in Dr.Egeria's vocabulary but it is NOT
+#: a classification — it means "no classification". Sending it would ask Egeria
+#: for a `ProjectProperties` classification that does not exist.
+_UNCLASSIFIED = "Project"
+
+
+def _initial_classifications(classification: str) -> dict:
+    """The `initialClassifications` entry for one Project classification.
+
+    Egeria's shape is `{"<Name>": {"class": "<Name>Properties"}}` — confirmed
+    against pyegeria's own functional test for `create_project`
+    (`tests/functional-tests/test_project_manager_omvs.py`, PersonalProject).
+    The properties class name is the classification name plus `Properties` for
+    all five of Campaign / Task / PersonalProject / StudyProject / Experiment
+    (`OpenMetadataType.java`, model 0130).
+
+    `Experiment` additionally carries `hypothesis`, which is the attribute the
+    classification exists for. It is not populated here because RE does not
+    collect one yet — see `docs/investigation-classification-and-zoning-design.md`
+    §1.4, which makes collecting it a precondition of offering `Experiment` in
+    the first place.
+    """
+    return {classification: {"class": f"{classification}Properties"}}
+
+
+def _confirm_classification(pm, project_guid: str, expected: str) -> "str | None":
+    """Read the classification back off the Project Egeria just created.
+
+    Returns the confirmed name, `""` when Egeria holds no such classification,
+    and `None` when we could not tell. The three are kept distinct on purpose:
+    a create that returned a GUID proves the *call* worked and says nothing
+    about whether the classification survived it — which is precisely how this
+    field came to be silently dropped for the whole life of the feature. A
+    test that asserts `create_project` was called with a body would have passed
+    throughout.
+
+    An unreachable read-back is reported as "could not tell", never as
+    confirmation and never as absence — a fact about us is not a fact about
+    Egeria.
+
+    **The payload shape, measured live 2026-09-07 against qs-view-server** (the
+    first version of this function guessed it and was wrong in the direction
+    that hides the bug: it looked for a top-level `classifications` list, found
+    nothing, and returned `None` — "could not tell" — on every single call, so
+    the check never checked). `get_project_by_guid(..., output_format="JSON")`
+    returns an `OpenMetadataRootElement`:
+
+        {"class": "OpenMetadataRootElement",
+         "elementHeader": {"guid": ..., "type": {...}, "anchor": {...},
+                           "projectKinds": [{"class": "ElementClassification",
+                                             "classificationName": "Task",
+                                             "type": {"typeName": "Task",
+                                                      "superTypeNames": ["ProjectKind"]}}]},
+         "properties": {...}, "resourceList": [...], "mermaidGraph": ...}
+
+    Two things to know about it:
+
+    * The project classifications live under `elementHeader.projectKinds`,
+      grouped away from `elementHeader.anchor` (which carries `Anchors`). They
+      are `ProjectKind` subtypes, which is what makes the grouping possible.
+    * **`projectKinds` is OMITTED, not null, when the Project has no kind** —
+      36 of 50 live Projects carried the key, and the other 14 lacked it
+      entirely. So an absent key cannot by itself be read as "not classified":
+      a changed payload shape looks identical. `elementHeader.guid` is the
+      sentinel that separates the two — if the header is there and recognisable,
+      the absence of `projectKinds` is Egeria's answer, not our confusion.
+    """
+    try:
+        proj = pm.get_project_by_guid(project_guid, output_format="JSON")
+    except Exception as exc:
+        log.warning("could not read back classification for %s — %s: %s",
+                    project_guid, type(exc).__name__, exc)
+        return None
+    header = (proj or {}).get("elementHeader") if isinstance(proj, dict) else None
+    if not isinstance(header, dict) or not header.get("guid"):
+        # Not the payload we know how to read. Saying "absent" here would turn
+        # our own parsing failure into an accusation about Egeria.
+        log.warning("could not read back classification for %s — unrecognised "
+                    "payload shape (keys: %s)", project_guid,
+                    sorted(proj.keys()) if isinstance(proj, dict) else type(proj).__name__)
+        return None
+    names = set()
+    for kind in header.get("projectKinds") or []:
+        if isinstance(kind, dict):
+            names.add(kind.get("classificationName")
+                      or (kind.get("type") or {}).get("typeName"))
+    names.discard(None)
+    return expected if expected in names else ""
+
+
 @dataclass
 class PromotionResult:
     """What actually happened, step by step."""
     project_guid: str = ""
     project_qualified_name: str = ""
+    #: The classification we asked Egeria to apply, and what Egeria actually
+    #: holds. Deliberately two fields with a tri-state on the second, because
+    #: "we did not check" and "we checked and it is not there" are different
+    #: facts and only one of them is about Egeria:
+    #:   None -> could not verify (read-back unavailable or failed)
+    #:   ""   -> verified, and the classification is NOT there (the bug)
+    #:   name -> verified present
+    classification_requested: str = ""
+    classification_confirmed: "str | None" = None
     collection_guid: str = ""
     resource_list_linked: bool = False
     members_linked: list[str] = field(default_factory=list)
@@ -69,6 +168,8 @@ class PromotionResult:
         return {
             "project_guid": self.project_guid,
             "project_qualified_name": self.project_qualified_name,
+            "classification_requested": self.classification_requested,
+            "classification_confirmed": self.classification_confirmed,
             "collection_guid": self.collection_guid,
             "resource_list_linked": self.resource_list_linked,
             "members_linked": self.members_linked,
@@ -152,10 +253,32 @@ class EgeriaInvestigationPublisher:
                 "purposeSource": "ProjectCharter.purposes (pending a real charter)",
                 "createdBy": "resource-explorer",
             }
+        # The classification the user chose at creation. It has been stored,
+        # validated and shown in the UI since the feature shipped, and until
+        # now it was dropped right here: the create body carried `properties`
+        # and nothing else, so every investigation RE ever promoted landed in
+        # Egeria as an unclassified `Project`. See
+        # `docs/investigation-classification-and-zoning-design.md` §2.
+        classification = (inv.get("project_classification") or "").strip()
+        body: dict = {"class": "NewElementRequestBody", "properties": properties}
+        if classification and classification != _UNCLASSIFIED:
+            known = getattr(self._registry, "PROJECT_CLASSIFICATIONS", ())
+            if known and classification not in known:
+                # Refuse BEFORE writing anything. Promoting anyway would create
+                # a Project silently missing the classification — reproducing
+                # the exact defect this change exists to fix, but with a real
+                # element left behind in Egeria to clean up.
+                res.errors.append(
+                    f"investigation carries classification {classification!r}, which is "
+                    f"not one of {list(known)}. Nothing was written to Egeria; correct "
+                    "the investigation and promote again."
+                )
+                return res
+            body["initialClassifications"] = _initial_classifications(classification)
+            res.classification_requested = classification
+
         try:
-            res.project_guid = pm.create_project(
-                body={"class": "NewElementRequestBody", "properties": properties},
-            ) or ""
+            res.project_guid = pm.create_project(body=body) or ""
             res.project_qualified_name = qualified_name
         except Exception as exc:
             # A qualifiedName collision is a specific, actionable situation, not
@@ -179,6 +302,25 @@ class EgeriaInvestigationPublisher:
         if not res.project_guid:
             res.errors.append("create_project returned no GUID")
             return res
+
+        # 1a. Did the classification actually survive the create?
+        #
+        # A returned GUID proves the call worked, not that the body was
+        # honoured. Silent loss here is the whole reason for this change, so it
+        # is checked rather than assumed — and a confirmed absence is an error
+        # even though the Project itself exists. The route binds on
+        # `project_guid`, not on `ok`, so reporting this does not orphan the
+        # element it is complaining about.
+        if res.classification_requested:
+            res.classification_confirmed = _confirm_classification(
+                pm, res.project_guid, res.classification_requested)
+            if res.classification_confirmed == "":
+                res.errors.append(
+                    f"Egeria created the Project but it does not carry the "
+                    f"{res.classification_requested!r} classification that was requested. "
+                    "The Project is bound and usable; the classification needs applying "
+                    "separately."
+                )
 
         # 2. the working set, as a Collection
         members = self._registry.list_investigation_members(investigation_slug)

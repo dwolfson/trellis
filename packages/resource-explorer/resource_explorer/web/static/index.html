@@ -10152,9 +10152,27 @@ async function _promoteInvestigation(slug) {
     const later = document.getElementById('inv-next-steps');
     if (later) {
       const missedNow = (r.members_unlinkable || []).length;
+      // The classification, in three distinguishable states — because for the
+      // whole life of this feature it silently was not applied at all, and
+      // nothing on this screen would have said so. `classification_confirmed`
+      // is deliberately tri-state: the name when verified present, `''` when
+      // verified ABSENT (the bug), and null when we could not check. Rendering
+      // the last two the same way would put the reassuring reading on a state
+      // that has not been established.
+      const cReq = r.classification_requested || '';
+      const cGot = r.classification_confirmed;
+      let cLine = '';
+      if (cReq && cGot === cReq) {
+        cLine = `<div class="text-slate-300">Classified as <span class="font-mono">${_esc(cReq)}</span>.</div>`;
+      } else if (cReq && cGot === '') {
+        cLine = `<div class="text-amber-300">Requested the <span class="font-mono">${_esc(cReq)}</span> classification, but Egeria's Project does not carry it. The Project is usable; the classification needs applying separately.</div>`;
+      } else if (cReq) {
+        cLine = `<div class="text-slate-400">Requested the <span class="font-mono">${_esc(cReq)}</span> classification — could not confirm it was applied.</div>`;
+      }
       later.innerHTML = `<div class="text-xs rounded border border-emerald-800 bg-emerald-950/40 p-2 space-y-1">
         <div class="text-emerald-300 font-semibold">Created in Egeria.</div>
         <div class="text-slate-300">Project <span class="font-mono">${_esc((r.project_guid || '').slice(0, 8))}</span>${r.resource_list_linked ? ' · working set linked' : ''} · ${linked} member(s) attached.</div>
+        ${cLine}
         ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be catalogued: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be catalogued"</span>, then re-scan and relink.</div>` : ''}
       </div>`;
     }
