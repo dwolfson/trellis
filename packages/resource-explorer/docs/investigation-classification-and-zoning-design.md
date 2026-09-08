@@ -1045,6 +1045,52 @@ ISSUE-93 workaround passed. All three now model what was measured.
 
 ---
 
+## 7a. After the 2026-09-08 redeploy — what changed, and two fixes it forced
+
+The owner redeployed to pick up the latest Egeria, **without resetting the
+metadata store**. Measured afterwards rather than assumed:
+
+* **`Investigation` and `NamingStandardsVocabulary` now exist** (both were "not
+  found" before). The marker is unblocked and the four Dr.Egeria Curation
+  templates have types to target.
+* **The private zone survived and still enforces** — present in the seed, the
+  runtime volume and the container, and a live check confirmed owner READ /
+  non-owner DENIED. Adding it to both compose seeds before the redeploy is what
+  made that unconditional rather than lucky.
+
+**Fix 1: platform discovery started refusing on a working deployment.** The
+redeploy catalogued a second platform, so `_platform_name()` saw
+`['Quickstart OMAG Server Platform', 'Local OMAG Server Platform']` and declined
+to guess — which returned `enforced: False` and would have disabled private
+publishing on a zone that was demonstrably denying. The refusal was the designed
+safe direction and it was still the wrong answer. It now asks **which platform
+already holds the control**, which is a fact rather than a guess, and refuses
+only when none does (a create, where there genuinely is no evidence).
+
+**Fix 2: the `Investigation` marker is applied after the create, not in it.**
+Owner's decision, 2026-09-08: it is an orthogonal marker meaning "this Project is
+an investigation", coexisting with the kind and not driving zones. RE now stamps
+it on every Project it promotes.
+
+It is a **separate classify call on purpose**. In `initialClassifications`, a
+classification the platform lacks fails the whole create — and this type did not
+exist until this redeploy, and will not exist on any older deployment. As a
+follow-on step a missing type costs the marker and not the investigation, and a
+failure is logged rather than raised: nothing in RE reads the marker, the kind is
+what drives behaviour.
+
+Verified live, including that it survives a change of kind:
+
+```
+after promote  -> projectKinds: ['Task', 'Investigation']
+after reclass  -> projectKinds: ['Investigation', 'PersonalProject']
+```
+
+which holds structurally because the reclassifier removes the old kind **by
+name**, gated on `PROJECT_CLASSIFICATIONS`, and the marker is not in that set.
+
+---
+
 ## 8. Observation for `egeria-workspaces-fs` (not changed here)
 
 The `digital-products` zone's `READ:` and `DEFAULT:` keys sit at the same indent

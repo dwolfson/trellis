@@ -982,6 +982,16 @@ that turns out to bite:
 
 Nothing decided; the owner should pick. (3) is worth doing regardless.
 
+### The Investigation marker — decided and BUILT 2026-09-08
+
+**Approved by the project owner directly** ("RE should apply the Investigation
+marker itself") and built once the redeploy made the type available. RE stamps it
+on every Project it promotes, as a separate classify call after the create so a
+platform lacking the type loses the marker rather than the investigation.
+
+*Original entry below, kept for the reasoning and the not-yet-approved framing it
+was written under.*
+
 ### The Investigation marker — decided, and what is NOT built
 
 **Decision (project owner, 2026-09-08):** the Egeria classification
@@ -1015,6 +1025,17 @@ running platform:
 The four new Dr.Egeria Curation templates targeting them will fail until the
 owner redeploys with the latest Egeria ("when everyone is ready"). Applying the
 marker before that redeploy would fail every create.
+
+### The private zone does not survive a redeploy — FIXED 2026-09-08
+
+**Resolved:** the `resource-explorer-private` control is now in BOTH compose-config
+seeds, so it is recreated on any redeploy and exists on a fresh machine. This is
+what makes the feature work on **freshstart**, where RE cannot create the control
+itself. Survived the 2026-09-08 redeploy and was live-verified still denying
+afterwards.
+
+*Original entry below, kept because its analysis of the failure mode is still the
+reason the fix matters.*
 
 ### The private zone does not survive a redeploy (and that is mostly fine)
 

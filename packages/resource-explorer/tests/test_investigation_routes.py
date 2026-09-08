@@ -1786,3 +1786,86 @@ def test_the_folio_is_anchored_to_the_project(made):
     assert body.get("isOwnAnchor") is False
     assert body.get("anchorGUID") == "proj-1", (
         "the Folio is its own anchor, so it inherits no zones and is public")
+
+
+# ── the Investigation marker (owner's decision, 2026-09-08) ────────────────
+
+def test_the_investigation_marker_is_applied_after_the_create_not_in_it(made):
+    """A SEPARATE classify call, deliberately not `initialClassifications`.
+
+    In the create body, a classification the platform does not have fails the
+    WHOLE create — and this type did not exist until the 2026-09-08 redeploy, and
+    will not exist on any deployment running an older Egeria. As a follow-on
+    step, a missing type costs the marker and not the investigation.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as pub
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Marked")
+    marked = []
+    real = pub._apply_investigation_marker
+    pub._apply_investigation_marker = lambda pm, guid: (marked.append(guid) or (True, ""))
+    try:
+        pm = _StubPM()
+        res = EgeriaInvestigationPublisher(
+            ProjectRegistry(), project_manager=pm, collection_manager=_StubCM()
+        ).promote(inv["slug"])
+    finally:
+        pub._apply_investigation_marker = real
+
+    assert marked == ["proj-1"], "the marker was not applied on promote"
+    assert res.investigation_marked is True
+    body = pm.calls[0][3]
+    assert pub.INVESTIGATION_MARKER not in (body.get("initialClassifications") or {}), (
+        "the marker is in the create body — a platform without the type would "
+        "fail the whole create")
+
+
+def test_a_platform_without_the_marker_type_still_promotes(made):
+    """The marker is a catalogue convenience, not a correctness property.
+    Nothing in RE reads it — the KIND drives behaviour — so an investigation
+    without it is fully functional, just less findable by someone browsing
+    Egeria. It must never fail a promotion."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as pub
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Old Platform")
+    real = pub._apply_investigation_marker
+    pub._apply_investigation_marker = lambda pm, guid: (
+        False, "this Egeria does not have the 'Investigation' classification")
+    try:
+        res = EgeriaInvestigationPublisher(
+            ProjectRegistry(), project_manager=_StubPM(), collection_manager=_StubCM()
+        ).promote(inv["slug"])
+    finally:
+        pub._apply_investigation_marker = real
+
+    assert res.project_guid == "proj-1", "a missing marker type lost the investigation"
+    assert res.investigation_marked is False
+    assert res.ok, res.errors
+
+
+def test_the_marker_is_not_a_kind_and_so_survives_reclassification(made):
+    """The owner's model: `Investigation` coexists with the kind and does not
+    replace it. Verified live 2026-09-08 — promote gave
+    `['Task', 'Investigation']` and a Task -> PersonalProject reclassification
+    gave `['Investigation', 'PersonalProject']`.
+
+    Structurally this holds because the reclassifier removes the old kind BY
+    NAME, gated on PROJECT_CLASSIFICATIONS, and the marker is not in that set.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        INVESTIGATION_MARKER,
+    )
+
+    assert INVESTIGATION_MARKER not in ProjectRegistry.PROJECT_CLASSIFICATIONS, (
+        "the marker is in the kind vocabulary — a reclassification would strip it")
+    assert INVESTIGATION_MARKER not in ProjectRegistry.PRIVATE_CLASSIFICATIONS, (
+        "the marker would drive zoning, which the owner said it must not")
