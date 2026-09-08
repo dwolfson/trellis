@@ -11103,7 +11103,7 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
 
   const known = (env.facts || []).filter(f => f.is_known);
   const unknown = (env.facts || []).filter(f => !f.is_known);
-  known.forEach(f => {
+  for (const f of known) {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
     // _analysisDisplayName, not the raw analysis_id -- "catalog_presence" is
     // a slug, "Catalog Presence" (the catalog's own `name`) is what someone
@@ -11208,6 +11208,44 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
     // render -- no count on the answer line AND a list beneath it.
     _factFindingLines(f.value).forEach(l => lines.push(l));
 
+    // An architecture_diagram fact carries real Mermaid source (2026-09-08,
+    // TC-8's sibling investigation into "how do components relate" — see
+    // BACKLOG.md). answerText above already covers the caption via
+    // f.headline (architecture_diagram's own headline_reader); this renders
+    // the actual picture underneath it, server-side via the same Kroki proxy
+    // web/routes/diagrams.py the DB ER-diagram view uses
+    // (renderAllDbViewsMermaid below) — no client-side mermaid.js here
+    // either. Raw HTML embedded directly in the markdown source, same as the
+    // <span> state lines elsewhere in this function: marked.parse() passes
+    // it through untouched, which this file already relies on throughout.
+    if (f.value && f.value.mermaid && !f.value.exceeds_renderer_limit) {
+      try {
+        const res = await fetch('/api/diagrams/mermaid', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: `%%{init: {"theme":"dark","flowchart":{"useMaxWidth":false,"htmlLabels":true}}}%%\n${f.value.mermaid}`,
+          }),
+        });
+        if (res.ok) {
+          const svg = await res.text();
+          lines.push(
+            `\n<div class="chat-arch-diagram" style="max-width:100%;max-height:420px;` +
+            `overflow:auto;background:#020617;border:1px solid #1e293b;border-radius:6px;` +
+            `padding:8px;margin:4px 0;">${svg}</div>`
+          );
+        } else {
+          // Same degrade-gracefully posture as renderAllDbViewsMermaid: one
+          // diagram failing must not blank the rest of the chat answer, and
+          // the caption line above already said what the diagram would have
+          // shown in words.
+          lines.push(`\n  _Diagram could not be rendered (the diagram server is unreachable)._`);
+        }
+      } catch (err) {
+        lines.push(`\n  _Diagram could not be rendered: ${_esc(err.message)}._`);
+      }
+    }
+
     // No Evidence toggle any more. Both halves of the value — the scalars
     // and the prose — are now on the answer line, so anything this block
     // could contain would repeat what is already visible. It is removed
@@ -11220,7 +11258,7 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
     // now does; a fact needing a genuine detail tier would need that cap
     // lifted first, which is a separate change with its own reason.
     if (f.note) lines.push(`  \n  _${f.note}_`);
-  });
+  }
   if (unknown.length) {
     lines.push(`\n**Not everything is known.** ` +
       unknown.map(f => `\`${f.analysis_id}\` ${(_FACT_STATE_TEXT[f.state] || {}).text || f.state}`).join('; ') + '.');
@@ -11331,8 +11369,18 @@ function _summariseFactValue(value) {
   // the same value directly, not through this function, so it still shows
   // every field -- this only trims what chat's one-line-plus-bullets answer
   // repeats or cannot use.
+  // 'caption'/'mermaid'/'char_count'/'exceeds_renderer_limit'/
+  // 'projection_depth' joined 2026-09-08, for architecture_diagram: `caption`
+  // duplicates f.headline exactly like `summary` did for architecture_summary
+  // above, and the other four are the diagram's own rendering metadata,
+  // handled by _renderEnvelopeMarkdown's dedicated diagram block (which reads
+  // `mermaid`/`exceeds_renderer_limit` directly off f.value, not through this
+  // function) rather than as bullets under it. Confirmed narrow the same way:
+  // repo_survey_definition_adapter.py's `_architecture_diagram_results` is
+  // the only results reader returning any of these as TOP-LEVEL keys.
   const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes',
     'summary', 'depth', 'source_kind',
+    'caption', 'mermaid', 'char_count', 'exceeds_renderer_limit', 'projection_depth',
     ..._factProseKeys(value), ..._factFindingArrayKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {

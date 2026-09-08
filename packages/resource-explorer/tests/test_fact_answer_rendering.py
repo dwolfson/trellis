@@ -129,7 +129,11 @@ def test_the_process_framing_is_a_footer_not_the_lead():
     not the answer. It must not be the first thing pushed for a known fact."""
     html = INDEX.read_text()
     fn = _fn(html, "_renderEnvelopeMarkdown")
-    known_loop_idx = fn.index("known.forEach")
+    # `known.forEach(f => {` became `for (const f of known) {` 2026-09-08,
+    # when the loop body needed `await` for architecture_diagram's inline
+    # Kroki fetch (forEach's callback cannot await). Same loop, same marker
+    # role — just the JS shape a `for` needs instead of a `.forEach`.
+    known_loop_idx = fn.index("for (const f of known)")
     footer_idx = fn.rindex("measurement(s) on")
     assert footer_idx > known_loop_idx, (
         "the measurement-count framing must appear after the per-fact loop "
@@ -639,3 +643,63 @@ class TestAdministrativeFieldsDoNotCrowdOutTheAnswer:
         out = _run_js(node, INDEX.read_text(), self._ARCH_SUMMARY_VALUE,
                        headline="107 candidate components, none documented")
         assert out.startswith("107 candidate components, none documented")
+
+
+class TestArchitectureDiagramRendersAPicture:
+    """The follow-up to the architecture_summary fix above (2026-09-08, same
+    BACKLOG.md investigation): "what components exist" now answers cleanly,
+    but "how do they relate" still had no real answer — a graph does not fit
+    the bullet-list shape that fixed the first half, at any real scale.
+
+    architecture_diagram (a new AnalysisKind, repo_survey_definition_adapter.py)
+    exposes a Mermaid diagram computed and persisted at survey time
+    (arch_recovery/persist.py::_persist_diagram) but never read back by
+    anything before this. `_renderEnvelopeMarkdown` now fetches it through
+    the same Kroki proxy the DB ER-diagram view already uses
+    (web/routes/diagrams.py) rather than embedding client-side mermaid.js.
+
+    Not executed end-to-end through this file's Node harness: unlike
+    _summariseFactValue/_factValueLines (pure functions over a value dict),
+    _renderEnvelopeMarkdown's diagram block calls the real `fetch` and
+    depends on the rest of the function (DOM-adjacent helpers, the
+    catalog-backfill await) that this harness's minimal preamble does not
+    reproduce — the same reason `_answer_expression` extracts one line
+    rather than running the whole function. These assert on the extracted
+    source directly instead, the same technique
+    test_evidence_no_longer_double_shows_or_drops_prose_fields (above) uses
+    for a structural guarantee rather than a behavioural one.
+    """
+
+    def test_the_diagram_is_only_fetched_when_mermaid_source_exists(self):
+        html = INDEX.read_text()
+        fn = _fn(html, "_renderEnvelopeMarkdown")
+        assert "f.value.mermaid" in fn, (
+            "the diagram block must gate on the fact actually carrying "
+            "Mermaid source, not fire for every fact"
+        )
+
+    def test_an_oversized_diagram_is_not_even_attempted(self):
+        """caption() already states the too-large case in its own text
+        (mermaid.py) — fetching a diagram known not to render would just
+        reproduce that failure a second, uglier way."""
+        html = INDEX.read_text()
+        fn = _fn(html, "_renderEnvelopeMarkdown")
+        assert "exceeds_renderer_limit" in fn
+
+    def test_it_calls_the_same_kroki_proxy_the_db_view_uses(self):
+        html = INDEX.read_text()
+        fn = _fn(html, "_renderEnvelopeMarkdown")
+        assert "/api/diagrams/mermaid" in fn
+        assert "mermaid.js" not in fn.lower() or "no client-side mermaid.js" in fn
+
+    def test_a_render_failure_degrades_the_answer_not_the_whole_message(self):
+        """Mirrors renderAllDbViewsMermaid's own posture: one diagram failing
+        must not blank the caption line already pushed above it."""
+        html = INDEX.read_text()
+        fn = _fn(html, "_renderEnvelopeMarkdown")
+        assert "try {" in fn and "catch" in fn
+        # The diagram block specifically, not just some other try/catch
+        # elsewhere in this large function.
+        diagram_start = fn.index("f.value.mermaid")
+        nearby = fn[diagram_start:diagram_start + 1500]
+        assert "catch" in nearby

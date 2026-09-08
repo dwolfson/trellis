@@ -774,7 +774,7 @@ repo_questions:
     checks: []
     note: repo_classification
   answering_mechanism: Code Analysis
-- question: What is its internal architecture — what components exist and how do they relate?
+- question: What components exist in this repository, and what kind is each?
   stage: Discovery
   perspectives:
   - App/AI Builder
@@ -792,6 +792,23 @@ repo_questions:
     - architecture_summary
     checks: []
     note: architecture_recovery + architecture_summary + architecture_doc_lens
+  answering_mechanism: Code Analysis
+- question: How do its components relate to each other?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Learn
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - architecture_diagram
+    checks: []
+    note: architecture_diagram
   answering_mechanism: Code Analysis
 - question: What languages and file types make up this repository?
   stage: Scouting

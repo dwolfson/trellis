@@ -249,6 +249,11 @@ whole_analysis_only:
   # collapse per-component findings into one statement. Decomposing it back
   # into checks would undo the step.
   - architecture_summary
+  # Same reasoning, same shape: one finding per resource, a fixed check_name
+  # ("architecture_diagram", arch_recovery/persist.py's _persist_diagram) --
+  # a diagram is not decomposable into pass/fail checks any more than a
+  # summary sentence is.
+  - architecture_diagram
   - repository_health
   - dependency_analysis
   - language_file_classification

@@ -2922,6 +2922,52 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
     return {"label": f"{n} {_plural('component', n)} recovered", "status": "info" if n else "warn"}
 
 
+def _architecture_diagram_results(registry, slug: str) -> dict:
+    """The rendered architecture Mermaid diagram, read back.
+
+    Written by `arch_recovery/persist.py::_persist_diagram` under its own
+    `architecture_diagram` kind (deliberately not under `architecture_recovery`
+    — see that module's own comment on why a whole-resource finding there
+    would suppress `context_compile.py`'s fallback). Never read by anything
+    before 2026-09-08: computed and persisted at survey time, alongside the
+    component/coupling findings, but nothing exposed it as an answerable
+    fact or through any UI — added so "how do components relate" has a real
+    visual to point to instead of asking the chat-facts renderer to flatten
+    a graph into bullet text (the same class of bug `architecture_summary`'s
+    fields hit, at a scale — 100+ components — where it would be far worse).
+    """
+    rows = registry.query_findings(slug, "architecture_diagram") or []
+    if not rows:
+        return {"state": result_status.NEVER_RUN,
+                "message": "No architecture diagram yet — run the analysis."}
+    row = rows[-1]
+    detail = row.get("detail_json") or row.get("detail") or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            detail = {}
+    return {
+        "caption": row.get("summary", ""),
+        "surveyed_at": row.get("surveyed_at", ""),
+        "mermaid": detail.get("mermaid", ""),
+        "char_count": detail.get("char_count", 0),
+        "exceeds_renderer_limit": detail.get("exceeds_renderer_limit", False),
+        "projection_depth": detail.get("projection_depth"),
+    }
+
+
+def _architecture_diagram_headline(registry, slug: str) -> dict | None:
+    r = _architecture_diagram_results(registry, slug)
+    if r.get("state"):
+        return None  # never run — the card's own empty state
+    # caption() already states the too-large case in its own text (mermaid.py)
+    # — surfaced as `status: warn` here too so the badge agrees with the words
+    # rather than a reader having to notice it only in the sentence.
+    return {"label": r.get("caption") or "Architecture diagram",
+            "status": "warn" if r.get("exceeds_renderer_limit") else "info"}
+
+
 def _website_ingestion_headline(registry, slug: str) -> dict | None:
     """Survey Results dashboard headline. A skip is reported as its own status
     rather than as zero-with-a-warning — "this repo publishes its own site" is a
@@ -3579,6 +3625,19 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _architecture_recovery_results, _architecture_recovery_trend, "custom",
             headline_reader=_architecture_recovery_headline,
+        ),
+    ),
+    # Same declaring steps as architecture_recovery — persist.py's
+    # _persist_diagram runs from persist_ir(), which both call — but its own
+    # AnalysisKind: the diagram is a rendered VIEW of the recovery, not the
+    # recovery's own evidence, and giving it a separate id is what lets a
+    # question ask for "the picture" without also pulling in the full,
+    # possibly 100+-component list that answers a different question.
+    "architecture_diagram": AnalysisKind(
+        "architecture_diagram", ["repo_arch_detect", "repo_arch_coupling"],
+        results=AnalysisKindResults(
+            _architecture_diagram_results, None, "custom",
+            headline_reader=_architecture_diagram_headline,
         ),
     ),
 }
