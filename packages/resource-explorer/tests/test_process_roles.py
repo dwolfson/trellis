@@ -225,6 +225,16 @@ class TestRunWorker:
             start=lambda: started.append("scheduler"), stop=lambda: None)])
         monkeypatch.setattr(worker, "_reconcile_orphaned_runs", lambda: None)
         monkeypatch.setattr(worker, "_warm_survey_definition_cache", lambda: None)
+        # A unit test of leader election should not be making network calls.
+        # `_ensure_draft_zone` reaches Egeria on startup (the draft zone, and
+        # since 2026-09-08 the private zone's security access control too).
+        #
+        # This is NOT what made the test flaky, though it was the first
+        # diagnosis and it was wrong: with this stubbed, `standby` still takes
+        # ~1.06s against ~1.13s unstubbed. The flake is the fixed
+        # `time.sleep(0.2)` below, which was always too short for the rest of
+        # worker startup. Stubbing stays because it is right on its own terms.
+        monkeypatch.setattr(worker, "_ensure_draft_zone", lambda: None)
         monkeypatch.setattr(
             worker, "LeaderLock",
             lambda name: type("L", (), {"key": 1, "acquire": lambda s: False,
@@ -240,7 +250,20 @@ class TestRunWorker:
             done.set()
 
         threading.Thread(target=_go, daemon=True).start()
-        time.sleep(0.2)
+
+        # POLL for the condition rather than sleeping a fixed interval and
+        # asserting once. The old `time.sleep(0.2)` raced worker startup:
+        # measured, the standby line lands at ~1.06s, so 0.2s was never enough
+        # and the test passed only when scheduling happened to favour it.
+        #
+        # A generous ceiling with an early exit costs nothing in the passing
+        # case and removes the race entirely. `started` is still asserted after
+        # the wait, so a process that wrongly STARTED the loop is caught just as
+        # it was before — this loosens the timing, not the assertion.
+        deadline = time.time() + 10
+        while time.time() < deadline and "standby" not in caplog.text:
+            time.sleep(0.05)
+
         stop.set()
         assert done.wait(timeout=10)
         assert started == [], "a standby process started the loop anyway"

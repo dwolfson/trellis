@@ -1646,3 +1646,143 @@ def test_a_successful_membership_still_links_before_promote_returns(made, monkey
     assert res.members_linked == ["published-repo"]
     assert res.members_unlinkable == []
     assert cm.members == [("coll-1", "asset-guid-1")]
+
+
+# ── Phase 4/5: the investigation's OWN Egeria elements ─────────────────────
+
+def test_a_private_investigations_project_is_zoned(made):
+    """Phase 5 zoned the artifacts a private investigation produces and left the
+    Project itself public — so its name, description, purposes and membership
+    were readable by everyone while its surveys were not.
+
+    The owner's point 5 is "the project AND all related artifacts", and the
+    Project is the half that names the work.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+    from resource_explorer import egeria_identity as ident
+
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Zoned", project_classification="PersonalProject")
+    zoned = {}
+    before_state, before_set = ident._private_zone_state, ident.set_zone_membership
+    ident._private_zone_state = {"status": "exists", "enforced": True,
+                                 "zone": ident.private_zone(), "control_present": True}
+    ident.set_zone_membership = lambda guid, zones, **k: zoned.setdefault(guid, list(zones)) or True
+    try:
+        res = EgeriaInvestigationPublisher(
+            reg, project_manager=_StubPM(), collection_manager=_StubCM()
+        ).promote(inv["slug"])
+    finally:
+        ident._private_zone_state, ident.set_zone_membership = before_state, before_set
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+    assert res.private_zoned is True, res.errors
+    assert zoned.get("proj-1") == [ident.private_zone(), "alice"]
+
+
+def test_a_private_project_that_cannot_be_zoned_is_reported_not_hidden(made):
+    """An unenforced zone means the Project is public. Saying nothing would let
+    someone believe their personal investigation is private when its name and
+    membership are readable by everyone."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+    from resource_explorer import egeria_identity as ident
+
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Unzonable", project_classification="Experiment",
+                                       hypothesis="h")
+    before = ident._private_zone_state
+    ident._private_zone_state = {"status": "not_authorized", "enforced": False}
+    try:
+        res = EgeriaInvestigationPublisher(
+            reg, project_manager=_StubPM(), collection_manager=_StubCM()
+        ).promote(inv["slug"])
+    finally:
+        ident._private_zone_state = before
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+    assert res.private_zoned is False
+    assert not res.ok
+    assert any("visible to everyone" in e for e in res.errors), res.errors
+
+
+def test_a_shared_investigations_project_is_not_zoned_private(made):
+    """The guard must be narrow: Task/Campaign/Study Projects follow the normal
+    rules and must not be swept into the private zone."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+    from resource_explorer import egeria_identity as ident
+
+    reg = ProjectRegistry()
+    with _as("alice"):
+        inv = reg.create_investigation("Alice Shared Proj", project_classification="Task")
+    zoned = {}
+    before_set = ident.set_zone_membership
+    before_state = ident._private_zone_state
+    # The zone MUST be enforced for this test to mean anything. Without it the
+    # code never reaches the zoning branch at all, so the assertion below holds
+    # even with the classification check deleted — which is exactly how the
+    # first version of this test passed a sabotage run that zoned everything.
+    ident._private_zone_state = {"status": "exists", "enforced": True,
+                                 "zone": ident.private_zone(), "control_present": True}
+    ident.set_zone_membership = lambda guid, zones, **k: zoned.setdefault(guid, list(zones)) or True
+    try:
+        res = EgeriaInvestigationPublisher(
+            reg, project_manager=_StubPM(), collection_manager=_StubCM()
+        ).promote(inv["slug"])
+    finally:
+        ident.set_zone_membership = before_set
+        ident._private_zone_state = before_state
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM investigations WHERE slug = ?", (inv["slug"],))
+
+    assert res.private_zoned is False
+    assert zoned == {}, f"a shared investigation's Project was zoned {zoned}"
+
+
+def test_the_folio_is_anchored_to_the_project(made):
+    """Anchored, not separately stamped.
+
+    Measured 2026-09-08: existing Folios were their own anchor with no
+    ZoneMembership, so a private investigation's collection was world-readable.
+    Anchoring is one property set at creation that stays correct when the
+    Project is re-zoned later — enforcement reads the LIVE anchor, not the copy
+    cached on the child.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    class _RecordingCM(_StubCM):
+        def __init__(self):
+            super().__init__()
+            self.bodies = []
+
+        def create_collection(self, display_name=None, description=None, body=None, **kw):
+            self.bodies.append(body)
+            return "coll-1"
+
+    reg = ProjectRegistry()
+    inv = made(display_name="Folio Anchor")
+    cm = _RecordingCM()
+    EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(), collection_manager=cm
+    ).promote(inv["slug"])
+
+    assert cm.bodies, "no collection was created"
+    body = cm.bodies[0]
+    assert body.get("isOwnAnchor") is False
+    assert body.get("anchorGUID") == "proj-1", (
+        "the Folio is its own anchor, so it inherits no zones and is public")

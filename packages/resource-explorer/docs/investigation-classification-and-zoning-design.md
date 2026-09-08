@@ -1,6 +1,6 @@
 # Investigation classification and zoning — design & plan
 
-**Status: design. Phases 1–3 and 5 are built and live-verified (2026-09-07); Phases 4 and 6 are not.** Extends
+**Status: design. Phases 1–5 are built and live-verified (2026-09-07/08); Phase 6 is not.** Extends
 `docs/investigation-framing-design.md` §1 (the Investigation record) and §6a
 (promotion). Does not supersede it; that document still governs membership,
 Purpose, and the local-first/promotable shape. This one covers two things it
@@ -738,10 +738,62 @@ filter does nothing at all. Each guard was made to fail on purpose, including
 dropping each back-reference filter individually while leaving the object-level
 one intact.
 
-**Phase 4 — anchoring.** Anchor investigation-produced artifacts
-(SurveyReports, Annotations, the Folio) to the investigation Project. Verify
-the `Anchors` classification actually carries `zoneMembership` through, live.
-*Prerequisite for Phase 5 being safe; independently valuable for lineage.*
+**Phase 4 — anchoring. ✅ Done 2026-09-08, and it found two live bugs in
+Phase 5.** Annotations are now created with `isOwnAnchor: False` +
+`anchorGUID: <report>`, so they inherit the report's zones instead of carrying
+none.
+
+**Inheritance measured, not inferred.** A child with no zones of its own,
+anchored to a privately-zoned parent, was DENIED to a non-owner and READ by the
+owner. `validateUserForAnchorMemberRead`'s `else` branch — the one an earlier
+draft of this document never read — evaluates `anchorEntity.getClassifications()`
+when the requested element carries none itself.
+
+**§7's open question is answered, and favourably.** Moving a parent from the
+draft zone to private flipped its untouched anchored child from READ to DENIED
+immediately, while the child's own `Anchors` classification still held the
+**stale** copy `['resource-explorer-draft']`. So enforcement reads the LIVE
+anchor and the cached copy is not authoritative: **re-zoning a parent protects
+every anchored child with no sweep.** That removes most of the difficulty §5
+attributes to the tightening direction of reclassification.
+
+**Two bugs in Phase 5 that this exposed, both live for a few hours:**
+
+*Annotations were public.* Measured against real published data: every
+annotation came back `anchorGUID: None` — its own anchor — with **no
+ZoneMembership at all**. `_stamp_governance` only ever stamped the asset and the
+report. So a private investigation's SurveyReport was protected while the
+annotations carrying its actual findings were world-readable. `parentGUID` does
+not anchor; `anchorGUID` does.
+
+*The shared repo asset was being zoned private* — the inverse failure, and the
+worse one. `_stamp_governance(asset_guid, report_guid)` applied one zone list to
+both, and the asset is `SourceControlLibrary::<github_url>`, **one per repo,
+shared by every investigation referencing it**. Publishing a private survey would
+have hidden a public repository from everyone else in the catalog. That is §3.6
+("an investigation zones what it produced, never what it references") violated by
+the code written to implement §3.6. The two are now stamped separately: the
+report takes the private zones and the investigation owner, the asset keeps the
+draft zone and the publishing identity.
+
+Both were found by asking what the *other* elements in a publish look like —
+neither would have been caught by testing the artifact the feature is about.
+
+**And a third, from asking the same question of the investigation itself.** The
+investigation's own Egeria `Project` was never zoned at all, and neither was its
+Folio. Phase 5 protected what a private investigation *produces* and left the
+thing that *names* it — display name, description, purposes, membership —
+readable by everyone. The owner's point 5 is "the project **and** all related
+artifacts"; only the second half had been built. `promote()` now zones the
+Project (refusing loudly, as a publish does, when the zone is not enforced) and
+the Folio is **anchored** to it rather than separately stamped, so it inherits
+and keeps inheriting when the Project is re-zoned.
+
+Three of the four defects in this phase were elements nobody had thought to look
+at, found by enumerating what a publish actually creates rather than by testing
+the feature's headline artifact. That is the general lesson worth carrying: for a
+protection feature, the question is not "is the thing I protected protected" but
+"what else did this operation create".
 
 **Phase 5 — zoning. ✅ Done 2026-09-07, and the live test earned its keep.**
 `ensure_private_zone_exists()` creates the control, reads it back, and gates
