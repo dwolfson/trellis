@@ -178,6 +178,40 @@ class ComponentMaterializer:
         component's path prefix), so this needs no separate identity."""
         return f"SolutionComponent::{entity_type}::{entity_slug}::{scope_locator}"
 
+    def _privacy_for(self, entity_type: str, entity_slug: str):
+        """`(private_owner, zones)` for this resource.
+
+        `("", None)` — not private, publish normally.
+        `(owner, [..])` — private, and the zone is confirmed enforced.
+        `(owner, None)` — private, and it is NOT safe to publish. The caller
+        must refuse; an unenforced zone is an *ignored* zone, which is public.
+
+        The three cases are distinguished by the second element rather than by
+        a bool, so a caller cannot accidentally treat "private but unsafe" as
+        "not private" — which is the direction that leaks.
+        """
+        from resource_explorer.egeria_identity import private_zone_is_enforced, private_zones
+
+        if not self._registry:
+            return "", None
+        try:
+            owner = self._registry.private_owner_for_entity(entity_type, entity_slug)
+        except Exception as exc:
+            log.warning("could not determine private ownership for %s/%s — "
+                        "materializing normally: %s", entity_type, entity_slug, exc)
+            return "", None
+        # Must be a real userId string. The value becomes a ZONE NAME, and a
+        # non-string there is meaningless — `validateZoneAccess` compares it to
+        # the caller's userId, so anything else silently matches nobody while
+        # still marking the element private. Anything truthy-but-not-a-string
+        # is a registry that is not answering this question, not an owner.
+        if not isinstance(owner, str) or not owner.strip():
+            return "", None
+        owner = owner.strip()
+        if not private_zone_is_enforced():
+            return owner, None
+        return owner, private_zones(owner)
+
     def materialize(
         self,
         entity_type: str,
@@ -198,6 +232,28 @@ class ComponentMaterializer:
         saved and does not get rolled back.
         """
         qualified_name = self.qualified_name_for(entity_type, entity_slug, scope_locator)
+
+        # Privacy FIRST, before `_connect()` and before anything is created.
+        #
+        # This is a SECOND publish path and therefore a second chance to leak —
+        # the shape the design removes by anchoring instead of stamping (Phase
+        # 4, not built). Until that lands every stamping path has to ask the
+        # same question, so it is asked here too.
+        #
+        # It sits at the top rather than next to the stamping call, and that
+        # placement is the whole point: the first version checked just before
+        # `stamp_published`, by which time the SolutionComponent had already
+        # been created in Egeria. Refusing there left a real, unzoned element
+        # behind and reported "skipped" — strictly worse than either doing it
+        # or not. Caught when a sabotage run created one for real.
+        private_owner, private_zones_for_owner = self._privacy_for(entity_type, entity_slug)
+        if private_owner and private_zones_for_owner is None:
+            return {"status": "skipped",
+                    "reason": ("belongs to a private investigation and the private "
+                               "governance zone is not confirmed to be enforced; "
+                               "nothing was written to Egeria"),
+                    "scope_locator": scope_locator,
+                    "qualified_name": qualified_name}
 
         # Local cache first — same shape as _find_or_create_asset's cached-
         # GUID check, and for the same reason: a repeat accept (re-running
@@ -286,9 +342,15 @@ class ComponentMaterializer:
         from resource_explorer.egeria_identity import draft_zone, stamp_published
 
         identity = self.resolve_identity()
-        governance = stamp_published(
-            guid, identity.user_id, identity=identity, zones=[draft_zone()],
-        )
+        # Decided at the top of this method, before anything was created.
+        # A component materialised from a repo in someone's personal
+        # investigation is derived from their private work: born in the draft
+        # zone with the publishing identity as owner it would be visible to
+        # every curator, and owned by whoever happened to run the analysis.
+        owner = private_owner or identity.user_id
+        zones = private_zones_for_owner or [draft_zone()]
+
+        governance = stamp_published(guid, owner, identity=identity, zones=zones)
 
         if self._registry:
             self._registry.record_materialized_component(

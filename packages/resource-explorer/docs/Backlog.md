@@ -894,6 +894,40 @@ change and a concurrent session was mid-edit in the same package — see the git
 repo `CLAUDE.md`.
 
 
+### Private zoning — what Phase 5 left open
+
+**Anchoring (design Phase 4) is still not built, and Phase 5 shipped without it.**
+RE stamps `ZoneMembership` on each element it publishes. Egeria's `Anchors`
+classification carries `zoneMembership` and propagates it, so anchoring
+investigation artifacts to the investigation's Project would collapse the
+invariant from "is every artifact stamped?" to "is every artifact anchored?" —
+one property, checkable in one query, instead of N chances to leak that grows
+with each new annotation type. Worth doing before the artifact set grows.
+
+**Freshstart has never run this.** Everything was verified on quickstart, whose
+Coco Pharma directory happens to make RE's own account a platform operator. On a
+stock freshstart no human account holds `serverOperator`, so
+`ensure_private_zone_exists` will return `not_authorized` and private
+investigations will refuse to publish — which is the designed-safe behaviour,
+but it means the feature is unusable there until someone grants the right. The
+deployment-side grant belongs in `egeria-workspaces-fs`. See §3.3a of the design.
+
+**Existing private artifacts are not retro-zoned.** Anything published before
+Phase 5 from what is now a private investigation stays in whatever zone it got.
+A backfill would need to enumerate them and re-zone; nothing does that yet, and
+nothing reports how many there are. Worth at least a count, so the gap is
+visible rather than assumed empty.
+
+**The settle window is a per-process belief, not shared state.** Each worker
+process learns the control exists at its own startup. A process that creates the
+control waits `PRIVATE_ZONE_SETTLE_SECONDS`; a process that starts afterwards
+sees it already present and trusts it immediately — correctly, since it predates
+that process. But two processes starting within the same window can disagree
+about whether private publishing is available. Harmless (the disagreement is
+between "refuse" and "allow" on a control that is genuinely settling) but
+surprising if someone hits it.
+
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step

@@ -190,6 +190,33 @@ class DataClassRule(BaseModel):
     source: str
 
 
+@router.get("/private-zone")
+async def private_zone_state() -> dict:
+    """Whether private investigations can publish, and if not, exactly why.
+
+    Exposed rather than left in a log line because the failure is silent from
+    the user's side: RE keeps showing personal investigations as private
+    (Phase 3's filter is local and works regardless), while their surveys quietly
+    refuse to reach Egeria. Someone has to be able to see the reason without
+    grepping the worker log.
+
+    `enforced: false` is not always a problem to fix here — on a stock
+    freshstart no human account holds the platform-operator rights this needs,
+    so the remedy is a deployment grant. The `remedy` field says which.
+    """
+    from resource_explorer.egeria_identity import (
+        ensure_private_zone_exists, private_zone_status,
+    )
+
+    status = private_zone_status()
+    if status.get("status") == "unknown":
+        # Nothing has asked in this process yet. Ask now rather than reporting
+        # "unknown" to a person who opened this page precisely to find out —
+        # `ensure_private_zone_exists` is idempotent and never raises.
+        status = ensure_private_zone_exists()
+    return status
+
+
 @router.get("/rules/dataclasses", response_model=list[DataClassRule])
 async def get_dataclass_rules() -> list[DataClassRule]:
     """Fetch the active PII Data Classes and their corresponding keyword matching rules.

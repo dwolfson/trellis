@@ -16515,10 +16515,25 @@ async function loadAdminDiscoverySourcesPanel() {
 let _resyncScan = null;
 let _resyncBusy = false;
 
+// The private zone's state, fetched alongside the resync scan.
+//
+// It has to be visible SOMEWHERE a person looks, because its failure is silent
+// from their side: RE keeps showing personal investigations as private (that
+// filter is local and works regardless), while their surveys quietly refuse to
+// reach Egeria. Without this the only signal is a worker log line and an error
+// on a publish they may not attempt for days.
+let _privateZone = null;
+
 async function loadAdminResyncPanel() {
   const view = document.getElementById('admin-resync-view');
   view.innerHTML = _adminSubnavHtml('admin-resync')
     + `<div class="p-6 text-sm text-slate-500">Scanning Egeria…</div>`;
+  // Deliberately not awaited with the scan below: the zone's state is useful
+  // even when the scan fails, and a scan failure must not hide it.
+  fetch('/api/egeria/private-zone')
+    .then(r => r.ok ? r.json() : null)
+    .then(z => { _privateZone = z; if (_resyncScan) renderAdminResyncPanel(); })
+    .catch(() => { _privateZone = null; });
   try {
     const res = await fetch('/api/egeria/resync/scan');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -16529,6 +16544,38 @@ async function loadAdminResyncPanel() {
     return;
   }
   renderAdminResyncPanel();
+}
+
+// Four states, rendered differently on purpose. "Enforced" and "not checked
+// yet" must never look alike: the second is a question nobody has asked, and
+// showing it as healthy is the exact failure this whole feature guards against.
+function _privateZoneCardHtml() {
+  const z = _privateZone;
+  if (!z) return '';
+  const zone = _esc(z.zone || 'private zone');
+  if (z.enforced) {
+    return `<div class="bg-slate-950 border border-emerald-900 rounded p-3 mb-3">
+      <div class="text-xs font-semibold text-emerald-300">🔒 Private zone enforced</div>
+      <div class="text-[11px] text-slate-400 mt-1">Personal and Experiment investigations publish to
+        <span class="font-mono">${zone}</span>, readable only by their creator.</div>
+    </div>`;
+  }
+  const settling = (z.settling_seconds_remaining || 0) > 0;
+  return `<div class="bg-slate-950 border border-amber-900 rounded p-3 mb-3">
+    <div class="text-xs font-semibold text-amber-300">${settling
+      ? '⏳ Private zone settling'
+      : '⚠ Private investigations cannot publish'}</div>
+    <div class="text-[11px] text-slate-300 mt-1">${settling
+      ? `The <span class="font-mono">${zone}</span> control exists but Egeria's security connector
+         has not reloaded it yet (about ${Math.ceil((z.settling_seconds_remaining || 0) / 60)} min).
+         Private publishing is refused until it has — publishing sooner would put private work in a
+         zone nothing is enforcing.`
+      : `The <span class="font-mono">${zone}</span> governance zone is not confirmed to be enforced,
+         so surveys of Personal and Experiment investigations are refused rather than published
+         where everyone could read them.`}</div>
+    ${z.detail ? `<div class="text-[11px] text-slate-500 mt-1">${_esc(z.detail)}</div>` : ''}
+    ${z.remedy ? `<div class="text-[11px] text-cyan-300 mt-1">${_esc(z.remedy)}</div>` : ''}
+  </div>`;
 }
 
 function renderAdminResyncPanel() {
@@ -16552,6 +16599,7 @@ function renderAdminResyncPanel() {
   const findings = d.findings || [];
   const repairable = findings.filter(f => f.repair_step);
   const decisions = findings.filter(f => !f.repair_step);
+  const zoneCard = _privateZoneCardHtml();
 
   const card = (f) => `<div class="bg-slate-950 border border-slate-800 rounded p-3">
     <div class="flex items-start justify-between gap-3">
@@ -16586,6 +16634,7 @@ function renderAdminResyncPanel() {
         Egeria that have fallen behind what RE can now run. Scanning never writes.
       </p>
     </div>
+    ${zoneCard}
 
     <div class="flex flex-wrap items-center gap-3 text-xs">
       <span class="text-slate-300">${d.total || 0} item(s) drifted</span>

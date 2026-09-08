@@ -1,6 +1,6 @@
 # Investigation classification and zoning — design & plan
 
-**Status: design. Phases 1–3 are built (2026-09-07); Phases 4–6 are not.** Extends
+**Status: design. Phases 1–3 and 5 are built and live-verified (2026-09-07); Phases 4 and 6 are not.** Extends
 `docs/investigation-framing-design.md` §1 (the Investigation record) and §6a
 (promotion). Does not supersede it; that document still governs membership,
 Purpose, and the local-first/promotable shape. This one covers two things it
@@ -464,6 +464,16 @@ it" — that passes under every broken variant. It is **"does a second user
 fail to see it"**, and it has to be seen to fail. A zoning scheme that has
 never been observed to deny anybody is not known to work.
 
+**Done 2026-09-07, and it did not pass first time.** The first denial test
+reported all three non-owners still READING a correctly-zoned element, with the
+control present in the store. That looked like the design being wrong; it was
+the connector not having reloaded yet (§6, Phase 5). Worth keeping in view as
+the general shape: the first run of a security check that *fails* is the one
+worth trusting, because it is the only kind of result the broken variants cannot
+produce. Anchoring is still the right structure for the same reason it always
+was — one invariant instead of N — but it is Phase 4 and is not yet built, so
+today RE stamps the elements it publishes directly.
+
 ### 3.5 Public means *in the publish zone*, not *unzoned*
 
 Proposal point 6 asks that Task / Campaign / Study be publicly visible. Do
@@ -733,7 +743,74 @@ one intact.
 the `Anchors` classification actually carries `zoneMembership` through, live.
 *Prerequisite for Phase 5 being safe; independently valuable for lineage.*
 
-**Phase 5 — zoning.** Create `resource-explorer-private` through
+**Phase 5 — zoning. ✅ Done 2026-09-07, and the live test earned its keep.**
+`ensure_private_zone_exists()` creates the control, reads it back, and gates
+private publishing on `private_zone_is_enforced()`. `private_owner_for_entity()`
+resolves whose an artifact is. `EgeriaPublisher.publish()` zones private
+artifacts as `[private_zone(), owner]`, stamps `Ownership` to the investigation
+owner rather than the publishing account, and **refuses outright** when the zone
+is not confirmed. `promote_to_publish_zones()` skips private elements, so
+accepting a finding is not an un-labelled publish-to-everyone button.
+
+**Verified live, three non-owners denied:**
+
+```
+owner  erinoverview     -> READ
+other  calliequartile   -> DENIED(PyegeriaUnauthorizedException)
+other  tanyatidie       -> DENIED(PyegeriaUnauthorizedException)
+other  faithbroker      -> DENIED(PyegeriaUnauthorizedException)
+```
+
+**Two defects the live test found that no amount of reading would have.**
+
+*The store is not the connector.* The control read back from the secrets store
+**immediately** — and a privately-zoned element was still readable by a
+non-owner **six minutes later**, with denial beginning at seven. The security
+connector reloads on `refreshTimeInterval` (10 minutes here, and
+`SecretsStoreConnector` multiplies it by `60 * 1000`). So "I wrote it and read
+it back" is exactly the evidence that looks conclusive and is not, and the first
+version of this code reported `enforced: True` on the strength of it. A publish
+in that window lands in a zone nothing is enforcing. `private_zone_status()` now
+carries a `settling` state with the remaining seconds, and a freshly created
+control is not trusted for `PRIVATE_ZONE_SETTLE_SECONDS` (default 720 —
+deliberately longer than the interval, because being late costs minutes and
+being early cannot be undone).
+
+*A slug-normalisation leak.* `private_owner_for_entity` first called
+`_normalize_slug`, which turns `egeria-python` into `egeria_python`, while
+`working_set_members` stores the slug verbatim — as the two neighbouring reads
+already assumed. It therefore matched nothing for any repo with a hyphen in its
+name, which is most of them. Silent, and it **failed open**: no owner found means
+"not private", so those artifacts would have published into the public zones.
+Caught by a test written with a realistic slug, not by review.
+
+**A third defect, in the second publish path.** `arch_recovery/materializer.py`
+stamps zones independently of the publisher — a component materialised from a
+private repo would have been born in the draft zone, owned by whoever ran the
+analysis. It now asks the same question; but the first version of that guard sat
+next to its `stamp_published` call, **after the SolutionComponent had already
+been created**, so refusing there left a real unzoned element behind and reported
+"skipped". Found because a sabotage run created one in the live catalog. The
+check now runs before `_connect()`, and the test stubs `_connect` to raise, so
+reaching Egeria at all fails the test.
+
+**A fourth, found by nine unrelated tests going red at once.** The owner value
+becomes a **zone name**, and both call sites took whatever the registry returned.
+The materializer tests use a `MagicMock` registry, whose
+`private_owner_for_entity` returns a truthy Mock — so every materialize looked
+private and was refused. A mock artefact, but the gap underneath is real:
+`validateZoneAccess` compares the zone name to the caller's userId with
+`.equals`, so a non-string owner would match **nobody at all** while still
+marking the element private — unreadable by everyone including its owner, with
+no error anywhere. Both sites now require a non-empty `str`.
+
+That this took four tries across three files is the argument for Phase 4:
+anchoring turns "did every publish path remember, and remember correctly?" into
+one property. It is the next thing to build.
+
+Nineteen tests, every guard made to fail on purpose.
+
+The mechanics, retained: create `resource-explorer-private` through
 `SecurityOfficer.set_security_access_control`, in the same one-shot
 leader-elected shape `ensure_draft_zone_exists` already uses — and, unlike that
 one, **verify the control reads back**, because a zone element without a control

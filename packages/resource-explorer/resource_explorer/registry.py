@@ -6112,6 +6112,64 @@ class ProjectRegistry:
             "_ambiguous": len(visible) > 1,
         }
 
+    def private_owner_for_entity(self, entity_type: str, entity_slug: str) -> str:
+        """The userId an entity's artifacts must be zoned to, or `""` for none.
+
+        A resource's artifacts are private when the resource is in scope for a
+        privately-classified investigation (`PRIVATE_CLASSIFICATIONS`) that has
+        a recorded owner. The answer is that owner's userId.
+
+        **Deliberately UNSCOPED — it must see investigations the caller cannot.**
+        This is the exact inverse of `_may_see_investigation`, and getting it
+        backwards is the whole bug:
+
+        * Phase 3's filter hides a private investigation FROM other callers.
+        * This decides whether to PROTECT an artifact, so it must see the
+          private investigation whoever is asking.
+
+        The worker publishes as the service account (`egeria_identity`'s module
+        docstring). If this used the caller-scoped read, a queued survey would
+        find no private investigation, conclude "not private", and publish the
+        artifact into the public zones — a silent leak produced by the privacy
+        machinery itself. So it reads the rows directly rather than going
+        through `get_investigation`, and that is not an oversight.
+
+        Closed investigations still count. Closing one means the work finished,
+        not that its artifacts became public.
+
+        Where a resource is in several private investigations, the oldest
+        owner wins — an arbitrary but STABLE choice, so an artifact does not
+        change zone because an unrelated investigation was created. Multiple
+        owners cannot be expressed in one `Ownership`, and picking the newest
+        would let anyone re-home someone else's artifacts by adding the repo to
+        their own investigation.
+        """
+        # NOT normalised. `working_set_members` stores the slug verbatim, as
+        # `find_entity_investigations` and `inherited_egeria_project_context`
+        # both assume — and `_normalize_slug` turns hyphens into underscores, so
+        # normalising here matched nothing for any repo with a hyphen in its
+        # name, which is most of them. That failure was silent and it failed
+        # OPEN: no owner found means "not private", so the artifacts would have
+        # published into the public zones. Caught by a test, not by review.
+        placeholders = ",".join("?" * len(self.PRIVATE_CLASSIFICATIONS))
+        with self._conn() as conn:
+            row = conn.execute(
+                f"""SELECT i.created_by, i.slug
+                    FROM working_set_members m
+                    JOIN working_sets ws ON ws.slug = m.working_set_slug
+                                         AND ws.collection_kind = 'folio'
+                    JOIN investigation_resource_lists rl
+                      ON rl.working_set_slug = m.working_set_slug
+                    JOIN investigations i ON i.slug = rl.investigation_slug
+                    WHERE m.entity_type = ? AND m.entity_slug = ?
+                      AND m.state <> 'excluded'
+                      AND i.project_classification IN ({placeholders})
+                      AND i.created_by IS NOT NULL AND i.created_by <> ''
+                    ORDER BY i.created_at ASC""",
+                (entity_type, entity_slug, *self.PRIVATE_CLASSIFICATIONS),
+            ).fetchone()
+        return (row["created_by"] if row else "") or ""
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.
