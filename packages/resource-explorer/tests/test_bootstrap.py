@@ -203,6 +203,28 @@ class TestCheckAndHeal:
             bs.check_and_heal(tmp_path)
         assert len(attempts) == bs.MAX_CONSECUTIVE_FAILURES
 
+    def test_a_heal_that_succeeds_but_never_resolves_still_stops_retrying(self, tmp_path, monkeypatch):
+        """The gap found live 2026-09-07: heal_batch() reporting ok=True (dr_egeria
+        exited zero) is a different question from the canary actually being
+        present afterward. Confirmed live on a deployment where
+        foundations/survey-definitions/governance-metrics re-healed every ~10
+        minutes for 6+ hours straight — heal_batch succeeded every cycle, so a
+        guard keyed on that never fired, even though the post-heal recheck
+        found the canary missing every single time. Each cycle fully re-ran
+        every document in the (idempotent=false) batch, relying entirely on
+        post_heal dedup to clean up the resulting duplicate links.
+
+        Keying the counter on the verified recheck instead — as opposed to
+        heal_batch's exit status — is what actually stops this."""
+        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::never"})
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: False)
+        attempts = []
+        monkeypatch.setattr(bs, "heal_batch", lambda b: attempts.append(1) or (True, "ok"))
+
+        for _ in range(bs.MAX_CONSECUTIVE_FAILURES + 3):
+            bs.check_and_heal(tmp_path)
+        assert len(attempts) == bs.MAX_CONSECUTIVE_FAILURES
+
     def test_unreachable_egeria_does_not_heal(self, tmp_path, monkeypatch):
         """The regression that matters most: None is falsy, so a bare
         `if present:` would have healed during an outage — re-running every

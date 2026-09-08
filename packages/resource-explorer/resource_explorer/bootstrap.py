@@ -453,7 +453,27 @@ def check_and_heal(docs_dir: Path = DOCS_DIR, force: bool = False) -> dict:
             with _status_lock:
                 st.last_healed_at = _now()
                 st.last_heal_result = "ok" if ok else detail
-                st.consecutive_failures = 0 if ok else st.consecutive_failures + 1
+                # The guard has to key off the *verified* outcome (recheck),
+                # not whether dr_egeria's process exited zero (ok) — those are
+                # different questions. A batch can heal "successfully" every
+                # cycle (ok=True) while its canary never actually resolves
+                # (recheck=False), which is precisely the infinite-heal-loop
+                # case this counter exists to catch (module docstring). Keying
+                # on `ok` instead reset the counter to 0 on every such cycle
+                # and the guard never fired — confirmed live 2026-09-07 on a
+                # deployment where foundations/survey-definitions/governance-
+                # metrics re-healed every ~10 minutes for 6+ hours straight,
+                # each cycle re-running all 10 (idempotent=false) Survey
+                # Definition documents, relying entirely on post_heal dedup to
+                # clean up the resulting duplicate step links every time.
+                # recheck is None (heal ran, but Egeria was unreachable for
+                # the verification call) is deliberately left unchanged —
+                # matching this module's tri-state policy that "could not
+                # determine" is not evidence of success or failure.
+                if recheck is True:
+                    st.consecutive_failures = 0
+                elif recheck is False:
+                    st.consecutive_failures += 1
                 if recheck is None:
                     st.last_check_error = "could not reach Egeria"
                 else:
