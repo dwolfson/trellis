@@ -4409,3 +4409,31 @@ is the flagship, most heavily-used analysis in the catalog (many questions'
 `analysis_ids` include it), so changing its run-gating behavior deserves its
 own verification pass across more than one repo, not a same-session
 addition to an unrelated feature. Flagged rather than fixed.
+
+## RE needs an admin/ingestion dashboard — EA has one, RE has none
+
+Raised 2026-09-08 by the project owner, checking why EA's admin panel
+(`/admin`, `admin.py`) doesn't show RE's repos. It can't: RE's only
+admin-shaped page is `admin-feedback.html`, scoped narrowly to feedback
+triage. `/api/admin/repair` (`repair.py`) manages repo *metadata* (rename,
+GitHub URL, collection enable/disable, drift) — nothing about triggering or
+watching a survey run.
+
+EA's dashboard (status table for 10 vector collections + 5 source repos,
+per-collection reindex, per-repo git pull, a job list with live output,
+one-click maintenance actions) isn't directly portable, because RE's
+ingestion model is a different shape entirely: EA clones a repo once and
+periodically re-vectorizes it into pgvector; RE surveys a GitHub repo
+on demand (`resource-explorer survey <repo> --publish`, or via
+`survey_definition_reader`/`egeria_publisher`) and writes results straight
+into Egeria as Survey/Investigation elements — there's no local clone+reindex
+cycle to expose a "pull" button for. A useful RE equivalent would need its
+own shape: something closer to "which repos have ever been surveyed, when,
+by which Survey Definition, with what outcome" plus a way to trigger a new
+survey and watch it run (RE's `run_queue.py` + job polling already exists for
+this — `/api/runs` — a dashboard could sit on top of it rather than needing
+new backend plumbing the way EA's admin.py's job-tracking does).
+
+Not designed or scoped further than this. Whoever picks it up should start
+from `run_queue.py`'s existing job model and `admin.py`'s UI shape as
+reference, not treat this as "copy admin.html."
