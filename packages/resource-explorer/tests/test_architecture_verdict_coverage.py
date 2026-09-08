@@ -230,28 +230,50 @@ class TestSplicedIntoAnswers:
         assert "1 accepted" in h["label"]
 
     def test_diagram_caption_states_coverage_alongside_the_description(self):
+        """`_architecture_diagram_results` moved to read-time reconstruction
+        one commit after this file was first written (docs/curated-
+        architecture-answers-design.md §6 items 2-4) -- the diagram is now
+        rendered fresh from real component rows, not a persisted blob, so
+        this exercises the real shape rather than a stand-in row."""
+        row = {
+            "check_name": "component", "label": "Software Service",
+            "summary": "Alpha (Software Service)", "confidence": 80,
+            "surveyed_at": "2026-09-08T00:00:00",
+            "detail_json": json.dumps({
+                "name": "Alpha", "slug": "a", "type": "Software Service",
+                "identity": {"method": "module-path", "value": "a", "deployment_context": ""},
+                "run_label": "coupling", "files": [], "blueprint": "",
+                "proposed_by": ["coupling"], "perspective": "physical",
+                "confidence_level": "Derived", "parent_slug": "", "depth": 0,
+            }),
+        }
         reg = _Reg(
             component_scopes=["a"],
+            recovery_rows_by_scope={"a": [row]},
             verdicts={"a": _verdict("accepted")},
-            diagram_rows=[{
-                "check_name": "coupling", "surveyed_at": "2026-09-08T00:00:00",
-                "summary": "1 component(s) shown at depth 1.",
-                "detail_json": {"mermaid": "graph TD\n  a", "char_count": 10,
-                                "exceeds_renderer_limit": False, "projection_depth": 1},
-            }],
         )
         r = _architecture_diagram_results(reg, "acme-widget")
-        assert "1 component(s) shown at depth 1." in r["caption"]
+        assert "1 component(s) shown" in r["caption"]
         assert "1 of 1 component reviewed (1 accepted)" in r["caption"]
 
-    def test_diagram_caption_is_unchanged_when_nothing_has_been_proposed(self):
-        """No component/blueprint totals at all -- the sentence is blank, so
-        the caption must not gain a stray " — ." trailer."""
-        reg = _Reg(diagram_rows=[{
-            "check_name": "coupling", "surveyed_at": "2026-09-08T00:00:00",
-            "summary": "No components detected.",
-            "detail_json": {"mermaid": "graph TD\n  a", "char_count": 10,
-                            "exceeds_renderer_limit": False, "projection_depth": 1},
-        }])
+    def test_diagram_caption_omits_the_blueprint_clause_when_nothing_clustered(self):
+        """Coverage's own zero-total omission (TestCoverageSentence above)
+        must survive being spliced into the diagram's caption too -- a
+        repo with components but no blueprint clustering must not read
+        "0 of 0 blueprints reviewed"."""
+        row = {
+            "check_name": "component", "label": "Software Service",
+            "summary": "Alpha (Software Service)", "confidence": 80,
+            "surveyed_at": "2026-09-08T00:00:00",
+            "detail_json": json.dumps({
+                "name": "Alpha", "slug": "a", "type": "Software Service",
+                "identity": {"method": "module-path", "value": "a", "deployment_context": ""},
+                "run_label": "coupling", "files": [], "blueprint": "",
+                "proposed_by": ["coupling"], "perspective": "physical",
+                "confidence_level": "Derived", "parent_slug": "", "depth": 0,
+            }),
+        }
+        reg = _Reg(component_scopes=["a"], recovery_rows_by_scope={"a": [row]})
         r = _architecture_diagram_results(reg, "acme-widget")
-        assert r["caption"] == "No components detected."
+        assert "blueprint" not in r["caption"]
+        assert "0 of 1 component reviewed" in r["caption"]

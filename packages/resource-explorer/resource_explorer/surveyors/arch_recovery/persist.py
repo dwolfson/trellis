@@ -562,8 +562,18 @@ def persist_ir(
 
     _persist_blueprints(registry, slug, cluster_sets, surveyed_at, run_scope)
 
-    _persist_diagram(registry, slug, components, ports or [], wires or [],
-                     surveyed_at, run_scope, run_label)
+    # `_persist_diagram` is NOT called here any more (2026-09-08,
+    # docs/curated-architecture-answers-design.md §6 items 2-4). The diagram
+    # moved from persist time to read time —
+    # repo_survey_definition_adapter.py's `_read_arch_recovery_ir` /
+    # `_architecture_diagram_results` reconstruct the same `Component`/
+    # ports/wires shape from the `component`/`architecture_interfaces`
+    # findings this function already writes above, and render fresh on
+    # every read — so a curator's accept/reject/retype verdict changes what
+    # the diagram shows immediately, not only after the next survey re-run.
+    # `_persist_diagram` itself is kept, unused, as a record of the
+    # write-time design it replaces (and so the many docstring references to
+    # it elsewhere in this package still resolve to real code).
 
     _persist_decisions(registry, slug, notes or [], surveyed_at, run_label, run_scope)
 

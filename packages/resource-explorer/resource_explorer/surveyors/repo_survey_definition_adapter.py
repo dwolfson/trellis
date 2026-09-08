@@ -3056,48 +3056,176 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
 #: Preference order for which perspective's diagram answers by default when
 #: more than one is on file — "coupling" (import/co-change clustered
 #: boundaries) reads as the more digested view; "detect" (raw
-#: structural/deployment detection) is the fallback; "architecture_diagram"
-#: is the literal check_name legacy rows were written under before
-#: 2026-09-08 (see `_persist_diagram`'s docstring), kept so data surveyed
-#: before this fix still answers instead of silently going never-run.
-_DIAGRAM_PERSPECTIVE_PREFERENCE = ("coupling", "detect", "architecture_diagram")
+#: structural/deployment detection) is the fallback.
+_DIAGRAM_PERSPECTIVE_PREFERENCE = ("coupling", "detect")
+
+
+def _read_arch_recovery_ir(registry, slug: str, run_label: str):
+    """Reconstruct ONE survey step's IR from the generic findings tables —
+    the same `Component`/ports/wires shape `persist_ir` held in memory when
+    `_persist_diagram` used to render from it directly, read back instead of
+    kept from write time. Returns `(ir, slug_to_scope, surveyed_at)`, or
+    `(None, {}, "")` when `run_label` currently proposes no live components
+    at all. `slug_to_scope` is needed because a component's own `slug`
+    (the IR's identity, and what `mermaid.py` uses for node ids) is not the
+    same string as its `scope_locator` (the join key
+    `architecture_component_verdicts` is keyed on — a scope keeps only the
+    last path segment, per `_architecture_recovery_results`'s own comment on
+    the same distinction); a verdict lookup needs the latter for a
+    component identified by the former.
+
+    docs/curated-architecture-answers-design.md §6 items 2-4 — the diagram
+    moves from persist time (rendered once, baked into a finding row) to
+    read time (recomputed on every read), so a curator's verdict changes
+    what the diagram shows without a re-survey.
+
+    **Deliberately per-`run_label`, not merged.** `_architecture_recovery_
+    results` above merges `repo_arch_detect`/`repo_arch_coupling` into one
+    component list on purpose (it answers "what exists, from any
+    approach"). This function does not, because the 2026-09-08 fix
+    established that the two propose genuinely different pictures (detect:
+    structural/deployment detection with ports+wires; coupling: import/
+    co-change clustered boundaries, neither) and a reader needs to be told
+    which one they are looking at — merging them here would silently undo
+    that fix.
+
+    The live scope universe comes from `query_finding_scopes`, which already
+    excludes withdrawn scopes ACROSS both steps ("revival for free" — a
+    scope one step withdrew stays live if the other still proposes it, per
+    that method's own docstring). A scope counts toward THIS run_label's IR
+    only when its own latest `check_name="component"` row was written by
+    `run_label` — if that row is a withdrawal, or simply absent because only
+    the OTHER step ever proposed it, the scope is silently excluded from
+    this perspective. That is the correct reading: detect's diagram must
+    not include a component only coupling currently proposes, even though
+    the scope itself is "live" in the merged sense.
+    """
+    from resource_explorer.surveyors.arch_recovery.ir import IR, Component, Identity
+
+    live_scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
+    components: list = []
+    slug_to_scope: dict[str, str] = {}
+    latest_surveyed_at = ""
+    for scope in live_scopes:
+        rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+        own_rows = [r for r in rows if r["check_name"] == "component"
+                   and _json_or_empty(r.get("detail_json")).get("run_label") == run_label]
+        if not own_rows:
+            continue
+        latest = max(own_rows, key=lambda r: r["surveyed_at"])
+        latest_surveyed_at = max(latest_surveyed_at, latest.get("surveyed_at", ""))
+        detail = _json_or_empty(latest.get("detail_json"))
+        comp_slug = detail.get("slug") or scope
+        identity_d = detail.get("identity") or {}
+        try:
+            c = Component(
+                slug=comp_slug,
+                name=detail.get("name", scope),
+                type=detail.get("type"),
+                identity=Identity(
+                    method=identity_d.get("method", "module-path"),
+                    value=identity_d.get("value", ""),
+                    deployment_context=identity_d.get("deployment_context", ""),
+                ),
+                confidence=latest.get("confidence", 0) or 0,
+                confidence_level=detail.get("confidence_level", "Derived"),
+                blueprint=detail.get("blueprint") or "",
+                proposed_by=detail.get("proposed_by") or [],
+                perspective=detail.get("perspective", "physical"),
+                parent_slug=detail.get("parent_slug") or "",
+                depth=detail.get("depth", 0) or 0,
+            )
+        except ValueError:
+            # __post_init__ (ir.py) rejects a `type` outside the 13-value
+            # §3.1 vocabulary — a row from before that vocabulary changed,
+            # or edited by hand, must not take the whole diagram down over
+            # one unreadable component. Silently dropped rather than logged:
+            # this module defines no logger (see `_doc_ingestion_state`'s own
+            # comment for why a handler that references one it doesn't have
+            # becomes the outage itself).
+            continue
+        components.append(c)
+        slug_to_scope[comp_slug] = scope
+
+    if not components:
+        return None, {}, ""
+
+    ports: list[dict] = []
+    wires: list[dict] = []
+    if run_label == "detect":
+        # Only repo_arch_detect ever passes ports/wires to persist_ir
+        # (arch_recovery_coupling.py's own call doesn't — confirmed by
+        # reading both call sites) — matched here rather than reading
+        # architecture_interfaces for every perspective and drawing
+        # coupling's diagram with ports it never proposed.
+        for r in (registry.query_findings(slug, "architecture_interfaces") or []):
+            d = _json_or_empty(r.get("detail_json"))
+            if d.get("kind") == "port":
+                ports.append({
+                    "component": d.get("component"), "name": d.get("port"),
+                    "direction": d.get("direction"), "protocol": d.get("protocol", ""),
+                    "additionalProperties": d.get("additionalProperties") or {},
+                })
+            elif d.get("kind") == "wire":
+                # persist.py's own wire `detail` never carried a `label`
+                # key separate from `integrationStyle` (confirmed by
+                # reading `_persist_interfaces`) — mermaid.py's edge
+                # rendering already falls back to `integrationStyle` when
+                # `label` is absent, so this is a like-for-like read, not a
+                # new loss.
+                wires.append({
+                    "source": d.get("source"), "target": d.get("target"),
+                    "protocol": d.get("protocol", ""), "oneWay": d.get("oneWay", True),
+                    "integrationStyle": d.get("integrationStyle", ""),
+                    "frequency": d.get("frequency", ""),
+                    "dataExchanged": d.get("dataExchanged", ""),
+                })
+
+    ir = IR(target=slug, checkout="", components=components, ports=ports, wires=wires)
+    return ir, slug_to_scope, latest_surveyed_at
 
 
 def _architecture_diagram_results(registry, slug: str) -> dict:
-    """The rendered architecture Mermaid diagram, read back.
+    """The architecture Mermaid diagram, rendered fresh on every read.
 
-    Written by `arch_recovery/persist.py::_persist_diagram` under its own
-    `architecture_diagram` kind (deliberately not under `architecture_recovery`
-    — see that module's own comment on why a whole-resource finding there
-    would suppress `context_compile.py`'s fallback). Never read by anything
-    before 2026-09-08: computed and persisted at survey time, alongside the
-    component/coupling findings, but nothing exposed it as an answerable
-    fact or through any UI — added so "how do components relate" has a real
-    visual to point to instead of asking the chat-facts renderer to flatten
-    a graph into bullet text (the same class of bug `architecture_summary`'s
-    fields hit, at a scale — 100+ components — where it would be far worse).
+    Moved off the write path 2026-09-08 (docs/curated-architecture-answers-
+    design.md §6 items 2-4): `persist_ir` no longer calls `_persist_diagram`
+    — `_read_arch_recovery_ir` (above) reconstructs the same `Component`/
+    ports/wires shape from the generic findings tables at READ time instead,
+    so a curator's verdict is reflected immediately rather than only after
+    the next survey re-run. `arch_recovery/persist.py::_persist_diagram`
+    itself is kept (nothing calls it any more) purely so
+    `docs/architecture-recovery.md`'s history of the write-time design and
+    any external reference to it still resolve to real code, not a 404.
 
-    **Two perspectives, not one.** `repo_arch_detect` and `repo_arch_coupling`
-    each call `_persist_diagram` with their own, genuinely different
-    component sets — found live 2026-09-08 against egeria-workspaces_git,
-    where the chat-typed answer (85 components, from `detect`) and the
-    clicked-question answer (12 components/93 nested, from `coupling`)
-    disagreed, because each path happened to land on a different one of two
-    rows nobody had distinguished. `check_name` now carries `run_label`
-    (`detect`/`coupling`) so both are addressable; this reader picks one by
-    `_DIAGRAM_PERSPECTIVE_PREFERENCE` and reports which, rather than an
-    insertion-order accident deciding it.
+    **Verdict-aware, per project-owner decision 2026-09-08** (docs/curated-
+    architecture-answers-design.md §5): a REJECTED component is omitted
+    entirely (its still-live children, if any, render as a grouping node —
+    `mermaid.render`'s existing structural-node mechanism handles "referenced
+    but absent" for free, the same path a withdrawn/superseded parent
+    already takes); ACCEPTED/RETYPED renders normally; anything else (no
+    verdict at all, i.e. still pending) gets a dashed border via `mermaid.
+    render`'s `component_verdicts` styling hook. A REJECTED blueprint is
+    ungrouped, not deleted — its member components keep whatever their own
+    individual verdict says; only the clustering proposal itself is
+    withdrawn from the picture.
 
-    Uses `query_findings_all_runs`, not `query_findings` — the two steps are
-    independent and need not share a `surveyed_at` (the exact reason
-    `query_findings_all_runs` exists at all, per its own docstring and
-    `architecture_recovery`'s reader above): `query_findings`'s "only the
-    single latest surveyed_at, across the whole kind" would silently drop
-    whichever perspective ran earlier, the same failure mode this whole fix
-    is about, one layer down.
+    **Two perspectives, not one** (unchanged from the 2026-09-08 fix this
+    replaces the storage half of): `repo_arch_detect`/`repo_arch_coupling`
+    propose genuinely different pictures, and this reads both via
+    `_read_arch_recovery_ir`, preferring `coupling` per
+    `_DIAGRAM_PERSPECTIVE_PREFERENCE` and naming the other as still on file
+    (`other_perspectives_available`) exactly as before.
     """
-    rows = registry.query_findings_all_runs(slug, "architecture_diagram", "") or []
-    if not rows:
+    from resource_explorer.surveyors.arch_recovery import mermaid
+
+    available: dict[str, tuple] = {}
+    for run_label in _DIAGRAM_PERSPECTIVE_PREFERENCE:
+        ir, slug_to_scope, surveyed_at = _read_arch_recovery_ir(registry, slug, run_label)
+        if ir is not None:
+            available[run_label] = (ir, slug_to_scope, surveyed_at)
+
+    if not available:
         # Nested under `_status`, not top-level `state`/`message` — the first
         # version of this used the latter, which `_has_content` (facts.py)
         # does NOT exempt from "this counts as content". Combined with
@@ -3106,61 +3234,73 @@ def _architecture_diagram_results(registry, slug: str) -> dict:
         # through to the real never-run gate — caught by
         # TestAgainstRealCatalog.test_every_catalogued_question_produces_an_
         # envelope (test_facts.py) asserting a nonexistent repo answers
-        # nothing, for every catalogued question. `_status` is the envelope
-        # key `_has_content` and `_state_for` both already know to read
-        # (see rag_ingestion/website_ingestion's readers above for the same
-        # pattern) — `state`/`message` was simply the wrong key name.
+        # nothing, for every catalogued question.
         return {"_status": {"state": result_status.NEVER_RUN,
                             "hint": "No architecture diagram yet — run the analysis."}}
 
-    # Latest row per check_name (perspective) — mirrors the pattern
-    # `_persist_decisions`'s own docstring prescribes for the same shape.
-    latest_by_perspective: dict[str, dict] = {}
-    for row in rows:
-        cn = row.get("check_name") or ""
-        if cn not in latest_by_perspective or \
-                row.get("surveyed_at", "") >= latest_by_perspective[cn].get("surveyed_at", ""):
-            latest_by_perspective[cn] = row
+    chosen_label = next(p for p in _DIAGRAM_PERSPECTIVE_PREFERENCE if p in available)
+    other_perspectives = sorted(p for p in available if p != chosen_label)
+    ir, slug_to_scope, surveyed_at = available[chosen_label]
 
-    chosen_label = next(
-        (p for p in _DIAGRAM_PERSPECTIVE_PREFERENCE if p in latest_by_perspective),
-        next(iter(latest_by_perspective)),  # any remaining, unrecognised check_name
-    )
-    row = latest_by_perspective[chosen_label]
-    other_perspectives = sorted(p for p in latest_by_perspective if p != chosen_label)
+    verdicts = registry.get_component_verdicts("repo", slug)
+    component_verdicts: dict[str, str] = {}
+    kept: list = []
+    for c in ir.components:
+        # verdict_target checked explicitly, not just presence-of-a-row —
+        # component and blueprint verdicts share ONE table
+        # (get_component_verdicts' own docstring), and a component's
+        # scope_locator (a directory path) could in principle collide with
+        # a blueprint's `f"{perspective}::{name}"` key string. Caught by
+        # test_a_component_verdict_does_not_leak_into_a_blueprint_lookup /
+        # its component-bucket counterpart in
+        # test_architecture_verdict_coverage.py before this shipped.
+        v = verdicts.get(slug_to_scope.get(c.slug, ""))
+        verdict = v.get("verdict") if v and v.get("verdict_target", "component") == "component" else None
+        if verdict == "rejected":
+            continue
+        if verdict:
+            component_verdicts[c.slug] = verdict
+        # Blueprint verdict is a SEPARATE decision from any member's own —
+        # keyed by f"{perspective}::{blueprint}", record_blueprint_verdict's
+        # own scope_locator convention (web/routes/curate.py). A rejected
+        # blueprint ungroups its members rather than dropping them: the
+        # clustering proposal was declined, not the components themselves.
+        if c.blueprint:
+            bp_verdict = verdicts.get(f"{c.perspective}::{c.blueprint}")
+            if bp_verdict and bp_verdict.get("verdict_target") == "blueprint" \
+                    and bp_verdict.get("verdict") == "rejected":
+                c.blueprint = ""
+        kept.append(c)
+    ir.components = kept
 
-    detail = row.get("detail_json") or row.get("detail") or {}
-    if isinstance(detail, str):
-        try:
-            detail = json.loads(detail)
-        except Exception:  # noqa: BLE001
-            detail = {}
+    max_depth = arch_projection.DEFAULT_PROJECTION_DEPTH
+    diagram = mermaid.render(ir, max_depth, component_verdicts=component_verdicts)
+    caption_text = mermaid.caption(ir, max_depth, component_verdicts=component_verdicts)
 
-    # docs/curated-architecture-answers-design.md §6 item 1. Appended to
-    # `caption` itself (which is also this fact's `headline`/answer text via
+    # docs/curated-architecture-answers-design.md §6 item 1 (2026-09-08,
+    # shipped one commit before this one). Appended to `caption_text` itself
+    # (also this fact's `headline`/answer text via
     # _architecture_diagram_headline below) rather than added as its own
     # `*_detail` key: `_factProseKeys` (index.html) would promote a second
     # `*_detail` string to the chat answer OUTRIGHT REPLACING the headline
-    # (`proseAnswer || f.headline`, and `||` picks proseAnswer unconditionally
-    # once non-empty) — the component-count description would silently drop
-    # out of the visible answer, leaving only the coverage clause. One string
-    # is the only way both survive.
+    # (`proseAnswer || f.headline`, `||` picks proseAnswer unconditionally
+    # once non-empty) — the diagram's own description would silently drop
+    # out of the visible answer, leaving only the coverage clause.
     coverage_sentence = _architecture_verdict_coverage_sentence(
         _architecture_verdict_coverage(registry, slug))
-    caption = row.get("summary", "")
     if coverage_sentence:
-        caption = f"{caption} — {coverage_sentence}." if caption else f"{coverage_sentence}."
+        caption_text = f"{caption_text} {coverage_sentence}."
 
     return {
-        "caption": caption,
-        "surveyed_at": row.get("surveyed_at", ""),
-        "mermaid": detail.get("mermaid", ""),
-        "char_count": detail.get("char_count", 0),
-        "exceeds_renderer_limit": detail.get("exceeds_renderer_limit", False),
-        "projection_depth": detail.get("projection_depth"),
-        # Which perspective this is, and what else is on file — not read by
-        # any UI yet, but the whole point of labelling both is that a reader
-        # doesn't have to guess it silently chose one.
+        "caption": caption_text,
+        "surveyed_at": surveyed_at,
+        "mermaid": diagram,
+        "char_count": len(diagram),
+        "exceeds_renderer_limit": mermaid.exceeds_renderer_limit(diagram),
+        "projection_depth": max_depth,
+        # Which perspective this is, and what else is on file — the
+        # 2026-09-08 fix's own contribution, unchanged by the move to
+        # read-time rendering.
         "perspective": chosen_label,
         "other_perspectives_available": other_perspectives,
     }

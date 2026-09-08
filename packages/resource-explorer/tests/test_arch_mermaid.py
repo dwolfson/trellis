@@ -275,11 +275,19 @@ class TestStructuralBlueprintInheritance:
         assert "blueprint: alpha" not in out
 
 
-class TestPersistedAtPublishTime:
-    """The diagram is a record of what THIS run proposed, captured beside the
-    evidence it was drawn from — not something re-derived later from an IR that
-    has since moved. When Phase 2 publishes proposals, this is what goes into
-    the annotation."""
+class TestDiagramIsNoLongerPersistedAtWriteTime:
+    """Was `TestPersistedAtPublishTime` — the diagram used to be a record of
+    what THIS run proposed, written alongside the evidence it was drawn
+    from. Moved to READ time 2026-09-08
+    (docs/curated-architecture-answers-design.md §6 items 2-4): a curator's
+    verdict now changes what the diagram shows immediately, which a
+    snapshot baked in at persist time never could. `persist_ir` no longer
+    calls `_persist_diagram` at all — this class pins that, plus the one
+    invariant here that was never about the diagram in the first place.
+    Content-level coverage (a component's confidence, structural nodes,
+    ports/wires, verdict styling) now lives against `mermaid.render`/
+    `caption` directly (this file, above) and against the read-time
+    reconstruction in tests/test_architecture_diagram_results.py."""
 
     class _StubRegistry:
         def __init__(self):
@@ -309,84 +317,31 @@ class TestPersistedAtPublishTime:
         return reg
 
     def _diagrams(self, reg):
-        # NOT check_name == "architecture_diagram" (2026-09-08): check_name
-        # now carries `run_label` ("detect"/"coupling"/the "run" default
-        # these tests' bare `_run()` uses) so the two survey steps' diagrams
-        # are distinguishable — see persist.py::_persist_diagram's docstring.
-        # `kind` is what stayed fixed; that's the real identity of "this is
-        # an architecture_diagram finding" now.
         from resource_explorer.surveyors.arch_recovery import persist
         return [f for f in reg.findings if f["kind"] == persist.DIAGRAM_KIND]
 
-    def test_a_run_with_components_writes_exactly_one_diagram(self):
-        reg = self._run([_c("a"), _c("b")])
-        assert len(self._diagrams(reg)) == 1
-
-    def test_the_diagram_is_whole_resource_scoped(self):
-        """It describes the proposal as a whole, not one component's scope."""
-        assert self._diagrams(self._run([_c("a")]))[0]["scope_locator"] == ""
-
-    def test_the_diagram_does_not_land_under_the_recovery_kind(self):
-        """A whole-resource finding under `architecture_recovery` would make
-        context_compile's default-scope `query_findings` return exactly one row
-        — this Mermaid blob — and suppress its fall-through to the analysis's
-        own results reader. Ports and wires live under their own kind for the
-        same reason."""
-        from resource_explorer.surveyors.arch_recovery import persist
-        reg = self._run([_c("a")])
-        kinds = {f["kind"] for f in self._diagrams(reg)}
-        assert kinds == {persist.DIAGRAM_KIND}
-        assert persist.KIND not in kinds
-
-    def test_no_whole_resource_finding_is_written_under_the_recovery_kind(self):
-        """The property that actually protects the compiler, asserted directly
-        rather than via the diagram's own kind."""
-        from resource_explorer.surveyors.arch_recovery import persist
-        reg = self._run([_c("a"), _c("b")])
-        whole = [f for f in reg.findings
-                 if f["kind"] == persist.KIND and f["scope_locator"] == ""]
-        assert whole == []
-
-    def test_the_diagram_carries_renderable_mermaid(self):
-        d = self._diagrams(self._run([_c("a", name="Alpha")]))[0]
-        assert d["detail"]["format"] == "mermaid"
-        assert d["detail"]["mermaid"].startswith("flowchart TD")
-        assert "Alpha" in d["detail"]["mermaid"]
-
-    def test_the_caption_is_the_summary(self):
-        d = self._diagrams(self._run([_c("a")]))[0]
-        assert "component(s) shown" in d["summary"]
-
-    def test_it_is_marked_as_not_a_claim(self):
-        """The diagram asserts nothing of its own — it renders claims that each
-        carry their own confidence."""
-        d = self._diagrams(self._run([_c("a")]))[0]
-        assert d["detail"]["not_a_claim"] is True
-        assert d["confidence"] == 0
-
-    def test_a_run_with_no_components_writes_no_diagram(self):
-        """A diagram of nothing would imply a proposal exists where the run
-        found none. The component-count metric carries that outcome instead."""
-        assert self._diagrams(self._run([])) == []
-
-    def test_ports_and_wires_reach_the_diagram(self):
+    def test_persist_ir_writes_no_diagram_at_all_any_more(self):
+        """The regression pin for this refactor: a survey run that would
+        very much have produced a diagram under the old write-time design
+        (real components, ports, wires all present) still writes none."""
         reg = self._run(
             [_c("a", name="a"), _c("b", name="b")],
             ports=[{"component": "a", "name": "8080", "direction": "Input", "protocol": "tcp"}],
             wires=[{"source": "a", "target": "b", "oneWay": True}],
         )
-        text = self._diagrams(reg)[0]["detail"]["mermaid"]
-        assert "8080" in text
-        assert f'{mermaid._nid("a")} --> {mermaid._nid("b")}' in text
-
-    def test_a_rendering_failure_does_not_lose_the_run(self, monkeypatch):
-        """Everything else is already written by that point; the diagram is a
-        view of the findings, not the findings."""
-        monkeypatch.setattr(mermaid, "render",
-                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-        reg = self._run([_c("a")])
         assert self._diagrams(reg) == []
+        # It did not write nothing at all -- the component rows this
+        # reconstruction now reads back from are still there.
         assert any(f["check_name"] == "component" for f in reg.findings)
+
+    def test_no_whole_resource_finding_is_written_under_the_recovery_kind(self):
+        """The property that actually protects the compiler, unrelated to
+        the diagram specifically -- kept from the class this replaces."""
+        from resource_explorer.surveyors.arch_recovery import persist
+        reg = self._run([_c("a"), _c("b")])
+        whole = [f for f in reg.findings
+                 if f["kind"] == persist.KIND and f["scope_locator"] == ""]
+        assert whole == []
 
 
 class TestRendererSizeLimit:
@@ -417,15 +372,17 @@ class TestRendererSizeLimit:
         out = mermaid.render(big, max_depth=None)
         assert mermaid._nid("component-number-01199") in out
 
-    def test_the_persisted_finding_labels_an_oversized_diagram(self, monkeypatch):
+    def test_char_count_and_exceeds_flag_agree_when_oversized(self, monkeypatch):
+        """Was against the persisted finding's own `detail.char_count`/
+        `exceeds_renderer_limit` fields (removed 2026-09-08 along with
+        write-time persistence) -- the same pairing a read-time caller
+        builds directly from `render()`'s own output, pinned here instead."""
         monkeypatch.setattr(mermaid, "RENDERER_CHAR_LIMIT", 10)
-        t = TestPersistedAtPublishTime()
-        d = t._diagrams(t._run([_c("a")]))[0]
-        assert d["detail"]["exceeds_renderer_limit"] is True
-        assert d["detail"]["char_count"] > 10
+        out = mermaid.render(_ir([_c("a")]))
+        assert mermaid.exceeds_renderer_limit(out) is True
+        assert len(out) > 10
 
-    def test_the_persisted_finding_records_size_even_when_fine(self):
-        t = TestPersistedAtPublishTime()
-        d = t._diagrams(t._run([_c("a")]))[0]
-        assert d["detail"]["exceeds_renderer_limit"] is False
-        assert d["detail"]["char_count"] > 0
+    def test_char_count_and_exceeds_flag_agree_when_fine(self):
+        out = mermaid.render(_ir([_c("a")]))
+        assert mermaid.exceeds_renderer_limit(out) is False
+        assert len(out) > 0
