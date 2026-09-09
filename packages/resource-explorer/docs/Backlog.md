@@ -4438,7 +4438,7 @@ Not designed or scoped further than this. Whoever picks it up should start
 from `run_queue.py`'s existing job model and `admin.py`'s UI shape as
 reference, not treat this as "copy admin.html."
 
-## `architecture_diagram` collides with `architecture_recovery`'s steps, and has no dashboard
+## `architecture_diagram` collides with `architecture_recovery`'s steps, and has no dashboard — FIXED 2026-09-08
 
 Two tests have been failing since `b3b0500` added the read-time
 `architecture_diagram` AnalysisKind (2026-09-08), and both became easier to
@@ -4467,12 +4467,56 @@ AnalysisKind and NOT a reason for it to claim the same steps: it runs no steps
 of its own (hence `live_read=True`), so the honest shape is probably an empty
 step list plus a dashboard entry, rather than borrowing `architecture_recovery`'s.
 
-Not fixed here. Both are one-line changes and neither is safe to guess at: the
-step map feeds run attribution across the catalog, and which dashboard the
-diagram belongs in is a presentation decision. Belongs with whoever owns
-`b3b0500`.
+**Fixed the same day, and the collision was worse than the test says.**
 
-## The silent-success ratchet is red on one site, and it needs a decision, not a fix
+`ProjectRegistry._step_key_to_analysis_id` inverts the step map with a dict
+comprehension, so the LAST analysis declaring a key wins — and
+`architecture_diagram` is the final entry in `ANALYSIS_KINDS`. Both recovery
+steps therefore resolved to the diagram, and every survey-derived run of them
+was credited to the picture rather than to the recovery that did the work.
+Confirmed by reading the live inverse map, not inferred from the source.
+
+Worse, the two attribution paths disagreed with each other:
+`egeria_annotation_materializer._analysis_for` loops and returns the FIRST
+match, so a run and the annotations that run produced were being filed under
+different analyses.
+
+The fix separates the two questions the one field was answering.
+`AnalysisKind.step_keys` now means only "whose run was that" and must still
+partition; a new `derives_from` means "what do I run to refresh this", and
+`REPO_ANALYSIS_SOURCE_STEPS` is its map. `architecture_diagram` owns nothing
+and derives from the recovery's two steps. The catalog entry's argument for
+sharing them (`_persist_diagram` ran inside those steps) was true when written
+and had stopped being true hours earlier, when the diagram moved to read-time
+rendering — that comment is corrected in place rather than left to mislead the
+next reader.
+
+Everything asking "what should I execute" moved to the source map: the Run
+button (`web/routes/projects.py`), the scheduler's single and coalesced
+dispatch, `analysis_cost`, and the fact layer's "run this next" hint. Missing
+any one of those would have been silent in its own way — a 400 on the button,
+a schedule that comes due and does nothing, the most expensive analysis in the
+catalog priced at ("none", "low") and recommended daily.
+
+`architecture_diagram` also joined the `architecture_overview` dashboard,
+first of its four: the picture states the relations the other three describe
+in fields.
+
+Guarded by four new tests in `test_run_publish_honesty.py`, each verified
+against the un-fixed code — including one that drives `_run_repo_survey` and
+asserts which steps reach the orchestrator, rather than reading the scheduler's
+source for the right symbol.
+
+**Related, and NOT resolved by this:** the entry above about
+`architecture_recovery` reporting never-run for `egeria-workspaces_git`
+proposes `live_read=True` as its fix. That repo has no attribution for ANY
+architecture analysis — the diagram included — so this collision is not its
+cause, and the diagnosis there stands. But the collision would have made
+`live_read=True` look like it worked for the wrong reason on repos that DO have
+survey attribution, so re-measure that entry now the ownership is correct
+before acting on it.
+
+## The silent-success ratchet is red on one site — FIXED 2026-09-08 by `a254f29`, and better than this entry advised
 
 `tests/test_no_silent_success.py` has been failing since 2026-09-08. Three new
 sites appeared; two were fixed the same day (`egeria_identity.py::
@@ -4488,16 +4532,27 @@ bookkeeping write, and its comment states the intent plainly: *"Persistence is
 an instrument, not the product: a compile the caller can use must never be
 lost to a failed bookkeeping write."*
 
-If that reasoning holds — and on its face it does — this is exactly option (3)
-in the test's own remediation list: a genuinely best-effort site that should be
-recorded in `tests/no_silent_success_baseline.json` **deliberately**, not
-worked around and not silently absorbed. The baseline is a reviewed artifact,
-so adding a key to it is a decision for whoever owns compiled context rather
-than something to do in passing from an unrelated change.
+This entry originally recommended option (3) in the test's own remediation
+list — record it in `tests/no_silent_success_baseline.json` as a reviewed,
+genuinely best-effort site — on the grounds that the comment's reasoning holds
+and the caller must not lose a usable compile to a failed bookkeeping write.
 
-Until then the ratchet reports 109 against a baseline of 108 and will stay red,
-which costs the whole repo the signal — a genuinely new silent-success site
-added tomorrow would land in an already-failing test.
+**`a254f29` took option (1) instead, and it is the better answer.** The compile
+is still returned, so nothing regressed for the caller; what changed is that
+the manifest now carries `recorded: False` and a note saying feedback citing
+this `compile_id` will not resolve to a stored manifest. The reasoning the
+comment gave was sound about the RETURN VALUE and did not follow for the
+manifest: "must not lose the compile" is not the same claim as "must not
+mention that we failed to file it", and a baseline entry would have frozen the
+weaker reading in a reviewed artifact.
+
+Worth keeping as a record of the near-miss: the argument for the baseline was
+made from the handler's own comment, which described the intent accurately and
+was never evidence about what the manifest could afford to say. A comment
+stating why a thing is deliberate is not a measurement of what the alternatives
+cost.
+
+The ratchet is green at 108.
 
 ## The architecture diagram is drawn by a path no test exercises end-to-end
 

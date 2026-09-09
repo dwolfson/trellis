@@ -32,7 +32,7 @@ import pytest
 from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 from resource_explorer.surveyors.repo_survey_definition_adapter import (
     ANALYSIS_KINDS,
-    REPO_ANALYSIS_STEP_MAP,
+    REPO_ANALYSIS_SOURCE_STEPS,
     STEP_REGISTRY,
 )
 
@@ -122,10 +122,21 @@ class TestAnalysesAreReachable:
             "Without one there is no card, so the kind can only be run from code.")
 
     def test_every_catalog_entry_can_be_dispatched(self):
-        """A card whose Run does nothing is worse than no card."""
+        """A card whose Run does nothing is worse than no card.
+
+        SOURCE steps, not owned ones (changed 2026-09-08). `step_keys` stopped
+        meaning "what this runs" when ownership and executability were split
+        (`AnalysisKind.derives_from`): `architecture_diagram` owns no steps
+        precisely so run attribution stops crediting it with
+        `architecture_recovery`'s, and it is dispatched — button, scheduler and
+        cost — through `REPO_ANALYSIS_SOURCE_STEPS`. Asked against the ownership
+        map this reported it undispatchable while its Run button worked, which
+        is this test's own failure mode inverted: a card that works, called
+        broken.
+        """
         undispatchable = {
             i for i, e in _repo_catalog().items()
-            if not REPO_ANALYSIS_STEP_MAP.get(i)
+            if not REPO_ANALYSIS_SOURCE_STEPS.get(i)
             and e.get("action") not in ("publish", "ingest", "profile")
         }
         assert not undispatchable, (
@@ -175,7 +186,11 @@ class TestNothingIsReachableOnlyFromCode:
 
     def test_every_step_is_reachable_from_a_survey_or_a_card(self):
         stage_steps = _stage_survey_steps()
-        card_steps = {s for keys in REPO_ANALYSIS_STEP_MAP.values() for s in keys}
+        # SOURCE steps: "reachable from a card" is about what a card can RUN,
+        # not what it owns. Identical today (the one derives-from card runs
+        # steps another card owns), but a step reachable ONLY from a
+        # derives-from card would read as unreachable off the ownership map.
+        card_steps = {s for keys in REPO_ANALYSIS_SOURCE_STEPS.values() for s in keys}
         reachable = stage_steps | card_steps
 
         unreachable = {

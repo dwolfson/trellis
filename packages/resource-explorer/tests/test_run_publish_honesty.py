@@ -64,6 +64,138 @@ class TestRunAttribution:
                 assert k not in seen, f"step {k} claimed by {seen[k]} and {analysis_id}"
                 seen[k] = analysis_id
 
+    def test_the_recovery_keeps_credit_for_its_own_steps(self, reg, slug):
+        """The concrete case the partition rule exists for.
+
+        `architecture_diagram` declared `repo_arch_detect`/`repo_arch_coupling`
+        as its own until 2026-09-08. `_step_key_to_analysis_id` inverts the map
+        with a dict comprehension and the diagram is defined LAST, so both keys
+        resolved to it and a survey that ran the recovery credited the picture
+        instead of the work. Asserting the survivor by name, not just that the
+        map partitions — a future entry could re-take these keys and still
+        partition, by removing them from `architecture_recovery`.
+        """
+        _log_survey(reg, slug, "2026-09-08T10:00:00",
+                    [("repo_arch_detect", "ok"), ("repo_arch_coupling", "ok")])
+        got = reg.get_analysis_last_run("repo", slug)
+        assert "architecture_recovery" in got, (
+            "the analysis that owns the recovery steps was not credited with running them")
+        assert got["architecture_recovery"]["last_run_at"] == "2026-09-08T10:00:00"
+        assert "architecture_diagram" not in got, (
+            "a run was attributed to the analysis that only renders its result")
+
+    def test_the_two_attribution_paths_agree(self):
+        """There are two of them, and they disagreed on a colliding key.
+
+        `ProjectRegistry._step_key_to_analysis_id` builds a dict, so the LAST
+        analysis declaring a key wins. `egeria_annotation_materializer`'s
+        `_analysis_for` loops and returns on the FIRST match. On
+        `repo_arch_detect` those gave different answers, so a run and the
+        annotations produced by that run were filed under different analyses.
+        """
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+        last_wins = ProjectRegistry._step_key_to_analysis_id()
+        first_wins = {}
+        for analysis_id, keys in REPO_ANALYSIS_STEP_MAP.items():
+            for k in keys:
+                first_wins.setdefault(k, analysis_id)
+        assert last_wins == first_wins, (
+            "the two attribution paths disagree on: "
+            f"{ {k: (first_wins[k], last_wins[k]) for k in first_wins if first_wins[k] != last_wins.get(k)} }")
+
+
+class TestEveryAnalysisCanActuallyBeRun:
+    """Ownership and executability were one field until 2026-09-08, and
+    splitting them introduced a way to be silently unrunnable: an analysis with
+    `step_keys=[]` and no `derives_from` has nothing to dispatch, so its Run
+    button 400s, its cost reads free, and the fact layer tells a user there is
+    nothing they can run. Nothing else fails."""
+
+    def test_a_survey_analysis_always_has_something_to_run(self):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_SOURCE_STEPS,
+        )
+        runnable = {a["id"] for a in get_analyses("repo", include_egeria_live=False)
+                    if a.get("action") == "survey"}
+        empty = {a for a in runnable
+                 if a in REPO_ANALYSIS_SOURCE_STEPS and not REPO_ANALYSIS_SOURCE_STEPS[a]}
+        assert not empty, (
+            f"catalogued as runnable with no steps to run: {sorted(empty)}. "
+            "Give the AnalysisKind step_keys of its own, or derives_from naming "
+            "the steps that produce its data.")
+
+    def test_derives_from_names_steps_that_someone_owns(self):
+        """A `derives_from` pointing at a step no analysis owns would name
+        something the orchestrator has no owner for — and would leave the
+        colliding-key bug's inverse: a step that runs and is credited to
+        nobody."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS, REPO_ANALYSIS_STEP_MAP, STEP_REGISTRY,
+        )
+        owned = {k for keys in REPO_ANALYSIS_STEP_MAP.values() for k in keys}
+        for analysis_id, kind in ANALYSIS_KINDS.items():
+            for k in kind.derives_from:
+                assert k in STEP_REGISTRY, f"{analysis_id} derives from unknown step {k}"
+                assert k in owned, (
+                    f"{analysis_id} derives from {k}, which no analysis owns — "
+                    "a run of it would be credited to nobody")
+
+    def test_a_derived_analysis_does_not_report_itself_free(self):
+        """`analysis_cost` reads the steps that RUN. Reading owned steps would
+        price architecture_diagram at ("none", "low") — the cheapest tier in
+        the catalog for the thing that downloads two artifacts — and
+        `recommended_schedule` would invite running it daily."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS, analysis_cost,
+        )
+        for analysis_id, kind in ANALYSIS_KINDS.items():
+            if not kind.derives_from:
+                continue
+            assert analysis_cost(analysis_id) != ("none", "low"), (
+                f"{analysis_id} derives from real steps and is priced as free")
+
+    def test_a_derived_analysis_is_dispatched_by_the_scheduler(self, monkeypatch):
+        """A schedule on `architecture_diagram` must actually run the recovery
+        steps. Resolved through the ownership map it runs nothing: the schedule
+        sits in the list, comes due, and reports an "internal configuration
+        gap" nobody reads.
+
+        Driven through `_run_repo_survey` rather than asserted against the
+        module's source — what matters is which steps reach the orchestrator.
+        """
+        from types import SimpleNamespace
+
+        from resource_explorer import scheduler
+
+        ran: list[list[str]] = []
+
+        class _Orch:
+            def __init__(self, registry):
+                pass
+
+            def run(self, slug, steps=None, **kw):
+                ran.append(list(steps or []))
+                return SimpleNamespace(errors=[], step_errors={})
+
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator", _Orch)
+
+        project = SimpleNamespace(slug="r", display_name="r",
+                                  github_url="https://github.com/o/r",
+                                  collections=[], subproject_path=None)
+        registry = SimpleNamespace(get=lambda slug: project)
+
+        _, _, errors = scheduler._run_repo_survey("r", "architecture_diagram", registry)
+
+        assert not errors, errors
+        assert ran == [["repo_arch_detect", "repo_arch_coupling"]], (
+            f"the scheduler ran {ran} for architecture_diagram")
+
+
     def test_a_partial_run_says_so(self, reg, slug):
         """language_file_classification owns three step keys. A survey running
         one of them did real work -- calling that "never run" is the larger

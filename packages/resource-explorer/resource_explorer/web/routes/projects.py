@@ -1240,7 +1240,9 @@ async def run_scoped_analysis(slug: str, analysis_id: str, body: ScopedAnalysisR
     plus the scope gate and scope_locator passthrough."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses, is_shape_compatible
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_SOURCE_STEPS,
+    )
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
     registry = ProjectRegistry()
@@ -1272,7 +1274,9 @@ async def run_scoped_analysis(slug: str, analysis_id: str, body: ScopedAnalysisR
                    f"to a '{sub_resource['kind']}' sub-resource.",
         )
 
-    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    # SOURCE steps: an analysis that owns none still runs its source's, and
+    # refusing here would make architecture_diagram's Run button a 400.
+    steps = REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id)
     if not steps:
         raise HTTPException(
             status_code=400,

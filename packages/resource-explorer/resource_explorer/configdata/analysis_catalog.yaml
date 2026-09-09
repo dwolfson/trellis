@@ -720,11 +720,18 @@ repo_analyses:
     # architecture_summary's OWN step (repo_arch_summary) declares empty
     # requires_resources: it re-summarises what repo_arch_detect/coupling
     # already wrote, in a separate pass, needing no zipball of its own.
-    # architecture_diagram has no such separate step -- persist.py's
-    # _persist_diagram runs INSIDE repo_arch_detect/repo_arch_coupling
-    # themselves (persist_ir(), which both call), the same fetch-heavy steps
-    # architecture_recovery itself declares. So this is architecture_recovery's
-    # classification, not architecture_summary's -- same steps, same cost.
+    # architecture_diagram has no such separate step, so refreshing it means
+    # running repo_arch_detect/repo_arch_coupling -- the same fetch-heavy steps
+    # architecture_recovery declares. Hence architecture_recovery's cost tier
+    # and availability here, not architecture_summary's.
+    #
+    # It does NOT own those steps, though, and briefly did (fixed 2026-09-08
+    # the same day): `AnalysisKind.step_keys` is inverted for run attribution,
+    # so declaring them here took credit for every recovery run. The
+    # AnalysisKind now carries them as `derives_from` -- run the same steps,
+    # own neither. The original argument for ownership was that
+    # `_persist_diagram` ran INSIDE those two steps; that stopped being true
+    # when the diagram moved to read-time rendering earlier the same day.
     intent: analysis
     perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ResourceMeasureAnnotation"]
