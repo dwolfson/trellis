@@ -78,6 +78,44 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### full-20260908, re-judged under rubric v2-2026-09-08 — the numbers to quote
+
+Same 312 answers as the first run; only the judge changed. `results.v2-2026-09-08.jsonl`; MLflow runs
+`full-20260908-rejudge-{compiled,rag}`.
+
+| metric | compiled | rag |
+|---|---:|---:|
+| answers_question (0–2) | 1.02 | 0.90 |
+| cites_evidence | 36% | 1% |
+| claims_missing_result | 3% (4 rows) | 7% (11 rows) |
+| acknowledges_limits | 40% | 60% |
+| unsupported_claims (mean) | 0.82 | 0.58 |
+| declines to answer | 46 rows | 84 rows |
+
+Paired per (repo, question): compiled higher in 38, lower in 20, tied in 98; mean difference
+**+0.12**, down from +0.46 under v1. Almost all of the v1 gap was the judge scoring RAG's honest
+refusals as 0; under v2 every decline that grounds itself scores 1, and RAG declines far more often
+(84 to 46). Replayability unchanged: 156 of 156.
+
+**What the corrected numbers say.**
+
+- The compiler's main job is visible now that the rubric can see it: RAG asserted a result for an
+  analysis with no usable result in 11 rows, compiled in 4, and of those 4 at least one is a real
+  compiled failure ("No, there are no outstanding CVEs" for a repository whose `cve_scan` is a gap)
+  while two look like judge over-reach on a general question. The per-kind split is sharper:
+  on `analysis` questions RAG claims missing results 16% of the time, compiled 4%.
+- Compiled answers cite evidence (36% vs 1%) and answer rather than decline; RAG's higher
+  `acknowledges_limits` is mostly that it declines twice as often.
+- **Compiled makes MORE unsupported claims** (0.82 vs 0.58; on `analysis` questions 1.12 vs 0.52).
+  This is the loss audit's cause B/C measured: summary-rung text from neighbouring sections
+  narrated as specifics ("5 lines of code by language"). It is the clearest engineering signal in
+  the run and it points at packing 24–27 sections into 6,000 characters, not at the judge.
+- The v1 conclusion "compiled roughly doubles answers_question" is withdrawn. The defensible
+  claim is: compiled answers are cited, decline less, and assert results for missing analyses less
+  often; they also invent more specifics from coarse evidence, which is a compiler defect with a
+  known location (`context_compile.py`: section breadth and `_results_to_rungs`' structural SUMMARY).
+
+
 ### full-20260908 — 3 repos × 52 questions × 2 conditions = 312 rows, 0 errors
 
 Answerer `llama3.1:8b`, tier `dev`, no perspectives; judge `qwen2.5:32b`. Results in
