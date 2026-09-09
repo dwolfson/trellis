@@ -78,6 +78,29 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run2-20260908 — reproducibility on the redeployed platform, rubric v2 from the start
+
+Same seed, same three repos, 312 rows, 0 errors, answered fresh after the 2026-09-08 Egeria
+redeploy and judged under v2. `data/experiments/compiled_vs_rag_run2/results.jsonl`.
+
+| metric | compiled | rag | (re-judged run 1) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.01 | 0.91 | 1.02 / 0.90 |
+| cites_evidence | 35% | 1% | 36% / 1% |
+| claims_missing_result | 5% | 7% | 3% / 7% |
+| acknowledges_limits | 38% | 59% | 40% / 60% |
+| unsupported_claims (mean) | 0.81 | 0.58 | 0.82 / 0.58 |
+| latency, median | 9.4 s | 7.4 s | 11.6 / 10.2 |
+
+Every metric reproduces within two points of the re-judged first run; replayability 156 of 156
+again. The protocol's "treat differences under about ten points as noise until a second run
+reproduces them" is satisfied for: cites_evidence (+34), declines (compiled declines about half as
+often), and unsupported_claims (compiled worse by about 0.23). The answers_question gap (+0.10 to
++0.12) is inside the noise band and should be reported as "no material difference on this
+judge". The missing-result claim rate is low and noisy in both conditions (4 to 11 rows); the
+direction favours compiled in both runs but the sample is too small to quote as a percentage.
+
+
 ### full-20260908, re-judged under rubric v2-2026-09-08 — the numbers to quote
 
 Same 312 answers as the first run; only the judge changed. `results.v2-2026-09-08.jsonl`; MLflow runs
