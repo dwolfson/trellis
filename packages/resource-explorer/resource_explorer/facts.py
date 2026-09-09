@@ -118,6 +118,20 @@ class Fact:
         }
 
 
+def _query_hash(question: str) -> str:
+    """The same key `/api/query/feedback` votes are recorded against.
+
+    Deliberately identical to `web/routes/query.py`'s inline expression rather
+    than a new scheme: a vote on "what is Egeria?" should land in one place
+    whether the answer came from RAG or from measurements, otherwise the
+    feedback corpus is split by an implementation detail the person voting
+    cannot see.
+    """
+    import hashlib
+
+    return hashlib.sha256((question or "").encode()).hexdigest()[:16]
+
+
 @dataclass
 class Envelope:
     """An answer, with everything needed to state it honestly.
@@ -161,6 +175,16 @@ class Envelope:
             # cannot disagree about whether the same envelope had an answer.
             "known_count": sum(1 for f in self.facts if f.is_known),
             "unknown_count": sum(1 for f in self.facts if not f.is_known),
+            # The key `/api/query/feedback` records a vote against, so an
+            # answer composed from measurements can be rated exactly like a
+            # RAG answer. Computed HERE, not in the browser, so it cannot
+            # drift from the query path's own
+            # `hashlib.sha256(query.encode()).hexdigest()[:16]`
+            # (web/routes/query.py) — two independent implementations of one
+            # hash would agree until some question contained a character they
+            # encoded differently, and then votes would silently land under a
+            # key nothing else uses.
+            "query_hash": _query_hash(self.question),
         }
 
 

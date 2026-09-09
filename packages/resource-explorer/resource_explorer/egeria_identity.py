@@ -550,9 +550,60 @@ def _platform_name() -> str:
             names.append(name)
     if len(names) == 1:
         return names[0]
+    if not names:
+        raise RuntimeError(
+            "could not identify the platform to configure: no catalogued "
+            "SoftwareServerPlatform found. Set EXPLORER_EGERIA_PLATFORM_NAME."
+        )
+
+    # Several platforms are catalogued. Before refusing, ask which of them
+    # already holds OUR control — that is a fact, not a guess, and it is the
+    # common case on a deployment that has been running: the control was
+    # created on one specific platform and we only need to find it again.
+    #
+    # This path became real on 2026-09-08: a redeploy catalogued a second
+    # platform ("Local OMAG Server Platform" beside "Quickstart OMAG Server
+    # Platform"), and the refusal below started firing on a deployment whose
+    # private zone was demonstrably still enforcing. Refusing there is the safe
+    # direction but it disables a working feature, which is its own kind of
+    # wrong answer.
+    zone = private_zone()
+    try:
+        from pyegeria.omvs.security_officer import SecurityOfficer
+
+        probe = SecurityOfficer(egeria.view_server, egeria.platform_url,
+                                egeria.user_id, egeria.user_password)
+        probe.create_egeria_bearer_token()
+        holders = []
+        for name in names:
+            try:
+                got = probe.get_security_access_control(name, zone)
+            except Exception:
+                continue
+            if got and (got.get("associatedSecurityList") or {}):
+                holders.append(name)
+        if len(holders) == 1:
+            log.info("egeria: several platforms catalogued %s; using %r, which holds "
+                     "the %r control", names, holders[0], zone)
+            return holders[0]
+        if len(holders) > 1:
+            raise RuntimeError(
+                f"the {zone!r} control exists on more than one catalogued platform "
+                f"({holders}), so which one governs this deployment is ambiguous. "
+                "Set EXPLORER_EGERIA_PLATFORM_NAME."
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        log.debug("could not probe platforms for the %r control: %s", zone, exc)
+
+    # None of them holds it, so this would be a CREATE and there is no evidence
+    # for where it belongs. Refusing beats writing security configuration to an
+    # arbitrary platform.
     raise RuntimeError(
-        f"could not identify the platform to configure: found {names or 'none'}. "
-        "Set EXPLORER_EGERIA_PLATFORM_NAME."
+        f"could not identify the platform to configure: found {names}, and none "
+        f"holds the {zone!r} control. Set EXPLORER_EGERIA_PLATFORM_NAME to say "
+        "which platform governs this deployment."
     )
 
 

@@ -968,10 +968,47 @@ exists to prevent, reproduced inside the code meant to prevent it. Unreadable
 members are now reported and block a tightening; a loosening still proceeds,
 because there the failure direction is safe.
 
-Sixteen tests, every guard made to fail on purpose — including one that had to
-be strengthened first: the lateral-change test started in `egeria-runtime`, which
-*is* `publish_zones()`, so a wrongly-applied re-zone would have been a no-op and
-invisible.
+**Completed 2026-09-08 with the Egeria metadata half.** The first version moved
+zones and the local row but never changed the Egeria Project's own kind
+classification — §5 lists declassify/classify as steps 1 and 2, and only the
+zones had been built. So an investigation promoted as `Task` and reclassified to
+`PersonalProject` had correct visibility and a Project still claiming to be a
+Task. `_move_kind_classification` now swaps it, after the zones, and a failure
+there is reported as a **metadata inconsistency rather than an exposure** —
+visibility went first and is correct.
+
+**The `Investigation` marker is safe by construction.** The project owner added
+an Egeria classification called `Investigation` (2026-09-08) as an orthogonal
+marker that coexists with the kind and does not drive zones. The swap removes
+the **old kind by name**, gated on `PROJECT_CLASSIFICATIONS`, so the marker —
+along with `Anchors`, `Ownership` and `ZoneMembership` — survives. Verified
+live: `['Task']` -> `['PersonalProject']` with `anchor`, `ownership` and
+`zoneMembership` all still present afterwards.
+
+**Two bugs the live run found here too:**
+
+*The read-back was asking the wrong client.*
+`MetadataExpert.get_metadata_element_by_guid` returns the raw element shape;
+`_confirm_classification` was measured against
+`ProjectManager.get_project_by_guid`'s `elementHeader.projectKinds`. Reading with
+the wrong one made the check return "could not tell" on **every** call —
+correctly refusing to guess, and checking nothing. The third time in this feature
+that a verification step has been the thing that was broken.
+
+*The old classification was never removed*, so the Project carried BOTH kinds
+and a check that only asked "is the new one present?" passed.
+`declassify_metadata_element` raises when its Optional `body` is omitted
+(pyegeria, logged as ISSUE-93 rather than patched); the body is now passed, and
+the swap additionally asserts the OLD kind is gone rather than only that the new
+one arrived.
+
+Twenty-one tests, every guard made to fail on purpose — including three that had
+to be strengthened first: the lateral-change test started in `egeria-runtime`,
+which *is* `publish_zones()`, so a wrongly-applied re-zone would have been a
+no-op and invisible; the marker-safety test read the source and passed a sabotage
+run that stripped every classification; and the fakes accepted a `None` body,
+which made them more forgiving than the system they stand for, so removing the
+ISSUE-93 workaround passed. All three now model what was measured.
 
 ---
 
@@ -1005,6 +1042,52 @@ invisible.
   `egeria-workspaces-fs`'s `.omsecrets`. That is a different repo with a
   different change policy; confirm who lands it and whether it belongs in the
   freshstart config, the quickstart config, or both.
+
+---
+
+## 7a. After the 2026-09-08 redeploy — what changed, and two fixes it forced
+
+The owner redeployed to pick up the latest Egeria, **without resetting the
+metadata store**. Measured afterwards rather than assumed:
+
+* **`Investigation` and `NamingStandardsVocabulary` now exist** (both were "not
+  found" before). The marker is unblocked and the four Dr.Egeria Curation
+  templates have types to target.
+* **The private zone survived and still enforces** — present in the seed, the
+  runtime volume and the container, and a live check confirmed owner READ /
+  non-owner DENIED. Adding it to both compose seeds before the redeploy is what
+  made that unconditional rather than lucky.
+
+**Fix 1: platform discovery started refusing on a working deployment.** The
+redeploy catalogued a second platform, so `_platform_name()` saw
+`['Quickstart OMAG Server Platform', 'Local OMAG Server Platform']` and declined
+to guess — which returned `enforced: False` and would have disabled private
+publishing on a zone that was demonstrably denying. The refusal was the designed
+safe direction and it was still the wrong answer. It now asks **which platform
+already holds the control**, which is a fact rather than a guess, and refuses
+only when none does (a create, where there genuinely is no evidence).
+
+**Fix 2: the `Investigation` marker is applied after the create, not in it.**
+Owner's decision, 2026-09-08: it is an orthogonal marker meaning "this Project is
+an investigation", coexisting with the kind and not driving zones. RE now stamps
+it on every Project it promotes.
+
+It is a **separate classify call on purpose**. In `initialClassifications`, a
+classification the platform lacks fails the whole create — and this type did not
+exist until this redeploy, and will not exist on any older deployment. As a
+follow-on step a missing type costs the marker and not the investigation, and a
+failure is logged rather than raised: nothing in RE reads the marker, the kind is
+what drives behaviour.
+
+Verified live, including that it survives a change of kind:
+
+```
+after promote  -> projectKinds: ['Task', 'Investigation']
+after reclass  -> projectKinds: ['Investigation', 'PersonalProject']
+```
+
+which holds structurally because the reclassifier removes the old kind **by
+name**, gated on `PROJECT_CLASSIFICATIONS`, and the marker is not in that set.
 
 ---
 

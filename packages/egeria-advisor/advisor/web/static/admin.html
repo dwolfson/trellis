@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Egeria Advisor — Admin</title>
+  <script src="/static/auth.js?v=20260908a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
   <style>
@@ -261,9 +262,15 @@ let _modalJobId = null;
 let _modalPollTimer = null;
 
 // ── Init ───────────────────────────────────────────────────────────────────
+// Auth.init handles the portal SSO handoff (URL fragment) and shows the login
+// overlay if no token is present — this page has none of that markup, so an
+// unauthenticated visit just never fires onReady (matches every fetch below
+// being challenged server-side anyway; see auth.js for the fallback logic).
 document.addEventListener('DOMContentLoaded', () => {
-  refresh();
-  startCountdown();
+  Auth.init(() => {
+    refresh();
+    startCountdown();
+  });
 });
 
 function startCountdown() {
@@ -283,7 +290,7 @@ async function refresh() {
   startCountdown();
   let data;
   try {
-    const r = await fetch('/api/admin/status');
+    const r = await fetch('/api/admin/status', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch (e) { return; }
 
@@ -349,7 +356,7 @@ function renderCollections(cols) {
 async function reindex(name, force) {
   const label = force ? 'Full rebuild' : 'Incremental update';
   if (force && !confirm(`Force rebuild of "${name}"?\n\nThis drops and recreates the collection — may take several minutes.`)) return;
-  const r = await fetch(`/api/admin/collections/${encodeURIComponent(name)}/reindex?force=${force}`, { method: 'POST' });
+  const r = await fetch(`/api/admin/collections/${encodeURIComponent(name)}/reindex?force=${force}`, { method: 'POST', headers: Auth.getHeaders() });
   const data = await r.json();
   if (data.job_id) openJobModal(data.job_id, data.description);
   await refreshJobs();
@@ -381,7 +388,7 @@ function renderRepos(repos) {
 }
 
 async function pullRepo(name) {
-  const r = await fetch(`/api/admin/repos/${encodeURIComponent(name)}/pull`, { method: 'POST' });
+  const r = await fetch(`/api/admin/repos/${encodeURIComponent(name)}/pull`, { method: 'POST', headers: Auth.getHeaders() });
   const data = await r.json();
   if (data.job_id) openJobModal(data.job_id, data.description);
   await refreshJobs();
@@ -389,7 +396,7 @@ async function pullRepo(name) {
 
 // ── Maintenance ────────────────────────────────────────────────────────────
 async function maintenance(action) {
-  const r = await fetch(`/api/admin/maintenance/${action}`, { method: 'POST' });
+  const r = await fetch(`/api/admin/maintenance/${action}`, { method: 'POST', headers: Auth.getHeaders() });
   const data = await r.json();
   const msg = document.getElementById('maint-msg');
   msg.textContent = data.message || data.status;
@@ -403,7 +410,7 @@ async function maintenance(action) {
 
 // ── Jobs ───────────────────────────────────────────────────────────────────
 async function refreshJobs() {
-  const r = await fetch('/api/admin/jobs');
+  const r = await fetch('/api/admin/jobs', { headers: Auth.getHeaders() });
   const data = await r.json();
   renderJobs(data.jobs || []);
   // Update modal if open
@@ -454,7 +461,7 @@ function renderJobs(jobs) {
 async function loadPlanStats() {
   let data;
   try {
-    const r = await fetch('/api/admin/plan-stats');
+    const r = await fetch('/api/admin/plan-stats', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
 
@@ -553,7 +560,7 @@ async function loadFeedbackAnalysis() {
   if (!el) return;
   let data;
   try {
-    const r = await fetch('/api/feedback/analysis');
+    const r = await fetch('/api/feedback/analysis', { headers: Auth.getHeaders() });
     if (!r.ok) throw new Error(r.statusText);
     data = await r.json();
   } catch (e) {
@@ -714,7 +721,7 @@ async function loadFeedbackReview() {
   if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
   let records = [];
   try {
-    const r = await fetch('/api/feedback/extended');
+    const r = await fetch('/api/feedback/extended', { headers: Auth.getHeaders() });
     if (!r.ok) throw new Error(r.statusText);
     const data = await r.json();
     records = data.records || [];
@@ -798,7 +805,7 @@ async function loadFeedbackReview() {
 async function fbUpdateTriage(idx, value) {
   await fetch(`/api/feedback/extended/${idx}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
     body: JSON.stringify({ triage_status: value }),
   }).catch(() => {});
 }
@@ -806,7 +813,7 @@ async function fbUpdateTriage(idx, value) {
 async function fbSaveComment(idx, value) {
   await fetch(`/api/feedback/extended/${idx}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
     body: JSON.stringify({ analysis_comments: value }),
   }).catch(() => {});
 }
@@ -890,7 +897,7 @@ function _fmtTs(ts) {
 async function loadSessions() {
   const tbody = document.getElementById('sessions-body');
   try {
-    const r = await fetch('/api/sessions');
+    const r = await fetch('/api/sessions', { headers: Auth.getHeaders() });
     const data = await r.json();
     const sessions = data.sessions || [];
     if (!sessions.length) {
@@ -932,7 +939,7 @@ async function openSessionModal(sessionId) {
   modal.classList.remove('hidden');
 
   try {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { headers: Auth.getHeaders() });
     if (!r.ok) { body.innerHTML = `<div class="text-red-400 p-4">Session not found.</div>`; return; }
     const data = await r.json();
     const entries = data.entries || [];

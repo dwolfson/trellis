@@ -34,10 +34,28 @@ def _as(user_id: str):
 
 
 @contextmanager
-def _egeria(zones_by_guid: dict, *, enforced=True, accept=True):
-    """Stand in for Egeria's zone calls, tracking what each element holds."""
-    from resource_explorer import egeria_identity as ident
+def _egeria(zones_by_guid: dict, *, enforced=True, accept=True, kind_swap=True,
+            kind_calls=None):
+    """Stand in for Egeria's zone calls, tracking what each element holds.
 
+    Also stubs the KIND swap, which is a separate Egeria round trip (declassify
+    + classify + read back). These tests are about zones and ordering; that the
+    swap is attempted, verified and reported SEPARATELY is covered explicitly by
+    `test_the_kind_swap_is_verified_and_reported_separately` and
+    `test_a_failed_kind_swap_does_not_claim_an_exposure`, so stubbing it here
+    hides nothing.
+    """
+    from resource_explorer import egeria_identity as ident
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    real_kind = rc.InvestigationReclassifier._move_kind_classification
+
+    def _stub(self, guid, f, t, h):
+        if kind_calls is not None:
+            kind_calls.append((guid, f, t))
+        return (True, "") if kind_swap else (False, "stubbed failure")
+
+    rc.InvestigationReclassifier._move_kind_classification = _stub
     before = (ident.current_zones, ident.set_zone_membership, ident._private_zone_state)
     ident._private_zone_state = {"status": "exists", "enforced": enforced,
                                  "zone": ident.private_zone(), "control_present": True}
@@ -54,6 +72,7 @@ def _egeria(zones_by_guid: dict, *, enforced=True, accept=True):
         yield zones_by_guid
     finally:
         ident.current_zones, ident.set_zone_membership, ident._private_zone_state = before
+        rc.InvestigationReclassifier._move_kind_classification = real_kind
 
 
 def _inv(reg, name, cls, user="alice", **kw):
@@ -318,10 +337,17 @@ def test_never_asked_triggers_a_zone_check_rather_than_refusing(tmp_path, monkey
     the zone was healthy — a self-inflicted outage that reads exactly like the
     real failure. Found by a live run in a fresh process, not by these stubs."""
     from resource_explorer import egeria_identity as ident
+    from resource_explorer.surveyors import investigation_reclassifier as rc
 
     reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
     inv = _inv(reg, "Fresh Process", "Task")
     _bind(reg, inv["slug"])
+
+    # This test patches `ident` directly rather than using `_egeria`, so the
+    # KIND swap would otherwise make a real Egeria call. It is about the zone
+    # check, not the metadata half.
+    monkeypatch.setattr(rc.InvestigationReclassifier, "_move_kind_classification",
+                        lambda self, guid, f, t, h: (True, ""))
 
     asked = []
 
@@ -407,3 +433,212 @@ def test_an_unreadable_member_does_not_block_a_loosening(tmp_path):
     assert res.local_applied is True, "a loosening was blocked by a reporting problem"
     assert res.reports_unmovable, "the unreadable member was still not reported"
     assert res.still_public == [], "still_public means nothing on a loosening"
+
+
+# ── the Egeria metadata half, and the Investigation marker ─────────────────
+
+def test_only_the_kind_classification_is_removed(tmp_path, monkeypatch):
+    """The project owner added an Egeria classification called `Investigation`
+    (2026-09-08) as an orthogonal MARKER — "this Project is an investigation" —
+    that coexists with the kind (PersonalProject / Task / ...) and does not drive
+    zones.
+
+    So a change of kind must remove the OLD KIND BY NAME and nothing else. A
+    blanket "strip the classifications" would take the marker with it, along with
+    `Anchors`, `Ownership` and `ZoneMembership`.
+
+    EXECUTED, not read. The first version of this test grepped the source for
+    `PROJECT_CLASSIFICATIONS` and passed a sabotage run that removed the guard
+    entirely — the string survives elsewhere in the module. Same weakness that
+    let a broken classification read-back pass five tests earlier in this work.
+    """
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    removed, added = [], []
+
+    class _FakeME:
+        def __init__(self, *a, **k):
+            pass
+
+        # `apply_identity` authenticates the client it is handed.
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def set_bearer_token(self, *a, **k):
+            pass
+
+        def declassify_metadata_element(self, guid, name, body=None):
+            # Reproduces the REAL pyegeria behaviour measured 2026-09-08
+            # (ISSUE-93): `body` is declared Optional and `.model_dump()` is
+            # called on it unconditionally, so omitting it raises and the
+            # classification is silently left in place. Without this the fake
+            # is more forgiving than the system it stands for, and a sabotage
+            # run that dropped the explicit body passed.
+            if body is None:
+                raise AttributeError("'NoneType' object has no attribute 'model_dump'")
+            removed.append(name)
+
+        def classify_metadata_element(self, guid, name, body=None):
+            added.append((name, (body or {}).get("properties")))
+
+        def get_metadata_element_by_guid(self, guid, **k):
+            # The measured payload shape: kinds live under
+            # elementHeader.projectKinds, and the marker sits there beside them.
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [
+                                          {"classificationName": n} for n in
+                                          ([x[0] for x in added] + ["Investigation"])]}}
+
+    class _FakePM(_FakeME):
+        def get_project_by_guid(self, guid, **k):
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": n}
+                                                       for n in [x[0] for x in added]]}}
+
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", _FakeME)
+    monkeypatch.setattr("pyegeria.ProjectManager", _FakePM)
+    ok, why = rc.InvestigationReclassifier(None)._move_kind_classification(
+        "g1", "Task", "PersonalProject", "")
+
+    assert ok, why
+    assert removed == ["Task"], f"removed {removed} — the Investigation marker must survive"
+    assert "Investigation" not in removed
+    assert added and added[0][0] == "PersonalProject"
+
+
+def test_a_marker_is_never_removed_even_if_it_is_the_current_kind_string(tmp_path, monkeypatch):
+    """`Investigation` is not in PROJECT_CLASSIFICATIONS, so even a row whose
+    stored classification somehow said `Investigation` must not cause the marker
+    to be stripped — the removal is gated on the kind vocabulary, not on
+    whatever the local row happens to hold."""
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    removed = []
+
+    class _FakeME:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def set_bearer_token(self, *a, **k):
+            pass
+
+        def declassify_metadata_element(self, guid, name, body=None):
+            # Reproduces the REAL pyegeria behaviour measured 2026-09-08
+            # (ISSUE-93): `body` is declared Optional and `.model_dump()` is
+            # called on it unconditionally, so omitting it raises and the
+            # classification is silently left in place. Without this the fake
+            # is more forgiving than the system it stands for, and a sabotage
+            # run that dropped the explicit body passed.
+            if body is None:
+                raise AttributeError("'NoneType' object has no attribute 'model_dump'")
+            removed.append(name)
+
+        def classify_metadata_element(self, guid, name, body=None):
+            pass
+
+        def get_metadata_element_by_guid(self, guid, **k):
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": "Task"}]}}
+
+    class _FakePM(_FakeME):
+        def get_project_by_guid(self, guid, **k):
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": "Task"}]}}
+
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", _FakeME)
+    monkeypatch.setattr("pyegeria.ProjectManager", _FakePM)
+    rc.InvestigationReclassifier(None)._move_kind_classification(
+        "g1", "Investigation", "Task", "")
+    assert removed == [], f"removed {removed} — a non-kind classification was stripped"
+
+
+def test_the_kind_swap_is_verified_and_reported_separately(tmp_path, monkeypatch):
+    """Executed, not read. Zones and the kind fail independently: a failed kind
+    swap is a metadata inconsistency (Egeria says Task, RE says Personal), not an
+    exposure — so it is reported without pretending visibility is wrong."""
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    inv = _inv(reg, "Kind Swap", "Task")
+    _bind(reg, inv["slug"])
+
+    calls = []
+    zones = {"proj-1": ["egeria-runtime"]}
+    # Observed through the helper's own hook rather than a second patcher on the
+    # same attribute. Doing both left the helper's stub installed permanently:
+    # `_egeria.__exit__` restored the real method, then monkeypatch's teardown
+    # put the STUB back, because that is what it had recorded. Every later test
+    # in the file then got the stub — `test_both_kinds_at_once...` passed alone
+    # and failed in suite, which is the signature of exactly this.
+    with _egeria(zones, kind_calls=calls):
+        res = InvestigationReclassifier(reg).reclassify(inv["slug"], "PersonalProject")
+
+    assert calls == [("proj-1", "Task", "PersonalProject")]
+    assert res.egeria_kind_changed is True
+    assert res.ok, res.errors
+
+
+def test_a_failed_kind_swap_does_not_claim_an_exposure(tmp_path, monkeypatch):
+    """It must be an error — the two systems now disagree — but it must NOT read
+    as "something is public". Zones went first and are correct."""
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    inv = _inv(reg, "Kind Swap Fails", "Task")
+    _bind(reg, inv["slug"])
+    zones = {"proj-1": ["egeria-runtime"]}
+    with _egeria(zones, kind_swap=False):
+        res = InvestigationReclassifier(reg).reclassify(inv["slug"], "PersonalProject")
+
+    assert res.egeria_kind_changed is False
+    assert res.project_rezoned is True, "zones are the safety property and went first"
+    assert res.still_public == [], "a stale classification is not an exposure"
+    assert any("metadata inconsistency, not an" in e for e in res.errors)
+
+
+def test_both_kinds_at_once_is_reported_as_a_failure(monkeypatch):
+    """Adding the new kind is not enough — the old one must be GONE.
+
+    Egeria will happily carry both, and `_confirm_classification` only asks
+    whether one named classification is present. So a declassify that silently
+    did nothing produced a Project claiming to be both `Task` and
+    `PersonalProject`, and the check passed. Seen live 2026-09-08, caused by
+    pyegeria raising when `declassify_metadata_element` is called without a body
+    (logged as ISSUE-93) — the call is now made with one, and this asserts the
+    outcome rather than trusting it.
+    """
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    class _FakeME:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def set_bearer_token(self, *a, **k):
+            pass
+
+        def declassify_metadata_element(self, guid, name, body=None):
+            pass                       # silently does nothing, as the bug did
+
+        def classify_metadata_element(self, guid, name, body=None):
+            pass
+
+    class _FakePM(_FakeME):
+        def get_project_by_guid(self, guid, **k):
+            # BOTH kinds present — the state the bug produced.
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": "Task"},
+                                                       {"classificationName": "PersonalProject"}]}}
+
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", _FakeME)
+    monkeypatch.setattr("pyegeria.ProjectManager", _FakePM)
+    ok, why = rc.InvestigationReclassifier(None)._move_kind_classification(
+        "g1", "Task", "PersonalProject", "")
+
+    assert ok is False
+    assert "both kinds" in why, why

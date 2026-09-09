@@ -219,13 +219,29 @@ def _resolve_endpoint(value: str, by_slug: dict[str, Component],
     return hit.slug if hit else None
 
 
-def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) -> str:
+def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH,
+           component_verdicts: dict[str, str] | None = None) -> str:
     """The proposal as a Mermaid flowchart.
 
     `max_depth` is the projection level (`projection.project`), not a filter on
     what was found — the full hierarchy is always persisted, and this chooses
     what to *show*. Which depth a curator should see first is genuinely open;
     the default is the same one a results reader gets.
+
+    `component_verdicts` (docs/curated-architecture-answers-design.md §6,
+    2026-09-08): `{slug: "accepted"|"rejected"|"retyped"}` — styling only, not
+    filtering. A REJECTED component must already be absent from `ir.components`
+    by the time it reaches this function; the caller (read-time reconstruction
+    in `repo_survey_definition_adapter.py`) does that, because omission and
+    projection interact the same way withdrawal already does (a rejected
+    parent whose children survive should render as a grouping node, not
+    vanish — `_structural_slugs`/`_with_structural` already produce exactly
+    that for "referenced but absent", so omitting upstream reuses it for
+    free rather than this function needing two absence mechanisms). This
+    parameter answers a narrower question — of what's shown, which of it has
+    been curator-reviewed — with a dashed border for anything not yet
+    `accepted`/`retyped`, the same visual language `classDef structural`
+    already uses for "this is not itself a finding".
     """
     projected = projection.project(ir.components, max_depth)
     structural = _structural_slugs(ir.components)
@@ -246,6 +262,18 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
     #: Structural slugs actually drawn as a NODE (rather than as a subgraph
     #: title), so the class statement never names an id that does not exist.
     structural_nodes: list[str] = []
+    #: Real (non-structural) components not yet accepted — styled, not
+    #: omitted. A structural grouping node carries no verdict of its own
+    #: (nothing detected it, so there is nothing to curate), so it is
+    #: deliberately never added here even when it happens to share a slug
+    #: naming scheme with a real component.
+    # None means "no verdict styling requested at all" (every existing
+    # caller/test), NOT "everything is pending" — {} would be indistinguishable
+    # from the latter if this collapsed straight to a dict, marking every
+    # node pending for a caller that never asked for verdict awareness.
+    style_verdicts = component_verdicts is not None
+    verdicts = component_verdicts or {}
+    pending_nodes: list[str] = []
 
     def emit(c, indent: str, enclosing_bp: str = "") -> None:
         children = [k for k in kids.get(c.slug, [])
@@ -265,6 +293,8 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
             lines.append(f"{indent}  direction TB")
             if not is_structural:
                 lines.append(f"{indent}  {_component_line(c, False, enclosing_bp)}")
+                if style_verdicts and verdicts.get(c.slug) not in ("accepted", "retyped"):
+                    pending_nodes.append(c.slug)
             for k in children:
                 emit(k, indent + "  ", inner_bp)
             lines.append(f"{indent}end")
@@ -272,6 +302,8 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
             lines.append(f"{indent}{_component_line(c, is_structural, enclosing_bp)}")
             if is_structural:
                 structural_nodes.append(c.slug)
+            elif style_verdicts and verdicts.get(c.slug) not in ("accepted", "retyped"):
+                pending_nodes.append(c.slug)
 
     # Blueprint grouping. A repo may hold several — a repo is a storage
     # boundary, not a solution boundary (design §3.3a, corrected 2026-08-29) —
@@ -353,6 +385,15 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
     if structural_nodes:
         lines.append("class " + ",".join(_nid(s) for s in sorted(structural_nodes))
                      + " structural;")
+    # Only emitted when a caller actually asked for verdict styling — an
+    # unconditional empty `classDef pending` line would change every
+    # existing caller's output (determinism is a stated requirement of this
+    # module, see its own docstring) for zero visual effect.
+    if style_verdicts:
+        lines.append("classDef pending stroke-dasharray:4 3;")
+        if pending_nodes:
+            lines.append("class " + ",".join(_nid(s) for s in sorted(set(pending_nodes)))
+                         + " pending;")
     return "\n".join(lines)
 
 
@@ -366,12 +407,19 @@ def exceeds_renderer_limit(diagram: str) -> bool:
     return len(diagram) > RENDERER_CHAR_LIMIT
 
 
-def caption(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) -> str:
+def caption(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH,
+            component_verdicts: dict[str, str] | None = None) -> str:
     """What the diagram does not show, stated rather than left to be noticed.
 
     Never a bare count: a projection that collapsed nothing and one that
     collapsed everything both report a number (`scope_hierarchy.summarise`
     makes the same point).
+
+    `component_verdicts` is forwarded to `render()` purely so the size check
+    below measures the SAME text a caller actually gets — the classDef/class
+    lines verdict styling adds are real characters, and measuring without
+    them would let a diagram that only exceeds the limit once styled report
+    itself as renderable.
     """
     shown = projection.project(ir.components, max_depth)
     hidden = len(ir.components) - len(shown)
@@ -387,7 +435,7 @@ def caption(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH)
     if low:
         bits.append(f"{low} marked ⚠ at or below {LOW_CONFIDENCE}% confidence")
     text = "; ".join(bits) + "."
-    size = len(render(ir, max_depth))
+    size = len(render(ir, max_depth, component_verdicts=component_verdicts))
     if size > RENDERER_CHAR_LIMIT:
         text += (f" NOT RENDERABLE: {size} characters exceeds the "
                  f"{RENDERER_CHAR_LIMIT}-character limit — the proposal is too "

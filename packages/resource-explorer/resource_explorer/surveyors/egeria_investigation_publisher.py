@@ -166,6 +166,61 @@ def _confirm_classification(pm, project_guid: str, expected: str) -> "str | None
     return expected if expected in names else ""
 
 
+#: The Egeria classification RE stamps on every Project it creates, so a Project
+#: that is an RE investigation says so in the catalogue.
+#:
+#: Added by the project owner 2026-09-08 as an ORTHOGONAL MARKER: it coexists
+#: with the kind (`PersonalProject` / `Task` / `StudyProject` / `Campaign` /
+#: `Experiment`), does not replace it, and does not drive zones. Their words:
+#: "you can have both Investigation and PersonalProject." So a change of kind
+#: leaves it alone — `investigation_reclassifier` removes the old kind BY NAME,
+#: gated on `PROJECT_CLASSIFICATIONS`, and this is not in that set.
+INVESTIGATION_MARKER = "Investigation"
+
+
+def _apply_investigation_marker(pm, project_guid: str) -> tuple[bool, str]:
+    """Stamp `Investigation` on a Project RE created. `(applied, reason)`.
+
+    **A separate call after the create, deliberately not in
+    `initialClassifications`.** In the create body a classification the platform
+    does not have fails the WHOLE create — and this type did not exist until the
+    2026-09-08 redeploy, and will not exist on any deployment running an older
+    Egeria. As a follow-on step, a missing type costs the marker and not the
+    investigation.
+
+    That is also why a failure here is reported rather than raised: the marker is
+    a catalogue convenience, not a correctness property. Nothing in RE reads it —
+    the kind classification is what drives behaviour — so an investigation
+    without it is fully functional, just less findable by anyone browsing Egeria
+    for RE's work.
+    """
+    try:
+        from pyegeria.omvs.metadata_expert import MetadataExpert
+
+        from resource_explorer.config import get_config
+        from resource_explorer.egeria_identity import apply_identity, caller_credentials
+
+        cfg = get_config().egeria
+        me = MetadataExpert(cfg.view_server, cfg.platform_url,
+                            cfg.user_id, cfg.user_password)
+        apply_identity(me, caller_credentials())
+        me.classify_metadata_element(project_guid, INVESTIGATION_MARKER, {
+            "class": "NewClassificationRequestBody",
+            "properties": {"class": "ClassificationProperties",
+                           "typeName": INVESTIGATION_MARKER}})
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        # An older platform simply does not have the type. Worth saying in those
+        # words rather than surfacing a raw type error, because it is a
+        # deployment fact and not something the user did wrong.
+        if "Unknown type" in detail or "TypeErrorException" in detail or "400-006" in detail:
+            return False, (f"this Egeria does not have the {INVESTIGATION_MARKER!r} "
+                           "classification (it needs a newer platform); the "
+                           "investigation is otherwise complete")
+        return False, detail
+    return True, ""
+
+
 @dataclass
 class PromotionResult:
     """What actually happened, step by step."""
@@ -180,6 +235,10 @@ class PromotionResult:
     #:   name -> verified present
     classification_requested: str = ""
     classification_confirmed: "str | None" = None
+    #: Whether the `Investigation` marker classification was applied. False on a
+    #: platform without the type — see `_apply_investigation_marker`; the
+    #: investigation is fully functional either way.
+    investigation_marked: bool = False
     #: True only when the private zone was actually applied to the Project.
     #: False on a shared investigation AND on a private one whose zoning
     #: failed — the second case also appends to `errors`, which is what
@@ -199,6 +258,7 @@ class PromotionResult:
         return {
             "project_guid": self.project_guid,
             "project_qualified_name": self.project_qualified_name,
+            "investigation_marked": self.investigation_marked,
             "classification_requested": self.classification_requested,
             "classification_confirmed": self.classification_confirmed,
             "private_zoned": self.private_zoned,
@@ -363,6 +423,18 @@ class EgeriaInvestigationPublisher:
         if not res.project_guid:
             res.errors.append("create_project returned no GUID")
             return res
+
+        # 1a-pre. The Investigation marker, so every Project RE creates says in
+        # the catalogue that it is one — not only the ones somebody classified by
+        # hand through Dr.Egeria. Owner's decision 2026-09-08.
+        #
+        # Best-effort and never fatal: it is a marker, nothing reads it, and an
+        # older platform does not have the type at all.
+        marked, mark_why = _apply_investigation_marker(pm, res.project_guid)
+        res.investigation_marked = marked
+        if not marked:
+            log.info("investigation marker not applied to %s: %s",
+                     res.project_guid, mark_why)
 
         # 1a. Zone the Project itself when the investigation is private.
         #

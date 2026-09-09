@@ -982,6 +982,125 @@ that turns out to bite:
 
 Nothing decided; the owner should pick. (3) is worth doing regardless.
 
+### The Investigation marker — decided and BUILT 2026-09-08
+
+**Approved by the project owner directly** ("RE should apply the Investigation
+marker itself") and built once the redeploy made the type available. RE stamps it
+on every Project it promotes, as a separate classify call after the create so a
+platform lacking the type loses the marker rather than the investigation.
+
+*Original entry below, kept for the reasoning and the not-yet-approved framing it
+was written under.*
+
+### The Investigation marker — decided, and what is NOT built
+
+**Decision (project owner, 2026-09-08):** the Egeria classification
+`Investigation` is an orthogonal MARKER — "this Project is an investigation" —
+that coexists with the kind (PersonalProject / Task / StudyProject / Campaign /
+Experiment). It does not replace the kind and does not drive zones. Relayed via
+dwolfson-fe; the owner's words: *"it does not need to collide, you can have both
+Investigation and PersonalProject."*
+
+**Already safe.** The reclassifier removes the old kind BY NAME, gated on
+`PROJECT_CLASSIFICATIONS`, so an `Investigation` marker survives a change of
+kind. Verified live for the equivalent property (`Anchors`, `Ownership` and
+`ZoneMembership` all survived a `Task` -> `PersonalProject` swap), and pinned by
+two tests.
+
+**NOT built, and NOT approved — needs the owner's decision, not a relayed
+suggestion.** dwolfson-fe raised that RE could apply the `Investigation` marker
+itself when it creates or promotes a Project, so every RE-owned Project carries
+it rather than only the ones classified by hand through Dr.Egeria. That is
+reasonable and cheap — one more entry in `initialClassifications` — but it is a
+new behaviour that writes a new classification to every Project RE creates, so
+it wants an explicit yes.
+
+**Blocked on the redeploy either way.** `Investigation` does not exist on the
+running platform:
+
+    Investigation              -> not found
+    NamingStandardsVocabulary  -> not found
+    StudyProject               -> FOUND        <- control, so the lookup works
+
+The four new Dr.Egeria Curation templates targeting them will fail until the
+owner redeploys with the latest Egeria ("when everyone is ready"). Applying the
+marker before that redeploy would fail every create.
+
+### The private zone does not survive a redeploy — FIXED 2026-09-08
+
+**Resolved:** the `resource-explorer-private` control is now in BOTH compose-config
+seeds, so it is recreated on any redeploy and exists on a fresh machine. This is
+what makes the feature work on **freshstart**, where RE cannot create the control
+itself. Survived the 2026-09-08 redeploy and was live-verified still denying
+afterwards.
+
+*Original entry below, kept because its analysis of the failure mode is still the
+reason the fix matters.*
+
+### The private zone does not survive a redeploy (and that is mostly fine)
+
+Measured 2026-09-08, ahead of the owner's planned redeploy:
+
+* `resource-explorer-private` exists **only** in
+  `egeria-workspaces-fs/runtime-volumes/quickstart-platform-data/secrets/coco-user-directory.omsecrets`,
+  which the compose file bind-mounts to `/deployments/secrets`.
+* That path is **gitignored** (`.gitignore:215`), so the control is not in
+  version control and does not exist on a fresh machine.
+* The compose-config **seed**
+  (`compose-configs/egeria-quickstart/secrets/coco-user-directory.omsecrets`)
+  does **not** contain it — 0 occurrences, against 1 in the live file.
+
+So a redeploy that repopulates the volume loses it.
+
+**Nothing has to be held for the redeploy.** The design fails safe: with the
+control gone, `private_zone_is_enforced()` is False and private publishing
+refuses loudly rather than leaking. And on **quickstart** it self-heals —
+`ensure_private_zone_exists()` recreates the control because RE's account holds
+platform-operator rights there.
+
+**Two things to expect anyway:**
+
+1. **A ~12 minute window after the redeploy** in which private publishing is
+   refused while the security connector reloads its secrets store
+   (`PRIVATE_ZONE_SETTLE_SECONDS`). By design, but it will look like a bug to
+   whoever hits it first.
+2. **On freshstart it will NOT self-heal**, because no human account there holds
+   `serverOperator` (§3.3a). Private investigations simply will not publish until
+   someone grants it.
+
+**The fix, if wanted:** add the `resource-explorer-private` control to BOTH
+compose-config seeds. It then survives redeploys, exists on a fresh machine, and
+— the real win — makes the feature work on freshstart, where RE cannot create it
+at all. That is the deployment change §3.3a already called for. It is a security
+config file in another repo, so it is written down here rather than done.
+
+Existing zoned artifacts need no sweep: a metadata-store wipe removes the
+Projects and reports outright, and RE republishes and zones fresh.
+
+**`test_the_real_egeria_checkout_yields_dependencies` asserts against a checkout
+that moves.** Started failing 2026-09-08 between two full-suite runs an hour
+apart, with only unrelated commits in between: *"only 36 of 72 gradle
+dependencies resolved a version — same-file ext-variable resolution appears to
+have regressed"*.
+
+Nothing in the parser changed. `~/localGit/egeria-v6/egeria` is now at
+`f5ae3c79ec` (a recent upstream merge), and the test reads that working tree
+directly — so its expectations (`> 50` deps, `> 50` versioned, "from 229
+build.gradle files") are pinned to whatever upstream Egeria looked like when they
+were written. Upstream restructures its build files and the numbers move.
+
+Not established: whether 36/72 means the parser genuinely lost ext-variable
+resolution, or upstream simply has fewer inline-versioned dependencies now. Those
+need distinguishing before anyone "fixes" the parser — the failure message asserts
+a regression it has not demonstrated, which is the same shape as the other
+entries here.
+
+Options: vendor a small fixture tree and assert against that (loses the
+real-corpus signal but is stable); keep the real checkout but assert a RATIO
+rather than absolute counts; or record the checkout commit the numbers were
+measured at, so a future failure says "upstream moved" rather than "the parser
+regressed".
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
@@ -4256,3 +4375,37 @@ turns out to be wrong is not exotic: it is the normal consequence of finding a
 bug in something that already ran. Twice in one day (this, and the 48,581-row
 render) the answer to unbounded output was a hand-written statement against
 live data. That is the part to fix.
+
+---
+
+## `architecture_recovery`'s own chat answer can go never-run despite real findings
+
+Found 2026-09-08 while verifying the new verdict-coverage feature
+(`docs/curated-architecture-answers-design.md` §6 item 1) against
+`egeria-workspaces_git`: `FactLayer.fact(slug, "architecture_recovery")`
+returned `state=never_run` for that repo even though real
+`architecture_recovery` findings exist (persisted 2026-09-01, confirmed via
+direct registry query — 109 components). `egeria_git`, surveyed more
+recently, answers correctly end-to-end
+(`"223 components recovered — 0 of 973 components reviewed; ..."`).
+
+Root cause, confirmed: `registry.get_analysis_last_run("repo",
+"egeria-workspaces_git")` has no `"architecture_recovery"` key at all — the
+same run-attribution gap that made `architecture_diagram` report never-run
+for the same repo before the 2026-09-08 fix (`ANALYSIS_KINDS["
+architecture_diagram"].results.live_read = True`,
+`repo_survey_definition_adapter.py`). `facts.py::fact()` gates non-`live_read`
+analyses on `run.get("last_run_at")` before ever calling their results
+reader — for a repo whose survey predates (or otherwise never wrote) proper
+step-attribution, that gate blocks the answer even though the underlying
+data is real and current.
+
+`_architecture_recovery_results`/`_architecture_recovery_headline` read a
+`project_analysis_findings` table populated at survey time, exactly the
+shape `AnalysisKindResults.live_read`'s own docstring describes (the
+`api_structure` 2026-09-02 precedent, and now `architecture_diagram`) — the
+fix is very likely the same one-line `live_read=True`. Not applied here: this
+is the flagship, most heavily-used analysis in the catalog (many questions'
+`analysis_ids` include it), so changing its run-gating behavior deserves its
+own verification pass across more than one repo, not a same-session
+addition to an unrelated feature. Flagged rather than fixed.

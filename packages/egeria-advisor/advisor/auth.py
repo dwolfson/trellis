@@ -234,9 +234,18 @@ _POLICY_ENV_PREFIX = "ADVISOR"
 #: no data; every `/api/...` call it makes is still challenged.
 #: `/api/auth/me`, `/api/auth/defaults` and `/api/auth/policy` are the three
 #: reads the login form itself performs before a token exists.
+#: `/admin` is the same shell-must-load reasoning as `/` -- it just never got
+#: added when the login-required policy shipped (2026-09-04), so a direct
+#: navigation there 401'd before admin.html's own JS ever ran, even for an
+#: already-signed-in user: the initial GET carries no Authorization header
+#: (a plain browser navigation can't attach one -- only a fetch() call can),
+#: and admin.html's fetch() calls didn't attach one either until this same
+#: change (see admin.html's Auth.getHeaders() additions). Every /api/admin/*
+#: call it makes is still challenged, same as `/`'s own data calls.
 _EA_PUBLIC_PATHS = (
     "/",
     "/index.html",
+    "/admin",
     "/api/auth/me",
     "/api/auth/defaults",
     "/api/auth/policy",
