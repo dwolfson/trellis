@@ -4437,3 +4437,89 @@ new backend plumbing the way EA's admin.py's job-tracking does).
 Not designed or scoped further than this. Whoever picks it up should start
 from `run_queue.py`'s existing job model and `admin.py`'s UI shape as
 reference, not treat this as "copy admin.html."
+
+## `architecture_diagram` collides with `architecture_recovery`'s steps, and has no dashboard
+
+Two tests have been failing since `b3b0500` added the read-time
+`architecture_diagram` AnalysisKind (2026-09-08), and both became easier to
+notice on 2026-09-08 when the kind finally reached the UI (`e20dd93` added its
+`_REPO_RESULTS_RENDER_MODE` entry and renderer — until then the analysis had a
+working results reader and no way to see it).
+
+  * `test_run_publish_honesty.py::TestRunAttribution::
+    test_step_keys_map_to_exactly_one_analysis` —
+    *"step repo_arch_detect claimed by architecture_recovery and
+    architecture_diagram"*. `REPO_ANALYSIS_STEP_MAP` is supposed to PARTITION
+    the step keys; both kinds declare `["repo_arch_detect",
+    "repo_arch_coupling"]`, so run attribution for those two steps is now
+    ambiguous by construction.
+  * `test_survey_results_routes.py::TestSurveyResultDashboardsRegistry::
+    test_every_findings_producing_analysis_has_a_dashboard` —
+    *"analyses with no Results dashboard: ['architecture_diagram']"*. The card
+    renders from the Analysis tab and is absent from the Survey Results
+    dashboard that groups these.
+
+These are not independent. The kind's own docstring is explicit that the
+diagram is "a rendered VIEW of the recovery, not the recovery's own evidence",
+and gives it a separate id precisely so a question can ask for the picture
+without pulling the full component list. That is a good reason for a separate
+AnalysisKind and NOT a reason for it to claim the same steps: it runs no steps
+of its own (hence `live_read=True`), so the honest shape is probably an empty
+step list plus a dashboard entry, rather than borrowing `architecture_recovery`'s.
+
+Not fixed here. Both are one-line changes and neither is safe to guess at: the
+step map feeds run attribution across the catalog, and which dashboard the
+diagram belongs in is a presentation decision. Belongs with whoever owns
+`b3b0500`.
+
+## The silent-success ratchet is red on one site, and it needs a decision, not a fix
+
+`tests/test_no_silent_success.py` has been failing since 2026-09-08. Three new
+sites appeared; two were fixed the same day (`egeria_identity.py::
+_platform_name` and `investigation_reclassifier.py::_move_kind_classification`
+— in both cases the handler already refused, but refused with words that
+asserted more than had been measured). The third is still open:
+
+    resource_explorer/context_compile.py::compile_context
+
+introduced by `3bed7b4` ("every compile gets a content-addressed id, is
+persisted, and turns and feedback link to it"). It wraps the `record_compile`
+bookkeeping write, and its comment states the intent plainly: *"Persistence is
+an instrument, not the product: a compile the caller can use must never be
+lost to a failed bookkeeping write."*
+
+If that reasoning holds — and on its face it does — this is exactly option (3)
+in the test's own remediation list: a genuinely best-effort site that should be
+recorded in `tests/no_silent_success_baseline.json` **deliberately**, not
+worked around and not silently absorbed. The baseline is a reviewed artifact,
+so adding a key to it is a decision for whoever owns compiled context rather
+than something to do in passing from an unrelated change.
+
+Until then the ratchet reports 109 against a baseline of 108 and will stay red,
+which costs the whole repo the signal — a genuinely new silent-success site
+added tomorrow would land in an already-failing test.
+
+## The architecture diagram is drawn by a path no test exercises end-to-end
+
+`_renderArchitectureDiagramResults` emits a placeholder and
+`renderPendingArchDiagrams()` POSTs the Mermaid source to
+`/api/diagrams/mermaid` (the Kroki proxy) to fill it in. As of `e20dd93` the
+**failure** path is verified live in a browser (the server's own message is
+shown and the card is left retryable) and the success path is verified only
+against a stubbed fetch: that route requires a session, so a signed-out session
+cannot drive it, and entering credentials is out of scope.
+
+Someone signed in should open an `architecture_diagram` card once and confirm a
+picture appears. Worth doing deliberately rather than assuming — the DB
+ER-diagram view uses the same proxy and is the evidence that the proxy works,
+but not that this card reaches it.
+
+Noticed in passing while building it, and NOT changed: `_renderEmptyResultState`
+maps `never_run` to the generic *"No results yet — click Run to scan."* and
+discards the reader's own `st.hint`. That is the documented behaviour
+(`result_status.py`: `never_run -> the original message`) and it is true for
+this kind, whose Run does trigger `repo_arch_detect`/`repo_arch_coupling`. But
+every other status branch shows the hint, and a reader that took the trouble to
+write one ("No architecture diagram yet — run the analysis.") has it dropped.
+Changing it touches every kind's empty state, so it is a deliberate call for
+the presentation session, not a side effect of adding one card.

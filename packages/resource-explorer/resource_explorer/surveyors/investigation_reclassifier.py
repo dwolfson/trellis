@@ -234,6 +234,7 @@ class InvestigationReclassifier:
 
         from resource_explorer.registry import ProjectRegistry
 
+        declassify_error = ""
         if from_kind and from_kind in ProjectRegistry.PROJECT_CLASSIFICATIONS:
             try:
                 # The explicit body is REQUIRED despite the parameter being
@@ -248,7 +249,19 @@ class InvestigationReclassifier:
             except Exception as exc:
                 # Not fatal on its own: the old kind may already be absent (an
                 # investigation promoted before Phase 1 carries none at all), and
-                # the add below is what actually matters.
+                # the add below is what actually matters. The read-back below is
+                # what decides — if the old kind is genuinely still there, this
+                # returns False whatever happened here.
+                #
+                # Kept rather than only logged, because the read-back can say
+                # THAT the Project carries both kinds and never why. These two
+                # causes need opposite responses: pyegeria rejecting the request
+                # body (upstream ISSUE-93, the reason the explicit body above
+                # exists) is a code fix, while Egeria refusing the declassify is
+                # a permissions or state problem on the platform. A reason
+                # string that names neither sends the reader to read this
+                # function instead of the error.
+                declassify_error = f"{type(exc).__name__}: {exc}"
                 log.info("could not remove the %s classification from %s (it may not "
                          "be there): %s", from_kind, guid, exc)
         props = _initial_classifications(to_kind, hypothesis)[to_kind]
@@ -267,9 +280,13 @@ class InvestigationReclassifier:
             # live before the declassify body was fixed.
             still = _confirm_classification(pm, guid, from_kind)
             if from_kind and still == from_kind:
+                why = (f" (removing it failed: {declassify_error})"
+                       if declassify_error else
+                       " (removing it reported no error, so Egeria accepted the "
+                       "request and kept the classification anyway)")
                 return False, (f"the {to_kind} classification was added but "
                                f"{from_kind} is still there — the Project now carries "
-                               "both kinds")
+                               f"both kinds{why}")
             return True, ""
         if confirmed == "":
             return False, f"Egeria does not carry the {to_kind} classification after the change"

@@ -613,3 +613,118 @@ def test_privacy_resolution_survives_a_thread_that_lost_the_caller(tmp_path):
     assert box["user"] == "", "precondition: a raw thread should have lost the caller"
     assert box["owner"] == "alice", (
         "a queued survey could not tell the repo was private — it would publish public")
+
+
+# ── which platform holds the control ───────────────────────────────────────
+#
+# `_platform_name` refuses rather than guessing when several platforms are
+# catalogued, and before refusing it asks which of them already holds our
+# control. That probe can itself fail, and the two outcomes are different
+# claims: "the probe ran and none of them holds it" is a fact about Egeria,
+# "the probe threw" means we do not know. Both refuse, so nothing here is a
+# failure reported as success — but an operator who reads "none holds it" goes
+# looking for a missing control instead of a broken Security Officer call.
+
+
+class _FakeEgeriaCfg:
+    view_server = "view-server"
+    platform_url = "https://fake"
+    user_id = "erinoverview"
+    user_password = "secret"
+
+
+def _two_platforms(monkeypatch, probe):
+    """Catalogue two platforms and install `probe` as the SecurityOfficer."""
+    import types
+
+    class _FakeTech:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def get_elements(self, type_name, output_format="JSON"):
+            return [{"properties": {"displayName": "Quickstart OMAG Server Platform"}},
+                    {"properties": {"displayName": "Local OMAG Server Platform"}}]
+
+    monkeypatch.delenv("EXPLORER_EGERIA_PLATFORM_NAME", raising=False)
+    monkeypatch.setattr("pyegeria.EgeriaTech", _FakeTech)
+    monkeypatch.setattr("resource_explorer.config.get_config",
+                        lambda: types.SimpleNamespace(egeria=_FakeEgeriaCfg()))
+    monkeypatch.setattr("pyegeria.omvs.security_officer.SecurityOfficer", probe)
+
+
+def test_a_probe_that_could_not_run_is_not_reported_as_a_missing_control(monkeypatch):
+    """Undetermined is not absent.
+
+    The handler around the probe used to only log, so a probe that threw fell
+    through to the "none of them holds it" refusal — a positive claim about
+    Egeria made on no evidence, and one that sends the reader to the wrong
+    problem.
+    """
+    from resource_explorer import egeria_identity as ident
+
+    class _BrokenOfficer:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            raise ConnectionError("security officer unreachable")
+
+    _two_platforms(monkeypatch, _BrokenOfficer)
+
+    with pytest.raises(RuntimeError) as e:
+        ident._platform_name()
+    msg = str(e.value)
+    assert "unknown, not no" in msg, msg
+    assert "ConnectionError" in msg, "the cause must survive into the message"
+    assert "security officer unreachable" in msg, msg
+    assert "and none holds" not in msg, (
+        "a probe that could not run must not claim none of them holds the control")
+
+
+def test_a_probe_that_ran_and_found_nothing_still_says_so_plainly(monkeypatch):
+    """The other side of the same fork: when the probe DOES run and none of the
+    platforms holds the control, the refusal is entitled to say so — and must,
+    since that is the case where an operator really does need to create one."""
+    from resource_explorer import egeria_identity as ident
+
+    class _EmptyOfficer:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def get_security_access_control(self, platform, zone):
+            return {}                  # ran fine; nobody holds it
+
+    _two_platforms(monkeypatch, _EmptyOfficer)
+
+    with pytest.raises(RuntimeError) as e:
+        ident._platform_name()
+    msg = str(e.value)
+    assert "none holds" in msg, msg
+    assert "unknown, not no" not in msg, msg
+
+
+def test_the_platform_holding_the_control_is_still_chosen(monkeypatch):
+    """The probe's whole purpose, pinned so the error-path work above cannot
+    quietly turn a working deployment into a refusal."""
+    from resource_explorer import egeria_identity as ident
+
+    class _OneHolderOfficer:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def get_security_access_control(self, platform, zone):
+            if platform == "Local OMAG Server Platform":
+                return {"associatedSecurityList": {"DEFAULT": ["nobody"]}}
+            return {}
+
+    _two_platforms(monkeypatch, _OneHolderOfficer)
+    assert ident._platform_name() == "Local OMAG Server Platform"

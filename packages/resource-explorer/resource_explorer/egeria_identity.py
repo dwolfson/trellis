@@ -568,6 +568,7 @@ def _platform_name() -> str:
     # direction but it disables a working feature, which is its own kind of
     # wrong answer.
     zone = private_zone()
+    probe_failed = ""
     try:
         from pyegeria.omvs.security_officer import SecurityOfficer
 
@@ -595,11 +596,29 @@ def _platform_name() -> str:
     except RuntimeError:
         raise
     except Exception as exc:
+        # Recorded, not only logged. Both paths below refuse, so nothing here
+        # turns a failure into a success — but they refuse with different WORDS,
+        # and that difference is the point. "None of them holds it" is a
+        # positive claim about Egeria, and we are entitled to make it only if
+        # the probe actually ran. A probe that threw leaves us unable to tell,
+        # and an operator reading "none holds it" goes looking for a missing
+        # control instead of a broken Security Officer call. Undetermined is
+        # not absent.
+        probe_failed = f"{type(exc).__name__}: {exc}"
         log.debug("could not probe platforms for the %r control: %s", zone, exc)
 
-    # None of them holds it, so this would be a CREATE and there is no evidence
-    # for where it belongs. Refusing beats writing security configuration to an
-    # arbitrary platform.
+    if probe_failed:
+        raise RuntimeError(
+            f"could not identify the platform to configure: found {names}, and "
+            f"asking which of them holds the {zone!r} control failed "
+            f"({probe_failed}) — so whether one does is unknown, not no. Set "
+            "EXPLORER_EGERIA_PLATFORM_NAME to say which platform governs this "
+            "deployment."
+        )
+
+    # The probe ran, and none of them holds it. This would therefore be a CREATE
+    # with no evidence for where it belongs, and refusing beats writing security
+    # configuration to an arbitrary platform.
     raise RuntimeError(
         f"could not identify the platform to configure: found {names}, and none "
         f"holds the {zone!r} control. Set EXPLORER_EGERIA_PLATFORM_NAME to say "
