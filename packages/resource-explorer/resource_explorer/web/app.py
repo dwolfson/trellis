@@ -239,3 +239,21 @@ async def index() -> FileResponse:
 @app.get("/admin/feedback")
 async def admin_feedback() -> FileResponse:
     return FileResponse(_STATIC / "admin-feedback.html")
+
+
+@app.get("/next")
+async def next_ui() -> FileResponse:
+    """The experimental `/next` UI — skin 1c, and the Questions pane rebuilt
+    to report the ANSWER rather than the mechanism.
+
+    Served alongside `/`, not instead of it. The whole UI is a consumer of
+    `/api/*`: this route adds no endpoint, touches no schema, and shares this
+    app's session, so the experiment is additive and reversible — if it is a
+    dead end, this function and `static/next/` go away together.
+
+    Same shape as `/admin/feedback` above, which is the precedent for a second
+    static page here. Its assets live under `/static/next/`, already public by
+    the shared `/static/` prefix; the shell itself is listed in
+    `RE_PUBLIC_PATHS` for the same reason `/` is.
+    """
+    return FileResponse(_STATIC / "next" / "index.html")

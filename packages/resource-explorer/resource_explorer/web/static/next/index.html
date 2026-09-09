@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resource Explorer · /next</title>
+<link rel="icon" href="/static/egeria-logo.png">
+
+<!-- Self-hosted, like every other asset this app loads. Regenerate with
+     frontend-build/build-next-fonts.py. -->
+<link rel="stylesheet" href="/static/next/fonts/fonts.css">
+
+<style>
+  /* Base and the handful of things a utility class is the wrong tool for.
+     Kept ABOVE the Tailwind link on purpose — index.html learned the hard
+     way that a plain class and a Tailwind utility of equal specificity are
+     decided by source order (see frontend-build/README.md). */
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: #1b1a19;
+    color: #f3f2f2;
+    font-family: Lora, Georgia, serif;
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Tabular figures. Every span holding a COUNT gets this; running prose
+     keeps its default figures. This is the change most likely to make the
+     app look considered rather than restyled, and no codemod can find the
+     spans — it is a manual pass, so the class is deliberately short. */
+  .tnum { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
+
+  /* Never the browser default. */
+  :focus { outline: none; }
+  :focus-visible { outline: 2px solid #b68235; outline-offset: 2px; }
+
+  ::selection { background: rgba(182, 130, 53, 0.3); }
+
+  /* The intent strip must never wrap: a wider item reflows the whole row.
+     Scrolled horizontally instead, with the scrollbar out of the way. */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* De-emphasis is glyph, weight and border style — never fading text
+     toward the ground. Nothing in this file sets opacity on text, and this
+     comment is here so the next person adding a "dim" role reads it first. */
+
+  /* Hover is an accent tint, everywhere something is interactive. A tint
+     rather than a colour change, so the element's own state (held, selected,
+     current) still reads underneath it. */
+  #app-grid button:hover, #intent-nav button:hover, #perspective-row button:hover {
+    background-color: rgba(182, 130, 53, 0.12);
+  }
+
+  /* ── Responsive ───────────────────────────────────────────────────────
+     Three columns collapse RAIL FIRST, then the sidebar — the content pane
+     is the artefact and is the last thing to give up room. Both panels
+     RESTACK rather than disappear: hiding the rail would take `evidence`
+     with it, and hiding the sidebar would strand the selection. The content
+     column is `minmax(0, 1fr)` at every width, or a long qualified name
+     forces the whole page to scroll sideways. */
+  #app-grid {
+    display: grid;
+    grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(0, 290px);
+    grid-template-areas: "sidebar content rail";
+  }
+  #app-grid > .pane-sidebar { grid-area: sidebar; }
+  #app-grid > .pane-content { grid-area: content; }
+  #app-grid > .pane-rail    { grid-area: rail; }
+
+  @media (max-width: 1100px) {
+    #app-grid {
+      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+      grid-template-areas: "sidebar content" "sidebar rail";
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+    #app-grid > .pane-rail { border-left: 0; border-top: 1px solid #444141; }
+  }
+
+  @media (max-width: 780px) {
+    #app-grid {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "content" "rail" "sidebar";
+      grid-template-rows: minmax(0, 1fr) auto auto;
+    }
+    #app-grid > .pane-sidebar { border-right: 0; border-top: 1px solid #444141; }
+  }
+</style>
+
+<link rel="stylesheet" href="/static/next/tailwind-next.css">
+<script src="/static/auth.js"></script>
+</head>
+
+<body class="bg-chrome text-chrome-ink font-body">
+
+<!-- ── Login overlay ──────────────────────────────────────────────────────
+     Inline styles, and the element ids auth.js binds to. Deliberately
+     depends on nothing but the token stylesheet: if the Tailwind build were
+     missing this must still be usable, because it is the screen you would
+     be looking at when you found out. auth.js toggles `style.display`
+     directly, so this cannot become a class-based toggle. -->
+<div id="login-overlay" style="display:none;position:fixed;inset:0;z-index:100;
+     align-items:center;justify-content:center;background:#1b1a19">
+  <div style="width:min(380px,92vw);border:1px solid #444141;border-radius:4px;
+              padding:27.6px;background:#201f1d">
+    <div style="font-family:'Cormorant Garamond',Georgia,serif;font-size:19px;margin-bottom:4.6px">
+      Resource Explorer
+    </div>
+    <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#e1ad66;
+                margin-bottom:18.4px">Experimental UI</div>
+    <div id="login-message" class="hidden" style="font-size:13px;color:#9b9797;margin-bottom:13.8px"></div>
+    <label for="login-username" style="display:block;font-size:11.5px;color:#9b9797;margin-bottom:4.6px">
+      Egeria user id
+    </label>
+    <input id="login-username" type="text" autocomplete="username"
+           style="width:100%;padding:6px 10px;margin-bottom:13.8px;font:inherit;font-size:13px;
+                  color:#f3f2f2;background:transparent;border:1px solid #444141;border-radius:2px">
+    <label for="login-password" style="display:block;font-size:11.5px;color:#9b9797;margin-bottom:4.6px">
+      Password
+    </label>
+    <input id="login-password" type="password" autocomplete="current-password"
+           style="width:100%;padding:6px 10px;margin-bottom:13.8px;font:inherit;font-size:13px;
+                  color:#f3f2f2;background:transparent;border:1px solid #444141;border-radius:2px">
+    <div id="login-error" class="hidden" style="font-size:12px;color:#e1ad66;margin-bottom:9.2px"></div>
+    <button id="login-submit-btn"
+            style="font-family:'Cormorant Garamond',Georgia,serif;font-size:14px;cursor:pointer;
+                   padding:6px 16px;color:#e1ad66;background:transparent;
+                   border:1px solid #b68235;border-radius:2px">Sign in</button>
+    <!-- Only useful in the dev-box anonymous-read mode, and safe by
+         construction rather than by being hidden: Auth.hideLogin() refuses
+         to dismiss while the server requires login and nobody is signed in,
+         so this button cannot reveal a shell whose every call 401s. Without
+         it, an anonymous-read box shows a modal with no way past it. -->
+    <button id="login-dismiss-btn"
+            style="margin-left:9.2px;font-size:12px;cursor:pointer;color:#9b9797;
+                   background:transparent;border:0">Continue without signing in</button>
+  </div>
+</div>
+
+<div class="flex h-full flex-col">
+
+  <!-- ── Top bar ───────────────────────────────────────────────────────── -->
+  <header class="flex flex-wrap items-center gap-s4 border-b border-chrome-line px-4 py-[10px]">
+    <span class="font-heading text-brand font-semibold">Resource Explorer</span>
+    <span id="scope-slug"
+          class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-[11px] text-accent-on-dark"></span>
+    <span class="ml-auto flex items-center gap-s4 text-[12px] text-chrome-muted">
+      <span>Activity <span id="activity-count" class="tnum text-accent-on-dark">–</span></span>
+      <span id="investigation-name">No investigation</span>
+      <span id="whoami">–</span>
+      <!-- Make switching one click, and say which UI you are in. Testers
+           comparing one repo in both shells in one session is what produces
+           usable feedback. -->
+      <a id="switch-ui" href="/"
+         class="rounded-sm border border-chrome-line px-2 py-[2px] text-chrome-ink no-underline hover:border-accent hover:text-accent-on-dark">
+        /next · switch to current UI
+      </a>
+      <button id="logout-btn" class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">
+        Sign out
+      </button>
+    </span>
+  </header>
+
+  <!-- ── Intent nav ────────────────────────────────────────────────────────
+       One row, never wrapping. Nine items: Investigation is the frame, not
+       an intent, so it leads and sits before the divider. -->
+  <nav id="intent-nav"
+       class="no-scrollbar flex flex-nowrap items-center gap-[2px] overflow-x-auto whitespace-nowrap
+              border-b border-chrome-line px-4 font-heading text-intent font-semibold"></nav>
+
+  <!-- ── Perspective row ───────────────────────────────────────────────── -->
+  <div id="perspective-row"
+       class="flex flex-wrap items-center gap-[6px] border-b border-chrome-line px-4 py-[7px]
+              text-chip text-chrome-muted"></div>
+
+  <!-- ── Body ──────────────────────────────────────────────────────────── -->
+  <!-- Grid columns and their responsive collapse live in the <style> block
+       above, keyed on #app-grid — three template-area layouts are clearer as
+       media queries than as arbitrary-value utilities. -->
+  <div id="app-grid" class="min-h-0 flex-1">
+
+    <aside id="sidebar"
+           class="pane-sidebar overflow-y-auto border-r border-chrome-line px-s3 py-s4 text-resource text-chrome-ink"></aside>
+
+    <!-- The paper pane. The seam does structural work: this is the artefact,
+         everything around it is navigation. -->
+    <main id="content" class="pane-content min-w-0 overflow-y-auto bg-paper p-s4 text-ink"></main>
+
+    <aside id="rail"
+           class="pane-rail overflow-y-auto border-l border-chrome-line bg-chrome-alt px-s3 py-s4"></aside>
+  </div>
+</div>
+
+<script type="module" src="/static/next/app.js"></script>
+</body>
+</html>
