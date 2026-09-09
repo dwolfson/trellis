@@ -284,3 +284,36 @@ def test_the_source_block_is_escaped_exactly_once():
         "_renderArchitectureDiagramResults passes an already-escaped string to "
         "_renderMermaidSource, so the copy button yields &gt; instead of >."
     )
+
+
+def test_a_derived_last_run_is_labelled_as_derived_on_the_card():
+    """`last_run_via: 'derived'` means nobody ran this analysis — a derived one
+    dispatched the steps it owns. The card renders `_runVia` from that field,
+    and before 2026-09-09 it tested only for 'survey', so 'derived' fell to the
+    empty string and the card said "Last run today" about a run of something
+    else. That is the same defect the attribution fix was for, one layer along:
+    a right date under a wrong label."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    body = next(b for b in fns.values() if "last_run_via === 'survey'" in b)
+    assert "'derived'" in body, (
+        "the analysis card branches on last_run_via but has no case for "
+        "'derived', so a borrowed freshness renders indistinguishably from a "
+        "direct run of this analysis"
+    )
+    assert "last_run_derived_from" in body, (
+        "the card labels a run as derived without naming which analysis's run "
+        "it came from — the reader cannot tell what was actually run"
+    )
+
+
+def test_the_api_sends_the_field_the_card_reads():
+    """A card reading a key the payload never sends renders `undefined`. Both
+    sides are edited here, so this pins them together."""
+    import pathlib as _p
+    route = (_p.Path(__file__).resolve().parent.parent
+             / "resource_explorer" / "web" / "routes" / "projects.py").read_text()
+    assert '"last_run_derived_from"' in route, (
+        "index.html reads la.last_run_derived_from but the analyses payload in "
+        "projects.py does not send it"
+    )

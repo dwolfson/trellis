@@ -765,6 +765,11 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
                                else "not_established" if unattributed else "never_run"),
             "unattributed_surveys": unattributed,
             "last_run_via": run.get("last_run_via", ""),
+            # Which analysis's run this freshness came from, when it came from
+            # a DERIVED one (architecture_diagram running the recovery's steps).
+            # Carried so the card can name it rather than saying "ran today"
+            # about a run of something else — see get_analysis_last_run().
+            "last_run_derived_from": run.get("last_run_derived_from", ""),
             "last_run_partial": run.get("last_run_partial", False),
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,

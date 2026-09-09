@@ -4504,7 +4504,7 @@ slug returns an empty answer rather than an error. Any claim of the form "X is
 missing for repo R" needs R proven to exist in the same session as the query
 that found X missing.
 
-## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first
+## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first — ATTRIBUTION FIXED 2026-09-09, freshness still open
 
 Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took
 ~90s: *"do we check to see if there was a recent architecture survey with the
@@ -4541,10 +4541,32 @@ attribution correct, which is the narrower and more honest repair.
 
 Three things, in dependency order, none done:
 
-1. **Credit the source analyses when a derived analysis runs their steps.** The
-   `analysis_run` row should attribute to every analysis in
-   `REPO_ANALYSIS_SOURCE_STEPS[analysis_id]`'s owners, not only to the clicked
-   id. Verify by asserting the source's `last_run_at` advances.
+1. ~~**Credit the source analyses when a derived analysis runs their steps.**~~
+   **DONE 2026-09-09.** `repo_analysis_derived_sources()` maps a derived
+   analysis to the owners of the steps it dispatches, and
+   `get_analysis_last_run` credits them from the same `analysis_run` row. Done
+   at READ time, not write time, so it corrects rows already in the log —
+   re-measured on `egeria_workspaces_git` immediately afterwards, the recovery
+   moved from `2026-08-30` to the diagram run's own timestamp.
+
+   Credited with `last_run_via: "derived"` and `last_run_derived_from: <id>`
+   rather than silently as `analysis`: the source was not run directly, and a
+   fix that produced a right date under a wrong label would be the same defect
+   moved one layer. The card names the borrowed run
+   ("its steps were run by architecture_diagram, not by this card"), which
+   needed the field carried through `projects.py`'s analyses payload too — the
+   frontend branched only on `'survey'`, so `'derived'` had been rendering as
+   the empty string.
+
+   A derived credit loses to any newer direct run of the source, and a FAILED
+   derived run records `error` rather than claiming the source succeeded.
+
+   Five guards, each sabotaged: no crediting, the wrong label, overwriting a
+   newer direct run, an error reported as ok, and an analysis crediting itself.
+   That last one was **vacuous when first written** — no catalogue entry both
+   owns and derives a key, so it passed with the guard removed; it now
+   constructs the case via monkeypatch, with a separate test asserting the real
+   catalogue has no such entry.
 2. **Consult the freshness that is already known** before dispatching — skip, or
    warn with the age, when the source data is newer than a threshold. Whether
    the default is skip-with-override or warn-and-run is a product decision;

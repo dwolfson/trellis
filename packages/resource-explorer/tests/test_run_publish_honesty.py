@@ -428,3 +428,108 @@ class TestProposedPerspectives:
             for a in get_analyses(rt, include_egeria_live=False):
                 for p in (a.get("perspectives") or []):
                     assert p == "all" or p in EGERIA_PERSPECTIVES, f"{a['id']}: {p}"
+
+
+class TestDerivedRunsCreditTheirSource:
+    """Running a derived analysis runs steps it does not own, so it refreshes
+    the SOURCE's data — and until 2026-09-09 the source got no credit for it.
+
+    Measured on egeria_workspaces_git minutes after an architecture_diagram run
+    that rewrote the recovery's components and published them:
+
+        architecture_diagram   last_run_at = 2026-09-09T14:08:05
+        architecture_recovery  last_run_at = 2026-08-30T20:41:46
+
+    The recovery's card reporting data ten days stale that was ten minutes old.
+    An `analysis_run` row records only the clicked id, and the step-level
+    attribution below it applies to `survey` rows.
+    """
+
+    def _log_analysis_run(self, reg, slug, analysis_id, status="ok"):
+        from resource_explorer.activity_logger import log_analysis_run
+        return log_analysis_run(reg, "repo", slug, slug, status,
+                                f"ran {analysis_id}", analysis_id, published=None)
+
+    def test_the_map_names_the_source_and_an_ordinary_analysis_has_none(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            repo_analysis_derived_sources)
+        assert repo_analysis_derived_sources("architecture_diagram") == {
+            "architecture_recovery": ["repo_arch_detect", "repo_arch_coupling"]}
+        # The source itself derives from nothing — it owns its steps.
+        assert repo_analysis_derived_sources("architecture_recovery") == {}
+        assert repo_analysis_derived_sources("security_scan") == {}
+        assert repo_analysis_derived_sources("not_an_analysis") == {}
+
+    def test_no_analysis_can_credit_itself_through_derivation(self, monkeypatch):
+        """An entry that both OWNS and DERIVES a key must not appear in its own
+        source map, or one run of it would record two differently-labelled runs
+        of it — the second overwriting `last_run_via: analysis` with `derived`.
+
+        Constructed, not surveyed: no catalogue entry is shaped that way today,
+        so asserting over the real ANALYSIS_KINDS passes whether or not the
+        guard exists. Measured — with the `source != analysis_id` check removed,
+        the real-catalogue version of this test stayed green.
+        """
+        from resource_explorer.surveyors import repo_survey_definition_adapter as mod
+
+        kind = mod.ANALYSIS_KINDS["architecture_recovery"]
+        monkeypatch.setattr(kind, "derives_from", list(kind.step_keys), raising=False)
+        assert mod.repo_analysis_derived_sources("architecture_recovery") == {}, (
+            "an analysis that owns the very steps it declares as derived is "
+            "crediting itself as its own source")
+
+    def test_the_real_catalogue_has_no_self_deriving_entry(self):
+        """The above proves the guard works; this proves nothing in the
+        catalogue is relying on it to paper over a mis-declared entry."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS)
+        overlapping = {
+            aid: sorted(set(k.step_keys) & set(getattr(k, "derives_from", []) or []))
+            for aid, k in ANALYSIS_KINDS.items()
+            if set(k.step_keys) & set(getattr(k, "derives_from", []) or [])
+        }
+        assert not overlapping, (
+            f"these analyses declare a step as both owned and derived, which is "
+            f"a contradiction — owning it means running it IS running them: "
+            f"{overlapping}")
+
+    def test_running_the_diagram_credits_the_recovery(self, reg, slug):
+        self._log_analysis_run(reg, slug, "architecture_diagram")
+        got = reg.get_analysis_last_run("repo", slug)
+        assert "architecture_recovery" in got, (
+            "an architecture_diagram run executed repo_arch_detect and "
+            "repo_arch_coupling and rewrote the recovery's data, but the "
+            "recovery still reports never-run")
+        assert got["architecture_recovery"]["last_run_at"] == \
+            got["architecture_diagram"]["last_run_at"]
+
+    def test_the_credit_says_it_was_derived_rather_than_run_directly(self, reg, slug):
+        """Same timestamp, different provenance. Nobody ran the recovery — a
+        reader deciding whether to trust this freshness has to be able to see
+        that, or the fix just replaces a wrong date with a wrong label."""
+        self._log_analysis_run(reg, slug, "architecture_diagram")
+        got = reg.get_analysis_last_run("repo", slug)
+        assert got["architecture_recovery"]["last_run_via"] == "derived"
+        assert got["architecture_recovery"]["last_run_derived_from"] == \
+            "architecture_diagram"
+        assert got["architecture_diagram"]["last_run_via"] == "analysis"
+
+    def test_a_failed_derived_run_does_not_report_its_source_as_ok(self, reg, slug):
+        self._log_analysis_run(reg, slug, "architecture_diagram", status="error")
+        got = reg.get_analysis_last_run("repo", slug)
+        assert got["architecture_recovery"]["last_run_status"] == "error"
+
+    def test_the_sources_own_newer_run_wins(self, reg, slug):
+        """Newest-first: a derived credit must not overwrite a real, later run
+        of the source, or the provenance would regress to 'derived' for a run
+        that actually happened."""
+        self._log_analysis_run(reg, slug, "architecture_diagram")
+        self._log_analysis_run(reg, slug, "architecture_recovery")
+        got = reg.get_analysis_last_run("repo", slug)
+        assert got["architecture_recovery"]["last_run_via"] == "analysis"
+
+    def test_an_ordinary_analysis_run_credits_only_itself(self, reg, slug):
+        self._log_analysis_run(reg, slug, "security_scan")
+        got = reg.get_analysis_last_run("repo", slug)
+        assert set(got) == {"security_scan"}, (
+            f"a non-derived analysis credited something else: {sorted(got)}")

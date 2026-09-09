@@ -4188,6 +4188,38 @@ REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {k: v.step_keys for k, v in ANALY
 REPO_ANALYSIS_SOURCE_STEPS: dict[str, list[str]] = {
     k: (v.step_keys or v.derives_from) for k, v in ANALYSIS_KINDS.items()
 }
+
+
+def repo_analysis_derived_sources(analysis_id: str) -> dict[str, list[str]]:
+    """{source_analysis_id: [the step keys it owns that `analysis_id` runs]}.
+
+    A derived analysis dispatches steps it does not own (architecture_diagram
+    runs architecture_recovery's two), so running it genuinely refreshes the
+    SOURCE's data. Attribution did not follow that: an `analysis_run` row
+    records only the id the user clicked, and the step-level attribution in
+    `get_analysis_last_run` applies to `survey` rows. Measured 2026-09-09 on
+    egeria_workspaces_git right after such a run —
+
+        architecture_diagram   last_run_at = 2026-09-09T14:08:05
+        architecture_recovery  last_run_at = 2026-08-30T20:41:46
+
+    — the recovery's card reporting data ten days stale that was ten minutes
+    old, having just been rewritten by that very run.
+
+    Empty for an ordinary analysis: only `derives_from` keys owned by SOMEONE
+    ELSE count. Self-owned keys are excluded so an analysis that both owns and
+    derives a key cannot credit itself twice.
+    """
+    kind = ANALYSIS_KINDS.get(analysis_id)
+    if not kind or not getattr(kind, "derives_from", None):
+        return {}
+    owner = {k: a for a, ks in REPO_ANALYSIS_STEP_MAP.items() for k in ks}
+    out: dict[str, list[str]] = {}
+    for key in kind.derives_from:
+        source = owner.get(key)
+        if source and source != analysis_id:
+            out.setdefault(source, []).append(key)
+    return out
 REPO_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     k: (v.results.results_reader, v.results.trend_reader)
     for k, v in ANALYSIS_KINDS.items() if v.results

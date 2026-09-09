@@ -2874,7 +2874,15 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     // Run button made every card say "Never run" while its results sat in the
     // findings tables — next to a Published badge derived from a different
     // source, which is how one card came to claim both at once.
-    const _runVia = la.last_run_via === 'survey' ? ' (as part of a survey)' : '';
+    // 'derived' is a third case, added 2026-09-09: nobody ran THIS analysis —
+    // a derived one (architecture_diagram) dispatched the steps this analysis
+    // owns, which genuinely refreshed its data. Saying only "ran today" would
+    // replace a wrong date with a wrong label, so the card names the run it is
+    // borrowing its freshness from.
+    const _runVia = la.last_run_via === 'survey' ? ' (as part of a survey)'
+      : la.last_run_via === 'derived'
+        ? ` (its steps were run by ${la.last_run_derived_from || 'another analysis'}, not by this card)`
+        : '';
     const _partial = la.last_run_partial
       ? ' — covered some of this analysis\'s steps, not all' : '';
     // Three states, not two. A repo surveyed by runs too old to record which
