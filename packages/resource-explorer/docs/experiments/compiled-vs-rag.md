@@ -65,6 +65,17 @@ uv run python scripts/experiment_compiled_vs_rag.py --summarise                 
 Results: `data/experiments/compiled_vs_rag/results.jsonl` (one row per unit, resumable) and, when
 MLflow is reachable, experiment `compiled_vs_rag` with one run per condition.
 
+## Rubric history
+
+| Version | What changed | Why |
+|---|---|---|
+| v1 (run full-20260908) | original five fields | — |
+| v2-2026-09-08 | `declines` field with an explicit refusal-scoring rule; `missing_result_claims` as a per-gap list that includes asserted absences and zeros; hedge-shaped statements count as acknowledging limits; consistency between missing-result claims and unsupported claims; grade content not fluency | two audits of the first run (`audits/`): the judge preferred fluent guesses over honest refusals in 10 of the 16 losses and scored the same refusal 0, 1 and 2 across rows; it missed both answers that asserted a result for a missing analysis, having counted them as unsupported claims without routing them to `claims_missing_result` |
+
+Rows carry `judge.rubric_version`; a re-judge (`--rejudge`) rescores existing answers under the
+current rubric into `results.<version>.jsonl`, keeping the previous verdict as `judge_previous`.
+Runs judged under different rubrics are never averaged together.
+
 ## Runs
 
 ### full-20260908 — 3 repos × 52 questions × 2 conditions = 312 rows, 0 errors
@@ -89,7 +100,7 @@ answering kind, including `human` (1.10 vs 0.48) and `gap` (1.00 vs 0.22), where
 condition's advantage is that it says what is missing. Replayability: the agent's compile id equalled
 the reference compile's id in 156 of 156 compiled rows.
 
-**Read with the caveats above.** One answering model, one judge, one afternoon. Two things to
+**Superseded by the v2 re-judge below once it lands; the audits in `audits/` explain why these v1 numbers overstate the compiled advantage.** Original caveats: **Read with the caveats above.** One answering model, one judge, one afternoon. Two things to
 check by hand before believing the numbers: (1) `claims_missing_result` never fired in either
 condition, which is either good news or a rubric that cannot detect it — sample the RAG rows for
 analyses listed as gaps and see whether the judge missed any; (2) the 16 pairs where RAG scored
