@@ -142,5 +142,14 @@ ___
 Repo Architecture Discovery
 
 ### Scope Reference
-What is its internal architecture — what components exist and how do they relate?
+What components exist in this repository, and what kind is each?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Architecture Discovery
+
+### Scope Reference
+How do its components relate to each other?
 
