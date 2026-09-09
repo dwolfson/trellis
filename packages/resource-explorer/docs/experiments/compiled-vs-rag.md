@@ -72,11 +72,88 @@ MLflow is reachable, experiment `compiled_vs_rag` with one run per condition.
 | v1 (run full-20260908) | original five fields | — |
 | v2-2026-09-08 | `declines` field with an explicit refusal-scoring rule; `missing_result_claims` as a per-gap list that includes asserted absences and zeros; hedge-shaped statements count as acknowledging limits; consistency between missing-result claims and unsupported claims; grade content not fluency | two audits of the first run (`audits/`): the judge preferred fluent guesses over honest refusals in 10 of the 16 losses and scored the same refusal 0, 1 and 2 across rows; it missed both answers that asserted a result for a missing analysis, having counted them as unsupported claims without routing them to `claims_missing_result` |
 
+| v3-2026-09-09 | the judge receives the packed evidence text; `supported_claims` and `misread_claims` counted separately from `unsupported_claims`, which is now checked claim by claim against the text; a decline scores 0 when a packed section answers the question; `evidence_text_exact` records whether a re-judged row's text was reconstructed with a matching compile id | run-4 audit: 89% of the claims v2 counted as unsupported were in the packed text; v2's flags were uncorrelated with the eleven real defects; run 3 showed a decline that names an analysis scoring 2 even when that analysis was packed |
+
 Rows carry `judge.rubric_version`; a re-judge (`--rejudge`) rescores existing answers under the
 current rubric into `results.<version>.jsonl`, keeping the previous verdict as `judge_previous`.
 Runs judged under different rubrics are never averaged together.
 
 ## Runs
+
+### run4-20260909 — cap, count-free summary and relevance fix in isolation; the metric, not the compiler, is what moved
+
+Same seed, repos and rubric (v2) as runs 2 and 3; commit d31379a (template reverted, the three
+other changes kept). `data/experiments/compiled_vs_rag_run4/results.jsonl`; MLflow
+`run4-20260909-{compiled,rag}`. Replayability 156 of 156; 11–12 sections per compile, 86% at FULL.
+
+| metric | compiled | rag | (run 2) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.03 | 0.94 | 1.01 / 0.91 |
+| cites_evidence | 24% | 1% | 35% / 1% |
+| claims_missing_result | 3% (5 rows) | 4% | 5% / 7% |
+| acknowledges_limits | 32% | 59% | 38% / 59% |
+| unsupported_claims (mean) | **1.09** | 0.59 | 0.81 / 0.58 |
+| declines to answer | 33 | 81 | 46 / 83 |
+
+Under rubric v2 the packing change did not reduce unsupported claims; it raised them. On the 101
+questions answered (not declined) in both runs, the mean went 1.10 → 1.22, with 24 rows down, 32
+up, 45 tied. Answers are longer and denser now that most sections are FULL, and the count rose
+with them.
+
+**But the judge never sees the packed text.** Rubric v2 gives it the list of analysis names, so
+"specific claims not attributable to stored evidence" is judged blind. An audit
+(`audits/2026-09-09-run4-unsupported-claims-vs-packed-text.md`) took the 36 compiled rows the
+judge flagged at ≥2 unsupported claims, sampled 20, recompiled each (all 20 compile ids matched,
+so the text audited is byte-identical to what the model saw) and checked every specific claim
+against it:
+
+| | claims |
+|---|---:|
+| judge's unsupported count over the 20 rows | 63 |
+| specific claims found by the audit | 101 |
+| supported (stated in the packed text) | 85 |
+| derived (faithful restatement or aggregation) | 5 |
+| invented | 5 |
+| misread (in the text, wrong value or wrong analysis) | 6 |
+
+89% of the flagged answers' specific claims are in the evidence. Eleven of the twenty rows have no
+defect at all; the two highest-scoring rows (6 and 7 "unsupported") are the longest and are
+perfectly faithful — fifteen Scorecard statuses recited exactly, six CSV files with every row and
+column count right. The judge's flags are not merely inflated but uncorrelated: its rationales
+name verbatim-supported text as unsupported and miss the real defects.
+
+**So the v2 `unsupported_claims` metric penalises exactly what compiled evidence is for**, and
+the run-2 baseline's 0.81-versus-0.58 finding — the reason this track started — measured answer
+density, not invention. Withdrawn as a compiler defect; it stands as a rubric defect.
+
+**The eleven real defects, which are the compiler's actual next targets:**
+
+- *Structure-only sections narrated as results* (3). Field names of `architecture_recovery` read
+  as an architecture; `dependency_analysis` at structure-only rung, so the model answered a
+  dependency question from the neighbouring `foss_scorecard` and relabelled Action references as
+  dependencies. The instruction forbidding this is in the pack and does not hold on an 8B model.
+- *FULL raw-JSON blocks narrated wrongly* (4). `repository_health`'s forks overwritten by its
+  stars; a trend invented from two counters; `cve_scan`'s `{checked: 0, unqueryable: 61}` rendered
+  as "found no vulnerabilities" while `foss_scorecard` in the same pack says no scan has run. That
+  last one is the absence-read-as-zero the compiler exists to prevent, and a raw JSON dump does
+  not carry the distinction.
+- *No section covers the question and `gaps` is empty* (3 of the 5 inventions). Every catalog
+  question maps to some analysis, so "nothing stored addresses this" is invisible to both the
+  model and the judge.
+
+Not confirmed: the hypothesised `foss_scorecard` status mix-up occurs nowhere in the sample.
+Bullet-with-explanation FULL sections are reproduced exactly, at scale.
+
+**RAG contrast** (8 rows, same threshold): 4 of 8 carry fabricated content of a categorically worse
+kind — "123 lines of code" where the stored figure is 107,747, "resale and sublicensing are
+forbidden" for an Apache-2.0 repo, and one answer describing a different repository entirely. v2
+scores both conditions in the same 2–4 band.
+
+**Rubric v3** follows from this: the judge receives the packed text (kept on the row from now on,
+recompiled with an id check for older rows), counts `supported_claims` and `misread_claims`
+separately from `unsupported_claims`, and scores a decline as 0 when a packed section answers the
+question (the run-3 note). Runs 2 and 4 are re-judged under it below; only v3 numbers are
+comparable across them.
 
 ### run3-20260909 — four compiler changes at once; a negative result on one of them
 

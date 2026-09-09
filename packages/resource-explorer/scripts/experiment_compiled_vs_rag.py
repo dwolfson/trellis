@@ -45,7 +45,7 @@ import requests
 CONDITIONS = ("compiled", "rag")
 #: Bump when JUDGE_PROMPT changes in a way that alters scores; every judged row
 #: carries it, so runs judged under different rubrics are never averaged together.
-RUBRIC_VERSION = "v2-2026-09-08"
+RUBRIC_VERSION = "v3-2026-09-09"
 DEFAULT_REPOS = "egeria_python_git,kafka,docling"
 DEFAULT_OUT = Path("data/experiments/compiled_vs_rag")
 JUDGE_MODEL = os.environ.get("EXPERIMENT_JUDGE_MODEL", "qwen2.5:32b")
@@ -60,18 +60,23 @@ WHAT THE SYSTEM ACTUALLY HAS STORED FOR THIS REPOSITORY (ground truth, from the 
 - Analyses with NO usable result for this repository (each one is a GAP): {gaps}
   (states: never_run = never executed; nothing_found = ran and found nothing; not_established = ran but cannot be credited; partial)
 
+THE STORED EVIDENCE ITSELF (the exact text compiled from those analyses; sections are headed "## <analysis id>"; a section marked "structure only" lists part names without values and is NOT a result):
+\"\"\"{evidence}\"\"\"
+
 ASSISTANT'S ANSWER:
 \"\"\"{answer}\"\"\"
 
 Return ONLY a JSON object with these keys:
 - "declines": true/false — does the answer decline to answer, saying the evidence or stored analyses do not cover the question (in any wording)?
-- "answers_question": 0, 1 or 2. If it does NOT decline: 2 = directly and usefully answers what was asked; 1 = partially; 0 = does not address it. If it DOES decline: 2 = declines AND names which analysis would answer it and/or what would have to run; 1 = declines and grounds the refusal in what is or is not stored; 0 = a bare refusal with no grounding. Never score a refusal higher for sounding thorough, and never score a guess higher for sounding confident.
+- "answers_question": 0, 1 or 2. If it does NOT decline: 2 = directly and usefully answers what was asked; 1 = partially; 0 = does not address it. If it DOES decline: first check whether a section in THE STORED EVIDENCE above actually answers the question — if one does, the refusal is wrong and scores 0 whatever it names; otherwise 2 = declines AND names which analysis would answer it and/or what would have to run; 1 = declines and grounds the refusal in what is or is not stored; 0 = a bare refusal with no grounding. Never score a refusal higher for sounding thorough, and never score a guess higher for sounding confident.
 - "cites_evidence": true/false — the answer names a specific analysis, finding, file, metric or source FOR A CLAIM IT MAKES. Naming analyses only to say they were not used does not count.
 - "missing_result_claims": list of gap analysis ids (from the GAP list above, exact ids) for which the answer states a concrete result AS IF MEASURED. This INCLUDES asserting absence or a zero — e.g. "there is no telemetry", "no CVEs were found", "provenance is handled via CLA" — for a gap whose state is never_run or not_established. Check every gap in the list individually. Empty list if none.
 - "claims_missing_result": true if missing_result_claims is non-empty, else false.
 - "acknowledges_limits": true/false — the answer says what it could not determine, what has not been checked, what is unknown or not available, or that the evidence does not cover the question. Any such hedge-shaped statement counts, including "no information available" and "not available in the provided data".
-- "unsupported_claims": integer — count of specific factual claims (numbers, names, findings, described features, asserted absences) not attributable to the stored evidence listed above or to general knowledge clearly labelled as such. A statement that evidence is missing or does not cover the question is NOT a claim (count 0 for it). Every entry in missing_result_claims is also an unsupported claim; keep the two consistent.
-- "rationale": one sentence.
+- "supported_claims": integer — count of specific factual claims (numbers, names, files, statuses, findings, asserted absences) that ARE stated in, or are a faithful restatement or aggregation of, THE STORED EVIDENCE above.
+- "misread_claims": integer — count of specific claims that come from the evidence but get it wrong: a wrong value, a value attributed to the wrong analysis, a "structure only" line or a count of parts quoted as a result, a field name read as a finding, or a "0 checked / unqueryable" read as "none found".
+- "unsupported_claims": integer — count of specific factual claims found NOWHERE in the stored evidence and not clearly labelled as general knowledge. Check each claim against the evidence text before counting it; a claim that appears in the evidence is supported, not unsupported, however specific it is. A statement that evidence is missing or does not cover the question is NOT a claim (count 0 for it). Every entry in missing_result_claims is also an unsupported claim; keep the two consistent. Do not count misread_claims here.
+- "rationale": one sentence naming the worst misread or unsupported claim if there is one.
 """
 
 
@@ -109,7 +114,11 @@ def reference_compile(registry, slug: str, question: str) -> dict:
     rungs = {p["key"]: str(p.get("rung")) for p in c.manifest.get("packed", []) if p.get("role") == "evidence"}
     gaps = [{"key": g["key"], "state": g.get("state"), "reason": g.get("reason")} for g in c.manifest.get("gaps", [])]
     return {"compile_id": c.compile_id, "packed": packed, "rungs": rungs, "gaps": gaps,
-            "used": c.manifest.get("used"), "budget": c.manifest.get("budget")}
+            "used": c.manifest.get("used"), "budget": c.manifest.get("budget"),
+            # Kept so the judge grades against the text the model saw
+            # (rubric v3) without recompiling, and so a later re-judge does
+            # not depend on stored state still matching. ~6 KB per row.
+            "text": c.text}
 
 
 def answer(slug: str, question: str, condition: str) -> tuple[str, float, str | None]:
@@ -123,17 +132,36 @@ def answer(slug: str, question: str, condition: str) -> tuple[str, float, str | 
     return text, latency, getattr(compiled, "compile_id", None)
 
 
-def judge(question: str, answer_text: str, ref: dict) -> dict:
+def evidence_text(ref: dict, registry, slug: str, question: str) -> tuple[str, bool]:
+    """The packed text the judge grades against, and whether it is the text
+    the model saw. Rows written before rubric v3 carry no text, so it is
+    recompiled: the compile is deterministic, and the recompiled id must
+    equal the row's — a mismatch means stored state has changed since the
+    run and the text is NOT what the model was given, in which case the
+    judge gets the analysis lists only and the row says so."""
+    if ref.get("text"):
+        return ref["text"], True
+    from resource_explorer.context_compile import compile_context
+    c = compile_context(registry, slug, question, perspectives=[], budget=6000,
+                        session_id="experiment:compiled_vs_rag:rejudge")
+    if c.compile_id != ref.get("compile_id"):
+        return ("(not available: the stored state has changed since this answer was produced, so "
+                "the evidence text cannot be reconstructed; grade against the analysis lists only)"), False
+    return c.text, True
+
+
+def judge(question: str, answer_text: str, ref: dict, evidence: str = "") -> dict:
     prompt = JUDGE_PROMPT.format(
         question=question,
         packed=", ".join(ref["packed"]) or "(none)",
         gaps=", ".join(f'{g["key"]} ({g["state"]})' for g in ref["gaps"]) or "(none)",
+        evidence=(evidence or "(none)")[:8000],
         answer=answer_text[:6000],
     )
     r = requests.post(f"{OLLAMA}/api/generate", json={
         "model": JUDGE_MODEL, "prompt": prompt, "stream": False, "format": "json",
-        "options": {"temperature": 0, "num_ctx": 8192},
-    }, timeout=600)
+        "options": {"temperature": 0, "num_ctx": 16384},
+    }, timeout=900)
     r.raise_for_status()
     raw = r.json().get("response", "{}")
     try:
@@ -160,6 +188,8 @@ def rejudge(args) -> None:
             if line.strip():
                 r = json.loads(line); done.add((r["repo"], r["question"], r["condition"]))
     rows = [json.loads(l) for l in src.read_text().splitlines() if l.strip()]
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
     print(f"re-judging {len(rows)} rows under {RUBRIC_VERSION} with {JUDGE_MODEL}; {len(done)} already done", flush=True)
     for i, r in enumerate(rows, 1):
         key = (r["repo"], r["question"], r["condition"])
@@ -168,7 +198,9 @@ def rejudge(args) -> None:
         if r["answer"].startswith("[ERROR]"):
             verdict = {"skipped": "answer errored"}
         else:
-            verdict = judge(r["question"], r["answer"], r["reference"])
+            text, exact = evidence_text(r["reference"], registry, r["repo"], r["question"])
+            verdict = judge(r["question"], r["answer"], r["reference"], text)
+            verdict["evidence_text_exact"] = exact
         new = dict(r); new["judge_previous"] = r.get("judge"); new["judge"] = verdict
         with dst.open("a") as f:
             f.write(json.dumps(new, default=str) + "\n")
@@ -214,7 +246,7 @@ def run(args) -> None:
                     text, latency, cid = answer(slug, q["question"], condition)
                 except Exception as exc:  # record the failure as a row; do not stop the run
                     text, latency, cid = f"[ERROR] {type(exc).__name__}: {exc}", 0.0, None
-                verdict = judge(q["question"], text, ref) if not text.startswith("[ERROR]") else {"skipped": "answer errored"}
+                verdict = judge(q["question"], text, ref, ref.get("text", "")) if not text.startswith("[ERROR]") else {"skipped": "answer errored"}
                 row = {
                     "run_id": args.run_id, "ts": datetime.now(timezone.utc).isoformat(),
                     "repo": slug, "question": q["question"], "stage": q["stage"],
@@ -250,6 +282,9 @@ def summarise(out: Path, args=None) -> None:
             "claims_missing_result%": round(100 * sum(bool(x.get("claims_missing_result")) for x in j) / n),
             "acknowledges_limits%": round(100 * sum(bool(x.get("acknowledges_limits")) for x in j) / n),
             "unsupported_claims(mean)": round(statistics.mean(float(x.get("unsupported_claims") or 0) for x in j), 2),
+            "supported_claims(mean)": round(statistics.mean(float(x.get("supported_claims") or 0) for x in j), 2),
+            "misread_claims(mean)": round(statistics.mean(float(x.get("misread_claims") or 0) for x in j), 2),
+            "declines": sum(1 for x in j if x.get("declines")),
             "latency_s(median)": round(statistics.median(r["latency_s"] for r in sub), 1),
         }
 
