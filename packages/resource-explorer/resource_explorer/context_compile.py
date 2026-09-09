@@ -539,8 +539,19 @@ def compile_context(
         try:
             record(compile_id, slug, question, compiled.manifest, compiled.derivation,
                    session_id=session_id)
-        except Exception:
+        except Exception as exc:
             # Persistence is an instrument, not the product: a compile the
             # caller can use must never be lost to a failed bookkeeping write.
+            # But the failure must be VISIBLE in what the caller gets, not
+            # only in a log nobody reads: the manifest says the compile was
+            # not recorded, so feedback that cites this compile_id can be
+            # told apart from feedback that cites a persisted one.
             log.warning("could not record compile %s for %s", compile_id, slug, exc_info=True)
+            compiled.manifest["notes"].append(
+                f"compile not recorded ({type(exc).__name__}); feedback citing "
+                f"{compile_id} will not resolve to a stored manifest"
+            )
+            compiled.manifest["recorded"] = False
+        else:
+            compiled.manifest["recorded"] = True
     return compiled

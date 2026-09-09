@@ -78,6 +78,16 @@ class TestCompileId:
         r.record_compile.side_effect = RuntimeError("db away")
         c = compile_context(r, "x", "q", purposes=["Certify"], budget=4000)
         assert c.text and c.compile_id
+        # ...but the failure is visible in the manifest, not only in a log:
+        # a caller (and the feedback that cites this id) can tell a persisted
+        # compile from one that was not recorded.
+        assert c.manifest["recorded"] is False
+        assert any("compile not recorded" in n for n in c.manifest["notes"])
+
+    def test_a_recorded_compile_says_so(self):
+        r = _registry({"license_classification": [_finding("license")]})
+        c = compile_context(r, "x", "q", purposes=["Certify"], budget=4000)
+        assert c.manifest["recorded"] is True
 
 
 def _sqlite_registry(tmp_path):
