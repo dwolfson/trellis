@@ -617,10 +617,14 @@ class FactLayer:
     def fact(self, slug: str, analysis_id: str) -> Fact:
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
             REPO_ANALYSIS_RESULTS_MAP,
-            REPO_ANALYSIS_STEP_MAP,
+            REPO_ANALYSIS_SOURCE_STEPS,
         )
 
-        can_run = list(REPO_ANALYSIS_STEP_MAP.get(analysis_id, []))
+        # SOURCE steps, not owned ones. `can_run` answers "what would you run to
+        # get this answered", which for a derives-from analysis is its source's
+        # steps — `architecture_diagram` owns none, and naming none would tell a
+        # user with no diagram that nothing can produce one.
+        can_run = list(REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []))
         run = self._last_run(slug).get(analysis_id, {})
         entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
 

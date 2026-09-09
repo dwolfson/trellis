@@ -133,9 +133,16 @@ class TemplateIndex:
         except Exception:
             pass
 
-        # Fallback: data/repos relative path
-        repo_path = Path(__file__).parent.parent.parent / "data" / "repos" / "egeria-python" / "sample-data" / "templates"
-        candidates.append(repo_path)
+        # Fallback: the cloned egeria-python checkout under Advisor's writable
+        # data root (resolve_advisor_data_root/ADVISOR_DATA_PATH) -- same
+        # location clone_repos.py/admin.py resolve, not a path relative to
+        # this file. See admin.py's _DATA_DIR for why that distinction matters.
+        try:
+            from advisor.config import resolve_advisor_data_root
+            repo_path = resolve_advisor_data_root() / "repos" / "egeria-python" / "sample-data" / "templates"
+            candidates.append(repo_path)
+        except Exception:
+            pass
 
         # Deduplicate by resolved path; use first existing match only
         seen: set = set()

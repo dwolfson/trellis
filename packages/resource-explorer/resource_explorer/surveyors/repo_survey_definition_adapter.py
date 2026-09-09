@@ -2785,6 +2785,28 @@ def _architecture_recovery_results(
         default="",
     )
 
+    # Genuine absence, returned as an envelope rather than an empty card — and
+    # the precondition that makes `live_read=True` safe on this kind.
+    #
+    # Without it the dict below always carries `slug` and `documentation`, both
+    # non-empty for ANY string, so facts.py's `_has_content()` answers True for
+    # a repo that has never been surveyed and live_read would report MEASURED
+    # with a headline of None. Measured 2026-09-09 against a slug that does not
+    # exist: content=True, headline=None. `_status` is one of the envelope keys
+    # `_has_content` exempts, which is why this shape reports absence as absence
+    # — the same fix and the same reasoning as _architecture_diagram_results.
+    #
+    # `not surveyed_at` and not "no components": measured across all 61 repos,
+    # the 8 with zero recovery findings ALL still have a surveyed_at, because
+    # their steps ran and recorded a run_outcome saying the repo could not be
+    # read. That is a real answer ("Unverified — could not read this repo",
+    # README finding 57) and must keep reaching the caller; only a repo nothing
+    # has ever touched has no timestamp at all. It is also the same discriminator
+    # _architecture_recovery_headline already uses to return None.
+    if not surveyed_at:
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No architecture recovery yet — run the analysis."}}
+
     # Component -> candidate blueprint(s) backlink (2026-09-03, Curate
     # redesign item 5 — "jump from a component to its candidate
     # blueprints"). Deliberately derived here rather than trusted from
@@ -3673,7 +3695,33 @@ class AnalysisKind:
     and schedules. May span more than one STEP_REGISTRY step_key (e.g.
     language_file_classification bundles three)."""
     id: str
+    #: The steps this analysis OWNS. `REPO_ANALYSIS_STEP_MAP` is built from
+    #: these and must PARTITION the step keys — each key belongs to exactly
+    #: one analysis — because run attribution inverts it
+    #: (`ProjectRegistry._step_key_to_analysis_id`). A duplicate key there does
+    #: not raise: the inverse is a dict comprehension, so the later analysis
+    #: silently wins and the earlier one stops being credited with its own
+    #: runs. Measured 2026-09-08, before `derives_from` below existed:
+    #: `architecture_diagram` declared `architecture_recovery`'s two steps and
+    #: took ownership of both.
     step_keys: list[str]
+    #: Steps this analysis READS but does not own — the steps to execute to
+    #: refresh its data, when it has none of its own.
+    #:
+    #: `architecture_diagram` is the case this exists for. It renders a VIEW of
+    #: what `architecture_recovery` found, and since 2026-09-08 it reconstructs
+    #: that view at READ time (`_architecture_diagram_results`) rather than
+    #: from anything written during a step — so it genuinely runs nothing, and
+    #: `live_read=True` says so. But "runs nothing of its own" and "needs
+    #: nothing run" are different claims: with no diagram yet, the answer is
+    #: still to run the two recovery steps, and a bare `step_keys=[]` would
+    #: leave the Run button, the cost estimate and the fact layer's "run this
+    #: next" hint with nothing to name.
+    #:
+    #: So ownership and executability are separated: `step_keys` answers "whose
+    #: run was that", `derives_from` answers "what do I run to refresh this",
+    #: and `REPO_ANALYSIS_SOURCE_STEPS` below is the second question's map.
+    derives_from: list[str] = field(default_factory=list)
     family: str = ""             # e.g. "security" — groups related kinds on
                                   # the generic findings/metrics tables' `kind`
                                   # column, so future security-family members
@@ -3974,6 +4022,21 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _architecture_recovery_results, _architecture_recovery_trend, "custom",
             headline_reader=_architecture_recovery_headline,
+            # Reads project_analysis_findings back directly, so its answer does
+            # not depend on this repo's survey having recorded step attribution.
+            # Measured 2026-09-09: 53 of 61 repos hold architecture_recovery
+            # findings and only 16 had an `architecture_recovery` key in
+            # get_analysis_last_run(), so 37 repos — some with thousands of
+            # findings rows (genaicomps 7,758; kafka 5,523) — answered
+            # `not_established`, "we have not established this", about data
+            # sitting in the table. Same failure and same fix as api_structure
+            # (2026-09-02) and architecture_diagram (2026-09-08).
+            #
+            # Safe only because the reader above returns a bare `_status` when
+            # surveyed_at is empty; without that gate this flag reports MEASURED
+            # for every unknown slug. Do not set this on a kind whose reader
+            # cannot say "nothing here".
+            live_read=True,
         ),
     ),
     # Same declaring steps as architecture_recovery — persist.py's
@@ -3983,7 +4046,24 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # question ask for "the picture" without also pulling in the full,
     # possibly 100+-component list that answers a different question.
     "architecture_diagram": AnalysisKind(
-        "architecture_diagram", ["repo_arch_detect", "repo_arch_coupling"],
+        # OWNS NO STEPS, and derives from architecture_recovery's two.
+        #
+        # It declared them as its own until 2026-09-08, which silently took
+        # ownership of both: `_step_key_to_analysis_id` inverts this map with a
+        # dict comprehension, and this entry is defined after
+        # architecture_recovery, so both keys resolved HERE and every
+        # survey-derived run of the recovery steps was credited to the diagram
+        # instead of to the recovery that did the work.
+        #
+        # The catalog entry's own comment argued the sharing was correct
+        # because `_persist_diagram` ran INSIDE those two steps. That reasoning
+        # was true when written and is not any more: the diagram moved off the
+        # write path the same day (`_architecture_diagram_results` rebuilds the
+        # IR at read time, so a curator's verdict shows up immediately instead
+        # of after the next survey). Nothing of this analysis runs during a
+        # step now, which is what `live_read=True` below already says.
+        "architecture_diagram", [],
+        derives_from=["repo_arch_detect", "repo_arch_coupling"],
         results=AnalysisKindResults(
             _architecture_diagram_results, None, "custom",
             headline_reader=_architecture_diagram_headline,
@@ -4024,7 +4104,10 @@ def analysis_cost(analysis_id: str) -> tuple[str, str]:
     ("none", "low"): it costs nothing here because it does nothing here (the
     Survey-Definition and publish dispatch paths run elsewhere).
     """
-    steps = [STEP_REGISTRY[k] for k in REPO_ANALYSIS_STEP_MAP.get(analysis_id, [])
+    # SOURCE steps, not owned steps: a derives-from analysis runs its source's
+    # steps, and reporting ("none", "low") for architecture_diagram would call
+    # the most expensive thing in the catalog free and invite an hourly schedule.
+    steps = [STEP_REGISTRY[k] for k in REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, [])
              if k in STEP_REGISTRY]
     if not steps:
         return ("none", "low")
@@ -4089,6 +4172,54 @@ def schedule_is_more_frequent_than_recommended(analysis_id: str, schedule: str) 
 # web/routes/projects.py already import, so this consolidation doesn't
 # force churn in every caller; only ANALYSIS_KINDS is hand-maintained now.
 REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {k: v.step_keys for k, v in ANALYSIS_KINDS.items()}
+
+#: What to RUN to refresh an analysis, as opposed to who owns a run.
+#:
+#: Identical to REPO_ANALYSIS_STEP_MAP for every analysis that owns its steps —
+#: which is all of them but one. It exists so that separating ownership from
+#: executability (see `AnalysisKind.derives_from`) does not leave a
+#: derives-from analysis unrunnable: `architecture_diagram` owns no steps, and
+#: without this its Run button would 400, its cost would read ("none", "low"),
+#: and the fact layer would tell a user with no diagram that there is nothing
+#: they can run to get one.
+#:
+#: Callers asking "whose run was that" must keep using REPO_ANALYSIS_STEP_MAP —
+#: it is the partition, and this map deliberately is not one.
+REPO_ANALYSIS_SOURCE_STEPS: dict[str, list[str]] = {
+    k: (v.step_keys or v.derives_from) for k, v in ANALYSIS_KINDS.items()
+}
+
+
+def repo_analysis_derived_sources(analysis_id: str) -> dict[str, list[str]]:
+    """{source_analysis_id: [the step keys it owns that `analysis_id` runs]}.
+
+    A derived analysis dispatches steps it does not own (architecture_diagram
+    runs architecture_recovery's two), so running it genuinely refreshes the
+    SOURCE's data. Attribution did not follow that: an `analysis_run` row
+    records only the id the user clicked, and the step-level attribution in
+    `get_analysis_last_run` applies to `survey` rows. Measured 2026-09-09 on
+    egeria_workspaces_git right after such a run —
+
+        architecture_diagram   last_run_at = 2026-09-09T14:08:05
+        architecture_recovery  last_run_at = 2026-08-30T20:41:46
+
+    — the recovery's card reporting data ten days stale that was ten minutes
+    old, having just been rewritten by that very run.
+
+    Empty for an ordinary analysis: only `derives_from` keys owned by SOMEONE
+    ELSE count. Self-owned keys are excluded so an analysis that both owns and
+    derives a key cannot credit itself twice.
+    """
+    kind = ANALYSIS_KINDS.get(analysis_id)
+    if not kind or not getattr(kind, "derives_from", None):
+        return {}
+    owner = {k: a for a, ks in REPO_ANALYSIS_STEP_MAP.items() for k in ks}
+    out: dict[str, list[str]] = {}
+    for key in kind.derives_from:
+        source = owner.get(key)
+        if source and source != analysis_id:
+            out.setdefault(source, []).append(key)
+    return out
 REPO_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     k: (v.results.results_reader, v.results.trend_reader)
     for k, v in ANALYSIS_KINDS.items() if v.results
@@ -4184,10 +4315,17 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
     # already proves out.
     "architecture_overview": SurveyResultDashboard(
         "architecture_overview", "Architecture Overview",
-        "Recovered architecture components, the depth-collapsed summary a question actually "
-        "asked for, and whether the project's own architecture document agrees with what was "
-        "recovered — three analyses of the same question, previously shown nowhere together.",
-        ["architecture_recovery", "architecture_summary", "architecture_doc_lens"],
+        "The component diagram, the recovered components behind it, the depth-collapsed "
+        "summary a question actually asked for, and whether the project's own architecture "
+        "document agrees with what was recovered — four views of one question, previously "
+        "shown nowhere together.",
+        # architecture_diagram FIRST (2026-09-08). It had no dashboard at all
+        # while carrying a working results reader — the same coverage gap this
+        # registry was opened to close — and of the four it is the one a reader
+        # who stops after one card should get: the picture states the relations
+        # the other three describe in fields.
+        ["architecture_diagram",
+         "architecture_recovery", "architecture_summary", "architecture_doc_lens"],
     ),
     "dependencies": SurveyResultDashboard(
         "dependencies", "Dependencies",

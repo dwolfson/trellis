@@ -144,3 +144,176 @@ def test_metrics_mode_readers_return_metrics_at_the_top_level():
             "'metrics', which reads them from the top level. Flatten the payload "
             f"(reserved top-level keys: {sorted(reserved)})."
         )
+
+
+# ── the architecture diagram's second half ───────────────────────────────────
+#
+# `architecture_diagram` is the first kind whose results view cannot be built
+# from its payload alone: the payload holds Mermaid SOURCE, and the picture is
+# drawn by the Kroki proxy (POST /api/diagrams/mermaid). A `(data) => html`
+# renderer cannot await that, so _renderArchitectureDiagramResults emits a
+# placeholder and renderPendingArchDiagrams() fills it in after the caller has
+# inserted the HTML.
+#
+# That split has an invariant no other kind has: a site that inserts results
+# HTML and never runs the sweep shows an empty bordered box — a card that looks
+# built and is blank, which is worse than the missing Results button this file's
+# other tests were written for. Four sites insert results HTML today; the point
+# of deriving them below rather than listing them is that a fifth is caught.
+
+
+def _top_level_functions(html: str) -> dict[str, str]:
+    """Split index.html's script into its top-level `function`/`async function`
+    bodies. Column-0 anchored — every function these tests care about is
+    top-level, and a nested one would belong to its parent's body anyway."""
+    # Line comments stripped first: this file discusses its own function names
+    # constantly, and a comment naming _renderAnalysisResultsContent() would
+    # otherwise classify a function by what it talks about rather than what it
+    # calls. (Harmless today — _loadDashboardTrendCharts was picked up that way
+    # and could not affect the result — but a derivation that reads prose as
+    # code is one edit away from being wrong in a direction that matters.)
+    html = re.sub(r"^\s*//.*$", "", html, flags=re.M)
+    starts = [(m.start(), m.group(1))
+              for m in re.finditer(r"^(?:async )?function (\w+)\s*\(", html, re.M)]
+    out = {}
+    for i, (pos, name) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(html)
+        out[name] = html[pos:end]
+    return out
+
+
+def test_every_site_that_inserts_results_html_draws_pending_diagrams():
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+
+    # A function that builds results HTML but never assigns innerHTML hands it
+    # upward — its caller is the insertion site, not it. _renderGroupedCards
+    # Dashboard is the one such today.
+    producers = {"_renderAnalysisResultsContent"}
+    producers |= {n for n, b in fns.items()
+                  if "_renderAnalysisResultsContent(" in b and ".innerHTML" not in b}
+
+    inserters = {
+        n for n, b in fns.items()
+        if ".innerHTML" in b and any(f"{p}(" in b for p in producers)
+        and n not in producers
+    }
+    assert inserters, "found no results-insertion sites at all — the derivation broke, not the code"
+
+    missing = {n for n in inserters if "renderPendingArchDiagrams(" not in fns[n]}
+    assert not missing, (
+        f"these insert analysis results HTML and never draw the pending "
+        f"architecture diagram, so an architecture_diagram card renders as an "
+        f"empty bordered box: {sorted(missing)}. Call renderPendingArchDiagrams() "
+        f"after the innerHTML assignment."
+    )
+
+
+def test_the_placeholder_is_claimed_before_the_diagram_is_fetched():
+    """Two sweeps can overlap — a dashboard rendering while a chat card is still
+    fetching. Measured with the claim moved after the await: three POSTs for two
+    placeholders, the second overwriting the first's SVG."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["renderPendingArchDiagrams"]
+    claim = body.index("container.dataset.rendered = 'true'")
+    fetched = body.index("await fetch(")
+    assert claim < fetched, (
+        "renderPendingArchDiagrams marks a placeholder rendered only after "
+        "awaiting the diagram server, leaving a window in which a second sweep "
+        "posts the same source again."
+    )
+
+
+def test_every_path_that_can_show_a_diagram_also_offers_its_source():
+    """The Mermaid source is the take-away form of this card (pastes into a PR
+    or an ADR and stays live, and is diffable between runs where two pictures
+    are not). All three exits of the renderer have a `mermaid` string in hand
+    — drawn, too-large-to-draw, and the empty case — so the two that have a
+    diagram to talk about must both offer it, not just the happy one."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["_renderArchitectureDiagramResults"]
+
+    # The early return for "no data at all" legitimately has no source to show.
+    returns = [seg for seg in body.split("return ")[1:]
+               if "_renderEmptyResultState" not in seg]
+    assert len(returns) >= 2, (
+        "expected at least the drawn and the too-large returns to inspect; the "
+        "derivation broke, not the code"
+    )
+    missing = [i for i, seg in enumerate(returns) if "_renderMermaidSource(" not in seg]
+    assert not missing, (
+        f"{len(missing)} of {len(returns)} returns in "
+        f"_renderArchitectureDiagramResults show a diagram (or say why it "
+        f"cannot be drawn) without offering its Mermaid source. Add "
+        f"_renderMermaidSource(data.mermaid)."
+    )
+
+
+def test_a_diagram_that_cannot_be_drawn_still_shows_its_source():
+    """The failure path is the one that most needs the source: the diagram
+    server being unreachable is exactly when a reader has no other route to
+    the answer, and the source is already sitting in the placeholder's
+    dataset. Guards against it regressing to an error message alone."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["renderPendingArchDiagrams"]
+    catch = body[body.index("} catch ("):]
+    assert "dataset.mcode" in catch, (
+        "renderPendingArchDiagrams' failure path no longer renders the Mermaid "
+        "source it already holds in container.dataset.mcode — a reader whose "
+        "diagram server is down now gets an error and nothing else."
+    )
+
+
+def test_the_source_block_is_escaped_exactly_once():
+    """_esc() on an already-escaped string double-escapes: the reader copies
+    `A --&gt; B` and pastes something no Mermaid renderer accepts. The
+    placeholder's data-mcode is escaped at emit time and decoded by reading
+    .dataset, so the failure path escapes once; the <details> block escapes the
+    raw payload once. Neither may escape a value that _esc already touched."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    src = fns["_renderMermaidSource"]
+    assert "_esc(mermaid)" in src, "_renderMermaidSource no longer escapes its input"
+    assert src.count("_esc(") == 1, (
+        f"_renderMermaidSource escapes {src.count('_esc(')} times; the source "
+        f"is displayed once and must be escaped once."
+    )
+    # The renderer must hand it the RAW payload, never the escaped copy.
+    body = fns["_renderArchitectureDiagramResults"]
+    assert "_renderMermaidSource(_esc(" not in body, (
+        "_renderArchitectureDiagramResults passes an already-escaped string to "
+        "_renderMermaidSource, so the copy button yields &gt; instead of >."
+    )
+
+
+def test_a_derived_last_run_is_labelled_as_derived_on_the_card():
+    """`last_run_via: 'derived'` means nobody ran this analysis — a derived one
+    dispatched the steps it owns. The card renders `_runVia` from that field,
+    and before 2026-09-09 it tested only for 'survey', so 'derived' fell to the
+    empty string and the card said "Last run today" about a run of something
+    else. That is the same defect the attribution fix was for, one layer along:
+    a right date under a wrong label."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    body = next(b for b in fns.values() if "last_run_via === 'survey'" in b)
+    assert "'derived'" in body, (
+        "the analysis card branches on last_run_via but has no case for "
+        "'derived', so a borrowed freshness renders indistinguishably from a "
+        "direct run of this analysis"
+    )
+    assert "last_run_derived_from" in body, (
+        "the card labels a run as derived without naming which analysis's run "
+        "it came from — the reader cannot tell what was actually run"
+    )
+
+
+def test_the_api_sends_the_field_the_card_reads():
+    """A card reading a key the payload never sends renders `undefined`. Both
+    sides are edited here, so this pins them together."""
+    import pathlib as _p
+    route = (_p.Path(__file__).resolve().parent.parent
+             / "resource_explorer" / "web" / "routes" / "projects.py").read_text()
+    assert '"last_run_derived_from"' in route, (
+        "index.html reads la.last_run_derived_from but the analyses payload in "
+        "projects.py does not send it"
+    )

@@ -1,6 +1,8 @@
 """Tests for scripts/generate_repo_survey_definition.py's D1 cross-reference
 logic (docs/survey-question-context-plan.md) — the step_key -> Question join
-via question_catalog.yaml's answering.analysis_ids and REPO_ANALYSIS_STEP_MAP.
+via question_catalog.yaml's answering.analysis_ids and REPO_ANALYSIS_SOURCE_STEPS
+(the steps that PRODUCE an analysis's data, not the ones it owns — see
+_build_step_key_to_questions).
 No live Egeria needed; loaded by path since scripts/ isn't a package."""
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ def _entry(question, analysis_ids):
 class TestBuildStepKeyToQuestions:
     def test_maps_analysis_id_through_step_map_to_step_keys(self, script, monkeypatch):
         monkeypatch.setattr(script, "get_questions", lambda **_kw: [_entry("Q1", ["security_scan"])])
-        monkeypatch.setattr(script, "REPO_ANALYSIS_STEP_MAP", {"security_scan": ["repo_security"]})
+        monkeypatch.setattr(script, "REPO_ANALYSIS_SOURCE_STEPS", {"security_scan": ["repo_security"]})
         mapping = script._build_step_key_to_questions()
         assert mapping == {"repo_security": ["Q1"]}
 
@@ -45,7 +47,7 @@ class TestBuildStepKeyToQuestions:
             lambda **_kw: [_entry("Q1", ["security_scan", "repository_health"])],
         )
         monkeypatch.setattr(
-            script, "REPO_ANALYSIS_STEP_MAP",
+            script, "REPO_ANALYSIS_SOURCE_STEPS",
             {"security_scan": ["repo_security"], "repository_health": ["repo_health"]},
         )
         mapping = script._build_step_key_to_questions()
@@ -55,7 +57,7 @@ class TestBuildStepKeyToQuestions:
         # language_file_classification-style bundle — one analysis id, three step keys.
         monkeypatch.setattr(script, "get_questions", lambda **_kw: [_entry("Q1", ["language_file_classification"])])
         monkeypatch.setattr(
-            script, "REPO_ANALYSIS_STEP_MAP",
+            script, "REPO_ANALYSIS_SOURCE_STEPS",
             {"language_file_classification": ["repo_language", "repo_file_classification", "repo_file_structure"]},
         )
         mapping = script._build_step_key_to_questions()
@@ -65,12 +67,12 @@ class TestBuildStepKeyToQuestions:
     def test_question_with_no_analysis_ids_contributes_nothing(self, script, monkeypatch):
         # kind="human"/"gap" questions have no answering.analysis_ids at all.
         monkeypatch.setattr(script, "get_questions", lambda **_kw: [_entry("Q1", [])])
-        monkeypatch.setattr(script, "REPO_ANALYSIS_STEP_MAP", {})
+        monkeypatch.setattr(script, "REPO_ANALYSIS_SOURCE_STEPS", {})
         assert script._build_step_key_to_questions() == {}
 
     def test_unmapped_analysis_id_contributes_nothing(self, script, monkeypatch):
         monkeypatch.setattr(script, "get_questions", lambda **_kw: [_entry("Q1", ["not_a_real_analysis_id"])])
-        monkeypatch.setattr(script, "REPO_ANALYSIS_STEP_MAP", {"security_scan": ["repo_security"]})
+        monkeypatch.setattr(script, "REPO_ANALYSIS_SOURCE_STEPS", {"security_scan": ["repo_security"]})
         assert script._build_step_key_to_questions() == {}
 
     def test_dedupes_same_question_reaching_a_step_key_twice(self, script, monkeypatch):
@@ -80,7 +82,7 @@ class TestBuildStepKeyToQuestions:
             script, "get_questions",
             lambda **_kw: [_entry("Q1", ["a", "b"])],
         )
-        monkeypatch.setattr(script, "REPO_ANALYSIS_STEP_MAP", {"a": ["repo_x"], "b": ["repo_x"]})
+        monkeypatch.setattr(script, "REPO_ANALYSIS_SOURCE_STEPS", {"a": ["repo_x"], "b": ["repo_x"]})
         mapping = script._build_step_key_to_questions()
         assert mapping == {"repo_x": ["Q1"]}
 

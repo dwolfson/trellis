@@ -4378,7 +4378,7 @@ live data. That is the part to fix.
 
 ---
 
-## `architecture_recovery`'s own chat answer can go never-run despite real findings
+## `architecture_recovery` answers `not_established` on 37 of 53 repos that have its findings — FIXED 2026-09-09 (re-measured first; the original example was a typo)
 
 Found 2026-09-08 while verifying the new verdict-coverage feature
 (`docs/curated-architecture-answers-design.md` §6 item 1) against
@@ -4409,3 +4409,345 @@ is the flagship, most heavily-used analysis in the catalog (many questions'
 `analysis_ids` include it), so changing its run-gating behavior deserves its
 own verification pass across more than one repo, not a same-session
 addition to an unrelated feature. Flagged rather than fixed.
+
+**Re-measured 2026-09-09** at the project owner's request, once the
+`architecture_diagram` step-map collision above was fixed and run attribution
+was trustworthy again. Two corrections and one confirmation:
+
+**1. The named example was a slug typo, and the bug does not reproduce on it.**
+There is no repo `egeria-workspaces_git`. The real slug is
+`egeria_workspaces_git` — underscore, not hyphen — and it has no alias under
+the hyphen form (`list_aliases` and `project_aliases` are both empty for it).
+So the `never_run` observation above was made against a slug that does not
+exist, while the "confirmed via direct registry query — 109 components" was
+made against the one that does. Two queries, two different slugs, and the
+difference between them was written up as a run-attribution bug. On the real
+slug today:
+
+    FactLayer.fact("egeria_workspaces_git", "architecture_recovery")
+      state    = 'measured'
+      headline = '109 components recovered — 23 of 181 components reviewed
+                  (21 accepted, 2 rejected); 14 of 39 blueprints reviewed
+                  (14 accepted)'
+
+— the same 109 components the entry cites as proof the data was there. It
+answers end-to-end and always did.
+
+**2. The class of problem is real, and about three times larger than the entry
+claimed.** Swept all 61 live repos: 53 have real `architecture_recovery`
+findings rows, and **37 of those 53 have no `architecture_recovery` key in
+`get_analysis_last_run()` at all**, so `fact()`'s run-gate returns
+`not_established` — 'we have not established this', on repos holding up to
+7,758 findings rows apiece (`genaicomps`; also `kafka` 5,523, `genaiexamples`
+4,079). Only 16 answer. The mechanism described above is right; the entry
+simply picked the one repo where it was not happening.
+
+**3. The collision fix helped, and was not enough.** Counterfactual, by
+restoring the pre-fix `step_keys` on `architecture_diagram` in-process and
+re-counting: **7 repos keyed before, 16 after** — `4db2cf9` recovered 9. The
+other 37 are unaffected by it, so they are a separate cause (surveys whose
+step recording predates attribution, per `get_analysis_last_run`'s own
+`unattributable` branch), not more of the same.
+
+**What this changes about the proposed fix.** `live_read=True` on
+`architecture_recovery` is still the plausible fix, but the case for it is now
+a measured 37-repo gap rather than a phantom one, and the verification pass it
+deserves has an obvious shape: it must not change the answer for the 16 repos
+that already answer correctly, and it must move the other 37 from
+`not_established` to `measured` **with headlines that match their findings
+rows** — a `live_read` that reports a number nobody can source is a worse
+failure than the silence it replaces.
+
+**Applied 2026-09-09, and it needed a precondition the api_structure and
+architecture_diagram precedents did not make obvious.** `live_read=True` alone
+would have been a bug: `facts.py` reports MEASURED whenever `_has_content()`
+finds anything outside the envelope keys, and this reader stamps `slug` and
+`documentation` into every payload unconditionally. Measured against a slug
+that does not exist: `_has_content` True, headline `None` — so every unknown
+repo would have answered "measured" with no label. The reader now returns a
+bare `{"_status": NEVER_RUN}` when `surveyed_at` is empty, which is the one
+shape `_has_content` exempts.
+
+The gate keys on **`surveyed_at`, not on having components**, and that
+distinction is the whole of it: all 8 repos with zero recovery findings still
+carry a timestamp, because their steps ran and recorded a run_outcome saying
+the repo could not be read. "Unverified — coupling, detect could not read this
+repo" is a real answer (README finding 57) and a component-count gate would
+report it as never-run. Only a repo nothing has ever touched has no timestamp.
+
+Verified against the three criteria stated above, all 61 repos:
+
+    before : 16 measured / 45 not_established
+    after  : 61 measured / 0 not_established
+
+    (1) all 16 already-answering repos unchanged                    0 regressions
+    (2) all 53 repos with findings measured, every one with a
+        headline sourced from its own rows (egeria_git 18,087
+        rows -> "223 components recovered", milvus 12,808 ->
+        "79 components", genaicomps 7,758 -> "304 components")      0 empty headlines
+    (3) a slug that does not exist                                  state='never_run'
+
+The 8 zero-findings repos moved from `not_established` to `measured` carrying
+"Unverified — could not read this repo", which is the honest answer and the one
+the run gate was suppressing.
+
+Guards in `tests/test_reader_status_wiring.py::TestLiveReadRequiresAnAbsenceGate`,
+derived over every kind with `live_read` set rather than naming this one, so a
+future kind that sets the flag without an absence gate fails on arrival. Both
+sabotages fire: removing the gate, and replacing it with the plausible-looking
+component-count version.
+
+**The measurement lesson, which is the durable part.** Both halves of the
+original entry were run correctly; they were run against different slugs, and
+nothing in either result said so, because a registry query for a nonexistent
+slug returns an empty answer rather than an error. Any claim of the form "X is
+missing for repo R" needs R proven to exist in the same session as the query
+that found X missing.
+
+## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first — ATTRIBUTION FIXED 2026-09-09, freshness still open
+
+Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took
+~90s: *"do we check to see if there was a recent architecture survey with the
+correct results before we redo that survey from architecture_diagram?"*
+
+**No, and there is no freshness gate anywhere in the dispatch path.**
+`resolve_analysis_plan` -> `enqueue_run` -> `SurveyOrchestrator.run(steps)` is
+unconditional; the only `force_refresh` in the package is `FileTypeCache`'s and
+unrelated. So clicking Run re-executes `repo_arch_detect` + `repo_arch_coupling`
+(the pair this Backlog already prices at ~110s, and the reason
+`repo_arch_coupling` is the one step routed to Prefect) even when identical
+results were produced minutes earlier. `get_analysis_last_run()` already returns
+the last run time and status — the information a freshness check needs is in
+hand at dispatch and simply never consulted.
+
+**The attribution half is the worse one, and was found by following that
+question.** Measured on `egeria_workspaces_git` immediately after such a run:
+
+    architecture_diagram   last_run_at = 2026-09-09T14:08:05   <- the run
+    architecture_recovery  last_run_at = 2026-08-30T20:41:46   <- ten days earlier
+
+The run executed the recovery's two steps and wrote fresh recovery data (108
+logical / 106 subtree components, published to Egeria), but only the id the user
+clicked was credited: an `analysis_run` row records its `analysis_id` directly,
+and the step-level attribution in `get_analysis_last_run` applies to `survey`
+rows only. So the recovery's card reports data ten days stale that is in fact ten
+minutes old. Same class as the `architecture_diagram`/`architecture_recovery`
+step-map collision fixed 2026-09-08, arriving from the other direction: there,
+ownership was wrong; here, dispatch is right and the credit does not follow it.
+
+Note this is **not** fixed by the `live_read=True` above, which makes the
+recovery answer *despite* bad attribution. This entry is about making the
+attribution correct, which is the narrower and more honest repair.
+
+Three things, in dependency order, none done:
+
+1. ~~**Credit the source analyses when a derived analysis runs their steps.**~~
+   **DONE 2026-09-09.** `repo_analysis_derived_sources()` maps a derived
+   analysis to the owners of the steps it dispatches, and
+   `get_analysis_last_run` credits them from the same `analysis_run` row. Done
+   at READ time, not write time, so it corrects rows already in the log —
+   re-measured on `egeria_workspaces_git` immediately afterwards, the recovery
+   moved from `2026-08-30` to the diagram run's own timestamp.
+
+   Credited with `last_run_via: "derived"` and `last_run_derived_from: <id>`
+   rather than silently as `analysis`: the source was not run directly, and a
+   fix that produced a right date under a wrong label would be the same defect
+   moved one layer. The card names the borrowed run
+   ("its steps were run by architecture_diagram, not by this card"), which
+   needed the field carried through `projects.py`'s analyses payload too — the
+   frontend branched only on `'survey'`, so `'derived'` had been rendering as
+   the empty string.
+
+   A derived credit loses to any newer direct run of the source, and a FAILED
+   derived run records `error` rather than claiming the source succeeded.
+
+   Five guards, each sabotaged: no crediting, the wrong label, overwriting a
+   newer direct run, an error reported as ok, and an analysis crediting itself.
+   That last one was **vacuous when first written** — no catalogue entry both
+   owns and derives a key, so it passed with the guard removed; it now
+   constructs the case via monkeypatch, with a separate test asserting the real
+   catalogue has no such entry.
+2. **Consult the freshness that is already known** before dispatching — skip, or
+   warn with the age, when the source data is newer than a threshold. Whether
+   the default is skip-with-override or warn-and-run is a product decision;
+   silently re-running for 90s is the one option that is clearly wrong.
+3. **Separate "view" from "refresh" on derived cards.** `architecture_diagram`
+   is `live_read`, so its Results tab already renders with no run at all — the
+   Run button offers a 90-second refresh where the reader wanted a picture. At
+   minimum the button should state what it will actually execute and roughly
+   what it costs.
+
+## RE needs an admin/ingestion dashboard — EA has one, RE has none
+
+Raised 2026-09-08 by the project owner, checking why EA's admin panel
+(`/admin`, `admin.py`) doesn't show RE's repos. It can't: RE's only
+admin-shaped page is `admin-feedback.html`, scoped narrowly to feedback
+triage. `/api/admin/repair` (`repair.py`) manages repo *metadata* (rename,
+GitHub URL, collection enable/disable, drift) — nothing about triggering or
+watching a survey run.
+
+EA's dashboard (status table for 10 vector collections + 5 source repos,
+per-collection reindex, per-repo git pull, a job list with live output,
+one-click maintenance actions) isn't directly portable, because RE's
+ingestion model is a different shape entirely: EA clones a repo once and
+periodically re-vectorizes it into pgvector; RE surveys a GitHub repo
+on demand (`resource-explorer survey <repo> --publish`, or via
+`survey_definition_reader`/`egeria_publisher`) and writes results straight
+into Egeria as Survey/Investigation elements — there's no local clone+reindex
+cycle to expose a "pull" button for. A useful RE equivalent would need its
+own shape: something closer to "which repos have ever been surveyed, when,
+by which Survey Definition, with what outcome" plus a way to trigger a new
+survey and watch it run (RE's `run_queue.py` + job polling already exists for
+this — `/api/runs` — a dashboard could sit on top of it rather than needing
+new backend plumbing the way EA's admin.py's job-tracking does).
+
+Not designed or scoped further than this. Whoever picks it up should start
+from `run_queue.py`'s existing job model and `admin.py`'s UI shape as
+reference, not treat this as "copy admin.html."
+
+## `architecture_diagram` collides with `architecture_recovery`'s steps, and has no dashboard — FIXED 2026-09-08
+
+Two tests have been failing since `b3b0500` added the read-time
+`architecture_diagram` AnalysisKind (2026-09-08), and both became easier to
+notice on 2026-09-08 when the kind finally reached the UI (`e20dd93` added its
+`_REPO_RESULTS_RENDER_MODE` entry and renderer — until then the analysis had a
+working results reader and no way to see it).
+
+  * `test_run_publish_honesty.py::TestRunAttribution::
+    test_step_keys_map_to_exactly_one_analysis` —
+    *"step repo_arch_detect claimed by architecture_recovery and
+    architecture_diagram"*. `REPO_ANALYSIS_STEP_MAP` is supposed to PARTITION
+    the step keys; both kinds declare `["repo_arch_detect",
+    "repo_arch_coupling"]`, so run attribution for those two steps is now
+    ambiguous by construction.
+  * `test_survey_results_routes.py::TestSurveyResultDashboardsRegistry::
+    test_every_findings_producing_analysis_has_a_dashboard` —
+    *"analyses with no Results dashboard: ['architecture_diagram']"*. The card
+    renders from the Analysis tab and is absent from the Survey Results
+    dashboard that groups these.
+
+These are not independent. The kind's own docstring is explicit that the
+diagram is "a rendered VIEW of the recovery, not the recovery's own evidence",
+and gives it a separate id precisely so a question can ask for the picture
+without pulling the full component list. That is a good reason for a separate
+AnalysisKind and NOT a reason for it to claim the same steps: it runs no steps
+of its own (hence `live_read=True`), so the honest shape is probably an empty
+step list plus a dashboard entry, rather than borrowing `architecture_recovery`'s.
+
+**Fixed the same day, and the collision was worse than the test says.**
+
+`ProjectRegistry._step_key_to_analysis_id` inverts the step map with a dict
+comprehension, so the LAST analysis declaring a key wins — and
+`architecture_diagram` is the final entry in `ANALYSIS_KINDS`. Both recovery
+steps therefore resolved to the diagram, and every survey-derived run of them
+was credited to the picture rather than to the recovery that did the work.
+Confirmed by reading the live inverse map, not inferred from the source.
+
+Worse, the two attribution paths disagreed with each other:
+`egeria_annotation_materializer._analysis_for` loops and returns the FIRST
+match, so a run and the annotations that run produced were being filed under
+different analyses.
+
+The fix separates the two questions the one field was answering.
+`AnalysisKind.step_keys` now means only "whose run was that" and must still
+partition; a new `derives_from` means "what do I run to refresh this", and
+`REPO_ANALYSIS_SOURCE_STEPS` is its map. `architecture_diagram` owns nothing
+and derives from the recovery's two steps. The catalog entry's argument for
+sharing them (`_persist_diagram` ran inside those steps) was true when written
+and had stopped being true hours earlier, when the diagram moved to read-time
+rendering — that comment is corrected in place rather than left to mislead the
+next reader.
+
+Everything asking "what should I execute" moved to the source map: the Run
+button (`web/routes/projects.py`), the scheduler's single and coalesced
+dispatch, `analysis_cost`, and the fact layer's "run this next" hint. Missing
+any one of those would have been silent in its own way — a 400 on the button,
+a schedule that comes due and does nothing, the most expensive analysis in the
+catalog priced at ("none", "low") and recommended daily.
+
+`architecture_diagram` also joined the `architecture_overview` dashboard,
+first of its four: the picture states the relations the other three describe
+in fields.
+
+Guarded by four new tests in `test_run_publish_honesty.py`, each verified
+against the un-fixed code — including one that drives `_run_repo_survey` and
+asserts which steps reach the orchestrator, rather than reading the scheduler's
+source for the right symbol.
+
+**Related, and NOT resolved by this:** the entry above about
+`architecture_recovery` reporting never-run for `egeria-workspaces_git`
+proposes `live_read=True` as its fix. That repo has no attribution for ANY
+architecture analysis — the diagram included — so this collision is not its
+cause, and the diagnosis there stands. But the collision would have made
+`live_read=True` look like it worked for the wrong reason on repos that DO have
+survey attribution, so re-measure that entry now the ownership is correct
+before acting on it.
+
+## The silent-success ratchet is red on one site — FIXED 2026-09-08 by `a254f29`, and better than this entry advised
+
+`tests/test_no_silent_success.py` has been failing since 2026-09-08. Three new
+sites appeared; two were fixed the same day (`egeria_identity.py::
+_platform_name` and `investigation_reclassifier.py::_move_kind_classification`
+— in both cases the handler already refused, but refused with words that
+asserted more than had been measured). The third is still open:
+
+    resource_explorer/context_compile.py::compile_context
+
+introduced by `3bed7b4` ("every compile gets a content-addressed id, is
+persisted, and turns and feedback link to it"). It wraps the `record_compile`
+bookkeeping write, and its comment states the intent plainly: *"Persistence is
+an instrument, not the product: a compile the caller can use must never be
+lost to a failed bookkeeping write."*
+
+This entry originally recommended option (3) in the test's own remediation
+list — record it in `tests/no_silent_success_baseline.json` as a reviewed,
+genuinely best-effort site — on the grounds that the comment's reasoning holds
+and the caller must not lose a usable compile to a failed bookkeeping write.
+
+**`a254f29` took option (1) instead, and it is the better answer.** The compile
+is still returned, so nothing regressed for the caller; what changed is that
+the manifest now carries `recorded: False` and a note saying feedback citing
+this `compile_id` will not resolve to a stored manifest. The reasoning the
+comment gave was sound about the RETURN VALUE and did not follow for the
+manifest: "must not lose the compile" is not the same claim as "must not
+mention that we failed to file it", and a baseline entry would have frozen the
+weaker reading in a reviewed artifact.
+
+Worth keeping as a record of the near-miss: the argument for the baseline was
+made from the handler's own comment, which described the intent accurately and
+was never evidence about what the manifest could afford to say. A comment
+stating why a thing is deliberate is not a measurement of what the alternatives
+cost.
+
+The ratchet is green at 108.
+
+## The architecture diagram is drawn by a path no test exercises end-to-end — CLOSED 2026-09-09, verified live
+
+`_renderArchitectureDiagramResults` emits a placeholder and
+`renderPendingArchDiagrams()` POSTs the Mermaid source to
+`/api/diagrams/mermaid` (the Kroki proxy) to fill it in. As of `e20dd93` the
+**failure** path is verified live in a browser (the server's own message is
+shown and the card is left retryable) and the success path is verified only
+against a stubbed fetch: that route requires a session, so a signed-out session
+cannot drive it, and entering credentials is out of scope.
+
+~~Someone signed in should open an `architecture_diagram` card once and confirm a
+picture appears.~~ **Done 2026-09-09**: the project owner, signed in on the
+:8810 server, confirmed the diagram materializes. The success path is now
+verified end-to-end by the only route that could verify it — a real session
+against the real proxy — and this entry is closed.
+
+Worth recording why it stayed open for a day rather than being assumed: the DB
+ER-diagram view uses the same proxy and was evidence that the proxy works, not
+that this card reaches it. The two are one `fetch` apart and the stub could not
+tell them apart.
+
+Noticed in passing while building it, and NOT changed: `_renderEmptyResultState`
+maps `never_run` to the generic *"No results yet — click Run to scan."* and
+discards the reader's own `st.hint`. That is the documented behaviour
+(`result_status.py`: `never_run -> the original message`) and it is true for
+this kind, whose Run does trigger `repo_arch_detect`/`repo_arch_coupling`. But
+every other status branch shows the hint, and a reader that took the trouble to
+write one ("No architecture diagram yet — run the analysis.") has it dropped.
+Changing it touches every kind's empty state, so it is a deliberate call for
+the presentation session, not a side effect of adding one card.

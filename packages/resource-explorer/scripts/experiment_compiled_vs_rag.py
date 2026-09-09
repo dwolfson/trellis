@@ -43,29 +43,34 @@ from pathlib import Path
 import requests
 
 CONDITIONS = ("compiled", "rag")
+#: Bump when JUDGE_PROMPT changes in a way that alters scores; every judged row
+#: carries it, so runs judged under different rubrics are never averaged together.
+RUBRIC_VERSION = "v2-2026-09-08"
 DEFAULT_REPOS = "egeria_python_git,kafka,docling"
 DEFAULT_OUT = Path("data/experiments/compiled_vs_rag")
 JUDGE_MODEL = os.environ.get("EXPERIMENT_JUDGE_MODEL", "qwen2.5:32b")
 OLLAMA = os.environ.get("LLM__OLLAMA__BASE_URL", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
 
-JUDGE_PROMPT = """You are grading an assistant's answer about a software repository. Be strict and literal.
+JUDGE_PROMPT = """You are grading an assistant's answer about a software repository. Be strict and literal. Grade CONTENT, never fluency: two answers that say the same thing must get the same scores however they are phrased, and a hedged or specific correct statement is never worse than a confident general one.
 
 QUESTION: {question}
 
 WHAT THE SYSTEM ACTUALLY HAS STORED FOR THIS REPOSITORY (ground truth, from the analysis registry):
 - Analyses with stored results that were available as evidence: {packed}
-- Analyses that have NO usable result for this repository: {gaps}
+- Analyses with NO usable result for this repository (each one is a GAP): {gaps}
   (states: never_run = never executed; nothing_found = ran and found nothing; not_established = ran but cannot be credited; partial)
 
 ASSISTANT'S ANSWER:
 \"\"\"{answer}\"\"\"
 
-Grade the answer. Return ONLY a JSON object with these keys:
-- "answers_question": 0, 1 or 2 — 0 does not address it, 1 partially, 2 directly and usefully.
-- "cites_evidence": true/false — does the answer name a specific analysis, finding, file, metric or source for its claims, rather than speaking generally?
-- "claims_missing_result": true/false — does the answer state a concrete result (a number, a finding, a list) for any analysis listed under NO usable result, as if it had been measured?
-- "acknowledges_limits": true/false — does the answer say what it could not determine, what has not been checked, or that the available evidence does not cover the question? A plain statement such as "the evidence does not cover this" COUNTS as acknowledging limits. Use false only if the answer asserts things without any such statement.
-- "unsupported_claims": integer — count of specific factual claims (numbers, names, findings, described features) that are not attributable to the stored evidence listed above or to general knowledge that is clearly labelled as such. A statement that evidence is missing or does not cover the question is NOT a claim; count 0 for such statements.
+Return ONLY a JSON object with these keys:
+- "declines": true/false — does the answer decline to answer, saying the evidence or stored analyses do not cover the question (in any wording)?
+- "answers_question": 0, 1 or 2. If it does NOT decline: 2 = directly and usefully answers what was asked; 1 = partially; 0 = does not address it. If it DOES decline: 2 = declines AND names which analysis would answer it and/or what would have to run; 1 = declines and grounds the refusal in what is or is not stored; 0 = a bare refusal with no grounding. Never score a refusal higher for sounding thorough, and never score a guess higher for sounding confident.
+- "cites_evidence": true/false — the answer names a specific analysis, finding, file, metric or source FOR A CLAIM IT MAKES. Naming analyses only to say they were not used does not count.
+- "missing_result_claims": list of gap analysis ids (from the GAP list above, exact ids) for which the answer states a concrete result AS IF MEASURED. This INCLUDES asserting absence or a zero — e.g. "there is no telemetry", "no CVEs were found", "provenance is handled via CLA" — for a gap whose state is never_run or not_established. Check every gap in the list individually. Empty list if none.
+- "claims_missing_result": true if missing_result_claims is non-empty, else false.
+- "acknowledges_limits": true/false — the answer says what it could not determine, what has not been checked, what is unknown or not available, or that the evidence does not cover the question. Any such hedge-shaped statement counts, including "no information available" and "not available in the provided data".
+- "unsupported_claims": integer — count of specific factual claims (numbers, names, findings, described features, asserted absences) not attributable to the stored evidence listed above or to general knowledge clearly labelled as such. A statement that evidence is missing or does not cover the question is NOT a claim (count 0 for it). Every entry in missing_result_claims is also an unsupported claim; keep the two consistent.
 - "rationale": one sentence.
 """
 
@@ -98,8 +103,12 @@ def reference_compile(registry, slug: str, question: str) -> dict:
     c = compile_context(registry, slug, question, perspectives=[], budget=6000,
                         session_id="experiment:compiled_vs_rag")
     packed = [p["key"] for p in c.manifest.get("packed", []) if p.get("role") == "evidence"]
+    # The rung each section was packed at. Without it, "the rung was too
+    # coarse to answer" cannot be told apart from "the model ignored it"
+    # (audit of run full-20260908, cause C unfalsifiable).
+    rungs = {p["key"]: str(p.get("rung")) for p in c.manifest.get("packed", []) if p.get("role") == "evidence"}
     gaps = [{"key": g["key"], "state": g.get("state"), "reason": g.get("reason")} for g in c.manifest.get("gaps", [])]
-    return {"compile_id": c.compile_id, "packed": packed, "gaps": gaps,
+    return {"compile_id": c.compile_id, "packed": packed, "rungs": rungs, "gaps": gaps,
             "used": c.manifest.get("used"), "budget": c.manifest.get("budget")}
 
 
@@ -132,7 +141,42 @@ def judge(question: str, answer_text: str, ref: dict) -> dict:
     except json.JSONDecodeError:
         out = {"parse_error": raw[:300]}
     out["judge_model"] = JUDGE_MODEL
+    out["rubric_version"] = RUBRIC_VERSION
     return out
+
+
+def rejudge(args) -> None:
+    """Re-score existing answers under the current rubric; nothing is re-answered.
+
+    Reads <out>/results.jsonl, writes <out>/results.<RUBRIC_VERSION>.jsonl with
+    the same rows and a fresh `judge`, keeping the previous verdict under
+    `judge_previous` so rubric changes are auditable row by row. Resumable.
+    """
+    src = Path(args.out) / "results.jsonl"
+    dst = Path(args.out) / f"results.{RUBRIC_VERSION}.jsonl"
+    done = set()
+    if dst.exists():
+        for line in dst.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line); done.add((r["repo"], r["question"], r["condition"]))
+    rows = [json.loads(l) for l in src.read_text().splitlines() if l.strip()]
+    print(f"re-judging {len(rows)} rows under {RUBRIC_VERSION} with {JUDGE_MODEL}; {len(done)} already done", flush=True)
+    for i, r in enumerate(rows, 1):
+        key = (r["repo"], r["question"], r["condition"])
+        if key in done:
+            continue
+        if r["answer"].startswith("[ERROR]"):
+            verdict = {"skipped": "answer errored"}
+        else:
+            verdict = judge(r["question"], r["answer"], r["reference"])
+        new = dict(r); new["judge_previous"] = r.get("judge"); new["judge"] = verdict
+        with dst.open("a") as f:
+            f.write(json.dumps(new, default=str) + "\n")
+        v = verdict
+        print(f"[{i}/{len(rows)}] {r['repo']} | {r['condition']:8s} | aq={v.get('answers_question')} "
+              f"cites={v.get('cites_evidence')} missing={v.get('claims_missing_result')} "
+              f"limits={v.get('acknowledges_limits')} | {r['question'][:60]}", flush=True)
+    summarise(dst, args)
 
 
 def run(args) -> None:
@@ -261,9 +305,13 @@ def main() -> None:
     ap.add_argument("--run-id", default=datetime.now().strftime("%Y%m%d-%H%M"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--summarise", action="store_true", help="only re-read results and print the tables")
+    ap.add_argument("--summarise-file", default=None, help="results file to summarise (default results.jsonl)")
+    ap.add_argument("--rejudge", action="store_true", help="re-score existing answers under the current rubric")
     args = ap.parse_args()
     if args.summarise:
-        summarise(Path(args.out) / "results.jsonl", args); return
+        summarise(Path(args.summarise_file) if args.summarise_file else Path(args.out) / "results.jsonl", args); return
+    if args.rejudge:
+        rejudge(args); return
     run(args)
 
 

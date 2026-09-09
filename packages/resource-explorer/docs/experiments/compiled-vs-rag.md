@@ -65,7 +65,142 @@ uv run python scripts/experiment_compiled_vs_rag.py --summarise                 
 Results: `data/experiments/compiled_vs_rag/results.jsonl` (one row per unit, resumable) and, when
 MLflow is reachable, experiment `compiled_vs_rag` with one run per condition.
 
+## Rubric history
+
+| Version | What changed | Why |
+|---|---|---|
+| v1 (run full-20260908) | original five fields | — |
+| v2-2026-09-08 | `declines` field with an explicit refusal-scoring rule; `missing_result_claims` as a per-gap list that includes asserted absences and zeros; hedge-shaped statements count as acknowledging limits; consistency between missing-result claims and unsupported claims; grade content not fluency | two audits of the first run (`audits/`): the judge preferred fluent guesses over honest refusals in 10 of the 16 losses and scored the same refusal 0, 1 and 2 across rows; it missed both answers that asserted a result for a missing analysis, having counted them as unsupported claims without routing them to `claims_missing_result` |
+
+Rows carry `judge.rubric_version`; a re-judge (`--rejudge`) rescores existing answers under the
+current rubric into `results.<version>.jsonl`, keeping the previous verdict as `judge_previous`.
+Runs judged under different rubrics are never averaged together.
+
 ## Runs
+
+### run3-20260909 — four compiler changes at once; a negative result on one of them
+
+Same seed, repos and rubric (v2) as run 2; the answering side changed. `data/experiments/
+compiled_vs_rag_run3/results.jsonl`; MLflow runs `run3-20260909-{compiled,rag}`. Commit 30989c5
+made four changes to `context_compile.py` (and one to the agent's system prompt): a section cap
+of 12 applied after ranking; a count-free structural SUMMARY rung; an additive relevance weight;
+and a **one-shape refusal template** ("reply in exactly this shape and add nothing else: 'The
+stored analyses do not cover X. <analysis> would answer it; it <state>.'").
+
+| metric | compiled | rag | (run 2) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.38 | 0.90 | 1.01 / 0.91 |
+| cites_evidence | 58% | 1% | 35% / 1% |
+| claims_missing_result | 5% (8 rows) | 4% | 5% / 7% |
+| acknowledges_limits | 74% | 62% | 38% / 59% |
+| unsupported_claims (mean) | 0.31 | 0.54 | 0.81 / 0.58 |
+| declines to answer | 99 | 86 | 46 / 83 |
+| sections packed per compile | 11–12, 84% at FULL | | 24–27, 20% at FULL |
+
+Replayability 156 of 156. The packing change did what the sweep predicted: 84% of packed
+sections at FULL against 20%, with the budget still filling to a median 5,918.
+
+**Do not quote the top three rows.** An audit of the compiled answers splits them by whether the
+refusal template appears:
+
+| subset | n | answers_question | unsupported | declines |
+|---|---:|---:|---:|---:|
+| pure template refusal (the template is the whole answer) | 107 | 1.43 | 0.05 | 93 |
+| template plus content | 7 | 1.57 | 0.29 | 6 |
+| no template | 42 | 1.21 | 0.98 | 0 |
+
+- **The template over-triggered.** 107 of 156 compiled answers are refusals, up from 46, and
+  they include questions whose answering analysis was packed at FULL with no gap at all: "How does
+  the repository handle secrets?" with `secret_scan` packed, "What languages and file types?" with
+  `language_file_classification` packed, "Is IP provenance managed via CLA?" with
+  `contribution_provenance` packed. Twelve of the pure refusals are questions run 2's compiled
+  answer had scored 2 on.
+- **The refusals score well because rubric v2 says a decline that names the analysis scores 2.**
+  That rule was written for honest refusals of unanswerable questions; the template satisfies its
+  letter on answerable ones. The `answers_question` gain is the template meeting the rubric, not
+  better answers.
+- **The template invented gap states.** Seven of the eight compiled `claims_missing_result` rows
+  are the template's `<state>` slot filled with "ran and found nothing" for an analysis that was
+  packed (`documentation_coverage`, `repository_health`, `architecture_recovery`,
+  `data_file_profiling`) — every one of those compiles had an empty gap list. A template with a
+  slot for a state the model does not have is an invitation to invent one.
+- **The unsupported-claims drop is mostly refusals making no claims.** Among the 42 answers with
+  no template, unsupported claims sit at 0.98 — no better than run 2's 0.81. Whether the cap and
+  the count-free summary reduce invented specifics on answers that *answer* is therefore not
+  shown by this run; the population that answered shrank to a quarter.
+
+**What was done about it.** The refusal wording went back to the original loose form in the
+instructions and the system prompt (commit after this one), keeping the cap, the count-free
+summary and the relevance fix. Run 4 isolates those three. Two rubric notes for a future v3, not
+applied now so runs 2–4 stay comparable: a decline whose named analysis is in the *packed* list
+should score 0, not 2 (the judge already sees both lists); and a state asserted for a packed
+analysis should count as a missing-result claim explicitly, which v2 caught only because the
+answers used the literal phrase "found nothing".
+
+**Method note, recorded so it is not repeated:** four changes went into one run. The one that
+dominated behaviour was the cheapest-looking of the four. One variable per run, or a run per
+variable, from here on.
+
+### run2-20260908 — reproducibility on the redeployed platform, rubric v2 from the start
+
+Same seed, same three repos, 312 rows, 0 errors, answered fresh after the 2026-09-08 Egeria
+redeploy and judged under v2. `data/experiments/compiled_vs_rag_run2/results.jsonl`.
+
+| metric | compiled | rag | (re-judged run 1) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.01 | 0.91 | 1.02 / 0.90 |
+| cites_evidence | 35% | 1% | 36% / 1% |
+| claims_missing_result | 5% | 7% | 3% / 7% |
+| acknowledges_limits | 38% | 59% | 40% / 60% |
+| unsupported_claims (mean) | 0.81 | 0.58 | 0.82 / 0.58 |
+| latency, median | 9.4 s | 7.4 s | 11.6 / 10.2 |
+
+Every metric reproduces within two points of the re-judged first run; replayability 156 of 156
+again. The protocol's "treat differences under about ten points as noise until a second run
+reproduces them" is satisfied for: cites_evidence (+34), declines (compiled declines about half as
+often), and unsupported_claims (compiled worse by about 0.23). The answers_question gap (+0.10 to
++0.12) is inside the noise band and should be reported as "no material difference on this
+judge". The missing-result claim rate is low and noisy in both conditions (4 to 11 rows); the
+direction favours compiled in both runs but the sample is too small to quote as a percentage.
+
+
+### full-20260908, re-judged under rubric v2-2026-09-08 — the numbers to quote
+
+Same 312 answers as the first run; only the judge changed. `results.v2-2026-09-08.jsonl`; MLflow runs
+`full-20260908-rejudge-{compiled,rag}`.
+
+| metric | compiled | rag |
+|---|---:|---:|
+| answers_question (0–2) | 1.02 | 0.90 |
+| cites_evidence | 36% | 1% |
+| claims_missing_result | 3% (4 rows) | 7% (11 rows) |
+| acknowledges_limits | 40% | 60% |
+| unsupported_claims (mean) | 0.82 | 0.58 |
+| declines to answer | 46 rows | 84 rows |
+
+Paired per (repo, question): compiled higher in 38, lower in 20, tied in 98; mean difference
+**+0.12**, down from +0.46 under v1. Almost all of the v1 gap was the judge scoring RAG's honest
+refusals as 0; under v2 every decline that grounds itself scores 1, and RAG declines far more often
+(84 to 46). Replayability unchanged: 156 of 156.
+
+**What the corrected numbers say.**
+
+- The compiler's main job is visible now that the rubric can see it: RAG asserted a result for an
+  analysis with no usable result in 11 rows, compiled in 4, and of those 4 at least one is a real
+  compiled failure ("No, there are no outstanding CVEs" for a repository whose `cve_scan` is a gap)
+  while two look like judge over-reach on a general question. The per-kind split is sharper:
+  on `analysis` questions RAG claims missing results 16% of the time, compiled 4%.
+- Compiled answers cite evidence (36% vs 1%) and answer rather than decline; RAG's higher
+  `acknowledges_limits` is mostly that it declines twice as often.
+- **Compiled makes MORE unsupported claims** (0.82 vs 0.58; on `analysis` questions 1.12 vs 0.52).
+  This is the loss audit's cause B/C measured: summary-rung text from neighbouring sections
+  narrated as specifics ("5 lines of code by language"). It is the clearest engineering signal in
+  the run and it points at packing 24–27 sections into 6,000 characters, not at the judge.
+- The v1 conclusion "compiled roughly doubles answers_question" is withdrawn. The defensible
+  claim is: compiled answers are cited, decline less, and assert results for missing analyses less
+  often; they also invent more specifics from coarse evidence, which is a compiler defect with a
+  known location (`context_compile.py`: section breadth and `_results_to_rungs`' structural SUMMARY).
+
 
 ### full-20260908 — 3 repos × 52 questions × 2 conditions = 312 rows, 0 errors
 
@@ -89,7 +224,7 @@ answering kind, including `human` (1.10 vs 0.48) and `gap` (1.00 vs 0.22), where
 condition's advantage is that it says what is missing. Replayability: the agent's compile id equalled
 the reference compile's id in 156 of 156 compiled rows.
 
-**Read with the caveats above.** One answering model, one judge, one afternoon. Two things to
+**Superseded by the v2 re-judge below once it lands; the audits in `audits/` explain why these v1 numbers overstate the compiled advantage.** Original caveats: **Read with the caveats above.** One answering model, one judge, one afternoon. Two things to
 check by hand before believing the numbers: (1) `claims_missing_result` never fired in either
 condition, which is either good news or a rubric that cannot detect it — sample the RAG rows for
 analyses listed as gaps and see whether the judge missed any; (2) the 16 pairs where RAG scored

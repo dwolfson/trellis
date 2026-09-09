@@ -24,6 +24,7 @@ pinned.
 """
 from __future__ import annotations
 
+import re
 import textwrap
 
 import pytest
@@ -352,14 +353,42 @@ def test_the_real_egeria_checkout_yields_dependencies(tmp_path):
     assert all("$" not in d["dep_version"] for d in deps), "an unresolved variable reached dep_version"
     assert all(d["ecosystem"] == "java" for d in deps)
 
-    # Egeria's real shape (measured 2026-09-01): the BOM's `ext` variables
-    # resolve the overwhelming majority of its own literal coordinates, so
-    # this must no longer be zero-with-a-good-excuse — that was true before
-    # variable resolution existed and would now be a regression.
+    # Variable resolution must still work — but asserted as an INVARIANT over
+    # this checkout, not as a count.
+    #
+    # This was `len(versioned) > 50`, measured 2026-09-01 when Egeria's
+    # `bom/build.gradle` carried ~80 coordinates versioned through its own `ext`
+    # variables. It went red on 2026-09-09 at 36 of 72, and its failure message
+    # said "same-file ext-variable resolution appears to have regressed" — which
+    # it could not tell. Measured: Egeria's BOM now imports the Spring Boot
+    # platform and declares 36 coordinates of its own instead of ~80, so the
+    # other 36 are `implementation 'g:a'` with no version segment anywhere in the
+    # repo. `_parse_gradle` records those with an empty version on purpose (its
+    # own docstring: cve_scan reads an empty version as "we looked and cannot
+    # answer", which beats both dropping and guessing). Nothing regressed; a
+    # number about someone else's repository moved.
+    #
+    # The replacement asks the question the count was standing in for: does
+    # every coordinate that HAS a knowable version end up with one? A genuine
+    # break in `${xVersion}` substitution leaves coordinates unversioned whose
+    # declaration plainly carries a version segment, and that fails here however
+    # large or small Egeria's BOM happens to be.
     versioned = [d for d in deps if d["dep_version"]]
-    assert len(versioned) > 50, (
-        f"only {len(versioned)} of {len(deps)} gradle dependencies resolved a "
-        "version — same-file ext-variable resolution appears to have regressed"
+    assert versioned, (
+        "no gradle dependency resolved a version at all — same-file "
+        "ext-variable resolution has regressed"
+    )
+    gradle_text = "\n".join(
+        f.read_text(encoding="utf-8", errors="ignore")
+        for f in list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts"))
+    )
+    missed = [d["dep_name"] for d in deps
+              if not d["dep_version"]
+              and re.search(re.escape(d["dep_name"]) + r":[^'\"\s]", gradle_text)]
+    assert not missed, (
+        f"{len(missed)} coordinate(s) are declared with a version segment and came "
+        f"back unversioned, so a version this parser could read was dropped: "
+        f"{sorted(missed)[:5]}"
     )
     # Every resolved version must carry provenance other than "declared" or
     # "declared" itself — never empty next to a non-empty dep_version, which

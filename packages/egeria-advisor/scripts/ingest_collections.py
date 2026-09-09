@@ -22,6 +22,7 @@ from advisor.collection_config import (
     get_phase1_collections,
     get_phase2_collections
 )
+from advisor.config import resolve_advisor_data_root
 from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
 from advisor.ingest import CodeIngester
@@ -54,10 +55,13 @@ class IngestResult:
 
 
 def get_repos_dir() -> Path:
-    """Get the data/repos directory path."""
-    script_dir = Path(__file__).parent
-    repos_dir = script_dir.parent / "data" / "repos"
-    return repos_dir
+    """Get the data/repos directory path.
+
+    Under resolve_advisor_data_root() (ADVISOR_DATA_PATH) -- see
+    clone_repos.py's get_repos_dir() for why this must match the clone
+    target, and admin.py for the read side.
+    """
+    return resolve_advisor_data_root() / "repos"
 
 
 def get_collection_source_paths(collection: CollectionMetadata) -> List[Path]:

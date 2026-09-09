@@ -23,6 +23,7 @@ from advisor.collection_config import (
     get_phase1_collections,
     get_phase2_collections
 )
+from advisor.config import resolve_advisor_data_root
 from loguru import logger
 
 
@@ -47,15 +48,28 @@ REPOS = {
         "url": "https://github.com/odpi/egeria-workspaces.git",
         "collections": ["egeria_workspaces"],
         "phase": 2
+    },
+    "egeria-trellis": {
+        "url": "https://github.com/odpi/egeria-trellis.git",
+        "collections": ["trellis"],
+        "phase": 2
     }
 }
 
 
 def get_repos_dir() -> Path:
-    """Get the data/repos directory path."""
-    script_dir = Path(__file__).parent
-    repos_dir = script_dir.parent / "data" / "repos"
-    return repos_dir
+    """Get the data/repos directory path.
+
+    Under resolve_advisor_data_root() (ADVISOR_DATA_PATH), same writable-state
+    root advisor_cache_dir/feedback already use -- NOT a path relative to this
+    script. The old package-relative path sat outside the container's only
+    persistent volume (trellis-ea-data:/app/data), so every clone here was
+    silently wiped on the next redeploy: admin.py's "pull" button would always
+    find nothing and start from a fresh clone rather than an incremental
+    update. See admin.py/ingest_collections.py for the matching fix on the
+    read side.
+    """
+    return resolve_advisor_data_root() / "repos"
 
 
 def ensure_repos_dir() -> Path:

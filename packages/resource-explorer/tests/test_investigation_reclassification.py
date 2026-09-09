@@ -642,3 +642,88 @@ def test_both_kinds_at_once_is_reported_as_a_failure(monkeypatch):
 
     assert ok is False
     assert "both kinds" in why, why
+
+
+def test_the_reason_names_why_the_old_kind_survived(monkeypatch):
+    """`both kinds` says WHAT is wrong; this says why, and the two causes need
+    opposite responses.
+
+    A declassify that RAISES is a code problem — pyegeria rejecting the request
+    body is what ISSUE-93 is, and the explicit body in `_move_kind_classification`
+    is the workaround for it. A declassify that returns cleanly and leaves the
+    classification in place is a platform problem. The handler used to only log
+    the exception, so both produced the same sentence and a reader had to go
+    into this function to tell them apart.
+    """
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    class _FakeME:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def set_bearer_token(self, *a, **k):
+            pass
+
+        def declassify_metadata_element(self, guid, name, body=None):
+            raise AttributeError("'NoneType' object has no attribute 'model_dump'")
+
+        def classify_metadata_element(self, guid, name, body=None):
+            pass
+
+    class _FakePM(_FakeME):
+        def get_project_by_guid(self, guid, **k):
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": "Task"},
+                                                       {"classificationName": "PersonalProject"}]}}
+
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", _FakeME)
+    monkeypatch.setattr("pyegeria.ProjectManager", _FakePM)
+    ok, why = rc.InvestigationReclassifier(None)._move_kind_classification(
+        "g1", "Task", "PersonalProject", "")
+
+    assert ok is False
+    assert "both kinds" in why, why
+    assert "AttributeError" in why, "the cause must reach the caller, not only the log"
+    assert "model_dump" in why, why
+
+
+def test_a_clean_declassify_that_did_nothing_says_that_instead(monkeypatch):
+    """The other cause, and it must NOT be described as an error — the call
+    succeeded and Egeria kept the classification anyway, which points at the
+    platform rather than at this code."""
+    from resource_explorer.surveyors import investigation_reclassifier as rc
+
+    class _FakeME:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def set_bearer_token(self, *a, **k):
+            pass
+
+        def declassify_metadata_element(self, guid, name, body=None):
+            pass                       # no error, no effect
+
+        def classify_metadata_element(self, guid, name, body=None):
+            pass
+
+    class _FakePM(_FakeME):
+        def get_project_by_guid(self, guid, **k):
+            return {"elementHeader": {"guid": guid, "type": {"typeName": "Project"},
+                                      "projectKinds": [{"classificationName": "Task"},
+                                                       {"classificationName": "PersonalProject"}]}}
+
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", _FakeME)
+    monkeypatch.setattr("pyegeria.ProjectManager", _FakePM)
+    ok, why = rc.InvestigationReclassifier(None)._move_kind_classification(
+        "g1", "Task", "PersonalProject", "")
+
+    assert ok is False
+    assert "reported no error" in why, why
+    assert "Error" not in why.split("reported no error")[0], (
+        "nothing raised, so the reason must not name an exception")

@@ -7145,6 +7145,9 @@ class ProjectRegistry:
         ran: it did real work then, and calling that "never run" is the larger
         error. `last_run_partial` says whether the run covered all its steps.
         """
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            repo_analysis_derived_sources as _repo_analysis_derived_sources)
+
         step_owner = self._step_key_to_analysis_id()
         owned_counts = {a: len(k) for a, k in _repo_analysis_step_map().items()}
         result: dict[str, dict] = {}
@@ -7174,6 +7177,31 @@ class ProjectRegistry:
 
             if row["operation"] == "analysis_run":
                 analysis_id = detail.get("analysis_id")
+                # A DERIVED analysis runs steps it does not own, so this row is
+                # also evidence that the owners of those steps just ran. Credited
+                # here rather than at write time so the correction applies to
+                # rows already in the log — measured 2026-09-09, an
+                # architecture_diagram run had rewritten architecture_recovery's
+                # data minutes earlier while its card still read ten days stale.
+                # Newest-first, so this loses to any more recent row of the
+                # source's own, exactly like the survey-step branch below.
+                for source_id, keys in _repo_analysis_derived_sources(
+                        analysis_id or "").items():
+                    if source_id in result:
+                        continue
+                    result[source_id] = {
+                        "last_run_at": row["ts"],
+                        # The derived run's own status. It dispatched these steps,
+                        # so if it failed we cannot claim the source succeeded.
+                        "last_run_status": row["status"],
+                        # Named distinctly from "analysis": nobody ran the source
+                        # directly, and a reader deciding whether to trust this
+                        # freshness should be able to see that.
+                        "last_run_via": "derived",
+                        "last_run_partial": len(keys) < owned_counts.get(source_id, 0),
+                        "last_publish_failed": False,
+                        "last_run_derived_from": analysis_id,
+                    }
                 if analysis_id and analysis_id not in result:
                     result[analysis_id] = {
                         "last_run_at": row["ts"], "last_run_status": row["status"],

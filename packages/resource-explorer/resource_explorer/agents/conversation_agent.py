@@ -84,6 +84,10 @@ class ConversationAgent(BaseExplorerAgent):
             "search and present its results as though they answered the question. A confident "
             "answer built from the wrong source is a worse outcome than admitting the evidence "
             "doesn't cover it."
+            # Restored 2026-09-09 after experiment run 3: pointing this at a
+            # one-shape refusal template in context_compile._INSTRUCTIONS made
+            # the 8B model refuse 107 of 156 questions, most with the answering
+            # analysis packed. See docs/experiments/compiled-vs-rag.md, run 3.
         )
 
     def tools(self) -> list:

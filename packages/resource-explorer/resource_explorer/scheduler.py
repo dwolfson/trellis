@@ -38,7 +38,7 @@ found while wiring this up, not by design.
 Repo dispatch, separately: previously _run_repo_survey always ran the full
 SurveyOrchestrator (all 10 sub-surveyors) regardless of which analysis_id was
 scheduled — repo's own version of the (a)-only gap above, fixed the same way:
-repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP resolves a scheduled
+repo_survey_definition_adapter.REPO_ANALYSIS_SOURCE_STEPS resolves a scheduled
 analysis_id to the specific SurveyOrchestrator step key(s) to run via
 SurveyOrchestrator.run(steps=...) — public there, not scheduler-private,
 since web/routes/projects.py's per-card "Run just this one analysis" is a
@@ -61,7 +61,7 @@ One more repo-only case: action:"ingest" (currently just 'rag_ingestion' —
 "Refresh & Re-ingest," pgvector re-embedding via IncrementalIndexer). Unlike
 action:"publish" this IS schedulable — it's a local re-index, not a new
 write into Egeria's catalog of record — so it gets its own dispatch branch
-in _run_repo_survey rather than going through REPO_ANALYSIS_STEP_MAP (it
+in _run_repo_survey rather than going through REPO_ANALYSIS_SOURCE_STEPS (it
 isn't a SurveyOrchestrator step at all).
 """
 from __future__ import annotations
@@ -213,7 +213,7 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
     Cadences make this the common case rather than a rare one: schedules are
     picked from a small set of intervals, so they land on the same tick.
 
-    Only analyses dispatched through REPO_ANALYSIS_STEP_MAP are batched. The
+    Only analyses dispatched through REPO_ANALYSIS_SOURCE_STEPS are batched. The
     ingest/profile/publish and Survey-Definition paths each do something other
     than run orchestrator steps and keep their own dispatch.
 
@@ -222,7 +222,7 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
     the common case running through code that has not changed.
     """
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_STEP_MAP, STEP_REGISTRY,
+        REPO_ANALYSIS_SOURCE_STEPS, STEP_REGISTRY,
     )
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
@@ -242,7 +242,13 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
         # that made action the wrong dispatch key in _run_repo_survey.
         if entry is None or entry.get("action") in ("publish", "profile"):
             continue
-        if not REPO_ANALYSIS_STEP_MAP.get(analysis_id):
+        # SOURCE steps throughout this function: the question here is what to
+        # execute and which analyses to credit the outcome to, not who owns a
+        # step. An analysis that derives from another's steps
+        # (architecture_diagram) is genuinely refreshed by running them, so it
+        # batches and reports like any other; skipping it on owned-steps would
+        # make a schedule on it silently do nothing.
+        if not REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id):
             continue
         by_slug.setdefault(sched["entity_slug"], []).append(sched)
 
@@ -255,7 +261,7 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
             continue
 
         analysis_ids = [s["analysis_id"] for s in scheds]
-        wanted = {k for aid in analysis_ids for k in REPO_ANALYSIS_STEP_MAP[aid]}
+        wanted = {k for aid in analysis_ids for k in REPO_ANALYSIS_SOURCE_STEPS[aid]}
         # STEP_REGISTRY order, not the order the schedules happened to be read
         # in. run(steps=[...]) executes in the caller's given order, and the
         # registry order encodes real prerequisites — repo_file_inventory must
@@ -277,7 +283,7 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
         # that actually contain it rather than every analysis in the batch.
         for aid in analysis_ids:
             results[(slug, aid)] = [
-                msg for k in REPO_ANALYSIS_STEP_MAP[aid]
+                msg for k in REPO_ANALYSIS_SOURCE_STEPS[aid]
                 if (msg := result.step_errors.get(k))
             ]
     return results
@@ -569,9 +575,11 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             errors = [f"classification failed: {exc}"]
         return (project.display_name, project.github_url, errors)
 
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_SOURCE_STEPS,
+    )
 
-    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    steps = REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id)
     if not steps:
         return (project.display_name, project.github_url, [
             f"Analysis '{analysis_id}' has no mapped survey step(s) — internal configuration gap."

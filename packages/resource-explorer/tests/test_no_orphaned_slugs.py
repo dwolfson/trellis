@@ -75,6 +75,14 @@ UNGUARDED_BY_DESIGN: dict[str, str] = {
     "query_log":
         "observability history -- what was asked about a resource is analytics "
         "that outlives the resource, and feedback tuning reads it. Deliberate.",
+    "context_compiles":
+        "every compile the apps ran, keyed on a content-addressed compile_id; "
+        "project_slug is the resource the compile was ABOUT, not the row's "
+        "identity. conversation_history and feedback rows point at compile_id, "
+        "and the compiled-vs-RAG experiment reads it back, so the row must "
+        "outlive the resource for the same reason query_log does: the compile "
+        "happened, and the feedback that cites it still needs its manifest. "
+        "Added 2026-09-08 (design §13); rename is handled via _PROJECT_SLUG_TABLES.",
 }
 
 # This allowlist is a RATCHET, in the manner of

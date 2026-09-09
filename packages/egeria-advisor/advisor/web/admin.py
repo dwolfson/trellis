@@ -28,13 +28,22 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from loguru import logger
 
+from advisor.config import resolve_advisor_data_root
 from advisor.db_consolidated import get_db_manager
 
 router = APIRouter()
 
 _STATIC = Path(__file__).parent / "static"
 _REPO_ROOT = Path(__file__).parent.parent.parent
-_DATA_DIR = _REPO_ROOT / "data"
+# Writable-state root, same one advisor_cache_dir/feedback already use
+# (resolve_advisor_data_root, ADVISOR_DATA_PATH) -- NOT _REPO_ROOT/"data", the
+# package-relative path this used to be. That path sits outside the
+# container's only persistent volume (trellis-ea-data:/app/data), so every
+# repo clone_repos.py/ingest_collections.py made was silently wiped on the
+# next redeploy: a "pull" from the admin UI would always start from a fresh
+# clone rather than an incremental update. See clone_repos.py/
+# ingest_collections.py for the matching fix on the write side.
+_DATA_DIR = resolve_advisor_data_root()
 _REPOS_DIR = _DATA_DIR / "repos"
 
 # ---------------------------------------------------------------------------

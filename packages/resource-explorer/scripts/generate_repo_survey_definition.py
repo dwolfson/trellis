@@ -43,7 +43,7 @@ survey_definition_reconciler.py's docstrings for the full story).
 Also emits one "Link Element To Scope" ScopedBy block per Question each
 generated Survey Definition answers (docs/survey-question-context-plan.md
 D1) — the join is: each step_key's containing analysis_catalog id (via
-REPO_ANALYSIS_STEP_MAP) cross-referenced against question_catalog.yaml's
+REPO_ANALYSIS_SOURCE_STEPS) cross-referenced against question_catalog.yaml's
 per-question answering.analysis_ids. Run docs/dr-egeria/foundations.md and
 docs/dr-egeria/scouting-questions.md (or their generated equivalents)
 first — the Question terms these blocks reference by name must already
@@ -88,7 +88,7 @@ from resource_explorer.surveyors.dr_egeria_survey_publisher import (
 )
 from resource_explorer.surveyors.question_catalog_reader import get_questions
 from resource_explorer.surveyors.repo_survey_definition_adapter import (
-    REPO_ANALYSIS_STEP_MAP,
+    REPO_ANALYSIS_SOURCE_STEPS,
     STEP_REGISTRY,
 )
 
@@ -208,16 +208,26 @@ def build_steps(step_keys: list[str]) -> list[PublishableStep]:
 
 def _build_step_key_to_questions() -> dict[str, list[str]]:
     """Invert question_catalog.yaml's answering.analysis_ids (analysis_catalog
-    id, e.g. "security_scan") through REPO_ANALYSIS_STEP_MAP (analysis id ->
-    STEP_REGISTRY step_key(s)) to get step_key -> [question display names] —
-    the join docs/survey-question-context-plan.md's D1 depends on. A
-    question with no analysis_ids (kind="human"/"gap"/etc.) contributes
-    nothing here; that's expected, not every question is answered by a
-    survey step at all."""
+    id, e.g. "security_scan") through REPO_ANALYSIS_SOURCE_STEPS (analysis id ->
+    the STEP_REGISTRY step_key(s) that produce its data) to get
+    step_key -> [question display names] — the join
+    docs/survey-question-context-plan.md's D1 depends on. A question with no
+    analysis_ids (kind="human"/"gap"/etc.) contributes nothing here; that's
+    expected, not every question is answered by a survey step at all.
+
+    SOURCE steps, not owned ones. The question here is "running this step, which
+    questions become answerable" — executability, not ownership. Read off
+    REPO_ANALYSIS_STEP_MAP after ownership and executability were split
+    (2026-09-08), "How do its components relate to each other?" — answered by
+    `architecture_diagram` alone, which deliberately owns no steps — mapped to
+    no step at all and would have been dropped from every generated Survey
+    Definition. Nothing would have failed: the document simply loses a
+    ScopedBy link, and the next resync un-authors it from Egeria.
+    """
     mapping: dict[str, list[str]] = {}
     for entry in get_questions(resource_type="repo"):
         for analysis_id in entry["answering"]["analysis_ids"]:
-            for step_key in REPO_ANALYSIS_STEP_MAP.get(analysis_id, []):
+            for step_key in REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []):
                 mapping.setdefault(step_key, [])
                 if entry["question"] not in mapping[step_key]:
                     mapping[step_key].append(entry["question"])
