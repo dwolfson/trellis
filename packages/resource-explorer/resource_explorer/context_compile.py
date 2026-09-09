@@ -31,11 +31,59 @@ log = logging.getLogger(__name__)
 
 #: Kept small on purpose: an instructions section that grows into a system
 #: prompt is a prompt template wearing a spec's clothes.
+#:
+#: The refusal has ONE shape and it lives here, not in the agent's system
+#: prompt. Audit of run full-20260908 (docs/experiments/audits/): two
+#: competing instructions produced the bare "The evidence does not cover
+#: what was asked." sixteen times (never scored 2 by the judge) and once
+#: had the model echo the system prompt's own clause back as its answer.
+#: A refusal that names the analysis and its state is the compiler's own
+#: gap judgement reaching the user; a bare one throws that judgement away.
 _INSTRUCTIONS = (
-    "Answer using only the evidence below. Every section states which analysis "
-    "produced it. If the evidence does not answer the question, say so and name "
-    "what is missing — do not infer from absence."
+    "Answer using only the evidence below, naming the analysis each point comes "
+    "from. A section marked 'structure only' lists the parts of a result without "
+    "their values; it is not a result — do not quote, count or summarise it as "
+    "one. If the evidence does not answer the question, reply in exactly this "
+    "shape and add nothing else: 'The stored analyses do not cover <what was "
+    "asked>. <analysis> would answer it; it <has not run | ran and found nothing "
+    "| ...>.' Take the analysis and its state from the missing-analyses list after "
+    "the evidence; if none fits, name the analysis that would need to run. Do not "
+    "infer from absence."
 )
+
+#: The same instructions at the packer's SUMMARY rung, for budgets too small
+#: to carry the template. Instructions are required, so without a shorter
+#: rung a tight budget fails the compile outright instead of degrading — the
+#: one section that used to be exempt from the ladder now climbs it too.
+_INSTRUCTIONS_SHORT = (
+    "Answer using only the evidence below; name the analysis behind each point. "
+    "If it does not answer the question, say which analysis would and whether "
+    "it has run. Do not infer from absence."
+)
+
+#: How many evidence sections a compile packs, counted after ranking. Ranking
+#: still orders and never excludes at the DERIVATION level — every catalog
+#: question that reaches an analysis stays in `derivation`, and the sections
+#: past the cap are reported in the manifest as `deferred`, with their rank
+#: and weight, rather than silently absent. What the cap changes is what
+#: competes for the budget.
+#:
+#: Measured 2026-09-09 on the three experiment repos, 6 questions each, at
+#: budget 6000 (scripts/experiment_compiled_vs_rag.py's budget):
+#:
+#:   cap    sections  FULL share  top-3 ranked at FULL  used (median)
+#:   none   26.0      22%         43 / 54               5985
+#:   12     11.9      88%         52 / 54               5610
+#:   8       8.0      90%         53 / 54               4368
+#:
+#: Uncapped, ~26 sections share 6000 chars, the budget pins at its ceiling in
+#: every compile, and four in five sections sit at SUMMARY — which the audit
+#: found the model narrating as if it were the answer (cause B/C: "649
+#: component(s) exist… documented in the architecture summary"). Twelve is
+#: the largest cap at which the ranked sections reach FULL while the budget,
+#: not the cap, still decides the last sections in. The value is a knob, not
+#: a law: `compile_context(max_sections=...)` overrides it, 0 disables it.
+MAX_EVIDENCE_SECTIONS = 12
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +159,11 @@ _STOPWORDS = frozenset({
     "the", "a", "an", "is", "are", "it", "of", "to", "and", "or", "for",
     "on", "in", "at", "this", "that", "what", "how", "does", "do", "show",
     "me", "all", "with", "about", "results", "result", "survey",
+    # Measured 2026-09-09 over the 52 repo catalog questions: "repository"
+    # appears in 13 of them and "there" in 9, so a paraphrase like "what
+    # languages are in this repository?" overlapped a quarter of the catalog
+    # on "repository" alone. Same reason "results"/"survey" are here.
+    "repository", "repositories", "repo", "there", "already", "has",
 })
 
 
@@ -274,12 +327,22 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
             rungs[Rung.FULL] += "\n(also: " + ", ".join(other) + ")"
         return rungs
 
-    def _extent(value) -> str:
+    # SUMMARY carries only what is safe to read as a value. A scalar IS a
+    # value and is shown; a list or mapping is named and its kind given, with
+    # NO count. The counts were the bug: "- lines_of_code_by_language: 5
+    # key(s)" was narrated as "5 lines of code by language" (kafka, run
+    # full-20260908, judged 2 and cites_evidence=true) and "649 component(s)"
+    # as an inventory. Under `unsupported_claims` compiled answers scored
+    # worse than RAG-only (0.82 vs 0.58) and this shape was the named cause.
+    # The rung is headed "structure only" so the instructions can refer to it
+    # by name; the IDENTIFIERS rung below is the same names with no values.
+    def _part(value) -> str:
         if isinstance(value, list):
-            return f"{len(value)} item(s)"
+            return "(list)"
         if isinstance(value, dict):
-            return f"{len(value)} key(s)"
-        return str(value)
+            return "(mapping)"
+        text = str(value)
+        return text if len(text) <= 80 else text[:77] + "..."
 
     keys = sorted(results)
     # Fenced, not bare -- this text reaches two readers: the model, for which a
@@ -293,7 +356,10 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
                    + json.dumps(results, indent=2, default=str, sort_keys=True)
                    + "\n```",
         Rung.SUMMARY: f"## {analysis_id}\n"
-                      + "\n".join(f"- {k}: {_extent(results[k])}" for k in keys),
+                      f"(structure only: part names and scalar values; lists and "
+                      f"mappings are named, not counted — read {analysis_id} for "
+                      f"their contents)\n"
+                      + "\n".join(f"- {k}: {_part(results[k])}" for k in keys),
         Rung.IDENTIFIERS: f"## {analysis_id}\nreports: " + ", ".join(keys),
     }
 
@@ -370,6 +436,7 @@ def compile_context(
     budget: int = 8000,
     target_model: str = "",
     session_id: str | None = None,
+    max_sections: int | None = None,
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
 
@@ -377,6 +444,9 @@ def compile_context(
     (fail-soft: a registry without it, or a write that fails, costs the caller
     nothing but the persistence). `session_id` is the chat/CLI session the
     compile served, when there is one; it lands on the row, not in the hash.
+    `max_sections` caps how many ranked evidence sections compete for the
+    budget (default MAX_EVIDENCE_SECTIONS; 0 means no cap); the rest are
+    listed in the manifest as `deferred`.
     """
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
@@ -418,7 +488,18 @@ def compile_context(
         # merely sits earlier in the YAML. Position still breaks ties among
         # equally (ir)relevant entries and keeps every entry's weight above
         # zero -- nothing is excluded, same rule Purpose already follows.
-        weight = (1.0 + relevance * 20.0) / (1 + position * 0.1)
+        #
+        # ADDITIVE, not a ratio. The first form, (1 + 20r) / (1 + 0.1p),
+        # divided relevance by position too, so a full match (r = 1) at
+        # catalog position 30 weighed 5.25 and a one-word match (r = 0.25)
+        # at position 0 weighed 6.0 — measured 2026-09-09 with "What
+        # languages and file types are in this repository?", which packed
+        # foss_scorecard and repository_health at FULL and the language
+        # analysis at SUMMARY. With the positional term bounded by 1.0 and
+        # each 0.05 of relevance worth as much, any better match outranks
+        # any worse one whatever their positions, and position still orders
+        # the equally relevant.
+        weight = 1.0 / (1 + position * 0.1) + relevance * 20.0
         for analysis_id in ids:
             weights[analysis_id] = max(weights.get(analysis_id, 0.0), weight)
         derivation.append({
@@ -447,9 +528,19 @@ def compile_context(
 
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
     candidates: dict[str, Candidate] = {
-        "instructions": Candidate("instructions", {Rung.FULL: _INSTRUCTIONS}),
+        "instructions": Candidate("instructions", {Rung.FULL: _INSTRUCTIONS,
+                                                   Rung.SUMMARY: _INSTRUCTIONS_SHORT}),
     }
-    for analysis_id, weight in sorted(weights.items(), key=lambda kv: (-kv[1], kv[0])):
+    ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
+    cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
+    deferred = [
+        {"key": k, "weight": round(w, 3), "rank": i,
+         "reason": f"below the section cap of {cap}"}
+        for i, (k, w) in enumerate(ranked) if cap > 0 and i >= cap
+    ]
+    if cap > 0:
+        ranked = ranked[:cap]
+    for analysis_id, weight in ranked:
         sections.append(Section(analysis_id, role="evidence", weight=weight))
         findings = registry.query_findings(slug, analysis_id)
         rungs = _findings_to_rungs(findings, analysis_id)
@@ -526,6 +617,10 @@ def compile_context(
             "spec_id": m.spec_id, "budget": m.budget, "used": m.used,
             "headroom": m.headroom, "packed": list(m.packed),
             "dropped": list(m.dropped),
+            # Ranked below the cap: never offered to the packer, so neither
+            # packed, dropped nor a gap. Listed so "why these?" can show what
+            # was left out and where it ranked.
+            "deferred": deferred,
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.

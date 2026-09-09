@@ -13391,12 +13391,21 @@ function _compiledEvidenceHtml(data, slug, question) {
          Nothing missing — every analysis that answers this has a stored result.
        </div>`;
 
-  const packedHtml = packed.length
+  // Ranked below the compiler's section cap: neither packed nor missing,
+  // and shown so "why these?" also answers "why not those?".
+  const deferred = m.deferred || [];
+  const deferredHtml = deferred.length
+    ? `<div class="mt-1 text-[10px] text-slate-500">
+         ${deferred.length} lower-ranked analysis/analyses not offered to the budget:
+         ${deferred.map(d => _esc(d.key)).join(', ')}
+       </div>`
+    : '';
+  const packedHtml = (packed.length
     ? packed.map(p => `<div class="flex justify-between gap-2">
           <span class="text-slate-300">${_esc(p.key)}</span>
           <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
         </div>${!p.pointer ? _inlineResultsToggleHtml(p.key, slug) : ''}${_pointerLinkHtml(p.pointer)}`).join('')
-    : '<div class="text-slate-500">nothing packed</div>';
+    : '<div class="text-slate-500">nothing packed</div>') + deferredHtml;
 
   const droppedHtml = dropped.length
     ? `<div class="mt-2 text-[10px] text-slate-500">

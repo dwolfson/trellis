@@ -264,6 +264,33 @@ established the tiering precedent.
   an assumption that holds because the underlying store is Egeria and not a vector index. Neither
   source states the guarantee in this doc's exact terms; I could not find this replayability
   contract formulated anywhere in the public literature. See `Backlog.md`.
+- **How many sections should compete for one budget? Measured 2026-09-09, and answered for
+  now.** The compiled-versus-RAG experiment (`packages/resource-explorer/docs/experiments/
+  compiled-vs-rag.md`, two runs, rubric v2) found compiled answers *cited* evidence (36% vs 1%) and
+  asserted results for missing analyses less often, but made **more** unsupported claims
+  (0.82 vs 0.58 per answer). The loss audit traced that to breadth: every analysis any catalog
+  question reaches became a section, so 24–27 sections shared 6,000 characters, the budget pinned
+  at its ceiling in all 156 compiles, and 78% of packed sections sat at SUMMARY — where the
+  structural rung's counts ("5 key(s)") were being narrated as values. A sweep over the three
+  experiment repos, six questions each, at budget 6,000:
+
+  | section cap | sections | FULL share | top-3 ranked at FULL | used, median |
+  |---|---:|---:|---:|---:|
+  | none | 26.0 | 22% | 43 / 54 | 5,985 |
+  | 12 | 11.9 | 88% | 52 / 54 | 5,610 |
+  | 8 | 8.0 | 90% | 53 / 54 | 4,368 |
+
+  Three changes followed, all in `context_compile.py`: a cap of 12 evidence sections applied
+  *after* ranking, with the rest reported in the manifest as `deferred` (ranking still orders and
+  never excludes at the derivation level — §3's rule survives; what changed is what competes for
+  the budget); the structural SUMMARY rung now shows scalars as values and names lists and
+  mappings without counting them, headed "structure only"; and the refusal has one template,
+  owned by the compiler's instructions section, which the agent's system prompt points at
+  instead of restating. A fourth, found on the way: the ranking weight divided relevance by
+  catalog position, so a full-text match at position 30 lost to a one-word match at position 0;
+  it is additive now, and "repository" (13 of 52 catalog questions) joined the relevance
+  stopwords. Run 3 of the experiment measures the effect against the run-2 baseline; its numbers
+  go in the experiment doc, not here.
 
 ---
 

@@ -79,11 +79,15 @@ class ConversationAgent(BaseExplorerAgent):
             "over vector_search, whose corpus is general documentation and can return content "
             "that matches a keyword in the question while being about something else entirely "
             "(a different feature, a different project) rather than about this resource. If the "
-            "evidence does not cover what was asked, say so plainly and either ask a clarifying "
-            "question or name what analysis would need to run — do not fall back to a broader "
-            "search and present its results as though they answered the question. A confident "
-            "answer built from the wrong source is a worse outcome than admitting the evidence "
-            "doesn't cover it."
+            "evidence does not cover what was asked, answer in the refusal shape the evidence "
+            "block's own instructions give — do not fall back to a broader search and present "
+            "its results as though they answered the question. A confident answer built from "
+            "the wrong source is a worse outcome than admitting the evidence doesn't cover it."
+            # The refusal WORDING is owned by context_compile._INSTRUCTIONS,
+            # deliberately not repeated here: two competing instructions
+            # produced sixteen bare "The evidence does not cover what was
+            # asked." answers in run full-20260908 and one answer that echoed
+            # this prompt's own clause back to the user (audit, 2026-09-08).
         )
 
     def tools(self) -> list:

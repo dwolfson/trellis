@@ -226,6 +226,7 @@ class TestPointerSections:
         c = compile_context(
             _registry({"architecture_recovery": [_finding("detect")]}),
             "egeria_git", "q", budget=4000,
+            max_sections=0,  # "q" ranks nothing; the cap is not what this tests
         )
         packed = {p["key"]: p for p in c.manifest["packed"]}
         assert "pointer" in packed["architecture_recovery"]
@@ -382,11 +383,20 @@ class TestReaderFindingsShapeIsFormattedNotCounted:
         rungs = _results_to_rungs({"overall": 85.8, "activity": 100.0}, "repository_health")
         assert "85.8" in rungs[Rung.SUMMARY]
         assert "key(s)" not in rungs[Rung.SUMMARY]  # no dict/list values here to miscount
-        # A shape that genuinely has no per-check identity keeps the old,
-        # structural summary -- e.g. a list-valued key still reads as a count.
+        # A shape that genuinely has no per-check identity keeps a structural
+        # summary -- but one that names a container without COUNTING it.
+        # This used to assert "2 key(s)" as unchanged behaviour; the audit of
+        # run full-20260908 found exactly that count narrated as a value
+        # ("5 lines of code by language" from "5 key(s)"), so the count is
+        # now the thing the rung must not carry. Scalars stay, as values.
         rungs2 = _results_to_rungs({"by_ecosystem": {"pypi": 3, "npm": 5}, "total": 8},
                                     "dependency_analysis")
-        assert "2 key(s)" in rungs2[Rung.SUMMARY]  # by_ecosystem: 2 key(s) — unchanged behavior
+        summary2 = rungs2[Rung.SUMMARY]
+        assert "by_ecosystem" in summary2 and "total: 8" in summary2
+        assert "key(s)" not in summary2 and "item(s)" not in summary2
+        assert "structure only" in summary2
+        # IDENTIFIERS names the parts and nothing else; FULL has the values.
+        assert "pypi" not in summary2 and "pypi" in rungs2[Rung.FULL]
 
 
 class TestHasContent:
@@ -647,3 +657,109 @@ class TestThinFindingsDoNotSuppressTheReader:
         compiled, _ = self._compile({"repo_conventions": thin}, {"detail": ""})
         packed = " ".join(s for s in [compiled.text])
         assert "repo_conventions" in packed
+
+
+class TestSectionCap:
+    """Measured 2026-09-09: uncapped, ~26 sections shared a 6000-char budget,
+    the budget pinned at its ceiling in every compile and 78% of packed
+    sections sat at SUMMARY (run2, 3164 of 4056). The cap is applied AFTER
+    ranking, so what is left out is what ranked lowest for this question."""
+
+    def _many(self):
+        # Every catalog analysis has a substantial finding, so with no cap
+        # they would all be candidates competing for the budget.
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+        ids = set()
+        for e in get_questions("repo"):
+            ids.update((e.get("derivation") or {}).get("analysis_ids") or [])
+        return _registry({i: [_finding("c", summary="w" * 400)] for i in ids})
+
+    def test_default_cap_bounds_what_competes(self):
+        from resource_explorer.context_compile import MAX_EVIDENCE_SECTIONS
+        c = compile_context(self._many(), "x", "how well documented is it?", budget=6000)
+        evidence = [p for p in c.manifest["packed"] if p["role"] == "evidence"]
+        offered = len(evidence) + len(c.manifest["dropped"]) + len(c.manifest["gaps"])
+        assert offered <= MAX_EVIDENCE_SECTIONS
+        assert c.manifest["deferred"], "with every analysis a candidate, some must be deferred"
+
+    def test_deferred_are_the_lowest_ranked_and_say_so(self):
+        c = compile_context(self._many(), "x", "how well documented is it?", budget=6000)
+        packed = {p["key"] for p in c.manifest["packed"]}
+        deferred = c.manifest["deferred"]
+        assert all(d["key"] not in packed for d in deferred)
+        assert all("cap" in d["reason"] for d in deferred)
+        # Deferred sections are ranked below every packed evidence section.
+        assert "documentation_coverage" in packed
+        assert "documentation_coverage" not in {d["key"] for d in deferred}
+        ranks = [d["rank"] for d in deferred]
+        assert ranks == sorted(ranks) and min(ranks) >= len(packed) - 1
+
+    def test_cap_is_a_knob_and_zero_disables_it(self):
+        reg = self._many()
+        capped = compile_context(reg, "x", "q", budget=6000, max_sections=3)
+        assert len([p for p in capped.manifest["packed"] if p["role"] == "evidence"]) <= 3
+        uncapped = compile_context(reg, "x", "q", budget=6000, max_sections=0)
+        assert uncapped.manifest["deferred"] == []
+        assert len(uncapped.manifest["packed"]) + len(uncapped.manifest["dropped"]) > 12
+
+    def test_fewer_sections_means_fuller_rungs(self):
+        """The point of the cap, stated as an invariant on one fixture: the
+        top-ranked section reaches FULL with the cap and does not without it."""
+        reg = self._many()
+        with_cap = compile_context(reg, "x", "how well documented is it?", budget=6000)
+        no_cap = compile_context(reg, "x", "how well documented is it?", budget=6000, max_sections=0)
+        def full_share(c):
+            ev = [p for p in c.manifest["packed"] if p["role"] == "evidence"]
+            return sum(p["rung"] == "FULL" for p in ev) / len(ev)
+        assert full_share(with_cap) > full_share(no_cap)
+        assert {p["key"]: p["rung"] for p in with_cap.manifest["packed"]}["documentation_coverage"] == "FULL"
+
+
+class TestRefusalShape:
+    def test_instructions_carry_the_one_refusal_template(self):
+        from resource_explorer.context_compile import _INSTRUCTIONS
+        assert "The stored analyses do not cover" in _INSTRUCTIONS
+        assert "would answer it" in _INSTRUCTIONS
+        assert "structure only" in _INSTRUCTIONS
+        assert "Do not infer from absence" in _INSTRUCTIONS
+
+    def test_the_template_reaches_the_packed_text(self):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=4000)
+        assert "The stored analyses do not cover" in c.text
+
+
+class TestInstructionsClimbTheLadder:
+    def test_a_tight_budget_gets_the_short_form_not_a_failure(self):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=300)
+        rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"]
+        assert rung == "SUMMARY"
+        assert "Do not infer from absence" in c.text
+        assert "The stored analyses do not cover" not in c.text
+
+    def test_a_normal_budget_gets_the_template(self):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
+        assert {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"] == "FULL"
+
+
+class TestRelevanceBeatsPosition:
+    def test_a_full_match_late_in_the_catalog_outranks_a_partial_match_early(self):
+        """Measured 2026-09-09: under the ratio form of the weight, "What
+        languages and file types are in this repository?" ranked
+        foss_scorecard (from "Is this repository actively maintained?",
+        catalog position 0, one shared word) above the language analysis
+        (a full match at position ~30). Relevance is additive now."""
+        reg = _registry({
+            "language_file_classification": [_finding("langs", summary="j" * 300)],
+            "foss_scorecard": [_finding("score", summary="k" * 300)],
+            "repository_health": [_finding("health", summary="h" * 300)],
+        })
+        c = compile_context(reg, "x", "What languages and file types are in this repository?",
+                            budget=6000)
+        order = [p["key"] for p in c.manifest["packed"] if p["role"] == "evidence"]
+        assert order[0] == "language_file_classification", order
+
+    def test_repository_is_not_a_relevance_signal(self):
+        from resource_explorer.context_compile import _question_relevance
+        assert _question_relevance("what is in this repository?",
+                                   "Is this repository actively maintained?",
+                                   ["repository_health"]) == 0.0

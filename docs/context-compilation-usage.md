@@ -60,6 +60,13 @@ three things people actually ask.
 
 - **`manifest.packed`** — sections included, at which rung, and their size
 - **`manifest.dropped`** — cut for budget, with the reason
+- **`manifest.deferred`** — ranked below the section cap and never offered to
+  the packer, with rank and weight. Since 2026-09-09 a compile packs at most
+  `MAX_EVIDENCE_SECTIONS` (12) evidence sections, chosen after ranking;
+  `compile_context(max_sections=...)` overrides it and 0 disables it. Measured
+  on the experiment repos at budget 6000: uncapped, 26 sections shared the
+  budget and 22% reached FULL; at 12, 88% did and the budget still filled to
+  5610 of 6000, so the budget rather than the cap decides the last sections in
 - **`manifest.gaps`** — sections the derivation says should exist, **judged**:
   `nothing_found` (ran, a real zero), `never_run`, `not_established`, each with
   `last_run_at` and `can_run` where known
@@ -76,6 +83,19 @@ three things people actually ask.
 
 Budget is in **characters**, not tokens. The caller owns the conversion, because
 only it knows which model the context is for.
+
+Two rung conventions the packed text relies on, both from the 2026-09-08 audit
+of the compiled-versus-RAG experiment (`packages/resource-explorer/docs/experiments/`):
+
+- A results-reader section at its SUMMARY rung is headed **`structure only`**:
+  scalar values are shown as values, lists and mappings are named but not
+  counted. The counts (`5 key(s)`) were being narrated as findings ("5 lines of
+  code by language"), which is where compiled answers picked up more unsupported
+  claims than RAG-only ones.
+- The refusal has **one shape**, owned by the compiler's instructions section:
+  *"The stored analyses do not cover X. `<analysis>` would answer it; it `<has
+  not run | ran and found nothing | …>`."* The agent's system prompt points at
+  that shape rather than restating it, so the two cannot drift apart again.
 
 ## In the UI
 
