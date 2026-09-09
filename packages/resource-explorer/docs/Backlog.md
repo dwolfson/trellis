@@ -4504,6 +4504,48 @@ slug returns an empty answer rather than an error. Any claim of the form "X is
 missing for repo R" needs R proven to exist in the same session as the query
 that found X missing.
 
+## LLM token accounting — done for `complete()`, streaming still uncounted
+
+Built 2026-09-09 at the project owner's direction, closing half of the
+funnel-cost spec's §6 ("the instrumentation that doesn't exist").
+
+**Why not just Phoenix.** Phoenix is running and does capture token counts, but
+`BeeAIInstrumentor` instruments BeeAI and nothing else. Measured, same process,
+same prompt, same model, Phoenix instrumented for both: a BeeAI
+`OllamaChatModel.run()` produced one span carrying `prompt=17 completion=2
+total=19`; a `get_llm().complete()` produced **no span at all** (106 spans
+before, 106 after). `llm_client` is where the chat path and ten agent call
+sites live, and several of those are the agents' `fallback_prompt` path — so
+tracing alone would have measured the minority of RE's LLM work, biased toward
+runs that succeeded.
+
+`observability/llm_usage.py` accumulates per-scope totals; all three backends
+record in `complete()`. Verified end-to-end against real Ollama:
+`{'llm_prompt_tokens': 17, 'llm_completion_tokens': 2, 'llm_total_tokens': 19,
+'llm_usage_complete': True, 'llm_models': ['llama3.1:8b']}` — matching the
+Phoenix span for the same prompt exactly, two independent measurements agreeing.
+
+**Streaming is deliberately NOT counted, and says so.** Three different shapes:
+Ollama reports counts only on the final `done` chunk (whose content is empty and
+is currently discarded), OpenAI sends no usage at all unless the *request*
+passes `stream_options={"include_usage": True}`, and Anthropic delivers it
+through `message_start`/`message_delta` events. Rather than leave streamed calls
+reading as free, each `stream()` calls `record_uncounted()`, so `total_tokens`
+is visibly a floor (`llm_usage_complete: False`) instead of a wrong measurement.
+Finishing streaming is the open follow-up.
+
+**Two scopes are open** so the counter is not inert: `run_queue` around the
+handler (per-run attribution, what §6 asked for) and `RAGSystem.query` around
+its route. Both currently log at INFO. **Persisting them — MLflow metrics
+beside `latency_ms`, or the `activity_log` detail — is the next step and is not
+done**; until it is, the numbers exist per-run but are not queryable.
+
+**The ContextVar trap this ran into.** `RAGSystem.query` hands off to a bare
+`threading.Thread`, which does NOT inherit ContextVars (asyncio tasks and
+`asyncio.to_thread` do). Reading the scope from inside `_track` would find
+nothing and report every query as free, so the read is synchronous in `query`
+itself, with a test pinning the ordering and another pinning the trap.
+
 ## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first — ATTRIBUTION FIXED 2026-09-09, freshness still open
 
 Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took

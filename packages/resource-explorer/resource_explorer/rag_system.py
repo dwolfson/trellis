@@ -1,6 +1,7 @@
 """Main orchestrator — entry point for all queries."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -12,6 +13,8 @@ from resource_explorer.prompt_templates import build_context, build_rag_prompt
 from resource_explorer.query_cache import QueryCache
 from resource_explorer.query_processor import QueryIntent, QueryProcessor
 from resource_explorer.registry import ProjectRegistry
+
+log = logging.getLogger(__name__)
 
 
 class RAGSystem:
@@ -43,8 +46,19 @@ class RAGSystem:
             return cached
 
         t0 = time.monotonic()
-        response, chunk_refs = self._route(query, intent, resource_slug)
+        from resource_explorer.observability import llm_usage
+
+        with llm_usage.usage_scope() as usage:
+            response, chunk_refs = self._route(query, intent, resource_slug)
         latency_ms = int((time.monotonic() - t0) * 1000)
+        # Read synchronously, BEFORE the tracking thread below. `_track` runs on
+        # a bare threading.Thread, which does not inherit ContextVars — reading
+        # the scope from in there would find nothing and report every query as
+        # having cost zero tokens. (asyncio tasks and asyncio.to_thread DO
+        # inherit; a plain Thread does not. Same trap as the identity
+        # ContextVar — see the Backlog note on it.)
+        if usage.calls:
+            log.info("rag query (%s) llm usage: %s", intent.value, usage.as_dict())
 
         self.cache.set(query, resource_slug, intent.value, response)
 

@@ -361,8 +361,15 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     log.info("run started: id=%s kind=%s claimed_by=%s target=%s",
              run_id, kind, row.get("claimed_by"), target)
     try:
-        with _Heartbeat(registry, run_id), _run_as_requester(row):
+        from resource_explorer.observability import llm_usage
+
+        with _Heartbeat(registry, run_id), _run_as_requester(row), \
+                llm_usage.usage_scope() as usage:
             outcome = handler(target, result_ref)
+        # Read here, inside the worker, not from a callback: the scope is a
+        # ContextVar and only code running under it can see the totals.
+        if usage.calls:
+            log.info("run %s (%s) llm usage: %s", run_id, kind, usage.as_dict())
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         log.exception("run %s (%s) crashed", run_id, kind)
         registry.finish_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")

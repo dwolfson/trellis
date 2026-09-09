@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from typing import Protocol, runtime_checkable
 
 from resource_explorer.config import ExplorerConfig, get_config
+from resource_explorer.observability import llm_usage
 
 
 @runtime_checkable
@@ -39,6 +40,11 @@ class OllamaBackend:
             messages=messages,
             options={"temperature": self._temperature, "num_ctx": self._num_ctx, **kwargs},
         )
+        # prompt_eval_count / eval_count are Ollama's names for prompt and
+        # completion tokens; both are absent on some responses, and llm_usage
+        # records a missing half as UNCOUNTED rather than as zero.
+        llm_usage.record(response.get("prompt_eval_count"),
+                         response.get("eval_count"), self._model)
         return response["message"]["content"]
 
     def stream(self, prompt: str, system: str = "", **kwargs) -> Iterator[str]:
@@ -53,6 +59,11 @@ class OllamaBackend:
             options={"temperature": self._temperature, "num_ctx": self._num_ctx, **kwargs},
         ):
             yield chunk["message"]["content"]
+        # Ollama carries the counts only on the final `done` chunk, whose
+        # content is empty — reading them means restructuring this loop, which
+        # is the streaming work llm_usage's docstring defers. Until then the
+        # call is visible and explicitly not counted.
+        llm_usage.record_uncounted(self._model)
 
 
 class OpenAIBackend:
@@ -73,6 +84,9 @@ class OpenAIBackend:
             messages=messages,
             temperature=self._temperature,
         )
+        usage = getattr(response, "usage", None)
+        llm_usage.record(getattr(usage, "prompt_tokens", None),
+                         getattr(usage, "completion_tokens", None), self._model)
         return response.choices[0].message.content or ""
 
     def stream(self, prompt: str, system: str = "", **kwargs) -> Iterator[str]:
@@ -88,6 +102,10 @@ class OpenAIBackend:
         ):
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+        # OpenAI sends no usage on a stream unless the REQUEST opts in with
+        # stream_options={"include_usage": True} — a request change, not a
+        # read, so it belongs with the rest of the streaming work.
+        llm_usage.record_uncounted(self._model)
 
 
 class AnthropicBackend:
@@ -106,6 +124,9 @@ class AnthropicBackend:
             messages=[{"role": "user", "content": prompt}],
             temperature=self._temperature,
         )
+        usage = getattr(response, "usage", None)
+        llm_usage.record(getattr(usage, "input_tokens", None),
+                         getattr(usage, "output_tokens", None), self._model)
         return response.content[0].text
 
     def stream(self, prompt: str, system: str = "", **kwargs) -> Iterator[str]:
@@ -117,6 +138,9 @@ class AnthropicBackend:
             temperature=self._temperature,
         ) as stream:
             yield from stream.text_stream
+        # Anthropic reports usage through message_start/message_delta events,
+        # which text_stream does not surface. Same deferral as the other two.
+        llm_usage.record_uncounted(self._model)
 
 
 def get_llm(config: ExplorerConfig | None = None) -> LLMBackend:
