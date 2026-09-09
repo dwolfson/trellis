@@ -715,17 +715,17 @@ class TestSectionCap:
         assert {p["key"]: p["rung"] for p in with_cap.manifest["packed"]}["documentation_coverage"] == "FULL"
 
 
-class TestRefusalShape:
-    def test_instructions_carry_the_one_refusal_template(self):
+class TestRefusalWording:
+    def test_instructions_do_not_carry_a_one_shape_template(self):
+        """Run3-20260909: a fixed refusal template made the 8B model refuse
+        107 of 156 questions, most with the answering analysis packed, and
+        invent gap states for packed analyses. The loose wording stays."""
         from resource_explorer.context_compile import _INSTRUCTIONS
-        assert "The stored analyses do not cover" in _INSTRUCTIONS
-        assert "would answer it" in _INSTRUCTIONS
+        assert "The stored analyses do not cover" not in _INSTRUCTIONS
+        assert "exactly this shape" not in _INSTRUCTIONS
+        assert "name what is missing" in _INSTRUCTIONS
         assert "structure only" in _INSTRUCTIONS
-        assert "Do not infer from absence" in _INSTRUCTIONS
-
-    def test_the_template_reaches_the_packed_text(self):
-        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=4000)
-        assert "The stored analyses do not cover" in c.text
+        assert "do not infer from absence" in _INSTRUCTIONS
 
 
 class TestInstructionsClimbTheLadder:
@@ -734,7 +734,6 @@ class TestInstructionsClimbTheLadder:
         rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"]
         assert rung == "SUMMARY"
         assert "Do not infer from absence" in c.text
-        assert "The stored analyses do not cover" not in c.text
 
     def test_a_normal_budget_gets_the_template(self):
         c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)

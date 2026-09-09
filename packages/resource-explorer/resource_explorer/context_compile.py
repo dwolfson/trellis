@@ -32,23 +32,21 @@ log = logging.getLogger(__name__)
 #: Kept small on purpose: an instructions section that grows into a system
 #: prompt is a prompt template wearing a spec's clothes.
 #:
-#: The refusal has ONE shape and it lives here, not in the agent's system
-#: prompt. Audit of run full-20260908 (docs/experiments/audits/): two
-#: competing instructions produced the bare "The evidence does not cover
-#: what was asked." sixteen times (never scored 2 by the judge) and once
-#: had the model echo the system prompt's own clause back as its answer.
-#: A refusal that names the analysis and its state is the compiler's own
-#: gap judgement reaching the user; a bare one throws that judgement away.
+#: The refusal wording is deliberately the ORIGINAL loose one. A one-shape
+#: template ("reply in exactly this shape and add nothing else: 'The stored
+#: analyses do not cover X. <analysis> would answer it; it <state>.'") was
+#: tried in experiment run3-20260909 and over-triggered on the 8B answering
+#: model: 107 of 156 compiled answers became pure refusals, including ones
+#: where the analysis that answers the question was packed at FULL with no
+#: gaps, and the <state> slot was filled by invention ("ran and found
+#: nothing" for a packed analysis) in 7 of the run's 8 missing-result
+#: claims. docs/experiments/compiled-vs-rag.md, run 3.
 _INSTRUCTIONS = (
-    "Answer using only the evidence below, naming the analysis each point comes "
-    "from. A section marked 'structure only' lists the parts of a result without "
-    "their values; it is not a result — do not quote, count or summarise it as "
-    "one. If the evidence does not answer the question, reply in exactly this "
-    "shape and add nothing else: 'The stored analyses do not cover <what was "
-    "asked>. <analysis> would answer it; it <has not run | ran and found nothing "
-    "| ...>.' Take the analysis and its state from the missing-analyses list after "
-    "the evidence; if none fits, name the analysis that would need to run. Do not "
-    "infer from absence."
+    "Answer using only the evidence below. Every section states which analysis "
+    "produced it. A section marked 'structure only' lists the parts of a result "
+    "without their values; it is not a result — do not quote, count or summarise "
+    "it as one. If the evidence does not answer the question, say so and name "
+    "what is missing — do not infer from absence."
 )
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small

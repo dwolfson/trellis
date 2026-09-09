@@ -84,18 +84,25 @@ three things people actually ask.
 Budget is in **characters**, not tokens. The caller owns the conversion, because
 only it knows which model the context is for.
 
-Two rung conventions the packed text relies on, both from the 2026-09-08 audit
-of the compiled-versus-RAG experiment (`packages/resource-explorer/docs/experiments/`):
+Two conventions the packed text relies on — one a rung convention, the other
+instruction wording — both from the 2026-09-08 audit of the compiled-versus-RAG
+experiment (`packages/resource-explorer/docs/experiments/`):
 
 - A results-reader section at its SUMMARY rung is headed **`structure only`**:
   scalar values are shown as values, lists and mappings are named but not
   counted. The counts (`5 key(s)`) were being narrated as findings ("5 lines of
   code by language"), which is where compiled answers picked up more unsupported
   claims than RAG-only ones.
-- The refusal has **one shape**, owned by the compiler's instructions section:
-  *"The stored analyses do not cover X. `<analysis>` would answer it; it `<has
-  not run | ran and found nothing | …>`."* The agent's system prompt points at
-  that shape rather than restating it, so the two cannot drift apart again.
+- The refusal wording is deliberately loose: *"If the evidence does not answer
+  the question, say so and name what is missing — do not infer from absence."*
+  A one-shape refusal template was tried instead and reverted — run 3
+  (`packages/resource-explorer/docs/experiments/compiled-vs-rag.md`,
+  run3-20260909) found it over-triggered, turning 107 of 156 compiled answers
+  into pure-template refusals, some for questions whose answering analysis was
+  packed at FULL. The agent's system prompt is back to its original wording too
+  — "say so plainly and either ask a clarifying question or name what analysis
+  would need to run" — and tightening the refusal shape without over-triggering
+  is noted as a rubric-side follow-up, not a compiler change.
 
 ## In the UI
 

@@ -73,11 +73,9 @@ class TestSystemPromptPrefersEvidenceOverSearch:
         assert "Evidence (compiled from stored analysis results)" in prompt
         assert "prefer it over vector_search" in prompt
 
-    def test_prompt_asks_for_the_refusal_shape_rather_than_substitution(self):
-        # Used to assert "clarifying question"; that wording competed with the
-        # compiler's own refusal template and lost (audit 2026-09-08).
+    def test_prompt_asks_for_clarification_rather_than_substitution(self):
         prompt = ConversationAgent().system_prompt()
-        assert "refusal shape" in prompt
+        assert "clarifying question" in prompt
         assert "do not fall back to a broader search" in prompt
 
 
@@ -97,18 +95,3 @@ class TestCompiledEvidenceSwitch:
     def test_default_is_on(self):
         from resource_explorer.agents.conversation_agent import ConversationAgent
         assert ConversationAgent(resource_slug="x").compiled_evidence is True
-
-
-class TestRefusalWordingHasOneOwner:
-    def test_system_prompt_defers_to_the_evidence_block_for_refusals(self):
-        """Audit 2026-09-08: two competing refusal instructions produced
-        sixteen bare refusals and one answer that echoed the prompt's own
-        clause back. The shape now lives in context_compile._INSTRUCTIONS
-        only; the system prompt points at it and keeps the tool-choice rule."""
-        from resource_explorer.agents.conversation_agent import ConversationAgent
-        from resource_explorer.context_compile import _INSTRUCTIONS
-        prompt = ConversationAgent(resource_slug="x").system_prompt()
-        assert "refusal shape the evidence block" in prompt
-        assert "name what analysis would need to run" not in prompt
-        assert "The stored analyses do not cover" not in prompt
-        assert "The stored analyses do not cover" in _INSTRUCTIONS

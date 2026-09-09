@@ -78,6 +78,69 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run3-20260909 — four compiler changes at once; a negative result on one of them
+
+Same seed, repos and rubric (v2) as run 2; the answering side changed. `data/experiments/
+compiled_vs_rag_run3/results.jsonl`; MLflow runs `run3-20260909-{compiled,rag}`. Commit 30989c5
+made four changes to `context_compile.py` (and one to the agent's system prompt): a section cap
+of 12 applied after ranking; a count-free structural SUMMARY rung; an additive relevance weight;
+and a **one-shape refusal template** ("reply in exactly this shape and add nothing else: 'The
+stored analyses do not cover X. <analysis> would answer it; it <state>.'").
+
+| metric | compiled | rag | (run 2) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.38 | 0.90 | 1.01 / 0.91 |
+| cites_evidence | 58% | 1% | 35% / 1% |
+| claims_missing_result | 5% (8 rows) | 4% | 5% / 7% |
+| acknowledges_limits | 74% | 62% | 38% / 59% |
+| unsupported_claims (mean) | 0.31 | 0.54 | 0.81 / 0.58 |
+| declines to answer | 99 | 86 | 46 / 83 |
+| sections packed per compile | 11–12, 84% at FULL | | 24–27, 20% at FULL |
+
+Replayability 156 of 156. The packing change did what the sweep predicted: 84% of packed
+sections at FULL against 20%, with the budget still filling to a median 5,918.
+
+**Do not quote the top three rows.** An audit of the compiled answers splits them by whether the
+refusal template appears:
+
+| subset | n | answers_question | unsupported | declines |
+|---|---:|---:|---:|---:|
+| pure template refusal (the template is the whole answer) | 107 | 1.43 | 0.05 | 93 |
+| template plus content | 7 | 1.57 | 0.29 | 6 |
+| no template | 42 | 1.21 | 0.98 | 0 |
+
+- **The template over-triggered.** 107 of 156 compiled answers are refusals, up from 46, and
+  they include questions whose answering analysis was packed at FULL with no gap at all: "How does
+  the repository handle secrets?" with `secret_scan` packed, "What languages and file types?" with
+  `language_file_classification` packed, "Is IP provenance managed via CLA?" with
+  `contribution_provenance` packed. Twelve of the pure refusals are questions run 2's compiled
+  answer had scored 2 on.
+- **The refusals score well because rubric v2 says a decline that names the analysis scores 2.**
+  That rule was written for honest refusals of unanswerable questions; the template satisfies its
+  letter on answerable ones. The `answers_question` gain is the template meeting the rubric, not
+  better answers.
+- **The template invented gap states.** Seven of the eight compiled `claims_missing_result` rows
+  are the template's `<state>` slot filled with "ran and found nothing" for an analysis that was
+  packed (`documentation_coverage`, `repository_health`, `architecture_recovery`,
+  `data_file_profiling`) — every one of those compiles had an empty gap list. A template with a
+  slot for a state the model does not have is an invitation to invent one.
+- **The unsupported-claims drop is mostly refusals making no claims.** Among the 42 answers with
+  no template, unsupported claims sit at 0.98 — no better than run 2's 0.81. Whether the cap and
+  the count-free summary reduce invented specifics on answers that *answer* is therefore not
+  shown by this run; the population that answered shrank to a quarter.
+
+**What was done about it.** The refusal wording went back to the original loose form in the
+instructions and the system prompt (commit after this one), keeping the cap, the count-free
+summary and the relevance fix. Run 4 isolates those three. Two rubric notes for a future v3, not
+applied now so runs 2–4 stay comparable: a decline whose named analysis is in the *packed* list
+should score 0, not 2 (the judge already sees both lists); and a state asserted for a packed
+analysis should count as a missing-result claim explicitly, which v2 caught only because the
+answers used the literal phrase "found nothing".
+
+**Method note, recorded so it is not repeated:** four changes went into one run. The one that
+dominated behaviour was the cheapest-looking of the four. One variable per run, or a run per
+variable, from here on.
+
 ### run2-20260908 — reproducibility on the redeployed platform, rubric v2 from the start
 
 Same seed, same three repos, 312 rows, 0 errors, answered fresh after the 2026-09-08 Egeria
