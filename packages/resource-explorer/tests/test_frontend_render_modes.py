@@ -144,3 +144,81 @@ def test_metrics_mode_readers_return_metrics_at_the_top_level():
             "'metrics', which reads them from the top level. Flatten the payload "
             f"(reserved top-level keys: {sorted(reserved)})."
         )
+
+
+# ── the architecture diagram's second half ───────────────────────────────────
+#
+# `architecture_diagram` is the first kind whose results view cannot be built
+# from its payload alone: the payload holds Mermaid SOURCE, and the picture is
+# drawn by the Kroki proxy (POST /api/diagrams/mermaid). A `(data) => html`
+# renderer cannot await that, so _renderArchitectureDiagramResults emits a
+# placeholder and renderPendingArchDiagrams() fills it in after the caller has
+# inserted the HTML.
+#
+# That split has an invariant no other kind has: a site that inserts results
+# HTML and never runs the sweep shows an empty bordered box — a card that looks
+# built and is blank, which is worse than the missing Results button this file's
+# other tests were written for. Four sites insert results HTML today; the point
+# of deriving them below rather than listing them is that a fifth is caught.
+
+
+def _top_level_functions(html: str) -> dict[str, str]:
+    """Split index.html's script into its top-level `function`/`async function`
+    bodies. Column-0 anchored — every function these tests care about is
+    top-level, and a nested one would belong to its parent's body anyway."""
+    # Line comments stripped first: this file discusses its own function names
+    # constantly, and a comment naming _renderAnalysisResultsContent() would
+    # otherwise classify a function by what it talks about rather than what it
+    # calls. (Harmless today — _loadDashboardTrendCharts was picked up that way
+    # and could not affect the result — but a derivation that reads prose as
+    # code is one edit away from being wrong in a direction that matters.)
+    html = re.sub(r"^\s*//.*$", "", html, flags=re.M)
+    starts = [(m.start(), m.group(1))
+              for m in re.finditer(r"^(?:async )?function (\w+)\s*\(", html, re.M)]
+    out = {}
+    for i, (pos, name) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(html)
+        out[name] = html[pos:end]
+    return out
+
+
+def test_every_site_that_inserts_results_html_draws_pending_diagrams():
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+
+    # A function that builds results HTML but never assigns innerHTML hands it
+    # upward — its caller is the insertion site, not it. _renderGroupedCards
+    # Dashboard is the one such today.
+    producers = {"_renderAnalysisResultsContent"}
+    producers |= {n for n, b in fns.items()
+                  if "_renderAnalysisResultsContent(" in b and ".innerHTML" not in b}
+
+    inserters = {
+        n for n, b in fns.items()
+        if ".innerHTML" in b and any(f"{p}(" in b for p in producers)
+        and n not in producers
+    }
+    assert inserters, "found no results-insertion sites at all — the derivation broke, not the code"
+
+    missing = {n for n in inserters if "renderPendingArchDiagrams(" not in fns[n]}
+    assert not missing, (
+        f"these insert analysis results HTML and never draw the pending "
+        f"architecture diagram, so an architecture_diagram card renders as an "
+        f"empty bordered box: {sorted(missing)}. Call renderPendingArchDiagrams() "
+        f"after the innerHTML assignment."
+    )
+
+
+def test_the_placeholder_is_claimed_before_the_diagram_is_fetched():
+    """Two sweeps can overlap — a dashboard rendering while a chat card is still
+    fetching. Measured with the claim moved after the await: three POSTs for two
+    placeholders, the second overwriting the first's SVG."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["renderPendingArchDiagrams"]
+    claim = body.index("container.dataset.rendered = 'true'")
+    fetched = body.index("await fetch(")
+    assert claim < fetched, (
+        "renderPendingArchDiagrams marks a placeholder rendered only after "
+        "awaiting the diagram server, leaving a window in which a second sweep "
+        "posts the same source again."
+    )

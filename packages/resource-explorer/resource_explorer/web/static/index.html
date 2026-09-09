@@ -3162,6 +3162,19 @@ const _REPO_RESULTS_RENDER_MODE = {
   website_ingestion: 'custom',
   // Phase 1 plan §4.2/§4.4 — architecture recovery's results view.
   architecture_recovery: 'custom',
+  // 'custom', matching ANALYSIS_KINDS' own render tag for this kind. Added
+  // 2026-09-08: test_every_kind_with_results_has_a_render_mode caught
+  // architecture_diagram sitting in the backend with a working results
+  // reader (and `live_read=True`, so it answers without a survey run) and no
+  // entry here — the diagram was re-rendered on every read and reachable
+  // from nowhere in the UI, since the Results button is gated on membership
+  // of this object. Exactly the drift this object's comment warns about.
+  //
+  // Not 'metrics' despite carrying char_count/projection_depth: those are
+  // properties OF the picture, and a key-value grid of them beside no
+  // picture is the shape that makes a card look populated while withholding
+  // the only thing it exists to show. See _renderArchitectureDiagramResults.
+  architecture_diagram: 'custom',
   // Added 2026-08-23 — repo_manifest_parse's card (project_dependencies +
   // project_analysis_findings kind="ci_quality"/"repo_conventions", all in
   // one run). Same shape as code_symbol_extraction's own results.
@@ -3227,6 +3240,7 @@ async function _toggleSurveyResults(qualifiedName, analysisIds, slug, btn) {
         ${sec.html}
       </div>`).join('')
     + `</div>`;
+  renderPendingArchDiagrams();
 }
 
 // facts.py's RESOURCE_STATE_SOURCES table names a "subject" for each of the
@@ -3299,6 +3313,7 @@ async function loadAnalysisResults(analysisId, slug) {
     </div>`;
     if (hasPie) _renderFileTypePieChart(`pie-${safeId}`, data.by_type);
     if (trend.length > 1) _renderAnalysisTrendChart(`trend-${safeId}`, trend, analysisId);
+    renderPendingArchDiagrams();
   } catch(e) {
     el.innerHTML = `<div class="text-red-400 text-xs py-2">Failed to load results: ${_esc(e.message)}</div>`;
   }
@@ -4300,6 +4315,106 @@ function _renderSubResourceSurveyResults(data) {
       </div>`).join('');
 }
 
+// _renderArchitectureDiagramResults — kind-plugin for `architecture_diagram`.
+//
+// Neither generic mode fits: the payload is not a findings list and not a
+// metrics dict, it is one rendered picture plus the caption that qualifies
+// it (perspective shown, projection depth, verdict coverage — all composed
+// server-side by _architecture_diagram_results).
+//
+// The picture cannot be produced synchronously. It is drawn by the Kroki
+// proxy (POST /api/diagrams/mermaid, web/routes/diagrams.py) — the same
+// server-side path the chat fact view and the DB ER-diagram view already
+// use, which is why no client-side mermaid.js is vendored anywhere in this
+// file. A `(data) => html` renderer has nowhere to await that, so this emits
+// a placeholder carrying the source and renderPendingArchDiagrams() fills it
+// in once the caller has inserted the HTML — the same emit-then-fill split
+// _renderFileTypePieChart and _renderAnalysisTrendChart already use on this
+// panel, rather than a fifth way of doing it.
+function _renderArchitectureDiagramResults(data) {
+  // Covers both the genuinely-never-run case (the reader returns a bare
+  // `_status`) and a payload whose diagram is missing for any other reason.
+  // _renderEmptyResultState reads that status rather than asserting "click
+  // Run to scan", which for this kind would often be wrong twice over: the
+  // runs that populate it are recorded under `architecture_recovery`, not
+  // under this id at all.
+  if (!data || !data.mermaid) return _renderEmptyResultState(data);
+
+  const caption = data.caption
+    ? `<div class="text-xs text-slate-300 leading-snug mb-1">${_esc(data.caption)}</div>`
+    : '';
+
+  // Which perspective this is, and what else is on file. Same wording and
+  // same reasoning as the chat fact view's copy of this line: repo_arch_detect
+  // and repo_arch_coupling propose genuinely different pictures, and handing
+  // a reader one of two with no sign the other exists is how their disagreeing
+  // component counts went unnoticed (see _architecture_diagram_results).
+  const perspective = data.perspective
+    ? `<div class="text-[10px] text-slate-500 mt-1">shown: ${_esc(data.perspective)}` +
+      ((data.other_perspectives_available || []).length
+        ? ` · also on file: ${_esc(data.other_perspectives_available.join(', '))}`
+        : '') + `</div>`
+    : '';
+
+  // Too large: say so instead of posting it and letting the renderer fail.
+  // The backend already decided this (mermaid.exceeds_renderer_limit) and the
+  // caption states it in words; a failed render would report it as a diagram
+  // server problem, which is a different fault with a different fix.
+  if (data.exceeds_renderer_limit) {
+    return caption + `<div class="text-[11px] text-amber-400/90 leading-snug">⚠ Too large to draw`
+      + (data.char_count ? ` (${_esc(data.char_count)} characters` +
+          (data.projection_depth ? ` at depth ${_esc(data.projection_depth)}` : '') + `)` : '')
+      + ` — the description above is the whole answer this card can show.</div>` + perspective;
+  }
+
+  return caption
+    + `<div class="arch-diagram-mermaid bg-slate-950 border border-slate-800 rounded p-2"`
+    + ` style="max-height:420px;overflow:auto" data-rendered="false"`
+    + ` data-mcode="${_esc(data.mermaid)}"></div>`
+    + perspective;
+}
+
+// Fills in every architecture-diagram placeholder on the page that has not
+// been drawn yet. Document-wide and idempotent on purpose: four different
+// call sites insert results HTML (the Analysis card, the survey-results
+// toggle, the Survey Results dashboard and the inline chat results), and one
+// sweep called from any of them draws whatever is currently pending rather
+// than each site needing to know which of its cards contained a diagram.
+async function renderPendingArchDiagrams() {
+  for (const container of document.querySelectorAll('.arch-diagram-mermaid')) {
+    if (container.dataset.rendered === 'true') continue;
+    // Claimed BEFORE the await, not after it as renderAllDbViewsMermaid does
+    // below: two sweeps can overlap here (a dashboard render while a chat
+    // card is still fetching), and a flag set after the await leaves a window
+    // in which both sweeps POST the same source and the second overwrites the
+    // first's SVG.
+    container.dataset.rendered = 'true';
+    container.innerHTML = `<div class="text-xs text-slate-500 py-2">Generating diagram…</div>`;
+    try {
+      const res = await fetch('/api/diagrams/mermaid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: `%%{init: {"theme":"dark","flowchart":{"useMaxWidth":false,"htmlLabels":true}}}%%\n${container.dataset.mcode}`,
+        }),
+      });
+      if (!res.ok) {
+        const detail = (await res.json().catch(() => null))?.detail || `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
+      container.innerHTML = await res.text();
+    } catch (err) {
+      // Un-claimed so a later sweep retries — the usual failure here is the
+      // diagram container being down or restarting, which the next render of
+      // the same card should be able to get past. The message names the
+      // diagram server rather than saying "no results": the analysis ran and
+      // its answer exists, only the drawing of it failed.
+      container.dataset.rendered = 'false';
+      container.innerHTML = `<div class="text-xs text-red-400 italic py-2">Could not render the diagram: ${_esc(err.message)}</div>`;
+    }
+  }
+}
+
 // _CUSTOM_RESULT_RENDERERS — kind -> renderer, `(data) => html`.
 //
 // This is the dispatch half of the "kind-plugin" shape started with
@@ -4324,6 +4439,7 @@ const _CUSTOM_RESULT_RENDERERS = {
   website_ingestion: _renderWebsiteIngestionResults,
   manifest_parse: _renderManifestParseResults,
   architecture_recovery: _renderArchitectureRecoveryResults,
+  architecture_diagram: _renderArchitectureDiagramResults,
   dependency_analysis: _renderDependencyAnalysisResults,
   data_file_profiling: _renderDataFileProfilingResults,
   language_file_classification: _renderLanguageFileClassificationResults,
@@ -8060,6 +8176,7 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml, 
     <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml ||
       '<div class="text-slate-600 text-xs text-center py-8 col-span-2">No dashboards match the active Perspective filter.</div>'}</div>`;
   _loadDashboardTrendCharts(visible, slug);
+  renderPendingArchDiagrams();
 }
 
 // Per-dashboard trend charts — deliberately opt-in per dashboard.id (not
@@ -13169,6 +13286,7 @@ async function _toggleInlineResults(analysisId, slug, containerId) {
     </div>`;
     if (hasPie) _renderFileTypePieChart(pieId, data.by_type);
     if (trend.length > 1) _renderAnalysisTrendChart(trendId, trend, analysisId);
+    renderPendingArchDiagrams();
     el.dataset.loaded = '1';
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   } catch (e) {
