@@ -4364,14 +4364,50 @@ function _renderArchitectureDiagramResults(data) {
     return caption + `<div class="text-[11px] text-amber-400/90 leading-snug">⚠ Too large to draw`
       + (data.char_count ? ` (${_esc(data.char_count)} characters` +
           (data.projection_depth ? ` at depth ${_esc(data.projection_depth)}` : '') + `)` : '')
-      + ` — the description above is the whole answer this card can show.</div>` + perspective;
+      + ` — the description above is the whole answer this card can show.</div>`
+      + _renderMermaidSource(data.mermaid) + perspective;
   }
 
   return caption
     + `<div class="arch-diagram-mermaid bg-slate-950 border border-slate-800 rounded p-2"`
     + ` style="max-height:420px;overflow:auto" data-rendered="false"`
     + ` data-mcode="${_esc(data.mermaid)}"></div>`
+    + _renderMermaidSource(data.mermaid)
     + perspective;
+}
+
+// The Mermaid source, collapsed, under every diagram this card draws.
+//
+// Asked for by the project owner 2026-09-09 ("instead of an svg (or along
+// with one) can we have a mermaid graph?"). Along with, not instead of: the
+// SVG is what you look at, the source is what you take away. It is worth
+// showing for three reasons the picture cannot cover —
+//
+//  * GitHub, GitLab and most doc tools render a ```mermaid fence natively,
+//    so the source pastes into an ADR or a PR description and stays live,
+//    where an SVG pasted into the same place is a dead image.
+//  * It is the only form of this answer that survives the diagram server
+//    being unreachable — which is why the failure path below falls back to
+//    it rather than showing an error and nothing else.
+//  * It is diffable. Two runs' pictures can only be compared by eye; two
+//    runs' sources can be compared by a machine, which is what the
+//    disagreeing component counts between perspectives actually need.
+//
+// <details> rather than a toggle button so it costs nothing when closed and
+// needs no state of its own; the copy button stops propagation so clicking
+// it does not also collapse the block it is in.
+function _renderMermaidSource(mermaid) {
+  if (!mermaid) return '';
+  const esc = _esc(mermaid);
+  return `<details class="mt-1 group">`
+    + `<summary class="text-[10px] text-slate-500 hover:text-slate-300 cursor-pointer select-none">`
+    + `Mermaid source (${String(mermaid.split('\n').length)} lines)`
+    + ` <button class="ml-1 px-1 border border-slate-700 rounded hover:bg-slate-800"`
+    + ` onclick="event.preventDefault();event.stopPropagation();`
+    + `navigator.clipboard.writeText(this.closest('details').querySelector('pre').textContent);`
+    + `this.textContent='copied'">copy</button></summary>`
+    + `<pre class="text-[10px] text-slate-400 bg-slate-950 border border-slate-800 rounded`
+    + ` p-2 mt-1 overflow-auto" style="max-height:240px">${esc}</pre></details>`;
 }
 
 // Fills in every architecture-diagram placeholder on the page that has not
@@ -4410,7 +4446,15 @@ async function renderPendingArchDiagrams() {
       // diagram server rather than saying "no results": the analysis ran and
       // its answer exists, only the drawing of it failed.
       container.dataset.rendered = 'false';
-      container.innerHTML = `<div class="text-xs text-red-400 italic py-2">Could not render the diagram: ${_esc(err.message)}</div>`;
+      // The source is already in hand, so the drawing failing does not have to
+      // mean the reader gets nothing: show what the picture would have been of.
+      // Escaped once — reading .dataset decodes the escaping applied when the
+      // placeholder was emitted, so this is one escape of a raw string, not two.
+      container.innerHTML =
+        `<div class="text-xs text-red-400 italic py-2">Could not draw the diagram: ${_esc(err.message)}`
+        + ` — its Mermaid source is below.</div>`
+        + `<pre class="text-[10px] text-slate-400 overflow-auto" style="max-height:300px">`
+        + `${_esc(container.dataset.mcode)}</pre>`;
     }
   }
 }

@@ -4378,7 +4378,7 @@ live data. That is the part to fix.
 
 ---
 
-## `architecture_recovery`'s own chat answer can go never-run despite real findings
+## `architecture_recovery` answers `not_established` on 37 of 53 repos that have its findings — RE-MEASURED 2026-09-09, original example was a typo
 
 Found 2026-09-08 while verifying the new verdict-coverage feature
 (`docs/curated-architecture-answers-design.md` §6 item 1) against
@@ -4409,6 +4409,61 @@ is the flagship, most heavily-used analysis in the catalog (many questions'
 `analysis_ids` include it), so changing its run-gating behavior deserves its
 own verification pass across more than one repo, not a same-session
 addition to an unrelated feature. Flagged rather than fixed.
+
+**Re-measured 2026-09-09** at the project owner's request, once the
+`architecture_diagram` step-map collision above was fixed and run attribution
+was trustworthy again. Two corrections and one confirmation:
+
+**1. The named example was a slug typo, and the bug does not reproduce on it.**
+There is no repo `egeria-workspaces_git`. The real slug is
+`egeria_workspaces_git` — underscore, not hyphen — and it has no alias under
+the hyphen form (`list_aliases` and `project_aliases` are both empty for it).
+So the `never_run` observation above was made against a slug that does not
+exist, while the "confirmed via direct registry query — 109 components" was
+made against the one that does. Two queries, two different slugs, and the
+difference between them was written up as a run-attribution bug. On the real
+slug today:
+
+    FactLayer.fact("egeria_workspaces_git", "architecture_recovery")
+      state    = 'measured'
+      headline = '109 components recovered — 23 of 181 components reviewed
+                  (21 accepted, 2 rejected); 14 of 39 blueprints reviewed
+                  (14 accepted)'
+
+— the same 109 components the entry cites as proof the data was there. It
+answers end-to-end and always did.
+
+**2. The class of problem is real, and about three times larger than the entry
+claimed.** Swept all 61 live repos: 53 have real `architecture_recovery`
+findings rows, and **37 of those 53 have no `architecture_recovery` key in
+`get_analysis_last_run()` at all**, so `fact()`'s run-gate returns
+`not_established` — 'we have not established this', on repos holding up to
+7,758 findings rows apiece (`genaicomps`; also `kafka` 5,523, `genaiexamples`
+4,079). Only 16 answer. The mechanism described above is right; the entry
+simply picked the one repo where it was not happening.
+
+**3. The collision fix helped, and was not enough.** Counterfactual, by
+restoring the pre-fix `step_keys` on `architecture_diagram` in-process and
+re-counting: **7 repos keyed before, 16 after** — `4db2cf9` recovered 9. The
+other 37 are unaffected by it, so they are a separate cause (surveys whose
+step recording predates attribution, per `get_analysis_last_run`'s own
+`unattributable` branch), not more of the same.
+
+**What this changes about the proposed fix.** `live_read=True` on
+`architecture_recovery` is still the plausible fix, but the case for it is now
+a measured 37-repo gap rather than a phantom one, and the verification pass it
+deserves has an obvious shape: it must not change the answer for the 16 repos
+that already answer correctly, and it must move the other 37 from
+`not_established` to `measured` **with headlines that match their findings
+rows** — a `live_read` that reports a number nobody can source is a worse
+failure than the silence it replaces. Still not applied here.
+
+**The measurement lesson, which is the durable part.** Both halves of the
+original entry were run correctly; they were run against different slugs, and
+nothing in either result said so, because a registry query for a nonexistent
+slug returns an empty answer rather than an error. Any claim of the form "X is
+missing for repo R" needs R proven to exist in the same session as the query
+that found X missing.
 
 ## RE needs an admin/ingestion dashboard — EA has one, RE has none
 

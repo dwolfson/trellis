@@ -222,3 +222,65 @@ def test_the_placeholder_is_claimed_before_the_diagram_is_fetched():
         "awaiting the diagram server, leaving a window in which a second sweep "
         "posts the same source again."
     )
+
+
+def test_every_path_that_can_show_a_diagram_also_offers_its_source():
+    """The Mermaid source is the take-away form of this card (pastes into a PR
+    or an ADR and stays live, and is diffable between runs where two pictures
+    are not). All three exits of the renderer have a `mermaid` string in hand
+    — drawn, too-large-to-draw, and the empty case — so the two that have a
+    diagram to talk about must both offer it, not just the happy one."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["_renderArchitectureDiagramResults"]
+
+    # The early return for "no data at all" legitimately has no source to show.
+    returns = [seg for seg in body.split("return ")[1:]
+               if "_renderEmptyResultState" not in seg]
+    assert len(returns) >= 2, (
+        "expected at least the drawn and the too-large returns to inspect; the "
+        "derivation broke, not the code"
+    )
+    missing = [i for i, seg in enumerate(returns) if "_renderMermaidSource(" not in seg]
+    assert not missing, (
+        f"{len(missing)} of {len(returns)} returns in "
+        f"_renderArchitectureDiagramResults show a diagram (or say why it "
+        f"cannot be drawn) without offering its Mermaid source. Add "
+        f"_renderMermaidSource(data.mermaid)."
+    )
+
+
+def test_a_diagram_that_cannot_be_drawn_still_shows_its_source():
+    """The failure path is the one that most needs the source: the diagram
+    server being unreachable is exactly when a reader has no other route to
+    the answer, and the source is already sitting in the placeholder's
+    dataset. Guards against it regressing to an error message alone."""
+    html = INDEX.read_text()
+    body = _top_level_functions(html)["renderPendingArchDiagrams"]
+    catch = body[body.index("} catch ("):]
+    assert "dataset.mcode" in catch, (
+        "renderPendingArchDiagrams' failure path no longer renders the Mermaid "
+        "source it already holds in container.dataset.mcode — a reader whose "
+        "diagram server is down now gets an error and nothing else."
+    )
+
+
+def test_the_source_block_is_escaped_exactly_once():
+    """_esc() on an already-escaped string double-escapes: the reader copies
+    `A --&gt; B` and pastes something no Mermaid renderer accepts. The
+    placeholder's data-mcode is escaped at emit time and decoded by reading
+    .dataset, so the failure path escapes once; the <details> block escapes the
+    raw payload once. Neither may escape a value that _esc already touched."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    src = fns["_renderMermaidSource"]
+    assert "_esc(mermaid)" in src, "_renderMermaidSource no longer escapes its input"
+    assert src.count("_esc(") == 1, (
+        f"_renderMermaidSource escapes {src.count('_esc(')} times; the source "
+        f"is displayed once and must be escaped once."
+    )
+    # The renderer must hand it the RAW payload, never the escaped copy.
+    body = fns["_renderArchitectureDiagramResults"]
+    assert "_renderMermaidSource(_esc(" not in body, (
+        "_renderArchitectureDiagramResults passes an already-escaped string to "
+        "_renderMermaidSource, so the copy button yields &gt; instead of >."
+    )
