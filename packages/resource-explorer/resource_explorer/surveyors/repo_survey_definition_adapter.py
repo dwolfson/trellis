@@ -2785,6 +2785,28 @@ def _architecture_recovery_results(
         default="",
     )
 
+    # Genuine absence, returned as an envelope rather than an empty card — and
+    # the precondition that makes `live_read=True` safe on this kind.
+    #
+    # Without it the dict below always carries `slug` and `documentation`, both
+    # non-empty for ANY string, so facts.py's `_has_content()` answers True for
+    # a repo that has never been surveyed and live_read would report MEASURED
+    # with a headline of None. Measured 2026-09-09 against a slug that does not
+    # exist: content=True, headline=None. `_status` is one of the envelope keys
+    # `_has_content` exempts, which is why this shape reports absence as absence
+    # — the same fix and the same reasoning as _architecture_diagram_results.
+    #
+    # `not surveyed_at` and not "no components": measured across all 61 repos,
+    # the 8 with zero recovery findings ALL still have a surveyed_at, because
+    # their steps ran and recorded a run_outcome saying the repo could not be
+    # read. That is a real answer ("Unverified — could not read this repo",
+    # README finding 57) and must keep reaching the caller; only a repo nothing
+    # has ever touched has no timestamp at all. It is also the same discriminator
+    # _architecture_recovery_headline already uses to return None.
+    if not surveyed_at:
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No architecture recovery yet — run the analysis."}}
+
     # Component -> candidate blueprint(s) backlink (2026-09-03, Curate
     # redesign item 5 — "jump from a component to its candidate
     # blueprints"). Deliberately derived here rather than trusted from
@@ -4000,6 +4022,21 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _architecture_recovery_results, _architecture_recovery_trend, "custom",
             headline_reader=_architecture_recovery_headline,
+            # Reads project_analysis_findings back directly, so its answer does
+            # not depend on this repo's survey having recorded step attribution.
+            # Measured 2026-09-09: 53 of 61 repos hold architecture_recovery
+            # findings and only 16 had an `architecture_recovery` key in
+            # get_analysis_last_run(), so 37 repos — some with thousands of
+            # findings rows (genaicomps 7,758; kafka 5,523) — answered
+            # `not_established`, "we have not established this", about data
+            # sitting in the table. Same failure and same fix as api_structure
+            # (2026-09-02) and architecture_diagram (2026-09-08).
+            #
+            # Safe only because the reader above returns a bare `_status` when
+            # surveyed_at is empty; without that gate this flag reports MEASURED
+            # for every unknown slug. Do not set this on a kind whose reader
+            # cannot say "nothing here".
+            live_read=True,
         ),
     ),
     # Same declaring steps as architecture_recovery — persist.py's

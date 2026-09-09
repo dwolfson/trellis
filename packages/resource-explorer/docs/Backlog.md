@@ -4378,7 +4378,7 @@ live data. That is the part to fix.
 
 ---
 
-## `architecture_recovery` answers `not_established` on 37 of 53 repos that have its findings — RE-MEASURED 2026-09-09, original example was a typo
+## `architecture_recovery` answers `not_established` on 37 of 53 repos that have its findings — FIXED 2026-09-09 (re-measured first; the original example was a typo)
 
 Found 2026-09-08 while verifying the new verdict-coverage feature
 (`docs/curated-architecture-answers-design.md` §6 item 1) against
@@ -4456,7 +4456,46 @@ deserves has an obvious shape: it must not change the answer for the 16 repos
 that already answer correctly, and it must move the other 37 from
 `not_established` to `measured` **with headlines that match their findings
 rows** — a `live_read` that reports a number nobody can source is a worse
-failure than the silence it replaces. Still not applied here.
+failure than the silence it replaces.
+
+**Applied 2026-09-09, and it needed a precondition the api_structure and
+architecture_diagram precedents did not make obvious.** `live_read=True` alone
+would have been a bug: `facts.py` reports MEASURED whenever `_has_content()`
+finds anything outside the envelope keys, and this reader stamps `slug` and
+`documentation` into every payload unconditionally. Measured against a slug
+that does not exist: `_has_content` True, headline `None` — so every unknown
+repo would have answered "measured" with no label. The reader now returns a
+bare `{"_status": NEVER_RUN}` when `surveyed_at` is empty, which is the one
+shape `_has_content` exempts.
+
+The gate keys on **`surveyed_at`, not on having components**, and that
+distinction is the whole of it: all 8 repos with zero recovery findings still
+carry a timestamp, because their steps ran and recorded a run_outcome saying
+the repo could not be read. "Unverified — coupling, detect could not read this
+repo" is a real answer (README finding 57) and a component-count gate would
+report it as never-run. Only a repo nothing has ever touched has no timestamp.
+
+Verified against the three criteria stated above, all 61 repos:
+
+    before : 16 measured / 45 not_established
+    after  : 61 measured / 0 not_established
+
+    (1) all 16 already-answering repos unchanged                    0 regressions
+    (2) all 53 repos with findings measured, every one with a
+        headline sourced from its own rows (egeria_git 18,087
+        rows -> "223 components recovered", milvus 12,808 ->
+        "79 components", genaicomps 7,758 -> "304 components")      0 empty headlines
+    (3) a slug that does not exist                                  state='never_run'
+
+The 8 zero-findings repos moved from `not_established` to `measured` carrying
+"Unverified — could not read this repo", which is the honest answer and the one
+the run gate was suppressing.
+
+Guards in `tests/test_reader_status_wiring.py::TestLiveReadRequiresAnAbsenceGate`,
+derived over every kind with `live_read` set rather than naming this one, so a
+future kind that sets the flag without an absence gate fails on arrival. Both
+sabotages fire: removing the gate, and replacing it with the plausible-looking
+component-count version.
 
 **The measurement lesson, which is the durable part.** Both halves of the
 original entry were run correctly; they were run against different slugs, and
@@ -4464,6 +4503,57 @@ nothing in either result said so, because a registry query for a nonexistent
 slug returns an empty answer rather than an error. Any claim of the form "X is
 missing for repo R" needs R proven to exist in the same session as the query
 that found X missing.
+
+## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first
+
+Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took
+~90s: *"do we check to see if there was a recent architecture survey with the
+correct results before we redo that survey from architecture_diagram?"*
+
+**No, and there is no freshness gate anywhere in the dispatch path.**
+`resolve_analysis_plan` -> `enqueue_run` -> `SurveyOrchestrator.run(steps)` is
+unconditional; the only `force_refresh` in the package is `FileTypeCache`'s and
+unrelated. So clicking Run re-executes `repo_arch_detect` + `repo_arch_coupling`
+(the pair this Backlog already prices at ~110s, and the reason
+`repo_arch_coupling` is the one step routed to Prefect) even when identical
+results were produced minutes earlier. `get_analysis_last_run()` already returns
+the last run time and status — the information a freshness check needs is in
+hand at dispatch and simply never consulted.
+
+**The attribution half is the worse one, and was found by following that
+question.** Measured on `egeria_workspaces_git` immediately after such a run:
+
+    architecture_diagram   last_run_at = 2026-09-09T14:08:05   <- the run
+    architecture_recovery  last_run_at = 2026-08-30T20:41:46   <- ten days earlier
+
+The run executed the recovery's two steps and wrote fresh recovery data (108
+logical / 106 subtree components, published to Egeria), but only the id the user
+clicked was credited: an `analysis_run` row records its `analysis_id` directly,
+and the step-level attribution in `get_analysis_last_run` applies to `survey`
+rows only. So the recovery's card reports data ten days stale that is in fact ten
+minutes old. Same class as the `architecture_diagram`/`architecture_recovery`
+step-map collision fixed 2026-09-08, arriving from the other direction: there,
+ownership was wrong; here, dispatch is right and the credit does not follow it.
+
+Note this is **not** fixed by the `live_read=True` above, which makes the
+recovery answer *despite* bad attribution. This entry is about making the
+attribution correct, which is the narrower and more honest repair.
+
+Three things, in dependency order, none done:
+
+1. **Credit the source analyses when a derived analysis runs their steps.** The
+   `analysis_run` row should attribute to every analysis in
+   `REPO_ANALYSIS_SOURCE_STEPS[analysis_id]`'s owners, not only to the clicked
+   id. Verify by asserting the source's `last_run_at` advances.
+2. **Consult the freshness that is already known** before dispatching — skip, or
+   warn with the age, when the source data is newer than a threshold. Whether
+   the default is skip-with-override or warn-and-run is a product decision;
+   silently re-running for 90s is the one option that is clearly wrong.
+3. **Separate "view" from "refresh" on derived cards.** `architecture_diagram`
+   is `live_read`, so its Results tab already renders with no run at all — the
+   Run button offers a 90-second refresh where the reader wanted a picture. At
+   minimum the button should state what it will actually execute and roughly
+   what it costs.
 
 ## RE needs an admin/ingestion dashboard — EA has one, RE has none
 
