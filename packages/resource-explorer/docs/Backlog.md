@@ -4721,7 +4721,7 @@ cost.
 
 The ratchet is green at 108.
 
-## The architecture diagram is drawn by a path no test exercises end-to-end
+## The architecture diagram is drawn by a path no test exercises end-to-end — CLOSED 2026-09-09, verified live
 
 `_renderArchitectureDiagramResults` emits a placeholder and
 `renderPendingArchDiagrams()` POSTs the Mermaid source to
@@ -4731,10 +4731,16 @@ shown and the card is left retryable) and the success path is verified only
 against a stubbed fetch: that route requires a session, so a signed-out session
 cannot drive it, and entering credentials is out of scope.
 
-Someone signed in should open an `architecture_diagram` card once and confirm a
-picture appears. Worth doing deliberately rather than assuming — the DB
-ER-diagram view uses the same proxy and is the evidence that the proxy works,
-but not that this card reaches it.
+~~Someone signed in should open an `architecture_diagram` card once and confirm a
+picture appears.~~ **Done 2026-09-09**: the project owner, signed in on the
+:8810 server, confirmed the diagram materializes. The success path is now
+verified end-to-end by the only route that could verify it — a real session
+against the real proxy — and this entry is closed.
+
+Worth recording why it stayed open for a day rather than being assumed: the DB
+ER-diagram view uses the same proxy and was evidence that the proxy works, not
+that this card reaches it. The two are one `fetch` apart and the stub could not
+tell them apart.
 
 Noticed in passing while building it, and NOT changed: `_renderEmptyResultState`
 maps `never_run` to the generic *"No results yet — click Run to scan."* and
