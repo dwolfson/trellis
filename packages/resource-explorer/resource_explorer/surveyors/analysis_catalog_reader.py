@@ -130,18 +130,26 @@ class AnalysisCatalogEntry:
 
 
 def _re_analysis_steps_for(analysis_id: str) -> list[str]:
-    """REPO_ANALYSIS_STEP_MAP lookup, imported lazily.
+    """REPO_ANALYSIS_SOURCE_STEPS lookup, imported lazily.
 
     repo_survey_definition_adapter imports this module at import time, so a
     module-level import here would close the cycle.
+
+    SOURCE steps, not owned ones. Consumers ask "a survey ran these steps —
+    which analyses can it now show results for" (web/routes/survey_definitions
+    .py's analysis_ids/perspectives union) and "which steps can this card
+    publish". Both are answered by the steps that PRODUCE the data. Off the
+    ownership map a survey running repo_arch_detect would not offer
+    architecture_diagram's Results view — the analysis computed, reachable from
+    nowhere, which is the exact failure this whole area keeps producing.
     """
     try:
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            REPO_ANALYSIS_STEP_MAP,
+            REPO_ANALYSIS_SOURCE_STEPS,
         )
     except Exception:  # pragma: no cover - defensive
         return []
-    return list(REPO_ANALYSIS_STEP_MAP.get(analysis_id, []))
+    return list(REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []))
 
 
 def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:

@@ -78,7 +78,7 @@ def resolve_analysis_plan(analysis_id: str) -> tuple[bool, list[str] | None]:
     """
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_STEP_MAP,
+        REPO_ANALYSIS_SOURCE_STEPS,
     )
 
     catalog_entry = next(
@@ -86,7 +86,10 @@ def resolve_analysis_plan(analysis_id: str) -> tuple[bool, list[str] | None]:
         None,
     )
     is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
-    steps = None if is_ingest else REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    # SOURCE steps: this resolves what to RUN. An analysis that owns no steps
+    # (architecture_diagram) still runs its source's — off the ownership map it
+    # would resolve to [] and the caller would report it undispatchable.
+    steps = None if is_ingest else REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id)
     return is_ingest, steps
 
 
@@ -101,7 +104,7 @@ def resolve_stage_step_keys(stage: str) -> tuple[list[str], int]:
     """
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_STEP_MAP,
+        REPO_ANALYSIS_SOURCE_STEPS,
     )
 
     entries = [
@@ -110,7 +113,11 @@ def resolve_stage_step_keys(stage: str) -> tuple[list[str], int]:
     ]
     step_keys: list[str] = []
     for a in entries:
-        for sk in REPO_ANALYSIS_STEP_MAP.get(a["id"], []):
+        # SOURCE steps: "Run all <Stage>" must run what each entry needs, not
+        # what it owns. Identical today only because architecture_diagram's
+        # source is owned by architecture_recovery, which shares its intent —
+        # a coincidence, not a guarantee.
+        for sk in REPO_ANALYSIS_SOURCE_STEPS.get(a["id"], []):
             if sk not in step_keys:
                 step_keys.append(sk)
     return step_keys, len(entries)

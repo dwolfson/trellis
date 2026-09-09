@@ -107,6 +107,76 @@ class TestRunAttribution:
             f"{ {k: (first_wins[k], last_wins[k]) for k in first_wins if first_wins[k] != last_wins.get(k)} }")
 
 
+class TestOwnershipMapIsOnlyUsedForAttribution:
+    """The guard whose absence cost three rounds of the same bug.
+
+    Splitting `step_keys` (ownership) from `derives_from` (executability) on
+    2026-09-08 meant every existing reader of REPO_ANALYSIS_STEP_MAP had to be
+    triaged: does it ask "whose run was that" or "what do I run"? Eight
+    consumers, and the second question is the common one. They were found in
+    three rounds rather than one, and each miss was silent in its own way —
+    a Run button that 400s, a schedule that comes due and does nothing, the
+    catalog's most expensive analysis priced as free, a Survey Definition
+    quietly losing a ScopedBy link on the next resync, a survey card that stops
+    offering a Results view for an analysis its own steps produce.
+
+    None of those fail a test on their own. So this pins the ownership map's
+    readers by name: adding one is now a deliberate act with a docstring to
+    read, not a plausible-looking autocomplete.
+    """
+
+    #: Modules entitled to REPO_ANALYSIS_STEP_MAP, and why.
+    ATTRIBUTION_READERS = {
+        # Inverts it to answer "which analysis owns this step key" for run
+        # attribution (_step_key_to_analysis_id). The partition IS the map.
+        "resource_explorer/registry.py",
+        # "these step keys ran — which analyses produced these annotations".
+        "resource_explorer/surveyors/egeria_annotation_materializer.py",
+        # Same question for published elements.
+        "resource_explorer/surveyors/egeria_publisher.py",
+        # Membership test only ("is this a repo analysis at all"); both maps
+        # carry identical KEYS, so this is not a dispatch decision.
+        "resource_explorer/web/routes/schedules.py",
+        # Defines both maps.
+        "resource_explorer/surveyors/repo_survey_definition_adapter.py",
+        # Names one analysis explicitly (language_file_classification), which
+        # owns its own steps — ownership and source are the same list there.
+        "resource_explorer/scheduler.py",
+    }
+
+    def test_no_new_module_reads_the_ownership_map(self):
+        import re as _re
+        from pathlib import Path
+
+        pkg = Path(__file__).resolve().parents[1]
+        found = set()
+        for path in list((pkg / "resource_explorer").rglob("*.py")) + \
+                list((pkg / "scripts").rglob("*.py")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # Comments and docstrings discuss the map constantly; only a real
+            # reference counts — an import, or the name followed by a lookup.
+            code = _re.sub(r"^\s*#.*$", "", text, flags=_re.M)
+            if _re.search(r"REPO_ANALYSIS_STEP_MAP\s*[\.\[]|^\s+REPO_ANALYSIS_STEP_MAP,\s*$",
+                          code, _re.M):
+                found.add(str(path.relative_to(pkg)))
+        unexpected = found - self.ATTRIBUTION_READERS
+        assert not unexpected, (
+            f"new reader(s) of the ownership map: {sorted(unexpected)}. If the question "
+            "is \"what do I run to refresh this analysis\", use REPO_ANALYSIS_SOURCE_STEPS "
+            "— an analysis that owns no steps resolves to [] here and fails silently. "
+            "If it really is attribution, add it to ATTRIBUTION_READERS with the reason.")
+
+    def test_the_listed_readers_still_read_it(self):
+        """The other direction: a stale entry here reads as coverage of a
+        consumer that no longer exists."""
+        from pathlib import Path
+
+        pkg = Path(__file__).resolve().parents[1]
+        gone = {m for m in self.ATTRIBUTION_READERS
+                if "REPO_ANALYSIS_STEP_MAP" not in (pkg / m).read_text(encoding="utf-8")}
+        assert not gone, f"ATTRIBUTION_READERS lists modules that no longer read it: {sorted(gone)}"
+
+
 class TestEveryAnalysisCanActuallyBeRun:
     """Ownership and executability were one field until 2026-09-08, and
     splitting them introduced a way to be silently unrunnable: an analysis with
