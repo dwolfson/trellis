@@ -124,7 +124,10 @@ const STAGES = [
  * thing it was deferring.
  */
 const SUB_TABS = [
-  { id: 'search', label: 'Search', does: 'Repo discovery — find and import candidate repos' },
+  // NAMED FOR WHAT IT IS. Calling it "Search" inherits the current UI's label
+  // and teaches the wrong noun on first contact: it is not a search of the
+  // selected resource, it is how candidate repos are found and imported.
+  { id: 'search', label: 'Find repos', does: 'Repo discovery — find and import candidate repos' },
   { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them' },
   { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts' },
   { id: 'questions', label: 'Questions', does: 'The question checklist' },
