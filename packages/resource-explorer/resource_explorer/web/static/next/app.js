@@ -2563,87 +2563,118 @@ async function loadDashboardPane() {
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   const stage = state.stage;
-  el.innerHTML = subTabsHtml() + '<div class="text-caveat text-ink-muted">Reading survey results…</div>';
-  bindSubTabs();
 
-  // Two independent reads. One failing must not blank the other, because they
-  // answer different questions and either alone is worth showing.
-  const [summary, dashboards] = await Promise.all([
-    getSurveySummary(slug, stage).catch((e) => ({ error: e.message })),
-    getSurveyDashboards(slug, stage).catch((e) => ({ error: e.message })),
-  ]);
-
-  const tiles = summary?.tiles || [];
-  const boards = dashboards?.dashboards || [];
-  const TONE = { ok: 'text-state-ok', warn: 'text-state-warn', info: 'text-ink' };
-
+  // THREE INDEPENDENT READS, each filling its own region as it lands.
+  //
+  // They were a Promise.all, which meant the pane showed one line for as long
+  // as the slowest took — and on Analysis that is not a moment. Measured on
+  // kafka: the headline tiles take 30s and the dashboards 109s, because this
+  // aggregation layer re-runs the very results readers whose cost the matrix
+  // projection exists to avoid. Two minutes of "Reading survey results…" is
+  // indistinguishable from a hung pane.
+  //
+  // So the skeleton renders first, each region says what it is waiting for,
+  // and one failing cannot blank the others: they answer different questions
+  // and any of them alone is worth showing.
+  const token = ++dashToken;
   el.innerHTML = subTabsHtml() + `
     <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">
       Survey results · ${esc(stage)}</div>
-
-    ${summary?.error
-      ? `<p class="mb-s3 text-caveat text-state-warn">The headlines could not be read:
-          ${esc(summary.error)}</p>`
-      : tiles.length
-        ? `<div class="mb-s4 grid gap-s2" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
-            ${tiles.map((t) => `<div class="border border-rule p-s2">
-              <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(t.analysis_name || t.analysis_id)}</div>
-              <div class="mt-[3px] ${TONE[t.status] || 'text-ink'}">${tnum(esc(t.label || ''))}</div>
-            </div>`).join('')}
-          </div>`
-        : `<p class="mb-s4 text-caveat text-ink-muted">No analysis has written a headline
-            for this stage yet.</p>`}
-
-    ${dashboards?.error
-      ? `<p class="text-caveat text-state-warn">The dashboards could not be read:
-          ${esc(dashboards.error)}</p>`
-      : boards.length
-        ? boards.map((b) => `
-          <div class="mb-s4 border-b border-rule pb-s3">
-            <div class="flex flex-wrap items-baseline gap-s2">
-              <span class="font-heading text-answer text-ink">${esc(b.title || b.id)}</span>
-              ${b.has_results
-                ? `<span class="text-provenance text-ink-muted">${
-                    b.last_surveyed_at ? `measured ${esc(ago(b.last_surveyed_at))}` : 'has results'}</span>`
-                : `<span class="text-provenance text-state-warn">nothing measured yet</span>`}
-              ${b.last_published_at
-                ? `<span class="text-provenance text-ink-muted">· published ${esc(ago(b.last_published_at))}</span>` : ''}
-            </div>
-            ${b.description ? `<p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
-            ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
-          </div>`).join('')
-        : `<p class="text-caveat text-ink-muted">No dashboard is registered for
-            ${esc(stage)}.</p>`}
-
+    <div id="dash-tiles" class="mb-s4 text-caveat text-ink-muted">Reading the headlines…</div>
+    <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>
     <div class="mt-s4">
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Health</div>
       <div id="dash-chart" class="text-caveat text-ink-muted">Reading the health figure…</div>
     </div>`;
   bindSubTabs();
 
-  // The radar figure, through the same themer the Understanding pane uses —
-  // Plotly's own template is a theme of its own and looks imported on paper.
-  try {
-    // Plotly is loaded on demand, not in the page. Calling newPlot without
-    // this is the "Cannot read properties of undefined" every pane that
-    // borrows a chart hits exactly once.
-    await loadScript('/static/vendor/plotly.min.js');
-    const fig = await getChart(slug, 'health');
-    const body = $('dash-chart');
-    if (!body) return;
-    if (!fig || !(fig.data || []).length) {
-      body.textContent = 'The health series exists and has nothing in it yet.';
+  const live = () => token === dashToken && state.subTab === 'dashboard';
+  const TONE = { ok: 'text-state-ok', warn: 'text-state-warn', info: 'text-ink' };
+
+  // Headlines.
+  (async () => {
+    let summary;
+    try {
+      summary = await getSurveySummary(slug, stage);
+    } catch (err) {
+      if (live()) $('dash-tiles').innerHTML =
+        `<span class="text-state-warn">The headlines could not be read: ${esc(err.message)}</span>`;
       return;
     }
-    body.innerHTML = '';
-    await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
-                                { displayModeBar: false, responsive: true });
-  } catch (err) {
-    const body = $('dash-chart');
-    if (body) body.innerHTML = `<span class="text-state-warn">The health figure could not
-      be read: ${esc(err.message)}</span>`;
-  }
+    if (!live()) return;
+    const tiles = summary.tiles || [];
+    $('dash-tiles').innerHTML = tiles.length
+      ? `<div class="grid gap-s2" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+          ${tiles.map((t) => `<div class="border border-rule p-s2">
+            <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(t.analysis_name || t.analysis_id)}</div>
+            <div class="mt-[3px] ${TONE[t.status] || 'text-ink'}">${tnum(esc(t.label || ''))}</div>
+          </div>`).join('')}
+        </div>`
+      : `No analysis has written a headline for ${esc(stage)} yet.`;
+  })();
+
+  // Dashboards. `include_empty` is ON deliberately: a dashboard with nothing
+  // measured is a real and useful state — "registered, never run" — and the
+  // default omits those, which renders absence as non-existence.
+  (async () => {
+    let data;
+    try {
+      data = await getSurveyDashboards(slug, stage, { includeEmpty: true });
+    } catch (err) {
+      if (live()) $('dash-boards').innerHTML =
+        `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
+      return;
+    }
+    if (!live()) return;
+    const boards = data.dashboards || [];
+    $('dash-boards').innerHTML = boards.length
+      ? boards.map((b) => `
+        <div class="mb-s4 border-b border-rule pb-s3">
+          <div class="flex flex-wrap items-baseline gap-s2">
+            <span class="font-heading text-answer text-ink">${esc(b.title || b.id)}</span>
+            ${b.has_results
+              ? `<span class="text-provenance text-ink-muted">${
+                  b.last_surveyed_at ? `measured ${esc(ago(b.last_surveyed_at))}` : 'has results'}</span>`
+              : `<span class="text-provenance text-state-warn">registered, never run</span>`}
+            ${b.last_published_at
+              ? `<span class="text-provenance text-ink-muted">· published ${esc(ago(b.last_published_at))}</span>` : ''}
+          </div>
+          ${b.description ? `<p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
+          ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
+        </div>`).join('')
+      : `No dashboard is registered for ${esc(stage)}.`;
+  })();
+
+  // The radar figure, through the same themer the Understanding pane uses —
+  // Plotly's own template is a theme of its own and looks imported on paper.
+  (async () => {
+    try {
+      // Plotly is loaded on demand, not in the page. Calling newPlot without
+      // this is the "Cannot read properties of undefined" every pane that
+      // borrows a chart hits exactly once.
+      await loadScript('/static/vendor/plotly.min.js');
+      const fig = await getChart(slug, 'health');
+      if (!live()) return;
+      const body = $('dash-chart');
+      if (!body) return;
+      if (!fig || !(fig.data || []).length) {
+        body.textContent = 'The health series exists and has nothing in it yet.';
+        return;
+      }
+      body.innerHTML = '';
+      await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
+                                  { displayModeBar: false, responsive: true });
+    } catch (err) {
+      if (!live()) return;
+      const body = $('dash-chart');
+      if (body) body.innerHTML = `<span class="text-state-warn">The health figure could not
+        be read: ${esc(err.message)}</span>`;
+    }
+  })();
 }
+
+/** Invalidates an in-flight dashboard read when the pane or resource changes. */
+let dashToken = 0;
 
 /** One analysis inside a dashboard: its name, and the numbers it measured.
  *

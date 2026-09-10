@@ -301,10 +301,21 @@ export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
   post(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/run`,
        { survey_definition_ref: ref });
 
-/** The dashboards registered for a resource, optionally scoped to a stage. */
-export const getSurveyDashboards = (slug, stage = '') =>
-  get(`/api/projects/${encodeURIComponent(slug)}/survey-results${
-    stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
+/**
+ * The dashboards registered for a resource, optionally scoped to a stage.
+ *
+ * `includeEmpty` keeps dashboards that have no stored results. The route
+ * drops them by default, which renders "registered, never run" as "no such
+ * dashboard" — an absence reported as a non-existence, which is the one thing
+ * this UI is most careful not to do.
+ */
+export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false } = {}) => {
+  const qs = new URLSearchParams();
+  if (stage) qs.set('stage', stage);
+  if (includeEmpty) qs.set('include_empty', 'true');
+  const q = qs.toString();
+  return get(`/api/projects/${encodeURIComponent(slug)}/survey-results${q ? `?${q}` : ''}`);
+};
 
 /** One-line headline per analysis that has results — the summary tiles. */
 export const getSurveySummary = (slug, stage = '') =>

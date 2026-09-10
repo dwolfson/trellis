@@ -908,6 +908,20 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
 
 @router.get("/{slug}/survey-results")
 async def get_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """Tier 2 — the Survey Results dashboards, off the event loop.
+
+    This aggregation re-runs the same results readers the per-analysis cards
+    use, and on the Analysis stage that is not a moment: measured at 109s for
+    one repo. Run inline it blocked the whole event loop — a cheap call made
+    while it was in flight took 100s, so ONE person opening this pane froze
+    the app for everyone.
+
+    Same fix, and same reason, as the `remove` route below it.
+    """
+    return await asyncio.to_thread(_survey_results_sync, slug, stage, include_empty)
+
+
+def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False) -> dict:
     """Tier 2 — the Survey Results dashboards for this repo.
 
     stage (optional): restrict to cards belonging to that funnel stage, so each
@@ -1029,6 +1043,16 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
 
 @router.get("/{slug}/survey-results/summary")
 async def get_survey_results_summary(slug: str, phase: str = "") -> dict:
+    """Tier 1 — the headline tiles, off the event loop.
+
+    Cheap on Scouting (1.8s) and not cheap on Analysis (30s), because the
+    headline readers are the same readers. Blocking work does not become safe
+    for being usually fast.
+    """
+    return await asyncio.to_thread(_survey_results_summary_sync, slug, phase)
+
+
+def _survey_results_summary_sync(slug: str, phase: str = "") -> dict:
     """Tier 1 — a phase-scoped 'is it worth proceeding' stat row
     (docs/survey-results-dashboard-plan.md D5). One stat tile per
     ANALYSIS_KINDS entry whose analysis_catalog.yaml intent matches `phase`
