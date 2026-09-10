@@ -72,6 +72,29 @@ def path_is_excluded(
     )
 
 
+def existing_chunk_count(vector_store, collection_name: str) -> Optional[int]:
+    """How many rows the collection's table already holds, or None if the
+    table does not exist.
+
+    Two traps this deliberately avoids (both bit trevor on 2026-09-04):
+
+    * `collection_name in vector_store.list_collections()` compares the
+      *collection* name with *table* names. `pyegeria_drE` is stored as the
+      table `pyegeria_dre` (see _TABLE_NAME_MAP in advisor/vector_store_pg.py),
+      so that check never matched drE — and always matched `pyegeria` and
+      `pyegeria_cli`. `collection_exists()` resolves the mapping.
+    * Existence alone says nothing about content. The web app's startup hook
+      (advisor/web/app.py `_startup` -> `provision_schema()`) creates every
+      collection table *empty* the moment the container starts, so on a fresh
+      deployment the tables already exist before the first ingest runs. An
+      empty table must be ingested into, not reported as "already exists".
+    """
+    if not vector_store.collection_exists(collection_name):
+        return None
+    stats = vector_store.get_collection_stats(collection_name) or {}
+    return int(stats.get("num_entities") or 0)
+
+
 class DataIngester:
     """Ingest prepared data into the vector store."""
     

@@ -38,6 +38,7 @@ from types import ModuleType
 
 import pytest
 
+from advisor import collection_sources
 from advisor.collection_config import (
     PYEGERIA_CLI_COLLECTION,
     PYEGERIA_COLLECTION,
@@ -88,7 +89,7 @@ def repos_dir(tmp_path, monkeypatch, ingest_script) -> Path:
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-    monkeypatch.setattr(ingest_script, "get_repos_dir", lambda: repos)
+    monkeypatch.setattr(collection_sources, "get_repos_dir", lambda: repos)
     return repos
 
 
@@ -120,7 +121,7 @@ def test_pyegeria_resolution_reaches_nested_subpackages(ingest_script, repos_dir
 
 
 def test_missing_repo_resolves_to_nothing(ingest_script, tmp_path, monkeypatch):
-    monkeypatch.setattr(ingest_script, "get_repos_dir", lambda: tmp_path / "nowhere")
+    monkeypatch.setattr(collection_sources, "get_repos_dir", lambda: tmp_path / "nowhere")
     assert ingest_script.get_collection_source_paths(PYEGERIA_CLI_COLLECTION) == []
 
 
@@ -338,7 +339,7 @@ def docs_repos_dir(tmp_path, monkeypatch, ingest_script) -> Path:
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-    monkeypatch.setattr(ingest_script, "get_repos_dir", lambda: repos)
+    monkeypatch.setattr(collection_sources, "get_repos_dir", lambda: repos)
     return repos
 
 
