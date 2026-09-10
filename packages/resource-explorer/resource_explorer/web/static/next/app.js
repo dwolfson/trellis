@@ -91,6 +91,7 @@ const state = {
   workLists: [],               // saved work lists
   workListSlug: null,          // the open one; the pane takes over when set
   lastWorkListSlug: null,      // the one you were last in, for the way back
+  workListIndex: false,        // showing the list OF work lists
 };
 
 /** The eight intents, in their canonical order, plus Investigation as the
@@ -481,15 +482,23 @@ function renderIntentNav() {
   }).join('');
 
   nav.innerHTML = `${items}
+    <!-- Work lists sit at the end of the frame row because, like
+         Investigation, they are a FRAME around the stages rather than a stage:
+         Investigation is why a body of work exists, a work list is which
+         resources it covers. Fixed position, always present — the matrix had
+         no front door before this, only a sidebar section and a crumb that
+         existed once you had already found it. -->
+    <span id="worklist-nav" class="flex items-center"></span>
     <span class="ml-auto flex gap-s2 text-subtab">
       <a href="/" title="The RFA drawer is not built in /next — opens the current UI"
         class="px-[10px] py-[9px] text-accent-on-dark no-underline"
         style="border-bottom:1px dashed currentColor">RFAs <span id="rfa-count" class="tnum">${
         state.counts.rfas === null ? '–' : state.counts.rfas}</span> ↗</a>
-      <span id="worklist-crumb"></span>
       <button id="chat-toggle" aria-expanded="true"
         class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">Chat ×</button>
     </span>`;
+
+  renderWorkListNav();
 
   $('chat-toggle').addEventListener('click', () => setRailOpen(!railIsOpen()));
   setRailOpen(railIsOpen());
@@ -504,30 +513,82 @@ function renderIntentNav() {
   });
 }
 
-/** Where the matrix lives in the chrome, so it is never lost.
+/** The list OF work lists — the front door the matrix never had. */
+function workListIndexHtml() {
+  if (!state.workLists.length) {
+    return `${subTabsHtml()}
+      <h3 class="m-0 font-heading text-name font-normal">No work lists yet</h3>
+      <div class="my-s3 h-px bg-rule"></div>
+      <p class="max-w-[70ch] text-answer text-ink">
+        A work list is a set of resources you compare as rows x questions, run a
+        survey across, and narrow down. Make one from the sidebar:
+        <strong>Select</strong>, tick some repos, then <strong>save as work list</strong>.
+      </p>`;
+  }
+  return `${subTabsHtml()}
+    <h3 class="m-0 font-heading text-name font-normal">Work lists</h3>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div class="flex flex-col">
+      ${state.workLists.map((w) => `<button data-open-wl="${esc(w.slug)}"
+        class="cursor-pointer border-b border-rule bg-transparent py-s3 text-left hover:bg-accent-tint">
+        <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
+        <div class="text-provenance text-ink-muted">
+          <span class="tnum">${w.member_count}</span> resources
+          ${w.investigation ? ` · ${esc(w.investigation)}` : ''}
+          ${w.derived_from ? ` · narrowed from ${esc(w.derived_from)}` : ''}
+          · ${w.egeria_guid ? 'published to Egeria' : 'not published'}
+        </div>
+      </button>`).join('')}
+    </div>`;
+}
+
+/**
+ * The work lists entry, permanently in the nav.
  *
- *  Shown whenever a work list is open OR was open — the second case is the
- *  one that matters, because leaving it by clicking a repo used to be
- *  irreversible without knowing the sidebar had a Work lists section. */
-function renderWorkListCrumb() {
-  const el = $('worklist-crumb');
+ * The matrix is a view of a SET and every other pane is a view of one
+ * resource, so there was nowhere on the Questions tab to put a route to it —
+ * a single repo is not a set. The consequence was that the matrix had no
+ * front door: you reached it from a sidebar section, or from a crumb that
+ * only existed if you had already been there.
+ *
+ * ONE control, in a fixed place, doing both jobs: it names the open list when
+ * you are in one, and takes you to the index when you are not. A separate
+ * "back to X" crumb beside it would be two things for one job, which is the
+ * complaint that retired the emoji.
+ */
+function renderWorkListNav() {
+  const el = $('worklist-nav');
   if (!el) return;
-  const openSlug = state.workListSlug;
-  const slug = openSlug || state.lastWorkListSlug;
-  if (!slug) { el.innerHTML = ''; return; }
-  const wl = state.workLists.find((w) => w.slug === slug);
-  const name = wl ? wl.display_name : slug;
-  el.innerHTML = openSlug
-    ? `<span class="px-[10px] py-[9px] text-accent-on-dark"
-        title="You are looking at this work list">▦ ${esc(name)}</span>`
-    : `<button data-act="back-to-matrix"
-        title="Return to the matrix you were looking at"
-        class="cursor-pointer bg-transparent px-[10px] py-[9px] text-chrome-muted hover:text-chrome-ink"
-        style="border-bottom:1px dashed currentColor">▦ back to ${esc(name)}</button>`;
+  const byslug = (sl) => state.workLists.find((w) => w.slug === sl);
+  const open = state.workListSlug ? byslug(state.workListSlug) : null;
+  const last = !open && state.lastWorkListSlug ? byslug(state.lastWorkListSlug) : null;
+  const n = state.workLists.length;
+  const active = Boolean(state.workListSlug || state.workListIndex);
+
+  // TWO controls, because they are two jobs — not one control with two
+  // meanings. The index is "show me the sets"; the return is "put me back in
+  // the one I was reading". Collapsing them cost a click on the path people
+  // actually take, which is matrix -> a question -> back.
+  el.innerHTML = `<button data-act="worklists"
+      title="${open ? 'Go back to the list of work lists' : 'Compare a set of resources as rows x questions'}"
+      class="cursor-pointer whitespace-nowrap bg-transparent px-3 py-[9px] ${
+        active ? 'border-b-2 border-accent text-accent-on-dark'
+               : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
+      >▦ ${open ? esc(open.display_name) : `Work lists${n ? ` <span class="tnum">${n}</span>` : ''}`}</button>
+    ${last ? `<button data-act="back-to-matrix"
+      title="Back to the matrix you were reading"
+      class="cursor-pointer whitespace-nowrap bg-transparent px-2 py-[9px] text-chrome-muted hover:text-chrome-ink"
+      style="border-bottom:1px dashed currentColor">↩ ${esc(last.display_name)}</button>` : ''}`;
+
+  el.querySelector('[data-act="worklists"]').addEventListener('click', () => {
+    state.workListSlug = null;
+    state.workListIndex = true;
+    writeUrl(); renderSidebar(); loadPane();
+  });
   el.querySelector('[data-act="back-to-matrix"]')?.addEventListener('click', () => {
     state.workListSlug = state.lastWorkListSlug;
-    renderSidebar();
-    loadPane();
+    state.workListIndex = false;
+    writeUrl(); renderSidebar(); loadPane();
   });
 }
 
@@ -2442,12 +2503,25 @@ async function loadPane() {
   // which pane you were in. One call site is the fix; a branch that forgets
   // is the bug.
   renderPerspectiveRow();
-  renderWorkListCrumb();
+  renderWorkListNav();
 
   // A work list is a view of a SET, so it replaces the single-resource pane
   // rather than sitting inside it. Everything else in /next reads one
   // resource at a time; this is the one surface that does not.
+  if (state.workListIndex && !state.workListSlug) {
+    el.innerHTML = workListIndexHtml();
+    bindSubTabs();
+    el.querySelectorAll('[data-open-wl]').forEach((b) => b.addEventListener('click', () => {
+      state.workListSlug = b.dataset.openWl;
+      state.workListIndex = false;
+      writeUrl(); renderSidebar(); loadPane();
+    }));
+    writeUrl();
+    return;
+  }
+
   if (state.workListSlug) {
+    state.workListIndex = false;
     try {
       await openWorkList({
         el,

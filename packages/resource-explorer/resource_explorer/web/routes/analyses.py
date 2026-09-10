@@ -10,6 +10,7 @@ from resource_explorer.surveyors.analysis_catalog_reader import (
 )
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -189,22 +190,45 @@ def bulk_resource_facts(
     ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
     ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
 
-    layer = FactLayer()
     out: dict[str, list] = {}
     failed: dict[str, str] = {}
-    for slug in subjects:
-        try:
-            out[slug] = [f.as_dict() for f in layer.facts(slug, ids)]
-        except Exception as exc:
-            # One unreadable resource is one unreadable resource. Named, and
-            # kept OUT of `subjects`, so a caller cannot mistake "we could not
-            # read it" for "it has no results" — the distinction this whole
-            # layer exists to preserve.
-            log.warning("bulk facts failed for %s: %s", slug, exc)
-            failed[slug] = f"{type(exc).__name__}: {exc}"
+
+    def read_one(slug: str):
+        # A FactLayer per thread rather than one shared: it holds a registry
+        # handle, and a DB connection is not something to share across
+        # threads on the strength of it probably being fine.
+        return slug, [f.as_dict() for f in FactLayer().facts(slug, ids)]
+
+    # Fanned out across resources, because the cost here is dominated by a
+    # couple of readers that are slow rather than by many that are quick —
+    # `architecture_recovery` is 47s on a large repo and `architecture_diagram`
+    # 22s, and Discovery's questions route to BOTH. Twelve resources serially
+    # is a quarter of an hour; the work is DB- and IO-bound, so threads
+    # actually buy something here.
+    #
+    # Bounded deliberately: this shares a Postgres with two apps and several
+    # sessions, and an unbounded pool would trade one slow page for everyone
+    # else's connections.
+    workers = min(8, len(subjects))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(read_one, slug): slug for slug in subjects}
+        for fut in as_completed(futures):
+            slug = futures[fut]
+            try:
+                slug, facts = fut.result()
+                out[slug] = facts
+            except Exception as exc:
+                # One unreadable resource is one unreadable resource. Named,
+                # and kept OUT of `subjects`, so a caller cannot mistake "we
+                # could not read it" for "it has no results" — the distinction
+                # this whole layer exists to preserve.
+                log.warning("bulk facts failed for %s: %s", slug, exc)
+                failed[slug] = f"{type(exc).__name__}: {exc}"
 
     return {
-        "subjects": out,
+        # Requested order, not completion order — the grid renders rows in the
+        # order it asked for them.
+        "subjects": {s: out[s] for s in subjects if s in out},
         "analysis_ids": ids,
         "requested": len(subjects),
         "returned": len(out),

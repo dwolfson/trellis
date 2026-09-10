@@ -90,6 +90,19 @@ function qsAnalysisIds(questions) {
   return (questions || []).flatMap((q) => q.analysis_ids || []);
 }
 
+/**
+ * Analyses whose RESULTS READER is slow enough to be worth loading second.
+ *
+ * Measured on `egeria_git`, not guessed: 47.7s and 22.5s respectively, where
+ * the other 32 analyses with readers total 0.6s between them. Named here in
+ * one place with the numbers, because a list like this rots silently — if a
+ * reader gets fixed, or another gets slow, this is the thing to re-measure.
+ *
+ * Being on this list costs nothing but arrival order, so a wrong entry is
+ * cheap; missing one costs a blank-looking pane.
+ */
+const EXPENSIVE_ANALYSES = new Set(['architecture_recovery', 'architecture_diagram']);
+
 /* ── State ──────────────────────────────────────────────────────────── */
 
 export const grid = {
@@ -101,6 +114,8 @@ export const grid = {
   stageLabel: '',        // for the question key's heading
   heldPerspectives: [],  // which perspectives narrowed the columns
   commonRationale: null, // a rationale every member shares, shown once
+  pendingAnalyses: new Set(),  // slow columns still arriving
+  slowError: null,
   questionsUnfiltered: null,
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
@@ -274,22 +289,32 @@ async function loadGrid(ctx) {
 
   renderGrid();
 
-  // ONE call for the whole set, scoped to the analyses these columns read.
+  // TWO calls, cheap analyses first, so the matrix is READABLE IMMEDIATELY
+  // and the slow columns fill in behind.
   //
-  // It was one request per row, each asking for all 34 analyses — and two of
-  // those have results readers costing 47s and 22s on a large repo, so a
-  // four-member work list took minutes and looked hung. Asking for the five
-  // that Scouting's questions actually use takes 0.5s per resource.
+  // Measured, on a large repo: `architecture_recovery`'s results reader takes
+  // 47s and `architecture_diagram`'s 22s, against under a second for the
+  // other 32 combined. Discovery's questions route to BOTH, so a four-member
+  // Discovery matrix is ~65s even fanned out across resources — parallelism
+  // cannot beat the slowest single resource, and that floor is one reader.
+  //
+  // So the split is not an optimisation, it is the difference between a blank
+  // pane for a minute and a usable one in a second with two columns still
+  // arriving. The cells that are still coming show their pending marker,
+  // which the grid already distinguishes from every other state.
   const needed = [...new Set(qsAnalysisIds(grid.questions))];
-  try {
-    const bulk = await getBulkFacts(wl.members.map((m) => m.entity_slug), needed);
+  const slow = needed.filter((a) => EXPENSIVE_ANALYSES.has(a));
+  const quick = needed.filter((a) => !EXPENSIVE_ANALYSES.has(a));
+
+  const applyBulk = (bulk) => {
     for (const m of wl.members) {
       const facts = bulk.subjects?.[m.entity_slug];
+      const prev = grid.rows.get(m.entity_slug);
       if (facts) {
-        const byId = new Map();
+        const byId = prev?.factsById || new Map();
         for (const f of facts) byId.set(f.analysis_id, f);
-        grid.rows.set(m.entity_slug, { facts, factsById: byId });
-      } else {
+        grid.rows.set(m.entity_slug, { facts: [...byId.values()], factsById: byId });
+      } else if (!prev) {
         // Named by the server as unreadable, or simply absent. Either way it
         // is "we could not read this", not "this has no results".
         grid.rows.set(m.entity_slug, {
@@ -297,10 +322,26 @@ async function loadGrid(ctx) {
         });
       }
     }
+  };
+
+  const slugs = wl.members.map((m) => m.entity_slug);
+  grid.pendingAnalyses = new Set(slow);
+  try {
+    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); renderGrid(); }
   } catch (err) {
     for (const m of wl.members) grid.rows.set(m.entity_slug, { error: err.message });
+    renderGrid();
   }
-  renderGrid();
+  if (slow.length) {
+    try {
+      applyBulk(await getBulkFacts(slugs, slow));
+    } catch (err) {
+      // The slow columns failing must not blank the ones already on screen.
+      grid.slowError = err.message;
+    }
+    grid.pendingAnalyses = new Set();
+    renderGrid();
+  }
 }
 
 function renderGrid() {
@@ -396,6 +437,12 @@ function rowHtml(member, qs) {
       // results. One state for "we could not look", never blank.
       return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}" title="${esc(row.error)}">${CELL.unknown.glyph}</td>`;
     }
+    // A column still arriving is PENDING, not "not run". Without this the
+    // slow columns would show `○ not run` for a minute and then change their
+    // minds, which is a confident wrong answer with a delay on it.
+    const stillComing = (q.analysis_ids || []).some((a) => grid.pendingAnalyses.has(a))
+      && !(q.analysis_ids || []).some((a) => row.factsById.has(a));
+    if (stillComing) return '<td class="wl-cell p-[6px] text-ink-muted" title="still loading">…</td>';
     const st = running ? 'running' : cellState(q, row.factsById);
     const c = CELL[st] || CELL.unclassified;
     return `<td class="wl-cell p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
