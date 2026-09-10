@@ -10,6 +10,41 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Provenance: stamp the producing run on results rows
+
+**Argued as provenance, not as UI polish** — it is the same class of fact as
+`surveyed_at` and the disposition trail, and it should not be costed as a
+convenience feature, because it will lose that argument and the loop it closes
+will stay open.
+
+A measurement cannot currently name the run that produced it. `project_analysis_
+findings` / `_metrics` carry `surveyed_at`; the runs queue (`/api/runs/`) carries
+timings and state but no per-step detail; and the step detail that exists lives
+in the activity log, keyed to neither. The only available correlation is
+timestamp proximity.
+
+**Timestamp correlation is exactly what must not be built here.** The two-clocks
+defect (2026-09-10: a run registry saying 24 August while the metric rows for the
+same analysis were written 10 September at 02:57) is the demonstration — the two
+clocks disagree by weeks, and a link inferred from them would be a guess wearing
+a link's clothing. A UI that offers "open the run that produced this value" is
+claiming causation the data cannot support.
+
+**What it unlocks**, once a run id is on the row:
+
+- a measurement opens the run that produced it, and the run names every step and
+  what each found — the level that regressed when the old Survey pane was
+  replaced by a definitions list;
+- "what changed since the last run" becomes exact rather than inferred from a
+  metric series;
+- a failed step can say which previous measurement is still current and was not
+  overwritten, which is currently only assertable in prose.
+
+Until then `/next` offers "Runs on this resource" — honestly a list, with no
+claimed link to the value it was opened from.
+
+---
+
 ## Next up — priorities as of 2026-08-26
 
 Marked at the end of the architecture-recovery thread. Findings 96–119 in
