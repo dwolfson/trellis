@@ -632,15 +632,29 @@ async function openCellDetail(slug, qi, ctx) {
       resource.</p>`;
     return;
   }
+  // A question is usually answered by MORE THAN ONE analysis, and they were
+  // not measured at the same time — 8h ago and 3d ago on this very question.
+  // So the re-run is offered per analysis, and the all-of-them action NAMES
+  // them and says how many. "Re-run for this resource" said neither, and
+  // quietly queued every one of them.
+  const runnable = facts.map((f) => f.analysis_id).filter(Boolean);
   body.innerHTML = facts.map((f) => factDetailHtml(f, slug)).join('')
-    + `<div class="mt-s3 border-t border-rule pt-s2">
-        <button type="button" data-act="rerun"
-          class="text-caveat text-accent-ink underline">Re-run for this resource</button>
-      </div>`;
+    + (runnable.length > 1
+        ? `<div class="mt-s3 border-t border-rule pt-s2 text-caveat text-ink-muted">
+            <button type="button" data-act="rerun"
+              class="text-accent-ink underline">Re-run all
+              <span class="tnum">${runnable.length}</span></button>
+            — ${esc(runnable.join(', '))}. Each is queued as its own run.
+          </div>`
+        : '');
   el.querySelector('[data-act="rerun"]')?.addEventListener('click', () => {
     closeCellDetail();
-    rerunOne(slug, ids, ctx);
+    rerunOne(slug, runnable, ctx);
   });
+  el.querySelectorAll('[data-rerun]').forEach((b) => b.addEventListener('click', () => {
+    closeCellDetail();
+    rerunOne(slug, [b.dataset.rerun], ctx);
+  }));
 }
 
 /** One analysis's contribution, shown as what it is rather than summarised.
@@ -684,6 +698,10 @@ function factDetailHtml(f, slug) {
           ? `<span class="${stale ? 'text-state-warn' : ''}" title="${esc(when)}"
               >${esc(ago(when))}${stale ? ' — stale' : ''}</span>`
           : 'run time not recorded'}
+      ${f.analysis_id
+          ? ` · <button type="button" data-rerun="${esc(f.analysis_id)}"
+                class="text-accent-ink underline">re-run this one</button>`
+          : ''}
     </div>
     ${bits.join('')}
   </div>`;
