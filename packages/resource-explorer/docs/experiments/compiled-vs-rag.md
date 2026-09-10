@@ -134,6 +134,18 @@ catalog-state, cost and organisational-use questions no analysis covers, where d
 The judge reads "a packed section" too loosely; the rule needs "a packed section whose analysis
 the question catalog maps to this question".
 
+**Follow-up, 2026-09-10 — the eleven defects fixed** (`context_compile.py`; acceptance script
+`scripts/check_compiler_audit_rows.py` recompiles the audit's twenty rows and checks the text,
+120 of 120 checks pass against the fixed code, 52 against the old): reader-derived sections lead
+with the analysis's own headline (`cve_scan`: "none in 0 of 61 declared dependenc(ies) (warn)"),
+FULL renders as flat bullets with dotted nested keys instead of fenced JSON, the middle rung is
+abridged with real first entries and marked truncation instead of "structure only", and a
+`Coverage:` line plus `manifest.coverage` says when the catalog itself answers a question by human
+input, a direct field, a chart or nothing. Found on the way: a verbatim catalog question made only
+of stopwords ("What does this repository do?") scored 0.0 against itself; an exact match is now
+1.0 before stopwords apply. Unmeasured until the next run; the protocol from here is one variable
+per run with text on the row.
+
 **Conclusion for the compiler track.** The engineering target this track started from was an
 artefact of a blind judge. The defensible statements are: (1) compiled evidence beats RAG-only on
 every content metric once the judge can verify claims; (2) the three packing changes are

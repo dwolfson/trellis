@@ -381,22 +381,38 @@ class TestReaderFindingsShapeIsFormattedNotCounted:
         from trellis_artifact_tree.model import Rung
 
         rungs = _results_to_rungs({"overall": 85.8, "activity": 100.0}, "repository_health")
-        assert "85.8" in rungs[Rung.SUMMARY]
-        assert "key(s)" not in rungs[Rung.SUMMARY]  # no dict/list values here to miscount
+        assert "85.8" in rungs[Rung.FULL]
+        assert "key(s)" not in rungs[Rung.FULL]  # no dict/list values here to miscount
+        # An all-scalar shape has nothing to abridge, so its abridged form is
+        # the same size as FULL and the middle rung is dropped rather than
+        # offered — a rung that saves nothing costs the packer a choice and
+        # buys a partial-evidence warning it does not need. (This assertion
+        # used to read the SUMMARY rung; there no longer is one here.)
+        assert Rung.SUMMARY not in rungs
         # A shape that genuinely has no per-check identity keeps a structural
         # summary -- but one that names a container without COUNTING it.
         # This used to assert "2 key(s)" as unchanged behaviour; the audit of
         # run full-20260908 found exactly that count narrated as a value
         # ("5 lines of code by language" from "5 key(s)"), so the count is
         # now the thing the rung must not carry. Scalars stay, as values.
-        rungs2 = _results_to_rungs({"by_ecosystem": {"pypi": 3, "npm": 5}, "total": 8},
-                                    "dependency_analysis")
+        # The middle rung is now ABRIDGED, not structure-only. This assertion
+        # used to require "structure only" in it and `pypi` absent from it.
+        # The run-4 audit (docs/experiments/audits/2026-09-09-...md, pattern A)
+        # measured the cost of naming a container without showing anything
+        # inside it: the model read the FIELD NAMES as findings, or — asked
+        # exactly what the structure-only section covered — answered from the
+        # section next door. Real first entries with an explicit marker is the
+        # replacement, so the values now DO appear at SUMMARY, bounded and
+        # labelled as a prefix.
+        big = {"by_ecosystem": {f"eco{i}": i for i in range(9)}, "total": 62}
+        rungs2 = _results_to_rungs(big, "dependency_analysis")
         summary2 = rungs2[Rung.SUMMARY]
-        assert "by_ecosystem" in summary2 and "total: 8" in summary2
+        assert "total: 62" in summary2
         assert "key(s)" not in summary2 and "item(s)" not in summary2
-        assert "structure only" in summary2
-        # IDENTIFIERS names the parts and nothing else; FULL has the values.
-        assert "pypi" not in summary2 and "pypi" in rungs2[Rung.FULL]
+        assert "abridged" in summary2
+        assert "(first 3 of 9)" in summary2, summary2
+        assert "eco0: 0" in summary2, "an abridged rung must carry real entries"
+        assert "eco8" not in summary2, "…and must stop after its first few"
 
 
 class TestHasContent:
@@ -724,15 +740,29 @@ class TestRefusalWording:
         assert "The stored analyses do not cover" not in _INSTRUCTIONS
         assert "exactly this shape" not in _INSTRUCTIONS
         assert "name what is missing" in _INSTRUCTIONS
-        assert "structure only" in _INSTRUCTIONS
+        # Was "structure only". That rung no longer exists: the middle rung
+        # carries real first entries now, so the instruction it needs is about
+        # PARTIALITY, not about a section that "is not a result" — wording the
+        # run-4 audit found the model ignoring in both directions (narrating
+        # field names as findings, and sourcing an answer from the neighbouring
+        # section when the relevant one showed nothing).
+        assert "abridged" in _INSTRUCTIONS
+        assert "do not report an abridged list as complete" in _INSTRUCTIONS
         assert "do not infer from absence" in _INSTRUCTIONS
 
 
 class TestInstructionsClimbTheLadder:
     def test_a_tight_budget_gets_the_short_form_not_a_failure(self):
+        """Used to pin the rung at exactly SUMMARY. It now lands at
+        IDENTIFIERS for this budget, because the instructions section grew: it
+        carries the coverage line (a question no analysis covers must say so)
+        and the abridged-section warning. Rather than trim the wording back to
+        fit one budget, instructions gained a third, bare rung — the point of
+        the test is that a tight budget DEGRADES instead of raising, and that
+        the absence rule survives every rung."""
         c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=300)
         rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"]
-        assert rung == "SUMMARY"
+        assert rung in {"SUMMARY", "IDENTIFIERS"}
         assert "Do not infer from absence" in c.text
 
     def test_a_normal_budget_gets_the_template(self):
@@ -762,3 +792,247 @@ class TestRelevanceBeatsPosition:
         assert _question_relevance("what is in this repository?",
                                    "Is this repository actively maintained?",
                                    ["repository_health"]) == 0.0
+
+
+# ── The three defect classes the run-4 audit found in the packed text ─────────
+# docs/experiments/audits/2026-09-09-run4-unsupported-claims-vs-packed-text.md
+
+
+class TestHeadlineComesFirst:
+    """Pattern B: a reader-derived section packed as raw JSON with no gloss.
+
+    Row 08: `cve_scan` showed `{"checked": 0, "unqueryable": 61, "findings":
+    []}` and the model answered "The CVE scan found no vulnerabilities" — in
+    the same pack as `foss_scorecard.vulnerabilities: unknown — No
+    vulnerability scan has run`. The sentence it needed already existed:
+    `_cve_scan_headline` says "none in 0 of 61 declared dependenc(ies)" with
+    tone `warn`. It was simply never packed.
+    """
+
+    _CVE = {"advisories": 0.0, "checked": 0.0, "recorded": 61, "scanned": True,
+            "unqueryable": 61.0, "packages_affected": 0.0, "findings": [],
+            "ecosystems_seen": ["python"]}
+
+    def _compile(self, monkeypatch, headline):
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "cve_scan", (lambda reg, slug: dict(self._CVE), None))
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_HEADLINE_MAP,
+                            "cve_scan", (lambda reg, slug: headline))
+        return cc.compile_context(_registry({}), "docling",
+                                  "Are there outstanding CVEs?", budget=8000)
+
+    def _section(self, text, key="cve_scan"):
+        block = [b for b in text.split("\n\n") if b.startswith(f"## {key}")]
+        assert block, f"{key} not packed: {text[:400]}"
+        return block[0]
+
+    def test_the_headline_is_the_first_line_of_the_section(self, monkeypatch):
+        c = self._compile(monkeypatch,
+                          {"label": "none in 0 of 61 declared dependenc(ies)",
+                           "tone": "warn"})
+        lines = self._section(c.text).splitlines()
+        assert lines[0] == "## cve_scan"
+        assert lines[1] == "headline: none in 0 of 61 declared dependenc(ies) (warn)"
+
+    def test_an_empty_findings_list_never_renders_as_a_bare_zero(self, monkeypatch):
+        """`findings: []` reads as "measured, and clean". It is not: nothing
+        was queryable. The list says so in words, and the headline carries the
+        coverage."""
+        c = self._compile(monkeypatch, {"label": "none in 0 of 61 declared "
+                                                 "dependenc(ies)", "tone": "warn"})
+        section = self._section(c.text)
+        assert "findings: []" not in section
+        assert "findings: (empty list)" in section
+        assert "0 of 61" in section
+
+    def test_a_headline_that_raises_costs_the_line_not_the_compile(self, monkeypatch):
+        def boom(reg, slug):
+            raise RuntimeError("no rows")
+
+        c = self._compile(monkeypatch, None)  # map entry replaced below
+        assert "cve_scan" not in {g["key"] for g in c.manifest["gaps"]}
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_HEADLINE_MAP, "cve_scan", boom)
+        from resource_explorer import context_compile as cc
+        c2 = cc.compile_context(_registry({}), "docling", "Are there outstanding CVEs?",
+                                budget=8000)
+        assert "headline:" not in self._section(c2.text)
+        assert "unqueryable: 61" in self._section(c2.text)
+
+
+class TestFlatFullRung:
+    """Pattern B, the other half. Row 13 read `stars: 65964` and `forks: 4745`
+    out of `repository_health`'s nested `detail` block as "65964 stars, forks,
+    watchers" — one number smeared across three fields inside a JSON dump."""
+
+    def test_a_nested_dict_flattens_with_dotted_keys(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        rungs = _results_to_rungs(
+            {"overall": 99.2, "detail": {"forks": 15474, "stars": 33665,
+                                         "subscribers_count": 349}},
+            "repository_health")
+        full = rungs[Rung.FULL]
+        assert "- detail.forks: 15474" in full
+        assert "- detail.stars: 33665" in full
+        assert "```json" not in full, "the fenced dump is what got misread"
+
+    def test_a_list_of_scalars_is_inline_and_marks_its_truncation(self):
+        from resource_explorer.context_compile import MAX_FULL_LIST_ITEMS, _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        n = MAX_FULL_LIST_ITEMS + 7
+        full = _results_to_rungs({"langs": [f"l{i}" for i in range(n)]}, "x")[Rung.FULL]
+        assert "l0, l1" in full
+        assert "and 7 more" in full, "an elided list that looked complete is the bug"
+
+    def test_a_list_of_dicts_is_one_block_per_item(self):
+        from resource_explorer.context_compile import MAX_FULL_DICT_ITEMS, _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        items = [{"name": f"c{i}", "kind": "module"} for i in range(MAX_FULL_DICT_ITEMS + 3)]
+        full = _results_to_rungs({"components": items}, "architecture_recovery")[Rung.FULL]
+        assert "- components: 13 item(s)" in full
+        assert "  - item 1:" in full and "    - name: c0" in full
+        assert "and 3 more" in full
+
+    def test_status_survives_as_a_plain_line(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        full = _results_to_rungs(
+            {"total": 3, "_status": {"state": "nothing_found", "outcome": "no_signal",
+                                     "cause": "no_manifest", "hint": "run manifest parse"}},
+            "dependency_analysis")[Rung.FULL]
+        assert "_status: state=nothing_found" in full
+        assert "outcome=no_signal" in full
+
+
+class TestAbridgedMiddleRung:
+    """Pattern A: the structure-only SUMMARY, narrated as a result.
+
+    Row 06 read `architecture_recovery`'s field names (`blueprints`,
+    `interfaces`, `documentation`) as an architecture and reported "some
+    components partial or unverified" when `partial: False`. Row 16 is the
+    mirror: `dependency_analysis` was structure-only, so the model answered a
+    dependency question from `foss_scorecard`'s action pinning next door.
+    """
+
+    def _results(self):
+        return {"component_count": 9, "partial": False, "raw_component_count": 107,
+                "components": [{"name": f"c{i}", "files": i} for i in range(62)],
+                "documentation": {f"d{i}": f"v{i}" for i in range(11)}}
+
+    def _rungs(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        return _results_to_rungs(self._results(), "architecture_recovery")
+
+    def test_it_carries_real_entries_with_an_explicit_marker(self):
+        from trellis_artifact_tree.model import Rung
+
+        summary = self._rungs()[Rung.SUMMARY]
+        assert "(abridged: first entries only" in summary
+        assert "(first 3 of 62)" in summary
+        assert "name=c0" in summary, "a named container with no entry is the old bug"
+        assert "c61" not in summary, "abridged must stop after its first entries"
+        assert "(list)" not in summary and "(mapping)" not in summary
+
+    def test_scalars_keep_their_values(self):
+        from trellis_artifact_tree.model import Rung
+
+        summary = self._rungs()[Rung.SUMMARY]
+        assert "- component_count: 9" in summary
+        assert "- partial: False" in summary
+
+    def test_it_is_materially_smaller_than_full(self):
+        from trellis_artifact_tree.model import Rung
+
+        rungs = self._rungs()
+        assert len(rungs[Rung.SUMMARY]) <= len(rungs[Rung.FULL]) * 0.8
+
+    def test_a_shape_with_nothing_to_abridge_offers_no_middle_rung(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        rungs = _results_to_rungs({"total": 62, "by_ecosystem": {"pypi": 62}}, "dependency_analysis")
+        assert Rung.SUMMARY not in rungs
+        assert {Rung.FULL, Rung.IDENTIFIERS} <= set(rungs)
+
+
+class TestCoverageOfTheQuestionItself:
+    """Pattern C, the most consequential class: 3 of the audit's 5 inventions.
+
+    "What does this repo do?", "surveyed at what tier?" and "any use inside
+    our organization?" have no answering analysis at all — and `gaps` was `[]`
+    for all three, because a need never mapped to an analysis can never be
+    reported as a missing one. The catalog already says so per question; the
+    compile just never read that field.
+    """
+
+    def _catalog_question(self, kind):
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        for e in get_questions("repo"):
+            if e["answering"]["kind"] == kind:
+                return e
+        return None
+
+    def test_a_human_or_direct_question_says_so_at_the_top(self):
+        entry = None
+        for kind in ("human", "direct", "gap", "chart"):
+            entry = self._catalog_question(kind)
+            if entry:
+                break
+        assert entry, "the catalog should carry at least one non-analysis question"
+        c = compile_context(_registry({}), "x", entry["question"], budget=8000)
+        assert c.manifest["coverage"]["kind"] == entry["answering"]["kind"]
+        assert c.manifest["coverage"]["question"] == entry["question"]
+        first = c.text.splitlines()[0]
+        assert first.startswith("Coverage: "), c.text[:200]
+        assert "not by stored analyses" in first
+
+    def test_an_analysis_backed_question_adds_no_line(self):
+        c = compile_context(_registry({"cve_scan": [_finding("cve")]}), "x",
+                            "Are there outstanding CVEs?", budget=8000)
+        assert c.manifest["coverage"]["kind"] in {"analysis", "mixed", "partial"}
+        assert "Coverage:" not in c.text
+
+    def test_a_question_matching_nothing_is_told_so(self):
+        """Not silence: "the sections below are the nearest-ranked evidence,
+        not an answer" is the sentence that was missing when the model
+        answered from the repo name and an invented survey tier."""
+        c = compile_context(_registry({}), "x", "zzz qqq wibble", budget=8000)
+        assert c.manifest["coverage"]["kind"] == "none"
+        assert c.text.splitlines()[0].startswith("Coverage: no catalog question matches")
+
+    def test_the_coverage_line_is_part_of_the_hashed_inputs(self):
+        """Deterministic, and identity-bearing: the same question over the
+        same stored state is one compile, and a different coverage verdict is
+        a different one."""
+        reg = _registry({})
+        a1 = compile_context(reg, "x", "zzz qqq wibble", budget=8000)
+        a2 = compile_context(reg, "x", "zzz qqq wibble", budget=8000)
+        b = compile_context(reg, "x", "Are there outstanding CVEs?", budget=8000)
+        assert a1.compile_id == a2.compile_id
+        assert a1.compile_id != b.compile_id
+
+
+class TestAnAllStopwordQuestionStillMatchesItself:
+    def test_verbatim_catalog_question_is_a_full_match(self):
+        """"What does this repository do?" strips to no tokens, so it scored
+        0.0 against its own catalog entry and the compile reported no
+        coverage at all (found by scripts/check_compiler_audit_rows.py)."""
+        from resource_explorer.context_compile import _question_relevance
+        assert _question_relevance("What does this repository do?",
+                                   "What does this repository do?", []) == 1.0
+        assert _question_relevance("what does this repository do",
+                                   "What does this repository do?", []) == 1.0
+
+    def test_coverage_is_found_for_it(self):
+        c = compile_context(_registry({}), "x", "What does this repository do?", budget=6000)
+        assert c.manifest["coverage"]["kind"] == "direct"
+        assert c.text.startswith("Coverage:")

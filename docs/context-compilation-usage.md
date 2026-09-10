@@ -67,6 +67,9 @@ three things people actually ask.
   on the experiment repos at budget 6000: uncapped, 26 sections shared the
   budget and 22% reached FULL; at 12, 88% did and the budget still filled to
   5610 of 6000, so the budget rather than the cap decides the last sections in
+- **`manifest.coverage`** — `{kind, question, note}` for the best-matching catalog question;
+  `kind` is the catalog's answering kind (`analysis`, `mixed`, `partial`, `direct`, `human`,
+  `chart`, `gap`) or `none` when nothing matches
 - **`manifest.gaps`** — sections the derivation says should exist, **judged**:
   `nothing_found` (ran, a real zero), `never_run`, `not_established`, each with
   `last_run_at` and `can_run` where known
@@ -84,25 +87,28 @@ three things people actually ask.
 Budget is in **characters**, not tokens. The caller owns the conversion, because
 only it knows which model the context is for.
 
-Two conventions the packed text relies on — one a rung convention, the other
-instruction wording — both from the 2026-09-08 audit of the compiled-versus-RAG
-experiment (`packages/resource-explorer/docs/experiments/`):
+Conventions the packed text relies on, from the two audits of the compiled-versus-RAG
+experiment (`packages/resource-explorer/docs/experiments/audits/`, 2026-09-08 and -09):
 
-- A results-reader section at its SUMMARY rung is headed **`structure only`**:
-  scalar values are shown as values, lists and mappings are named but not
-  counted. The counts (`5 key(s)`) were being narrated as findings ("5 lines of
-  code by language"), which is where compiled answers picked up more unsupported
-  claims than RAG-only ones.
-- The refusal wording is deliberately loose: *"If the evidence does not answer
-  the question, say so and name what is missing — do not infer from absence."*
-  A one-shape refusal template was tried instead and reverted — run 3
-  (`packages/resource-explorer/docs/experiments/compiled-vs-rag.md`,
-  run3-20260909) found it over-triggered, turning 107 of 156 compiled answers
-  into pure-template refusals, some for questions whose answering analysis was
-  packed at FULL. The agent's system prompt is back to its original wording too
-  — "say so plainly and either ask a clarifying question or name what analysis
-  would need to run" — and tightening the refusal shape without over-triggering
-  is noted as a rubric-side follow-up, not a compiler change.
+- **A reader-derived section leads with its headline** — the same one-line verdict the
+  analysis card shows, e.g. `headline: none in 0 of 61 declared dependenc(ies) (warn)` for a
+  `cve_scan` that could query nothing. The raw fields below it once read as "no vulnerabilities";
+  the headline functions already own the absence-versus-zero distinction, so the compiler uses
+  them rather than re-deriving it.
+- **FULL is flat bullets, not fenced JSON.** `- key: value`, one level of nesting as
+  `- detail.forks: 4`, lists of scalars inline, lists of records as indented blocks, empties
+  said out loud (`(empty list)`), truncation always marked (`… and N more`).
+- **The middle rung is `abridged`, not "structure only".** Headline, scalars with values, then
+  the first three entries of each list or mapping with a `(first 3 of 62)` marker. A section
+  whose abridged form is not materially smaller than FULL has no middle rung at all.
+- **A `Coverage:` line leads the text when the catalog itself says no analysis answers the
+  question** — kinds `direct`, `human`, `chart`, `gap`, or no matching catalog question — and
+  `manifest.coverage` carries the kind, the matched question and the catalog's note. Without it,
+  a question nothing covers arrived with an empty gap list and the model answered from the
+  nearest-ranked sections.
+- **The refusal wording is deliberately loose** (*"say so and name what is missing — do not
+  infer from absence"*). A one-shape template was tried in run 3 and reverted: it turned two
+  thirds of answers into refusals, including questions whose answering analysis was packed.
 
 ## In the UI
 
