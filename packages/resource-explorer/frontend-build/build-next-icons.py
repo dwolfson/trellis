@@ -42,13 +42,20 @@ ICONS = {
     "microscope": "disposition: investigating",
     "thumbs-up-check": "disposition: recommended",   # falls back below
     "check-circle-2": "disposition: using",
-    "circle-slash": "hidden from the personal list",
+    "eye-off": "hidden from the personal list — deliberately NOT `ban` or "
+               "`circle-slash`, which are what `ignored` uses; two marks that "
+               "look alike is the emoji complaint in a new coat",
+    "archive": "disposition: abandoned",
+    "ban": "disposition: ignored",
+    "copy": "copy an answer as evidence",
+    "circle-help": "opens the sidebar mark key",
     "panel-right-close": "close the chat drawer",
     "panel-right-open": "open the chat drawer",
     "maximize-2": "promote a rail answer into the pane",
 }
 #: Icons renamed or absent upstream, mapped to the nearest real one.
 FALLBACK = {
+    "circle-help": "help-circle",
     "thumbs-up-check": "badge-check",
     "check-circle-2": "circle-check",
     "bar-chart-2": "chart-column",

@@ -63,6 +63,7 @@ const state = {
   dispositionFacet: 'all',
   showHidden: false,
   showEmptyFacets: false,
+  showMarkKey: false,
   selectMode: false,
   selected: new Set(),
   investigations: [],
@@ -842,11 +843,12 @@ async function promoteToPane(turn) {
                                   { displaylogo: false, responsive: true });
     } else if (form === 'diagram') {
       const t = tokens();
+      const prepped = mermaidForKroki(turn.mermaid);
       // Server-side render via Kroki — the browser never loads mermaid.js.
       const res = await fetch('/api/diagrams/mermaid', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: mermaidWithTheme(turn.mermaid, t) }),
+        body: JSON.stringify({ source: prepped.source }),
       });
       if (!res.ok) {
         let detail = res.statusText;
@@ -855,17 +857,85 @@ async function promoteToPane(turn) {
       }
       // The endpoint returns the RAW SVG body as image/svg+xml, not JSON —
       // it is a thin proxy to Kroki and hands back exactly what Kroki sent.
-      const svg = await res.text();
-      if (!svg.includes('<svg')) throw new Error('the renderer returned no SVG');
-      body.innerHTML = `<div id="promoted-svg" class="w-full overflow-hidden"
-        style="height:min(70vh,640px)">${svg}</div>`;
+      const raw = await res.text();
+      if (!raw.includes('<svg')) throw new Error('the renderer returned no SVG');
+
+      body.innerHTML = `
+        <div id="promoted-svg" class="w-full overflow-hidden rounded-sm border border-rule-strong"
+          style="height:min(70vh,640px);background:${t.paper}">${raw}</div>
+        <div id="diagram-note" class="mt-s2 text-provenance text-ink-muted"></div>`;
+
       await loadScript('/static/vendor/svg-pan-zoom.min.js');
-      const svgEl = body.querySelector('svg');
-      if (svgEl && window.svgPanZoom) {
-        svgEl.setAttribute('width', '100%');
-        svgEl.setAttribute('height', '100%');
-        window.svgPanZoom(svgEl, { controlIconsEnabled: true, fit: true, center: true });
+      const svgEl = body.querySelector('#promoted-svg svg');
+      const note = [];
+      if (svgEl) {
+        themeSvgElement(svgEl, t);
+        // Read the INTRINSIC size before touching it. These diagrams are
+        // extreme strips — the real one measures 14102 x 193, a 73:1 ratio —
+        // and forcing width AND height to 100% squashed it to an invisible
+        // sliver, which is what "blank space where the diagram should be"
+        // was. Let svg-pan-zoom own the sizing instead, and say how big the
+        // thing actually is so a flat-looking strip is not a surprise.
+        const vb = (svgEl.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+        const w = Math.round(vb[2] || svgEl.getBoundingClientRect().width);
+        const h = Math.round(vb[3] || svgEl.getBoundingClientRect().height);
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        svgEl.style.width = '100%';
+        svgEl.style.height = '100%';
+        svgEl.style.maxWidth = 'none';       // mermaid sets an inline max-width
+        if (window.svgPanZoom) {
+          const pz = window.svgPanZoom(svgEl, {
+            controlIconsEnabled: true, fit: true, contain: true, center: true,
+            minZoom: 0.05, maxZoom: 60,
+          });
+          // `fit` fits the LIMITING dimension, which for a 73:1 strip means
+          // fitting the width and leaving the diagram 8px tall — visually
+          // indistinguishable from an empty box, and exactly what "blank
+          // space where the diagram should be" looked like.
+          //
+          // For an extreme aspect the useful opening view is fit-to-HEIGHT
+          // with the left edge in view: nodes are legible and you pan
+          // sideways. Capped, so a pathological ratio cannot zoom to a pixel.
+          try {
+            const sz = pz.getSizes();
+            const vbW = sz.viewBox.width;
+            const vbH = sz.viewBox.height;
+            if (vbW && vbH && vbW / vbH > 4) {
+              const shownH = sz.width * (vbH / vbW);       // height after fit-to-width
+              const factor = Math.min(sz.height / shownH, 12);
+              if (factor > 1.2) {
+                pz.zoom(pz.getZoom() * factor);
+                // Let the library do the arithmetic. Computing the pan by
+                // hand put the content at y = -609 — above the box, zero
+                // nodes on screen, which measures as "53 nodes rendered at
+                // 96x39" and looks like an empty white panel. Centre, then
+                // move only the horizontal axis to the left edge.
+                pz.center();
+                pz.pan({ x: 0, y: pz.getPan().y });
+              }
+            }
+          } catch (e) {
+            // Pan/zoom tuning is a nicety; a diagram that opened badly
+            // framed still beats one that threw on the way in.
+            console.warn('could not frame the diagram:', e);
+          }
+        }
+        if (w && h) {
+          note.push(`<span class="tnum">${w}</span> × <span class="tnum">${h}</span> at full size`
+            + (w / h > 6 ? ' — a wide strip; scroll-zoom or use the controls' : ''));
+        }
       }
+      if (prepped.droppedStyles) {
+        // Say what was given up, and why. A silently unstyled node is the
+        // kind of small loss this project keeps finding months later.
+        note.push(`<span class="text-accent-ink">the dashed “pending” styling on
+          <span class="tnum">${prepped.droppedStyles}</span> node(s) was dropped —
+          this renderer refuses a diagram that styles more than
+          <span class="tnum">${KROKI_MAX_CLASSED_NODES}</span></span>`);
+      }
+      const noteEl = $('diagram-note');
+      if (noteEl) noteEl.innerHTML = note.join(' · ');
     } else {
       body.innerHTML = `<div class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
     }
@@ -879,24 +949,96 @@ async function promoteToPane(turn) {
 /** Mermaid's own init directive, carrying the token values.
  *  Prepended rather than configured in JS because the render happens on the
  *  server; the directive is the only channel a Kroki round trip has. */
-function mermaidWithTheme(source, t) {
-  const init = {
-    theme: 'base',
-    themeVariables: {
-      background: t.paper,
-      primaryColor: t.paperSurface,
-      primaryBorderColor: t.rule,
-      primaryTextColor: t.ink,
-      lineColor: t.rule,
-      secondaryColor: t.paperSurface,
-      tertiaryColor: t.paper,
-      fontFamily: t.font,
-      fontSize: '13px',
-    },
-  };
-  return `%%{init: ${JSON.stringify(init)}}%%\n${source}`;
+/**
+ * Make diagram source this renderer will actually accept.
+ *
+ * Three transforms, each measured against the live Kroki on 6002 rather than
+ * assumed — every one of them was found by bisecting a diagram that returned
+ * `400 Internal Server Error` with no other diagnostic:
+ *
+ *  1. NO `%%` LINES AT ALL. This Kroki rejects any line beginning `%%` —
+ *     a plain comment and an `%%{init: …}%%` directive alike, on a two-node
+ *     diagram. That is why theming moved out of an init directive and into
+ *     `themeSvgElement()` below; it is not a preference.
+ *  2. `%` IS ESCAPED to `&#37;`. A literal percent anywhere in a node label
+ *     fails the whole render. `architecture_diagram` writes confidence as
+ *     `40% ⚠` into every label, so this alone made it unrenderable.
+ *  3. `class` ASSIGNMENTS ARE CAPPED at 20 nodes total. 20 renders, 21 does
+ *     not, deterministically, whether on one line or split across several.
+ *     Excess assignments are dropped rather than the diagram, and the caller
+ *     says how many — losing the dashed "pending" styling on some nodes
+ *     beats losing the diagram.
+ *
+ * THE REAL FIX IS IN THE GENERATOR, which should not emit source its own
+ * renderer refuses. Worth noting the fact value carries
+ * `exceeds_renderer_limit: false` for a diagram that no renderer here will
+ * take — a guard that reports the opposite of what is true.
+ */
+const KROKI_MAX_CLASSED_NODES = 20;
+
+function mermaidForKroki(source) {
+  const out = [];
+  let classed = 0;
+  let droppedStyles = 0;
+  for (const raw of String(source).split('\n')) {
+    if (raw.trimStart().startsWith('%%')) continue;
+    const line = raw.replace(/%/g, '&#37;');
+    const m = /^\s*class\s+(\S+)\s+\S+;\s*$/.exec(line);
+    if (m) {
+      const n = m[1].split(',').length;
+      if (classed + n > KROKI_MAX_CLASSED_NODES) { droppedStyles += n; continue; }
+      classed += n;
+    }
+    out.push(line);
+  }
+  return { source: out.join('\n'), droppedStyles };
 }
 
+/**
+ * Theme a rendered SVG, scoped to that SVG.
+ *
+ * Mermaid's own theming is unreachable here (this Kroki rejects every `%%`
+ * line, so there is no init directive to carry themeVariables), so the token
+ * values are applied to the output instead.
+ *
+ * EVERY selector is prefixed with the element's own id. An SVG `<style>` is
+ * NOT scoped — it is ordinary CSS in the same document — so an earlier
+ * version of this containing bare `text, span, p { … !important }` restyled
+ * the entire application the moment a diagram opened, chrome included. The
+ * id is stamped on here rather than trusting mermaid's own `#container`,
+ * which is neither unique nor ours.
+ */
+const DIAGRAM_ID = 're-diagram-svg';
+
+function themeSvgElement(svgEl, t) {
+  svgEl.id = DIAGRAM_ID;
+  const rules = [
+    ['', `background:${t.paper}`],
+    ['.node rect, .node polygon, .node circle, .node path',
+     `fill:${t.paperSurface} !important; stroke:${t.rule} !important`],
+    ['.cluster rect', `fill:none !important; stroke:${t.rule} !important`],
+    ['.edgePath path, .flowchart-link', `stroke:${t.rule} !important; fill:none !important`],
+    ['.arrowheadPath, marker path', `fill:${t.rule} !important; stroke:${t.rule} !important`],
+    ['text, .nodeLabel, .edgeLabel, .cluster-label, span, p, div',
+     `fill:${t.ink} !important; color:${t.ink} !important; font-family:${t.font} !important`],
+    ['.edgeLabel rect, .labelBkg', `fill:${t.paper} !important; background:${t.paper} !important`],
+    ['small', `color:${t.inkMuted} !important; fill:${t.inkMuted} !important`],
+  ];
+  // EVERY comma-separated part gets the prefix, not just the first.
+  // `#id a, b, c` scopes only `a` — `b` and `c` stay global, which is how a
+  // rule meant for diagram labels restyled the application's brand, nav and
+  // sidebar the moment a diagram opened. The bug survived one fix because
+  // the string LOOKED prefixed.
+  const scope = (selectorList) => selectorList
+    .split(',')
+    .map((part) => `#${DIAGRAM_ID} ${part.trim()}`)
+    .join(', ');
+  const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+  style.textContent = rules
+    .map(([sel, decl]) => `${sel ? scope(sel) : `#${DIAGRAM_ID}`}{${decl}}`)
+    .join('\n');
+  svgEl.prepend(style);
+}
 /* ════════════════════════════════════════════════════════════════════════
  * The sidebar — selection and grouping
  *
@@ -939,15 +1081,56 @@ function lifecycleMark(p) {
   return icon(name, { size: 14, cls, title });
 }
 
+/**
+ * The glyph for a disposition — ONE map, read by both the row mark and the
+ * facet chip.
+ *
+ * That shared map is the whole key mechanism: the chips at the top of the
+ * list already pair a glyph with a word (`◎ investigating 6`), so as long as
+ * a row's mark is the SAME glyph its chip uses, the filter row IS the
+ * legend. No popover to find, no second thing to keep in sync.
+ *
+ * `undecided` deliberately has none — a mark on the default state is noise
+ * on 45 of 59 rows, and its chip carries the word anyway.
+ */
+const DISPOSITION_ICON = {
+  tracking: 'eye',
+  investigating: 'microscope',
+  recommended: 'thumbs-up-check',
+  using: 'check-circle-2',
+  abandoned: 'archive',
+  ignored: 'ban',
+};
+
 function dispositionMark(p) {
-  const name = {
-    tracking: 'eye',
-    investigating: 'microscope',
-    recommended: 'thumbs-up-check',
-    using: 'check-circle-2',
-  }[p.disposition];
+  const name = DISPOSITION_ICON[p.disposition];
   if (!name) return '';
   return icon(name, { size: 14, cls: 'text-accent-on-dark', title: p.disposition });
+}
+
+/** The compact key — all three mark families in one place.
+ *
+ *  A backstop for the first run, not the primary mechanism: the disposition
+ *  chips are already a legend, the lifecycle icons are metaphors that read
+ *  without one, and every mark carries a `title`. Three families on one
+ *  dense row is exactly where hover text earns its place.
+ */
+function markKeyHtml() {
+  const row = (ic, label, note) => `<div class="flex items-baseline gap-[6px]">
+    <span class="w-[16px] text-chrome-muted">${icon(ic, { size: 13 })}</span>
+    <span class="text-chrome-ink">${esc(label)}</span>
+    <span class="text-chrome-muted">${esc(note)}</span></div>`;
+  return `<div class="mb-s3 rounded-sm border border-chrome-line p-s2 text-caps">
+    <div class="mb-[4px] uppercase tracking-caps text-chrome-muted">Lifecycle</div>
+    ${row('sparkles', 'new', 'registered, not surveyed')}
+    ${row('bar-chart-2', 'surveyed', 'has survey results')}
+    ${row('cloud', 'published', 'in the Egeria catalog')}
+    <div class="mb-[4px] mt-s2 uppercase tracking-caps text-chrome-muted">Disposition</div>
+    ${Object.entries(DISPOSITION_ICON).map(([d, ic]) => row(ic, d, '')).join('')}
+    <div class="mt-[3px] text-chrome-muted">undecided has no mark</div>
+    <div class="mb-[4px] mt-s2 uppercase tracking-caps text-chrome-muted">Your view</div>
+    ${row('eye-off', 'hidden', 'still registered — “Show hidden” brings it back')}
+  </div>`;
 }
 
 /** The repos passing every active filter, in list order. */
@@ -1010,9 +1193,14 @@ function renderSidebar() {
     slug ? (state.groups.find((g) => g.slug === slug)?.display_name || slug) : 'Ungrouped';
 
   el.innerHTML = `
-    <div class="mb-s2 flex gap-[5px] text-chip">
+    <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
+      <button data-act="mark-key" title="What the marks in this list mean"
+        aria-label="What the marks in this list mean"
+        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
+        >${icon('circle-help', { size: 14 })}</button>
     </div>
+    ${state.showMarkKey ? markKeyHtml() : ''}
 
     ${investigationBarHtml()}
 
@@ -1036,10 +1224,12 @@ function renderSidebar() {
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
-        >${esc(d)} <span class="tnum">${counts[d]}</span></button>`).join('')}
+        >${DISPOSITION_ICON[d] ? icon(DISPOSITION_ICON[d], { size: 12 }) : ''} ${esc(d)}
+        <span class="tnum">${counts[d]}</span></button>`).join('')}
       ${absent.length && state.showEmptyFacets
         ? absent.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)} border-dashed"
-            >${esc(d)} <span class="tnum">0</span></button>`).join('')
+            >${DISPOSITION_ICON[d] ? icon(DISPOSITION_ICON[d], { size: 12 }) : ''} ${esc(d)}
+            <span class="tnum">0</span></button>`).join('')
         : absent.length
           ? `<button data-act="show-empty-facets" class="cursor-pointer bg-transparent text-chrome-muted underline"
               ><span class="tnum">${absent.length}</span> more…</button>`
@@ -1084,7 +1274,7 @@ function renderSidebar() {
             class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
             >${esc(p.display_name || p.slug)}</button>
           ${p.working_set_hidden
-            ? icon('circle-slash', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list' })
+            ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
             : ''}
           ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
             title="Open ${esc(p.display_name || p.slug)} on GitHub"
@@ -1192,6 +1382,7 @@ function bindSidebar() {
 
   const acts = {
     'show-empty-facets': () => { state.showEmptyFacets = true; renderSidebar(); },
+    'mark-key': () => { state.showMarkKey = !state.showMarkKey; renderSidebar(); },
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {
       state.selectMode = !state.selectMode;
@@ -1407,9 +1598,14 @@ function renderRail() {
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Ask</span>
       <span class="text-caps text-chrome-muted">${
         state.selectedSlug ? `scoped to ${esc(state.selectedSlug)}` : 'no resource selected'}</span>
-      ${state.chat.length ? `<button data-act="clear-chat"
-        class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline hover:text-chrome-ink"
-        >clear</button>` : ''}
+      ${state.chat.length ? `<span class="ml-auto flex items-center gap-s2">
+        <button data-act="copy-transcript" title="Copy the whole transcript as markdown, with each answer's source line"
+          class="cursor-pointer bg-transparent text-caps text-chrome-muted hover:text-chrome-ink"
+          >${icon('copy', { size: 13 })} transcript</button>
+        <button data-act="clear-chat"
+          class="cursor-pointer bg-transparent text-caps text-chrome-muted underline hover:text-chrome-ink"
+          >clear</button>
+      </span>` : ''}
     </div>
 
     <div id="rail-evidence" class="mb-s3"></div>
@@ -1433,6 +1629,8 @@ function renderRail() {
     state.chat = [];
     renderRail();
   });
+  $('rail').querySelector('[data-act="copy-transcript"]')?.addEventListener('click', (e) =>
+    copyAsEvidence(state.chat.map(turnAsMarkdown).join('\n\n---\n\n'), e.currentTarget));
   renderChatLog();
 }
 
@@ -1516,6 +1714,12 @@ function renderChatLog() {
             ${esc(t.source)}${t.intent ? ` · intent ${esc(t.intent)}` : ''}${t.cached ? ' · cached' : ''}
           </div>
           ${t.queryHash ? feedbackHtml(t, i) : ''}
+          <div class="mt-s2">
+            <button data-copy-turn="${i}" title="Copy this answer and its source line as markdown"
+              class="cursor-pointer bg-transparent text-caps text-chrome-muted opacity-100
+                     hover:text-chrome-ink focus-visible:text-chrome-ink"
+              >${icon('copy', { size: 13 })} copy as evidence</button>
+          </div>
         </div>` : ''}
     </div>`;
   }).join('');
@@ -1529,6 +1733,8 @@ function renderChatLog() {
   log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
     promoteToPane(state.chat[Number(b.dataset.promote)]);
   }));
+  log.querySelectorAll('[data-copy-turn]').forEach((b) => b.addEventListener('click', () =>
+    copyAsEvidence(turnAsMarkdown(state.chat[Number(b.dataset.copyTurn)]), b)));
   log.scrollTop = log.scrollHeight;
 }
 
@@ -2436,6 +2642,10 @@ function provenanceLine(entry, i, lines, st) {
   if (lines.mermaid) {
     actions.push(`<button data-diagram="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">diagram</button>`);
   }
+  if (st !== 'loading') {
+    actions.push(`<button data-copy="${i}" title="Copy this answer and its provenance as markdown"
+      class="cursor-pointer bg-transparent text-accent-ink underline">copy as evidence</button>`);
+  }
   const canRun = (lines.canRun && lines.canRun.length) || (entry.analysis_ids || []).length;
   if (canRun && st !== 'running') {
     actions.push(`<button data-rerun="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">${
@@ -2503,6 +2713,8 @@ function bindRowActions(el, entry, i) {
   el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', () => rerun(entry, i));
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
+  el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
+    copyAsEvidence(rowAsMarkdown(entry, i), e.currentTarget));
 }
 
 /**
@@ -2589,6 +2801,99 @@ function measureHtml(key, v) {
   const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v);
   return `<div>${label} <span class="tnum">${tnum(esc(shown))}</span></div>`;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Copy as evidence
+ *
+ * Labelled "Copy as evidence", not "Copy": the label says what the artifact
+ * is for. These answers get pasted into issues, Dr.Egeria plans and review
+ * documents — all markdown — and an answer pasted WITHOUT its source line
+ * loses the thing this whole redesign is about. So the provenance is not
+ * optional and is not a separate button.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Put text on the clipboard, and say so on the button that asked. */
+async function copyAsEvidence(markdown, btn) {
+  const done = (msg, ok = true) => {
+    if (!btn) return;
+    const prev = btn.innerHTML;
+    btn.innerHTML = `<span class="text-caps ${ok ? '' : 'text-state-warn'}">${esc(msg)}</span>`;
+    setTimeout(() => { btn.innerHTML = prev; }, 1600);
+  };
+  try {
+    await navigator.clipboard.writeText(markdown);
+    done('copied');
+  } catch (err) {
+    // A clipboard write can be refused (no permission, not a user gesture,
+    // an insecure origin). Saying nothing would leave someone pasting a
+    // stale buffer into an issue and not knowing.
+    done('could not copy', false);
+    console.warn('clipboard write refused:', err);
+  }
+}
+
+/** One question row, as markdown with its provenance. */
+function rowAsMarkdown(entry, i) {
+  const env = state.answers.get(entry.question);
+  const st = rowState(entry, env);
+  const lines = (env && env !== 'loading' && !env.__error)
+    ? readEnvelope(entry, env) : null;
+
+  const out = [`**${entry.question}**`, ''];
+
+  // The answer, as text. `lines.answer` is HTML by the time it reaches a row,
+  // so it is rebuilt from the facts here rather than stripped of tags — a
+  // regex over markup is how a stray `<` ends up in someone's issue.
+  const said = [];
+  for (const f of ((env && env.facts) || []).filter((x) => x.is_known)) {
+    if (f.headline) said.push(f.headline);
+    else if (prose(f)) said.push(f.value?.verdict ? `${cap(String(f.value.verdict))} — ${prose(f)}` : prose(f));
+    else if (scalarMeasures(f.value)) said.push(scalarMeasures(f.value));
+  }
+  if (said.length) out.push(said.join(' '), '');
+  else out.push(`_${(env && env.blocked_reason) || STATE_SENTENCE[st] || 'No answer recorded.'}_`, '');
+
+  if (lines && lines.caveat) {
+    // The caveat as a blockquote — it is the part a reader most needs to
+    // carry across, and a quote survives being pasted into a thread.
+    out.push(...lines.caveat.split('\n').map((l) => `> ${l}`), '');
+  }
+
+  const bits = [state.selectedSlug];
+  const sources = (lines && lines.sources.length ? lines.sources : entry.analysis_ids) || [];
+  if (sources.length) bits.push(sources.join(', '));
+  if (lines && lines.lastRun) bits.push(`run ${String(lines.lastRun).slice(0, 10)}`);
+  else if (lines && lines.runTimeUnrecorded) bits.push('run time not recorded');
+  else bits.push('never run');
+  bits.push(env && env.answerable
+    ? 'answered from survey metadata, no retrieval'
+    : `state: ${STATE_LABEL[st] || st}`);
+  out.push(`— ${bits.filter(Boolean).join(' · ')}`);
+
+  return out.join('\n');
+}
+
+/** One chat turn, as markdown with its source line. */
+function turnAsMarkdown(t) {
+  const out = [`**${t.question}**`, ''];
+  out.push(t.answer || `_${t.error || 'No answer.'}_`, '');
+  const bits = [t.slug, t.source].filter(Boolean);
+  if (t.intent) bits.push(`intent ${t.intent}`);
+  out.push(`— ${bits.join(' · ')}`);
+  return out.join('\n');
+}
+
+const STATE_LABEL = {
+  answered: 'answered', automatic: 'automatic', unrun: 'not run',
+  human: 'needs human input', 'no-surveyor': 'no surveyor exists yet',
+  unclassified: 'unclassified',
+};
+const STATE_SENTENCE = {
+  unrun: 'Not run yet.',
+  human: 'Answered by a person, not by a survey.',
+  'no-surveyor': 'No surveyor exists for this question.',
+  unclassified: 'The catalog does not state how this would be answered.',
+};
 
 /** Promote a question's diagram into the content pane. */
 function showDiagram(entry) {

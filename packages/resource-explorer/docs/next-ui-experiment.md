@@ -429,6 +429,88 @@ still gets a 304. Scoped by exact prefix, so the rest of `/static` is
 untouched. If `/next` ever becomes the default, replace it with a content
 hash in the filename rather than keeping revalidation forever.
 
+## Round 5 — why the diagram was a blank box
+
+Reported as "the diagram doesn't render — blank space where it should be".
+Four separate defects, stacked, each hiding the next. Every one was found by
+bisecting against the live Kroki on 6002 rather than reasoning about it, and
+each is recorded at its call site because none of them is guessable.
+
+**1. This Kroki rejects every `%%` line.** A plain comment and an
+`%%{init: …}%%` directive alike, on a two-node diagram, return
+`400 Internal Server Error`. The theming was delivered as an init directive,
+so it broke every render it was supposed to style. Theming moved to
+`themeSvgElement()`, which styles the returned SVG instead.
+
+**2. A literal `%` in a node label fails the whole render.** `&#37;` and
+`&percnt;` are fine. `architecture_diagram` writes confidence as `40% ⚠` into
+every label, so the architecture diagram could never have rendered here.
+
+**3. A `class` directive assigning more than 20 nodes fails.** 20 renders, 21
+does not, deterministically, whether on one line or split across several. The
+real diagram styles 53. The excess assignments are dropped and the pane says
+how many were lost — losing the dashed "pending" styling beats losing the
+diagram.
+
+**4. The SVG is 14,102 × 193 — a 73:1 strip.** `fit: true` fits the limiting
+dimension, so it fitted the width and left the diagram **8 pixels tall**.
+That is the blank box. Wide diagrams now open fitted to HEIGHT with the left
+edge in view.
+
+### Two bugs introduced while fixing those
+
+Worth recording because both measured as working:
+
+- **An SVG `<style>` is not scoped.** The first theming attempt injected
+  `text, span, p { … !important }` into the document, restyling the
+  application's brand, nav and sidebar the moment a diagram opened.
+- **Prefixing a selector list only scopes the first selector.**
+  `#id a, b, c` leaves `b` and `c` global — so the "fixed" version still
+  restyled the whole page, and the string *looked* correct. Every
+  comma-separated part is prefixed now.
+
+And one that measured as working and was not: after the framing fix, 53 nodes
+reported bounding boxes of 96×39 while sitting at `y = -609`, entirely above
+their container. "53 nodes rendered at 96×39" and "an empty white panel" were
+both true. Hand-rolled pan arithmetic was replaced with the library's own
+`center()`.
+
+**Verified:** Kroki 200, 53 nodes, 5 visible in the opening viewport at
+readable size, chrome fonts unaffected before and after opening a diagram.
+The proxy call itself is still auth-gated, so the render was driven through a
+stub that forwards the identical body to Kroki; everything after the fetch is
+the app's own code path.
+
+### Also in this round
+
+- **The sidebar mark key.** Each row's disposition mark is now the exact
+  glyph its facet chip uses — one `DISPOSITION_ICON` map read by both — so
+  the filter row *is* the legend. Lifecycle keeps its metaphors, `hidden`
+  moved from `circle-slash` to `eye-off` so it stops looking like `ignored`'s
+  `ban`, and a `?` opens a compact key covering all three families.
+- **Copy as evidence.** On every question row, on every chat turn, and on the
+  transcript as a whole. Markdown, with the caveat as a blockquote and the
+  provenance line always attached — an answer pasted without its source loses
+  the point of the redesign. Named for what the artifact is for, not for the
+  clipboard operation.
+
+## Not started — Round 3, the vertical slice
+
+The bundle's Round 3 asks for a slice through Scouting: search → select →
+save as a work list → run one survey across the set concurrently → compare as
+rows × questions → bulk disposition → promote the survivors.
+
+**It is not started, and it needs decisions this experiment has not been
+given.** It is the first round that is not API-free:
+
+- a **batch-enqueue endpoint** (a set of resources plus an analysis, N rows
+  in `runs`, a set id back) and a progress read by set id;
+- persisting a work list as an Egeria `WorkList`-classified collection with
+  `CollectionMembership` rationale and confidence — a **write to shared
+  Egeria**, which is coordinated work on this machine, not a solo change.
+
+The rest of the slice is client work on top of those two.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it
