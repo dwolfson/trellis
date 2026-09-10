@@ -794,6 +794,44 @@ function answerForm(turn) {
  *                                  a measured zero
  *   - a failed call             -> say the call failed, name the reason
  */
+/** Where a chart means something different from a number elsewhere, say so.
+ *
+ * The radar was cut from the Dashboard because `repository_health` composes
+ * FOUR sub-scores on 0-100 while this plots FIVE different axes on 0-10 — two
+ * models of one word, forty pixels apart. Cutting it there and leaving it here
+ * did not resolve that; it moved the collision one pane away, where it is
+ * harder to notice rather than absent.
+ *
+ * It stays, because on this pane it is not sitting beside its rival and the
+ * series is real. It now says what it is not. The proper fix is the designer's
+ * own: plot the four published sub-scores on their own scale, which needs an
+ * endpoint that does not exist yet.
+ */
+const CHART_CAVEATS = {
+  health: 'These five axes on a 0–10 scale are not the same composition as '
+        + 'the Dashboard\'s repository_health score, which combines four '
+        + 'sub-scores on 0–100. Two models of the same word: read them '
+        + 'separately, and do not compare the numbers.',
+};
+
+/** The latest x-value across a figure's traces, as a plain date. */
+function lastPointDate(traces) {
+  let latest = '';
+  for (const t of traces || []) {
+    for (const x of t.x || []) {
+      const v = String(x);
+      if (/^\d{4}-\d{2}-\d{2}/.test(v) && v > latest) latest = v;
+    }
+  }
+  return latest.slice(0, 10);
+}
+
+/** Same threshold as the grid's, and the same placeholder caveat. */
+function chartIsStale(dateStr) {
+  const d = (Date.now() - Date.parse(dateStr)) / 86400000;
+  return Number.isFinite(d) && d >= 7;
+}
+
 async function loadChartsPane() {
   const el = $('content');
   const slug = state.selectedSlug;
@@ -830,10 +868,16 @@ async function loadChartsPane() {
   const results = await Promise.all(REPO_CHARTS.map(async ([kind, label]) => {
     try {
       const fig = await getChart(slug, kind);
-      const series = Array.isArray(fig?.data) ? fig.data.length : 0;
-      return { kind, label, fig, series, error: null };
+      // POINTS, NOT TRACES. `fig.data.length` counts series, so a trace
+      // holding a single observation counted as a usable chart and drew one
+      // dot — the flat-line lie in chart form, and the same mistake as a
+      // sparkline of one point. Some repos here are at 2.
+      const traces = Array.isArray(fig?.data) ? fig.data : [];
+      const points = traces.reduce((n, t) => n + (
+        (t.x || t.labels || t.r || t.values || []).length), 0);
+      return { kind, label, fig, traces: traces.length, points, last: lastPointDate(traces), error: null };
     } catch (err) {
-      return { kind, label, fig: null, series: 0, error: err.message };
+      return { kind, label, fig: null, traces: 0, points: 0, last: '', error: err.message };
     }
   }));
   if (slug !== state.selectedSlug) return;
@@ -845,14 +889,23 @@ async function loadChartsPane() {
         class="rounded-sm border border-dashed border-state-warn px-2 py-[3px] text-caveat text-state-warn"
         >${esc(r.label)} · unavailable</span>`;
     }
-    if (!r.series) {
+    if (!r.points) {
       return `<span title="The series exists and has nothing in it yet"
         class="rounded-sm border border-dashed border-rule-strong px-2 py-[3px] text-caveat text-ink-muted"
         >${esc(r.label)} · nothing recorded yet</span>`;
     }
+    // ONE OBSERVATION IS NOT A TREND. Offered, because the value is real and
+    // worth seeing — labelled, because a chart of it would imply a shape it
+    // does not have.
+    const one = r.points === 1;
     return `<button data-chart="${r.kind}"
+      title="${r.points} observation(s)${r.last ? ` · latest ${r.last}` : ''}"
       class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
-             text-caveat text-ink hover:border-accent">${esc(r.label)}</button>`;
+             text-caveat text-ink hover:border-accent">${esc(r.label)}${
+      one ? ' · first measurement'
+          : `<span class="tnum text-ink-muted"> · ${r.points}</span>`}${
+      r.last && chartIsStale(r.last)
+        ? '<span class="wl-age-text"> </span>' : ''}</button>`;
   }).join('');
 
   index.querySelectorAll('[data-chart]').forEach((b) => b.addEventListener('click', () => {
@@ -861,7 +914,7 @@ async function loadChartsPane() {
     drawChart(results.find((r) => r.kind === b.dataset.chart));
   }));
 
-  const first = results.find((r) => r.series);
+  const first = results.find((r) => r.points);
   if (first) {
     index.querySelector(`[data-chart="${first.kind}"]`)?.classList.add('border-accent');
     drawChart(first);
@@ -881,8 +934,17 @@ async function drawChart(entry) {
     await loadScript('/static/vendor/plotly.min.js');
     body.innerHTML = `<div id="chart-canvas" style="height:min(62vh,560px)"></div>
       <div class="mt-s2 text-provenance text-ink-muted">${esc(entry.label)} ·
-        <span class="tnum">${entry.series}</span> series ·
-        from the registry's recorded history · no retrieval</div>`;
+        <span class="tnum">${entry.points}</span> observation(s) in
+        <span class="tnum">${entry.traces}</span> series${
+        entry.last ? ` · latest ${esc(entry.last)}${
+          chartIsStale(entry.last) ? ' — nothing newer has been recorded' : ''}` : ''} ·
+        from the registry's recorded history · no retrieval</div>
+      ${entry.points === 1 ? `<div class="mt-s1 text-caveat text-ink-muted">
+        One observation. This is a value, not a trend — the shape of a chart
+        with a single point is drawn by the axes, not by the data.</div>` : ''}
+      ${CHART_CAVEATS[entry.kind]
+        ? `<div class="mt-s1 max-w-[70ch] text-caveat text-accent-ink">${esc(CHART_CAVEATS[entry.kind])}</div>`
+        : ''}`;
     await window.Plotly.newPlot($('chart-canvas'), entry.fig.data || [],
                                 chartLayout(entry.fig.layout),
                                 { displaylogo: false, responsive: true });
