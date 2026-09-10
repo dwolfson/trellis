@@ -216,6 +216,10 @@ function renderActions(ctx) {
     <button data-act="run" ${runnable ? '' : 'disabled'}
       class="cursor-pointer rounded-sm border ${runnable ? 'border-accent text-accent-ink' : 'border-dashed border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px]"
       >Run across <span class="tnum">${n || grid.workList.members.length}</span></button>
+    <button data-act="refresh"
+      class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink"
+      title="Re-run only what is stale, for ${n ? 'the selected rows' : 'every row'}. Shows the plan first."
+      >Bring up to date</button>
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
@@ -234,6 +238,7 @@ function renderActions(ctx) {
     </span>`;
 
   host.querySelector('[data-act="run"]').addEventListener('click', () => runBatch(ctx));
+  host.querySelector('[data-act="refresh"]').addEventListener('click', () => openRefreshPlan(ctx));
   host.querySelector('[data-act="promote"]')?.addEventListener('click', () => promote(ctx));
   host.querySelector('[data-act="publish"]')?.addEventListener('click', () => publish(ctx));
   host.querySelector('#wl-disposition')?.addEventListener('change', (e) => {
@@ -570,22 +575,22 @@ function closeCellDetail() {
 
 function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
 
-async function openCellDetail(slug, qi, ctx) {
-  const q = grid.questions[qi];
-  if (!q) return;
+/** The panel shell both the cell popup and the refresh plan use. One shell,
+ *  so the two cannot drift apart in behaviour — backdrop closes, Escape
+ *  closes, a click inside does not. */
+function openDialog(title, sub) {
   closeCellDetail();
-
   const el = document.createElement('div');
   el.id = 'wl-detail';
   el.className = 'fixed inset-0 z-50 flex items-start justify-center '
     + 'bg-black/40 p-s4 overflow-auto';
   el.innerHTML = `
     <div class="mt-[6vh] w-full max-w-[640px] rounded bg-paper p-s4 shadow-lg"
-      role="dialog" aria-modal="true" aria-label="Latest results">
+      role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="flex items-start justify-between gap-s3">
         <div>
-          <div class="font-heading text-answer text-ink">${esc(q.question)}</div>
-          <div class="mt-[2px] font-mono text-[11px] text-ink-muted">${esc(slug)}</div>
+          <div class="font-heading text-answer text-ink">${esc(title)}</div>
+          ${sub ? `<div class="mt-[2px] font-mono text-[11px] text-ink-muted">${esc(sub)}</div>` : ''}
         </div>
         <button type="button" data-act="close"
           class="text-ink-muted hover:text-ink" aria-label="Close">×</button>
@@ -599,7 +604,152 @@ async function openCellDetail(slug, qi, ctx) {
     if (e.target === el || e.target.closest('[data-act="close"]')) closeCellDetail();
   });
   document.addEventListener('keydown', detailKeys);
+  return el;
+}
 
+/* ── Bringing things up to date ───────────────────────────────────────────
+ *
+ * Staleness is per CELL, so refreshing is too. "Bring everything up to date"
+ * across a twelve-repo list would re-run analyses measured this morning
+ * alongside ones last measured in August — most of the work wasted, and none
+ * of it visible before it started.
+ *
+ * So this plans first: which (resource, analysis) pairs are actually stale,
+ * grouped BY ANALYSIS, because that is how a batch is enqueued — one run per
+ * analysis carrying only the resources that need it. What is current is named
+ * and skipped. What has NEVER run is counted separately and left out by
+ * default: a first run is not a refresh, it can cost far more, and nobody
+ * asking to freshen a matrix is asking to populate it.
+ */
+
+/** `{stale, never, current}` for `slugs` over the current columns. */
+function refreshPlan(slugs) {
+  const ids = [...new Set(qsAnalysisIds(grid.questions))];
+  const stale = new Map();     // analysis id -> [slug]
+  const never = new Map();     // analysis id -> [slug]
+  let current = 0;
+  for (const slug of slugs) {
+    const per = grid.states?.[slug] || {};
+    for (const aid of ids) {
+      const v = per[aid];
+      // No projection entry means nothing has been established about this
+      // pair. Not stale, not never-run — unknown, and unknown is not a
+      // reason to run something.
+      if (!v) continue;
+      if (!v.has_results) {
+        if (v.certain_never_run) never.set(aid, [...(never.get(aid) || []), slug]);
+        continue;
+      }
+      const d = daysSince(v.measured_at);
+      if (d === null) continue;    // has results but no usable date: not evidence of age
+      if (d >= STALE_DAYS) stale.set(aid, [...(stale.get(aid) || []), slug]);
+      else current += 1;
+    }
+  }
+  return { stale, never, current };
+}
+
+const planSize = (m) => [...m.values()].reduce((n, a) => n + a.length, 0);
+
+function openRefreshPlan(ctx) {
+  const slugs = targets();
+  const scope = grid.selected.size ? `${grid.selected.size} selected` : 'all rows';
+  const plan = refreshPlan(slugs);
+  const el = openDialog('Bring up to date', `${slugs.length} resource(s) · ${scope}`);
+  const body = el.querySelector('#wl-detail-body');
+
+  const staleCount = planSize(plan.stale);
+  const neverCount = planSize(plan.never);
+  if (!staleCount && !neverCount) {
+    body.innerHTML = `<p>Nothing here was measured more than
+      <span class="tnum">${STALE_DAYS}</span> days ago.
+      <span class="tnum">${plan.current}</span> measurement(s) across
+      <span class="tnum">${slugs.length}</span> resource(s) are current, so
+      there is nothing to refresh.</p>`;
+    return;
+  }
+
+  const listing = (m) => [...m.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([aid, ss]) => `<li><span class="font-mono">${esc(aid)}</span>
+      — <span class="tnum">${ss.length}</span> resource(s)</li>`).join('');
+
+  body.innerHTML = `
+    ${staleCount
+      ? `<p>Stale — measured more than <span class="tnum">${STALE_DAYS}</span> days ago:</p>
+         <ul class="ml-s3 mt-[4px] list-disc">${listing(plan.stale)}</ul>`
+      : `<p>Nothing is stale.</p>`}
+    ${plan.current ? `<p class="mt-s2"><span class="tnum">${plan.current}</span>
+      measurement(s) are already current and will be skipped.</p>` : ''}
+    ${neverCount ? `
+      <p class="mt-s2">
+        <label><input type="checkbox" id="wl-incl-never"> also run the
+        <span class="tnum">${neverCount}</span> that ${
+          neverCount === 1 ? 'has' : 'have'} never run</label>
+        — a first run, not a refresh, and it can cost far more.</p>
+      <ul class="ml-s3 mt-[4px] list-disc" id="wl-never-list" hidden>${listing(plan.never)}</ul>`
+      : ''}
+    <p class="mt-s3 text-ink">This queues <span class="tnum" id="wl-plan-n">${staleCount}</span>
+      run(s), one batch per analysis carrying only the resources that need it.
+      Nothing runs until you confirm.</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Queue them</button>
+      <button type="button" data-act="close"
+        class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+
+  const incl = body.querySelector('#wl-incl-never');
+  incl?.addEventListener('change', () => {
+    body.querySelector('#wl-never-list').hidden = !incl.checked;
+    body.querySelector('#wl-plan-n').textContent =
+      planSize(plan.stale) + (incl.checked ? planSize(plan.never) : 0);
+  });
+  body.querySelector('[data-act="go"]').addEventListener('click', () => {
+    // Merged per analysis, so one that is stale on some resources and never
+    // run on others is ONE batch, not two.
+    const merged = new Map();
+    for (const [aid, ss] of plan.stale) merged.set(aid, [...ss]);
+    if (incl?.checked) {
+      for (const [aid, ss] of plan.never) {
+        merged.set(aid, [...new Set([...(merged.get(aid) || []), ...ss])]);
+      }
+    }
+    closeCellDetail();
+    runRefresh(merged, ctx);
+  });
+}
+
+/** Enqueue one batch per analysis, each carrying only its own resources. */
+async function runRefresh(byAnalysis, ctx) {
+  const entries = [...byAnalysis.entries()];
+  if (!entries.length) return;
+  let last = null;
+  const done = [];
+  for (const [aid, ss] of entries) {
+    try {
+      last = await enqueueBatch(aid, ss, grid.workList.slug);
+      done.push(`${aid} \u00d7 ${ss.length}`);
+    } catch (err) {
+      // Report what DID get queued. A failure on the fourth analysis does not
+      // un-queue the first three, and "it failed" would leave three batches
+      // running that nobody was told about.
+      note(`<span class="text-state-warn">Queued ${done.length ? esc(done.join(', ')) : 'nothing'},
+        then <span class="font-mono">${esc(aid)}</span> was refused:
+        ${esc(err.message)}</span>`);
+      if (last?.set_id) watchBatch(ctx, last.set_id);
+      return;
+    }
+  }
+  note(`Queued ${esc(done.join(', '))}. Watching the last batch.`);
+  if (last?.set_id) watchBatch(ctx, last.set_id);
+}
+
+async function openCellDetail(slug, qi, ctx) {
+  const q = grid.questions[qi];
+  if (!q) return;
+  const el = openDialog(q.question, slug);
   const body = el.querySelector('#wl-detail-body');
   const ids = q.analysis_ids || [];
   if (!ids.length) {
