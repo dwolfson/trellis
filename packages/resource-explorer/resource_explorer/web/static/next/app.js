@@ -31,6 +31,7 @@ import {
   VALID_DISPOSITIONS,
   addInvestigationMember,
   ask,
+  CHART_MEASURE,
   REPO_CHARTS,
   getAnswer,
   getChart,
@@ -819,6 +820,78 @@ function answerForm(turn) {
  *                                  a measured zero
  *   - a failed call             -> say the call failed, name the reason
  */
+/** Axis labels, a stated zero, and a title that names the measurement.
+ *
+ * Three faults compounded here: an unhighlighted selector meant you did not
+ * know WHICH chart you were looking at; not knowing that, an unlabelled
+ * vertical scale had no referent; and a bare date axis left nothing to anchor
+ * it to. The selector is fixed above, which half-fixes these by context —
+ * this states them outright.
+ *
+ * **If the axis does not start at zero, it says so on the axis.** A truncated
+ * scale that does not admit it is the oldest chart lie there is.
+ */
+function chartAxes(entry) {
+  const layout = { ...(entry.fig.layout || {}) };
+  const [measure, range] = CHART_MEASURE[entry.kind] || [entry.label.toLowerCase(), ''];
+  const span = entry.first && entry.last && entry.first !== entry.last
+    ? `${entry.first} – ${entry.last}` : (entry.last || '');
+  layout.title = {
+    text: `${entry.label} — ${measure}${range ? `, ${range}` : ''}`,
+    subtitle: undefined,
+  };
+  // Radar has no cartesian axes to label; everything else gets both.
+  if ((entry.fig.data || []).some((t) => t.type === 'scatterpolar')) return layout;
+
+  const ys = (entry.fig.data || []).flatMap((t) => (t.y || []).filter((v) => typeof v === 'number'));
+  const min = ys.length ? Math.min(...ys) : 0;
+  const zeroed = min <= 0;
+  layout.yaxis = {
+    ...(layout.yaxis || {}),
+    title: { text: `${measure}${range ? ` (${range})` : ''}${
+      zeroed ? '' : ' — axis does not start at zero'}` },
+    showticklabels: true,
+    rangemode: zeroed ? 'tozero' : 'normal',
+  };
+  layout.xaxis = {
+    ...(layout.xaxis || {}),
+    title: { text: entry.timeAxis
+      ? 'Measurement date — plotted to scale, so gaps are real'
+      : (layout.xaxis?.title?.text || layout.xaxis?.title || '') },
+    showticklabels: true,
+  };
+  layout.margin = { l: 70, r: 20, t: 54, b: 62, ...(layout.margin || {}) };
+  return layout;
+}
+
+/** A REAL TIME AXIS, not evenly spaced points.
+ *
+ * Surveys run irregularly. Three measurements at 14, 68 and 88 days drawn
+ * equidistant invent a steady cadence that never happened — and the shape of
+ * the line is precisely what someone reads off it. Plotted to scale, a long
+ * unmeasured gap reads as a gap rather than as a slow steady climb: the same
+ * argument as the staleness rule, drawn instead of marked.
+ *
+ * The last point is labelled with its value, because that is the number
+ * someone came for.
+ */
+function timeAxisData(entry) {
+  const data = entry.fig.data || [];
+  if (!entry.timeAxis) return data;
+  return data.map((t, i) => {
+    if (i > 0 || !(t.x || []).length) return t;
+    const y = t.y || [];
+    const last = y.length - 1;
+    return {
+      ...t,
+      mode: 'lines+markers+text',
+      text: y.map((v, j) => (j === last ? String(Math.round(v * 10) / 10) : '')),
+      textposition: 'top left',
+      marker: { ...(t.marker || {}), size: 7 },
+    };
+  });
+}
+
 /** Not every chart endpoint returns a Plotly figure.
  *
  * `survey_history` returns `{dates, total_files}` — raw series, no `data`
@@ -869,16 +942,16 @@ const CHART_CAVEATS = {
         + 'separately, and do not compare the numbers.',
 };
 
-/** The latest x-value across a figure's traces, as a plain date. */
-function lastPointDate(traces) {
-  let latest = '';
+/** Every date-shaped x-value in a figure, sorted. */
+function allPointDates(traces) {
+  const out = [];
   for (const t of traces || []) {
     for (const x of t.x || []) {
       const v = String(x);
-      if (/^\d{4}-\d{2}-\d{2}/.test(v) && v > latest) latest = v;
+      if (/^\d{4}-\d{2}-\d{2}/.test(v)) out.push(v.slice(0, 10));
     }
   }
-  return latest.slice(0, 10);
+  return out.sort();
 }
 
 /** Same threshold as the grid's, and the same placeholder caveat. */
@@ -930,7 +1003,15 @@ async function loadChartsPane() {
       const traces = Array.isArray(fig?.data) ? fig.data : [];
       const points = traces.reduce((n, t) => n + (
         (t.x || t.labels || t.r || t.values || []).length), 0);
-      return { kind, label, fig, traces: traces.length, points, last: lastPointDate(traces), error: null };
+      const dates = allPointDates(traces);
+      return {
+        kind, label, fig, traces: traces.length, points,
+        first: dates[0] || '', last: dates[dates.length - 1] || '',
+        // A date x-axis means the spacing can be honest; a categorical one
+        // (languages, file types, committers) has no time to be true to.
+        timeAxis: dates.length > 1 && dates.length === points,
+        error: null,
+      };
     } catch (err) {
       return { kind, label, fig: null, traces: 0, points: 0, last: '', error: err.message };
     }
@@ -953,26 +1034,32 @@ async function loadChartsPane() {
     // worth seeing — labelled, because a chart of it would imply a shape it
     // does not have.
     const one = r.points === 1;
-    return `<button data-chart="${r.kind}"
+    // SELECTION IS THE ONE THING THAT MUST NEVER BE INFERRED, and it gets the
+    // treatment the stage tabs already use — accent ink plus an accent
+    // underline — so the app speaks one visual language rather than two.
+    // Without it you cannot tell WHICH chart you are looking at, which is what
+    // made the unlabelled axes hard to notice underneath.
+    return `<button data-chart="${r.kind}" aria-pressed="false"
       title="${r.points} observation(s)${r.last ? ` · latest ${r.last}` : ''}"
-      class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
-             text-caveat text-ink hover:border-accent">${esc(r.label)}${
+      class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px]
+             text-caveat text-ink-muted hover:text-ink">${esc(r.label)}${
       one ? ' · first measurement'
           : `<span class="tnum text-ink-muted"> · ${r.points}</span>`}${
       r.last && chartIsStale(r.last)
         ? '<span class="wl-age-text"> </span>' : ''}</button>`;
   }).join('');
 
-  index.querySelectorAll('[data-chart]').forEach((b) => b.addEventListener('click', () => {
+  const select = (kind) => {
     index.querySelectorAll('[data-chart]').forEach((o) =>
-      o.classList.toggle('border-accent', o === b));
-    drawChart(results.find((r) => r.kind === b.dataset.chart));
-  }));
+      o.setAttribute('aria-pressed', o.dataset.chart === kind ? 'true' : 'false'));
+    drawChart(results.find((r) => r.kind === kind));
+  };
+  index.querySelectorAll('[data-chart]').forEach((b) =>
+    b.addEventListener('click', () => select(b.dataset.chart)));
 
   const first = results.find((r) => r.points);
   if (first) {
-    index.querySelector(`[data-chart="${first.kind}"]`)?.classList.add('border-accent');
-    drawChart(first);
+    select(first.kind);
   } else {
     $('chart-body').innerHTML = `<div class="text-answer text-ink">
       Nothing has been recorded for any of this resource's charts yet. That is
@@ -1000,8 +1087,8 @@ async function drawChart(entry) {
       ${CHART_CAVEATS[entry.kind]
         ? `<div class="mt-s1 max-w-[70ch] text-caveat text-accent-ink">${esc(CHART_CAVEATS[entry.kind])}</div>`
         : ''}`;
-    await window.Plotly.newPlot($('chart-canvas'), entry.fig.data || [],
-                                chartLayout(entry.fig.layout),
+    await window.Plotly.newPlot($('chart-canvas'), timeAxisData(entry),
+                                chartLayout(chartAxes(entry)),
                                 { displaylogo: false, responsive: true });
   } catch (err) {
     body.innerHTML = `<div class="text-answer text-state-warn">

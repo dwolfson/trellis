@@ -253,6 +253,23 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
 /* ── Charts ──────────────────────────────────────────────────────────── */
 
 /** The chart kinds `/api/stats/{slug}/charts/{kind}` serves for a repo. */
+/** What each chart measures, and on what scale.
+ *
+ * The range belongs in the TITLE. It is what stops the radar-chart problem
+ * recurring: two charts of the same word on different scales become obviously
+ * different rather than quietly so.
+ */
+export const CHART_MEASURE = {
+  stars: ['stars', ''],
+  commits: ['commits', ''],
+  weekly_commits: ['commits per week', ''],
+  languages: ['share of code', '0–100%'],
+  file_types: ['files', ''],
+  top_committers: ['commits', ''],
+  health: ['health signals', '0–10, five axes'],
+  survey_history: ['total files', ''],
+};
+
 export const REPO_CHARTS = [
   ['stars', 'Stars over time'],
   ['commits', 'Commits over time'],
