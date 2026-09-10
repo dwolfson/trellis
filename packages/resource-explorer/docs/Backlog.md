@@ -4853,7 +4853,7 @@ was isolated by bisecting down to a two-node diagram rather than inferred:
 | cause | evidence |
 |---|---|
 | Any line beginning `%%` | `flowchart TD / A[a] --> B[b]` renders (200). The same two lines with `%%{init: {"theme":"dark"}}%%` prefixed, or even a plain `%% comment`, return 400. So the UI's own theming directive breaks every render it is applied to. |
-| A literal `%` in a node label | `A["x 40% y"]` alone returns 400. `&#37;` and `&percnt;` render. |
+| A literal `%` in a node label | `A["x 40% y"]` alone returns 400. Escape it as **`&percnt;`** — `&#37;` is also accepted (200) but comes back rendered as `40&%`, and the status code cannot tell the two apart. The difference is only visible by reading the text nodes of the returned SVG. |
 | A `class` directive naming more than 20 nodes | 20 renders, 21 does not, deterministically, whether on one line or split across several. A real diagram styles 53. |
 
 Cause 2 is **unconditional in the generator**:
