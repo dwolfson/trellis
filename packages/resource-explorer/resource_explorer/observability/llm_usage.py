@@ -27,14 +27,21 @@ must say which kind of zero it is. Three states, not two:
   `uncounted` > 0      -- calls happened whose usage we could not read. NOT a
                           zero; `total_tokens` is a floor, not a measurement.
 
-Streaming is the live source of `uncounted`. `LLMBackend.stream()` is not
-instrumented: Ollama reports the counts only on the final `done` chunk (which
-the current loop yields as empty content and drops), OpenAI does not send usage
-at all unless the request passes `stream_options={"include_usage": True}`, and
-Anthropic delivers it through `message_start`/`message_delta` events. Three
-different shapes, one of them needing a request change — deliberately a separate
-piece of work. Until it lands, a streamed call increments `uncounted` so it
-cannot be mistaken for a call that cost nothing.
+Streaming is counted too (2026-09-10), in each backend's own shape: Ollama
+reports the counts on the final `done` chunk, OpenAI sends them only when the
+request passes `stream_options={"include_usage": True}` — and then in a final
+chunk whose `choices` list is EMPTY — and Anthropic reassembles them from
+`message_start`/`message_delta` via `get_final_message()`.
+
+`uncounted` did not become dead weight when that landed; streaming is still
+where it earns its keep. Every `stream()` records from a **`finally`**, because
+a generator abandoned by its consumer raises GeneratorExit *at the yield* and
+never reaches code after the loop — a trailing `record(...)` would drop the call
+from the accounting altogether, which is worse than counting it as uncounted. An
+abandoned or failed stream therefore still appears, with both counts still None,
+and is booked UNCOUNTED. Verified against live Ollama: a completed stream
+records 21/10/31 and `complete=True`; the same stream closed after one chunk
+records one call, zero tokens and `complete=False`.
 """
 from __future__ import annotations
 

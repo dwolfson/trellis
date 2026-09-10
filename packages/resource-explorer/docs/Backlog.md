@@ -4519,7 +4519,7 @@ token counts as RE's.
 collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
 history is deleted; the two simply stop sharing a bucket.
 
-## LLM token accounting — done for `complete()`, streaming still uncounted
+## LLM token accounting — complete() and streaming both counted
 
 Built 2026-09-09 at the project owner's direction, closing half of the
 funnel-cost spec's §6 ("the instrumentation that doesn't exist").
@@ -4540,14 +4540,31 @@ record in `complete()`. Verified end-to-end against real Ollama:
 'llm_usage_complete': True, 'llm_models': ['llama3.1:8b']}` — matching the
 Phoenix span for the same prompt exactly, two independent measurements agreeing.
 
-**Streaming is deliberately NOT counted, and says so.** Three different shapes:
-Ollama reports counts only on the final `done` chunk (whose content is empty and
-is currently discarded), OpenAI sends no usage at all unless the *request*
-passes `stream_options={"include_usage": True}`, and Anthropic delivers it
-through `message_start`/`message_delta` events. Rather than leave streamed calls
-reading as free, each `stream()` calls `record_uncounted()`, so `total_tokens`
-is visibly a floor (`llm_usage_complete: False`) instead of a wrong measurement.
-Finishing streaming is the open follow-up.
+**Streaming landed 2026-09-10**, in each backend's own shape. Ollama reports the
+counts on the final `done` chunk; OpenAI sends them only when the REQUEST passes
+`stream_options={"include_usage": True}`, and then in a final chunk whose
+`choices` list is **empty** — the previous `chunk.choices[0]` would have raised
+IndexError on it, so the loop now tests `chunk.choices` before indexing;
+Anthropic reassembles them from `message_start`/`message_delta` via
+`get_final_message()`.
+
+**Every `stream()` records from a `finally`, and that is the load-bearing
+detail.** A `stream()` is a generator: a consumer that breaks out of the loop
+closes it, GeneratorExit is raised *at the yield*, and anything written after
+the loop never runs. A trailing `record(...)` would therefore drop the call from
+the accounting **entirely** — strictly worse than counting it as uncounted,
+because the run then looks like it made fewer LLM calls than it did. With the
+`finally`, an abandoned or failed stream still appears, both counts still None,
+booked UNCOUNTED.
+
+Verified against live Ollama: a completed stream records
+`prompt 21 / completion 10 / total 31, complete=True`; the same stream closed
+after one chunk records `1 call, 0 tokens, uncounted 1, complete=False` — the
+model id is kept either way, so an abandoned call is still attributable.
+
+So `uncounted` did not become dead weight: it now means "a call we could not
+price" — an abandoned stream, a failed one, or a response omitting either half
+— rather than "a whole category we have not instrumented".
 
 **Two scopes are open** so the counter is not inert: `run_queue` around the
 handler (per-run attribution, what §6 asked for) and `RAGSystem.query` around

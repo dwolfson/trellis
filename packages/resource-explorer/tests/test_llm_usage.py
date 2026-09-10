@@ -133,19 +133,30 @@ class TestEveryBackendIsWired:
             f"{missing}"
         )
 
-    def test_streaming_is_declared_uncounted_rather_than_forgotten(self):
-        """Streaming genuinely is not instrumented yet (three backend-specific
-        shapes, one needing a request change). The requirement is that it says
-        so — `record_uncounted`, not silence."""
+    def test_every_stream_records_from_a_finally(self):
+        """A `stream()` is a generator. A consumer that breaks out of the loop
+        closes it, GeneratorExit is raised AT the yield, and anything written
+        after the loop never runs — so a trailing `record(...)` loses the call
+        from the accounting entirely, which is worse than counting it as
+        uncounted. The record must be in a `finally`."""
+        import ast
         import inspect
         wrong = []
         for backend in self._backends():
-            src = inspect.getsource(getattr(backend, "stream"))
-            if "record_uncounted" not in src:
+            tree = ast.parse(inspect.getsource(getattr(backend, "stream")).lstrip())
+            in_finally = any(
+                isinstance(n, ast.Try) and any(
+                    getattr(c.func, "attr", "") in ("record", "record_uncounted")
+                    for stmt in n.finalbody for c in ast.walk(stmt)
+                    if isinstance(c, ast.Call)
+                )
+                for n in ast.walk(tree)
+            )
+            if not in_finally:
                 wrong.append(backend.__name__)
         assert not wrong, (
-            f"{wrong} stream without recording an uncounted call, so a streamed "
-            f"run reports zero tokens as though it were a measurement"
+            f"{wrong}.stream() records usage outside a finally, so a consumer "
+            f"that stops reading early drops the call from the accounting"
         )
 
 
@@ -473,3 +484,136 @@ class TestTheSinkCannotRaise:
             "makes execute_run a broad-except/log-only/value-returning site, "
             "which tests/test_no_silent_success.py counts against the baseline."
         )
+
+
+class TestStreamingIsCounted:
+    """Streaming was deliberately uncounted when the accounting first landed —
+    three backend-specific shapes, one of them needing a request change. These
+    pin each shape, and the abandonment case that a plain trailing call would
+    lose."""
+
+    def _ollama(self, chunks):
+        from resource_explorer import llm_client
+
+        class _Client:
+            def chat(self, **_kw):
+                return iter(chunks)
+
+        b = object.__new__(llm_client.OllamaBackend)
+        b._client, b._model, b._temperature, b._num_ctx = _Client(), "llama3.1:8b", 0.0, 8192
+        return b
+
+    # Ollama's real shape: content chunks, then a final `done` chunk whose
+    # message content is empty and which carries the counts.
+    CHUNKS = [
+        {"message": {"content": "pi"}},
+        {"message": {"content": "ng"}},
+        {"message": {"content": ""}, "done": True,
+         "prompt_eval_count": 17, "eval_count": 2},
+    ]
+
+    def test_a_completed_ollama_stream_is_counted(self):
+        b = self._ollama(self.CHUNKS)
+        with llm_usage.usage_scope() as u:
+            assert "".join(b.stream("x")) == "ping"
+        assert (u.prompt_tokens, u.completion_tokens) == (17, 2)
+        assert u.calls == 1 and u.complete
+
+    def test_an_abandoned_ollama_stream_is_uncounted_not_lost(self):
+        """The case `finally` exists for: the consumer stops after one chunk,
+        so the counts never arrive. The call must still appear."""
+        b = self._ollama(self.CHUNKS)
+        with llm_usage.usage_scope() as u:
+            gen = b.stream("x")
+            next(gen)
+            gen.close()
+        assert u.calls == 1, "the abandoned call vanished from the accounting"
+        assert u.uncounted == 1 and not u.complete
+        assert u.total_tokens == 0
+
+    def test_a_stream_that_raises_still_records_the_call(self):
+        from resource_explorer import llm_client
+
+        class _Client:
+            def chat(self, **_kw):
+                def _gen():
+                    yield {"message": {"content": "pi"}}
+                    raise RuntimeError("connection dropped")
+                return _gen()
+
+        b = object.__new__(llm_client.OllamaBackend)
+        b._client, b._model, b._temperature, b._num_ctx = _Client(), "m", 0.0, 8192
+        with llm_usage.usage_scope() as u:
+            with pytest.raises(RuntimeError):
+                list(b.stream("x"))
+        assert u.calls == 1 and u.uncounted == 1
+
+    def test_openai_asks_for_usage_and_survives_the_usage_only_chunk(self):
+        """`include_usage` adds a final chunk with usage and an EMPTY choices
+        list. Indexing choices[0] on it raises IndexError — the bug this guard
+        exists for."""
+        from resource_explorer import llm_client
+
+        class _Delta:
+            def __init__(self, c): self.content = c
+
+        class _Choice:
+            def __init__(self, c): self.delta = _Delta(c)
+
+        class _Usage:
+            prompt_tokens, completion_tokens = 31, 4
+
+        class _Chunk:
+            def __init__(self, content=None, usage=None):
+                self.choices = [_Choice(content)] if content is not None else []
+                self.usage = usage
+
+        sent = {}
+
+        class _Completions:
+            def create(self, **kw):
+                sent.update(kw)
+                return iter([_Chunk("pi"), _Chunk("ng"), _Chunk(usage=_Usage())])
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+        b = object.__new__(llm_client.OpenAIBackend)
+        b._client, b._model, b._temperature = _Client(), "gpt-x", 0.0
+        with llm_usage.usage_scope() as u:
+            assert "".join(b.stream("x")) == "ping"
+        assert sent.get("stream_options") == {"include_usage": True}, (
+            "OpenAI streams send no usage unless the request opts in")
+        assert (u.prompt_tokens, u.completion_tokens) == (31, 4)
+        assert u.complete
+
+    def test_anthropic_reads_usage_from_the_final_message(self):
+        from resource_explorer import llm_client
+
+        class _Usage:
+            input_tokens, output_tokens = 12, 5
+
+        class _Msg:
+            usage = _Usage()
+
+        class _Stream:
+            text_stream = iter(["pi", "ng"])
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get_final_message(self): return _Msg()
+
+        class _Messages:
+            def stream(self, **_kw): return _Stream()
+
+        class _Client:
+            messages = _Messages()
+
+        b = object.__new__(llm_client.AnthropicBackend)
+        b._client, b._model, b._temperature = _Client(), "claude-x", 0.0
+        with llm_usage.usage_scope() as u:
+            assert "".join(b.stream("x")) == "ping"
+        assert (u.prompt_tokens, u.completion_tokens) == (12, 5)
+        assert u.complete
