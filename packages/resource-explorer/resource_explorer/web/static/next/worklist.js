@@ -141,6 +141,10 @@ export const grid = {
   onlyQuestion: null,    // narrowed to one column, by index
   narrowIndex: 0,        // transposed view: which resource
   narrowFilter: 'all',   // transposed view: all | unresolved | stale
+  bgToken: 0,            // invalidates an in-flight background resolve
+  bgRemaining: 0,        // resources still to resolve
+  bgLast: 0,             // ms the last chunk took, for the note
+  bgError: null,
   ctx: null,             // the pane context, for actions raised from a popup
 };
 
@@ -363,15 +367,71 @@ async function loadGrid(ctx) {
     grid.statesError = err.message;
   }
 
-  // PASS 2 — the full read, but ONLY for the analyses that are cheap to read.
-  // The expensive ones keep the projection's honest "has results, not read"
-  // rather than costing a minute to turn ▪ into ✓.
+  // PASS 2 — the full read for the analyses that are cheap to read.
   try {
     if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); }
   } catch (err) {
     grid.slowError = err.message;
   }
   grid.pendingAnalyses = new Set();
+  renderGrid();
+
+  // PASS 3 — resolve the remaining `□` in the BACKGROUND, a few resources at
+  // a time, so a grid that opens full of squares settles into truth while the
+  // first column is being read. That makes `□` a loading state that happens
+  // to be honest, rather than a population you live with.
+  //
+  // It is deliberately not "viewport first": the grid is in triage order, so
+  // row order already puts the least resolved rows at the top of each band —
+  // which is where attention goes anyway. Claiming viewport precision we do
+  // not implement would be worse than saying this.
+  //
+  // It yields between chunks, stops the moment another work list is opened,
+  // and never blocks anything: every pass before it has already rendered.
+  const slow = needed.filter((a) => EXPENSIVE_ANALYSES.has(a));
+  if (slow.length) resolveInBackground(ctx, slugs, slow);
+}
+
+/** Turn `□` into real states, a few resources at a time. */
+async function resolveInBackground(ctx, slugs, analyses) {
+  const token = ++grid.bgToken;
+  const CHUNK = 2;
+  grid.bgRemaining = slugs.length;
+  grid.bgError = null;
+  // Say so BEFORE the first chunk, not after it. The first chunk is the
+  // slowest thing here — measured at 33s per resource on the architecture
+  // analyses — so rendering the notice only on chunk completion left the
+  // longest silence of the whole load completely unexplained.
+  renderGrid();
+  for (let i = 0; i < slugs.length; i += CHUNK) {
+    // A new work list, or a second load of this one, invalidates this pass.
+    if (token !== grid.bgToken) return;
+    const chunk = slugs.slice(i, i + CHUNK);
+    const started = Date.now();
+    try {
+      const bulk = await getBulkFacts(chunk, analyses);
+      if (token !== grid.bgToken) return;
+      for (const slug of chunk) {
+        const facts = bulk.subjects?.[slug];
+        if (!facts) continue;
+        const prev = grid.rows.get(slug);
+        const byId = prev?.factsById || new Map();
+        for (const f of facts) byId.set(f.analysis_id, f);
+        grid.rows.set(slug, { facts: [...byId.values()], factsById: byId });
+      }
+    } catch (err) {
+      // A background pass that fails must not disturb a usable grid. The
+      // squares simply stay squares, which is what they honestly are.
+      grid.bgError = err.message;
+      grid.bgRemaining = 0;
+      renderGrid();
+      return;
+    }
+    grid.bgRemaining = Math.max(0, slugs.length - (i + chunk.length));
+    grid.bgLast = Date.now() - started;
+    renderGrid();
+  }
+  grid.bgRemaining = 0;
   renderGrid();
 }
 
@@ -576,6 +636,14 @@ function digestHtml(members, qs) {
             r.unresolved ? 'text-accent-ink' : 'text-ink-muted'}">${r.unresolved}</span>
         </button>`).join('')}
       </div>
+      <div class="mt-s2 flex flex-wrap gap-s3 text-provenance text-ink-muted">
+        ${[['answered', 'answered'], ['nothing', 'ran, found nothing'],
+           ['partial', 'partial'], ['stored', 'not read yet'], ['human', 'needs a person']]
+          .map(([k, label]) => `<span><i style="display:inline-block;width:9px;height:9px;
+            border-radius:2px;margin-right:5px;background:${DIGEST_TONE[k]}"></i>${esc(label)}</span>`).join('')}
+        <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;
+          margin-right:5px;background:${DIGEST_REST}"></i>not run · no surveyor · unread</span>
+      </div>
     </details>`;
 }
 
@@ -696,6 +764,12 @@ function renderGrid() {
 
   host.innerHTML = `
     ${digestHtml(wl.members, qs)}
+    ${grid.bgRemaining ? `<div class="mb-s2 text-provenance text-ink-muted">
+      Resolving <span class="tnum">${grid.bgRemaining}</span> more resource(s) in the
+      background — <span class="font-mono">□</span> cells become their real state as they land.</div>` : ''}
+    ${grid.bgError ? `<div class="mb-s2 text-provenance text-state-warn">
+      The background read stopped: ${esc(grid.bgError)}. The
+      <span class="font-mono">□</span> cells are unread, not empty — open one to read it.</div>` : ''}
     <div id="wl-readout" class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-[4px] text-caveat">
       <span class="text-ink-muted">Hover or focus a column to read its question.</span>
     </div>
@@ -1493,6 +1567,11 @@ export async function openWorkList(ctx, slug) {
   grid.workList = await getWorkList(slug);
   grid.rows.clear();
   grid.selected.clear();
+  // Invalidate any background resolve still running for the previous list —
+  // its results would land in the new list's rows.
+  grid.bgToken += 1;
+  grid.bgRemaining = 0;
+  grid.bgError = null;
   clearInterval(grid.poll);
   window.__wlCtx = ctx;
   grid.ctx = ctx;   // the cell popup's re-run needs it, and it is not passed down
