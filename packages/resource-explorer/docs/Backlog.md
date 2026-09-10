@@ -4567,11 +4567,22 @@ population as a paid one. Verified end-to-end against the live MLflow:
 `llm_prompt_tokens 17, llm_completion_tokens 2, llm_total_tokens 19,
 llm_counted_calls 1, llm_uncounted_calls 0`.
 
-Two structural faults found while wiring it, both worth remembering. The MLflow
-call was first placed INSIDE the `try` whose `except` marks a run **failed** —
-a metrics sink able to report a completed run as crashed. And `_track` must
-receive `usage` **by value**: it runs on a bare `threading.Thread` and cannot
-read the ContextVar itself.
+Three structural faults found while wiring it, all worth remembering. The
+MLflow call was first placed INSIDE the `try` whose `except` marks a run
+**failed** — a metrics sink able to report a completed run as crashed. `_track`
+must receive `usage` **by value**: it runs on a bare `threading.Thread` and
+cannot read the ContextVar itself.
+
+And the caller's own defensive `try/except` around the sink was itself the
+defect: it made `execute_run` — which returns a `RunOutcome` — a
+broad-except/log-only/value-returning site, which the silent-success ratchet
+caught on the next full run (108 → 109). The fix was not to narrow the wrapper
+but to delete it: `log_run_usage` now guards its **whole** body, config read and
+reachability probe included, so it cannot raise and the call site needs nothing.
+**Protection belongs in the sink, not at every call site** — a guard at each
+caller multiplies the silent sites instead of removing them. Four tests prove
+the sink survives a broken config, an exploding reachability probe and a
+malformed usage dict, and one fails if a wrapper is ever re-added.
 
 **The ContextVar trap this ran into.** `RAGSystem.query` hands off to a bare
 `threading.Thread`, which does NOT inherit ContextVars (asyncio tasks and

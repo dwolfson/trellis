@@ -88,10 +88,16 @@ def log_run_usage(run_id: str, kind: str, usage: dict, *,
     Called from the worker thread that ran the handler, not from a callback —
     the usage scope is a ContextVar and only code running under it can read it.
     """
-    cfg = get_config().observability.mlflow
-    if not cfg.enabled or not endpoint_reachable(cfg.tracking_uri):
-        return
+    # The config read and the reachability probe are INSIDE the try, unlike
+    # log_query above. This function is called from the run worker on a path
+    # where the run has already succeeded, so it must be incapable of raising —
+    # a caller that has to wrap it in its own try/except becomes a
+    # broad-except/log-only/value-returning site itself, which is what the
+    # silent-success ratchet correctly flagged the first version for.
     try:
+        cfg = get_config().observability.mlflow
+        if not cfg.enabled or not endpoint_reachable(cfg.tracking_uri):
+            return
         import mlflow
         mlflow.set_tracking_uri(cfg.tracking_uri)
         mlflow.set_experiment(f"{cfg.experiment_name}-runs")

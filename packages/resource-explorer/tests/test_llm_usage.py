@@ -417,3 +417,59 @@ class TestPhoenixSpansAreAttributable:
         assert PhoenixConfig().project_name not in ("", "default"), (
             "RE's default Phoenix project is the shared `default` bucket"
         )
+
+
+class TestTheSinkCannotRaise:
+    """`execute_run` calls `log_run_usage` with no try/except, deliberately —
+    wrapping it would make that function a broad-except/log-only site in a
+    function returning a RunOutcome, which the silent-success ratchet flags
+    (and did, on the first version: 108 -> 109). That removal is only safe if
+    the sink genuinely cannot raise, so this proves it rather than trusting the
+    comment."""
+
+    def test_a_broken_config_does_not_propagate(self, monkeypatch):
+        from resource_explorer.observability import mlflow_tracking
+
+        def _boom():
+            raise RuntimeError("config unavailable")
+
+        monkeypatch.setattr(mlflow_tracking, "get_config", _boom)
+        mlflow_tracking.log_run_usage("r1", "analysis_run", {"llm_total_tokens": 5})
+
+    def test_an_exploding_reachability_probe_does_not_propagate(self, monkeypatch):
+        from resource_explorer.observability import mlflow_tracking
+
+        def _boom(_uri):
+            raise OSError("network stack gone")
+
+        monkeypatch.setattr(mlflow_tracking, "endpoint_reachable", _boom)
+        mlflow_tracking.log_run_usage("r1", "analysis_run", {"llm_total_tokens": 5})
+
+    def test_a_malformed_usage_dict_does_not_propagate(self, monkeypatch):
+        from resource_explorer.observability import mlflow_tracking
+        monkeypatch.setattr(mlflow_tracking, "endpoint_reachable", lambda _u: True)
+        for bad in ({"llm_models": None}, {"llm_total_tokens": object()}, {"x": [1, 2]}):
+            mlflow_tracking.log_run_usage("r1", "analysis_run", bad)
+
+    def test_the_caller_does_not_wrap_it(self):
+        """If someone re-adds a try/except at the call site, the ratchet will
+        fail — this says why before they spend time on it."""
+        import ast
+        import inspect
+        from resource_explorer import run_queue
+
+        tree = ast.parse(inspect.getsource(run_queue.execute_run).lstrip())
+        wrapped = [
+            t for t in ast.walk(tree)
+            if isinstance(t, ast.Try)
+            and any(
+                getattr(c.func, "id", getattr(c.func, "attr", "")) == "log_run_usage"
+                for stmt in t.body for c in ast.walk(stmt) if isinstance(c, ast.Call)
+            )
+        ]
+        assert not wrapped, (
+            "log_run_usage is wrapped in a try/except at its call site. It "
+            "guards its own whole body, so the wrapper is unnecessary — and it "
+            "makes execute_run a broad-except/log-only/value-returning site, "
+            "which tests/test_no_silent_success.py counts against the baseline."
+        )

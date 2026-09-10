@@ -382,14 +382,16 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     if usage.calls:
         snapshot = usage.as_dict()
         log.info("run %s (%s) llm usage: %s", run_id, kind, snapshot)
-        try:
-            from resource_explorer.observability.mlflow_tracking import log_run_usage
+        # No try/except here on purpose. log_run_usage cannot raise — its whole
+        # body is guarded — and wrapping it would make execute_run itself a
+        # broad-except/log-only site in a function that returns a RunOutcome,
+        # which is exactly what tests/test_no_silent_success.py flags. The
+        # protection belongs in the sink, not at every call site.
+        from resource_explorer.observability.mlflow_tracking import log_run_usage
 
-            log_run_usage(run_id, kind, snapshot,
-                          slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
-                          analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
-        except Exception:  # pragma: no cover
-            log.debug("could not record llm usage for run %s", run_id, exc_info=True)
+        log_run_usage(run_id, kind, snapshot,
+                      slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
+                      analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
 
     registry.finish_run(run_id, outcome.state, error=outcome.error)
     log.info("run finished: id=%s kind=%s state=%s", run_id, kind, outcome.state)
