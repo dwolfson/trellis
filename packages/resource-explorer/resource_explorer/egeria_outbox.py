@@ -197,7 +197,24 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
     with no error anywhere. Re-measure if pyegeria changes these signatures.
     """
     cm = clients.require("collection_manager")
-    cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
+    # `membershipRationale` is a real CollectionMembership property and
+    # `add_to_collection` takes an optional relationship body, so a member's
+    # REASON for being in the collection travels with it instead of staying
+    # local. Sent only when a caller supplied one: the investigation path
+    # does not, and adding an empty body to its writes would change what
+    # every already-queued row means.
+    props = {}
+    if payload.get("membership_rationale"):
+        props["membershipRationale"] = payload["membership_rationale"]
+    if payload.get("expected_confidence") is not None:
+        props["expectedConfidence"] = payload["expected_confidence"]
+    if props:
+        cm.add_to_collection(payload["collection_guid"], payload["member_guid"], body={
+            "class": "NewRelationshipRequestBody",
+            "properties": dict(props, **{"class": "CollectionMembershipProperties"}),
+        })
+    else:
+        cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
     return ""
 
 

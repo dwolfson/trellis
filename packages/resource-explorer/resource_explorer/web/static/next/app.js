@@ -20,6 +20,10 @@
  * it. A confident wrong answer is worse than no answer.
  */
 
+// The Scouting slice — work lists, batch runs and the comparison grid. Its
+// own module: it is the one surface that reads a SET rather than a resource,
+// and it goes when the experiment goes.
+import { listWorkLists, openWorkList, saveAsWorkList } from '/static/next/worklist.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -33,6 +37,7 @@ import {
   getQuestions,
   getScoutingOverview,
   listActivity,
+  listAnalyses,
   listGroups,
   listInvestigationMembers,
   listInvestigations,
@@ -83,6 +88,8 @@ const state = {
   chat: [],                    // the transcript: one entry per turn
   promoted: null,              // a chat answer promoted into the pane
   charts: null,                // Understanding's probed chart index
+  workLists: [],               // saved work lists
+  workListSlug: null,          // the open one; the pane takes over when set
 };
 
 /** The eight intents, in their canonical order, plus Investigation as the
@@ -1248,6 +1255,20 @@ function renderSidebar() {
 
     ${state.selectMode ? selectActionsHtml() : ''}
 
+    ${state.workLists.length ? `
+      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
+        Work lists · <span class="tnum">${state.workLists.length}</span>
+      </div>
+      <div class="mb-s4 flex flex-col gap-[1px]">
+        ${state.workLists.map((w) => `<button data-worklist="${esc(w.slug)}"
+          class="cursor-pointer truncate bg-transparent px-2 py-[5px] text-left ${
+            w.slug === state.workListSlug
+              ? 'border-l-2 border-accent bg-chrome-surface text-chrome-ink'
+              : 'border-l-2 border-transparent text-chrome-ink hover:bg-chrome-surface'}"
+          >${esc(w.display_name)} <span class="tnum text-chrome-muted">${w.member_count}</span>${
+            w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
+      </div>` : ''}
+
     ${state.resourceType !== 'repo' ? `
       <div class="text-chip text-chrome-ink" style="border-bottom:1px dashed currentColor;padding-bottom:2px">
         Databases and filesystems · not built in /next
@@ -1313,6 +1334,9 @@ function selectActionsHtml() {
         <option value="">mark as…</option>
         ${VALID_DISPOSITIONS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
       </select>
+      <button data-act="sel-worklist"
+        title="Save the selected resources as a work list you can run, compare and narrow"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">save as work list</button>
       <button data-act="sel-delete"
         title="Unregister entirely and delete all local survey data"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">delete…</button>
@@ -1364,7 +1388,13 @@ function bindSidebar() {
     else state.selected.delete(cb.dataset.sel);
     renderSidebar();
   }));
+  el.querySelectorAll('button[data-worklist]').forEach((b) => b.addEventListener('click', () => {
+    state.workListSlug = b.dataset.worklist;
+    renderSidebar();
+    loadPane();
+  }));
   el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', () => {
+    state.workListSlug = null;      // picking a resource leaves the set view
     // Selecting a resource preserves stage and perspectives, deliberately.
     state.selectedSlug = b.dataset.slug;
     rerender();
@@ -1395,6 +1425,7 @@ function bindSidebar() {
     'sel-scope-remove': () => bulkScope(false),
     'sel-hide': () => bulkHide(),
     'sel-delete': () => confirmBulkDelete(),
+    'sel-worklist': () => saveSelectionAsWorkList(),
   };
   for (const [name, fn] of Object.entries(acts)) {
     el.querySelector(`[data-act="${name}"]`)?.addEventListener('click', fn);
@@ -1521,6 +1552,34 @@ async function bulkDelete(slugs) {
     ? `<span class="text-accent-on-dark">${esc(failed.join('; '))}</span>`
     : `<span class="tnum">${slugs.length - failed.length}</span> removed.`);
   if (!state.selectedSlug) loadPane();
+}
+
+/** Turn the sidebar's current selection into a work list.
+ *
+ *  This is the hinge of the slice: a selection is ephemeral and a work list
+ *  is the thing you can run across, compare, narrow and publish. */
+async function saveSelectionAsWorkList() {
+  const slugs = [...state.selected];
+  if (!slugs.length) return;
+  const name = window.prompt(
+    `Name for a work list of ${slugs.length} resource(s):`,
+    state.investigation ? `${state.investigation} candidates` : 'Candidates');
+  if (name === null) return;
+  sidebarNote('Saving…');
+  try {
+    const wl = await saveAsWorkList(name.trim() || 'Candidates', slugs, {
+      investigation: state.investigation,
+      rationale: 'selected in the sidebar',
+    });
+    state.workLists = await listWorkLists();
+    state.workListSlug = wl.slug;
+    state.selectMode = false;
+    state.selected.clear();
+    renderSidebar();
+    await loadPane();
+  } catch (err) {
+    sidebarNote(`<span class="text-accent-on-dark">Not saved: ${esc(err.message)}</span>`);
+  }
 }
 
 /* ── Investigation ───────────────────────────────────────────────────── */
@@ -1972,6 +2031,7 @@ function writeUrl() {
   if (state.selectedSlug) p.set('resource', state.selectedSlug);
   if (state.stage !== 'scouting') p.set('stage', state.stage);
   if (state.subTab !== 'questions') p.set('tab', state.subTab);
+  if (state.workListSlug) p.set('worklist', state.workListSlug);
   if (state.activePerspectives.size) p.set('perspectives', [...state.activePerspectives].join(','));
   const url = `${location.pathname}${p.toString() ? `?${p}` : ''}`;
   history.replaceState(null, '', url);
@@ -1986,6 +2046,7 @@ function readUrl() {
     if (p.get('resource')) state.selectedSlug = p.get('resource');
     if (p.get('stage')) state.stage = p.get('stage');
     if (p.get('tab')) state.subTab = p.get('tab');
+    if (p.get('worklist')) state.workListSlug = p.get('worklist');
     const persp = p.get('perspectives');
     if (persp) state.activePerspectives = new Set(persp.split(',').filter(Boolean));
   } finally {
@@ -2333,6 +2394,21 @@ function paneMessage(title, body) {
 
 async function loadPane() {
   const el = $('content');
+
+  // A work list is a view of a SET, so it replaces the single-resource pane
+  // rather than sitting inside it. Everything else in /next reads one
+  // resource at a time; this is the one surface that does not.
+  if (state.workListSlug) {
+    await openWorkList({
+      el,
+      stage: state.stage,
+      projects: state.projects,
+      analyses: state.analyses || [],
+      onExit: () => { state.workListSlug = null; writeUrl(); renderSidebar(); loadPane(); },
+    }, state.workListSlug);
+    writeUrl();
+    return;
+  }
 
   if (state.subTab !== 'questions') {
     const tab = SUB_TABS.find((t) => t.id === state.subTab)
@@ -2983,7 +3059,8 @@ async function start() {
   // down with it. `allSettled`, and each consumer handles its own absence.
   state.investigation = currentInvestigation();
 
-  const [me, projects, perspectives, activity, rfas, groups, investigations] =
+  const [me, projects, perspectives, activity, rfas, groups, investigations,
+         workLists, analyses] =
     await Promise.allSettled([
       getMe(),
       // The FULL list — every disposition, hidden included — because the
@@ -2991,7 +3068,7 @@ async function start() {
       // make the `ignored`, `abandoned` and hidden facets permanently empty.
       listProjects({ includeIgnored: true, includeHidden: true }),
       listPerspectives(), listActivity(ACTIVITY_LIMIT), listRfas(),
-      listGroups(), listInvestigations(),
+      listGroups(), listInvestigations(), listWorkLists(), listAnalyses('repo'),
     ]);
 
   if (me.status === 'fulfilled') state.me = me.value;
@@ -3003,6 +3080,8 @@ async function start() {
   state.counts.activity = countOf(activity, ACTIVITY_LIMIT, 'entries');
   state.counts.rfas = countOf(rfas, RFA_LIMIT, 'rfas');
   if (groups.status === 'fulfilled') state.groups = groups.value || [];
+  if (workLists.status === 'fulfilled') state.workLists = workLists.value || [];
+  if (analyses.status === 'fulfilled') state.analyses = analyses.value || [];
   if (investigations.status === 'fulfilled') state.investigations = investigations.value || [];
   if (projects.status === 'fulfilled') {
     state.projects = projects.value || [];

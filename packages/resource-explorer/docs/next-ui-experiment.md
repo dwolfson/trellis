@@ -511,6 +511,96 @@ given.** It is the first round that is not API-free:
 
 The rest of the slice is client work on top of those two.
 
+## Round 6 — the Scouting vertical slice
+
+The bundle's Round 3, built: search → select → **save as a work list** → **run
+one survey across the set** → **compare as rows × questions** → **bulk
+disposition with reasons** → **promote the survivors**. It is the first
+surface in `/next` that reads a SET rather than one resource at a time, which
+is the constraint the whole review is about.
+
+| Path | What it is |
+|---|---|
+| `resource_explorer/work_lists.py` | storage, batch enqueue, Egeria publish |
+| `web/routes/work_lists.py` | `/api/work-lists/…` |
+| `static/next/worklist.js` | the grid, the batch watcher, the bulk actions |
+
+### The type is `WorkingSet`, not `WorkList`
+
+`WorkList` **does not exist in Egeria** — no hit anywhere in the type archive
+or `OpenMetadataType`. `WorkingSet` does, and its own definition is this
+feature: *"a list of elements that are being worked on by a process or by a
+group of people."*
+
+`WorkItemList` is the neighbouring type and is the wrong one — *"a list of
+activities such as ToDos, Tasks"*. A work list holds the **resources** being
+worked on, not the activities. If the runs launched across a set ever want
+cataloguing themselves, that is what `WorkItemList` would be for, as a second
+collection beside this one.
+
+RE already makes `WorkingSet` collections for an investigation's
+per-disposition membership, so this is a second producer of the subtype; they
+are told apart by qualifiedName (`WorkingSet::resource-explorer::<slug>`).
+
+`membershipRationale` is real, and pyegeria's `add_to_collection` takes an
+optional relationship body — so a member's reason travels to Egeria rather
+than staying local. The shared creator sends a body **only** when a caller
+supplied one, so the investigation path's already-queued rows keep meaning
+what they meant.
+
+### The one backend change
+
+`POST /api/work-lists/runs/batch` — a set plus an analysis, one `runs` row per
+resource, a `set_id` back — and `GET /api/work-lists/runs/sets/{set_id}` for
+progress. The queue already did the hard half (`SKIP LOCKED`, per-user
+fairness, dead-worker reconciliation); what was missing was a caller that
+enqueues a set and a view that watches it finish.
+
+Progress is **derived from the run rows on every read**, never stored: a
+cached aggregate goes stale the moment a worker updates a row without
+telling it. A run row that has vanished reports `unknown`, not `done` — an
+unobserved run is not a successful one. The watcher shows queued / running /
+done / failed *separately*, because "12 of 14 finished" hides that two failed.
+
+### Every cell says which of the six states it is in
+
+The grid's hardest requirement is the question pane's, at higher density: an
+empty cell must not stand for "never ran", "ran and found nothing" and
+"nothing can answer this" at once. Nine cell states, keyed by a legend under
+the grid, including `∅ ran, found nothing` and a distinct `? could not read`
+for a resource whose facts failed to load.
+
+One call per resource, not one per cell — `GET /api/analyses/facts/{slug}`
+returns every already-judged fact and the columns are looked up among them.
+Fourteen calls, not seventy.
+
+### Writes, and what was deliberately not run
+
+Four interactive peer sessions were live and `SendMessage` is unavailable in
+this tab, so the usual clearance could not be obtained. The work was split by
+blast radius instead:
+
+- **Verified on an isolated SQLite registry** (`REGISTRY_DATABASE_URL`
+  pointing at a scratch file, no worker): create with dedupe, `set_member`
+  with rationale and confidence, batch enqueue of three runs, progress
+  derivation, a missing set returning `None`, and promote recording
+  `derived_from` while silently dropping a non-member.
+- **Verified with a stub client, contacting nothing**: the outbox payloads a
+  publish would queue, and the exact body pyegeria would receive — with
+  `membershipRationale`/`expectedConfidence` when supplied and `body: null`
+  when not.
+- **One work list created in the shared registry** to verify the grid against
+  real facts. Safe by the coordination skill's own test: it writes only
+  `work_lists`/`work_list_members`, three new tables nothing else reads, so a
+  concurrent writer cannot be duplicated or diverged.
+- **NOT run: the batch, and the publish.** The first writes `runs` rows that
+  a live worker would execute as real surveys; the second reaches shared
+  Egeria. Both need peer clearance rather than an assumption.
+
+The seeded list is `Egeria family — scouting` (`wl-b37710b3b4`, two members).
+Deleting a work list is local-only and never removes a published Collection —
+that is a catalog decision with its own consequences.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it
@@ -528,9 +618,9 @@ The rest of the slice is client work on top of those two.
   verdicts, the Context form, Automate, the Activity log, the RFA drawer,
   Admin, and the stat tiles. Each is marked and linked out; none is silently
   absent.
-- **The work-list grid does not exist**, so the "one question across several
-  resources" row of the form table has nowhere to go. It needs a batch-enqueue
-  endpoint that does not exist either.
+- **The batch run and the Egeria publish have not been exercised end to
+  end** — see "what was deliberately not run" above. Both need a moment when
+  the other sessions on this machine are quiet.
 - **Lucide is not wired in.** The screen needs almost no icons: its state
   vocabulary is typographic (`✓ ○ ⚠ ·`), which is not emoji and not an icon
   set. Add the sprite when a surface actually needs one.

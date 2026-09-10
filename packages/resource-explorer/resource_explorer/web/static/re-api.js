@@ -274,6 +274,55 @@ export const REPO_CHARTS = [
 export const getChart = (slug, kind) =>
   get(`/api/stats/${encodeURIComponent(slug)}/charts/${encodeURIComponent(kind)}`);
 
+/* ── Work lists and batch runs ───────────────────────────────────────── */
+
+export const listWorkLists = (investigation = '') =>
+  get(`/api/work-lists/${investigation ? `?investigation=${encodeURIComponent(investigation)}` : ''}`);
+
+export const getWorkList = (slug) => get(`/api/work-lists/${encodeURIComponent(slug)}`);
+
+export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '' } = {}) =>
+  post('/api/work-lists/', {
+    display_name: displayName, entity_slugs: [...entitySlugs],
+    investigation, rationale, description,
+  });
+
+export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
+       { survivors: [...survivors], display_name: displayName, rationale });
+
+/**
+ * Publish a work list to Egeria as a `WorkingSet` collection.
+ *
+ * NOT `WorkList` — that type does not exist in Egeria. `WorkingSet` is the
+ * one whose definition is this feature ("a list of elements that are being
+ * worked on"); `WorkItemList` is the neighbouring type and is for activities.
+ *
+ * Explicit: creating or editing a list publishes nothing.
+ */
+export const publishWorkList = (slug) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/publish`);
+
+/**
+ * Run one analysis across a SET of resources, concurrently.
+ *
+ * Returns a `set_id` to poll. One queue row per resource, so one failure is
+ * one row — the rest still run.
+ */
+export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '') =>
+  post('/api/work-lists/runs/batch', {
+    analysis_id: analysisId, entity_slugs: [...entitySlugs], work_list_slug: workListSlug,
+  });
+
+/** Progress for one batch, derived from the run rows on every read. */
+export const getBatchProgress = (setId) =>
+  get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);
+
+/** Every fact known about a resource, already judged. One call per resource —
+ *  which is what makes a rows x questions grid affordable. */
+export const getResourceFacts = (slug) =>
+  get(`/api/analyses/facts/${encodeURIComponent(slug)}`);
+
 /* ── Running an analysis ─────────────────────────────────────────────── */
 
 export const runAnalysis = (slug, analysisId) =>
