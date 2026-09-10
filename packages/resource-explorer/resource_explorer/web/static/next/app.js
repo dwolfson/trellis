@@ -996,9 +996,13 @@ async function promoteToPane(turn) {
  *     a plain comment and an `%%{init: …}%%` directive alike, on a two-node
  *     diagram. That is why theming moved out of an init directive and into
  *     `themeSvgElement()` below; it is not a preference.
- *  2. `%` IS ESCAPED to `&#37;`. A literal percent anywhere in a node label
- *     fails the whole render. `architecture_diagram` writes confidence as
- *     `40% ⚠` into every label, so this alone made it unrenderable.
+ *  2. `%` IS ESCAPED to `&percnt;`. A literal percent anywhere in a node
+ *     label fails the whole render, and `architecture_diagram` writes
+ *     confidence as `40% ⚠` into every label, so this alone made it
+ *     unrenderable. `&percnt;` and NOT `&#37;`: both are accepted (200), but
+ *     the numeric one comes back rendered as `40&%` — measured by reading
+ *     the text nodes of the returned SVG, which is the only way to tell the
+ *     two apart, since both "work" by status code.
  *  3. `class` ASSIGNMENTS ARE CAPPED at 20 nodes total. 20 renders, 21 does
  *     not, deterministically, whether on one line or split across several.
  *     Excess assignments are dropped rather than the diagram, and the caller
@@ -1018,7 +1022,7 @@ function mermaidForKroki(source) {
   let droppedStyles = 0;
   for (const raw of String(source).split('\n')) {
     if (raw.trimStart().startsWith('%%')) continue;
-    const line = raw.replace(/%/g, '&#37;');
+    const line = raw.replace(/%/g, '&percnt;');
     const m = /^\s*class\s+(\S+)\s+\S+;\s*$/.exec(line);
     if (m) {
       const n = m[1].split(',').length;
@@ -2944,6 +2948,17 @@ function measureHtml(key, v) {
     return `<div>${label} <span class="text-chrome-muted"><span class="tnum">${n}</span> fields</span></div>`;
   }
   const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v);
+  // A long string is SUMMARISED, never dumped. `architecture_diagram`'s value
+  // carries 9,384 characters of Mermaid source, and rendering it as a scalar
+  // filled the rail with raw diagram code — which reads as the app having
+  // broken, not as a measure. The rail is 290px; nothing that wide belongs in
+  // it, and the diagram already has its own action.
+  if (shown.length > 120) {
+    const isDiagram = /^(mermaid|diagram|svg)$/i.test(key);
+    return `<div>${label} <span class="text-chrome-muted">${
+      isDiagram ? 'diagram source' : 'text'} · <span class="tnum">${shown.length}</span> characters${
+      isDiagram ? ' — use “Open diagram in pane”' : ''}</span></div>`;
+  }
   return `<div>${label} <span class="tnum">${tnum(esc(shown))}</span></div>`;
 }
 
