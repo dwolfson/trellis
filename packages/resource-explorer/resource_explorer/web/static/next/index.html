@@ -172,6 +172,20 @@
      the cells you are comparing. This does none of those, and gives keyboard
      users exactly what pointer users get. */
   #wl-readout { min-height: 1.6em; }
+
+  /* Dashboard cards. A PROSE measurement is a peer of a numeric one — same
+     border, same weight, same rank in the flow — and simply wider, because a
+     sentence needs a measure to be read at. A grid that can only hold numbers
+     pushes the honest findings to the bottom of the page. */
+  .wl-cards {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+  .wl-card-wide { grid-column: span 2; }
+  @media (max-width: 780px) {
+    .wl-cards { grid-template-columns: minmax(0, 1fr); }
+    .wl-card-wide { grid-column: auto; }
+  }
   #wl-grid th.wl-col-live { color: var(--wl-accent-ink, #7a6a3f); }
   #wl-grid .wl-cellbtn:focus-visible { outline: 2px solid var(--wl-focus, #7a6a3f); outline-offset: 1px; }
 

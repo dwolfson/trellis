@@ -2640,7 +2640,9 @@ async function loadDashboardPane() {
               ? `<span class="text-provenance text-ink-muted">· published ${esc(ago(b.last_published_at))}</span>` : ''}
           </div>
           ${b.description ? `<p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
-          ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
+          <div class="wl-cards mt-s2">
+            ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
+          </div>
         </div>`).join('')
       : `No dashboard is registered for ${esc(stage)}.`;
   })();
@@ -2676,53 +2678,67 @@ async function loadDashboardPane() {
 /** Invalidates an in-flight dashboard read when the pane or resource changes. */
 let dashToken = 0;
 
-/** One analysis inside a dashboard: its name, and the numbers it measured.
+/** One analysis inside a dashboard, as a CARD in the same grid as the others.
  *
- * `analyses` carries `{analysis_id, results}` — the measurements themselves,
- * not a list of ids. Joining that array to a string yields `[object Object]`,
- * which is what the first version of this pane rendered.
+ * A prose measurement is a PEER OF THE TILE, not a fallback beneath it: same
+ * border, same weight, same rank, its own measurement date. It is just wider,
+ * because a sentence needs a measure to be read at.
  *
- * Only SCALARS are shown, and at most six. A results dict also carries nested
- * detail, and a dashboard that dumps it is a worse version of the cell popup.
+ * This matters more than layout. "Not measurable, and here is why" is a
+ * result, not an absence — often the most decision-relevant one on the pane,
+ * because it says what a whole line of enquiry would cost to open. Three
+ * analyses here carry no numbers at all, and a tile grid that can only hold
+ * numbers pushes exactly those findings to the bottom of the page.
  */
 function dashboardAnalysisHtml(a) {
   const id = a.analysis_id || 'unknown';
   const results = a.results || {};
+  const when = a.last_surveyed_at || a.surveyed_at || '';
+  const stamp = `<div class="mt-[6px] text-provenance text-ink-muted">
+    <span class="font-mono">${esc(id)}</span>${when ? ` · ${esc(ago(when))}` : ''}</div>`;
+
   const scalars = Object.entries(results)
     .filter(([, v]) => typeof v === 'number' || typeof v === 'boolean')
     .slice(0, 6);
-  // A results dict is EITHER scores OR findings, and the findings are the
-  // better half: `maturity`, `community_support` and `chaoss_metrics` carry no
-  // numbers at all, only written sentences — "No discussions, issues or wiki —
-  // nowhere obvious to ask a question." Rendering those as "nothing scalar to
-  // show" threw away the most readable thing on the pane.
   const findings = Array.isArray(results.findings) ? results.findings : [];
-  if (!scalars.length && findings.length) {
-    return `<div class="mt-s2">
-      <div class="font-mono text-provenance text-ink-muted">${esc(id)}</div>
-      <ul class="m-0 mt-[2px] list-none p-0 text-caveat">
-        ${findings.slice(0, 6).map((f) => `<li class="text-ink">
-          <span class="text-ink-muted">${esc((f.check_name || '').replace(/_/g, ' '))}</span>
-          ${f.label ? ` · <strong class="font-semibold">${esc(f.label)}</strong>` : ''}
-          ${f.summary ? ` — ${tnum(esc(f.summary))}` : ''}</li>`).join('')}
-        ${findings.length > 6
-          ? `<li class="text-ink-muted">and ${findings.length - 6} more — open the
-              question this answers to read them all</li>` : ''}
-      </ul>
+
+  if (scalars.length) {
+    // The headline number gets the size; the rest ride under it.
+    const [k0, v0] = scalars[0];
+    const rest = scalars.slice(1);
+    return `<div class="wl-card border border-rule p-s3">
+      <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(k0.replace(/_/g, ' '))}</div>
+      <div class="tnum font-heading text-name text-ink">${esc(fmtScalar(v0))}</div>
+      ${rest.length ? `<div class="mt-[4px] flex flex-wrap gap-s2 text-caveat text-ink-muted">
+        ${rest.map(([k, v]) => `<span>${esc(k.replace(/_/g, ' '))}
+          <span class="tnum text-ink">${esc(fmtScalar(v))}</span></span>`).join('')}</div>` : ''}
+      ${stamp}
     </div>`;
   }
-  if (!scalars.length) {
-    return `<div class="mt-s1 text-provenance text-ink-muted">
-      <span class="font-mono">${esc(id)}</span> — measured, with nothing scalar
-      and no written findings to show</div>`;
+
+  if (findings.length) {
+    return findings.slice(0, 6).map((f) => `
+      <div class="wl-card wl-card-wide border border-rule p-s3">
+        <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(
+          (f.check_name || id).replace(/_/g, ' '))}${
+          f.label ? ` — ${esc(f.label)}` : ''}</div>
+        ${f.summary ? `<div class="mt-[6px] text-answer text-ink">${tnum(esc(f.summary))}</div>` : ''}
+        ${stamp}
+      </div>`).join('');
   }
-  return `<div class="mt-s2">
-    <div class="font-mono text-provenance text-ink-muted">${esc(id)}</div>
-    <div class="mt-[2px] flex flex-wrap gap-s3 text-caveat">
-      ${scalars.map(([k, v]) => `<span class="text-ink-muted">${esc(k.replace(/_/g, ' '))}
-        <span class="tnum text-ink">${esc(typeof v === 'number' ? String(Math.round(v * 10) / 10) : String(v))}</span></span>`).join('')}
-    </div>
+
+  return `<div class="wl-card border border-rule p-s3">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(id)}</div>
+    <div class="mt-[6px] text-caveat text-ink-muted">Measured, with nothing scalar and no
+      written finding to show.</div>
+    ${stamp}
   </div>`;
+}
+
+/** Numbers to one decimal, booleans as words. */
+function fmtScalar(v) {
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  return String(Math.round(v * 10) / 10);
 }
 
 /** What a deferred sub-tab shows when you click it. */
