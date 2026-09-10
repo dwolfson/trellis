@@ -29,6 +29,7 @@ import {
   getQuestions,
   getBulkFacts,
   getBulkStates,
+  getAnalysisTrend,
   getDispositionHistory,
   getWorkList,
   listAnalyses,
@@ -1365,6 +1366,7 @@ function openRefreshPlan(ctx) {
     <p class="mt-s3 text-ink">This queues <span class="tnum" id="wl-plan-n">${staleCount}</span>
       run(s), one batch per analysis carrying only the resources that need it.
       Nothing runs until you confirm.</p>
+    <div id="wl-plan-movement"></div>
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="go"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
@@ -1379,6 +1381,9 @@ function openRefreshPlan(ctx) {
     body.querySelector('#wl-plan-n').textContent =
       planSize(plan.stale) + (incl.checked ? planSize(plan.never) : 0);
   });
+  reportPlanMovement('wl-plan-movement',
+    [...plan.stale.entries()].flatMap(([analysis, ss]) => ss.map((slug) => ({ slug, analysis }))));
+
   body.querySelector('[data-act="go"]').addEventListener('click', () => {
     // Merged per analysis, so one that is stale on some resources and never
     // run on others is ONE batch, not two.
@@ -1392,6 +1397,47 @@ function openRefreshPlan(ctx) {
     closeCellDetail();
     runRefresh(merged, ctx);
   });
+}
+
+/**
+ * How many of the runs a plan queues are for measurements that have not moved.
+ *
+ * The same fact the dashboard shows on a measurement, counted over a PLAN —
+ * "of the N runs this queues, M are for measurements unchanged across their
+ * recorded runs". On a measurement it reports; here it argues, because this is
+ * the moment before paying again, and a cadence that returns nothing is only
+ * visible as a cost at the point of spending.
+ *
+ * Best-effort and non-blocking: it fills in after the plan renders, and an
+ * unreadable series simply is not counted. A plan must never wait on it.
+ */
+async function reportPlanMovement(slotId, slug_pairs) {
+  const slot = document.getElementById(slotId);
+  if (!slot || !slug_pairs.length) return;
+  // One read per ANALYSIS, not per pair: the series is per (resource,
+  // analysis), but an unchanged analysis is usually unchanged across the set,
+  // and a plan preview must not cost more than the run it is describing.
+  const sample = slug_pairs.slice(0, 12);
+  const results = await Promise.all(sample.map(async ({ slug, analysis }) => {
+    try {
+      const res = await getAnalysisTrend(slug, analysis);
+      const series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
+      if (series.length < 2) return null;
+      const values = new Set(series.map((r) => r.metric_value ?? r.value));
+      return values.size === 1 ? { slug, analysis, runs: series.length } : null;
+    } catch (_) {
+      return null;                     // not tracked, or unreadable — not counted
+    }
+  }));
+  const still = results.filter(Boolean);
+  if (!still.length || !document.getElementById(slotId)) return;
+  const names = [...new Set(still.map((x) => x.analysis))];
+  slot.innerHTML = `<div class="mt-s2 text-caveat text-accent-ink">
+    Of the <span class="tnum">${slug_pairs.length}</span> run(s) this queues,
+    <span class="tnum">${still.length}</span> are for measurements
+    <strong>unchanged across their recorded runs</strong> —
+    <span class="font-mono">${esc(names.join(', '))}</span>. Re-running those will
+    measure them again and, on this evidence, change nothing.</div>`;
 }
 
 /** Enqueue one batch per analysis, each carrying only its own resources. */
@@ -1603,6 +1649,7 @@ function runBatch(ctx) {
         <strong>these will be re-run too</strong>. To skip them, use
         <em>Bring up to date</em> instead.</li>
     </ul>
+    <div id="wl-run-movement"></div>
     <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="go"
@@ -1611,6 +1658,8 @@ function runBatch(ctx) {
       <button type="button" data-act="close"
         class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
     </div>`;
+  reportPlanMovement('wl-run-movement', slugs.map((slug) => ({ slug, analysis: analysisId })));
+
   body.querySelector('[data-act="go"]').addEventListener('click', () => {
     closeCellDetail();
     enqueueRun(ctx, analysisId, slugs);

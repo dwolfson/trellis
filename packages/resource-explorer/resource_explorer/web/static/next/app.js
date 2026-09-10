@@ -2842,8 +2842,11 @@ async function historyHtml(slug, analysisId, metric = '') {
   }
   if (!series.length) return '<p class="text-caveat text-ink-muted">No recorded history.</p>';
   if (series.length === 1) {
-    return `<p class="text-caveat text-ink-muted">First measurement —
-      ${esc(ago(series[0].surveyed_at))}. There is no trend with one point.</p>`;
+    // "There WILL be a trend" is the whole difference from `not tracked`, and
+    // it is the half a reader cannot infer from an empty list.
+    return `<p class="text-caveat text-ink-muted">First measurement,
+      ${esc(ago(series[0].surveyed_at))}. Tracked, but measured once — there will
+      be a trend; there isn't one yet.</p>`;
   }
   series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
   return `
@@ -2895,8 +2898,14 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
       ${when ? `<span class="ml-auto text-provenance text-ink-muted">measured ${esc(ago(when))}</span>` : ''}
     </div>
     ${summary ? `<p class="mt-s1 max-w-[70ch] text-ink">${tnum(esc(summary))}</p>` : ''}
-    ${trendSupport(analysisId) === 'not_tracked' ? '' : `
-      <div id="md-history" class="mt-s3 text-caveat text-ink-muted">Reading the history…</div>`}
+    ${trendSupport(analysisId) === 'not_tracked'
+      // Said, flatly, once. No history SECTION — an empty section implies
+      // something should be there — but not silence either: a reader who
+      // expects a history and finds nothing cannot tell "correctly none" from
+      // "we forgot". One line closes that.
+      ? `<p class="mt-s3 text-caveat text-ink-muted">Current-state classification —
+          not tracked over time.</p>`
+      : `<div id="md-history" class="mt-s3 text-caveat text-ink-muted">Reading the history…</div>`}
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="rerun"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
