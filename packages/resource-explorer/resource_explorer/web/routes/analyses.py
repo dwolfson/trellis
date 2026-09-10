@@ -9,6 +9,9 @@ from resource_explorer.surveyors.analysis_catalog_reader import (
     list_perspectives,
 )
 
+import logging
+
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -134,6 +137,79 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     return get_questions(resource_type)
+
+
+#: Most resources one bulk read will serve. Beyond this the request is
+#: REFUSED with the cap named, rather than quietly truncated — a matrix that
+#: silently drops rows past 200 is worse than one that says it cannot.
+BULK_FACTS_MAX_SUBJECTS = 200
+
+
+@router.get("/facts")
+def bulk_resource_facts(
+    slugs: str = Query(..., description="comma-separated resource slugs"),
+    analysis_ids: str = Query("", description="comma-separated; omit for every analysis"),
+) -> dict:
+    """What is known about SEVERAL resources, in one call.
+
+    Exists for the comparison matrix, which is rows x questions and was making
+    one request per row. Twelve rows is twelve round trips; four hundred is
+    four hundred.
+
+    **Scope `analysis_ids` if you can.** The cost here is dominated by a
+    couple of analyses whose results readers are genuinely expensive —
+    measured on `egeria_git`, `architecture_recovery` takes 47s and
+    `architecture_diagram` 22s, while the other 32 together take under a
+    second. Reading all 34 for one resource is 70s; reading the 5 that
+    Scouting's questions actually use is 0.5s. A caller that knows which
+    analyses it will display should say so.
+
+    A GET rather than a POST because it is a read, and this app has a
+    read-only mode that a POST would put it out of reach of. The cost of that
+    choice is the URL length, hence the cap.
+    """
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+
+    subjects = [s.strip() for s in slugs.split(",") if s.strip()]
+    # Deduped, order preserved: a repeated slug in the request should not mean
+    # the work is done twice.
+    subjects = list(dict.fromkeys(subjects))
+    if not subjects:
+        raise HTTPException(status_code=400, detail="slugs is required")
+    if len(subjects) > BULK_FACTS_MAX_SUBJECTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(subjects)} resources requested; this endpoint serves at "
+                   f"most {BULK_FACTS_MAX_SUBJECTS} at a time",
+        )
+
+    ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
+    ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+
+    layer = FactLayer()
+    out: dict[str, list] = {}
+    failed: dict[str, str] = {}
+    for slug in subjects:
+        try:
+            out[slug] = [f.as_dict() for f in layer.facts(slug, ids)]
+        except Exception as exc:
+            # One unreadable resource is one unreadable resource. Named, and
+            # kept OUT of `subjects`, so a caller cannot mistake "we could not
+            # read it" for "it has no results" — the distinction this whole
+            # layer exists to preserve.
+            log.warning("bulk facts failed for %s: %s", slug, exc)
+            failed[slug] = f"{type(exc).__name__}: {exc}"
+
+    return {
+        "subjects": out,
+        "analysis_ids": ids,
+        "requested": len(subjects),
+        "returned": len(out),
+        "unreadable": failed,
+    }
 
 
 @router.get("/facts/{slug}")

@@ -318,10 +318,30 @@ export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '') =>
 export const getBatchProgress = (setId) =>
   get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);
 
-/** Every fact known about a resource, already judged. One call per resource —
- *  which is what makes a rows x questions grid affordable. */
+/** Every fact known about ONE resource, already judged. */
 export const getResourceFacts = (slug) =>
   get(`/api/analyses/facts/${encodeURIComponent(slug)}`);
+
+/**
+ * Facts for SEVERAL resources, in one call.
+ *
+ * ALWAYS pass `analysisIds` when you know them. The cost is dominated by two
+ * analyses with expensive results readers — measured on `egeria_git`,
+ * `architecture_recovery` 47s and `architecture_diagram` 22s, against under a
+ * second for the other 32 combined. Reading all 34 is 70s per resource;
+ * reading the 5 that Scouting's questions use is 0.5s. Omitting the scope is
+ * what made a four-member work list look hung.
+ *
+ * Returns `{subjects: {slug: [fact]}, unreadable: {slug: reason}}` — a
+ * resource that could not be read is named there rather than coming back as
+ * an empty fact list, which would be indistinguishable from one that has no
+ * results.
+ */
+export const getBulkFacts = (slugs, analysisIds = []) => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(',') });
+  if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
+  return get(`/api/analyses/facts?${qs}`);
+};
 
 /* ── Running an analysis ─────────────────────────────────────────────── */
 

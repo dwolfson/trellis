@@ -27,7 +27,7 @@ import {
   enqueueBatch,
   getBatchProgress,
   getQuestions,
-  getResourceFacts,
+  getBulkFacts,
   getWorkList,
   listAnalyses,
   listWorkLists,
@@ -81,6 +81,13 @@ export function cellState(question, factsById) {
   if (found.some((f) => f.state === 'partial')) return 'partial';
   if (found.every((f) => f.state === 'never_run')) return 'unrun';
   return 'partial';
+}
+
+/** Every analysis id the given questions read — the scope for the bulk call.
+ *  Questions with no analysis contribute nothing, which is why a stage of
+ *  `gap`/`human` questions costs almost nothing to display. */
+function qsAnalysisIds(questions) {
+  return (questions || []).flatMap((q) => q.analysis_ids || []);
 }
 
 /* ── State ──────────────────────────────────────────────────────────── */
@@ -266,19 +273,34 @@ async function loadGrid(ctx) {
   grid.commonRationale = rationales.size === 1 ? [...rationales][0] : null;
 
   renderGrid();
-  // Rows arrive independently, same as the question pane: one slow resource
-  // must not hold up thirteen others.
-  await Promise.all(wl.members.map(async (m) => {
-    try {
-      const res = await getResourceFacts(m.entity_slug);
-      const byId = new Map();
-      for (const f of res.facts || []) byId.set(f.analysis_id, f);
-      grid.rows.set(m.entity_slug, { facts: res.facts || [], factsById: byId });
-    } catch (err) {
-      grid.rows.set(m.entity_slug, { error: err.message });
+
+  // ONE call for the whole set, scoped to the analyses these columns read.
+  //
+  // It was one request per row, each asking for all 34 analyses — and two of
+  // those have results readers costing 47s and 22s on a large repo, so a
+  // four-member work list took minutes and looked hung. Asking for the five
+  // that Scouting's questions actually use takes 0.5s per resource.
+  const needed = [...new Set(qsAnalysisIds(grid.questions))];
+  try {
+    const bulk = await getBulkFacts(wl.members.map((m) => m.entity_slug), needed);
+    for (const m of wl.members) {
+      const facts = bulk.subjects?.[m.entity_slug];
+      if (facts) {
+        const byId = new Map();
+        for (const f of facts) byId.set(f.analysis_id, f);
+        grid.rows.set(m.entity_slug, { facts, factsById: byId });
+      } else {
+        // Named by the server as unreadable, or simply absent. Either way it
+        // is "we could not read this", not "this has no results".
+        grid.rows.set(m.entity_slug, {
+          error: bulk.unreadable?.[m.entity_slug] || 'no facts returned for this resource',
+        });
+      }
     }
-    renderGrid();
-  }));
+  } catch (err) {
+    for (const m of wl.members) grid.rows.set(m.entity_slug, { error: err.message });
+  }
+  renderGrid();
 }
 
 function renderGrid() {
