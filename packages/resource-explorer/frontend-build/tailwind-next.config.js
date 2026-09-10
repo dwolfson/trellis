@@ -49,7 +49,41 @@ module.exports = {
         'accent-ink': '#7d5411',        // accent TEXT on paper; #b68235 is
                                         // not legible at body size
         'accent-tint': '#fff3e4',       // selected-row tint
-        'rule-strong': '#d7d3d3',       // visible hairline on paper (chips)
+        // 3.05:1 on paper. Was #d7d3d3 at 1.33:1 — a chip outline that faint
+        // is a boundary you cannot see, and the round's done-criteria put a
+        // floor under anything carrying meaning.
+        'rule-strong': '#8e8a8a',
+
+        // ── State roles ──────────────────────────────────────────────
+        //
+        // Hue is BACK, alongside the glyph rather than instead of it. The
+        // mono-only first pass applied the design system's constraint where
+        // it does not belong: a list of rows scanned for exceptions is
+        // exactly where hue earns its keep.
+        //
+        // Two variants per role, for the same reason `ink-muted` and
+        // `chrome-muted` are two tokens. ONE value cannot hold 4.5:1 against
+        // both grounds — measured, not assumed: passing on paper needs
+        // luminance <= 0.159, passing on chrome needs >= 0.222, and that
+        // window is empty. Any single "state-ok" would fail on one ground.
+        //
+        // Measured contrast, each against its own ground:
+        //   state-ok        5.82:1     state-ok-on-dark    8.44:1
+        //   state-warn      5.87:1     state-warn-on-dark  8.40:1
+        //   state-gap       6.47:1     state-gap-on-dark   6.94:1
+        //
+        // Gold is NOT a state role. It means "needs your attention" and is
+        // used for the human-input row, links and held chips. KNOWN RISK:
+        // `state-warn` and gold are both warm and within 1.02:1 of each
+        // other in luminance, so they separate by hue alone. Tolerable only
+        // because colour is never the sole channel here — the two states
+        // carry different glyphs (○ vs ⚠) and different words in the legend.
+        'state-ok': '#1d6b3f',
+        'state-ok-on-dark': '#74c68d',
+        'state-warn': '#9c4212',
+        'state-warn-on-dark': '#f2a26a',
+        'state-gap': '#5b4a9c',
+        'state-gap-on-dark': '#a99ae0',
       },
 
       // A 1.15x density scale. Airy by intent — the existing UI is tighter,
@@ -86,6 +120,12 @@ module.exports = {
         body: ['Lora', 'Georgia', 'serif'],
         // Qualified names, ids, paths.
         mono: ['ui-monospace', '"SF Mono"', 'Menlo', 'monospace'],
+        // Diagrams and charts. THE ONE PLACE THE TYPE SYSTEM IS DELIBERATELY
+        // OVERRIDDEN: SVG text at small sizes in Lora or Cormorant is a bad
+        // trade, so every node label, axis tick and legend entry takes the
+        // mono stack instead. Exposed to JS as `--font-diagram` too, since
+        // Plotly and Mermaid are configured in script, not in CSS.
+        diagram: ['ui-monospace', '"SF Mono"', 'Menlo', 'monospace'],
       },
 
       // The sizes as used on the Questions screen, named by their role so a

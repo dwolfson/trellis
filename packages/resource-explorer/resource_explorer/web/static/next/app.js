@@ -26,6 +26,7 @@ import {
   addInvestigationMember,
   ask,
   getAnswer,
+  getDispositionHistory,
   getMe,
   getQuestions,
   getScoutingOverview,
@@ -77,6 +78,7 @@ const state = {
   me: null,
   counts: { activity: null, rfas: null },
   chat: [],                    // the transcript: one entry per turn
+  promoted: null,              // a chat answer promoted into the pane
 };
 
 /** The eight intents, in their canonical order, plus Investigation as the
@@ -100,7 +102,22 @@ const STAGES = [
 /** Sub-tab order is IDENTICAL across every stage, on purpose. A stage that
  *  lacks one greys it out rather than removing it, so the tab under the
  *  cursor does not change meaning when you switch stages. */
-const SUB_TABS = ['Search', 'Survey', 'Dashboard', 'Questions', 'Disposition'];
+/**
+ * Sub-tab order is IDENTICAL across every stage, on purpose.
+ *
+ * `label` is what the current UI calls it; `does` is what it actually is.
+ * They differ for Search, which is REPO DISCOVERY — saved sources, a GitHub
+ * search form and a list importer — and has nothing to do with the selected
+ * resource. Naming the deferred stub "Search" made /next mis-describe the
+ * thing it was deferring.
+ */
+const SUB_TABS = [
+  { id: 'search', label: 'Search', does: 'Repo discovery — find and import candidate repos' },
+  { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them' },
+  { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts' },
+  { id: 'questions', label: 'Questions', does: 'The question checklist' },
+  { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, and its history' },
+];
 
 /* ════════════════════════════════════════════════════════════════════════
  * Helpers
@@ -150,6 +167,40 @@ function ago(iso) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * Icons
+ *
+ * Lucide, vendored as a sprite by frontend-build/build-next-icons.py and
+ * injected into the document once, so `currentColor` inherits — which is the
+ * whole point, since several of these carry state.
+ *
+ * Emoji is not the icon system, but the replacement rule is "nearest Lucide
+ * equivalent of the SAME metaphor", not "an abstract shape". A cloud stays a
+ * cloud. Only the six question states use an abstract glyph, because no
+ * metaphor exists for them and a legend keys them instead.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+async function loadIcons() {
+  if (document.getElementById('lucide-sprite')) return;
+  try {
+    const res = await fetch('/static/next/icons.svg');
+    if (!res.ok) return;                     // icons are an enhancement
+    const holder = document.createElement('div');
+    holder.id = 'lucide-sprite';
+    holder.style.display = 'none';
+    holder.innerHTML = await res.text();
+    document.body.prepend(holder);
+  } catch { /* the labels still read without them */ }
+}
+
+/** An inline icon. `title` is required wherever the icon is the only label —
+ *  an unlabelled pictogram is the emoji problem with better provenance. */
+function icon(name, { size = 15, cls = '', title = '' } = {}) {
+  return `<svg width="${size}" height="${size}" class="inline-block shrink-0 align-[-2px] ${cls}"
+    aria-hidden="${title ? 'false' : 'true'}" ${title ? `role="img"` : ''}
+    ><use href="#i-${esc(name)}"/>${title ? `<title>${esc(title)}</title>` : ''}</svg>`;
+}
+
 /* ════════════════════════════════════════════════════════════════════════
  * Reading an envelope — the honest part
  * ════════════════════════════════════════════════════════════════════════ */
@@ -184,15 +235,40 @@ function rowState(entry, env) {
 }
 
 const GLYPH = {
-  answered: '✓',      // ✓
+  answered: '✓',
   automatic: '✓',
-  unrun: '○',         // ○
-  human: '⚠',         // ⚠
+  unrun: '○',
+  human: '⚠',
   'no-surveyor': '○',
-  unclassified: '·',  // ·
-  running: '◔',       // ◔
-  error: '✕',         // ✕
+  unclassified: '·',
+  running: '◔',
+  error: '✕',
 };
+
+/**
+ * State colour, per ground.
+ *
+ * Hue is back — ALONGSIDE the glyph, never instead of it. Colour is not the
+ * only channel carrying meaning here (the glyph and the legend words carry
+ * it too), and it does not carry two meanings at once: gold is reserved for
+ * "needs your attention" and is not a state role.
+ *
+ * Two variants per role because one value cannot hold 4.5:1 against both a
+ * paper and a chrome ground — see the measurement in tailwind-next.config.js.
+ */
+const STATE_TONE = {
+  answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
+  human:         { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  'no-surveyor': { paper: 'text-state-gap',   chrome: 'text-state-gap-on-dark' },
+  unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
+  running:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  error:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
+};
+
+const tone = (st, ground = 'paper') =>
+  (STATE_TONE[st] || STATE_TONE.unclassified)[ground];
 
 /** Verdict words the design sets at weight 600. Matched only at the head of
  *  a sentence and only when a separator follows, so a headline that merely
@@ -483,6 +559,198 @@ function renderPerspectiveRow() {
 
 
 /* ════════════════════════════════════════════════════════════════════════
+ * Diagrams and charts
+ *
+ * They live in the CONTENT PANE, on paper. That is a real dividend of the
+ * dark-chrome/paper-content split: Mermaid, Plotly and Kroki all default to
+ * a light ground, so on paper they need no dark override and no second
+ * theme — which is what the current dark UI has to fight for all three.
+ *
+ * Every renderer is bound to the TOKEN LAYER rather than to hardcoded
+ * values, and the token values are read back off the live stylesheet rather
+ * than restated here. Restating them would put the palette in two places,
+ * which is the thing the token layer exists to prevent.
+ *
+ * Diagrams do NOT use the body serif. SVG text at small sizes in Lora or
+ * Cormorant is a bad trade, so node labels, axis ticks and legends take the
+ * `diagram` font token. This is the one place the type system is
+ * deliberately overridden.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+let _themeProbe = null;
+
+/** Read a token's computed value off a probe element carrying its class.
+ *  One source of truth: tailwind-next.config.js, via the built stylesheet. */
+function tokens() {
+  if (!_themeProbe) {
+    _themeProbe = document.createElement('div');
+    _themeProbe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+    _themeProbe.innerHTML = `
+      <span data-t="paper" class="bg-paper"></span>
+      <span data-t="paper-surface" class="bg-paper-surface"></span>
+      <span data-t="ink" class="text-ink"></span>
+      <span data-t="ink-muted" class="text-ink-muted"></span>
+      <span data-t="rule-strong" class="text-rule-strong"></span>
+      <span data-t="accent" class="text-accent"></span>
+      <span data-t="state-ok" class="text-state-ok"></span>
+      <span data-t="state-warn" class="text-state-warn"></span>
+      <span data-t="state-gap" class="text-state-gap"></span>
+      <span data-t="font-diagram" class="font-diagram"></span>`;
+    document.body.appendChild(_themeProbe);
+  }
+  const read = (name, prop) => {
+    const el = _themeProbe.querySelector(`[data-t="${name}"]`);
+    return el ? getComputedStyle(el)[prop] : '';
+  };
+  return {
+    paper: read('paper', 'backgroundColor'),
+    paperSurface: read('paper-surface', 'backgroundColor'),
+    ink: read('ink', 'color'),
+    inkMuted: read('ink-muted', 'color'),
+    rule: read('rule-strong', 'color'),
+    accent: read('accent', 'color'),
+    ok: read('state-ok', 'color'),
+    warn: read('state-warn', 'color'),
+    gap: read('state-gap', 'color'),
+    font: read('font-diagram', 'fontFamily'),
+  };
+}
+
+/** Load a vendored script once. Both are already in static/vendor. */
+const _scripts = new Map();
+function loadScript(src) {
+  if (_scripts.has(src)) return _scripts.get(src);
+  const p = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.appendChild(el);
+  });
+  _scripts.set(src, p);
+  return p;
+}
+
+/**
+ * Form follows ANSWER SHAPE, not the model's preference.
+ *
+ *   scalar / short verdict     inline in the rail
+ *   ranked list                table; promoted when wide
+ *   anything over time         chart, promoted to the pane
+ *   relationships / topology   Mermaid, always in the pane
+ *   one question, many repos   the work-list grid (does not exist yet)
+ *
+ * A diagram cannot live in the rail: it is at most 290px wide and a topology
+ * graph there is unreadable. So the rail shows a marker and promotes.
+ */
+function answerForm(turn) {
+  if (turn.mermaid) return 'diagram';
+  if (turn.chart) return 'chart';
+  if (turn.candidates && turn.candidates.length) return 'list';
+  return 'inline';
+}
+
+/** Render a promoted artefact in the content pane, at full width. */
+async function promoteToPane(turn) {
+  const el = $('content');
+  if (!el) return;
+  state.promoted = turn;
+  const form = answerForm(turn);
+
+  el.innerHTML = `${subTabsHtml()}
+    <div class="flex flex-wrap items-baseline gap-s3">
+      <h3 class="m-0 font-heading text-name font-normal">${esc(turn.question)}</h3>
+      <button data-act="close-promoted"
+        class="ml-auto cursor-pointer bg-transparent text-caveat text-accent-ink underline">back to questions</button>
+    </div>
+    <div class="mt-s1 text-provenance text-ink-muted">${esc(turn.source || '')}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="promoted-body" class="min-h-[320px]"></div>`;
+  bindSubTabs();
+  el.querySelector('[data-act="close-promoted"]').addEventListener('click', () => {
+    state.promoted = null;
+    loadPane();
+  });
+
+  const body = $('promoted-body');
+  const t = tokens();
+  try {
+    if (form === 'chart') {
+      await loadScript('/static/vendor/plotly.min.js');
+      const fig = turn.chart;
+      const layout = Object.assign({}, fig.layout, {
+        paper_bgcolor: t.paper,
+        plot_bgcolor: t.paper,
+        font: { color: t.ink, family: t.font, size: 12 },
+        xaxis: Object.assign({ gridcolor: t.rule, zerolinecolor: t.rule,
+                               linecolor: t.rule, tickfont: { family: t.font } },
+                             fig.layout && fig.layout.xaxis),
+        yaxis: Object.assign({ gridcolor: t.rule, zerolinecolor: t.rule,
+                               linecolor: t.rule, tickfont: { family: t.font } },
+                             fig.layout && fig.layout.yaxis),
+        legend: Object.assign({ font: { family: t.font, color: t.ink } },
+                              fig.layout && fig.layout.legend),
+        margin: { l: 56, r: 20, t: 20, b: 44 },
+      });
+      await window.Plotly.newPlot(body, fig.data || [], layout,
+                                  { displaylogo: false, responsive: true });
+    } else if (form === 'diagram') {
+      // Server-side render via Kroki — the browser never loads mermaid.js.
+      const res = await fetch('/api/diagrams/mermaid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: mermaidWithTheme(turn.mermaid, t) }),
+      });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+        throw new ApiError(res.status, detail, '/api/diagrams/mermaid');
+      }
+      // The endpoint returns the RAW SVG body as image/svg+xml, not JSON —
+      // it is a thin proxy to Kroki and hands back exactly what Kroki sent.
+      const svg = await res.text();
+      if (!svg.includes('<svg')) throw new Error('the renderer returned no SVG');
+      body.innerHTML = `<div id="promoted-svg" class="w-full overflow-hidden"
+        style="height:min(70vh,640px)">${svg}</div>`;
+      await loadScript('/static/vendor/svg-pan-zoom.min.js');
+      const svgEl = body.querySelector('svg');
+      if (svgEl && window.svgPanZoom) {
+        svgEl.setAttribute('width', '100%');
+        svgEl.setAttribute('height', '100%');
+        window.svgPanZoom(svgEl, { controlIconsEnabled: true, fit: true, center: true });
+      }
+    } else {
+      body.innerHTML = `<div class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
+    }
+  } catch (err) {
+    // Per-artefact failure, stated. Never a blank pane.
+    body.innerHTML = `<div class="text-answer text-state-warn">
+      This could not be rendered: ${esc(err.message)}</div>`;
+  }
+}
+
+/** Mermaid's own init directive, carrying the token values.
+ *  Prepended rather than configured in JS because the render happens on the
+ *  server; the directive is the only channel a Kroki round trip has. */
+function mermaidWithTheme(source, t) {
+  const init = {
+    theme: 'base',
+    themeVariables: {
+      background: t.paper,
+      primaryColor: t.paperSurface,
+      primaryBorderColor: t.rule,
+      primaryTextColor: t.ink,
+      lineColor: t.rule,
+      secondaryColor: t.paperSurface,
+      tertiaryColor: t.paper,
+      fontFamily: t.font,
+      fontSize: '13px',
+    },
+  };
+  return `%%{init: ${JSON.stringify(init)}}%%\n${source}`;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
  * The sidebar — selection and grouping
  *
  * Restored wholesale after a first pass reduced it to a filter box and a
@@ -516,17 +784,23 @@ function lifecycleKind(p) {
  *  glyph is never the only thing saying what it means. */
 function lifecycleMark(p) {
   const kind = lifecycleKind(p);
-  const mark = { published: '▣', surveyed: '▤', new: '▢' }[kind];
+  const name = { published: 'cloud', surveyed: 'bar-chart-2', new: 'sparkles' }[kind];
   const title = kind === 'published' ? 'Published to Egeria'
     : kind === 'surveyed' ? `Surveyed ${ago(p.last_surveyed_at)}`
     : 'Registered, not yet surveyed';
-  return `<span title="${esc(title)}" class="text-chrome-muted">${mark}</span>`;
+  const cls = kind === 'published' ? 'text-state-ok-on-dark' : 'text-chrome-muted';
+  return icon(name, { size: 14, cls, title });
 }
 
 function dispositionMark(p) {
-  const mark = { investigating: '◎', recommended: '✚', using: '●' }[p.disposition];
-  if (!mark) return '';
-  return `<span title="${esc(p.disposition)}" class="text-accent-on-dark">${mark}</span>`;
+  const name = {
+    tracking: 'eye',
+    investigating: 'microscope',
+    recommended: 'thumbs-up-check',
+    using: 'check-circle-2',
+  }[p.disposition];
+  if (!name) return '';
+  return icon(name, { size: 14, cls: 'text-accent-on-dark', title: p.disposition });
 }
 
 /** The repos passing every active filter, in list order. */
@@ -608,6 +882,10 @@ function renderSidebar() {
       }).join('')}
     </div>
 
+    <div class="mb-[3px] text-caps uppercase tracking-caps text-chrome-muted"
+      title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
+      Disposition · all registered repos
+    </div>
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
@@ -658,7 +936,13 @@ function renderSidebar() {
           <button data-slug="${esc(p.slug)}"
             class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
             >${esc(p.display_name || p.slug)}</button>
-          ${p.working_set_hidden ? '<span title="Hidden from your list" class="text-chrome-muted">⌀</span>' : ''}
+          ${p.working_set_hidden
+            ? icon('circle-slash', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list' })
+            : ''}
+          ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
+            title="Open ${esc(p.display_name || p.slug)} on GitHub"
+            class="shrink-0 text-chrome-muted hover:text-accent-on-dark"
+            >${icon('external-link', { size: 13 })}</a>` : ''}
         </div>`).join('')}
       </div>`).join('')}
   `;
@@ -1025,6 +1309,16 @@ function sourceLine(body) {
   return 'No compiled evidence on this answer · source not reported';
 }
 
+/** Mermaid source fenced inside an answer, if there is any.
+ *
+ *  Several analyses carry their diagram source as text (architecture_recovery
+ *  writes its Mermaid into the answer), so this is how a topology answer
+ *  reaches the pane without a new endpoint. */
+function extractMermaid(text) {
+  const m = /```mermaid\s*\n([\s\S]*?)```/.exec(String(text || ''));
+  return m ? m[1].trim() : null;
+}
+
 /** Does this answer look like a list of resources worth acting on?
  *  Only then is "Open as candidates" offered — an action that appears on
  *  every answer teaches people to ignore it. */
@@ -1052,11 +1346,25 @@ function renderChatLog() {
       ${t.answer ? `
         <div class="rounded-sm border border-chrome-line p-s3 text-subtab">
           <div class="whitespace-pre-wrap text-chrome-ink">${tnum(esc(t.answer))}</div>
-          ${t.candidates && t.candidates.length ? `
-            <button data-candidates="${i}"
-              class="mt-s3 cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
-                     text-chip text-accent-on-dark">Open as candidates
-              (<span class="tnum">${t.candidates.length}</span>)</button>` : ''}
+          ${(() => {
+            const form = answerForm(t);
+            const bits = [];
+            if (form === 'chart' || form === 'diagram') {
+              // A diagram cannot live in a 290px rail. The rail says what it
+              // is and promotes; the pane is where it becomes readable.
+              bits.push(`<button data-promote="${i}"
+                class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
+                       text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
+                Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
+            }
+            if (t.candidates && t.candidates.length) {
+              bits.push(`<button data-candidates="${i}"
+                class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-[10px] py-[4px]
+                       text-chip text-chrome-ink">Open as candidates
+                (<span class="tnum">${t.candidates.length}</span>)</button>`);
+            }
+            return bits.length ? `<div class="mt-s3 flex flex-wrap gap-s2">${bits.join('')}</div>` : '';
+          })()}
           <div class="mt-[10px] border-t border-chrome-line-soft pt-[9px] text-caps text-chrome-muted">
             ${esc(t.source)}${t.intent ? ` · intent ${esc(t.intent)}` : ''}${t.cached ? ' · cached' : ''}
           </div>
@@ -1071,6 +1379,9 @@ function renderChatLog() {
   log.querySelectorAll('[data-candidates]').forEach((b) => b.addEventListener('click', () => {
     showCandidates(Number(b.dataset.candidates));
   }));
+  log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
+    promoteToPane(state.chat[Number(b.dataset.promote)]);
+  }));
   log.scrollTop = log.scrollHeight;
 }
 
@@ -1081,19 +1392,32 @@ function renderChatLog() {
  *  content problem. Folding it into either neighbour loses the signal the
  *  vote exists to collect. Words rather than emoji, since emoji is not this
  *  UI's icon system. */
+const VOTES = [
+  [1, 'thumbs-up', 'Helpful', 'text-state-ok-on-dark'],
+  // "Partly right" is the value that separates a routing problem from a
+  // content problem. It is a real third state, not a midpoint.
+  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'text-state-warn-on-dark'],
+  [-1, 'thumbs-down', 'Not helpful', 'text-state-warn-on-dark'],
+];
+
 function feedbackHtml(turn, i) {
   if (turn.voted !== undefined) {
     const said = { 1: 'Marked helpful.', 0: 'Marked partly right.', '-1': 'Marked not helpful.' };
     return `<div class="mt-s2 text-caps text-chrome-muted">${esc(said[String(turn.voted)])}</div>`;
   }
   if (turn.voteError) {
-    return `<div class="mt-s2 text-caps text-accent-on-dark">Vote not recorded: ${esc(turn.voteError)}</div>`;
+    return `<div class="mt-s2 text-caps text-state-warn-on-dark">Vote not recorded: ${esc(turn.voteError)}</div>`;
   }
-  return `<div class="mt-s2 flex flex-wrap gap-s2 text-caps">
+  // Thumbs, not the words `yes / partly / no`. Substituting words for a
+  // conventional pictogram turned a one-glance control into reading; the
+  // objection to emoji was platform variance and non-recolourability, which
+  // a Lucide glyph inheriting currentColor does not have.
+  return `<div class="mt-s2 flex flex-wrap items-center gap-s3 text-caps">
     <span class="text-chrome-muted">Was this right?</span>
-    <button data-turn="${i}" data-vote="1" class="cursor-pointer bg-transparent text-chrome-ink underline">yes</button>
-    <button data-turn="${i}" data-vote="0" class="cursor-pointer bg-transparent text-chrome-ink underline">partly</button>
-    <button data-turn="${i}" data-vote="-1" class="cursor-pointer bg-transparent text-chrome-ink underline">no</button>
+    ${VOTES.map(([v, ic, title, cls]) => `<button data-turn="${i}" data-vote="${v}"
+      title="${esc(title)}" aria-label="${esc(title)}"
+      class="cursor-pointer bg-transparent text-chrome-muted hover:${cls}"
+      >${icon(ic, { size: 16 })}</button>`).join('')}
   </div>`;
 }
 
@@ -1160,6 +1484,10 @@ async function submitAsk() {
     turn.queryHash = body.query_hash || '';
     turn.compileId = body.compiled?.manifest?.compile_id || null;
     turn.candidates = listCandidates(turn.answer);
+    // The chart the server chose to attach (statistical/health/comparison
+    // intents produce one). A Plotly figure, and far too wide for the rail.
+    turn.chart = body.chart || null;
+    turn.mermaid = extractMermaid(turn.answer);
   } catch (err) {
     turn.pending = false;
     turn.error = `The question could not be asked: ${err.message}`;
@@ -1265,7 +1593,7 @@ function setRailOpen(open) {
   $('app-grid').classList.toggle('rail-closed', !open);
   const btn = $('chat-toggle');
   if (btn) {
-    btn.textContent = open ? 'Chat ×' : 'Chat';
+    btn.innerHTML = `Chat ${icon(open ? 'panel-right-close' : 'panel-right-open', { size: 14 })}`;
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     btn.className = open
       ? 'cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark'
@@ -1390,6 +1718,38 @@ function resourceHeaderHtml(slug) {
     <div id="resource-action" class="mt-s2"></div>`;
 }
 
+/** The dated verdict trail for one repo. */
+async function renderDispositionHistory(githubUrl) {
+  const el = $('disposition-history');
+  if (!el) return;
+  let rows;
+  try {
+    rows = await getDispositionHistory(githubUrl);
+  } catch (err) {
+    el.innerHTML = `<span class="text-state-warn">History could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!Array.isArray(rows) || !rows.length) {
+    // Distinct from "no history was readable" above. Nothing has been set,
+    // which is itself the answer.
+    el.textContent = 'No disposition has been recorded for this repo.';
+    return;
+  }
+  el.innerHTML = `<div class="mb-[3px] uppercase tracking-caps text-caps">History</div>`
+    + rows.map((r) => {
+      // The field is `decided_at` — verified against the endpoint, not
+      // guessed. `decided_by` is often empty; it is shown only when set,
+      // rather than rendering an empty attribution.
+      const when = r.decided_at || '';
+      const rel = ago(when);
+      return `<div><span class="text-ink">${esc(r.disposition || '—')}</span>
+        ${rel ? ` · <span class="tnum">${esc(rel)}</span>` : ''}
+        ${when ? ` <span class="tnum">(${esc(String(when).slice(0, 10))})</span>` : ''}
+        ${r.decided_by ? ` · ${esc(r.decided_by)}` : ''}
+        ${r.reason ? ` · ${esc(r.reason)}` : ''}</div>`;
+    }).join('');
+}
+
 /** The header's three write paths. `hide` is reversible, `disposition` is a
  *  judgement, `remove` is neither — so only one of them asks. */
 function bindResourceHeader() {
@@ -1416,7 +1776,14 @@ function bindResourceHeader() {
               ? 'border border-accent text-accent-ink'
               : 'border border-rule-strong text-ink hover:border-accent'}"
           >${esc(d)}</button>`).join('')}
-      </div>`;
+      </div>
+      <div id="disposition-history" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
+    // The HISTORY, alongside the picker. It exists in the current UI and
+    // nowhere in /next, and it is the only place the SEQUENCE of verdicts is
+    // visible — which is the rationale trail, not decoration. A single
+    // current value cannot say that something was abandoned and then picked
+    // back up.
+    renderDispositionHistory(p.github_url);
     slot.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
       const value = b.dataset.disp;
       note('Saving…');
@@ -1494,16 +1861,15 @@ function bindResourceHeader() {
 function subTabsHtml() {
   return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
     ${SUB_TABS.map((t) => {
-      const id = t.toLowerCase();
-      if (id === state.subTab) {
-        return `<span class="border-b border-accent pb-[2px] text-ink">${t}</span>`;
+      if (t.id === state.subTab) {
+        return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
-      if (t === 'Questions') {
-        return `<button data-subtab="${id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t}</button>`;
+      if (t.id === 'questions') {
+        return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
       }
-      return `<button data-deferred="${id}" title="Not built in /next — opens the current UI"
+      return `<button data-deferred="${t.id}" title="${esc(t.does)} — not built in /next"
         class="cursor-pointer bg-transparent text-ink-muted"
-        style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t}</button>`;
+        style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
     }).join('')}
     <span class="ml-auto text-caps uppercase tracking-caps text-ink-muted">Questions only, in /next</span>
   </div>`;
@@ -1525,21 +1891,27 @@ function bindSubTabs() {
 }
 
 /** What a deferred sub-tab shows when you click it. */
-function deferredPaneHtml(name) {
+/** A link into the current UI, on the same resource.
+ *
+ *  `index.html` gained a `?resource=` reader for this — it had no deep link
+ *  of any kind, so "links out preserving the resource" was not satisfiable
+ *  without adding one. Additive: an unrecognised slug selects nothing and
+ *  the app starts exactly as before. */
+function oldUiHref() {
+  return state.selectedSlug
+    ? `/?resource=${encodeURIComponent(state.selectedSlug)}`
+    : '/';
+}
+
+function deferredPaneHtml(tab) {
   return `${subTabsHtml()}
-    <h3 class="m-0 font-heading text-name font-normal">${esc(name)} · not built in /next</h3>
+    <h3 class="m-0 font-heading text-name font-normal">${esc(tab.label)} · not built in /next</h3>
     <div class="my-s3 h-px bg-rule"></div>
+    <p class="max-w-[70ch] text-answer text-ink">${esc(tab.does)}.</p>
     <p class="max-w-[70ch] text-answer text-ink">
-      This experiment builds one pane. ${esc(name)} is live in the current UI.
-    </p>
-    <p class="max-w-[70ch] text-answer text-ink">
-      <a href="/" class="text-accent-ink underline">Open the current UI ↗</a>
-    </p>
-    <p class="max-w-[70ch] text-caveat text-accent-ink">
-      The current UI has no deep link — navigation state lives in JavaScript
-      variables, not in the URL — so it cannot be opened on
-      ${state.selectedSlug ? `<span class="font-mono">${esc(state.selectedSlug)}</span>` : 'this resource'}
-      directly. You will have to select it again there.
+      <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
+        >Open ${state.selectedSlug ? `<span class="font-mono">${esc(state.selectedSlug)}</span>` : 'this'}
+        in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
     </p>`;
 }
 
@@ -1582,14 +1954,12 @@ function renderLegend() {
     counts[st] = (counts[st] || 0) + 1;
   }
 
-  const items = LEGEND.filter(([k]) => counts[k]).map(([k, label]) => {
-    const accented = ['answered', 'automatic', 'human', 'running'].includes(k);
-    return `<span class="inline-flex items-baseline gap-[5px]">
-      <span class="${accented ? 'text-accent-ink' : 'text-ink-muted'}">${GLYPH[k]}</span>
+  const items = LEGEND.filter(([k]) => counts[k]).map(([k, label]) => `
+    <span class="inline-flex items-baseline gap-[5px]">
+      <span class="${tone(k, 'paper')}">${GLYPH[k]}</span>
       <span class="text-ink">${esc(label)}</span>
       <span class="tnum text-ink">${counts[k]}</span>
-    </span>`;
-  });
+    </span>`);
 
   if (pending) {
     items.push(`<span class="text-ink-muted">
@@ -1612,8 +1982,9 @@ async function loadPane() {
   const el = $('content');
 
   if (state.subTab !== 'questions') {
-    const name = SUB_TABS.find((t) => t.toLowerCase() === state.subTab) || state.subTab;
-    el.innerHTML = deferredPaneHtml(name);
+    const tab = SUB_TABS.find((t) => t.id === state.subTab)
+      || { id: state.subTab, label: state.subTab, does: 'Not a pane /next knows about' };
+    el.innerHTML = deferredPaneHtml(tab);
     bindSubTabs();
     return;
   }
@@ -1756,7 +2127,10 @@ function rowShell(entry, i) {
 /** One question row. The layout is fixed across states so a column of rows
  *  scans: glyph at 22px, everything below indented to match. */
 function rowInner(entry, i, env) {
-  const perspective = (entry.perspectives || [])[0] || '';
+  // ALL of them, wrapping — not just the first. Seeing that a question
+  // carries four perspectives is how you learn the axis barely filters, and
+  // the first-only version hid exactly that.
+  const perspectives = entry.perspectives || [];
   const running = state.runsInFlight.get(entry.question);
   const st = running ? 'running'
     : env === 'loading' ? 'loading'
@@ -1764,19 +2138,27 @@ function rowInner(entry, i, env) {
     : rowState(entry, env);
 
   const glyph = GLYPH[st] || '·';
-  // The GLYPH carries the state, not a shade of grey. An earlier version put
-  // the question title in `ink-muted` for the unrun/gap/unclassified states —
-  // which is de-emphasis by fading text toward the ground, the one thing this
-  // palette forbids, and on the Analysis stage it was most of the page.
-  // Titles are `ink` in every state now.
-  const glyphColor = ['answered', 'automatic', 'human', 'running'].includes(st)
-    ? 'text-accent-ink' : 'text-ink-muted';
+  // Glyph AND colour. The glyph survives printing, greyscale and colour
+  // blindness and is what the legend keys; the hue is what makes a column of
+  // rows scannable for the exceptions. Neither is doing the job alone.
+  //
+  // The TITLE stays `ink` in every state. Colouring the state is not the same
+  // as fading the question, and an earlier version put unrun titles in
+  // `ink-muted`, which is de-emphasis by fading text toward the ground.
+  const glyphColor = tone(st, 'paper');
 
+  const perspectiveTags = perspectives.length
+    ? `<span class="ml-auto flex flex-wrap justify-end gap-[4px]">${perspectives.map((pv) =>
+        `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
+          >${esc(pv)}</span>`).join('')}</span>`
+    : '';
   const tag = st === 'no-surveyor'
-    ? `<span class="ml-auto rounded-pill border border-dashed border-accent px-2 py-[1px] text-caps text-accent-ink">no surveyor yet</span>`
-    : perspective
-      ? `<span class="ml-auto rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted">${esc(perspective)}</span>`
-      : '';
+    ? `<span class="ml-auto flex flex-wrap justify-end gap-[4px]">
+        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no surveyor yet</span>
+        ${perspectives.map((pv) => `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
+          >${esc(pv)}</span>`).join('')}
+      </span>`
+    : perspectiveTags;
 
   const head = `<div class="flex flex-wrap items-baseline gap-[9px]">
       <span class="w-[13px] ${glyphColor} text-question">${st === 'loading' ? '' : glyph}</span>
@@ -2095,6 +2477,7 @@ function countOf(settled, limit, key) {
 }
 
 async function start() {
+  await loadIcons();
   applyWidths();
   initSeams();
   readUrl();

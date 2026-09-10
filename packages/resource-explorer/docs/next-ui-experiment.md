@@ -252,6 +252,119 @@ permits reads only. The turn's *error* rendering is verified against a live
 written but have not been seen with a real response. Signing in is what would
 settle it.
 
+## Round 3 — the fix round
+
+Working order: `FIX-ROUND.md` in the design bundle, with two reversals of the
+original spec and a section on diagrams that the spec never covered.
+
+### Hue is back
+
+The first spec removed hue-coded state because the bound design system is
+mono by construction. That was the system's constraint applied where it does
+not belong: a list of rows scanned for exceptions is where hue earns its
+keep. State is now **glyph *and* colour** — the glyph survives printing,
+greyscale and colour blindness and is what the legend keys; the hue is what
+makes the column scannable.
+
+The instruction was for named roles "each holding at least 4.5:1 against both
+grounds". **No single colour can do that**, and this is arithmetic rather
+than opinion: passing on paper needs luminance ≤ 0.159, passing on chrome
+needs ≥ 0.222, and that window is empty. So each role has two variants, the
+same split that already forced `ink-muted` and `chrome-muted`:
+
+| Role | On paper | On chrome | Used for |
+|---|---|---|---|
+| `state-ok` | `#1d6b3f` 5.82:1 | `#74c68d` 8.44:1 | answered, automatic |
+| `state-warn` | `#9c4212` 5.87:1 | `#f2a26a` 8.40:1 | not run |
+| `state-gap` | `#5b4a9c` 6.47:1 | `#a99ae0` 6.94:1 | no surveyor |
+| `accent` (gold) | `#7d5411` 5.97:1 | `#e1ad66` 8.58:1 | needs your attention |
+
+**Known risk, stated rather than hidden:** `state-warn` and gold are both
+warm and within 1.02:1 of each other in luminance, so on the same ground they
+separate by hue alone. Tolerable only because colour is never the sole
+channel — the two states carry different glyphs (`○` vs `⚠`) and different
+words in the legend. If they turn out to be confusable in use, warn is the
+one to move.
+
+Also raised: the chip border was `#d7d3d3` at **1.33:1**, well under the 3:1
+a UI boundary needs. Now `#8e8a8a` at 3.05:1.
+
+### Icons in, emoji out — metaphor kept
+
+Two substitutions in the previous round went too far and are reverted to
+pictograms, via a vendored Lucide sprite
+(`frontend-build/build-next-icons.py` → `static/next/icons.svg`, injected so
+`currentColor` inherits):
+
+- **Feedback** — `yes / partly / no` became words, turning a one-glance
+  control into reading. Back to `thumbs-up` / `minus` / `thumbs-down`.
+- **Sidebar marks** — `▣ ▤ ▢` was abstract geometry needing a key where a
+  metaphor had landed. Back to `cloud` / `bar-chart-2` / `sparkles`, plus
+  `eye` / `microscope` / `badge-check` / `circle-check` for dispositions.
+
+The rule now followed: nearest Lucide equivalent of the **same** metaphor, at
+14–16px, inheriting `currentColor`. Only the six question states use an
+abstract glyph, because no metaphor exists for them and a legend keys them.
+
+### The five items from the side-by-side walk
+
+- **Disposition history** restored, under the picker. The field is
+  `decided_at` (verified against the endpoint, not guessed), and `decided_by`
+  renders only when set rather than showing an empty attribution.
+- **Facet count scoping** — `/next` counts every registered repo and now
+  **says so** in the label; the current UI counts the investigation's working
+  set. One was picked and named, as instructed.
+- **GitHub link back on every sidebar row**, as well as on the header.
+- **The deferred "Search" stub renamed** to what it is: *Repo discovery —
+  find and import candidate repos*. Each deferred sub-tab now states its own
+  job rather than inheriting a label that mis-describes it.
+- **All perspectives per row**, wrapping. Seeing that a question carries four
+  is how you learn the axis barely filters.
+
+### The current UI gained one deep link
+
+"Links out **preserving the current resource**" was not satisfiable: the
+current UI had no URL state at all. `index.html` now reads `?resource=<slug>`
+on boot and selects it — deliberately narrow and additive, it selects a
+resource and nothing else, runs after the normal boot rather than replacing
+any of it, does not write the URL back, and quietly ignores a slug that is
+not registered. Verified both ways: `/?resource=egeria_workspaces_git` lands
+on that repo, and a bare `/` still boots with nothing selected.
+
+This is the first edit to `index.html` in this experiment. It adds no Tailwind
+classes, so `tailwind.css` is unchanged.
+
+### Diagrams and charts
+
+Not in the original spec at all. They live in the **content pane, on paper** —
+which is a real dividend of the chrome/paper split, since Mermaid, Plotly and
+Kroki all default to a light ground and need no dark override there.
+
+- **Token-bound, with the tokens read back off the live stylesheet** via a
+  hidden probe element carrying the classes. Restating the palette in JS
+  would put it in two places, which is what the token layer exists to
+  prevent.
+- **`font-diagram`** (the mono stack) for every node label, axis tick and
+  legend — the one place the type system is deliberately overridden.
+- **A diagram cannot live in the rail** at 290px, so a chart or diagram
+  answer shows a marker there and an **"open in pane"** action that promotes
+  it to full width, with `svg-pan-zoom` attached for SVG. Both libraries were
+  already vendored.
+- **Form follows answer shape**, not the model's preference: scalar inline,
+  ranked list as a list, anything over time as a chart in the pane,
+  relationships as Mermaid in the pane, cross-resource as the work-list grid
+  (which does not exist yet).
+
+Mermaid renders server-side through `POST /api/diagrams/mermaid`, which
+returns **raw SVG as `image/svg+xml`, not JSON** — a first attempt parsed it
+as JSON and would have failed on every diagram.
+
+**Unverified end to end.** Reaching a chart or a diagram needs a real chat
+answer, and `POST /api/query/` needs a session the anonymous-read verification
+instance does not have. The rendering path, the theme binding and the
+promotion mechanism are written and syntax-checked; none has been seen with a
+real figure.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it
@@ -269,9 +382,9 @@ settle it.
   verdicts, the Context form, Automate, the Activity log, the RFA drawer,
   Admin, and the stat tiles. Each is marked and linked out; none is silently
   absent.
-- **No deep link into the current UI**, so the link-out cannot preserve the
-  resource. Fixing that means giving `index.html` URL state, which is its own
-  change.
+- **The work-list grid does not exist**, so the "one question across several
+  resources" row of the form table has nowhere to go. It needs a batch-enqueue
+  endpoint that does not exist either.
 - **Lucide is not wired in.** The screen needs almost no icons: its state
   vocabulary is typographic (`✓ ○ ⚠ ·`), which is not emoji and not an icon
   set. Add the sprite when a surface actually needs one.
