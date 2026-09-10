@@ -351,7 +351,43 @@ def list_analyses(
     perspective:  all | dba | data_scientist | steward | security
     """
     result = get_analyses(resource_type, intent=intent, perspective=perspective)
+    _attach_trend_support(resource_type, result)
     return result
+
+
+def _attach_trend_support(resource_type: str, entries: list[dict]) -> None:
+    """Declare, per analysis, whether a series is kept for it.
+
+    THE ANALYSIS KNOWS. `REPO_ANALYSIS_RESULTS_MAP` registers a trend reader,
+    or registers `None` deliberately for a current-state classification whose
+    history would be a flat, near-meaningless line. That is a property of the
+    analysis, so it belongs in the analysis's descriptor — and then a client
+    never has to ask a trend endpoint a question whose answer is "no", and
+    never has to render an error to say "correctly, there is nothing".
+
+    Same shape as putting the tier on a survey row instead of warning that the
+    stage filter failed: the fact moves to where it is known, and the failure
+    it used to produce stops existing.
+
+    Three states, not two — `series`, `first measurement`, and `not tracked` —
+    and only the first two involve a request at all.
+    """
+    if resource_type != "repo":
+        # Only the repo adapter registers trend readers today. Unknown is not
+        # the same as untracked, so these say nothing rather than guessing.
+        return
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_RESULTS_MAP)
+    except Exception:                                        # pragma: no cover
+        return
+    for entry in entries:
+        record = REPO_ANALYSIS_RESULTS_MAP.get(entry.get("id"))
+        if record is None:
+            entry["trend"] = "unknown"          # not in the results map at all
+            continue
+        _, trend_reader = record
+        entry["trend"] = "tracked" if trend_reader is not None else "not_tracked"
 
 
 @router.get("/{resource_type}/egeria-status")

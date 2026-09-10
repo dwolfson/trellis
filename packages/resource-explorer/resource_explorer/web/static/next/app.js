@@ -2724,6 +2724,7 @@ function planSurveyRun(c, slug) {
         ? `<li>writes: <span class="font-mono">${esc((c.analysis_ids || []).join(', '))}</span></li>` : ''}
       ${c.auto_publishes ? '<li>publishes its results to Egeria when it finishes</li>' : ''}
     </ul>
+    <div id="plan-movement" class="mt-s2 text-caveat text-ink-muted"></div>
     <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="go"
@@ -2736,6 +2737,33 @@ function planSurveyRun(c, slug) {
     closeCellDetail();
     launchSurvey(slug, c.qualified_name || c.guid);
   });
+
+  // WHAT MOVED LAST TIME, HERE, WHERE IT CHANGES A DECISION.
+  //
+  // "Unchanged across N runs" reports a fact on a dashboard row; in a plan it
+  // is an argument. A survey whose measurements have not moved across several
+  // runs is a survey whose cadence is costing more than it returns, and this
+  // is the moment that matters — before paying for it again rather than after.
+  reportPlanMovement(slug, c);
+}
+
+async function reportPlanMovement(slug, c) {
+  const ids = (c.analysis_ids || []).filter((a) => trendSupport(a) === 'tracked');
+  if (!ids.length) return;
+  const checked = ids.slice(0, 6);         // enough to characterise, not a survey of its own
+  const deltas = await Promise.all(checked.map(async (a) => ({ a, text: await deltaFor(slug, a) })));
+  const slot = document.getElementById('plan-movement');
+  if (!slot) return;                        // the dialog was closed while we read
+  const still = deltas.filter((d) => /^unchanged/.test(d.text));
+  const moved = deltas.filter((d) => d.text && !/^unchanged|^first/.test(d.text));
+  if (!still.length && !moved.length) return;
+  slot.innerHTML = `
+    ${still.length ? `<div class="text-accent-ink"><span class="tnum">${still.length}</span> of
+      <span class="tnum">${checked.length}</span> tracked measurement(s) have not moved across
+      their recorded runs — <span class="font-mono">${esc(still.map((d) => d.a).join(', '))}</span>.
+      Running this again will re-measure them and, on this evidence, change nothing.</div>` : ''}
+    ${moved.length ? `<div class="mt-[2px]"><span class="tnum">${moved.length}</span> did move
+      last time: ${esc(moved.map((d) => `${d.a} ${d.text}`).join(' · '))}.</div>` : ''}`;
 }
 
 async function launchSurvey(slug, ref) {
@@ -2773,6 +2801,13 @@ async function launchSurvey(slug, ref) {
  * learn one and distrust the others.
  */
 
+/** What the catalog says about an analysis: `tracked`, `not_tracked`, or
+ *  `unknown` when it is not in the results map at all. */
+function trendSupport(analysisId) {
+  const entry = (state.analyses || []).find((a) => a.id === analysisId);
+  return entry?.trend || 'unknown';
+}
+
 /** The recorded series for one analysis, oldest first.
  *
  * WITH ONE MEASUREMENT THERE IS NO TREND. It says "first measurement" rather
@@ -2780,6 +2815,16 @@ async function launchSurvey(slug, ref) {
  * a tick standing in for an unread cell.
  */
 async function historyHtml(slug, analysisId, metric = '') {
+  // ASK THE DESCRIPTOR, NOT THE ENDPOINT. A current-state classification
+  // correctly keeps no series; that is a property of the analysis, so the UI
+  // renders no history section at all rather than an empty one — and never
+  // makes a request whose only possible answer is "no".
+  //
+  // This is what replaced a 400. The endpoint's message was a good sentence
+  // in the wrong place: an error is not how a system reports that something
+  // is working as designed.
+  if (trendSupport(analysisId) === 'not_tracked') return '';
+
   let series;
   try {
     const res = await getAnalysisTrend(slug, analysisId, metric);
@@ -2819,6 +2864,7 @@ async function historyHtml(slug, analysisId, metric = '') {
  * itself lives in the detail.
  */
 async function deltaFor(slug, analysisId, metric = '') {
+  if (trendSupport(analysisId) === 'not_tracked') return '';
   try {
     const res = await getAnalysisTrend(slug, analysisId, metric);
     const series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
@@ -2849,7 +2895,8 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
       ${when ? `<span class="ml-auto text-provenance text-ink-muted">measured ${esc(ago(when))}</span>` : ''}
     </div>
     ${summary ? `<p class="mt-s1 max-w-[70ch] text-ink">${tnum(esc(summary))}</p>` : ''}
-    <div id="md-history" class="mt-s3 text-caveat text-ink-muted">Reading the history…</div>
+    ${trendSupport(analysisId) === 'not_tracked' ? '' : `
+      <div id="md-history" class="mt-s3 text-caveat text-ink-muted">Reading the history…</div>`}
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="rerun"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
@@ -2857,9 +2904,11 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
       <button type="button" data-act="runs"
         class="cursor-pointer bg-transparent text-ink-muted underline">Runs on this resource</button>
     </div>`;
-  const hist = await historyHtml(slug, analysisId, metric);
   const slot = body.querySelector('#md-history');
-  if (slot) slot.innerHTML = hist;
+  if (slot) {
+    const hist = await historyHtml(slug, analysisId, metric);
+    if (hist) slot.innerHTML = hist; else slot.remove();
+  }
   body.querySelector('[data-act="runs"]')?.addEventListener('click', () => openRunsList(slug));
   body.querySelector('[data-act="rerun"]')?.addEventListener('click', async () => {
     const b = body.querySelector('[data-act="rerun"]');
