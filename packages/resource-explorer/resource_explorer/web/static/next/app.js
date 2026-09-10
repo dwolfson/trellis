@@ -34,6 +34,10 @@ import {
   getAnswer,
   getChart,
   getDispositionHistory,
+  getSurveyCandidates,
+  getSurveyDashboards,
+  getSurveySummary,
+  runSurveyDefinition,
   getMe,
   getQuestions,
   getScoutingOverview,
@@ -128,8 +132,8 @@ const SUB_TABS = [
   // and teaches the wrong noun on first contact: it is not a search of the
   // selected resource, it is how candidate repos are found and imported.
   { id: 'search', label: 'Find repos', does: 'Repo discovery — find and import candidate repos' },
-  { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them' },
-  { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts' },
+  { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them', built: true },
+  { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts', built: true },
   { id: 'questions', label: 'Questions', does: 'The question checklist' },
   { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, and its history' },
 ];
@@ -2412,14 +2416,17 @@ function subTabsHtml() {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
-      if (t.id === 'questions') {
+      if (t.id === 'questions' || t.built) {
         return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
       }
       return `<button data-deferred="${t.id}" title="${esc(t.does)} — not built in /next"
         class="cursor-pointer bg-transparent text-ink-muted"
         style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
     }).join('')}
-    <span class="ml-auto text-caps uppercase tracking-caps text-ink-muted">Questions only, in /next</span>
+    <span class="ml-auto text-caps uppercase tracking-caps text-ink-muted">${
+      SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length
+        ? `${SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length} of these are not built in /next`
+        : 'all panes built'}</span>
   </div>`;
 }
 
@@ -2436,6 +2443,239 @@ function bindSubTabs() {
     writeUrl();
     loadPane();
   }));
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Survey and Dashboard
+ *
+ * Both were deferred in /next, and both were deferred against data that was
+ * already one GET away — the same mistake Understanding turned out to be.
+ * Neither pane invents anything: Survey lists the Survey Definitions the
+ * adapter says can run against this resource, Dashboard reads the dashboards
+ * the registry already declares for the current stage.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** A resource must be selected and be a repo for either pane to mean anything. */
+function paneNeedsRepo() {
+  if (state.resourceType !== 'repo') {
+    return paneMessage('Repos only, in /next',
+      'Surveys and dashboards are built for repositories here. Databases and '
+      + 'filesystems have their own survey endpoints, and they are live in the '
+      + 'current UI.');
+  }
+  if (!state.selectedSlug) {
+    return paneMessage('Select a resource',
+      'Pick a repository from the sidebar.');
+  }
+  return '';
+}
+
+async function loadSurveyPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  el.innerHTML = subTabsHtml() + '<div class="text-caveat text-ink-muted">Reading the survey catalog…</div>';
+  bindSubTabs();
+
+  let data;
+  try {
+    data = await getSurveyCandidates(slug);
+  } catch (err) {
+    el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
+      `${err.message}. This is a fact about the request, not about ${slug} — nothing
+       here says the repo has no surveys.`);
+    bindSubTabs();
+    return;
+  }
+  const candidates = data.candidates || [];
+  el.innerHTML = subTabsHtml() + `
+    <div class="mb-s3">
+      <div class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
+        ${esc(data.technology_type || 'unknown technology type')}</div>
+      <div class="mt-s1 text-caveat text-ink-muted">Each of these is a chain of steps
+        Egeria coordinates. Running one is real work on a real repository, so each says
+        what it is before you start it.</div>
+    </div>
+    ${candidates.length ? candidates.map((c, i) => `
+      <div class="mb-s4 border-b border-rule pb-s3">
+        <div class="flex flex-wrap items-baseline gap-s2">
+          <span class="font-heading text-answer text-ink">${esc(c.display_name || c.qualified_name)}</span>
+          ${c.step_count != null
+            ? `<span class="tnum text-provenance text-ink-muted">${c.step_count} step(s)</span>` : ''}
+          <button data-run-survey="${esc(c.qualified_name || c.guid)}"
+            class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+            >Run →</button>
+        </div>
+        <div class="mt-s1 font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}</div>
+        ${c.description ? `<details class="mt-s2 text-caveat text-ink-muted" ${i === 0 ? 'open' : ''}>
+          <summary class="cursor-pointer">What it does</summary>
+          <p class="mt-s1 max-w-[70ch]">${esc(c.description)}</p>
+        </details>` : ''}
+      </div>`).join('')
+    : paneMessage('No survey definitions for this resource',
+        'The adapter registered none for this technology type. That is a fact about '
+        + 'the catalog, not about the repository.')}
+    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>`;
+  bindSubTabs();
+
+  el.querySelectorAll('[data-run-survey]').forEach((b) => b.addEventListener('click', async () => {
+    const ref = b.dataset.runSurvey;
+    const note = $('survey-note');
+    // Say what is about to happen, name it, and do not pretend it is instant.
+    note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
+    b.disabled = true;
+    try {
+      const res = await runSurveyDefinition(slug, ref);
+      note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
+        ${res && (res.guid || res.engine_action_guid)
+          ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.`
+          : ''}
+        It runs asynchronously — its results appear in Dashboard and in the question
+        rows as each step lands, not when this line changes.`;
+    } catch (err) {
+      note.innerHTML = `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
+    } finally {
+      b.disabled = false;
+    }
+  }));
+}
+
+async function loadDashboardPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  const stage = state.stage;
+  el.innerHTML = subTabsHtml() + '<div class="text-caveat text-ink-muted">Reading survey results…</div>';
+  bindSubTabs();
+
+  // Two independent reads. One failing must not blank the other, because they
+  // answer different questions and either alone is worth showing.
+  const [summary, dashboards] = await Promise.all([
+    getSurveySummary(slug, stage).catch((e) => ({ error: e.message })),
+    getSurveyDashboards(slug, stage).catch((e) => ({ error: e.message })),
+  ]);
+
+  const tiles = summary?.tiles || [];
+  const boards = dashboards?.dashboards || [];
+  const TONE = { ok: 'text-state-ok', warn: 'text-state-warn', info: 'text-ink' };
+
+  el.innerHTML = subTabsHtml() + `
+    <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">
+      Survey results · ${esc(stage)}</div>
+
+    ${summary?.error
+      ? `<p class="mb-s3 text-caveat text-state-warn">The headlines could not be read:
+          ${esc(summary.error)}</p>`
+      : tiles.length
+        ? `<div class="mb-s4 grid gap-s2" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+            ${tiles.map((t) => `<div class="border border-rule p-s2">
+              <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(t.analysis_name || t.analysis_id)}</div>
+              <div class="mt-[3px] ${TONE[t.status] || 'text-ink'}">${tnum(esc(t.label || ''))}</div>
+            </div>`).join('')}
+          </div>`
+        : `<p class="mb-s4 text-caveat text-ink-muted">No analysis has written a headline
+            for this stage yet.</p>`}
+
+    ${dashboards?.error
+      ? `<p class="text-caveat text-state-warn">The dashboards could not be read:
+          ${esc(dashboards.error)}</p>`
+      : boards.length
+        ? boards.map((b) => `
+          <div class="mb-s4 border-b border-rule pb-s3">
+            <div class="flex flex-wrap items-baseline gap-s2">
+              <span class="font-heading text-answer text-ink">${esc(b.title || b.id)}</span>
+              ${b.has_results
+                ? `<span class="text-provenance text-ink-muted">${
+                    b.last_surveyed_at ? `measured ${esc(ago(b.last_surveyed_at))}` : 'has results'}</span>`
+                : `<span class="text-provenance text-state-warn">nothing measured yet</span>`}
+              ${b.last_published_at
+                ? `<span class="text-provenance text-ink-muted">· published ${esc(ago(b.last_published_at))}</span>` : ''}
+            </div>
+            ${b.description ? `<p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
+            ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
+          </div>`).join('')
+        : `<p class="text-caveat text-ink-muted">No dashboard is registered for
+            ${esc(stage)}.</p>`}
+
+    <div class="mt-s4">
+      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Health</div>
+      <div id="dash-chart" class="text-caveat text-ink-muted">Reading the health figure…</div>
+    </div>`;
+  bindSubTabs();
+
+  // The radar figure, through the same themer the Understanding pane uses —
+  // Plotly's own template is a theme of its own and looks imported on paper.
+  try {
+    // Plotly is loaded on demand, not in the page. Calling newPlot without
+    // this is the "Cannot read properties of undefined" every pane that
+    // borrows a chart hits exactly once.
+    await loadScript('/static/vendor/plotly.min.js');
+    const fig = await getChart(slug, 'health');
+    const body = $('dash-chart');
+    if (!body) return;
+    if (!fig || !(fig.data || []).length) {
+      body.textContent = 'The health series exists and has nothing in it yet.';
+      return;
+    }
+    body.innerHTML = '';
+    await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
+                                { displayModeBar: false, responsive: true });
+  } catch (err) {
+    const body = $('dash-chart');
+    if (body) body.innerHTML = `<span class="text-state-warn">The health figure could not
+      be read: ${esc(err.message)}</span>`;
+  }
+}
+
+/** One analysis inside a dashboard: its name, and the numbers it measured.
+ *
+ * `analyses` carries `{analysis_id, results}` — the measurements themselves,
+ * not a list of ids. Joining that array to a string yields `[object Object]`,
+ * which is what the first version of this pane rendered.
+ *
+ * Only SCALARS are shown, and at most six. A results dict also carries nested
+ * detail, and a dashboard that dumps it is a worse version of the cell popup.
+ */
+function dashboardAnalysisHtml(a) {
+  const id = a.analysis_id || 'unknown';
+  const results = a.results || {};
+  const scalars = Object.entries(results)
+    .filter(([, v]) => typeof v === 'number' || typeof v === 'boolean')
+    .slice(0, 6);
+  // A results dict is EITHER scores OR findings, and the findings are the
+  // better half: `maturity`, `community_support` and `chaoss_metrics` carry no
+  // numbers at all, only written sentences — "No discussions, issues or wiki —
+  // nowhere obvious to ask a question." Rendering those as "nothing scalar to
+  // show" threw away the most readable thing on the pane.
+  const findings = Array.isArray(results.findings) ? results.findings : [];
+  if (!scalars.length && findings.length) {
+    return `<div class="mt-s2">
+      <div class="font-mono text-provenance text-ink-muted">${esc(id)}</div>
+      <ul class="m-0 mt-[2px] list-none p-0 text-caveat">
+        ${findings.slice(0, 6).map((f) => `<li class="text-ink">
+          <span class="text-ink-muted">${esc((f.check_name || '').replace(/_/g, ' '))}</span>
+          ${f.label ? ` · <strong class="font-semibold">${esc(f.label)}</strong>` : ''}
+          ${f.summary ? ` — ${tnum(esc(f.summary))}` : ''}</li>`).join('')}
+        ${findings.length > 6
+          ? `<li class="text-ink-muted">and ${findings.length - 6} more — open the
+              question this answers to read them all</li>` : ''}
+      </ul>
+    </div>`;
+  }
+  if (!scalars.length) {
+    return `<div class="mt-s1 text-provenance text-ink-muted">
+      <span class="font-mono">${esc(id)}</span> — measured, with nothing scalar
+      and no written findings to show</div>`;
+  }
+  return `<div class="mt-s2">
+    <div class="font-mono text-provenance text-ink-muted">${esc(id)}</div>
+    <div class="mt-[2px] flex flex-wrap gap-s3 text-caveat">
+      ${scalars.map(([k, v]) => `<span class="text-ink-muted">${esc(k.replace(/_/g, ' '))}
+        <span class="tnum text-ink">${esc(typeof v === 'number' ? String(Math.round(v * 10) / 10) : String(v))}</span></span>`).join('')}
+    </div>
+  </div>`;
 }
 
 /** What a deferred sub-tab shows when you click it. */
@@ -2591,6 +2831,9 @@ async function loadPane() {
     writeUrl();
     return;
   }
+
+  if (state.subTab === 'survey') { await loadSurveyPane(); return; }
+  if (state.subTab === 'dashboard') { await loadDashboardPane(); return; }
 
   if (state.subTab !== 'questions') {
     const tab = SUB_TABS.find((t) => t.id === state.subTab)

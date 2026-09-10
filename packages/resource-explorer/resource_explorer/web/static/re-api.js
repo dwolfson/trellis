@@ -274,6 +274,32 @@ export const REPO_CHARTS = [
 export const getChart = (slug, kind) =>
   get(`/api/stats/${encodeURIComponent(slug)}/charts/${encodeURIComponent(kind)}`);
 
+/* ── Surveys and dashboards ──────────────────────────────────────────── */
+
+/**
+ * The Survey Definitions that can be run against one resource.
+ *
+ * `entity_type` is the ADAPTER's vocabulary, not the sidebar's: repositories
+ * are `repo` here, and passing `project` returns a 404 naming the known types.
+ */
+export const getSurveyCandidates = (slug, entityType = 'repo') =>
+  get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates`);
+
+/** Launch one Survey Definition. `ref` is its qualified_name or guid. */
+export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
+  post(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/run`,
+       { survey_definition_ref: ref });
+
+/** The dashboards registered for a resource, optionally scoped to a stage. */
+export const getSurveyDashboards = (slug, stage = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/survey-results${
+    stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
+
+/** One-line headline per analysis that has results — the summary tiles. */
+export const getSurveySummary = (slug, stage = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/survey-results/summary${
+    stage ? `?phase=${encodeURIComponent(stage)}` : ''}`);
+
 /* ── Work lists and batch runs ───────────────────────────────────────── */
 
 export const listWorkLists = (investigation = '') =>
