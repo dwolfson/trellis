@@ -2399,13 +2399,32 @@ async function loadPane() {
   // rather than sitting inside it. Everything else in /next reads one
   // resource at a time; this is the one surface that does not.
   if (state.workListSlug) {
-    await openWorkList({
-      el,
-      stage: state.stage,
-      projects: state.projects,
-      analyses: state.analyses || [],
-      onExit: () => { state.workListSlug = null; writeUrl(); renderSidebar(); loadPane(); },
-    }, state.workListSlug);
+    try {
+      await openWorkList({
+        el,
+        stage: state.stage,
+        projects: state.projects,
+        analyses: state.analyses || [],
+        onExit: () => { state.workListSlug = null; writeUrl(); renderSidebar(); loadPane(); },
+      }, state.workListSlug);
+    } catch (err) {
+      // A pane that throws on the way in leaves whatever was there before,
+      // which reads as "clicking did nothing" — reported as both "the batch
+      // could not be enqueued" and "switching the stage changed nothing"
+      // when the server was restarted underneath the page. Say it instead.
+      el.innerHTML = `
+        <h3 class="m-0 font-heading text-name font-normal">This view could not be loaded</h3>
+        <div class="my-s3 h-px bg-rule"></div>
+        <p class="max-w-[70ch] text-answer text-ink">${esc(err.message)}</p>
+        <p class="max-w-[70ch] text-caveat text-ink-muted">
+          A network-level failure here usually means the server restarted. What
+          you were looking at is unchanged — nothing was written.
+        </p>
+        <button data-act="retry-pane"
+          class="mt-s2 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px]
+                 text-caveat text-accent-ink">Try again</button>`;
+      el.querySelector('[data-act="retry-pane"]').addEventListener('click', () => loadPane());
+    }
     writeUrl();
     return;
   }

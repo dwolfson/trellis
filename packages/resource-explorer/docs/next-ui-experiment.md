@@ -601,6 +601,64 @@ The seeded list is `Egeria family — scouting` (`wl-b37710b3b4`, two members).
 Deleting a work list is local-only and never removes a published Collection —
 that is a catalog decision with its own consequences.
 
+## Round 7 — running the batch and the publish for real
+
+Cleared to run both. Both worked, and running them found things the stubs
+could not.
+
+### The batch ran — and reported `0 of 2 complete` forever
+
+Two runs were enqueued, a live worker claimed them, and **both succeeded**.
+The progress endpoint reported `finished 0/2, complete: false` and would have
+done so indefinitely, because the terminal states were guessed:
+
+    invented:  done, failed, cancelled
+    actual:    succeeded, failed, cancelled   (ProjectRegistry.RUN_STATES)
+
+`claimed` was missing from the active set too. Nothing errored — the numbers
+were simply always wrong, and since the UI polls on `complete`, a finished
+batch would have polled until the tab closed and the grid would never have
+refreshed. The vocabulary now comes from the registry's own `RUN_STATES`, and
+a state in neither the terminal nor the active set is **named** in the
+response as `unrecognised_states` rather than bucketed.
+
+### The publish worked, after one bug a stub could not catch
+
+`_default_clients()` returns a **tuple** — `(clients, find_element_guid)` —
+not an `OutboxClients`. Unpacking it wrong raises
+`'tuple' object has no attribute 'require'`, and that line is only reachable
+with a live platform, so no amount of stub testing would have found it.
+
+Then, end to end and verified **independently of the call that wrote it**:
+
+- collection `d8323a5b-ad2a-4775-aadf-acee2df78441`, found by looking up its
+  qualifiedName rather than trusting the publish's return value
+- `typeName: WorkingSet`, `qualifiedName:
+  WorkingSet::resource-explorer::wl-b37710b3b4`
+- both memberships drained from the outbox and **confirmed present** —
+  `egeria-python` and `egeria-workspaces` are attached. Presence confirmed,
+  not "no failures reported"
+
+Only those two outbox rows were pending, so the ordinary `drain_outbox()` was
+safe; had there been a backlog it would have applied other sessions' queued
+work, which is why the count was checked first.
+
+### Two symptoms with one cause, and a real gap behind them
+
+Reported mid-round: *"the batch could not be enqueued: Load failed"* and
+*"switching the stage didn't change what was seen"*. The route was registered
+and stage switching worked when tested (5 Scouting columns → 27 Analysis
+columns). Both were the same event: **the server on 8811 was restarted
+underneath the page**, and a fetch died.
+
+The gap that made it confusing is real and is fixed: a pane whose load threw
+left whatever was there before, so a dead page and a working one looked
+identical. It now renders what failed, says a network-level failure usually
+means a restart and that nothing was written, and offers a retry. `Load
+failed` / `Failed to fetch` are distinguished from an application error,
+because "the batch could not be enqueued" reads as a refusal and this is not
+one.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it
@@ -618,9 +676,10 @@ that is a catalog decision with its own consequences.
   verdicts, the Context form, Automate, the Activity log, the RFA drawer,
   Admin, and the stat tiles. Each is marked and linked out; none is silently
   absent.
-- **The batch run and the Egeria publish have not been exercised end to
-  end** — see "what was deliberately not run" above. Both need a moment when
-  the other sessions on this machine are quiet.
+- **Concurrency across a set is enqueued but not yet *proven* concurrent.**
+  Two runs is not a test of throughput; the queue's `SKIP LOCKED` claim is
+  existing, tested machinery, but the slice's own claim — fourteen repos
+  running at once — has been exercised at two.
 - **Lucide is not wired in.** The screen needs almost no icons: its state
   vocabulary is typographic (`✓ ○ ⚠ ·`), which is not emoji and not an icon
   set. Add the sprite when a surface actually needs one.

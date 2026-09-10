@@ -61,10 +61,25 @@ log = logging.getLogger(__name__)
 #: `WorkList`.
 EGERIA_TYPE_NAME = "WorkingSet"
 
-#: A batch run's states, derived from its rows rather than stored — a stored
-#: aggregate is a second copy of the truth and goes stale the moment a worker
-#: updates a row without telling it.
-RUN_SET_STATES = ("queued", "running", "done", "failed", "cancelled")
+#: The states a run can END in.
+#:
+#: MEASURED, not guessed. The first version of this invented `done` and left
+#: out `claimed`, so a set whose runs had all SUCCEEDED reported
+#: `finished 0/2, complete false` — forever. The UI polls on `complete`, so a
+#: finished batch would have polled until the tab closed and the grid would
+#: never have refreshed. Nothing errored; the numbers were simply always
+#: wrong, which is the shape this project keeps finding.
+#:
+#: `ProjectRegistry.RUN_STATES` is the authority. This is kept as an explicit
+#: subset rather than "everything that is not active", so that a NEW state
+#: added upstream shows up here as unrecognised instead of being silently
+#: counted as finished.
+TERMINAL_RUN_STATES = ("succeeded", "failed", "cancelled")
+
+#: What a run is doing while it is not finished. `claimed` is a real state —
+#: a worker has taken the row but not started it — and omitting it is how a
+#: run in flight gets counted as neither running nor done.
+ACTIVE_RUN_STATES = ("queued", "claimed", "running")
 
 
 def _now() -> str:
@@ -328,13 +343,22 @@ class WorkLists:
             d["state"] = state
             counts[state] = counts.get(state, 0) + 1
             runs.append(d)
-        terminal = {"done", "failed", "cancelled"}
+        terminal = set(TERMINAL_RUN_STATES)
+        unrecognised = sorted(
+            {r["state"] for r in runs}
+            - set(TERMINAL_RUN_STATES) - set(ACTIVE_RUN_STATES) - {"unknown"})
+        if unrecognised:
+            # Neither finished nor in flight by this module's reckoning. Said
+            # out loud rather than bucketed, because guessing is what produced
+            # the `done` bug.
+            log.warning("run set %s has unrecognised state(s): %s", set_id, unrecognised)
         return {
             "set_id": set_id,
             "total": len(runs),
             "counts": counts,
             "finished": sum(n for s, n in counts.items() if s in terminal),
             "complete": all(r["state"] in terminal for r in runs),
+            "unrecognised_states": unrecognised,
             "runs": runs,
         }
 
@@ -366,7 +390,12 @@ class WorkLists:
             _create_typed_collection,
         )
 
-        clients = _default_clients()
+        # `_default_clients()` returns a TUPLE — (clients, find_element_guid) —
+        # not an `OutboxClients`. Unpacking it wrong gets you
+        # `'tuple' object has no attribute 'require'` at publish time, which
+        # is only reachable with a live platform and so is exactly the kind of
+        # line a stub test does not exercise.
+        clients, _find_element_guid = _default_clients()
         cm = clients.require("collection_manager")
 
         guid = (wl.get("egeria_guid") or "").strip()

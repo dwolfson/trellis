@@ -254,7 +254,7 @@ function rowHtml(member, qs) {
   const slug = member.entity_slug;
   const row = grid.rows.get(slug);
   const running = grid.batch?.runs?.find(
-    (r) => r.entity_slug === slug && ['queued', 'running'].includes(r.state));
+    (r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state));
 
   const cells = qs.map((q) => {
     if (!row) {
@@ -304,7 +304,16 @@ async function runBatch(ctx) {
   try {
     started = await enqueueBatch(analysisId, slugs, grid.workList.slug);
   } catch (err) {
-    note(`<span class="text-state-warn">The batch could not be enqueued: ${esc(err.message)}</span>`);
+    // `Load failed` / `Failed to fetch` is the browser's wording for a
+    // network-level failure, not an application error — most often the
+    // server restarting. Distinguish it, because "the batch could not be
+    // enqueued" reads as a rejection and this is not one: nothing was
+    // written and retrying is the right move.
+    const networkish = /load failed|failed to fetch|networkerror/i.test(err.message || '');
+    note(networkish
+      ? `<span class="text-state-warn">The server could not be reached, so nothing was
+         enqueued (${esc(err.message)}). If it was restarting, try again.</span>`
+      : `<span class="text-state-warn">The batch was refused: ${esc(err.message)}</span>`);
     return;
   }
   note(`Batch <span class="font-mono">${esc(started.set_id)}</span> ·
@@ -331,10 +340,17 @@ function watchBatch(ctx, setId) {
       return;
     }
     grid.batch = p;
-    const order = ['queued', 'running', 'done', 'failed', 'cancelled', 'unknown'];
+    // The queue's OWN vocabulary — `ProjectRegistry.RUN_STATES`. `done` is not
+    // one of them; assuming it was is what made a finished batch poll forever.
+    const order = ['queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'unknown'];
+    const tone = { succeeded: 'text-state-ok', failed: 'text-state-warn',
+                   cancelled: 'text-state-warn', unknown: 'text-ink-muted' };
     const parts = order.filter((s) => p.counts[s]).map((s) =>
-      `<span class="${s === 'failed' ? 'text-state-warn' : s === 'done' ? 'text-state-ok' : 'text-ink'}"
-        ><span class="tnum">${p.counts[s]}</span> ${s}</span>`);
+      `<span class="${tone[s] || 'text-ink'}"><span class="tnum">${p.counts[s]}</span> ${s}</span>`);
+    // Anything the server flagged as unrecognised is named, not folded in.
+    for (const s of p.unrecognised_states || []) {
+      parts.push(`<span class="text-state-warn"><span class="tnum">${p.counts[s] || 0}</span> ${esc(s)} (unrecognised)</span>`);
+    }
     renderProgress(`<span class="text-caps uppercase tracking-caps text-ink-muted">Batch</span>
       ${parts.join(' · ')} · <span class="tnum">${p.finished}</span> of
       <span class="tnum">${p.total}</span> finished`);
@@ -345,7 +361,7 @@ function watchBatch(ctx, setId) {
       // Re-read the facts: the whole reason for running was to change them.
       await loadGrid(ctx);
       renderProgress(`<span class="text-caps uppercase tracking-caps text-ink-muted">Batch</span>
-        finished — <span class="tnum">${p.counts.done || 0}</span> done${
+        finished — <span class="tnum">${p.counts.succeeded || 0}</span> succeeded${
           p.counts.failed ? `, <span class="text-state-warn"><span class="tnum">${p.counts.failed}</span> failed</span>` : ''}`);
     }
   };
