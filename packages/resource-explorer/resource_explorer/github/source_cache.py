@@ -95,15 +95,23 @@ class SourceCache:
 
     def get(self, kind: str, full_name: str, sha: str) -> Path | None:
         """The cached artifact, or None. Touches it so eviction sees the use."""
+        # `self.hits`/`self.misses` are process-wide and shared across runs, so
+        # they cannot attribute a lookup to the run that made it. The scope
+        # below can; both are kept because the totals are still the cheapest
+        # thing to print when debugging the cache itself.
+        from resource_explorer.observability import acquisition
+
         path = self._entry(kind, full_name, sha)
         if not path.exists():
             self.misses += 1
+            acquisition.record_miss(kind)
             return None
         try:
             os.utime(path, None)
         except OSError:
             pass          # an unwritable cache still reads fine; only LRU degrades
         self.hits += 1
+        acquisition.record_hit(kind)
         return path
 
     def put(self, kind: str, full_name: str, sha: str, produce) -> Path:

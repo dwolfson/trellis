@@ -361,10 +361,11 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     log.info("run started: id=%s kind=%s claimed_by=%s target=%s",
              run_id, kind, row.get("claimed_by"), target)
     try:
-        from resource_explorer.observability import llm_usage
+        from resource_explorer.observability import acquisition, llm_usage
 
         with _Heartbeat(registry, run_id), _run_as_requester(row), \
-                llm_usage.usage_scope() as usage:
+                llm_usage.usage_scope() as usage, \
+                acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         log.exception("run %s (%s) crashed", run_id, kind)
@@ -379,9 +380,13 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     # see. `log_run_usage` swallows its own errors too; this is belt and braces
     # because the cost of being wrong is a run reported failed after doing its
     # work.
-    if usage.calls:
+    # Logged whenever EITHER has something to say. A run that made no LLM call
+    # but fetched a 200MB zipball is the expensive case §1 cares most about, and
+    # gating on `usage.calls` alone would have dropped it entirely.
+    if usage.calls or acquired.lookups:
         snapshot = usage.as_dict()
-        log.info("run %s (%s) llm usage: %s", run_id, kind, snapshot)
+        acquired_snapshot = acquired.as_dict()
+        log.info("run %s (%s) cost: %s %s", run_id, kind, snapshot, acquired_snapshot)
         # No try/except here on purpose. log_run_usage cannot raise — its whole
         # body is guarded — and wrapping it would make execute_run itself a
         # broad-except/log-only site in a function that returns a RunOutcome,
@@ -389,7 +394,7 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         # protection belongs in the sink, not at every call site.
         from resource_explorer.observability.mlflow_tracking import log_run_usage
 
-        log_run_usage(run_id, kind, snapshot,
+        log_run_usage(run_id, kind, snapshot, acquisition=acquired_snapshot,
                       slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
                       analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
 

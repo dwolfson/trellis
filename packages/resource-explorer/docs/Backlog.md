@@ -4519,6 +4519,51 @@ token counts as RE's.
 collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
 history is deleted; the two simply stop sharing a bucket.
 
+## Source-acquisition accounting — cold vs warm per run, DONE 2026-09-10
+
+The cheap half of the funnel-cost spec's §6. That section asks for *bytes
+fetched*; the thing it actually needs bytes FOR — separating "slow because it
+downloaded" from "slow because it worked" — is settled by one bit, and
+`SourceCache` already knew it.
+
+Rule 17 measured the stakes: acquisition **22.64s cold against 1.28s warm**, one
+repo's full route 110.5s → 30s → **14.4s** as caching landed. A tier median that
+pools those two populations measures how many of its runs happened to be first,
+not the tier. The spec calls caching its single biggest confounder and it is
+right.
+
+`SourceCache.hits`/`.misses` have existed since the class was written and
+**nothing has ever read them** — and they could not have answered this anyway:
+the cache is deliberately shared across `SurveyOrchestrator.run()` calls, so
+they are process-wide totals and sampling them either side of a run would race
+any concurrent run. `observability/acquisition.py` is a ContextVar scope
+attributing each lookup to the run that made it — the same shape as
+`llm_usage`, deliberately one pattern rather than two. The shared counters are
+kept for debugging the cache itself.
+
+**Three states, and the third is the point.** `cold` (anything missed — one
+miss means a real download), `warm` (all hits), and **`not-consulted`** (the run
+never touched the cache at all). A database survey does no source acquisition,
+and defaulting it to `warm` would file every one of them in the cheap bucket of
+a comparison they never entered. `cold` is deliberately "any miss", not "all
+misses": a run warm on the zipball and cold on the clone still paid for the
+download.
+
+Logged per run beside the token counts — counts as metrics, `source_acquisition`
+and `source_kinds_fetched` as params, so a cost query can *filter* cold runs out
+of a tier median rather than averaging them in. The run-cost log fires on
+`usage.calls or acquired.lookups`: a run that downloaded a large zipball and
+made no LLM call is exactly the expensive case §1 cares about, and gating on
+tokens alone dropped it.
+
+Verified end-to-end through the real cache: cold 2 misses, warm 2 hits,
+SHA-moved 1 hit + 1 miss reading `cold` with `source_kinds_fetched:
+[git_clone_root]`, and a no-lookup run reading `not-consulted`.
+
+**Bytes fetched is still not instrumented**, and is now much less urgent: the
+confounder it was wanted for is handled. It remains the honest answer if two
+tiers ever come out indistinguishable *within* the same acquisition state.
+
 ## LLM token accounting — complete() and streaming both counted
 
 Built 2026-09-09 at the project owner's direction, closing half of the

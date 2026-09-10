@@ -75,6 +75,7 @@ def log_query(
 
 
 def log_run_usage(run_id: str, kind: str, usage: dict, *,
+                  acquisition: dict | None = None,
                   slug: str = "", analysis_id: str = "") -> None:
     """One queued run's LLM cost — the per-run attribution the funnel-cost
     spec's §1 wanted and wall time could not give it.
@@ -102,6 +103,16 @@ def log_run_usage(run_id: str, kind: str, usage: dict, *,
         mlflow.set_tracking_uri(cfg.tracking_uri)
         mlflow.set_experiment(f"{cfg.experiment_name}-runs")
         metrics, params = _usage_metrics(usage)
+        if acquisition:
+            # Counts aggregate, the state filters — same split and same reason
+            # as the token metrics. `source_acquisition` is the one that makes a
+            # tier median trustworthy: a cold run and a warm one are different
+            # populations, and rule 17 measured them 22.64s against 1.28s.
+            metrics.update({k: v for k, v in acquisition.items()
+                            if isinstance(v, int) and not isinstance(v, bool)})
+            params["source_acquisition"] = acquisition.get("source_acquisition", "unknown")
+            params["source_kinds_fetched"] = \
+                ",".join(acquisition.get("source_kinds_fetched") or []) or "none"
         with mlflow.start_run(run_name=f"{kind}:{analysis_id or slug or run_id}"):
             mlflow.log_params({
                 "run_id": run_id,
