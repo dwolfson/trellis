@@ -80,6 +80,70 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### Runs 2 and 4 re-judged under rubric v3 (judge sees the packed text) — the compiler change is neutral; compiled-versus-RAG is not
+
+`results.v3-2026-09-09.jsonl` in both run directories; run 2 also keeps `results.v3-2026-09-09.blind.jsonl`,
+the first v3 pass in which no row had text (see the caveat). Every v3 row carries
+`judge.evidence_text_exact`: whether the judge saw the exact text the model saw.
+
+**Caveat first — shared state drifted under the re-judge, twice.** Rows written before v3 carry no
+text, so it was reconstructed by recompiling and checking the compile id. Run 4: docling's stored
+state had changed since the run, so all 104 docling rows were graded blind. Run 2: the current
+compiler cannot reproduce run-2 ids by construction (different section set), so a scratch worktree
+at b407dae ran the pre-change compiler — it matched all 104 egeria and kafka questions at the start,
+but egeria's state changed after the 7th question while the judge was running (another session's
+analysis run on the shared registry), leaving 45 of 52 egeria questions blind. **The comparable set
+is the 59 questions (52 kafka, 7 egeria) with exact text in both runs.** From now on the reference
+compile keeps its text on the row, so this cannot recur; a re-judge never depends on shared state
+again.
+
+On those 59 questions, both conditions, both runs:
+
+| metric (v3) | run 2 compiled | run 2 rag | run 4 compiled | run 4 rag |
+|---|---:|---:|---:|---:|
+| answers_question (0–2) | 1.10 | 0.32 | 0.88 | 0.25 |
+| supported_claims (mean) | 1.54 | 0.20 | 1.61 | 0.36 |
+| unsupported_claims (mean) | 0.29 | 0.69 | 0.46 | 0.59 |
+| misread_claims (mean) | 0.02 | 0.00 | 0.02 | 0.00 |
+| cites_evidence | 68% | 3% | 61% | 3% |
+| claims_missing_result | 0% | 2% | 0% | 2% |
+| declines | 27% | 69% | 24% | 71% |
+
+**What holds in both runs, on a judge that can check the text:** compiled answers make four to
+eight times the supported claims, about half the unsupported claims, answer three times as often,
+and cite evidence in about two thirds of answers against 3%. The run-2 v2 finding that compiled
+answers "invent more specifics" is reversed, not merely withdrawn: under v2 the judge was counting
+density, and density is mostly supported. Misread claims are rare in both conditions (0.02).
+
+**What the compiler change did, paired on the same 59 questions (run 4 minus run 2, compiled):**
+answers_question −0.22 (9 up, 19 down, 31 tied); supported_claims +0.07 (14/14/31);
+unsupported_claims +0.17 (16 up, 8 down, 35 tied); cites_evidence −7 points. **Neutral to slightly
+negative**, on a set that is 88% kafka and small enough that the answers_question move sits at the
+edge of the protocol's noise band. The cap, the count-free summary and the relevance fix did not
+improve answer quality on a judge that can see; they improved what the manifest reports (86% of
+sections at FULL, sane ranking on paraphrases) and nothing the judge measures. The hypothesis that
+coarse SUMMARY rungs were breeding invented specifics is not supported: the specifics were real.
+
+On the wider egeria+kafka set (run 4 fully exact, run 2 blind for most of egeria) the direction is
+the same for compiled-versus-RAG and should not be read for run-4-versus-run-2.
+
+**Rubric v3's own defect, noted for v4:** its rule "a decline scores 0 when a packed section
+answers the question" fired on 9 compiled run-4 declines, of which only 2 are real (public
+interfaces with `interface_surface` packed; APIs with `api_structure` packed). The other 7 are
+catalog-state, cost and organisational-use questions no analysis covers, where declining is right.
+The judge reads "a packed section" too loosely; the rule needs "a packed section whose analysis
+the question catalog maps to this question".
+
+**Conclusion for the compiler track.** The engineering target this track started from was an
+artefact of a blind judge. The defensible statements are: (1) compiled evidence beats RAG-only on
+every content metric once the judge can verify claims; (2) the three packing changes are
+neutral on quality and stay because they are cheaper and the manifest is more honest, not because
+they helped answers; (3) the real remaining defects are the eleven from the run-4 audit — raw JSON
+misread (`cve_scan` zero-versus-unqueryable), structure-only sections narrated, and uncovered
+questions arriving with an empty gap list — each small and specific. **Next experiment, if the cap
+is to be judged on its own: a within-run A/B (`max_sections` 12 vs 0), same day, text on the row,
+rubric v4 with the decline rule tightened.** One variable, no reconstruction.
+
 ### run4-20260909 — cap, count-free summary and relevance fix in isolation; the metric, not the compiler, is what moved
 
 Same seed, repos and rubric (v2) as runs 2 and 3; commit d31379a (template reverted, the three
