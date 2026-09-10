@@ -365,6 +365,70 @@ instance does not have. The rendering path, the theme binding and the
 promotion mechanism are written and syntax-checked; none has been seen with a
 real figure.
 
+## Round 4 — why charts and diagrams did not work
+
+Reported as "chart and diagram don't seem to work". They didn't, and the
+cause was not the rendering code: **both were wired only to a chat answer.**
+A chart needed the query router to classify the question as statistical,
+health or comparison; a diagram needed the answer to contain a fenced
+` ```mermaid ` block. Neither is reachable by anyone who has not asked the
+right question first, and the chat path needs a session. So the features
+existed and had no route to them.
+
+Both now hang off data that is already there.
+
+### Diagrams — on the question that has one
+
+`architecture_diagram` writes its Mermaid source into the fact value, and
+Discovery's *"How do its components relate to each other?"* routes to it. So
+that row now carries a **`diagram`** action beside `evidence` and `re-run`,
+and the evidence panel offers the same. Both promote into the content pane at
+full width with `svg-pan-zoom`.
+
+Verified on `egeria_workspaces_git`: the action appears on the right row, the
+promotion renders the pane, and the render fails with a stated reason under
+anonymous read — `POST /api/diagrams/mermaid` is a write-shaped route for a
+read-shaped operation, so an anonymous-read deployment cannot render diagrams
+at all. **That is the one part still unverified end to end**; with a session
+it should complete, and Kroki is up on 6002.
+
+### Charts — Understanding is where they live
+
+`/api/stats/{slug}/charts/*` serves **seven working Plotly figures** for a
+repo. Understanding was marked "not built" on the strength of having zero
+rows in the analysis catalog and the activity log — both true, and neither of
+them is what feeds a chart. The catalog is empty; the data is not.
+
+So Understanding is now the charts pane: it probes every kind, offers the ones
+with series, and keeps the three outcomes apart —
+
+- a figure with data → rendered,
+- a `200` with no series → *"nothing recorded yet"*, offered but not
+  clickable, because an empty chart reads as a measured zero,
+- a failed call → *"unavailable"* with the reason.
+
+**This changes a marking the design made deliberately.** Understanding is no
+longer dashed in the intent nav. The justification for the marker was
+catalog-shaped and the charts are not; worth putting back to the designer
+rather than assuming agreement.
+
+Both chart paths — the Understanding pane and a promoted chat answer — share
+one `chartLayout()`, so they cannot drift into two designs. Plotly's own
+default template is dropped rather than fought property by property.
+
+### The cache bug that wasted a loop
+
+Editing `re-api.js` and reloading gave
+`does not provide an export named 'REPO_CHARTS'` — an error that reads like a
+code bug and is a stale module cache. `StaticFiles` sets no `Cache-Control`,
+and an ES module already in a page's module map is stickier still.
+
+`/static/next/*` and `/static/re-api.js` now carry `Cache-Control: no-cache`,
+which means *revalidate*, not *do not store* — the browser still caches and
+still gets a 304. Scoped by exact prefix, so the rest of `/static` is
+untouched. If `/next` ever becomes the default, replace it with a content
+hash in the filename rather than keeping revalidation forever.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it

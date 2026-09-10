@@ -250,6 +250,30 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
        compileId ? { query_hash: queryHash, vote, compile_id: compileId }
                  : { query_hash: queryHash, vote });
 
+/* ── Charts ──────────────────────────────────────────────────────────── */
+
+/** The chart kinds `/api/stats/{slug}/charts/{kind}` serves for a repo. */
+export const REPO_CHARTS = [
+  ['stars', 'Stars over time'],
+  ['commits', 'Commits over time'],
+  ['weekly_commits', 'Commits by week'],
+  ['languages', 'Languages'],
+  ['file_types', 'File types'],
+  ['top_committers', 'Top committers'],
+  ['health', 'Health'],
+  ['survey_history', 'Survey history'],
+];
+
+/**
+ * One Plotly figure.
+ *
+ * A 200 with an empty `data` array is a real and different answer from a
+ * failure: it means the series exists and has nothing in it yet. Callers
+ * must not render the two the same way.
+ */
+export const getChart = (slug, kind) =>
+  get(`/api/stats/${encodeURIComponent(slug)}/charts/${encodeURIComponent(kind)}`);
+
 /* ── Running an analysis ─────────────────────────────────────────────── */
 
 export const runAnalysis = (slug, analysisId) =>

@@ -25,7 +25,9 @@ import {
   VALID_DISPOSITIONS,
   addInvestigationMember,
   ask,
+  REPO_CHARTS,
   getAnswer,
+  getChart,
   getDispositionHistory,
   getMe,
   getQuestions,
@@ -79,6 +81,7 @@ const state = {
   counts: { activity: null, rfas: null },
   chat: [],                    // the transcript: one entry per turn
   promoted: null,              // a chat answer promoted into the pane
+  charts: null,                // Understanding's probed chart index
 };
 
 /** The eight intents, in their canonical order, plus Investigation as the
@@ -90,11 +93,9 @@ const STAGES = [
   { id: 'assessment',    label: 'Assessment' },
   { id: 'analysis',      label: 'Analysis' },
   { id: 'enrichment',    label: 'Enrichment' },
-  // Understanding is MARKED, not dimmed: it has zero rows in both the
-  // analysis catalog and the activity log, so presenting it as a peer of
-  // four working stages is a claim the data does not support. Full
-  // legibility, a dashed rule, and the words.
-  { id: 'understanding', label: 'Understanding · not built', unbuilt: true },
+  // Understanding was marked "not built" here. It renders charts now — see
+  // loadChartsPane(); the catalog rows it lacks were never what fed it.
+  { id: 'understanding', label: 'Understanding' },
   { id: 'curate',        label: 'Curate' },
   { id: 'automate',      label: 'Automate' },
 ];
@@ -423,6 +424,7 @@ function readEnvelope(entry, env) {
   }
 
   lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun;
+  lines.mermaid = factMermaid(env);
 
   return lines;
 }
@@ -650,6 +652,163 @@ function answerForm(turn) {
   return 'inline';
 }
 
+/* ── Understanding: the charts pane ──────────────────────────────────── */
+
+/**
+ * Every chart kind, with what each actually holds for this resource.
+ *
+ * The three outcomes are kept apart, because they are three different
+ * sentences and this app's whole discipline is not folding them together:
+ *   - a figure with series      -> render it
+ *   - a 200 with no series      -> "nothing recorded yet", NOT an error and
+ *                                  NOT an empty chart, which would read as
+ *                                  a measured zero
+ *   - a failed call             -> say the call failed, name the reason
+ */
+async function loadChartsPane() {
+  const el = $('content');
+  const slug = state.selectedSlug;
+
+  if (!slug) {
+    el.innerHTML = paneMessage('Select a resource',
+      'Pick a repository from the sidebar to see its charts.');
+    bindSubTabs();
+    return;
+  }
+
+
+  // NO sub-tab row here. Understanding has no Search/Survey/Dashboard/
+  // Questions/Disposition — rendering the strip with "Questions" underlined
+  // while a chart is on screen says this pane is something it is not.
+  el.innerHTML = `
+    <div class="mb-s4 font-heading text-subtab text-ink">
+      <span class="border-b border-accent pb-[2px]">Charts</span>
+      <span class="ml-s3 text-caps uppercase tracking-caps text-ink-muted">Understanding has one pane</span>
+    </div>
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="chart-index" class="flex flex-wrap gap-s2"></div>
+    <div id="chart-body" class="mt-s4"></div>`;
+  bindResourceHeader();
+
+  const index = $('chart-index');
+  index.innerHTML = REPO_CHARTS.map(([kind, label]) =>
+    `<button data-chart="${kind}" disabled
+      class="cursor-wait rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
+             text-caveat text-ink-muted">${esc(label)}…</button>`).join('');
+
+  // Probe each kind so the index never offers a chart with nothing in it.
+  const results = await Promise.all(REPO_CHARTS.map(async ([kind, label]) => {
+    try {
+      const fig = await getChart(slug, kind);
+      const series = Array.isArray(fig?.data) ? fig.data.length : 0;
+      return { kind, label, fig, series, error: null };
+    } catch (err) {
+      return { kind, label, fig: null, series: 0, error: err.message };
+    }
+  }));
+  if (slug !== state.selectedSlug) return;
+  state.charts = results;
+
+  index.innerHTML = results.map((r) => {
+    if (r.error) {
+      return `<span title="${esc(r.error)}"
+        class="rounded-sm border border-dashed border-state-warn px-2 py-[3px] text-caveat text-state-warn"
+        >${esc(r.label)} · unavailable</span>`;
+    }
+    if (!r.series) {
+      return `<span title="The series exists and has nothing in it yet"
+        class="rounded-sm border border-dashed border-rule-strong px-2 py-[3px] text-caveat text-ink-muted"
+        >${esc(r.label)} · nothing recorded yet</span>`;
+    }
+    return `<button data-chart="${r.kind}"
+      class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
+             text-caveat text-ink hover:border-accent">${esc(r.label)}</button>`;
+  }).join('');
+
+  index.querySelectorAll('[data-chart]').forEach((b) => b.addEventListener('click', () => {
+    index.querySelectorAll('[data-chart]').forEach((o) =>
+      o.classList.toggle('border-accent', o === b));
+    drawChart(results.find((r) => r.kind === b.dataset.chart));
+  }));
+
+  const first = results.find((r) => r.series);
+  if (first) {
+    index.querySelector(`[data-chart="${first.kind}"]`)?.classList.add('border-accent');
+    drawChart(first);
+  } else {
+    $('chart-body').innerHTML = `<div class="text-answer text-ink">
+      Nothing has been recorded for any of this resource's charts yet. That is
+      a statement about the history collected so far, not about the resource.</div>`;
+  }
+}
+
+/** Render one figure into the pane, themed from the token layer. */
+async function drawChart(entry) {
+  const body = $('chart-body');
+  if (!body || !entry) return;
+  body.innerHTML = `<div class="text-caveat text-ink-muted">Drawing ${esc(entry.label)}…</div>`;
+  try {
+    await loadScript('/static/vendor/plotly.min.js');
+    body.innerHTML = `<div id="chart-canvas" style="height:min(62vh,560px)"></div>
+      <div class="mt-s2 text-provenance text-ink-muted">${esc(entry.label)} ·
+        <span class="tnum">${entry.series}</span> series ·
+        from the registry's recorded history · no retrieval</div>`;
+    await window.Plotly.newPlot($('chart-canvas'), entry.fig.data || [],
+                                chartLayout(entry.fig.layout),
+                                { displaylogo: false, responsive: true });
+  } catch (err) {
+    body.innerHTML = `<div class="text-answer text-state-warn">
+      ${esc(entry.label)} could not be drawn: ${esc(err.message)}</div>`;
+  }
+}
+
+/**
+ * The figure's own layout, with the token layer laid over it.
+ *
+ * Plotly's default template is a dark-on-white theme of its own; on paper it
+ * has to be overridden or the chart is a different design from the page it
+ * sits in. `template: undefined` drops that default rather than fighting it
+ * property by property.
+ */
+function chartLayout(layout = {}) {
+  const t = tokens();
+  const axis = (a = {}) => Object.assign({
+    gridcolor: t.rule, zerolinecolor: t.rule, linecolor: t.rule,
+    tickfont: { family: t.font, color: t.inkMuted, size: 11 },
+    titlefont: { family: t.font, color: t.inkMuted, size: 11 },
+  }, a);
+  return Object.assign({}, layout, {
+    template: undefined,
+    paper_bgcolor: t.paper,
+    plot_bgcolor: t.paper,
+    colorway: [t.accent, t.ok, t.gap, t.warn, t.inkMuted],
+    font: { color: t.ink, family: t.font, size: 12 },
+    xaxis: axis(layout.xaxis),
+    yaxis: axis(layout.yaxis),
+    legend: Object.assign({ font: { family: t.font, color: t.ink, size: 11 } }, layout.legend),
+    margin: { l: 56, r: 24, t: 24, b: 48 },
+  });
+}
+
+/** The Mermaid source a fact carries, if it carries any.
+ *
+ *  `architecture_diagram` writes its source into the fact value, so the
+ *  relationship question ("How do its components relate to each other?") has
+ *  a real diagram sitting behind it. This is the product path to a diagram —
+ *  a chat answer is not the only one, and wiring promotion ONLY to chat left
+ *  the feature unreachable for anyone who had not asked a question first.
+ */
+function factMermaid(env) {
+  for (const f of (env && env.facts) || []) {
+    const src = f.value && (f.value.mermaid || f.value.diagram);
+    if (typeof src === 'string' && src.trim()) {
+      return { source: src.trim(), analysisId: f.analysis_id, lastRun: f.last_run_at || '' };
+    }
+  }
+  return null;
+}
+
 /** Render a promoted artefact in the content pane, at full width. */
 async function promoteToPane(turn) {
   const el = $('content');
@@ -673,28 +832,16 @@ async function promoteToPane(turn) {
   });
 
   const body = $('promoted-body');
-  const t = tokens();
   try {
     if (form === 'chart') {
       await loadScript('/static/vendor/plotly.min.js');
       const fig = turn.chart;
-      const layout = Object.assign({}, fig.layout, {
-        paper_bgcolor: t.paper,
-        plot_bgcolor: t.paper,
-        font: { color: t.ink, family: t.font, size: 12 },
-        xaxis: Object.assign({ gridcolor: t.rule, zerolinecolor: t.rule,
-                               linecolor: t.rule, tickfont: { family: t.font } },
-                             fig.layout && fig.layout.xaxis),
-        yaxis: Object.assign({ gridcolor: t.rule, zerolinecolor: t.rule,
-                               linecolor: t.rule, tickfont: { family: t.font } },
-                             fig.layout && fig.layout.yaxis),
-        legend: Object.assign({ font: { family: t.font, color: t.ink } },
-                              fig.layout && fig.layout.legend),
-        margin: { l: 56, r: 20, t: 20, b: 44 },
-      });
-      await window.Plotly.newPlot(body, fig.data || [], layout,
+      // Same themed layout as the Understanding pane — one place, so a chat
+      // chart and a stage chart cannot drift into two designs.
+      await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
                                   { displaylogo: false, responsive: true });
     } else if (form === 'diagram') {
+      const t = tokens();
       // Server-side render via Kroki — the browser never loads mermaid.js.
       const res = await fetch('/api/diagrams/mermaid', {
         method: 'POST',
@@ -1999,6 +2146,22 @@ async function loadPane() {
   // would have shipped a screen whose whole argument — that six states are
   // scannable as glyph plus sentence — could not be looked at.
   const stageDef = STAGES.find((s) => s.id === state.stage);
+
+  // Understanding is CHARTS.
+  //
+  // It was marked "not built" on the strength of having zero rows in the
+  // analysis catalog and the activity log — both true, and both irrelevant
+  // to the seven Plotly figures `/api/stats/{slug}/charts/*` already serves
+  // for a repo. The catalog is empty; the data is not. Since the fix round
+  // puts "anything over time" in the pane as a chart, this is where charts
+  // live, and leaving the marker up would have been marking a surface as
+  // absent while its data sat one GET away.
+  if (state.stage === 'understanding') {
+    await loadChartsPane();
+    renderPerspectiveRow();
+    return;
+  }
+
   if (stageDef?.frame || stageDef?.unbuilt) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
@@ -2268,6 +2431,11 @@ function provenanceLine(entry, i, lines, st) {
   if (st === 'answered' || st === 'automatic') {
     actions.push(`<button data-evidence="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">evidence</button>`);
   }
+  // A relationship answer has a diagram behind it. It cannot be read in a
+  // 290px rail, so the row promotes it straight into the pane.
+  if (lines.mermaid) {
+    actions.push(`<button data-diagram="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">diagram</button>`);
+  }
   const canRun = (lines.canRun && lines.canRun.length) || (entry.analysis_ids || []).length;
   if (canRun && st !== 'running') {
     actions.push(`<button data-rerun="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">${
@@ -2334,6 +2502,7 @@ function bindRowActions(el, entry, i) {
   });
   el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', () => rerun(entry, i));
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
+  el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
 }
 
 /**
@@ -2421,6 +2590,21 @@ function measureHtml(key, v) {
   return `<div>${label} <span class="tnum">${tnum(esc(shown))}</span></div>`;
 }
 
+/** Promote a question's diagram into the content pane. */
+function showDiagram(entry) {
+  const env = state.answers.get(entry.question);
+  if (!env || env === 'loading' || env.__error) return;
+  const found = factMermaid(env);
+  if (!found) return;
+  promoteToPane({
+    question: entry.question,
+    mermaid: found.source,
+    source: `${found.analysisId}`
+      + (found.lastRun ? ` · run ${ago(found.lastRun)}` : ' · run time not recorded')
+      + ' · rendered by Kroki, no retrieval',
+  });
+}
+
 /** The full measurement behind a claim, in the rail. The row states the
  *  answer; this is where the numbers it came from live. */
 function showEvidence(entry) {
@@ -2452,12 +2636,17 @@ function showEvidence(entry) {
       <div class="mb-s2 font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence</div>
       <div class="mb-s3 text-subtab">${esc(entry.question)}</div>
       ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope.</div>'}
+      ${factMermaid(env) ? `<button data-act="evidence-diagram"
+        class="mb-s2 w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
+               text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Open diagram in pane</button>` : ''}
       <div class="mt-[10px] border-t border-chrome-line-soft pt-[9px] text-caps text-chrome-muted">
         Answered from <span class="tnum">${env.known_count ?? 0}</span> of
         <span class="tnum">${(env.known_count ?? 0) + (env.unknown_count ?? 0)}</span> measurements ·
         no retrieval
       </div>
     </div>`;
+  out.querySelector('[data-act="evidence-diagram"]')
+    ?.addEventListener('click', () => showDiagram(entry));
 }
 
 /* ════════════════════════════════════════════════════════════════════════
