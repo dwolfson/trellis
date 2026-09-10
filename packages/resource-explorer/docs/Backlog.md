@@ -4837,3 +4837,79 @@ every other status branch shows the hint, and a reader that took the trouble to
 write one ("No architecture diagram yet — run the analysis.") has it dropped.
 Changing it touches every kind's empty state, so it is a deliberate call for
 the presentation session, not a side effect of adding one card.
+
+
+## The architecture diagram cannot be rendered by this Kroki — REOPENS "drawn by a path no test exercises end-to-end"
+
+Measured 2026-09-10 against the live `egeria-shared-kroki` on :6002. The
+**exact payload the shipping UI POSTs** — `renderPendingArchDiagrams()`'s
+`%%{init: …}%%` prefix plus the stored `mermaid` source — returns
+`400 Internal Server Error`. Not a slow render, not a large-diagram limit:
+a refusal.
+
+There are **three independent causes, each sufficient on its own**, and each
+was isolated by bisecting down to a two-node diagram rather than inferred:
+
+| cause | evidence |
+|---|---|
+| Any line beginning `%%` | `flowchart TD / A[a] --> B[b]` renders (200). The same two lines with `%%{init: {"theme":"dark"}}%%` prefixed, or even a plain `%% comment`, return 400. So the UI's own theming directive breaks every render it is applied to. |
+| A literal `%` in a node label | `A["x 40% y"]` alone returns 400. `&#37;` and `&percnt;` render. |
+| A `class` directive naming more than 20 nodes | 20 renders, 21 does not, deterministically, whether on one line or split across several. A real diagram styles 53. |
+
+Cause 2 is **unconditional in the generator**:
+`surveyors/arch_recovery/mermaid.py:160` is `conf = f"{c.confidence}%"`, with
+no branch — so every component node of every diagram carries a literal `%`.
+Confirmed against stored data, not only read off the source: `milvus` (10
+literal `%`), `sqlglot` (3) and `marquez` (7) each return 400 from their real
+diagram. There is no repo for which this source renders.
+
+Cause 3 is narrower but independent: across the 53 repos holding a stored
+diagram, **7 also exceed the 20-node `class` ceiling** — `openmetadata` styles
+63. Those seven would still fail after cause 2 is fixed.
+
+*(A first pass at that survey reported "0 repos affected by `%`", which was a
+bug in the survey: the regex used a `(?<![&#\d])` lookbehind, and every real
+occurrence is `40%` — a digit immediately before the `%`, so the instrument
+excluded exactly the case it was looking for. Recorded because the wrong
+number looked entirely reasonable and agreed with no other evidence.)*
+
+**This reopens the entry above** ("CLOSED 2026-09-09, verified live"), which
+records the project owner confirming on :8810 that the diagram materialises.
+That verification and today's measurement cannot both describe the same
+system, and this entry does not guess which changed — the Kroki containers
+have been up three days, spanning both. What is certain is that the shipping
+UI's diagram does not render **today**, by direct measurement of its own
+payload, and the closed entry's conclusion should not be relied on until
+someone signed in re-checks it.
+
+**Where the fix belongs: the generator, not the caller.** A renderer that
+refuses `%` is a constraint on what may be emitted, and emitting the
+confidence as `40%` when `&#37;` renders identically is a free change.
+The `%%{init}%%` theming is the UI's, and has to move to styling the returned
+SVG — `/next` does this in `static/next/worklist.js`'s `themeSvgElement()`,
+scoped to the SVG's own id, and the two traps found doing it are worth
+copying: an SVG `<style>` is not scoped (it restyles the whole document), and
+prefixing a comma-separated selector list only scopes the FIRST selector.
+
+Worked around at the render boundary in `/next` (`mermaidForKroki()`), which
+strips `%%` lines, escapes `%`, and caps the class assignments while naming
+how many node styles it dropped. That is a workaround in one consumer, not a
+fix — the second consumer will hit all three again.
+
+## `exceeds_renderer_limit` reports the opposite of the truth
+
+`architecture_diagram`'s fact value carries `exceeds_renderer_limit: false`
+for a diagram that no renderer available here will accept — measured on
+`egeria_workspaces_git`, 9,384 characters, `false`, and a hard 400 from
+Kroki.
+
+Whatever that flag measures, it is not "will this render", which is what its
+name promises and what a caller will read it as. A guard that is confidently
+wrong in the safe-looking direction is worse than no guard: a UI that trusts
+it will not offer the fallback it would otherwise have offered.
+
+Either the flag should mean what it says — checked against the renderer's
+actual constraints, which per the entry above are `%%` lines, literal `%`,
+and a 20-node ceiling on `class` — or it should be renamed to whatever it
+does measure (a character count against some other bound) so nobody reads it
+as a rendering guarantee.
