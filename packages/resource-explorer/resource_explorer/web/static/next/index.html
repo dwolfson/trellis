@@ -173,6 +173,10 @@
      users exactly what pointer users get. */
   #wl-readout { min-height: 1.6em; }
 
+  /* The same staleness treatment the grid uses, for a line of text: a rule
+     under it, never a recolour. Age and quality stay different claims. */
+  .wl-age-text { border-bottom: 1px solid var(--wl-age, rgba(32,31,29,.55)); }
+
   /* Dashboard cards. A PROSE measurement is a peer of a numeric one — same
      border, same weight, same rank in the flow — and simply wider, because a
      sentence needs a measure to be read at. A grid that can only hold numbers

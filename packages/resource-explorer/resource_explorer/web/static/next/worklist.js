@@ -1136,7 +1136,7 @@ const STATE_WORD = {
   never_run: 'never run',
 };
 
-function closeCellDetail() {
+export function closeCellDetail() {
   document.getElementById('wl-detail')?.remove();
   document.removeEventListener('keydown', detailKeys);
 }
@@ -1146,7 +1146,7 @@ function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
 /** The panel shell both the cell popup and the refresh plan use. One shell,
  *  so the two cannot drift apart in behaviour — backdrop closes, Escape
  *  closes, a click inside does not. */
-function openDialog(title, sub) {
+export function openDialog(title, sub) {
   closeCellDetail();
   const el = document.createElement('div');
   el.id = 'wl-detail';

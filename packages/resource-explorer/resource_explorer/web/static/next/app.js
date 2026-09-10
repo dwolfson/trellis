@@ -23,7 +23,8 @@
 // The Scouting slice — work lists, batch runs and the comparison grid. Its
 // own module: it is the one surface that reads a SET rather than a resource,
 // and it goes when the experiment goes.
-import { listWorkLists, openWorkList, saveAsWorkList } from '/static/next/worklist.js';
+import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail }
+  from '/static/next/worklist.js';
 import { ago } from '/static/next/format.js';
 import {
   ApiError,
@@ -2470,6 +2471,61 @@ function paneNeedsRepo() {
   return '';
 }
 
+/** The tiers, in the order a funnel is worked through. */
+const SURVEY_TIERS = ['scouting', 'discovery', 'assessment', 'analysis',
+                      'refresh', 'automate_full'];
+
+/** Placeholder, like the matrix's — see STALE_DAYS there. */
+const SURVEY_STALE_DAYS = 7;
+
+/** The first sentence of a description: what this will produce.
+ *
+ * The full text is a maintainer's CHANGELOG — which definition was renamed,
+ * that `qualified_name` never changed across either rename. That is real
+ * provenance and it is how a real bug was once found, but it answers a
+ * question nobody deciding whether to spend compute is asking, and it was the
+ * longest text on the pane. It moves behind a disclosure; the first sentence,
+ * which is the purpose, comes up to the row.
+ */
+function onePurpose(text) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  const stop = t.search(/[.!?](\s|$)/);
+  const first = stop === -1 ? t : t.slice(0, stop + 1);
+  return first.length > 160 ? `${first.slice(0, 157)}…` : first;
+}
+
+/** Last run, with the matrix's own staleness treatment — a rule, not a colour. */
+function lastRunHtml(c) {
+  const when = c.last_run_at || '';
+  if (!when) return '<span class="text-ink-muted">never run</span>';
+  const days = (Date.now() - Date.parse(when)) / 86400000;
+  const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
+  const ok = (c.last_run_status || '') === 'ok';
+  return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
+    ${ok ? '<span class="text-state-ok">✓</span> '
+         : c.last_run_status ? `<span class="text-state-warn">⚠</span> ` : ''}
+    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
+}
+
+function surveyRowHtml(c) {
+  const steps = (c.steps || []).length || c.step_count || 0;
+  return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
+    <div class="min-w-0 flex-1">
+      <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
+      ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
+      <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
+        c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
+          class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
+    </div>
+    <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step(s)</div>
+    <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
+    <button data-run-survey="${esc(c.qualified_name || c.guid)}"
+      class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+      >Run →</button>
+  </div>`;
+}
+
 async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -2488,73 +2544,155 @@ async function loadSurveyPane() {
     bindSubTabs();
     return;
   }
-  const candidates = data.candidates || [];
+  const all = data.candidates || [];
   const stage = data.phase || state.stage;
+
+  // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
+  // paragraph. The four-line cold-server warning becomes a chip that says
+  // which scope you are looking at, with a retry.
+  const heavy = all.filter((c) => c.survey_kind === 'automate_full');
+  const rest = all.filter((c) => c.survey_kind !== 'automate_full');
+  const byTier = new Map();
+  for (const c of rest) {
+    const t = c.survey_kind || 'unclassified';
+    byTier.set(t, [...(byTier.get(t) || []), c]);
+  }
+  const tierOrder = [...byTier.keys()].sort(
+    (a, b) => (SURVEY_TIERS.indexOf(a) + 1 || 99) - (SURVEY_TIERS.indexOf(b) + 1 || 99));
+  const here = tierOrder.filter((t) => t === stage);
+  const elsewhere = tierOrder.filter((t) => t !== stage);
+  const nElsewhere = elsewhere.reduce((n, t) => n + byTier.get(t).length, 0);
+
   el.innerHTML = subTabsHtml() + `
-    <div class="mb-s3">
-      <div class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
-        ${esc(data.technology_type || 'unknown technology type')} · ${esc(stage)}</div>
-      <div class="mt-s1 text-caveat text-ink-muted">Each of these is a chain of steps
-        Egeria coordinates. Running one is real work on a real repository, so each says
-        what it is before you start it.</div>
-      ${data.scoping === 'full-scan' ? `
-        <div class="mt-s2 text-caveat text-state-warn">Showing
-          <span class="tnum">${candidates.length}</span> — <strong>every</strong> survey
-          definition for this technology type, not just ${esc(stage)}'s. Nothing resolved
-          through ${esc(stage)}'s questions, so the stage filter had nothing to narrow
-          with. This happens on a cold server for the first request or two; reloading
-          usually scopes it.</div>` : ''}
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
+        ${esc(data.technology_type || 'unknown technology type')}</span>
+      <span class="ml-auto rounded-sm border ${
+        data.scoping === 'full-scan' ? 'border-state-warn text-state-warn' : 'border-rule-strong text-ink-muted'}
+        px-2 py-[1px] text-provenance">
+        Scope: ${data.scoping === 'full-scan'
+          ? `all tiers — stage filter unavailable · <button type="button" data-act="rescope"
+              class="cursor-pointer bg-transparent underline">retry</button>`
+          : esc(stage)}</span>
     </div>
-    ${candidates.length ? candidates.map((c, i) => `
-      <div class="mb-s4 border-b border-rule pb-s3">
+
+    ${here.map((t) => `
+      <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
+        <span class="tnum">${byTier.get(t).length}</span></div>
+      ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
+
+    ${nElsewhere ? `
+      <details class="mt-s3">
+        <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
+          Other stages · <span class="tnum">${nElsewhere}</span>
+          <span class="normal-case tracking-normal">— ${esc(elsewhere.map(
+            (t) => `${t} ${byTier.get(t).length}`).join(' · '))}</span>
+        </summary>
+        ${elsewhere.map((t) => `
+          <div class="mt-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(t)}</div>
+          ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
+      </details>` : ''}
+
+    ${heavy.map((c) => {
+      // SET APART, GIVEN A PLAN VERB, AND NOT PLACED FIRST. Its own
+      // description says it scales poorly by construction and is meant as a
+      // scheduled choice; a row that argues against being clicked should not
+      // be the most default-looking row on the pane.
+      const steps = (c.steps || []).length;
+      return `<div class="mt-s4 border border-rule bg-[rgba(32,31,29,.03)] p-s3">
         <div class="flex flex-wrap items-baseline gap-s2">
-          <span class="font-heading text-answer text-ink">${esc(c.display_name || c.qualified_name)}</span>
-          ${c.step_count != null
-            ? `<span class="tnum text-provenance text-ink-muted">${c.step_count} step(s)</span>` : ''}
-          <button data-run-survey="${esc(c.qualified_name || c.guid)}"
-            class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-            >Run →</button>
+          <span class="text-answer text-ink">${esc(c.display_name)}</span>
+          <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
+            >${steps} steps · all tiers</span>
+          <button data-plan-survey="${esc(c.qualified_name)}"
+            class="ml-auto cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
+            >Plan a run…</button>
         </div>
-        <div class="mt-s1 font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}</div>
-        ${c.description ? `<details class="mt-s2 text-caveat text-ink-muted" ${i === 0 ? 'open' : ''}>
-          <summary class="cursor-pointer">What it does</summary>
-          <p class="mt-s1 max-w-[70ch]">${esc(c.description)}</p>
-        </details>` : ''}
-      </div>`).join('')
-    : paneMessage('No survey definitions for this resource',
+        <div class="mt-s1 max-w-[60ch] text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>
+      </div>`;
+    }).join('')}
+
+    ${!all.length ? paneMessage('No survey definitions for this resource',
         'The adapter registered none for this technology type. That is a fact about '
-        + 'the catalog, not about the repository.')}
+        + 'the catalog, not about the repository.') : ''}
     <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>`;
   bindSubTabs();
 
-  el.querySelectorAll('[data-run-survey]').forEach((b) => b.addEventListener('click', async () => {
-    const ref = b.dataset.runSurvey;
-    const note = $('survey-note');
-    // Say what is about to happen, name it, and do not pretend it is instant.
-    note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
-    b.disabled = true;
-    try {
-      const res = await runSurveyDefinition(slug, ref);
-      note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
-        ${res && (res.guid || res.engine_action_guid)
-          ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.`
-          : ''}
-        It runs asynchronously — its results appear in Dashboard and in the question
-        rows as each step lands, not when this line changes.`;
-    } catch (err) {
-      // 401 is not a failure of the survey, it is a fact about this session.
-      // Running a survey is a WRITE, and anonymous-read dev mode permits GETs
-      // and gates POSTs — so this pane reads perfectly and cannot launch
-      // anything, which without saying so reads as a broken button.
-      note.innerHTML = err.status === 401
-        ? `<span class="text-accent-ink">Not launched — running a survey is a write, and
-           this session is not signed in. Sign in with an Egeria user id to launch it;
-           everything else on this pane is readable without one.</span>`
-        : `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
-    } finally {
-      b.disabled = false;
-    }
+  el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
+  el.querySelectorAll('[data-defhist]').forEach((b) => b.addEventListener('click', () => {
+    const c = all.find((x) => x.qualified_name === b.dataset.defhist);
+    const d = openDialog(c.display_name || c.qualified_name, c.qualified_name);
+    d.querySelector('#wl-detail-body').innerHTML = `
+      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Definition history</div>
+      <p class="max-w-[70ch] whitespace-pre-line">${esc(c.description || '')}</p>`;
   }));
+  el.querySelectorAll('[data-run-survey], [data-plan-survey]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const ref = b.dataset.runSurvey || b.dataset.planSurvey;
+      planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
+    }));
+}
+
+/** RUN GOES THROUGH THE SAME PREVIEW as the matrix's two plans.
+ *
+ * This is the third and most expensive of them, and if they answer "what am I
+ * about to spend" in three shapes people learn to read one and skim the rest.
+ */
+function planSurveyRun(c, slug) {
+  if (!c) return;
+  const steps = (c.steps || []).length;
+  const el = openDialog(c.display_name || c.qualified_name, `${slug} · ${c.survey_kind || 'unclassified'}`);
+  const body = el.querySelector('#wl-detail-body');
+  const local = (c.steps_local || []).length;
+  const native = (c.steps_native || []).length;
+  body.innerHTML = `
+    <p>This runs <span class="tnum">${steps}</span> step(s) against
+      <span class="font-mono">${esc(slug)}</span>.</p>
+    <ul class="ml-s3 mt-s2 list-disc">
+      ${local ? `<li><span class="tnum">${local}</span> run here</li>` : ''}
+      ${native ? `<li><span class="tnum">${native}</span> are coordinated by Egeria</li>` : ''}
+      <li>${c.last_run_at
+            ? `last ran ${esc(ago(c.last_run_at))}${
+                c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''} —
+               <strong>everything it covers will be measured again</strong>`
+            : 'it has never run on this resource'}</li>
+      ${(c.analysis_ids || []).length
+        ? `<li>writes: <span class="font-mono">${esc((c.analysis_ids || []).join(', '))}</span></li>` : ''}
+      ${c.auto_publishes ? '<li>publishes its results to Egeria when it finishes</li>' : ''}
+    </ul>
+    <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Run <span class="tnum">${steps}</span> step(s)</button>
+      <button type="button" data-act="close"
+        class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  body.querySelector('[data-act="go"]').addEventListener('click', () => {
+    closeCellDetail();
+    launchSurvey(slug, c.qualified_name || c.guid);
+  });
+}
+
+async function launchSurvey(slug, ref) {
+  const note = $('survey-note');
+  if (note) note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
+  try {
+    const res = await runSurveyDefinition(slug, ref);
+    if (note) note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
+      ${res && (res.guid || res.engine_action_guid)
+        ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}
+      It runs asynchronously — its results appear in Dashboard and in the question rows
+      as each step lands, not when this line changes.`;
+  } catch (err) {
+    if (!note) return;
+    // 401 is not a failure of the survey, it is a fact about this session.
+    note.innerHTML = err.status === 401
+      ? `<span class="text-accent-ink">Not launched — running a survey is a write, and
+         this session is not signed in. Sign in with an Egeria user id to launch it;
+         everything else on this pane is readable without one.</span>`
+      : `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
+  }
 }
 
 async function loadDashboardPane() {
