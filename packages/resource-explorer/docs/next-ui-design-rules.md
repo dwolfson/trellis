@@ -74,6 +74,25 @@ full cell width past 30. Never recolour for age — "this answer is old" and
 "this answer is bad" are different claims, and the warn colour is already
 spent on the second.
 
+**7 and 30 are placeholders, and are marked as such in the code.** They are
+calendar habits, not facts about surveys: a language classification is fresh
+at ninety days and a release check is stale at fourteen. The honest measure is
+*older than this analysis's own re-run cadence*, a value Automate will own.
+Until it exists the rounds are a stand-in, and the comment is what stops them
+quietly becoming policy.
+
+Rendered at all three levels, with faked dates, in
+[`assets/age-rule.html`](assets/age-rule.html) — open it in a browser. It
+copies the real CSS rather than drawing a picture of it, so it stays a true
+rendering.
+
+**Render a threshold you cannot observe.** The 30-day rule was implemented and
+unseen, and faking a date found two defects in it: the button was 14px inside
+a 26px cell, so "full cell width" was 54% of the cell and adjacent rules never
+met; and moving the rule to the `td` made it 1700px wide, because a
+`position: relative` table cell did not establish the containing block.
+Implemented-and-unseen is where this kind of bug lives.
+
 ## 6. Scale is a selection problem, not a rendering one
 
 The matrix earns its cost by holding a cohort you can keep in your head, and
@@ -83,6 +102,15 @@ sorted by unresolved, and clicking a line narrows the grid to that question.
 
 Rows are in **triage order** — least resolved first, banded by disposition —
 because name order is a filing convention and means nothing here.
+
+**The digest becomes primary on unresolved AREA, not row count.** Fifty rows
+nearly all answered scans perfectly well — the eye hunts the few marks that
+break the pattern, and there are few; twenty rows of unknown is a wall. Area
+also decays correctly: a fresh list opens on the digest, and the grid earns
+its place back as the session fills cells in.
+
+Decided **once, at list open**. A view that flips underneath someone
+mid-session is worse than either view.
 
 ## 7. Narrow is a different view, not a smaller one
 
@@ -103,6 +131,15 @@ not scroll off a 375px screen. All three were found by looking at it.
 - "Never run" is a claim, and needs evidence; absent evidence the answer is
   "unknown".
 - A question with no surveyor is settled, not loading.
+- **`□` and `?` are different facts.** `□` is a promise that a read is still
+  owed; `?` is "we looked and could not read it". A failed read therefore
+  converts to `?`, and only a *cancelled* one stays a square — cancellation
+  learned nothing, so the promise is still good. There is no such thing as a
+  permanent square, only a permanent failure that says so.
+- **"Not measurable, and here is why" is a result**, not an absence — often
+  the most decision-relevant one on a pane, because it says what a line of
+  enquiry would cost to open. It ranks as a peer of a measurement, never as a
+  footnote under one.
 
 ## 9. Provenance is not decoration
 
@@ -116,7 +153,60 @@ This extends to **human** judgements: the sequence of dispositions is
 provenance too, and is reachable from the matrix rather than only from a
 picker on another pane.
 
-## 10. Name things for what they are
+## 10. A stored preference carries the context that produced it
+
+A preference is not a fact about the user; it is a fact about the user **in a
+situation**. Replayed outside that situation it is noise wearing the costume
+of a choice.
+
+Three defects in one round had this single root, all of them rules written for
+one context and replayed in another:
+
+- the chat rail's open state was a *wide-screen* preference, replayed on a
+  phone as though it meant something there;
+- CSS written for a column, replayed on an overlay (the specificity bug);
+- a pane's own background, assumed from its parent, replayed when it floated
+  free of it (the invisible drawer).
+
+So: **store the context alongside the preference, or scope the key to it.**
+The digest toggle is keyed per work list, not globally, for exactly this
+reason — a choice made on a fifty-repo scouting sweep says nothing about a
+four-repo assessment. This generalises past layout, and will come back for
+column widths and sort order.
+
+## 11. Cost a deferral against the adapter, not against the design
+
+Three panes were deferred as unbuilt — Understanding, Survey, Dashboard — and
+all three turned out to be one GET away from working. Three for three is a
+pattern, not bad luck.
+
+The cause: each deferral was costed against **the design's** model of what the
+pane would need, and a design model is always the more expensive one, because
+it imagines the finished thing. The adapter had already been built to a
+narrower, sufficient shape.
+
+**The check is cheap: before deferring a pane, ask what a single GET already
+returns.** Three times the answer was "the whole pane".
+
+The sub-tab rail now counts what is *not* built rather than asserting
+"questions only" — a deferral that has to display its own count is harder to
+forget.
+
+## 12. "Missing" and "unrouted" are different defects
+
+A capability can be present and unreachable, and the two want opposite fixes:
+missing means build it, unrouted means route it. Calling one the other sends
+the work to the wrong place.
+
+Disposition history was reported missing from `/next`. It was not — it
+rendered inside a picker popover on the resource header. What was true is that
+the **matrix**, where triage actually happens, had no route to it. The fix was
+a route, not a feature.
+
+The property that matters on a working surface is **reachable from where the
+decision is made**, which is not the same as *present in the product*.
+
+## 13. Name things for what they are
 
 The repo-discovery panel is "Find repos", not "Search". Inheriting a wrong
 label teaches the wrong noun on first contact, and the current UI's "Search"
