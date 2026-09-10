@@ -268,11 +268,18 @@ async def list_candidates(
         question_rows = get_questions(resource_type=entity_type, phase=phase)
         questions = [q["question"] for q in question_rows]
         thin_candidates: list = []
+        # Which path produced the list, for the caller. A UI that passed a
+        # phase and gets the FULL SCAN back is showing every survey while
+        # looking filtered — the silent version of the bug the phase filter
+        # exists to fix, so the response says which happened rather than
+        # leaving the caller to infer it from a count.
+        scoping = "questions"
         if questions:
             thin_candidates = reader.find_candidate_process_guids_by_questions(
                 questions, adapter.technology_type, survey_kind=survey_kind,
             )
         if not thin_candidates:
+            scoping = "full-scan"
             # No cataloged Questions for this resource type, none resolved to
             # a real Egeria GUID yet, or none are scoped to any matching
             # Survey Definition — fall back to the full scan rather than
@@ -500,6 +507,11 @@ async def list_candidates(
             "technology_type": adapter.technology_type,
             "candidates": _narrow_by_perspective(detailed, perspectives),
             "egeria_native_processes": native_processes,
+            # `questions` — scoped through the cataloged Questions for `phase`.
+            # `full-scan` — nothing resolved, so this is EVERY Survey Definition
+            # for the technology type, whatever phase was asked for.
+            "scoping": scoping,
+            "phase": phase or "",
         }
 
     try:

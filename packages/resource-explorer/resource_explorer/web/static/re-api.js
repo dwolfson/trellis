@@ -281,9 +281,20 @@ export const getChart = (slug, kind) =>
  *
  * `entity_type` is the ADAPTER's vocabulary, not the sidebar's: repositories
  * are `repo` here, and passing `project` returns a 404 naming the known types.
+ *
+ * PASS THE STAGE. The route's own contract says each intent's UI should send
+ * its stage as the primary filter, and omitting it falls back to every
+ * cataloged Question regardless of stage — which is a list of every survey,
+ * rendered under a stage heading.
+ *
+ * The response carries `scoping`: `questions` when the stage really narrowed
+ * it, `full-scan` when nothing resolved and this is everything. Callers must
+ * render those differently — a full scan under a stage heading is the same
+ * lie, one layer deeper.
  */
-export const getSurveyCandidates = (slug, entityType = 'repo') =>
-  get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates`);
+export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = {}) =>
+  get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates${
+    phase ? `?phase=${encodeURIComponent(phase)}` : ''}`);
 
 /** Launch one Survey Definition. `ref` is its qualified_name or guid. */
 export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>

@@ -2480,7 +2480,7 @@ async function loadSurveyPane() {
 
   let data;
   try {
-    data = await getSurveyCandidates(slug);
+    data = await getSurveyCandidates(slug, { phase: state.stage });
   } catch (err) {
     el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
       `${err.message}. This is a fact about the request, not about ${slug} — nothing
@@ -2489,13 +2489,21 @@ async function loadSurveyPane() {
     return;
   }
   const candidates = data.candidates || [];
+  const stage = data.phase || state.stage;
   el.innerHTML = subTabsHtml() + `
     <div class="mb-s3">
       <div class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
-        ${esc(data.technology_type || 'unknown technology type')}</div>
+        ${esc(data.technology_type || 'unknown technology type')} · ${esc(stage)}</div>
       <div class="mt-s1 text-caveat text-ink-muted">Each of these is a chain of steps
         Egeria coordinates. Running one is real work on a real repository, so each says
         what it is before you start it.</div>
+      ${data.scoping === 'full-scan' ? `
+        <div class="mt-s2 text-caveat text-state-warn">Showing
+          <span class="tnum">${candidates.length}</span> — <strong>every</strong> survey
+          definition for this technology type, not just ${esc(stage)}'s. Nothing resolved
+          through ${esc(stage)}'s questions, so the stage filter had nothing to narrow
+          with. This happens on a cold server for the first request or two; reloading
+          usually scopes it.</div>` : ''}
     </div>
     ${candidates.length ? candidates.map((c, i) => `
       <div class="mb-s4 border-b border-rule pb-s3">
