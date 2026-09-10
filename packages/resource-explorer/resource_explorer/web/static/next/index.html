@@ -184,6 +184,59 @@
       grid-template-rows: minmax(0, 1fr);
     }
   }
+
+  /* ── Below 780px BOTH side panes are drawers ─────────────────────────────
+     Stacking the sidebar under the content was fine in principle and wrong in
+     practice: the rail's own overlay rule kept a sidebar COLUMN alive at
+     375px, so the content pane was a squeezed strip with a drawer sitting on
+     top of it. At this width there is no width to give away — content gets
+     all of it, and either pane arrives over the top when asked for.
+
+     This block is last on purpose. It must win over the rail rules above,
+     which carry the same specificity. */
+  @media (max-width: 780px) {
+    /* All three forms, because `.rail-closed` and `:not(.rail-closed)` each
+       out-specify a bare `#app-grid` — a media query adds no specificity, so
+       the bare selector alone left a phantom 277px sidebar column and a 98px
+       content pane. */
+    #app-grid,
+    #app-grid.rail-closed,
+    #app-grid:not(.rail-closed) {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "content";
+      grid-template-rows: minmax(0, 1fr);
+    }
+    #app-grid > .pane-sidebar {
+      position: absolute; top: 0; left: 0; bottom: 0;
+      width: min(300px, 88vw); z-index: 31;
+      /* Its OWN ground. As a column the sidebar inherits the chrome behind
+         it; as a drawer it floats over the paper content pane, and without
+         this its chrome-light text lands on white and is invisible — the
+         drawer opened correctly and looked like a blank screen. */
+      background: #1b1a19;
+      border-right: 1px solid #444141; border-top: 0;
+      box-shadow: 0 12px 32px rgba(45, 43, 43, 0.28);
+      transform: translateX(-101%); transition: transform .16s ease-out;
+    }
+    body.sidebar-open #app-grid > .pane-sidebar { transform: none; }
+    #app-grid:not(.rail-closed) > .pane-rail {
+      width: min(360px, 92vw);
+    }
+    .seam { display: none; }
+  }
+  /* The header is a two-line masthead on a phone, not a six-line one. The
+     investigation name and the cross-link to the current UI are context, and
+     context is what a 375px screen has least room for — the content is why
+     anyone opened it. */
+  @media (max-width: 780px) {
+    #investigation-name, #switch-ui { display: none; }
+    #intent-nav { overflow-x: auto; white-space: nowrap; }
+    #perspective-row { max-height: 2.4em; overflow: hidden; }
+  }
+
+  /* The sidebar toggle exists only where the sidebar is a drawer. */
+  #sidebar-toggle { display: none; }
+  @media (max-width: 780px) { #sidebar-toggle { display: inline-block; } }
 </style>
 
 <link rel="stylesheet" href="/static/next/tailwind-next.css">
@@ -240,6 +293,12 @@
 
   <!-- ── Top bar ───────────────────────────────────────────────────────── -->
   <header class="flex flex-wrap items-center gap-s4 border-b border-chrome-line px-4 py-[10px]">
+    <!-- Below 780px the sidebar is a drawer and this is the way in. It lives
+         in the MASTHEAD, not in the nav row below: that row overflows
+         horizontally at this width, which put the button at x=882 on a 375px
+         screen — present, styled, and unreachable. -->
+    <button id="sidebar-toggle" aria-expanded="false" title="Show the resource list"
+      class="cursor-pointer bg-transparent text-accent-on-dark">Resources</button>
     <span class="font-heading text-brand font-semibold">Resource Explorer</span>
     <span id="scope-slug"
           class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-[11px] text-accent-on-dark"></span>

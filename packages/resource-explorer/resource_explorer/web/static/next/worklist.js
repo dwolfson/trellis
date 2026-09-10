@@ -139,6 +139,8 @@ export const grid = {
   note: '',
   digestOpen: false,     // the digest is collapsed until asked for
   onlyQuestion: null,    // narrowed to one column, by index
+  narrowIndex: 0,        // transposed view: which resource
+  narrowFilter: 'all',   // transposed view: all | unresolved | stale
   ctx: null,             // the pane context, for actions raised from a popup
 };
 
@@ -379,6 +381,108 @@ async function loadGrid(ctx) {
  * the question while looking at the row you are comparing, which a tooltip
  * cannot do because it times out and covers the grid.
  */
+/** True when the pane is too narrow for a grid to be honest. */
+function isNarrow() {
+  return window.matchMedia('(max-width: 719px)').matches;
+}
+
+/** One resource, questions down the page. The transposed view. */
+function renderNarrow(host, wl, qs) {
+  const members = orderedRows(wl.members, qs).filter((e) => e.member).map((e) => e.member);
+  if (!members.length) { host.innerHTML = ''; return; }
+  const idx = Math.min(grid.narrowIndex, members.length - 1);
+  const m = members[idx];
+  const slug = m.entity_slug;
+  const row = grid.rows.get(slug);
+  const per = grid.states?.[slug] || {};
+
+  const stateOf = (q) => {
+    const ids = q.analysis_ids || [];
+    if (!ids.length) {
+      return q.kind === 'gap' ? 'no-surveyor' : q.kind === 'human' ? 'human' : 'unclassified';
+    }
+    if (row?.error) return 'unknown';
+    if (row && ids.some((a) => row.factsById.has(a))) return cellState(q, row.factsById);
+    if (ids.some((a) => per[a]?.has_results)) return 'stored';
+    if (ids.every((a) => per[a]?.certain_never_run)) return 'unrun';
+    return 'unknown';
+  };
+  const stampOf = (q) => {
+    const ss = (q.analysis_ids || []).map((a) => per[a]?.measured_at || '').filter(Boolean);
+    return ss.length ? ss.sort()[0] : '';
+  };
+  const isUnresolved = (q) => ['unrun', 'human', 'unknown', 'no-surveyor'].includes(stateOf(q));
+  const isStale = (q) => {
+    const d = daysSince(stampOf(q));
+    return d !== null && d >= STALE_DAYS;
+  };
+
+  // The filter row is what replaces scanning. On a phone you do not read 27
+  // rows — you tap Unresolved and read nine.
+  const counts = {
+    all: qs.length,
+    unresolved: qs.filter(isUnresolved).length,
+    stale: qs.filter(isStale).length,
+  };
+  const filter = grid.narrowFilter;
+  const list = qs.map((q, i) => ({ q, i })).filter(({ q }) =>
+    filter === 'unresolved' ? isUnresolved(q) : filter === 'stale' ? isStale(q) : true);
+
+  host.innerHTML = `
+    <div class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-[4px]">
+      <button type="button" data-narrow="prev" class="cursor-pointer bg-transparent text-ink-muted"
+        aria-label="Previous resource">←</button>
+      <div class="min-w-0">
+        <div class="truncate font-mono text-answer text-ink">${esc(slug)}</div>
+        <div class="tnum text-provenance text-ink-muted">${idx + 1} of ${members.length} ·
+          ${esc(grid.stageLabel || '')}${
+            m.disposition ? ` · ${esc(m.disposition)}` : ''}</div>
+      </div>
+      <button type="button" data-narrow="next" class="ml-auto cursor-pointer bg-transparent text-ink-muted"
+        aria-label="Next resource">→</button>
+    </div>
+    <div class="mb-s2 flex gap-s3 text-caveat">
+      ${[['all', `All ${counts.all}`], ['unresolved', `Unresolved ${counts.unresolved}`],
+         ['stale', `Stale ${counts.stale}`]].map(([k, label]) =>
+        `<button type="button" data-nfilter="${k}"
+          class="cursor-pointer bg-transparent ${
+            filter === k ? 'text-ink underline' : 'text-ink-muted'}">${esc(label)}</button>`).join('')}
+    </div>
+    ${list.length ? `<ul class="m-0 list-none p-0">
+      ${list.map(({ q, i }) => {
+        const c = CELL[stateOf(q)] || CELL.unclassified;
+        const iso = stampOf(q);
+        return `<li class="border-b border-rule">
+          <button type="button" data-cell="${esc(slug)}" data-q="${i}"
+            class="flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 py-s2 text-left">
+            <span class="w-[16px] shrink-0 ${c.tone}">${c.glyph}</span>
+            <span class="min-w-0 flex-1">
+              <span class="text-answer text-ink">${esc(q.question)}</span>
+              <span class="block text-provenance text-ink-muted">${esc(c.label)}</span>
+            </span>
+            <span class="tnum shrink-0 text-provenance ${
+              isStale(q) ? 'text-state-warn' : 'text-ink-muted'}">${
+              iso ? esc(ago(iso)) : '—'}</span>
+          </button>
+        </li>`;
+      }).join('')}
+    </ul>` : `<p class="py-s3 text-caveat text-ink-muted">Nothing in this filter for
+      ${esc(slug)}.</p>`}`;
+
+  host.querySelectorAll('button[data-cell]').forEach((b) => b.addEventListener('click',
+    () => openCellDetail(b.dataset.cell, Number(b.dataset.q), grid.ctx)));
+  host.querySelectorAll('[data-nfilter]').forEach((b) => b.addEventListener('click', () => {
+    grid.narrowFilter = b.dataset.nfilter;
+    renderGrid();
+  }));
+  host.querySelectorAll('[data-narrow]').forEach((b) => b.addEventListener('click', () => {
+    const step = b.dataset.narrow === 'next' ? 1 : -1;
+    grid.narrowIndex = (idx + step + members.length) % members.length;
+    grid.narrowFilter = filter;
+    renderGrid();
+  }));
+}
+
 /** Name the cause of an unreadable cell, from the server's own message.
  *
  * Deliberately a small, closed set of causes with a fallback that admits it
@@ -570,6 +674,15 @@ function renderGrid() {
           : '.'}</div>`;
     return;
   }
+
+  // BELOW ~720px THE AXES SWAP. There is no narrow version of a wide grid;
+  // there is a different view of the same data. One resource at a time,
+  // questions down the page: frozen columns stop being needed because there
+  // is one column, and a full-width row carries the glyph, the question text
+  // you had been keying to a number, and its own date — the three things the
+  // wide view had to compress. This is the honest layout at that size, not a
+  // fallback.
+  if (isNarrow()) { renderNarrow(host, wl, qs); return; }
 
   // The columns actually rendered. Narrowing keeps each question's TRUE
   // index, so cell clicks, the readout and the key all still address the same
@@ -1366,6 +1479,15 @@ async function publish(ctx) {
 }
 
 /* ── Entry points used by the shell ─────────────────────────────────── */
+
+/** Crossing the breakpoint swaps the view, once, not on every resize tick. */
+let narrowWas = null;
+window.addEventListener('resize', () => {
+  const now = isNarrow();
+  if (now === narrowWas) return;
+  narrowWas = now;
+  if (grid.workList) renderGrid();
+});
 
 export async function openWorkList(ctx, slug) {
   grid.workList = await getWorkList(slug);

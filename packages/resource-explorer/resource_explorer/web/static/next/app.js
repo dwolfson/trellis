@@ -449,6 +449,35 @@ function renderTopBar() {
     : '/next · open current UI';
 }
 
+/** Below 780px the sidebar is a drawer, and this is the way in.
+ *
+ * Wired ONCE. This sits beside a function that re-renders, and attaching per
+ * render stacked a second listener on the same button: the class was toggled
+ * on and then straight back off, so the drawer never appeared and nothing
+ * looked broken enough to suspect it.
+ */
+let sidebarWired = false;
+function wireSidebarDrawer() {
+  if (sidebarWired) return;
+  sidebarWired = true;
+  const btn = $('sidebar-toggle');
+  if (!btn) return;
+  const set = (open) => {
+    document.body.classList.toggle('sidebar-open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    set(!document.body.classList.contains('sidebar-open'));
+  });
+  // A tap outside closes it. At this width the drawer covers most of the
+  // content, so leaving it open is never what the next tap meant.
+  document.addEventListener('click', (e) => {
+    if (!document.body.classList.contains('sidebar-open')) return;
+    if (!e.target.closest('.pane-sidebar')) set(false);
+  });
+}
+
 function renderIntentNav() {
   const nav = $('intent-nav');
   const items = STAGES.map((s) => {
@@ -487,8 +516,13 @@ function renderIntentNav() {
 
   renderWorkListNav();
 
-  $('chat-toggle').addEventListener('click', () => setRailOpen(!railIsOpen()));
-  setRailOpen(railIsOpen());
+  $('chat-toggle').addEventListener('click', () => {
+    const nowOpen = !$('app-grid').classList.contains('rail-closed');
+    setRailOpen(!nowOpen, { persist: !shellIsNarrow() });
+  });
+  setRailOpen(railIsOpen() && !shellIsNarrow(), { persist: false });
+
+  wireSidebarDrawer();
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -2086,8 +2120,19 @@ function railIsOpen() {
   return LS.get('re-next.railOpen', 'true') !== 'false';
 }
 
-function setRailOpen(open) {
-  LS.set('re-next.railOpen', open ? 'true' : 'false');
+/** Below the drawer breakpoint the rail must not open ITSELF.
+ *
+ * The stored preference is a wide-screen preference: someone who likes the
+ * chat rail open on a laptop has not asked for a drawer covering the whole
+ * screen on a phone. So a narrow shell starts closed regardless, and opening
+ * it there is a deliberate tap that is not written back over the preference.
+ */
+function shellIsNarrow() {
+  return window.matchMedia('(max-width: 780px)').matches;
+}
+
+function setRailOpen(open, { persist = true } = {}) {
+  if (persist) LS.set('re-next.railOpen', open ? 'true' : 'false');
   $('app-grid').classList.toggle('rail-closed', !open);
   const btn = $('chat-toggle');
   if (btn) {
