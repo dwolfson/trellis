@@ -813,6 +813,8 @@ def compile_context(
     ]
     if cap > 0:
         ranked = ranked[:cap]
+    # Failures the compile survived but the caller must be able to see.
+    extra_notes: list[str] = []
     for analysis_id, weight in ranked:
         sections.append(Section(analysis_id, role="evidence", weight=weight))
         findings = registry.query_findings(slug, analysis_id)
@@ -872,6 +874,13 @@ def compile_context(
                             except Exception as exc:
                                 log.warning("headline reader for %s failed on %s: %s",
                                             analysis_id, slug, exc)
+                                # Visible in the manifest, not only in a log:
+                                # a section missing its verdict line must be
+                                # distinguishable from one that never had one.
+                                extra_notes.append(
+                                    f"headline for {analysis_id} unavailable "
+                                    f"({type(exc).__name__}); section packed "
+                                    f"without its verdict line")
                         rungs = _with_headline(from_reader, headline)
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
@@ -915,7 +924,7 @@ def compile_context(
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.
             "gaps": [_judge_gap(_facts, slug, g["key"]) for g in m.gaps],
-            "notes": list(m.notes),
+            "notes": list(m.notes) + extra_notes,
         },
         derivation=derivation,
     )

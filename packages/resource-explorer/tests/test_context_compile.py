@@ -861,6 +861,11 @@ class TestHeadlineComesFirst:
                                 budget=8000)
         assert "headline:" not in self._section(c2.text)
         assert "unqueryable: 61" in self._section(c2.text)
+        # And the caller can SEE that the line is missing for a reason --
+        # the silent-success ratchet (tests/test_no_silent_success.py) is
+        # what caught this being log-only.
+        assert any("headline for cve_scan unavailable (RuntimeError)" in n
+                   for n in c2.manifest["notes"]), c2.manifest["notes"]
 
 
 class TestFlatFullRung:
