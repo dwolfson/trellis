@@ -794,6 +794,36 @@ function answerForm(turn) {
  *                                  a measured zero
  *   - a failed call             -> say the call failed, name the reason
  */
+/** Not every chart endpoint returns a Plotly figure.
+ *
+ * `survey_history` returns `{dates, total_files}` — raw series, no `data`
+ * array — because the current UI builds that figure client-side. Everything
+ * else returns `fig.to_json()`. Reading `fig.data` on it therefore found no
+ * traces, and `/next` reported **"nothing recorded yet"** on every repository
+ * in the corpus while the registry held ten points per repo: 6,107 → 6,423
+ * files over a month on egeria-workspaces alone.
+ *
+ * That is the failure this project keeps hunting, in a new place: a fact about
+ * the ENDPOINT rendered as a fact about the RESOURCE. And it hid in the one
+ * state that looks like diligence — an honest-sounding empty.
+ *
+ * The endpoint is not changed, because the current UI depends on this shape;
+ * the adapting happens here, where the assumption was.
+ */
+function asFigure(raw) {
+  if (!raw || Array.isArray(raw.data)) return raw;
+  if (Array.isArray(raw.dates) && Array.isArray(raw.total_files)) {
+    return {
+      data: [{
+        type: 'scatter', mode: 'lines+markers',
+        x: raw.dates, y: raw.total_files, name: 'Total files',
+      }],
+      layout: { xaxis: { title: 'Surveyed' }, yaxis: { title: 'Files' } },
+    };
+  }
+  return raw;
+}
+
 /** Where a chart means something different from a number elsewhere, say so.
  *
  * The radar was cut from the Dashboard because `repository_health` composes
@@ -867,7 +897,7 @@ async function loadChartsPane() {
   // Probe each kind so the index never offers a chart with nothing in it.
   const results = await Promise.all(REPO_CHARTS.map(async ([kind, label]) => {
     try {
-      const fig = await getChart(slug, kind);
+      const fig = asFigure(await getChart(slug, kind));
       // POINTS, NOT TRACES. `fig.data.length` counts series, so a trace
       // holding a single observation counted as a usable chart and drew one
       // dot — the flat-line lie in chart form, and the same mistake as a
