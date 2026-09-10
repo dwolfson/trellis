@@ -44,8 +44,19 @@ module.exports = {
         'paper-surface': '#eae9e9',
         rule: 'rgba(32, 31, 29, 0.16)', // hairline divider
         ink: '#201f1d',
-        'ink-muted': '#605d5d',         // secondary text on paper — 6.2:1.
-                                        // neutral-400/500/600 all fail here.
+        // #4a463e, not #605d5d. Two reasons, and the second is why a palette
+        // that measures fine was genuinely too light in place:
+        //
+        //  1. Drift. "No muted tokens on content lines" was settled in the
+        //     fix round, and secondary greys crept back onto text that
+        //     carries meaning — analysis ids, dates, descriptions.
+        //  2. Perception. The dark chrome SURROUNDS the paper pane, and after
+        //     the eye adapts to a dark surround, mid-greys on white read
+        //     lighter than they measure. This pane wants to be set a step
+        //     firmer than a normal light UI, not the same.
+        //
+        // ~9:1 on paper. Informational text goes no lighter than this.
+        'ink-muted': '#4a463e',
         'accent-ink': '#7d5411',        // accent TEXT on paper; #b68235 is
                                         // not legible at body size
         'accent-tint': '#fff3e4',       // selected-row tint
@@ -131,22 +142,33 @@ module.exports = {
       // The sizes as used on the Questions screen, named by their role so a
       // reader can tell a question title from an answer line without
       // counting pixels.
+      // IN REM, so the app's own text-size control moves every one of them.
+      // An interface inside an embedded browser cannot rely on the browser's
+      // zoom; these scale against `html { font-size }`, which the control
+      // sets to 16 / 17.9 / 20px.
+      //
+      // The floors are the round's, and they are floors: nothing that carries
+      // meaning goes below 13px, and caps go no lower than 12 because .09em
+      // tracking costs legibility at small sizes on top of the size itself.
       fontSize: {
-        brand: ['19px', '1.2'],
-        intent: ['14px', '1.2'],
-        chip: ['11.5px', '1.3'],
-        resource: ['12.5px', '1.35'],
-        subtab: ['13px', '1.2'],
-        name: ['26px', '1.15'],
-        question: ['17px', '1.25'],
+        brand: ['1.1875rem', '1.2'],      // 19
+        intent: ['0.875rem', '1.2'],      // 14
+        chip: ['0.8125rem', '1.3'],       // 13 — was 11.5
+        resource: ['0.8125rem', '1.35'],  // 13 — was 12.5
+        subtab: ['0.875rem', '1.2'],      // 14 — was 13
+        name: ['1.625rem', '1.15'],       // 26
+        question: ['1.0625rem', '1.25'],  // 17
         // 15px, not the handoff's original 14.5. Lora has a generous
         // x-height but is optically lighter than a grotesque at the same
         // size, and 14.5 was matching the current app's density rather than
         // choosing well — it read as too light on a real screen.
-        answer: ['15px', '1.55'],
-        caveat: ['13px', '1.5'],
-        provenance: ['11.5px', '1.45'],
-        caps: ['11px', '1.3'],
+        answer: ['0.9375rem', '1.55'],    // 15
+        // A number is not secondary: figures take the same ink and size as
+        // body, and only their tabular treatment differs.
+        caveat: ['0.9375rem', '1.55'],    // 15 — was 13
+        // Dates, ids and analysis names. Informational, so this is the floor.
+        provenance: ['0.8125rem', '1.45'], // 13 — was 11.5
+        caps: ['0.75rem', '1.3'],          // 12 — was 11
       },
 
       letterSpacing: { caps: '.09em', kicker: '.08em' },

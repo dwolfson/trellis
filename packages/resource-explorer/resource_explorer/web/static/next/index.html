@@ -173,6 +173,15 @@
      users exactly what pointer users get. */
   #wl-readout { min-height: 1.6em; }
 
+  /* The text-size steps. `html { font-size }` is what every rem-based size in
+     the pane scales against; the chrome deliberately scales with it too, so
+     one control moves the whole interface rather than leaving the shell at a
+     size the content has outgrown. */
+  html { font-size: 16px; }
+  html[data-textsize="112"] { font-size: 17.9px; }
+  html[data-textsize="125"] { font-size: 20px; }
+  #textsize button[aria-pressed="true"] { color: var(--wl-accent-on-dark, #e0b872); }
+
   /* The same staleness treatment the grid uses, for a line of text: a rule
      under it, never a recolour. Age and quality stay different claims. */
   .wl-age-text { border-bottom: 1px solid var(--wl-age, rgba(32,31,29,.55)); }
@@ -331,9 +340,22 @@
          screen — present, styled, and unreachable. -->
     <button id="sidebar-toggle" aria-expanded="false" title="Show the resource list"
       class="cursor-pointer bg-transparent text-accent-on-dark">Resources</button>
+    <!-- THE APP'S OWN TEXT SIZE. An interface that lives inside an embedded
+         browser cannot rely on the browser's zoom, and should not have to:
+         one control removes the whole class of complaint. Three steps off the
+         root font size, which every pane size is expressed against. -->
+    <span id="textsize" class="flex items-baseline gap-[2px] text-[13px]" role="group"
+          aria-label="Text size">
+      <button data-textsize="100" class="cursor-pointer bg-transparent px-[5px] text-chrome-muted"
+        title="Normal text size">A</button>
+      <button data-textsize="112" class="cursor-pointer bg-transparent px-[5px] text-[15px] text-chrome-muted"
+        title="Larger text">A</button>
+      <button data-textsize="125" class="cursor-pointer bg-transparent px-[5px] text-[17px] text-chrome-muted"
+        title="Largest text">A</button>
+    </span>
     <span class="font-heading text-brand font-semibold">Resource Explorer</span>
     <span id="scope-slug"
-          class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-[11px] text-accent-on-dark"></span>
+          class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-provenance text-accent-on-dark"></span>
     <span class="ml-auto flex items-center gap-s4 text-[12px] text-chrome-muted">
       <a href="/" title="The activity log is not built in /next — opens the current UI"
         class="text-chrome-muted no-underline hover:text-chrome-ink"

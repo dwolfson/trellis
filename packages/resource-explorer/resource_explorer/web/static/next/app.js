@@ -459,6 +459,30 @@ function renderTopBar() {
     : '/next · open current UI';
 }
 
+/** The app's own text-size control: 100 / 112 / 125%.
+ *
+ * Wired once, and persisted — a size someone chose because they could not
+ * read the pane is not a per-session preference. It is stored globally rather
+ * than per work list, deliberately: unlike the digest toggle, this is a fact
+ * about the reader, not about a list.
+ */
+let textSizeWired = false;
+function wireTextSize() {
+  if (textSizeWired) return;
+  textSizeWired = true;
+  const host = $('textsize');
+  if (!host) return;
+  const apply = (v) => {
+    document.documentElement.setAttribute('data-textsize', String(v));
+    host.querySelectorAll('[data-textsize]').forEach((b) =>
+      b.setAttribute('aria-pressed', b.dataset.textsize === String(v) ? 'true' : 'false'));
+    LS.set('re-next.textSize', String(v));
+  };
+  host.querySelectorAll('[data-textsize]').forEach((b) =>
+    b.addEventListener('click', () => apply(b.dataset.textsize)));
+  apply(LS.get('re-next.textSize', '100'));
+}
+
 /** Below 780px the sidebar is a drawer, and this is the way in.
  *
  * Wired ONCE. This sits beside a function that re-renders, and attaching per
@@ -533,6 +557,7 @@ function renderIntentNav() {
   setRailOpen(railIsOpen() && !shellIsNarrow(), { persist: false });
 
   wireSidebarDrawer();
+  wireTextSize();
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -2347,7 +2372,7 @@ function resourceHeaderHtml(slug) {
   return `
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(name)}</h3>
-      <span class="font-mono text-[11px] text-ink-muted">${esc(slug)}</span>
+      <span class="font-mono text-provenance text-ink-muted">${esc(slug)}</span>
       ${links.length
         ? `<span class="flex flex-wrap gap-s3 text-caveat">${links.join('')}</span>`
         : `<span class="text-caveat text-ink-muted">no external links recorded</span>`}
@@ -3526,7 +3551,7 @@ async function loadPane() {
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-provenance">
-      <span id="answered-count" class="tnum text-[12px] text-ink-muted">loading…</span>
+      <span id="answered-count" class="tnum text-caveat text-ink-muted">loading…</span>
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>

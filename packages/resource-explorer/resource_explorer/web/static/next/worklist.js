@@ -179,7 +179,7 @@ export async function renderWorkListPane(ctx) {
     </div>
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(wl.display_name)}</h3>
-      <span class="tnum text-[12px] text-ink-muted">
+      <span class="tnum text-caveat text-ink-muted">
         <span class="tnum">${wl.members.length}</span> resources · ${esc(stage)}
         ${wl.derived_from ? ` · narrowed from <span class="font-mono">${esc(wl.derived_from)}</span>` : ''}
         ${wl.egeria_guid ? ' · published to Egeria' : ' · not published'}
@@ -1066,7 +1066,7 @@ click for the latest results">${c.glyph}</button></td>`;
       grid.selected.has(slug) ? 'checked' : ''}></td>
     <td class="wl-freeze-2 p-[6px] text-ink">
       <button type="button" data-res="${esc(slug)}"
-        class="cursor-pointer border-0 bg-transparent p-0 text-left font-mono text-[11px] text-ink underline decoration-dotted"
+        class="cursor-pointer border-0 bg-transparent p-0 text-left font-mono text-provenance text-ink underline decoration-dotted"
         title="Its verdicts, in order">${esc(slug)}</button>${
         member.disposition
           ? `<span class="ml-s2 text-provenance text-ink-muted">${esc(member.disposition)}</span>`
@@ -1159,7 +1159,7 @@ export function openDialog(title, sub) {
       <div class="flex items-start justify-between gap-s3">
         <div>
           <div class="font-heading text-answer text-ink">${esc(title)}</div>
-          ${sub ? `<div class="mt-[2px] font-mono text-[11px] text-ink-muted">${esc(sub)}</div>` : ''}
+          ${sub ? `<div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(sub)}</div>` : ''}
         </div>
         <button type="button" data-act="close"
           class="text-ink-muted hover:text-ink" aria-label="Close">×</button>
