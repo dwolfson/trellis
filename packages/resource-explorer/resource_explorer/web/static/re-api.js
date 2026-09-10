@@ -83,7 +83,25 @@ export const getMe = () => get('/api/auth/me');
 
 /* ── Resources ───────────────────────────────────────────────────────── */
 
-export const listProjects = () => get('/api/projects/');
+/**
+ * Every registered repo.
+ *
+ * NOTE the default filters, which are stronger than their names suggest:
+ * `include_ignored=false` drops BOTH `ignored` and `abandoned` repos, and
+ * `include_working_set_hidden=false` drops anything hidden from the personal
+ * view. A sidebar that offers disposition facets has to ask for the full
+ * list and filter client-side, or the facets for those two dispositions can
+ * never have anything in them.
+ */
+export const listProjects = ({ includeIgnored = false, includeHidden = false } = {}) =>
+  get(`/api/projects/?include_ignored=${includeIgnored}`
+      + `&include_working_set_hidden=${includeHidden}`);
+
+/** The Scouting-tier facts for one repo — this is where `homepage`,
+ *  `last_published_at` and `egeria_link_stale` live; they are NOT on the
+ *  summary row that the list endpoint returns. */
+export const getScoutingOverview = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/scouting-overview`);
 export const getProject = (slug) => get(`/api/projects/${encodeURIComponent(slug)}`);
 export const listDatabases = () => get('/api/databases/');
 export const listFilesystems = () => get('/api/filesystems/');
@@ -139,6 +157,98 @@ export function getQuestions(slug, { phase = 'scouting', perspectives = [], purp
 export const getAnswer = (slug, question) =>
   get(`/api/analyses/facts/${encodeURIComponent(slug)}/answer`
       + `?question=${encodeURIComponent(question)}`);
+
+/* ── Write paths ─────────────────────────────────────────────────────── */
+
+/**
+ * A repo's disposition.
+ *
+ * Keyed on `github_url`, NOT the slug — the endpoint is reachable for a repo
+ * that has not been imported yet, and it resolves the slug server-side.
+ * Passing a slug here silently fails to match anything.
+ */
+export const VALID_DISPOSITIONS = [
+  'undecided', 'tracking', 'investigating', 'recommended',
+  'using', 'abandoned', 'ignored',
+];
+
+export const setDisposition = (githubUrl, disposition, reason = '') =>
+  post('/api/discovery/disposition', { github_url: githubUrl, disposition, reason });
+
+export const getDispositionHistory = (githubUrl) =>
+  get(`/api/discovery/disposition-history?github_url=${encodeURIComponent(githubUrl)}`);
+
+/**
+ * Hide or unhide a resource in the personal working set.
+ *
+ * A view preference, not a judgement about the resource, and a different
+ * axis from disposition — the endpoint's own docstring is explicit about
+ * that. Nothing is deleted.
+ */
+export const setWorkingSetHidden = (entityType, entitySlug, hidden) =>
+  post('/api/discovery/working-set', {
+    entity_type: entityType, entity_slug: entitySlug, hidden,
+  });
+
+/**
+ * Unregister a repo and delete its local survey data.
+ *
+ * DESTRUCTIVE and irreversible: it drops the repo's pgvector collections and
+ * removes the registry row. The endpoint takes no confirmation flag of any
+ * kind, so the only confirmation that will ever exist is the caller's.
+ */
+export const removeProject = (slug) =>
+  request(`/api/projects/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+/* ── Groups ──────────────────────────────────────────────────────────── */
+
+export const listGroups = () => cached('groups', () => get('/api/projects/groups'));
+
+export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
+  post(`/api/projects/${encodeURIComponent(slug)}/group`,
+       { resource_type: resourceType, group_slug: groupSlug });
+
+/* ── Investigations ──────────────────────────────────────────────────── */
+
+export const listInvestigationMembers = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/members`);
+
+export const addInvestigationMember = (slug, entityType, entitySlug, rationale = '') =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/members`, {
+    entity_type: entityType, entity_slug: entitySlug,
+    membership_rationale: rationale, state: 'in-scope',
+  });
+
+export const removeInvestigationMember = (slug, entityType, entitySlug) =>
+  request(`/api/investigations/${encodeURIComponent(slug)}/members/`
+          + `${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
+          { method: 'DELETE' });
+
+/* ── Query ───────────────────────────────────────────────────────────── */
+
+export const ask = (query, { resourceSlug, perspectives = [], sessionId } = {}) =>
+  post('/api/query/', {
+    query,
+    project_slug: resourceSlug || null,   // the wire key is still the old name
+    perspectives: [...perspectives],
+    session_id: sessionId || null,
+  });
+
+/**
+ * Rate an answer.
+ *
+ * `vote` is THREE states, not a thumb: +1 helpful, 0 partially correct,
+ * -1 not helpful. Recording a "partly" as either of the others is the kind
+ * of quiet flattening that makes the feedback corpus useless.
+ *
+ * `queryHash` always comes from a prior server response — the client never
+ * computes it — so that a vote on the same question text lands under one key
+ * whether the answer came from retrieval or from measurements.
+ */
+export const sendFeedback = (queryHash, vote, compileId = null) =>
+  post('/api/query/feedback',
+       compileId ? { query_hash: queryHash, vote, compile_id: compileId }
+                 : { query_hash: queryHash, vote });
 
 /* ── Running an analysis ─────────────────────────────────────────────── */
 

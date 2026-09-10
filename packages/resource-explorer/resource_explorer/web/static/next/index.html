@@ -21,7 +21,8 @@
     background: #1b1a19;
     color: #f3f2f2;
     font-family: Lora, Georgia, serif;
-    font-size: 14px;
+    font-size: 15px;   /* raised from 14px with the answer line — see the
+                          `answer` token's note in tailwind-next.config.js */
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
   }
@@ -61,22 +62,42 @@
      with it, and hiding the sidebar would strand the selection. The content
      column is `minmax(0, 1fr)` at every width, or a long qualified name
      forces the whole page to scroll sideways. */
+  /* The two seam widths are DRAGGABLE and PERSISTED (see app.js). They are
+     not cosmetic: qualified names and file paths are this app's primary
+     content, and a reader of answers and a reader of paths want different
+     proportions. Defaults here, overridden by the stored values on load. */
   #app-grid {
+    --sidebar-w: 240px;
+    --rail-w: 290px;
     display: grid;
-    grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(0, 290px);
+    grid-template-columns:
+      minmax(150px, var(--sidebar-w)) minmax(0, 1fr) minmax(0, var(--rail-w));
     grid-template-areas: "sidebar content rail";
   }
   #app-grid > .pane-sidebar { grid-area: sidebar; }
   #app-grid > .pane-content { grid-area: content; }
   #app-grid > .pane-rail    { grid-area: rail; }
 
+  /* A 5px grab strip sitting ON the seam, drawn only on hover/drag so the
+     hairline stays a hairline. */
+  .seam {
+    position: absolute; top: 0; bottom: 0; width: 5px; z-index: 20;
+    cursor: col-resize; background: transparent;
+  }
+  .seam:hover, .seam.dragging { background: rgba(182, 130, 53, 0.55); }
+  #seam-sidebar { left: calc(var(--sidebar-w) - 2px); }
+  #seam-rail    { right: calc(var(--rail-w) - 2px); }
+  body.resizing { cursor: col-resize; user-select: none; }
+
   @media (max-width: 1100px) {
     #app-grid {
-      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+      grid-template-columns: minmax(150px, var(--sidebar-w)) minmax(0, 1fr);
       grid-template-areas: "sidebar content" "sidebar rail";
       grid-template-rows: minmax(0, 1fr) auto;
     }
     #app-grid > .pane-rail { border-left: 0; border-top: 1px solid #444141; }
+    /* Only the sidebar seam still means anything once the rail is stacked. */
+    #seam-rail { display: none; }
   }
 
   @media (max-width: 780px) {
@@ -86,6 +107,31 @@
       grid-template-rows: minmax(0, 1fr) auto auto;
     }
     #app-grid > .pane-sidebar { border-right: 0; border-top: 1px solid #444141; }
+    .seam { display: none; }
+  }
+
+  /* ── The chat rail is a DRAWER, not a fixed column ──────────────────── */
+  #app-grid.rail-closed {
+    grid-template-columns: minmax(150px, var(--sidebar-w)) minmax(0, 1fr);
+    grid-template-areas: "sidebar content";
+  }
+  #app-grid.rail-closed > .pane-rail { display: none; }
+  #app-grid.rail-closed #seam-rail { display: none; }
+
+  /* On a narrow viewport an open drawer OVERLAYS rather than squeezing the
+     content pane — below ~1100px there is not enough width to give away. */
+  @media (max-width: 1100px) {
+    #app-grid:not(.rail-closed) > .pane-rail {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      width: min(360px, 92vw); z-index: 30;
+      border-left: 1px solid #444141; border-top: 0;
+      box-shadow: 0 12px 32px rgba(45, 43, 43, 0.22);
+    }
+    #app-grid:not(.rail-closed) {
+      grid-template-columns: minmax(150px, var(--sidebar-w)) minmax(0, 1fr);
+      grid-template-areas: "sidebar content";
+      grid-template-rows: minmax(0, 1fr);
+    }
   }
 </style>
 
@@ -147,7 +193,13 @@
     <span id="scope-slug"
           class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-[11px] text-accent-on-dark"></span>
     <span class="ml-auto flex items-center gap-s4 text-[12px] text-chrome-muted">
-      <span>Activity <span id="activity-count" class="tnum text-accent-on-dark">–</span></span>
+      <a href="/" title="The activity log is not built in /next — opens the current UI"
+        class="text-chrome-muted no-underline hover:text-chrome-ink"
+        style="border-bottom:1px dashed currentColor">Activity
+        <span id="activity-count" class="tnum text-accent-on-dark">–</span> ↗</a>
+      <a href="/" title="Admin and feedback are not built in /next — opens the current UI"
+        class="text-chrome-muted no-underline hover:text-chrome-ink"
+        style="border-bottom:1px dashed currentColor">Admin ↗</a>
       <span id="investigation-name">No investigation</span>
       <span id="whoami">–</span>
       <!-- Make switching one click, and say which UI you are in. Testers
@@ -179,7 +231,11 @@
   <!-- Grid columns and their responsive collapse live in the <style> block
        above, keyed on #app-grid — three template-area layouts are clearer as
        media queries than as arbitrary-value utilities. -->
-  <div id="app-grid" class="min-h-0 flex-1">
+  <div id="app-grid" class="relative min-h-0 flex-1">
+    <div id="seam-sidebar" class="seam" role="separator" aria-orientation="vertical"
+         aria-label="Resize the sidebar" tabindex="0"></div>
+    <div id="seam-rail" class="seam" role="separator" aria-orientation="vertical"
+         aria-label="Resize the chat rail" tabindex="0"></div>
 
     <aside id="sidebar"
            class="pane-sidebar overflow-y-auto border-r border-chrome-line px-s3 py-s4 text-resource text-chrome-ink"></aside>

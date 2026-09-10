@@ -129,6 +129,129 @@ does not exist), nothing about scale while it loads one resource at a time,
 and it will flatter itself on performance because a new shell carries none of
 the accumulated listeners the old one does.
 
+## Round 2 — the regression review
+
+The design owner reviewed the first build and raised nine losses, with a
+correction to their own handoff: *"a parallel UI may defer any affordance,
+but it may not silently omit one."* The first pass read "stub the chrome" as
+licence to drop things that looked like frame and were function — a sub-tab
+rail, a resize handle, a chat drawer, a state legend.
+
+### The two readability fixes
+
+**#1 — text too light.** The diagnosis offered was that the answer line had
+picked up a muted token. It had not: the answer line measured `#201f1d` at
+14.5px with Lora loading correctly. The real cause was next door — the
+*question title* was muted for the unrun, no-surveyor and unclassified
+states, and so was the whole body line for those rows. On the Analysis stage
+that is most of the page. So de-emphasis had crept back in as fading text,
+which is the one thing this palette forbids.
+
+The correction was right even though the cause was not: no line that carries
+content uses a muted token now (muted is labels, provenance and metadata
+only), the glyph carries the state, and body and answer text went to 15px.
+
+**#6 — no key for the symbols.** Restored as a counted legend under the
+stage line — `✓ answered 3 · ✓ automatic 1 · ○ not run 1` — listing only the
+states actually present, and re-rendering as rows arrive.
+
+### The honesty pass
+
+**#3** — the four unbuilt sub-tabs now carry the same dashed marker the
+unbuilt intent uses, and clicking one opens a panel that says so and links
+out. The same treatment reached Activity, RFAs and Admin in the chrome:
+their counts stay live, the surfaces link to the current UI.
+
+One thing that panel cannot do is preserve the resource. **The current UI has
+no deep link** — its navigation state lives in JavaScript variables, not the
+URL — so the panel says plainly that you will have to reselect. `/next` now
+has one (`?resource=&stage=&tab=&perspectives=`), which the inventory lists
+as a Keep and which neither UI had.
+
+### The keeps
+
+**#7, selection and grouping** — restored whole: the resource-type facet, the
+text filter, the five lifecycle scope chips, disposition facets, Select mode
+with bulk actions, the group tree, Show hidden, and per-resource status marks
+(typographic, not emoji: `▣ ▤ ▢` for published/surveyed/new, `● ◎ ✚` for
+using/investigating/recommended).
+
+Two things worth knowing about that:
+
+- Disposition zeros are **collapsed behind a "N more…" control, not
+  removed**. The handoff's "show only non-zero counts" was advice about
+  noise; as a spec it removed the controls, and a facet you cannot select is
+  a filter you cannot undo.
+- `GET /api/projects/` filters harder than its parameter names suggest:
+  `include_ignored=false` drops **`abandoned` as well as `ignored`**, and
+  `include_working_set_hidden=false` drops hidden repos. `/next` asks for the
+  full list and filters client-side, or those facets could never be
+  populated.
+
+**#8, write paths** — remove, hide/unhide and disposition are on the resource
+header, plus their bulk equivalents in Select mode. Notes on each:
+
+- `DELETE /api/projects/{slug}` takes **no confirmation flag of any kind**
+  and drops the repo's pgvector collections along with the registry row. The
+  only confirmation that can exist is the client's, so it names what is
+  going, says it cannot be undone, and says how it differs from marking a
+  repo *ignored* — which leaves it registered.
+- Disposition is keyed on **`github_url`, not the slug**. A repo with no
+  GitHub URL cannot be dispositioned, and the header says that rather than
+  appearing to work.
+- There are **seven** legal dispositions, not four: `undecided`, `tracking`,
+  `investigating`, `recommended`, `using`, `abandoned`, `ignored`.
+- Every bulk write reports per-resource. A partial failure never renders as
+  success.
+
+**#9, external links** — GitHub and the project site, marked external and
+visually distinct from internal navigation. There is **no separate docs
+link**: `homepage` is already the derived best link (GitHub's declared
+homepage, then the packaging manifest, then the README) and does duty as
+both. It lives on the scouting overview, not the summary row, so the header
+fetches it per selection and renders without it if that call fails.
+
+**#2, resizable panes** — both seams drag, with keyboard support, and both
+widths persist. Bounds are 150–520px for the sidebar and 220–620px for the
+rail.
+
+**#4 and #5, the chat drawer** — it toggles, remembers its state, overlays
+rather than squeezing below 1100px, and keeps a transcript. Each turn is
+labelled with the resource it was asked about and marked when that is not the
+current selection. Each answer carries its source line, the three-state
+feedback control, and an *Open as candidates* action when the answer looks
+like a list.
+
+The feedback vote is **three states, not a thumb pair**: `+1` / `0` /
+`-1`, where `0` is "partly right". That middle value is the one that
+separates a routing problem from a content problem, and folding it into
+either neighbour would lose the signal the vote exists to collect. The
+`query_hash` always comes off a server response — never computed here — so a
+vote lands under the same key however the answer was produced.
+
+**The current investigation** is in the chrome and switchable from the
+sidebar. There is no server-side notion of a current investigation; the
+existing UI keeps it in `localStorage` under `re_current_investigation`, and
+`/next` reads and writes **the same key**, so switching shells does not
+silently change what you are working on.
+
+### A third instance of the same bug
+
+The evidence panel was still saying "never run" for a fact whose state is
+`measured` and whose `last_run_at` is empty — the same conflation fixed in
+the row last round, in a second place. It now says "run time not recorded"
+there too. Worth noting because it is the pattern: the fix went where the bug
+was seen, not everywhere the mistake was made.
+
+### Not verified
+
+**The chat success path.** `POST /api/query/` requires a real session, and
+the verification instance runs with `TRELLIS_ANONYMOUS_READ=true`, which
+permits reads only. The turn's *error* rendering is verified against a live
+401; the answer, source line, feedback control and candidates action are
+written but have not been seen with a real response. Signing in is what would
+settle it.
+
 ## Known gaps
 
 - **`re-api.js` is shared in location only.** `index.html` does not import it
@@ -141,6 +264,14 @@ the accumulated listeners the old one does.
   weakens the side-by-side comparison the handoff asks for.
 - **Enrichment rows cannot be answered inline.** The `⚠` row says so rather
   than offering a form.
+- **Deferred, per the affordance inventory:** survey cards (run, schedule,
+  notify, results, steps), sub-resources and scoped analysis, Curate
+  verdicts, the Context form, Automate, the Activity log, the RFA drawer,
+  Admin, and the stat tiles. Each is marked and linked out; none is silently
+  absent.
+- **No deep link into the current UI**, so the link-out cannot preserve the
+  resource. Fixing that means giving `index.html` URL state, which is its own
+  change.
 - **Lucide is not wired in.** The screen needs almost no icons: its state
   vocabulary is typographic (`✓ ○ ⚠ ·`), which is not emoji and not an icon
   set. Add the sprite when a surface actually needs one.

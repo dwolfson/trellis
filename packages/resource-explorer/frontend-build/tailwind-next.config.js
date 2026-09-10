@@ -99,7 +99,11 @@ module.exports = {
         subtab: ['13px', '1.2'],
         name: ['26px', '1.15'],
         question: ['17px', '1.25'],
-        answer: ['14.5px', '1.55'],
+        // 15px, not the handoff's original 14.5. Lora has a generous
+        // x-height but is optically lighter than a grotesque at the same
+        // size, and 14.5 was matching the current app's density rather than
+        // choosing well — it read as too light on a real screen.
+        answer: ['15px', '1.55'],
         caveat: ['13px', '1.5'],
         provenance: ['11.5px', '1.45'],
         caps: ['11px', '1.3'],
