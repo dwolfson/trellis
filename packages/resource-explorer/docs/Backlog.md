@@ -4504,6 +4504,21 @@ slug returns an empty answer rather than an error. Any claim of the form "X is
 missing for repo R" needs R proven to exist in the same session as the query
 that found X missing.
 
+## Phoenix: RE traces into its own project — FIXED 2026-09-09
+
+Phoenix buckets spans by project and anything that does not name one lands in
+`default`, which is shared. Measured 2026-09-09: this machine's `default` held
+106 spans from an unrelated BeeAI **tutorial** run in December 2025
+(`OpenMeteoTool`, `DuckDuckGo`, 7 error spans) — and RE's first real span landed
+among them. Anyone opening Phoenix cold would reasonably read the tutorial's
+token counts as RE's.
+
+`init_phoenix()` now stamps `openinference.project.name` on the TracerProvider's
+`Resource` (not per-span, so it cannot be forgotten at a call site), from the new
+`PhoenixConfig.project_name`, default `resource-explorer`. Verified live: the
+collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
+history is deleted; the two simply stop sharing a bucket.
+
 ## LLM token accounting — done for `complete()`, streaming still uncounted
 
 Built 2026-09-09 at the project owner's direction, closing half of the
@@ -4536,9 +4551,27 @@ Finishing streaming is the open follow-up.
 
 **Two scopes are open** so the counter is not inert: `run_queue` around the
 handler (per-run attribution, what §6 asked for) and `RAGSystem.query` around
-its route. Both currently log at INFO. **Persisting them — MLflow metrics
-beside `latency_ms`, or the `activity_log` detail — is the next step and is not
-done**; until it is, the numbers exist per-run but are not queryable.
+its route.
+
+**Persisted to MLflow 2026-09-09** — chosen over the `activity_log` because it
+needs no schema migration, is already live with thousands of RE runs, and is
+where a cost analysis would look. `log_query(..., usage=)` carries the chat
+path; `log_run_usage()` writes a **separate** `<experiment>-runs` experiment,
+because pooling runs with chat queries would make "median cost per run" quietly
+include every chat message. Token counts go in as **metrics** (they aggregate);
+`llm_usage_complete` and the model list go in as **params** (they filter) — a
+run whose total is a floor rather than a measurement has to be excludable by
+query, or the aggregate silently mixes the two. A cache hit passes `usage=None`
+and logs nothing rather than zeros: a free answer does not belong in the same
+population as a paid one. Verified end-to-end against the live MLflow:
+`llm_prompt_tokens 17, llm_completion_tokens 2, llm_total_tokens 19,
+llm_counted_calls 1, llm_uncounted_calls 0`.
+
+Two structural faults found while wiring it, both worth remembering. The MLflow
+call was first placed INSIDE the `try` whose `except` marks a run **failed** —
+a metrics sink able to report a completed run as crashed. And `_track` must
+receive `usage` **by value**: it runs on a bare `threading.Thread` and cannot
+read the ContextVar itself.
 
 **The ContextVar trap this ran into.** `RAGSystem.query` hands off to a bare
 `threading.Thread`, which does NOT inherit ContextVars (asyncio tasks and

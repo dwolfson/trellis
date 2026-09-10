@@ -282,3 +282,138 @@ class TestScopeSurvivesTheWaysWorkIsDispatched:
             "a bare threading.Thread now inherits ContextVars — if this fails, "
             "the synchronous-read requirement in RAGSystem.query can be relaxed"
         )
+
+
+class TestTheNumbersArePersisted:
+    """A per-run total that only reaches a log line is not queryable, which was
+    the gap left when the accounting first landed. These pin the MLflow sink."""
+
+    def test_the_split_puts_counts_in_metrics_and_qualifiers_in_params(self):
+        """Token counts must aggregate (metrics); `llm_usage_complete` and the
+        model list must filter (params). A run whose total is a FLOOR rather
+        than a measurement has to be excludable by query, or the aggregate
+        silently mixes the two."""
+        from resource_explorer.observability.mlflow_tracking import _usage_metrics
+
+        with llm_usage.usage_scope() as u:
+            llm_usage.record(10, 5, "llama3.1:8b")
+            llm_usage.record_uncounted("llama3.1:8b")
+        metrics, params = _usage_metrics(u.as_dict())
+
+        assert metrics["llm_total_tokens"] == 15
+        assert metrics["llm_uncounted_calls"] == 1, (
+            "uncounted_calls must be a metric even when zero — a metric absent "
+            "from a run is indistinguishable from one that was zero, and this "
+            "is the number that says whether to trust the total"
+        )
+        assert params["llm_usage_complete"] is False
+        assert "llama3.1:8b" in params["llm_models"]
+        # A bool is an int in Python; it must not leak into the metric set.
+        assert "llm_usage_complete" not in metrics, (
+            "llm_usage_complete logged as a metric — it would average to a "
+            "meaningless 0.4 across runs instead of filtering them"
+        )
+
+    def test_no_usage_produces_no_metrics_at_all(self):
+        """A cache hit makes no LLM call. Logging zeros would put a free answer
+        in the same population as a paid one."""
+        from resource_explorer.observability.mlflow_tracking import _usage_metrics
+        assert _usage_metrics(None) == ({}, {})
+        assert _usage_metrics({}) == ({}, {})
+
+    def test_runs_and_queries_go_to_different_experiments(self):
+        """Pooling them makes 'median cost per run' quietly include every chat
+        message."""
+        import inspect
+        from resource_explorer.observability import mlflow_tracking
+        q = inspect.getsource(mlflow_tracking.log_query)
+        r = inspect.getsource(mlflow_tracking.log_run_usage)
+        assert "cfg.experiment_name" in q
+        assert '-runs' in r, (
+            "log_run_usage writes to the same experiment as log_query, so run "
+            "costs and chat-query costs share a denominator"
+        )
+
+    def test_the_query_path_forwards_usage_to_mlflow(self):
+        import inspect
+        from resource_explorer.observability import metrics_collector
+        src = inspect.getsource(metrics_collector.MetricsCollector.record_query)
+        assert "usage=usage" in src, (
+            "record_query accepts usage and does not pass it to log_query, so "
+            "the tokens stop one layer short of the sink"
+        )
+
+    def test_track_receives_usage_by_value_rather_than_reading_it(self):
+        """`_track` runs on a bare thread; it must be handed the snapshot."""
+        import inspect
+        from resource_explorer import rag_system
+        sig = inspect.signature(rag_system.RAGSystem._track)
+        assert "usage" in sig.parameters, (
+            "_track has no usage parameter, so the query path's tokens cannot "
+            "reach the sink from the thread it tracks in"
+        )
+
+    def test_the_run_path_records_outside_the_failure_handler(self):
+        """A metrics sink must not be able to turn a succeeded run into a
+        failed one. The first version of this had log_run_usage inside the try
+        whose except marks the run failed."""
+        import ast
+        import inspect
+        from resource_explorer import run_queue
+
+        # AST, not string positions. The first version compared
+        # src.index("log_run_usage(") against
+        # src.index('registry.finish_run(run_id, "failed"') — and this function
+        # has TWO of the latter, so index() always matched the earlier one and
+        # the check passed with the call moved inside the try. Found by
+        # sabotage, not by reading. The property is structural, so test it
+        # structurally: is the call lexically inside a Try that handles
+        # exceptions?
+        tree = ast.parse(inspect.getsource(run_queue.execute_run).lstrip())
+
+        def _calls(node):
+            return [n for n in ast.walk(node)
+                    if isinstance(n, ast.Call)
+                    and getattr(n.func, "id", getattr(n.func, "attr", "")) == "log_run_usage"]
+
+        assert _calls(tree), "execute_run no longer records run usage at all"
+        guarded = [t for t in ast.walk(tree)
+                   if isinstance(t, ast.Try) and t.handlers
+                   and any(_calls(stmt) for stmt in t.body)]
+        offenders = [t for t in guarded
+                     if any(isinstance(h.body[-1], ast.Return) for h in t.handlers)]
+        assert not offenders, (
+            "log_run_usage sits inside a try whose handler returns a failed "
+            "outcome; a metrics failure would report a completed run as crashed"
+        )
+
+
+class TestPhoenixSpansAreAttributable:
+    def test_re_names_its_own_phoenix_project(self):
+        """Unnamed spans land in `default`, which is shared: measured
+        2026-09-09, this machine's `default` held 106 spans from an unrelated
+        December 2025 BeeAI tutorial, and RE's first real span landed among
+        them."""
+        import inspect
+        from resource_explorer.observability import phoenix_client
+        src = inspect.getsource(phoenix_client.init_phoenix)
+        assert "openinference.project.name" in src, (
+            "init_phoenix does not set the project attribute, so RE's spans go "
+            "to Phoenix's shared `default` project"
+        )
+        assert "project_name" in src, "the project name is hardcoded rather than configured"
+
+    def test_the_project_is_set_on_the_resource_not_per_span(self):
+        import inspect
+        from resource_explorer.observability import phoenix_client
+        src = inspect.getsource(phoenix_client.init_phoenix)
+        assert "Resource.create" in src and "TracerProvider(resource=" in src, (
+            "the project name is not on the TracerProvider's Resource, so it "
+            "depends on every call site remembering to set it"
+        )
+
+    def test_the_default_is_not_phoenixs_shared_bucket(self):
+        from resource_explorer.config import PhoenixConfig
+        assert PhoenixConfig().project_name not in ("", "default"), (
+            "RE's default Phoenix project is the shared `default` bucket"
+        )

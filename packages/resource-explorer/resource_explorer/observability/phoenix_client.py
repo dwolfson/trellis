@@ -25,10 +25,16 @@ def init_phoenix() -> None:
         from openinference.instrumentation.beeai import BeeAIInstrumentor
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        provider = TracerProvider()
+        # `openinference.project.name` is the attribute Phoenix reads to bucket
+        # spans; without it everything lands in `default` alongside whatever
+        # else has ever pointed at this collector. Set on the Resource rather
+        # than per-span so it cannot be forgotten at a call site.
+        provider = TracerProvider(resource=Resource.create(
+            {"openinference.project.name": cfg.project_name}))
         # BatchSpanProcessor, not SimpleSpanProcessor: Simple exports
         # synchronously on every span end, so a collector that goes away AFTER
         # this init — which the reachability check above cannot predict — puts

@@ -199,6 +199,14 @@ class MLflowConfig(BaseSettings):
 class PhoenixConfig(BaseSettings):
     enabled: bool = True
     collector_endpoint: str = "http://localhost:6006/v1/traces"
+    #: Phoenix groups spans by project, and everything that does not name one
+    #: lands in `default`. That is a shared bucket: measured 2026-09-09, this
+    #: machine's Phoenix held 106 spans in `default` from an unrelated BeeAI
+    #: tutorial run in December 2025 (OpenMeteoTool, DuckDuckGo, 7 errors), and
+    #: RE's first real span landed among them — anyone opening Phoenix cold
+    #: would reasonably read the tutorial's numbers as RE's. Naming the project
+    #: separates them without deleting anyone's history.
+    project_name: str = "resource-explorer"
 
 
 class ObservabilityConfig(BaseSettings):

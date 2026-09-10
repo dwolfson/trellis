@@ -155,6 +155,7 @@ class MetricsCollector:
         cache_hit: bool = False,
         chunk_refs: list[str] | None = None,
         derivation: dict | None = None,
+        usage: dict | None = None,
     ) -> None:
         """Record one query.
 
@@ -187,6 +188,7 @@ class MetricsCollector:
                 response=response,
                 latency_ms=latency_ms,
                 collections_used=chunk_refs or [],
+                usage=usage,
             )
         except Exception:
             pass

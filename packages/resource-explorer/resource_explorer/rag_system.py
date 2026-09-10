@@ -57,14 +57,19 @@ class RAGSystem:
         # having cost zero tokens. (asyncio tasks and asyncio.to_thread DO
         # inherit; a plain Thread does not. Same trap as the identity
         # ContextVar — see the Backlog note on it.)
-        if usage.calls:
-            log.info("rag query (%s) llm usage: %s", intent.value, usage.as_dict())
+        # Snapshot here, not in the thread: `_track` runs on a bare
+        # threading.Thread (below), which does not inherit ContextVars, so the
+        # scope is already gone by the time it runs. Passed by value instead.
+        usage_snapshot = usage.as_dict() if usage.calls else None
+        if usage_snapshot:
+            log.info("rag query (%s) llm usage: %s", intent.value, usage_snapshot)
 
         self.cache.set(query, resource_slug, intent.value, response)
 
         threading.Thread(
             target=self._track,
-            args=(query, intent, resource_slug, response, latency_ms, False, chunk_refs),
+            args=(query, intent, resource_slug, response, latency_ms, False,
+                  chunk_refs, usage_snapshot),
             daemon=True,
         ).start()
 
@@ -204,12 +209,19 @@ class RAGSystem:
         latency_ms: int = 0,
         cache_hit: bool = False,
         chunk_refs: list[str] | None = None,
+        usage: dict | None = None,
     ) -> None:
+        # `usage` arrives BY VALUE from `query`, which read it synchronously.
+        # This method runs on a bare threading.Thread and cannot read the usage
+        # ContextVar itself — it would always find None and record every query
+        # as free. None here means "no LLM call was made" (a cache hit), which
+        # is not the same as zero tokens and is left unlogged rather than
+        # logged as a zero.
         try:
             self.metrics.record_query(
                 query, intent.value, resource_slug, response,
                 latency_ms=latency_ms, cache_hit=cache_hit,
-                chunk_refs=chunk_refs or [],
+                chunk_refs=chunk_refs or [], usage=usage,
             )
         except Exception:
             pass

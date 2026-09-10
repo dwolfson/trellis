@@ -366,14 +366,30 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         with _Heartbeat(registry, run_id), _run_as_requester(row), \
                 llm_usage.usage_scope() as usage:
             outcome = handler(target, result_ref)
-        # Read here, inside the worker, not from a callback: the scope is a
-        # ContextVar and only code running under it can see the totals.
-        if usage.calls:
-            log.info("run %s (%s) llm usage: %s", run_id, kind, usage.as_dict())
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         log.exception("run %s (%s) crashed", run_id, kind)
         registry.finish_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")
         return RunOutcome(state="failed", error=str(exc))
+
+    # LLM cost for this run, recorded OUTSIDE the try above on purpose: the
+    # handler has already succeeded by here, and a metrics sink must not be able
+    # to turn that into a failed run. `usage` is still in scope — the `with`
+    # closed, the name did not — and is read here in the worker rather than from
+    # a callback, since the scope is a ContextVar only code running under it can
+    # see. `log_run_usage` swallows its own errors too; this is belt and braces
+    # because the cost of being wrong is a run reported failed after doing its
+    # work.
+    if usage.calls:
+        snapshot = usage.as_dict()
+        log.info("run %s (%s) llm usage: %s", run_id, kind, snapshot)
+        try:
+            from resource_explorer.observability.mlflow_tracking import log_run_usage
+
+            log_run_usage(run_id, kind, snapshot,
+                          slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
+                          analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
+        except Exception:  # pragma: no cover
+            log.debug("could not record llm usage for run %s", run_id, exc_info=True)
 
     registry.finish_run(run_id, outcome.state, error=outcome.error)
     log.info("run finished: id=%s kind=%s state=%s", run_id, kind, outcome.state)
