@@ -131,6 +131,13 @@ not scroll off a 375px screen. All three were found by looking at it.
 - "Never run" is a claim, and needs evidence; absent evidence the answer is
   "unknown".
 - A question with no surveyor is settled, not loading.
+- **An absence that holds for EVERY resource is a bug report about the reader,
+  not a finding about the corpus.** `survey_history` rendered "nothing
+  recorded yet" on ten out of ten repositories while the registry held ten
+  points each — the endpoint returns a raw series rather than a figure, and
+  the reader looked for the wrong shape. An empty state is a claim like any
+  other, and it is the one claim that looks like diligence when it is wrong.
+  Check across resources before believing it.
 - **`□` and `?` are different facts.** `□` is a promise that a read is still
   owed; `?` is "we looked and could not read it". A failed read therefore
   converts to `?`, and only a *cancelled* one stays a square — cancellation
