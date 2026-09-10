@@ -29,6 +29,7 @@ import {
   getQuestions,
   getResourceFacts,
   getWorkList,
+  listAnalyses,
   listWorkLists,
   promoteWorkList,
   publishWorkList,
@@ -89,6 +90,8 @@ export const grid = {
   questions: [],         // columns
   rows: new Map(),       // entity_slug -> { facts, factsById, error }
   selected: new Set(),   // rows ticked for a bulk action
+  analyses: null,        // the CURRENT STAGE's analyses; null = not read yet
+  stageLabel: '',        // for the question key's heading
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
   note: '',
@@ -133,8 +136,24 @@ export async function renderWorkListPane(ctx) {
     <div id="wl-legend" class="mt-s3 flex flex-wrap gap-s3 text-caveat text-ink"></div>`;
 
   el.querySelector('[data-act="exit"]').addEventListener('click', () => ctx.onExit());
+
+  // The runnable analyses for THIS STAGE, re-read whenever the pane renders.
+  //
+  // The dropdown used to show the whole catalog — 36 analyses on every stage —
+  // because it was filled once at boot with no intent filter. Offering
+  // `security_scan` under Scouting is not a longer menu, it is a menu that
+  // disagrees with the funnel the rest of the screen is arranged around.
+  grid.stageLabel = stage;
+  grid.analyses = null;
   renderActions(ctx);
   renderLegend();
+  try {
+    grid.analyses = await listAnalyses('repo', { intent: stage });
+  } catch (err) {
+    grid.analyses = { error: err.message };
+  }
+  renderActions(ctx);
+
   await loadGrid(ctx);
 }
 
@@ -142,16 +161,30 @@ function renderActions(ctx) {
   const host = document.getElementById('wl-actions');
   if (!host) return;
   const n = grid.selected.size;
-  const analyses = (ctx.analyses || []).filter((a) => a.id || a.analysis_id);
+  const loaded = Array.isArray(grid.analyses);
+  const failed = grid.analyses && grid.analyses.error;
+  const analyses = loaded ? grid.analyses.filter((a) => a.id || a.analysis_id) : [];
+  // Four states, kept apart. "Not read yet", "this stage has none",
+  // "the catalog could not be read" and "here they are" are different
+  // sentences, and an empty dropdown that means the first three looks
+  // identical to a broken one.
+  const runnable = analyses.length > 0;
   host.innerHTML = `
-    <select id="wl-analysis" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
-      ${analyses.length
-        ? analyses.map((a) => `<option value="${esc(a.id || a.analysis_id)}">${esc(a.display_name || a.name || a.id || a.analysis_id)}</option>`).join('')
-        : '<option value="">no analyses in the catalog</option>'}
+    <select id="wl-analysis" ${runnable ? '' : 'disabled'}
+      class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+      ${!loaded && !failed ? '<option value="">reading the catalog…</option>' : ''}
+      ${failed ? `<option value="">catalog unavailable</option>` : ''}
+      ${loaded && !runnable ? `<option value="">no analyses for ${esc(ctx.stage)}</option>` : ''}
+      ${analyses.map((a) => `<option value="${esc(a.id || a.analysis_id)}">${esc(a.display_name || a.name || a.id || a.analysis_id)}</option>`).join('')}
     </select>
-    <button data-act="run" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink"
+    <button data-act="run" ${runnable ? '' : 'disabled'}
+      class="cursor-pointer rounded-sm border ${runnable ? 'border-accent text-accent-ink' : 'border-dashed border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px]"
       >Run across <span class="tnum">${n || grid.workList.members.length}</span></button>
-    <span class="text-ink-muted">${n ? `${n} selected` : 'all rows'}</span>
+    <span class="text-ink-muted">${
+      failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
+      : !loaded ? 'reading the catalog…'
+      : !runnable ? `<span class="text-accent-ink">${esc(ctx.stage)} has no analyses in the catalog — by design for Enrichment, Understanding and Automate, which are served elsewhere</span>`
+      : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}
         class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
@@ -226,22 +259,53 @@ function renderGrid() {
   const wl = grid.workList;
   const qs = grid.questions;
 
+  // Columns are NUMBERED and the questions are listed in full underneath.
+  //
+  // They used to be the question text clamped to three lines at 120px, which
+  // at 27 columns meant nobody could read any of them — "I can't see the full
+  // questions". A tooltip is not a fix: it shows one at a time, needs a mouse,
+  // and cannot be read alongside the row you are comparing it against. The
+  // key below is readable, printable, and keeps the cells narrow enough that
+  // a wide stage still scans.
   host.innerHTML = `
     <table class="w-full border-collapse text-caveat">
       <thead>
         <tr class="border-b border-rule">
           <th class="w-[26px] p-[6px]"></th>
           <th class="p-[6px] text-left font-heading text-ink">Resource</th>
-          ${qs.map((q) => `<th class="p-[6px] text-left align-bottom font-heading text-ink"
-            title="${esc(q.question)}" style="max-width:120px">
-            <div class="line-clamp-3">${esc(q.question)}</div></th>`).join('')}
+          ${qs.map((q, i) => `<th class="p-[6px] text-center align-bottom font-heading text-ink"
+            title="${esc(q.question)}">
+            <span class="tnum">${i + 1}</span></th>`).join('')}
           <th class="p-[6px] text-left font-heading text-ink">Answered</th>
         </tr>
       </thead>
       <tbody>
         ${wl.members.map((m) => rowHtml(m, qs)).join('')}
       </tbody>
-    </table>`;
+    </table>
+
+    <div class="mt-s4">
+      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">
+        The questions · <span class="tnum">${qs.length}</span> in ${esc(grid.stageLabel || '')}
+      </div>
+      <ol class="m-0 flex list-none flex-col gap-[6px] p-0">
+        ${qs.map((q, i) => `<li class="flex gap-s2">
+          <span class="tnum w-[22px] shrink-0 text-right text-ink-muted">${i + 1}</span>
+          <span class="min-w-0">
+            <span class="text-answer text-ink">${esc(q.question)}</span>
+            ${(q.perspectives || []).length ? `<span class="ml-s2 text-caps text-ink-muted"
+              >${esc((q.perspectives || []).join(' · '))}</span>` : ''}
+            ${q.analysis_ids && q.analysis_ids.length
+              ? `<div class="text-provenance text-ink-muted">${esc(q.analysis_ids.join(', '))}</div>`
+              : `<div class="text-provenance text-ink-muted">${
+                  q.kind === 'gap' ? 'no surveyor exists for this'
+                  : q.kind === 'human' ? 'answered by a person, not a survey'
+                  : q.kind === 'direct' ? 'a direct field, not a survey'
+                  : 'no analysis is mapped to this'}</div>`}
+          </span>
+        </li>`).join('')}
+      </ol>
+    </div>`;
 
   host.querySelectorAll('input[data-row]').forEach((cb) => cb.addEventListener('change', () => {
     if (cb.checked) grid.selected.add(cb.dataset.row);
