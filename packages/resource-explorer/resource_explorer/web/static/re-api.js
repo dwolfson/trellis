@@ -322,6 +322,22 @@ export const getSurveySummary = (slug, stage = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/survey-results/summary${
     stage ? `?phase=${encodeURIComponent(stage)}` : ''}`);
 
+/**
+ * One analysis's recorded series for a resource.
+ *
+ * THE HISTORY WAS ALWAYS THERE. Results are keyed by `surveyed_at` and the
+ * reader returns the rows at MAX(surveyed_at) — earlier rows are retained,
+ * which the `'probe'` incident proved by hiding real runs underneath one.
+ * Every measurement therefore already has a series; nothing displayed it.
+ */
+export const getAnalysisTrend = (slug, analysisId, metric = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
+    encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
+
+/** Recent activity for one resource — the runs, with their per-step detail. */
+export const getResourceRuns = (slug, limit = 40) =>
+  get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
+
 /* ── Work lists and batch runs ───────────────────────────────────────── */
 
 export const listWorkLists = (investigation = '') =>

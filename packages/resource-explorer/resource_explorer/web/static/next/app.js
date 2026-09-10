@@ -35,6 +35,9 @@ import {
   getAnswer,
   getChart,
   getDispositionHistory,
+  enqueueBatch,
+  getAnalysisTrend,
+  getResourceRuns,
   getSurveyCandidates,
   getSurveyDashboards,
   runSurveyDefinition,
@@ -2694,6 +2697,176 @@ async function launchSurvey(slug, ref) {
   }
 }
 
+/* ── The shared measurement detail ────────────────────────────────────────
+ *
+ * THE MISSING MIDDLE. Survey says what you can run; Dashboard says what is
+ * currently true; nothing said what a run FOUND, and no value opened into its
+ * evidence or its history.
+ *
+ * Evidence was never missing — it was unrouted. The matrix cell popup has done
+ * this job since the round that produced "the grid carries state, the popup
+ * carries meaning"; the Dashboard simply did not call it. So this is one
+ * component with several entry points: a dashboard finding, a count, and (via
+ * the history section) the matrix's own cell popup. If they diverge, people
+ * learn one and distrust the others.
+ */
+
+/** The recorded series for one analysis, oldest first.
+ *
+ * WITH ONE MEASUREMENT THERE IS NO TREND. It says "first measurement" rather
+ * than drawing a flat line — a sparkline of a single point is the same lie as
+ * a tick standing in for an unread cell.
+ */
+async function historyHtml(slug, analysisId, metric = '') {
+  let series;
+  try {
+    const res = await getAnalysisTrend(slug, analysisId, metric);
+    series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
+  } catch (err) {
+    // A 400 here is an ANSWER, not a failure: the endpoint says this analysis
+    // keeps no trend because it is a current-state classification. Rendering
+    // that as "could not be read" turns a fact about the analysis into a fault
+    // in the reader — the same mistake as "no results" for "not looked at".
+    if (err.status === 400) {
+      return `<p class="text-caveat text-ink-muted">${esc(err.message)}</p>`;
+    }
+    return `<p class="text-caveat text-state-warn">The history could not be read:
+      ${esc(err.message)}</p>`;
+  }
+  if (!series.length) return '<p class="text-caveat text-ink-muted">No recorded history.</p>';
+  if (series.length === 1) {
+    return `<p class="text-caveat text-ink-muted">First measurement —
+      ${esc(ago(series[0].surveyed_at))}. There is no trend with one point.</p>`;
+  }
+  series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
+  return `
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">History · oldest first ·
+      <span class="tnum">${series.length}</span> recorded</div>
+    <table class="w-full border-collapse text-caveat">
+      ${series.map((r, i) => `<tr class="border-b border-rule">
+        <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
+        <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
+          esc(fmtScalar(r.metric_value ?? r.value))}</td>
+      </tr>`).join('')}
+    </table>`;
+}
+
+/** The inline delta beside a value: what it was, and when.
+ *
+ * That is the whole trend for most measurements most of the time — the series
+ * itself lives in the detail.
+ */
+async function deltaFor(slug, analysisId, metric = '') {
+  try {
+    const res = await getAnalysisTrend(slug, analysisId, metric);
+    const series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
+    if (series.length < 2) return series.length === 1 ? 'first measurement' : '';
+    series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
+    const now = series[series.length - 1];
+    // The last value that DIFFERS, not simply the previous row: repeated runs
+    // that changed nothing would otherwise report "was <the same> 2h ago",
+    // which reads as movement where there was none.
+    const prior = [...series].reverse().find(
+      (r) => (r.metric_value ?? r.value) !== (now.metric_value ?? now.value));
+    if (!prior) return `unchanged across ${series.length} runs`;
+    return `was ${fmtScalar(prior.metric_value ?? prior.value)} ${ago(prior.surveyed_at)}`;
+  } catch (_) {
+    return '';
+  }
+}
+
+/** One measurement, opened: what it says, its evidence, its history. */
+async function openMeasurementDetail({ slug, analysisId, title, metric = '',
+                                       glyph = '', summary = '', when = '' }) {
+  const el = openDialog(title, `${slug} · ${analysisId}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = `
+    <div class="flex items-baseline gap-s2">
+      ${glyph ? `<span>${glyph}</span>` : ''}
+      <span class="text-answer text-ink">${esc(title)}</span>
+      ${when ? `<span class="ml-auto text-provenance text-ink-muted">measured ${esc(ago(when))}</span>` : ''}
+    </div>
+    ${summary ? `<p class="mt-s1 max-w-[70ch] text-ink">${tnum(esc(summary))}</p>` : ''}
+    <div id="md-history" class="mt-s3 text-caveat text-ink-muted">Reading the history…</div>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="rerun"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Re-run <span class="font-mono">${esc(analysisId)}</span> →</button>
+      <button type="button" data-act="runs"
+        class="cursor-pointer bg-transparent text-ink-muted underline">Runs on this resource</button>
+    </div>`;
+  const hist = await historyHtml(slug, analysisId, metric);
+  const slot = body.querySelector('#md-history');
+  if (slot) slot.innerHTML = hist;
+  body.querySelector('[data-act="runs"]')?.addEventListener('click', () => openRunsList(slug));
+  body.querySelector('[data-act="rerun"]')?.addEventListener('click', async () => {
+    const b = body.querySelector('[data-act="rerun"]');
+    b.disabled = true;
+    b.textContent = 'Queueing…';
+    try {
+      await enqueueBatch(analysisId, [slug], '');
+      b.textContent = 'Queued';
+    } catch (err) {
+      b.textContent = err.status === 401 ? 'Not signed in' : `Refused: ${err.message}`;
+    }
+  });
+}
+
+/* ── The run record ───────────────────────────────────────────────────────
+ *
+ * The level that regressed. The old Survey pane showed what a run FOUND, and
+ * a definitions list replaced it without replacing that.
+ *
+ * The per-step detail is in the activity log's own `detail` payload — steps
+ * with their statuses — so this is wiring too, not new persistence.
+ */
+async function openRunsList(slug) {
+  const el = openDialog('Runs', slug);
+  const body = el.querySelector('#wl-detail-body');
+  let rows;
+  try {
+    rows = await getResourceRuns(slug);
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">The runs could not be read: ${esc(err.message)}</p>`;
+    return;
+  }
+  const runs = (rows || []).filter((r) => r.operation === 'survey');
+  if (!runs.length) {
+    body.innerHTML = `<p>No survey run is recorded for ${esc(slug)}.</p>`;
+    return;
+  }
+  body.innerHTML = runs.slice(0, 12).map((r) => {
+    let steps = [];
+    try {
+      const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
+      steps = d.steps || [];
+    } catch (_) { /* a detail we cannot parse is a run with no step list */ }
+    const ok = steps.filter((s) => s.status === 'ok').length;
+    const bad = steps.filter((s) => s.status && s.status !== 'ok');
+    return `<details class="border-b border-rule py-s2">
+      <summary class="cursor-pointer">
+        <span class="text-ink">${esc(r.summary || 'survey run')}</span>
+        <span class="text-provenance text-ink-muted"> · ${esc(ago(r.ts))} · ${esc(r.status || '')}</span>
+      </summary>
+      ${steps.length ? `
+        <div class="mt-s1 text-provenance text-ink-muted">
+          <span class="text-state-ok">${ok} ran</span>${
+          bad.length ? ` · <span class="text-state-warn">${bad.length} did not</span>` : ''}</div>
+        <ul class="m-0 mt-s1 list-none p-0 text-caveat">
+          ${steps.map((s) => `<li class="flex gap-s2">
+            <span class="${s.status === 'ok' ? 'text-state-ok' : 'text-state-warn'}">${
+              s.status === 'ok' ? '✓' : '⚠'}</span>
+            <span class="min-w-0 font-mono text-provenance">${
+              esc(String(s.step || '').split('::').pop())}</span>
+            ${s.status !== 'ok' && s.detail
+              ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : ''}
+          </li>`).join('')}
+        </ul>`
+        : '<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>'}
+    </details>`;
+  }).join('');
+}
+
 /** Invalidates an in-flight dashboard read when the pane or resource changes. */
 let dashToken = 0;
 
@@ -2825,7 +2998,10 @@ async function loadDashboardPane() {
           <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Findings · unresolved first</div>
           ${findings.map((f) => {
             const c = findingGlyph(f.label);
-            return `<div class="flex items-baseline gap-s2 border-b border-rule py-s2">
+            return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
+              data-measure="${esc(f.analysis_id)}" data-check="${esc(f.check_name || '')}"
+              data-title="${esc((f.check_name || f.analysis_id).replace(/_/g, ' '))}"
+              data-summary="${esc(f.summary || '')}" data-when="${esc(f.when || '')}">
               <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
               <span class="min-w-0 flex-1 text-ink">
                 <strong class="font-semibold">${
@@ -2833,10 +3009,12 @@ async function loadDashboardPane() {
                     ? `${esc(f.check_name.replace(/_/g, ' '))}${
                         f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
                     : esc(humanLabel(f.label) || f.analysis_id)}.</strong>
-                ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}</span>
+                ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
+                <span class="block text-provenance text-ink-muted"
+                  data-delta="${esc(f.analysis_id)}|${esc(f.check_name || '')}">·</span></span>
               <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(f.analysis_id)}${
-                f.when ? ` · ${esc(ago(f.when))}` : ''}</span>
-            </div>`;
+                f.when ? ` · ${esc(ago(f.when))}` : ''} ›</span>
+            </button>`;
           }).join('')}` : ''}
 
         ${counts.length ? `
@@ -2868,7 +3046,9 @@ async function loadDashboardPane() {
                 if (shown.has(c.key)) return '';
                 shown.add(c.key);
                 const agree = (seen.get(c.key) || []).filter((x) => x.analysis !== c.analysis_id);
-                return `<tr class="border-b border-rule">
+                return `<tr class="wl-countrow cursor-pointer border-b border-rule"
+                  data-measure="${esc(c.analysis_id)}" data-metric="${esc(c.key)}"
+                  data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
                   <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
                   <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value))}</td>
                   <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
@@ -2880,6 +3060,32 @@ async function loadDashboardPane() {
           </table>` : ''}
       </section>`;
   }).join('');
+
+  // EVERY MEASUREMENT OPENS THE SAME DETAIL. Three entry points, one
+  // component — a dashboard finding, a count, and the matrix cell popup.
+  $('dash-boards').querySelectorAll('[data-measure]').forEach((n) => {
+    n.addEventListener('click', () => openMeasurementDetail({
+      slug,
+      analysisId: n.dataset.measure,
+      title: n.dataset.title || n.dataset.measure,
+      metric: n.dataset.metric || '',
+      summary: n.dataset.summary || '',
+      when: n.dataset.when || '',
+    }));
+  });
+
+  // Inline deltas, from the same series the detail uses. Filled after render
+  // so a slow trend read never delays the pane.
+  for (const n of $('dash-boards').querySelectorAll('[data-delta]')) {
+    const [analysisId] = n.dataset.delta.split('|');
+    deltaFor(slug, analysisId).then((text) => {
+      if (!live()) return;
+      n.textContent = text || '';
+      n.className = text === 'first measurement'
+        ? 'block text-provenance text-ink-muted'
+        : 'block text-provenance text-ink';
+    });
+  }
 }
 
 /** The composed score, once, at size — with its own sub-scores beside it.
