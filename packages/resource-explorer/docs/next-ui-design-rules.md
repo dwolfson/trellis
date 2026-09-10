@@ -206,7 +206,43 @@ a route, not a feature.
 The property that matters on a working surface is **reachable from where the
 decision is made**, which is not the same as *present in the product*.
 
-## 13. Name things for what they are
+## 13. When two analyses report the same name with different values, say so
+
+Not an alert — a mark and a phrase, the way a stale cell gets a rule.
+
+Found by the Dashboard's own provenance: two cards both titled SYMBOL COUNT,
+adjacent, unlabelled as related, neither aware the other existed. A reader
+either does not notice, or notices and cannot tell which is wrong.
+
+**Both were right.** `api_structure.symbol_count` is a live `COUNT(*)` of
+`project_code_symbols`; `code_symbol_extraction.symbol_count` is what the
+extractor recorded when it ran. The table carries
+`UNIQUE(project_slug, file_path, qualified_name)`, so symbols sharing a
+qualified name within a file collapse on insert — measured, stored rows equal
+distinct `(file_path, qualified_name)` exactly, and the gap is 2.7% on
+`egeria_git` (40,994 vs 42,116) and 5.8% on `kafka` (82,852 vs 87,907).
+
+So they answer different questions under one name: *how many distinct symbols
+are stored* and *how many the extractor found*. The interface could not tell
+anyone that, and it should be the thing that asks.
+
+The detection is worth more than the one case: it found three on the first
+repo, including `total` — `dependency_analysis` 72 against
+`data_file_profiling` 45 — which is two unqualified fields that were never the
+same measurement, a naming defect rather than a disagreement. Hence the
+careful wording: *"report this name with different values; they may not be
+measuring the same thing."*
+
+**The durable fix is a declared definition per analysis.** Worth having
+regardless of whether any given disagreement is legitimate — and if one turns
+out not to be, the mark has found the next defect.
+
+This is the third time a surface that showed provenance found a defect nobody
+was looking for: the `'probe'` strings, the two clocks, and now two counts of
+one name. Three is a pattern, which is why this is a rule and a mechanism
+rather than a fixed bug.
+
+## 14. Name things for what they are
 
 The repo-discovery panel is "Find repos", not "Search". Inheriting a wrong
 label teaches the wrong noun on first contact, and the current UI's "Search"
