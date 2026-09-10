@@ -138,7 +138,10 @@ export const grid = {
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
   note: '',
-  digestOpen: false,     // the digest is collapsed until asked for
+  digestOpen: false,     // decided at list open by unresolved area
+  digestShare: 0,        // that measurement, for the summary line
+  digestFromPreference: false,
+  digestLogId: '',
   onlyQuestion: null,    // narrowed to one column, by index
   narrowIndex: 0,        // transposed view: which resource
   narrowFilter: 'all',   // transposed view: all | unresolved | stale
@@ -146,6 +149,7 @@ export const grid = {
   bgRemaining: 0,        // resources still to resolve
   bgLast: 0,             // ms the last chunk took, for the note
   bgError: null,
+  bgErrors: new Map(),   // slug -> why its background read FAILED (not cancelled)
   ctx: null,             // the pane context, for actions raised from a popup
 };
 
@@ -368,6 +372,11 @@ async function loadGrid(ctx) {
     grid.statesError = err.message;
   }
 
+  // Decided HERE — once, when the list opens — and never re-evaluated as the
+  // background pass resolves cells underneath it.
+  decideDigest(wl.members, grid.questions);
+  renderGrid();
+
   // PASS 2 — the full read for the analyses that are cheap to read.
   try {
     if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); }
@@ -399,6 +408,7 @@ async function resolveInBackground(ctx, slugs, analyses) {
   const CHUNK = 2;
   grid.bgRemaining = slugs.length;
   grid.bgError = null;
+  grid.bgErrors.clear();
   // Say so BEFORE the first chunk, not after it. The first chunk is the
   // slowest thing here — measured at 33s per resource on the architecture
   // analyses — so rendering the notice only on chunk completion left the
@@ -421,8 +431,17 @@ async function resolveInBackground(ctx, slugs, analyses) {
         grid.rows.set(slug, { facts: [...byId.values()], factsById: byId });
       }
     } catch (err) {
-      // A background pass that fails must not disturb a usable grid. The
-      // squares simply stay squares, which is what they honestly are.
+      // CANCELLED IS NOT ERRORED, and only this code knows which happened.
+      //
+      // `□` means "we have not looked". Once the pass has looked and FAILED,
+      // that sentence is false — what is true is "we looked and could not read
+      // it", which is exactly `?`, and `?` names its own cause. Keeping the
+      // square would leave a promise of a read that is never coming, quietly.
+      //
+      // A cancellation learned nothing, so those cells stay squares and the
+      // promise stays true: another pass will make it good.
+      if (token !== grid.bgToken) return;         // cancelled — stays a square
+      for (const slug of chunk) grid.bgErrors.set(slug, err.message);
       grid.bgError = err.message;
       grid.bgRemaining = 0;
       renderGrid();
@@ -680,7 +699,13 @@ function digestHtml(members, qs) {
     <details id="wl-digest" class="mb-s3" ${grid.digestOpen ? 'open' : ''}>
       <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
         Column digest · <span class="tnum">${qs.length}</span> questions ×
-        <span class="tnum">${total}</span> resources · sorted by unresolved
+        <span class="tnum">${total}</span> resources · sorted by unresolved${
+          grid.digestFromPreference
+            ? ' · your choice for this list'
+            : grid.digestOpen
+              ? ` · <span class="tnum">${Math.round(grid.digestShare * 100)}%</span> of this
+                  grid is unread, so this opened first`
+              : ''}
       </summary>
       <div class="mt-s2">
         ${rows.map((r) => `<button type="button" data-digest="${r.i}"
@@ -824,8 +849,10 @@ function renderGrid() {
       Resolving <span class="tnum">${grid.bgRemaining}</span> more resource(s) in the
       background — <span class="font-mono">□</span> cells become their real state as they land.</div>` : ''}
     ${grid.bgError ? `<div class="mb-s2 text-provenance text-state-warn">
-      The background read stopped: ${esc(grid.bgError)}. The
-      <span class="font-mono">□</span> cells are unread, not empty — open one to read it.</div>` : ''}
+      The background read stopped: ${esc(grid.bgError)}.
+      <span class="tnum">${grid.bgErrors.size}</span> resource(s) now show
+      <span class="font-mono">?</span> — looked at and unreadable, with the cause on
+      the cell. Any remaining <span class="font-mono">□</span> were never reached.</div>` : ''}
     <div id="wl-readout" class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-[4px] text-caveat">
       <span class="text-ink-muted">Hover or focus a column to read its question.</span>
     </div>
@@ -895,6 +922,10 @@ function renderGrid() {
   });
   host.querySelector('#wl-digest')?.addEventListener('toggle', (e) => {
     grid.digestOpen = e.target.open;
+    try {
+      localStorage.setItem(digestKey(grid.workList?.slug || ''), String(e.target.open));
+    } catch (_) { /* private mode: the toggle still works for this session */ }
+    noteDigestToggled(e.target.open);
   });
   host.querySelectorAll('button[data-res]').forEach((b) => b.addEventListener('click', () => {
     const m = grid.workList.members.find((x) => x.entity_slug === b.dataset.res);
@@ -993,6 +1024,15 @@ click for the latest results">${c.glyph}</button></td>`;
     // `measured` from `partial`, so it never claims `answered`.
     const proj = (q.analysis_ids || []).map((a) => per[a]).filter(Boolean);
     if (proj.length) {
+      // Looked and failed. There is no such thing as a permanent square —
+      // only a permanent failure, which says so.
+      const readErr = grid.bgErrors.get(slug);
+      if (readErr && proj.some((v) => v.has_results)) {
+        const c = CELL.unknown;
+        return `<td class="wl-cell p-[6px] ${c.tone}"
+          title="${esc(q.question)} — ${esc(whyUnreadable(readErr))}\n${esc(readErr)}"
+          >${c.glyph}</td>`;
+      }
       if (proj.some((v) => v.has_results)) {
         const c = CELL.stored;
         return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
@@ -1053,8 +1093,17 @@ click for the latest results">${c.glyph}</button></td>`;
  * from 31 August — so a single date per row is wrong whichever end it takes.
  * The date belongs to the cell, and the cell shows it on click.
  */
+/** PLACEHOLDERS. Seven and thirty days are calendar habits, not facts about
+ *  surveys: a language classification is still fresh at ninety days and a
+ *  release check is stale at fourteen. The honest measure is "older than this
+ *  analysis's own re-run cadence", and that cadence is a value Automate will
+ *  own (`notification_subscriptions` / `resource_schedules`).
+ *
+ *  Until it exists these two rounds are a stand-in. This comment is what stops
+ *  them quietly becoming policy — when the per-analysis cadence lands, the
+ *  rule should read from it and these constants should go. */
 const STALE_DAYS = 7;
-/** Past this, the rule runs the full width of the cell. */
+/** Past this, the rule runs the full width of the cell. Same placeholder. */
 const VERY_STALE_DAYS = 30;
 
 /** The age rule's class for one measurement date: '' / short / full. */
@@ -1170,6 +1219,103 @@ function refreshPlan(slugs) {
     }
   }
   return { stale, never, current, unknown };
+}
+
+/* ── When the digest is the primary view ──────────────────────────────────
+ *
+ * THE MEASURE IS UNRESOLVED AREA, NOT ROW COUNT. Fifty rows nearly all
+ * answered scans perfectly well — the eye is hunting the few marks that break
+ * the pattern, and there are few. Twenty rows of unknown is a wall. What makes
+ * a grid unreadable is how much of it is unknown, not how tall it is; screen
+ * height measures the window, which was never the problem.
+ *
+ * It also decays correctly, which is why it is the right measure rather than
+ * merely a better one: a fresh list opens on the digest because nobody has a
+ * per-resource question yet, and as the session fills cells in the grid earns
+ * its place back. The view follows the work.
+ *
+ * DECIDED ONCE, AT LIST OPEN. A view that flips underneath someone as cells
+ * resolve is worse than either view, so this is evaluated when the list loads
+ * and then left alone until another one is.
+ */
+
+/** PLACEHOLDER, like STALE_DAYS. "Mostly unknown" as a first stand-in, to be
+ *  replaced by what a fortnight of real lists shows — the proportion at open
+ *  and whether the user then toggled are both recorded for exactly that. */
+const DIGEST_PRIMARY_ABOVE = 0.5;
+
+/** The share of cells in view whose state nobody has established. */
+function unresolvedShare(members, qs) {
+  let total = 0, unknown = 0;
+  for (const m of members) {
+    const per = grid.states?.[m.entity_slug] || {};
+    const row = grid.rows.get(m.entity_slug);
+    for (const q of qs) {
+      const ids = q.analysis_ids || [];
+      if (!ids.length) continue;          // settled by kind, not by a read
+      total += 1;
+      const read = row && !row.error && ids.some((a) => row.factsById.has(a));
+      const stored = ids.some((a) => per[a]?.has_results);
+      if (!read && !stored) unknown += 1;
+    }
+  }
+  return total ? unknown / total : 0;
+}
+
+/** Per-WORK-LIST, never global. A preference set on a fifty-repo scouting
+ *  sweep should not govern a four-repo assessment — the same mistake the chat
+ *  rail made across a breakpoint. A stored preference carries the context that
+ *  produced it and does not apply outside it. */
+const digestKey = (slug) => `re-next.digestOpen.${slug}`;
+
+function decideDigest(members, qs) {
+  const slug = grid.workList?.slug || '';
+  let held = null;
+  try {
+    const v = localStorage.getItem(digestKey(slug));
+    if (v !== null) held = v === 'true';
+  } catch (_) { /* private mode: fall through to the measurement */ }
+
+  const share = unresolvedShare(members, qs);
+  grid.digestShare = share;
+  grid.digestOpen = held !== null ? held : share >= DIGEST_PRIMARY_ABOVE;
+  grid.digestFromPreference = held !== null;
+
+  // Logged so the threshold can be chosen from real lists rather than from
+  // anyone's imagination: the share at open, what was shown, and — appended
+  // later — whether the user disagreed enough to toggle.
+  logDigestDecision({
+    at: new Date().toISOString(),
+    workList: slug,
+    resources: members.length,
+    questions: qs.length,
+    unresolvedShare: Math.round(share * 100) / 100,
+    opened: grid.digestOpen,
+    fromPreference: grid.digestFromPreference,
+    toggled: false,
+  });
+}
+
+/** A short rolling record, kept client-side. Never more than 50 entries. */
+function logDigestDecision(entry) {
+  grid.digestLogId = entry.at;
+  try {
+    const raw = localStorage.getItem('re-next.digestLog');
+    const log = raw ? JSON.parse(raw) : [];
+    log.push(entry);
+    localStorage.setItem('re-next.digestLog', JSON.stringify(log.slice(-50)));
+  } catch (_) { /* not worth failing a render over */ }
+}
+
+/** Mark the most recent decision as one the user overrode. */
+function noteDigestToggled(open) {
+  try {
+    const raw = localStorage.getItem('re-next.digestLog');
+    const log = raw ? JSON.parse(raw) : [];
+    const row = log.find((e) => e.at === grid.digestLogId);
+    if (row) { row.toggled = true; row.toggledTo = open; }
+    localStorage.setItem('re-next.digestLog', JSON.stringify(log));
+  } catch (_) { /* same */ }
 }
 
 const planSize = (m) => [...m.values()].reduce((n, a) => n + a.length, 0);
