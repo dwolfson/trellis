@@ -4578,7 +4578,33 @@ function hideAnalysisRunModal() {
 // submitSurveyDefinitionRun() does, reusing its _pollActivityUntilDone.
 // Unlike that modal there's no credentials/submit step: a card's Run already
 // means "run it now" — this opens the modal straight into "Starting…".
-async function runAnalysisCatalogCard(analysisId, slug) {
+// The freshness gate (POST .../run answering {status:"skipped"}) — measured
+// 2026-09-10, a fifth of all successful runs were within five minutes of an
+// identical one and ~95% of those changed nothing, at up to 110s each. The
+// server declines and says why; this turns that into something the reader can
+// act on, because a Run that appears to do nothing is indistinguishable from a
+// broken button.
+//
+// Returns true when the run was declined, so each caller stops its own polling:
+// `activity_id` is null on a skip and _pollActivityUntilDone would otherwise
+// poll nothing forever. THREE call sites reach this route (the card grid, the
+// chat answer button and the gap-analysis button) — two of them share a
+// byte-identical fetch block, which is why they are patched by enclosing
+// function rather than by that block.
+function _handleFreshnessSkip(started, onForce) {
+  if (!started || started.status !== 'skipped') return false;
+  const id = `force-${++_toastSeq}`;
+  window[`_force_${id}`] = onForce;
+  showToast('info',
+    `${_esc(started.detail || 'Already up to date.')} ` +
+    `<button id="${id}" class="underline ml-1"` +
+    ` onclick="const f=window['_force_${id}'];delete window['_force_${id}'];` +
+    `document.getElementById('${id}').remove();f&&f()">Run anyway</button>`,
+    12000);
+  return true;
+}
+
+async function runAnalysisCatalogCard(analysisId, slug, force = false) {
   document.getElementById('analysis-run-name').textContent = analysisId;
   const errEl    = document.getElementById('analysis-run-error');
   const progress = document.getElementById('analysis-run-progress');
@@ -4596,9 +4622,16 @@ async function runAnalysisCatalogCard(analysisId, slug) {
 
   let started;
   try {
-    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    const startRes = await fetch(
+      `/api/projects/${slug}/analyses/${analysisId}/run${force ? '?force=true' : ''}`,
+      { method: 'POST' });
     started = await startRes.json();
     if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+    if (_handleFreshnessSkip(started, () => runAnalysisCatalogCard(analysisId, slug, true))) {
+      progress.classList.add('hidden');
+      updateOp(opId, 'ok', `'${analysisId}' already up to date`, started.detail || '');
+      return;
+    }
   } catch(e) {
     progress.classList.add('hidden');
     errEl.textContent = e.message;
@@ -11184,15 +11217,21 @@ function _chatRunScheduleButtons(analysisId, analysisName, slug, msgId) {
 // activity_id immediately; this polls it rather than blocking the request
 // for a possibly multi-minute run). The button IS the progress indicator —
 // same reasoning as runScheduleNow's comment on why there's no timed toast.
-async function _chatRunAnalysis(analysisId, slug, msgId, btn) {
+async function _chatRunAnalysis(analysisId, slug, msgId, btn, force = false) {
   const original = btn.textContent;
   btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…';
   try {
     const startRes = await fetch(
-      `/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`,
+      `/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`
+      + (force ? '?force=true' : ''),
       { method: 'POST' });
     const started = await startRes.json().catch(() => ({}));
     if (!startRes.ok) throw new Error(started.detail || `HTTP ${startRes.status}`);
+    if (_handleFreshnessSkip(started,
+        () => _chatRunAnalysis(analysisId, slug, msgId, btn, true))) {
+      btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original;
+      return;
+    }
     const final = await _pollActivityUntilDone(started.activity_id, {
       onTick: (elapsedSec) => { btn.textContent = `Running… (${elapsedSec}s)`; },
     });
@@ -13371,7 +13410,7 @@ async function _openPointer(pointer) {
 // preview named, not the compiler triggering a survey itself: §20's rule
 // ("the packer must never trigger a survey") is about the compile path, not
 // about whether a human can ask for one from here instead of the card grid.
-async function _runGapAnalysis(analysisId, slug, btn) {
+async function _runGapAnalysis(analysisId, slug, btn, force = false) {
   btn.disabled = true;
   btn.textContent = 'starting…';
   const opId = logOp({ type: 'analysis', slug, status: 'running',
@@ -13379,9 +13418,16 @@ async function _runGapAnalysis(analysisId, slug, btn) {
 
   let started;
   try {
-    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    const startRes = await fetch(
+      `/api/projects/${slug}/analyses/${analysisId}/run${force ? '?force=true' : ''}`,
+      { method: 'POST' });
     started = await startRes.json();
     if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+    if (_handleFreshnessSkip(started, () => _runGapAnalysis(analysisId, slug, btn, true))) {
+      btn.textContent = '▶ run'; btn.disabled = false;
+      updateOp(opId, 'ok', `'${analysisId}' already up to date`, started.detail || '');
+      return;
+    }
   } catch (e) {
     btn.textContent = '▶ run';
     btn.disabled = false;

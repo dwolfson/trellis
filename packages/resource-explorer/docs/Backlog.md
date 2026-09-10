@@ -4715,7 +4715,35 @@ Three things, in dependency order, none done:
    owns and derives a key, so it passed with the guard removed; it now
    constructs the case via monkeypatch, with a separate test asserting the real
    catalogue has no such entry.
-2. **Consult the freshness that is already known** before dispatching — skip, or
+2. ~~**Consult the freshness that is already known** before dispatching~~ **DONE
+   2026-09-10, skip-by-default, user-initiated runs only.** Two decisions from
+   the project owner: *skip by default* (not warn-and-run), and *leave the
+   scheduler alone* — gating nightly sweeps changes what "nightly" means, which
+   is a different question from sparing someone a redundant click, and
+   `RunsConfig.gate_user_runs` names that scope.
+
+   `workflows.analysis.assess_freshness()` returns a verdict **and its
+   evidence** — three states (`never-run` / `stale` / `fresh`), the age, and
+   `via`: the id whose run supplied the freshness. For a derived analysis that
+   is its SOURCE, so `architecture_diagram` reports being fresh because
+   `architecture_recovery` ran rather than claiming a run it never had. That
+   inheritance only works because of the 2026-09-09 attribution fix above.
+
+   Never counts as fresh: a run whose latest attempt **errored** (its data is
+   the old data, and pressing Run after a failure must run), a **future**
+   timestamp (clock skew would otherwise wedge an analysis into never running
+   again), and an unparseable one.
+
+   `POST .../run` answers `{"status": "skipped", "reason": "already-fresh",
+   "detail": ...}` with null ids, and `?force=true` always runs. All **three**
+   frontend callers handle it — the card grid, the chat answer button and the
+   gap-analysis button — each offering "Run anyway". Two of those three share a
+   byte-identical fetch block, and the first attempt patched one of the pair;
+   the guard is derived over every function that polls `activity_id`, not a
+   list.
+
+   Original item, for the record:
+   **Consult the freshness that is already known** before dispatching — skip, or
    warn with the age, when the source data is newer than a threshold. Whether
    the default is skip-with-override or warn-and-run is a product decision;
    silently re-running for 90s is the one option that is clearly wrong.

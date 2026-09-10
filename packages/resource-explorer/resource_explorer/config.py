@@ -426,6 +426,29 @@ class ArtifactTreeSettings(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+class RunsConfig(BaseSettings):
+    """Freshness gating for USER-INITIATED analysis runs."""
+
+    #: How recently an analysis's data must have been produced for a new run to
+    #: be considered redundant. Measured 2026-09-10 over 1,207 successful runs:
+    #: 20.7% happened within 5 minutes of an identical prior run, and ~95% of
+    #: those produced no different findings — a fifth of all runs buying
+    #: nothing, at up to 110s each. The 1h→6h step is only +1.4pp, a flat
+    #: region between burst duplication and the legitimate daily cadence, so
+    #: anywhere in it behaves much the same; 1 hour sits at its start.
+    #:
+    #: Per-tier thresholds are the better answer and are NOT possible yet: they
+    #: need the rot measurement in the funnel-cost spec's §5, which needs
+    #: material-difference detection that does not exist. One number, honestly
+    #: a placeholder, beats a per-tier table invented from nothing.
+    freshness_seconds: int = 3600
+    #: Gate user-initiated runs only. The scheduler is deliberately exempt (a
+    #: project-owner decision, 2026-09-10): skipping scheduled sweeps would
+    #: change what "nightly" means, which is a different decision from sparing
+    #: someone a redundant click.
+    gate_user_runs: bool = True
+
+
 class RuntimeConfig(BaseSettings):
     """Process-role runtime settings — see docs/process-model.md and
     docs/runtime-architecture-plan.md §2.
@@ -556,6 +579,7 @@ class ExplorerConfig(BaseSettings):
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    runs: RunsConfig = Field(default_factory=RunsConfig)
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILES,

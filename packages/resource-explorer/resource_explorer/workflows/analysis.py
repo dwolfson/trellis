@@ -315,3 +315,113 @@ def execute_and_record_stage_batch(slug: str, stage: str, step_keys: list[str],
         annotations=result.annotations,
     )
     return result
+
+
+def _humanise_age(seconds: float) -> str:
+    """"3 minutes ago" / "2 hours ago" / "6 days ago" — coarse on purpose. The
+    first version printed minutes at every scale and produced "1827 minutes
+    ago", which is a number a reader has to do arithmetic on before it means
+    anything."""
+    if seconds < 60:
+        return "less than a minute ago"
+    if seconds < 3600:
+        n, unit = int(seconds // 60), "minute"
+    elif seconds < 86400:
+        n, unit = int(seconds // 3600), "hour"
+    else:
+        n, unit = int(seconds // 86400), "day"
+    return f"{n} {unit}{'s' if n != 1 else ''} ago"
+
+
+@dataclass(frozen=True)
+class Freshness:
+    """Whether an analysis's data is recent enough that running it again would
+    buy nothing.
+
+    Deliberately a verdict PLUS its evidence, not a bare bool: a Run that
+    declines to run has to be able to say why, and say it about the analysis
+    that actually produced the data. `via` is the id whose run supplied the
+    freshness — for a derived analysis that is its SOURCE, so
+    `architecture_diagram` reports being fresh because `architecture_recovery`
+    ran, rather than claiming a run of its own it never had.
+    """
+
+    fresh: bool
+    #: "never-run" / "stale" / "fresh" — three states, because "we have no idea
+    #: when this last ran" and "it ran, a while ago" are different reasons to
+    #: proceed and only one of them is a measurement.
+    state: str
+    age_seconds: float | None
+    last_run_at: str
+    via: str
+
+    def reason(self, analysis_id: str) -> str:
+        """One sentence a caller can hand straight to a user."""
+        if self.state == "never-run":
+            return f"'{analysis_id}' has no recorded run, so it will run now."
+        ago = _humanise_age(self.age_seconds or 0)
+        source = "" if self.via == analysis_id else f" (via '{self.via}')"
+        if self.fresh:
+            return (f"'{analysis_id}' already has data from {ago}{source}; "
+                    f"not running it again. Pass force=true to run anyway.")
+        return f"'{analysis_id}' last produced data {ago}{source}."
+
+
+def assess_freshness(registry, entity_type: str, slug: str, analysis_id: str,
+                     max_age_seconds: int | None = None) -> Freshness:
+    """Is `analysis_id`'s data newer than the freshness threshold?
+
+    Reads `get_analysis_last_run`, which since 2026-09-09 credits a derived
+    analysis's run to the source whose steps it actually ran — this function
+    depends on that fix and would otherwise report the recovery stale moments
+    after a diagram run had rewritten its data.
+
+    Considers the analysis's SOURCES as well as itself, in the other direction:
+    `architecture_diagram` derives from `architecture_recovery`'s steps, so a
+    recent run of the recovery makes the diagram's data current even though the
+    diagram itself has never been run. Takes the most recent of the two.
+
+    A run recorded as `error` does NOT count as freshness — its data is the old
+    data, and refusing to re-run after a failure is the one behaviour nobody
+    would want.
+    """
+    from datetime import UTC, datetime
+
+    from resource_explorer.config import get_config
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        repo_analysis_derived_sources,
+    )
+
+    if max_age_seconds is None:
+        max_age_seconds = get_config().runs.freshness_seconds
+
+    runs = registry.get_analysis_last_run(entity_type, slug)
+    candidates = [analysis_id, *repo_analysis_derived_sources(analysis_id)]
+
+    best_ts, best_via = None, analysis_id
+    for aid in candidates:
+        row = runs.get(aid) or {}
+        if row.get("last_run_status") == "error":
+            continue
+        raw = row.get("last_run_at") or ""
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if best_ts is None or ts > best_ts:
+            best_ts, best_via = ts, aid
+
+    if best_ts is None:
+        return Freshness(False, "never-run", None, "", analysis_id)
+
+    age = (datetime.now(UTC) - best_ts).total_seconds()
+    # A negative age means a clock skew or a future-dated row; treat it as stale
+    # rather than as infinitely fresh, so a bad timestamp can never wedge an
+    # analysis into never running again.
+    fresh = 0 <= age < max_age_seconds
+    return Freshness(fresh, "fresh" if fresh else "stale", age,
+                     best_ts.isoformat(), best_via)

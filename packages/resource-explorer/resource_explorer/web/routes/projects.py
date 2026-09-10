@@ -566,6 +566,7 @@ from resource_explorer.workflows.analysis import (  # noqa: E402
     STAGE_BATCH_ANALYSIS_ID as _STAGE_BATCH_ANALYSIS_ID,
     execute_and_record_analysis as _run_single_analysis_background_impl,
     execute_and_record_stage_batch as _run_stage_batch_background_impl,
+    assess_freshness as _assess_freshness,
     resolve_analysis_plan as _resolve_analysis_plan,
     resolve_stage_step_keys as _resolve_stage_step_keys,
     run_analysis as _run_analysis_workflow,
@@ -591,7 +592,8 @@ def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run")
-async def run_single_analysis(slug: str, analysis_id: str) -> dict:
+async def run_single_analysis(slug: str, analysis_id: str,
+                              force: bool = False) -> dict:
     """Queue one named analysis's mapped survey step(s) — the per-card "Run"
     action in Analysis/Assessment.
 
@@ -627,6 +629,37 @@ async def run_single_analysis(slug: str, analysis_id: str) -> dict:
             detail=f"Analysis '{analysis_id}' has no mapped survey step(s) — "
                    "either it's a publish action (not a survey) or an unknown id.",
         )
+
+    # Freshness gate — user-initiated runs only. Measured 2026-09-10: 20.7% of
+    # all successful runs happened within five minutes of an identical prior
+    # run, and ~95% of those produced no different findings, at up to 110s each.
+    #
+    # Declines rather than running, and SAYS SO in the same response shape the
+    # caller already handles. A silent skip would be the same defect as every
+    # other zero here — a Run that does nothing must say which nothing it did.
+    # `force=true` always runs; a never-run or errored analysis is never fresh.
+    #
+    # The scheduler is deliberately NOT gated (project owner, 2026-09-10):
+    # skipping nightly sweeps changes what "nightly" means, which is a different
+    # decision from sparing someone a redundant click.
+    from resource_explorer.config import get_config
+
+    cfg = get_config().runs
+    if cfg.gate_user_runs and not force and not is_ingest:
+        freshness = _assess_freshness(registry, "repo", slug, analysis_id)
+        if freshness.fresh:
+            log.info("declined analysis_run for %s/%s — fresh via %s (%.0fs old)",
+                     slug, analysis_id, freshness.via, freshness.age_seconds or 0)
+            return {
+                "status": "skipped",
+                "reason": "already-fresh",
+                "detail": freshness.reason(analysis_id),
+                "last_run_at": freshness.last_run_at,
+                "last_run_via": freshness.via,
+                "age_seconds": int(freshness.age_seconds or 0),
+                "activity_id": None,
+                "run_id": None,
+            }
 
     activity_id = log_analysis_run(
         registry, "repo", slug, project.display_name, "running",
