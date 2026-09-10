@@ -10,7 +10,9 @@ from resource_explorer.surveyors.analysis_catalog_reader import (
 )
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+
+from resource_explorer import concurrency
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -259,24 +261,32 @@ def bulk_resource_facts(
     # is a quarter of an hour; the work is DB- and IO-bound, so threads
     # actually buy something here.
     #
-    # Bounded deliberately: this shares a Postgres with two apps and several
-    # sessions, and an unbounded pool would trade one slow page for everyone
-    # else's connections.
-    workers = min(8, len(subjects))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(read_one, slug): slug for slug in subjects}
-        for fut in as_completed(futures):
-            slug = futures[fut]
-            try:
-                slug, facts = fut.result()
-                out[slug] = facts
-            except Exception as exc:
-                # One unreadable resource is one unreadable resource. Named,
-                # and kept OUT of `subjects`, so a caller cannot mistake "we
-                # could not read it" for "it has no results" — the distinction
-                # this whole layer exists to preserve.
-                log.warning("bulk facts failed for %s: %s", slug, exc)
-                failed[slug] = f"{type(exc).__name__}: {exc}"
+    # THE PROCESS'S SHARED POOL, not one of our own.
+    #
+    # `docs/process-model.md` §1.3 inventoried the ad-hoc pools this codebase
+    # used to build and replaced them with one bounded, daemon-worker pool;
+    # `test_no_module_builds_its_own_bridging_pool` keeps new ones out, by
+    # AST rather than by substring, and caught this route the moment the
+    # fan-out landed.
+    #
+    # The bound matters for the same reason it did when it was local: this
+    # shares a Postgres with two apps and several sessions, and an unbounded
+    # fan-out would trade one slow page for everyone else's connections. The
+    # shared pool is already sized for that, so there is nothing to cap here.
+    pool = concurrency.get_pool()
+    futures = {pool.submit(read_one, slug): slug for slug in subjects}
+    for fut in as_completed(futures):
+        slug = futures[fut]
+        try:
+            slug, facts = fut.result()
+            out[slug] = facts
+        except Exception as exc:
+            # One unreadable resource is one unreadable resource. Named, and
+            # kept OUT of `subjects`, so a caller cannot mistake "we could not
+            # read it" for "it has no results" — the distinction this whole
+            # layer exists to preserve.
+            log.warning("bulk facts failed for %s: %s", slug, exc)
+            failed[slug] = f"{type(exc).__name__}: {exc}"
 
     return {
         # Requested order, not completion order — the grid renders rows in the
