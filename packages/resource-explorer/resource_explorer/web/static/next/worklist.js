@@ -60,7 +60,15 @@ export const CELL = {
   // established, because establishing it costs 47s for one analysis. Its own
   // glyph rather than a tick: a tick would claim `answered`, which is
   // precisely the state nobody has read.
-  stored:        { glyph: '▪', tone: 'text-ink-muted',  label: 'has results · not read' },
+  //
+  // HOLLOW, not filled. A filled square was the heaviest mark in the set
+  // while meaning the least — "we haven't looked" — and that inversion is a
+  // shape problem, not a colour one; muting a heavy shape fights it rather
+  // than fixing it. Hollow reads as a container waiting to be filled, which
+  // is exactly what it is: opening the cell resolves it, and so does the
+  // background pass. It also sits correctly beside `○` (nothing here) and
+  // the filled glyphs (something definite).
+  stored:        { glyph: '□', tone: 'text-ink-muted',  label: 'has results · not read yet' },
 };
 
 /**
@@ -129,6 +137,8 @@ export const grid = {
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
   note: '',
+  digestOpen: false,     // the digest is collapsed until asked for
+  onlyQuestion: null,    // narrowed to one column, by index
   ctx: null,             // the pane context, for actions raised from a popup
 };
 
@@ -363,6 +373,180 @@ async function loadGrid(ctx) {
   renderGrid();
 }
 
+/** Fill the readout slot for one column, and mark that column's number.
+ *
+ * It HOLDS until another column is touched — the point is that you can read
+ * the question while looking at the row you are comparing, which a tooltip
+ * cannot do because it times out and covers the grid.
+ */
+/** Name the cause of an unreadable cell, from the server's own message.
+ *
+ * Deliberately a small, closed set of causes with a fallback that admits it
+ * does not know. Guessing a cause would be worse than the bare `?` it
+ * replaces — the point is to make a real defect recognisable on sight, and a
+ * confident wrong label defeats exactly that.
+ */
+function whyUnreadable(msg) {
+  const m = String(msg || '').toLowerCase();
+  if (/timeout|timed out/.test(m)) return 'the read timed out';
+  if (/no such|not found|unknown analysis|missing/.test(m)) return 'the analysis is not in the catalog';
+  if (/json|decode|parse|unparsable|invalid/.test(m)) return 'the stored result could not be parsed';
+  if (/permission|forbidden|denied|401|403/.test(m)) return 'not permitted to read this';
+  if (/connect|refused|unreachable|network|load failed/.test(m)) return 'the server could not be reached';
+  return 'the reader failed — cause not recognised';
+}
+
+/* ── The column digest ───────────────────────────────────────────────────
+ *
+ * One line per question showing how its states distribute across the rows in
+ * view, sorted by how much is unresolved.
+ *
+ * At twelve rows it is a summary you glance at. Its real job is at fifty,
+ * where the grid stops being scannable: the answer to scale is not a smaller
+ * cell, it is an inversion — read the distribution first, then open the one
+ * question that looks wrong. Growing the grid was never the fix, because a
+ * matrix earns its cost by holding a cohort you can keep in your head, and
+ * nobody holds fifty.
+ *
+ * Clicking a line narrows the grid to that question, which is the same move
+ * as opening a cell, one axis up.
+ */
+
+const DIGEST_TONE = {
+  answered: 'var(--wl-ok, #2f6f4f)',
+  nothing: 'var(--wl-neutral, #6b6b68)',
+  partial: 'var(--wl-warn, #a8712a)',
+  human: 'var(--wl-warn, #a8712a)',
+  stored: 'var(--wl-unread, #8d8a83)',
+};
+const DIGEST_REST = 'var(--wl-none, #c9c6bf)';
+
+/** State counts for one question across the given members. */
+function columnDigest(members, q) {
+  const counts = {};
+  let unresolved = 0;
+  for (const m of members) {
+    const slug = m.entity_slug;
+    const row = grid.rows.get(slug);
+    const per = grid.states?.[slug] || {};
+    const ids = q.analysis_ids || [];
+    let st;
+    if (!ids.length) st = q.kind === 'gap' ? 'no-surveyor' : q.kind === 'human' ? 'human' : 'unclassified';
+    else if (row && !row.error && ids.some((a) => row.factsById.has(a))) st = cellState(q, row.factsById);
+    else if (ids.some((a) => per[a]?.has_results)) st = 'stored';
+    else if (ids.every((a) => per[a]?.certain_never_run)) st = 'unrun';
+    else st = 'unknown';
+    counts[st] = (counts[st] || 0) + 1;
+    // "Unresolved" means nobody has an answer yet — NOT that the answer is
+    // uncomfortable. `nothing` is a result; `stored` is one we have not read.
+    if (['unrun', 'human', 'unknown', 'no-surveyor'].includes(st)) unresolved += 1;
+  }
+  return { counts, unresolved };
+}
+
+function digestHtml(members, qs) {
+  if (!qs.length || !members.length) return '';
+  const rows = qs.map((q, i) => ({ q, i, ...columnDigest(members, q) }))
+    .sort((a, b) => b.unresolved - a.unresolved);
+  const total = members.length;
+  const bar = (counts) => {
+    const order = ['answered', 'nothing', 'partial', 'stored', 'human'];
+    const seg = order.filter((k) => counts[k]).map((k) =>
+      `<i style="width:${(counts[k] / total) * 100}%;background:${DIGEST_TONE[k]}"></i>`).join('');
+    const rest = total - order.reduce((n, k) => n + (counts[k] || 0), 0);
+    return seg + (rest > 0 ? `<i style="width:${(rest / total) * 100}%;background:${DIGEST_REST}"></i>` : '');
+  };
+  return `
+    <details id="wl-digest" class="mb-s3" ${grid.digestOpen ? 'open' : ''}>
+      <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
+        Column digest · <span class="tnum">${qs.length}</span> questions ×
+        <span class="tnum">${total}</span> resources · sorted by unresolved
+      </summary>
+      <div class="mt-s2">
+        ${rows.map((r) => `<button type="button" data-digest="${r.i}"
+          class="flex w-full items-center gap-s2 border-0 bg-transparent px-0 py-[4px] text-left text-caveat text-ink hover:bg-[rgba(32,31,29,.05)]">
+          <span class="tnum w-[22px] shrink-0 text-right font-mono text-ink-muted">${r.i + 1}</span>
+          <span class="min-w-0 flex-1 truncate">${esc(r.q.question)}</span>
+          <span class="wl-bar flex h-[9px] w-[160px] shrink-0 overflow-hidden rounded-[2px]">${bar(r.counts)}</span>
+          <span class="tnum w-[34px] shrink-0 text-right ${
+            r.unresolved ? 'text-accent-ink' : 'text-ink-muted'}">${r.unresolved}</span>
+        </button>`).join('')}
+      </div>
+    </details>`;
+}
+
+/** Rows in triage order, banded by disposition.
+ *
+ * NAME ORDER IS A FILING CONVENTION and means nothing in a triage view. Two
+ * changes, both aimed at the eye:
+ *
+ * - Within a band, the least resolved rows come FIRST. Ragged rows collect at
+ *   one end instead of being sprinkled through, so the eye stops sweeping
+ *   settled space looking for work.
+ * - Bands by disposition, because once verdicts land a long grid is really
+ *   several small grids — kept, parked, dropped — and only one of them is
+ *   still work.
+ *
+ * Returns a flat list of `{member}` and `{band, count}` entries so the table
+ * body stays one map.
+ */
+function orderedRows(members, qs) {
+  const unresolvedOf = (m) => {
+    const per = grid.states?.[m.entity_slug] || {};
+    const row = grid.rows.get(m.entity_slug);
+    let n = 0;
+    for (const q of qs) {
+      const ids = q.analysis_ids || [];
+      if (!ids.length) continue;
+      const settled = row && !row.error
+        && ['answered', 'nothing'].includes(cellState(q, row.factsById));
+      const stored = ids.some((a) => per[a]?.has_results);
+      if (!settled && !stored) n += 1;
+    }
+    return n;
+  };
+  const byBand = new Map();
+  for (const m of members) {
+    const d = m.disposition || 'undecided';
+    byBand.set(d, [...(byBand.get(d) || []), m]);
+  }
+  // Bands in the order a triage session works through them, not alphabetical.
+  const ORDER = ['undecided', 'investigating', 'tracking', 'recommended',
+                 'using', 'abandoned', 'ignored'];
+  const bands = [...byBand.keys()].sort(
+    (a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99));
+  const out = [];
+  const banded = bands.length > 1;   // one band is not a grouping, it is noise
+  for (const b of bands) {
+    const rows = byBand.get(b).sort((x, y) => unresolvedOf(y) - unresolvedOf(x));
+    if (banded) out.push({ band: b, count: rows.length });
+    for (const m of rows) out.push({ member: m });
+  }
+  return out;
+}
+
+function readout(qi) {
+  const q = grid.questions[qi];
+  const el = document.getElementById('wl-readout');
+  if (!q || !el) return;
+  const ids = q.analysis_ids || [];
+  el.innerHTML = `
+    <span class="tnum font-mono text-accent-ink">${qi + 1}</span>
+    <span class="text-ink">${esc(q.question)}</span>
+    <span class="ml-auto shrink-0 text-provenance text-ink-muted">${
+      ids.length
+        ? `<span class="tnum">${ids.length}</span> ${
+            ids.length === 1 ? 'analysis' : 'analyses'} · ${esc(ids.join(', '))}`
+        : esc(q.kind === 'gap' ? 'no surveyor exists for this'
+            : q.kind === 'human' ? 'answered by a person'
+            : q.kind === 'direct' ? 'a direct field, not a survey'
+            : 'no analysis is mapped to this')}</span>`;
+  const host = document.getElementById('wl-grid');
+  host?.querySelectorAll('th[data-col]').forEach((th) => {
+    th.classList.toggle('wl-col-live', Number(th.dataset.col) === qi);
+  });
+}
+
 function renderGrid() {
   const host = document.getElementById('wl-grid');
   if (!host) return;
@@ -387,23 +571,45 @@ function renderGrid() {
     return;
   }
 
+  // The columns actually rendered. Narrowing keeps each question's TRUE
+  // index, so cell clicks, the readout and the key all still address the same
+  // question they did in the full grid.
+  const shown = grid.onlyQuestion == null || !qs[grid.onlyQuestion]
+    ? qs.map((q, i) => ({ q, i }))
+    : [{ q: qs[grid.onlyQuestion], i: grid.onlyQuestion }];
+
   const cr = document.getElementById('wl-common-rationale');
   if (cr) cr.textContent = grid.commonRationale ? `All members: ${grid.commonRationale}` : '';
 
   host.innerHTML = `
+    ${digestHtml(wl.members, qs)}
+    <div id="wl-readout" class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-[4px] text-caveat">
+      <span class="text-ink-muted">Hover or focus a column to read its question.</span>
+    </div>
+    ${grid.onlyQuestion != null && qs[grid.onlyQuestion] ? `
+      <div class="mb-s2 text-caveat text-accent-ink">
+        Showing question <span class="tnum">${grid.onlyQuestion + 1}</span> only ·
+        <button type="button" data-act="all-cols"
+          class="cursor-pointer bg-transparent underline">show all
+          <span class="tnum">${qs.length}</span></button>
+      </div>` : ''}
     <table class="w-full border-collapse text-caveat">
       <thead>
         <tr class="border-b border-rule">
           <th class="wl-freeze-1 w-[26px] p-[6px]"></th>
           <th class="wl-freeze-2 p-[6px] text-left font-heading text-ink">Resource</th>
-          ${qs.map((q, i) => `<th class="wl-col p-[6px] align-bottom font-heading text-ink"
-            title="${esc(q.question)}">
+          ${shown.map(({ q, i }) => `<th class="wl-col p-[6px] align-bottom font-heading text-ink"
+            data-col="${i}" title="${esc(q.question)}">
             <span class="tnum">${i + 1}</span></th>`).join('')}
           <th class="p-[6px] text-left font-heading text-ink">Answered</th>
         </tr>
       </thead>
       <tbody>
-        ${wl.members.map((m) => rowHtml(m, qs)).join('')}
+        ${orderedRows(wl.members, qs).map((entry) => entry.band
+          ? `<tr class="wl-band"><td colspan="${shown.length + 3}"
+               class="p-[6px] text-caps uppercase tracking-caps text-ink-muted">
+               ${esc(entry.band)} · <span class="tnum">${entry.count}</span></td></tr>`
+          : rowHtml(entry.member, shown, qs)).join('')}
       </tbody>
     </table>
 
@@ -434,9 +640,32 @@ function renderGrid() {
       </ol>
     </div>`;
 
-  host.querySelectorAll('button[data-cell]').forEach((b) => b.addEventListener('click', () => {
-    openCellDetail(b.dataset.cell, Number(b.dataset.q), grid.ctx);
-  }));
+  host.querySelectorAll('button[data-cell]').forEach((b) => {
+    b.addEventListener('click', () => openCellDetail(b.dataset.cell, Number(b.dataset.q), grid.ctx));
+    // Pointer AND keyboard, the same way. A tooltip only ever served the first.
+    b.addEventListener('mouseenter', () => readout(Number(b.dataset.q)));
+    b.addEventListener('focus', () => readout(Number(b.dataset.q)));
+  });
+  host.querySelector('[data-act="all-cols"]')?.addEventListener('click', () => {
+    grid.onlyQuestion = null;
+    renderGrid();
+  });
+  host.querySelector('#wl-digest')?.addEventListener('toggle', (e) => {
+    grid.digestOpen = e.target.open;
+  });
+  host.querySelectorAll('button[data-digest]').forEach((b) => {
+    b.addEventListener('mouseenter', () => readout(Number(b.dataset.digest)));
+    b.addEventListener('click', () => {
+      // Narrowing to one question is the same move as opening one cell, one
+      // axis up: same rows, one column, nothing hidden that was not chosen.
+      grid.onlyQuestion = grid.onlyQuestion === Number(b.dataset.digest)
+        ? null : Number(b.dataset.digest);
+      renderGrid();
+    });
+  });
+  host.querySelectorAll('th[data-col]').forEach((th) => {
+    th.addEventListener('mouseenter', () => readout(Number(th.dataset.col)));
+  });
   host.querySelectorAll('input[data-row]').forEach((cb) => cb.addEventListener('change', () => {
     if (cb.checked) grid.selected.add(cb.dataset.row);
     else grid.selected.delete(cb.dataset.row);
@@ -444,7 +673,7 @@ function renderGrid() {
   }));
 }
 
-function rowHtml(member, qs) {
+function rowHtml(member, shown, qs) {
   const slug = member.entity_slug;
   const row = grid.rows.get(slug);
   // Each cell carries ITS OWN measurement date, because each analysis ran
@@ -463,14 +692,22 @@ function rowHtml(member, qs) {
       d !== null && d >= STALE_DAYS ? ' — stale' : ''}`;
   };
 
-  const cells = qs.map((q, qi) => {
-    const stale = (() => {
-      const d = daysSince(cellStamp(q));
-      return d !== null && d >= STALE_DAYS;
-    })();
-    // A stale cell keeps its own state glyph and gains a mark. Recolouring it
-    // would conflate "this answer is old" with "this answer is bad".
-    const mark = stale ? '<span class="text-state-warn">·</span>' : '';
+  const cells = shown.map(({ q, i: qi }) => {
+    // AGE IS A RULE UNDER THE GLYPH, not a mark beside it.
+    //
+    // An appended `·` inside a 26px cell was very nearly invisible, and it
+    // could only ever say one bit. A rule on the cell's baseline does not
+    // compete with the glyph for the same pixels, survives print, reads as an
+    // annotation rather than as part of the mark — and it GRADES, which age
+    // deserves, being continuous. Nothing under 7 days, a short hairline past
+    // 7, the full cell width past 30.
+    //
+    // Still no recolouring: "this answer is old" and "this answer is bad" are
+    // different claims, and the warn colour is already spent on the second.
+    // Three channels that cannot collide — glyph says what state, hue says
+    // whether a person is needed, rule says how old. A column of stale cells
+    // then reads as a broken underline running down the grid.
+    const ageClass = ageRule(cellStamp(q));
 
     // KIND FIRST. A question with no surveyor, or one only a person can
     // answer, has no analysis to read and no facts to wait for — it is
@@ -484,8 +721,13 @@ function rowHtml(member, qs) {
     }
     if (row?.error) {
       // A resource whose facts could not be read is NOT a resource with no
-      // results. One state for "we could not look", never blank.
-      return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}" title="${esc(row.error)}">${CELL.unknown.glyph}</td>`;
+      // results. One state for "we could not look", never blank — and it says
+      // WHY, because "could not read" found a real defect this round only
+      // because somebody happened to be looking at it. A `?` that names its
+      // own cause turns that accident into a routine catch.
+      return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}"
+        title="${esc(q.question)} — ${esc(whyUnreadable(row.error))}\n${esc(row.error)}"
+        >${CELL.unknown.glyph}</td>`;
     }
     const running = !!grid.batch?.runs?.find(
       (r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state));
@@ -496,8 +738,8 @@ function rowHtml(member, qs) {
     const haveFacts = row && (q.analysis_ids || []).some((a) => row.factsById.has(a));
     if (haveFacts) {
       const c = CELL[cellState(q, row.factsById)] || CELL.unclassified;
-      return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
-click for the latest results">${c.glyph}${mark}</button></td>`;
+      return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+click for the latest results">${c.glyph}</button></td>`;
     }
     // Otherwise the CHEAP PROJECTION answers, and only as far as it honestly
     // can: there is stored output, or there provably is not. It cannot tell
@@ -506,12 +748,12 @@ click for the latest results">${c.glyph}${mark}</button></td>`;
     if (proj.length) {
       if (proj.some((v) => v.has_results)) {
         const c = CELL.stored;
-        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
-click for the latest results">${c.glyph}${mark}</button></td>`;
+        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+click for the latest results">${c.glyph}</button></td>`;
       }
       if (proj.every((v) => v.certain_never_run)) {
         const c = CELL.unrun;
-        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}
+        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}
 click for the latest results">${c.glyph}</button></td>`;
       }
     }
@@ -519,6 +761,13 @@ click for the latest results">${c.glyph}</button></td>`;
     // confident wrong answer with a delay on it.
     return '<td class="wl-cell p-[6px] text-ink-muted" title="still loading">…</td>';
   }).join('');
+
+  const staleCount = qs.reduce((n, q) => {
+    const stamps = (q.analysis_ids || []).map((a) => per[a]?.measured_at || '').filter(Boolean);
+    if (!stamps.length) return n;
+    const d = daysSince(stamps.sort()[0]);
+    return n + (d !== null && d >= STALE_DAYS ? 1 : 0);
+  }, 0);
 
   const answered = row && !row.error
     ? qs.filter((q) => ['answered', 'nothing'].includes(cellState(q, row.factsById))).length
@@ -534,7 +783,14 @@ click for the latest results">${c.glyph}</button></td>`;
     </td>
     ${cells}
     <td class="p-[6px] tnum text-ink-muted">${
-      answered === null ? '—' : `${answered} of ${qs.length}`}</td>
+      answered === null ? '—' : `${answered} of ${qs.length}`}${
+      // A row's age signal is a COUNT, not a date and not a span. A span is
+      // two dates to interpret in a narrow column, where the first reads as
+      // "the" date; a count is a plain fact about the row — how many of its
+      // cells are old — and needs no interpretation at all.
+      staleCount ? `<div class="text-provenance text-state-warn"
+        title="Measured more than ${STALE_DAYS} days ago. The dates themselves are on the cells."
+        >${staleCount} stale</div>` : ''}</td>
   </tr>`;
 }
 
@@ -546,6 +802,17 @@ click for the latest results">${c.glyph}</button></td>`;
  * The date belongs to the cell, and the cell shows it on click.
  */
 const STALE_DAYS = 7;
+/** Past this, the rule runs the full width of the cell. */
+const VERY_STALE_DAYS = 30;
+
+/** The age rule's class for one measurement date: '' / short / full. */
+function ageRule(iso) {
+  const d = daysSince(iso);
+  if (d === null) return '';
+  if (d >= VERY_STALE_DAYS) return 'wl-age2';
+  if (d >= STALE_DAYS) return 'wl-age1';
+  return '';
+}
 
 
 /* ── One cell, opened ────────────────────────────────────────────────────
@@ -628,6 +895,10 @@ function refreshPlan(slugs) {
   const stale = new Map();     // analysis id -> [slug]
   const never = new Map();     // analysis id -> [slug]
   let current = 0;
+  // Pairs the projection knows NOTHING about. A confident zero here would be
+  // the same failure the cells were fixed for: the fast path must not report
+  // certainty it does not have, and "never run" is a claim, not a default.
+  let unknown = 0;
   for (const slug of slugs) {
     const per = grid.states?.[slug] || {};
     for (const aid of ids) {
@@ -635,7 +906,7 @@ function refreshPlan(slugs) {
       // No projection entry means nothing has been established about this
       // pair. Not stale, not never-run — unknown, and unknown is not a
       // reason to run something.
-      if (!v) continue;
+      if (!v) { unknown += 1; continue; }
       if (!v.has_results) {
         if (v.certain_never_run) never.set(aid, [...(never.get(aid) || []), slug]);
         continue;
@@ -646,7 +917,7 @@ function refreshPlan(slugs) {
       else current += 1;
     }
   }
-  return { stale, never, current };
+  return { stale, never, current, unknown };
 }
 
 const planSize = (m) => [...m.values()].reduce((n, a) => n + a.length, 0);
@@ -681,6 +952,10 @@ function openRefreshPlan(ctx) {
       : `<p>Nothing is stale.</p>`}
     ${plan.current ? `<p class="mt-s2"><span class="tnum">${plan.current}</span>
       measurement(s) are already current and will be skipped.</p>` : ''}
+    ${plan.unknown ? `<p class="mt-s2"><span class="tnum">${plan.unknown}</span>
+      pair(s) have no state read yet, so whether they have ever run is
+      <em>unknown</em>, not no. They are left out — this plan will not claim a
+      first run for something it has not looked at.</p>` : ''}
     ${neverCount ? `
       <p class="mt-s2">
         <label><input type="checkbox" id="wl-incl-never"> also run the
@@ -892,10 +1167,59 @@ function targets() {
     : grid.workList.members.map((m) => m.entity_slug);
 }
 
-async function runBatch(ctx) {
+/**
+ * Run one analysis across the set — THROUGH THE SAME PLAN PREVIEW the refresh
+ * uses.
+ *
+ * Both actions answer one question, "what am I about to spend", and if they
+ * answer it in two different shapes people learn to read one and skim the
+ * other. So this one shows what it would run and what it already has, and
+ * queues nothing until it is confirmed.
+ */
+function runBatch(ctx) {
   const analysisId = document.getElementById('wl-analysis')?.value;
   if (!analysisId) { note('<span class="text-state-warn">No analysis selected.</span>'); return; }
   const slugs = targets();
+  const scope = grid.selected.size ? `${grid.selected.size} selected` : 'all rows';
+  const el = openDialog('Run across the set', `${analysisId} · ${slugs.length} resource(s) · ${scope}`);
+  const body = el.querySelector('#wl-detail-body');
+
+  // What is already held for this analysis, so "run it again" is a choice
+  // rather than an accident.
+  let fresh = 0, stale = 0, none = 0;
+  for (const slug of slugs) {
+    const v = grid.states?.[slug]?.[analysisId];
+    if (!v || !v.has_results) { none += 1; continue; }
+    const d = daysSince(v.measured_at);
+    if (d !== null && d >= STALE_DAYS) stale += 1; else fresh += 1;
+  }
+  body.innerHTML = `
+    <p>This runs <span class="font-mono">${esc(analysisId)}</span> on
+      <span class="tnum">${slugs.length}</span> resource(s), whatever they
+      already hold.</p>
+    <ul class="ml-s3 mt-s2 list-disc">
+      <li><span class="tnum">${none}</span> have no result for it</li>
+      <li><span class="tnum">${stale}</span> were measured more than
+        <span class="tnum">${STALE_DAYS}</span> days ago</li>
+      <li><span class="tnum">${fresh}</span> were measured more recently —
+        <strong>these will be re-run too</strong>. To skip them, use
+        <em>Bring up to date</em> instead.</li>
+    </ul>
+    <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Run <span class="tnum">${slugs.length}</span></button>
+      <button type="button" data-act="close"
+        class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  body.querySelector('[data-act="go"]').addEventListener('click', () => {
+    closeCellDetail();
+    enqueueRun(ctx, analysisId, slugs);
+  });
+}
+
+async function enqueueRun(ctx, analysisId, slugs) {
   note(`Enqueueing <span class="tnum">${slugs.length}</span> run(s)…`);
   let started;
   try {

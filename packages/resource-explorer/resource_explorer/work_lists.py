@@ -189,7 +189,38 @@ class WorkLists:
                 (slug,)).fetchall()
         out = dict(row)
         out["members"] = [dict(m) for m in members]
+        self._attach_dispositions(out["members"])
         return out
+
+    def _attach_dispositions(self, members: list[dict]) -> None:
+        """Add each member's current disposition, for grouping in the matrix.
+
+        Dispositions are keyed by github_url, not by slug, so this is a
+        two-step lookup per member. It is best-effort by design: a work list
+        whose disposition store is unreachable must still open, with rows
+        that say `undecided` rather than no rows at all. The matrix groups on
+        this and a missing value is a legitimate group.
+        """
+        try:
+            from resource_explorer.registry import ProjectRegistry
+            registry = ProjectRegistry()
+        except Exception:                                   # pragma: no cover
+            return
+        for m in members:
+            m.setdefault("disposition", "")
+            try:
+                # registry.get() returns a Project DATACLASS, not a dict —
+                # a .get() call on it raises rather than returning None, and
+                # the broad except below would have swallowed that into a
+                # silent empty disposition for every row.
+                project = registry.get(m["entity_slug"])
+                url = getattr(project, "github_url", "") or ""
+                if not url:
+                    continue
+                held = registry.get_disposition(url) or {}
+                m["disposition"] = held.get("disposition") or ""
+            except Exception:                               # pragma: no cover
+                continue
 
     def list_all(self, *, investigation: str = "") -> list[dict]:
         with self._conn() as conn:
