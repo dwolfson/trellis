@@ -92,6 +92,9 @@ export const grid = {
   selected: new Set(),   // rows ticked for a bulk action
   analyses: null,        // the CURRENT STAGE's analyses; null = not read yet
   stageLabel: '',        // for the question key's heading
+  heldPerspectives: [],  // which perspectives narrowed the columns
+  commonRationale: null, // a rationale every member shares, shown once
+  questionsUnfiltered: null,
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
   note: '',
@@ -132,6 +135,7 @@ export async function renderWorkListPane(ctx) {
     <div id="wl-note" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-progress" class="mt-s2"></div>
     <div class="my-s3 h-px bg-rule"></div>
+    <div id="wl-common-rationale" class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="wl-grid" class="overflow-x-auto"></div>
     <div id="wl-legend" class="mt-s3 flex flex-wrap gap-s3 text-caveat text-ink"></div>`;
 
@@ -229,13 +233,37 @@ async function loadGrid(ctx) {
   // Columns: the stage's questions. Taken from the first member, because the
   // catalog is per resource TYPE, not per resource.
   try {
-    const checklist = await getQuestions(wl.members[0].entity_slug, { phase: ctx.stage });
+    // Perspectives NARROW THE COLUMNS here, exactly as they narrow the rows
+    // in the questions pane. They were being ignored, so holding one changed
+    // nothing on this screen — an inert control beside a live one.
+    //
+    // It is also the honest answer to "27 columns is too many": the axis for
+    // cutting them down already exists and was simply not wired up.
+    const held = [...(ctx.perspectives || [])];
+    const checklist = await getQuestions(wl.members[0].entity_slug,
+                                         { phase: ctx.stage, perspectives: held });
     grid.questions = checklist.questions || [];
+    grid.heldPerspectives = held;
+    if (held.length) {
+      // The residue, said out loud: a filtered grid that does not say what it
+      // hid is a grid you cannot trust to be complete.
+      try {
+        const all = await getQuestions(wl.members[0].entity_slug, { phase: ctx.stage });
+        grid.questionsUnfiltered = (all.questions || []).length;
+      } catch { grid.questionsUnfiltered = null; }
+    } else {
+      grid.questionsUnfiltered = grid.questions.length;
+    }
   } catch (err) {
     host.innerHTML = `<div class="py-s3 text-answer text-state-warn">
       The question columns could not be read: ${esc(err.message)}</div>`;
     return;
   }
+
+  // One shared rationale is said once, above the grid, rather than repeated
+  // under all twelve rows — at 12 rows it was the noisiest thing on screen.
+  const rationales = new Set(wl.members.map((m) => m.rationale || ''));
+  grid.commonRationale = rationales.size === 1 ? [...rationales][0] : null;
 
   renderGrid();
   // Rows arrive independently, same as the question pane: one slow resource
@@ -267,13 +295,26 @@ function renderGrid() {
   // and cannot be read alongside the row you are comparing it against. The
   // key below is readable, printable, and keeps the cells narrow enough that
   // a wide stage still scans.
+  if (!qs.length) {
+    host.innerHTML = `<div class="py-s3 text-answer text-ink">
+      No questions in ${esc(grid.stageLabel || 'this stage')}${
+        grid.heldPerspectives.length
+          ? ` match ${esc(grid.heldPerspectives.join(' · '))}. That is a fact about the
+              filter, not about these resources — drop a perspective to widen it.`
+          : '.'}</div>`;
+    return;
+  }
+
+  const cr = document.getElementById('wl-common-rationale');
+  if (cr) cr.textContent = grid.commonRationale ? `All members: ${grid.commonRationale}` : '';
+
   host.innerHTML = `
     <table class="w-full border-collapse text-caveat">
       <thead>
         <tr class="border-b border-rule">
-          <th class="w-[26px] p-[6px]"></th>
-          <th class="p-[6px] text-left font-heading text-ink">Resource</th>
-          ${qs.map((q, i) => `<th class="p-[6px] text-center align-bottom font-heading text-ink"
+          <th class="wl-freeze-1 w-[26px] p-[6px]"></th>
+          <th class="wl-freeze-2 p-[6px] text-left font-heading text-ink">Resource</th>
+          ${qs.map((q, i) => `<th class="wl-col p-[6px] align-bottom font-heading text-ink"
             title="${esc(q.question)}">
             <span class="tnum">${i + 1}</span></th>`).join('')}
           <th class="p-[6px] text-left font-heading text-ink">Answered</th>
@@ -286,7 +327,11 @@ function renderGrid() {
 
     <div class="mt-s4">
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">
-        The questions · <span class="tnum">${qs.length}</span> in ${esc(grid.stageLabel || '')}
+        The questions · <span class="tnum">${qs.length}</span> in ${esc(grid.stageLabel || '')}${
+          grid.heldPerspectives.length && grid.questionsUnfiltered != null
+            ? ` · <span class="tnum">${Math.max(0, grid.questionsUnfiltered - qs.length)}</span> hidden by
+               ${esc(grid.heldPerspectives.join(' · '))}`
+            : ''}
       </div>
       <ol class="m-0 flex list-none flex-col gap-[6px] p-0">
         ${qs.map((q, i) => `<li class="flex gap-s2">
@@ -322,16 +367,16 @@ function rowHtml(member, qs) {
 
   const cells = qs.map((q) => {
     if (!row) {
-      return '<td class="p-[6px] text-ink-muted">…</td>';
+      return '<td class="wl-cell p-[6px] text-ink-muted">…</td>';
     }
     if (row.error) {
       // A resource whose facts could not be read is NOT a resource with no
       // results. One state for "we could not look", never blank.
-      return `<td class="p-[6px] ${CELL.unknown.tone}" title="${esc(row.error)}">${CELL.unknown.glyph}</td>`;
+      return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}" title="${esc(row.error)}">${CELL.unknown.glyph}</td>`;
     }
     const st = running ? 'running' : cellState(q, row.factsById);
     const c = CELL[st] || CELL.unclassified;
-    return `<td class="p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
+    return `<td class="wl-cell p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
   }).join('');
 
   const answered = row && !row.error
@@ -339,11 +384,12 @@ function rowHtml(member, qs) {
     : null;
 
   return `<tr class="border-b border-rule">
-    <td class="p-[6px]"><input type="checkbox" data-row="${esc(slug)}" ${
+    <td class="wl-freeze-1 p-[6px]"><input type="checkbox" data-row="${esc(slug)}" ${
       grid.selected.has(slug) ? 'checked' : ''}></td>
-    <td class="p-[6px] text-ink">
+    <td class="wl-freeze-2 p-[6px] text-ink">
       <span class="font-mono text-[11px]">${esc(slug)}</span>
-      ${member.rationale ? `<div class="text-provenance text-ink-muted">${esc(member.rationale)}</div>` : ''}
+      ${member.rationale && member.rationale !== grid.commonRationale
+          ? `<div class="text-provenance text-ink-muted">${esc(member.rationale)}</div>` : ''}
     </td>
     ${cells}
     <td class="p-[6px] tnum text-ink-muted">${

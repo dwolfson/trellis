@@ -110,6 +110,28 @@
     .seam { display: none; }
   }
 
+  /* ── The comparison matrix ──────────────────────────────────────────
+     The checkbox and resource columns FREEZE while the question columns
+     scroll under them. Without it, scrolling right on a laptop loses which
+     row you are on — the one thing a comparison grid must never do — and at
+     27 columns you are scrolling almost immediately. The scroll is confined
+     to the table's own container, so the page itself never moves. */
+  #wl-grid { overflow-x: auto; }
+  #wl-grid table { border-collapse: separate; border-spacing: 0; }
+  #wl-grid th, #wl-grid td { border-bottom: 1px solid var(--wl-rule, rgba(32,31,29,.16)); }
+  #wl-grid .wl-freeze-1, #wl-grid .wl-freeze-2 {
+    position: sticky; z-index: 2; background: #f3f2f2;
+  }
+  #wl-grid .wl-freeze-1 { left: 0; }
+  #wl-grid .wl-freeze-2 { left: 26px; }
+  /* A hairline where the frozen block ends, so the seam is legible rather
+     than the columns appearing to overlap mid-scroll. */
+  #wl-grid .wl-freeze-2 { box-shadow: 1px 0 0 rgba(32,31,29,.16); }
+  #wl-grid thead th { position: sticky; top: 0; z-index: 3; background: #f3f2f2; }
+  #wl-grid thead th.wl-freeze-1, #wl-grid thead th.wl-freeze-2 { z-index: 4; }
+  /* Question columns stay narrow: they hold one glyph. */
+  #wl-grid td.wl-cell, #wl-grid th.wl-col { width: 26px; min-width: 26px; text-align: center; }
+
   /* ── The chat rail is a DRAWER, not a fixed column ──────────────────── */
   #app-grid.rail-closed {
     grid-template-columns: minmax(150px, var(--sidebar-w)) minmax(0, 1fr);

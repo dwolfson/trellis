@@ -90,6 +90,7 @@ const state = {
   charts: null,                // Understanding's probed chart index
   workLists: [],               // saved work lists
   workListSlug: null,          // the open one; the pane takes over when set
+  lastWorkListSlug: null,      // the one you were last in, for the way back
 };
 
 /** The eight intents, in their canonical order, plus Investigation as the
@@ -485,6 +486,7 @@ function renderIntentNav() {
         class="px-[10px] py-[9px] text-accent-on-dark no-underline"
         style="border-bottom:1px dashed currentColor">RFAs <span id="rfa-count" class="tnum">${
         state.counts.rfas === null ? '–' : state.counts.rfas}</span> ↗</a>
+      <span id="worklist-crumb"></span>
       <button id="chat-toggle" aria-expanded="true"
         class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">Chat ×</button>
     </span>`;
@@ -499,6 +501,33 @@ function renderIntentNav() {
       renderIntentNav();
       loadPane();
     });
+  });
+}
+
+/** Where the matrix lives in the chrome, so it is never lost.
+ *
+ *  Shown whenever a work list is open OR was open — the second case is the
+ *  one that matters, because leaving it by clicking a repo used to be
+ *  irreversible without knowing the sidebar had a Work lists section. */
+function renderWorkListCrumb() {
+  const el = $('worklist-crumb');
+  if (!el) return;
+  const openSlug = state.workListSlug;
+  const slug = openSlug || state.lastWorkListSlug;
+  if (!slug) { el.innerHTML = ''; return; }
+  const wl = state.workLists.find((w) => w.slug === slug);
+  const name = wl ? wl.display_name : slug;
+  el.innerHTML = openSlug
+    ? `<span class="px-[10px] py-[9px] text-accent-on-dark"
+        title="You are looking at this work list">▦ ${esc(name)}</span>`
+    : `<button data-act="back-to-matrix"
+        title="Return to the matrix you were looking at"
+        class="cursor-pointer bg-transparent px-[10px] py-[9px] text-chrome-muted hover:text-chrome-ink"
+        style="border-bottom:1px dashed currentColor">▦ back to ${esc(name)}</button>`;
+  el.querySelector('[data-act="back-to-matrix"]')?.addEventListener('click', () => {
+    state.workListSlug = state.lastWorkListSlug;
+    renderSidebar();
+    loadPane();
   });
 }
 
@@ -1394,7 +1423,12 @@ function bindSidebar() {
     loadPane();
   }));
   el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', () => {
-    state.workListSlug = null;      // picking a resource leaves the set view
+    // Leaving the matrix is remembered, so the way back is one click rather
+    // than a hunt. Losing a 12x27 grid to a stray click on a repo, with no
+    // visible route back, is what "I somehow got off the matrix view and
+    // don't know how to get back" was.
+    if (state.workListSlug) state.lastWorkListSlug = state.workListSlug;
+    state.workListSlug = null;
     // Selecting a resource preserves stage and perspectives, deliberately.
     state.selectedSlug = b.dataset.slug;
     rerender();
@@ -2395,6 +2429,17 @@ function paneMessage(title, body) {
 async function loadPane() {
   const el = $('content');
 
+  // The perspective row is re-rendered HERE, once, for every branch below.
+  //
+  // It used to be re-rendered inside individual branches, and the work-list
+  // branch returned before reaching one — so holding a perspective updated
+  // the state and never repainted the chip. Reported as "sometimes the
+  // perspective stays highlighted and sometimes not": it depended entirely on
+  // which pane you were in. One call site is the fix; a branch that forgets
+  // is the bug.
+  renderPerspectiveRow();
+  renderWorkListCrumb();
+
   // A work list is a view of a SET, so it replaces the single-resource pane
   // rather than sitting inside it. Everything else in /next reads one
   // resource at a time; this is the one surface that does not.
@@ -2403,9 +2448,14 @@ async function loadPane() {
       await openWorkList({
         el,
         stage: state.stage,
+        perspectives: state.activePerspectives,
         projects: state.projects,
         analyses: state.analyses || [],
-        onExit: () => { state.workListSlug = null; writeUrl(); renderSidebar(); loadPane(); },
+        onExit: () => {
+          state.lastWorkListSlug = state.workListSlug;
+          state.workListSlug = null;
+          writeUrl(); renderSidebar(); loadPane();
+        },
       }, state.workListSlug);
     } catch (err) {
       // A pane that throws on the way in leaves whatever was there before,
