@@ -4719,6 +4719,42 @@ Three things, in dependency order, none done:
    warn with the age, when the source data is newer than a threshold. Whether
    the default is skip-with-override or warn-and-run is a product decision;
    silently re-running for 90s is the one option that is clearly wrong.
+
+   **Measured 2026-09-10, which turns the threshold from a guess into a
+   reading.** Over the 1,207 successful runs in `activity_log`, grouped per
+   (repo, analysis):
+
+       within  5 min of an identical prior run:  250 runs  (20.7%)
+       within  1 hour:                           330       (27.3%)
+       within  6 hours:                          347       (28.7%)
+       within 24 hours:                          418       (34.6%)
+       within  7 days:                           669       (55.4%)
+
+   The 1h→6h step is +1.4pp — a flat region separating burst duplication from
+   the legitimate daily cadence, so a threshold anywhere in it behaves much the
+   same. **1 hour** is the suggested global default, overridable per analysis;
+   per-tier thresholds are the right long-term answer but need §5's rot
+   measurement, which needs material-difference detection that does not exist.
+
+   **And a trap worth recording, because the first reading said the opposite.**
+   Comparing consecutive findings sets by hash gave a *change* rate of 27% at
+   <5min against 12% at 5min–1h — i.e. findings apparently rotting faster in
+   five minutes than in an hour, which cannot be true. 75 of those 92 "changes"
+   (82%) were one logical run seen as two: the architecture pipeline writes
+   `architecture_recovery`, `architecture_decisions`, `architecture_blueprints`,
+   `architecture_interfaces` and `architecture_diagram` from
+   `arch_recovery/persist.py` (both `repo_arch_detect` and `repo_arch_coupling`
+   call it) plus `architecture_summary` from `sub_surveyors/arch_summary.py`,
+   each at its own `surveyed_at`. A first attempt to control for this checked
+   `REPO_ANALYSIS_STEP_MAP` for analyses owning >1 step — and missed all of them,
+   because those are **finding kinds, not analysis ids**. Corrected, the real
+   <5min change rate is **~5%**, below the 12–13% at longer intervals, which is
+   the direction that makes sense.
+
+   So: **a fifth of all runs are near-duplicates and ~95% of them produce
+   nothing new.** Anyone re-deriving this must group by the pipeline that wrote
+   the findings, not by `kind`, or they will measure the step boundary instead
+   of the rot.
 3. **Separate "view" from "refresh" on derived cards.** `architecture_diagram`
    is `live_read`, so its Results tab already renders with no run at all — the
    Run button offers a 90-second refresh where the reader wanted a picture. At
