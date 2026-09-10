@@ -2534,7 +2534,15 @@ async function loadSurveyPane() {
         It runs asynchronously — its results appear in Dashboard and in the question
         rows as each step lands, not when this line changes.`;
     } catch (err) {
-      note.innerHTML = `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
+      // 401 is not a failure of the survey, it is a fact about this session.
+      // Running a survey is a WRITE, and anonymous-read dev mode permits GETs
+      // and gates POSTs — so this pane reads perfectly and cannot launch
+      // anything, which without saying so reads as a broken button.
+      note.innerHTML = err.status === 401
+        ? `<span class="text-accent-ink">Not launched — running a survey is a write, and
+           this session is not signed in. Sign in with an Egeria user id to launch it;
+           everything else on this pane is readable without one.</span>`
+        : `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
     } finally {
       b.disabled = false;
     }
