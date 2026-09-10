@@ -29,6 +29,7 @@ import {
   getQuestions,
   getBulkFacts,
   getBulkStates,
+  getDispositionHistory,
   getWorkList,
   listAnalyses,
   listWorkLists,
@@ -543,6 +544,61 @@ function renderNarrow(host, wl, qs) {
   }));
 }
 
+/** One resource's verdict trail, from the matrix.
+ *
+ * The current UI shows the SEQUENCE of dispositions; /next showed the current
+ * value and nothing else, and the matrix — the surface where triage actually
+ * happens — had no route to it at all. A reviewer could see what was decided
+ * but not that it was decided twice, reversed, or by whom.
+ *
+ * That is the provenance of a HUMAN judgement, and this round's argument for
+ * surfacing provenance applies to it at least as strongly as to a survey's.
+ */
+async function openResourceDetail(member) {
+  if (!member) return;
+  const slug = member.entity_slug;
+  const el = openDialog(slug, member.disposition
+    ? `now: ${member.disposition}` : 'no verdict recorded');
+  const body = el.querySelector('#wl-detail-body');
+  if (!member.github_url) {
+    body.innerHTML = `<p>Dispositions are keyed on a GitHub URL and this resource
+      has none recorded, so its verdict trail cannot be read.</p>`;
+    return;
+  }
+  let rows;
+  try {
+    rows = await getDispositionHistory(member.github_url);
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">The history could not be read:
+      ${esc(err.message)}</p>`;
+    return;
+  }
+  if (!Array.isArray(rows) || !rows.length) {
+    body.innerHTML = `<p>No verdict has ever been recorded for ${esc(slug)}.
+      That is the answer, not a gap.</p>`;
+    return;
+  }
+  // Oldest first: the point is the sequence, and a sequence read backwards is
+  // a list of values.
+  const ordered = [...rows].sort((a, b) => (a.decided_at || '').localeCompare(b.decided_at || ''));
+  body.innerHTML = `
+    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Verdicts, in order</div>
+    <ol class="m-0 list-none p-0">
+      ${ordered.map((r, i) => `<li class="flex gap-s2 border-b border-rule py-[5px]">
+        <span class="tnum w-[18px] shrink-0 text-right text-ink-muted">${i + 1}</span>
+        <span class="min-w-0">
+          <span class="text-ink">${esc(r.disposition || '—')}</span>
+          ${r.reason ? `<span class="text-ink-muted"> — ${esc(r.reason)}</span>` : ''}
+          <span class="block text-provenance text-ink-muted">${
+            r.decided_at ? `${esc(ago(r.decided_at))} · ${esc(String(r.decided_at).slice(0, 10))}` : 'undated'}${
+            r.decided_by ? ` · ${esc(r.decided_by)}` : ''}</span>
+        </span>
+      </li>`).join('')}
+    </ol>
+    ${ordered.length > 1 ? `<p class="mt-s2">Changed
+      <span class="tnum">${ordered.length - 1}</span> time(s).</p>` : ''}`;
+}
+
 /** Name the cause of an unreadable cell, from the server's own message.
  *
  * Deliberately a small, closed set of causes with a fallback that admits it
@@ -840,6 +896,10 @@ function renderGrid() {
   host.querySelector('#wl-digest')?.addEventListener('toggle', (e) => {
     grid.digestOpen = e.target.open;
   });
+  host.querySelectorAll('button[data-res]').forEach((b) => b.addEventListener('click', () => {
+    const m = grid.workList.members.find((x) => x.entity_slug === b.dataset.res);
+    openResourceDetail(m);
+  }));
   host.querySelectorAll('button[data-digest]').forEach((b) => {
     b.addEventListener('mouseenter', () => readout(Number(b.dataset.digest)));
     b.addEventListener('click', () => {
@@ -964,7 +1024,12 @@ click for the latest results">${c.glyph}</button></td>`;
     <td class="wl-freeze-1 p-[6px]"><input type="checkbox" data-row="${esc(slug)}" ${
       grid.selected.has(slug) ? 'checked' : ''}></td>
     <td class="wl-freeze-2 p-[6px] text-ink">
-      <span class="font-mono text-[11px]">${esc(slug)}</span>
+      <button type="button" data-res="${esc(slug)}"
+        class="cursor-pointer border-0 bg-transparent p-0 text-left font-mono text-[11px] text-ink underline decoration-dotted"
+        title="Its verdicts, in order">${esc(slug)}</button>${
+        member.disposition
+          ? `<span class="ml-s2 text-provenance text-ink-muted">${esc(member.disposition)}</span>`
+          : ''}
       ${member.rationale && member.rationale !== grid.commonRationale
           ? `<div class="text-provenance text-ink-muted">${esc(member.rationale)}</div>` : ''}
     </td>

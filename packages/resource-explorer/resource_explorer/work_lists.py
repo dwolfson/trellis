@@ -208,6 +208,7 @@ class WorkLists:
             return
         for m in members:
             m.setdefault("disposition", "")
+            m.setdefault("github_url", "")
             try:
                 # registry.get() returns a Project DATACLASS, not a dict —
                 # a .get() call on it raises rather than returning None, and
@@ -217,6 +218,10 @@ class WorkLists:
                 url = getattr(project, "github_url", "") or ""
                 if not url:
                     continue
+                # The URL travels with the member too: dispositions and their
+                # history are keyed on it, so a client that has only the slug
+                # cannot ask for the verdict trail.
+                m["github_url"] = url
                 held = registry.get_disposition(url) or {}
                 m["disposition"] = held.get("disposition") or ""
             except Exception:                               # pragma: no cover
