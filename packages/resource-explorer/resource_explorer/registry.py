@@ -4058,6 +4058,24 @@ class ProjectRegistry:
                 "removed since this survey run started)."
             )
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        # `surveyed_at` is the READ KEY, not a label: query_findings returns
+        # only the rows at MAX(surveyed_at). A non-timestamp string therefore
+        # shadows every real run FOREVER, because any word starting above '2'
+        # sorts above every ISO timestamp this century.
+        #
+        # Not hypothetical. 3,269 rows written with the literal `'probe'` from
+        # an ad-hoc session on 2026-08/09 made `architecture_doc_lens`
+        # unreadable on five resources — query_findings returned the probe
+        # batch and the 2026-09-01 run was invisible. Same shadowing failure
+        # arch_lens.py's LENS_KIND comment documents, through a different
+        # door: there a newer timestamp, here a word.
+        if not re.match(r"^\d{4}-\d{2}-\d{2}", surveyed_at):
+            raise ValueError(
+                f"surveyed_at must be an ISO-8601 timestamp, got {surveyed_at!r}. "
+                "It is the read key — query_findings returns only the rows at "
+                "MAX(surveyed_at) — so a non-timestamp value permanently hides "
+                f"every real run of '{kind}' for '{slug}'."
+            )
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_analysis_findings "
@@ -4114,6 +4132,60 @@ class ProjectRegistry:
                 "UPDATE project_analysis_findings SET egeria_annotation_guid = ? WHERE id = ?",
                 (guid, finding_id),
             )
+
+    def analysis_result_summary(self, slugs: list, kinds: list) -> dict:
+        """Per (resource, analysis): is there stored output, and how old is it.
+
+        TWO grouped queries for a whole matrix, instead of running each
+        analysis's results reader. The readers are the expensive part —
+        `architecture_recovery`'s reassembles and projects a candidate
+        hierarchy, measured at 47s on a large repo — and a grid cell needs to
+        know THAT there is output and WHEN it was measured, not what it says.
+
+        Returns `{(slug, kind): {"rows": int, "measured_at": str}}`, from
+        `project_analysis_findings` and `project_analysis_metrics` combined —
+        an analysis may write to either or both.
+
+        **This is a projection, not the full state.** It can tell
+        "there is output" from "there is none"; it CANNOT tell `measured`
+        from `partial`, because that distinction lives in the results dict's
+        own `_status`, which only the reader produces. A caller must render
+        the difference as "not read yet", never as a state it has not
+        established — see FactLayer._state_for for the full determination.
+        """
+        if not slugs or not kinds:
+            return {}
+        out: dict = {}
+        with self._conn() as conn:
+            for table in ("project_analysis_findings", "project_analysis_metrics"):
+                rows = conn.execute(
+                    f"SELECT project_slug, kind, COUNT(*) AS n, MAX(surveyed_at) AS last_at "
+                    f"FROM {table} "
+                    f"WHERE project_slug IN ({','.join('?' * len(slugs))}) "
+                    f"  AND kind IN ({','.join('?' * len(kinds))}) "
+                    # Excluded BEFORE the MAX, not after. A non-timestamp
+                    # label sorts above every real timestamp, so filtering the
+                    # result would discard the row's true date along with it.
+                    # `____-__-__%` is the ISO date shape in both SQLite and
+                    # Postgres LIKE; `_` is one character in each.
+                    # `____-__-__%` is the ISO date shape in both SQLite and
+                    # Postgres LIKE. BOUND, not inlined: a literal `%` in the
+                    # SQL text collides with psycopg's own parameter syntax.
+                    f"  AND surveyed_at LIKE ? "
+                    f"GROUP BY project_slug, kind",
+                    (*slugs, *kinds, "____-__-__%"),
+                ).fetchall()
+                for r in rows:
+                    key = (r["project_slug"], r["kind"])
+                    prev = out.get(key) or {"rows": 0, "measured_at": ""}
+                    prev["rows"] += r["n"] or 0
+                    # The LATER of the two tables' timestamps: an analysis that
+                    # wrote metrics after findings was measured at the later
+                    # moment, and reporting the earlier one would age it.
+                    if (r["last_at"] or "") > prev["measured_at"]:
+                        prev["measured_at"] = r["last_at"] or ""
+                    out[key] = prev
+        return out
 
     def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
         """Latest run's findings for one analysis kind, scoped to

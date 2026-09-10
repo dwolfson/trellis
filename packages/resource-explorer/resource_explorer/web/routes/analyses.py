@@ -150,6 +150,11 @@ BULK_FACTS_MAX_SUBJECTS = 200
 def bulk_resource_facts(
     slugs: str = Query(..., description="comma-separated resource slugs"),
     analysis_ids: str = Query("", description="comma-separated; omit for every analysis"),
+    states_only: bool = Query(
+        False,
+        description="cheap projection: is there output and when was it measured, "
+                    "without running the results readers",
+    ),
 ) -> dict:
     """What is known about SEVERAL resources, in one call.
 
@@ -189,6 +194,54 @@ def bulk_resource_facts(
 
     ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
     ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+
+    if states_only:
+        # THE CHEAP PATH. Two grouped queries for the whole matrix instead of
+        # one results reader per (resource, analysis). The readers are what
+        # cost — `architecture_recovery` at 47s on a large repo — and they
+        # build a value a grid cell never displays.
+        #
+        # DELIBERATELY LESS INFORMATIVE, and it says so in the response. This
+        # separates "there is output" from "there is none"; it does NOT
+        # separate `measured` from `partial`, because that lives in the
+        # results dict's own `_status` and only the reader produces it. A
+        # caller must render the difference as not-yet-read. Claiming a state
+        # nobody established is the exact failure this layer exists to stop,
+        # and doing it for speed would be a poor trade.
+        from resource_explorer.registry import ProjectRegistry
+
+        registry = ProjectRegistry()
+        summary = registry.analysis_result_summary(subjects, ids)
+        layer = FactLayer()
+        states: dict[str, dict] = {}
+        for slug in subjects:
+            runs = layer._last_run(slug)
+            per: dict[str, dict] = {}
+            for aid in ids:
+                hit = summary.get((slug, aid)) or {}
+                run = runs.get(aid) or {}
+                per[aid] = {
+                    "has_results": bool(hit.get("rows")),
+                    "rows": hit.get("rows", 0),
+                    # How current this cell is — the question a matrix of
+                    # stored results has to answer before anyone trusts it.
+                    "measured_at": hit.get("measured_at") or run.get("last_run_at", ""),
+                    "last_run_at": run.get("last_run_at", ""),
+                    # CERTAIN, not inferred: nothing stored and nothing run.
+                    "certain_never_run": not hit.get("rows") and not run.get("last_run_at"),
+                }
+            states[slug] = per
+        return {
+            "states": {s: states[s] for s in subjects if s in states},
+            "analysis_ids": ids,
+            "requested": len(subjects),
+            "returned": len(states),
+            "projection": True,
+            "projection_note": (
+                "has_results and measured_at only — `measured` vs `partial` is "
+                "not established here. Read the full facts for that."
+            ),
+        }
 
     out: dict[str, list] = {}
     failed: dict[str, str] = {}

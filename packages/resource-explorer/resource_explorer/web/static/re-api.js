@@ -337,6 +337,22 @@ export const getResourceFacts = (slug) =>
  * an empty fact list, which would be indistinguishable from one that has no
  * results.
  */
+/**
+ * The CHEAP projection: for each (resource, analysis), is there stored output
+ * and when was it measured — without running the results readers.
+ *
+ * 0.83s for the four-resource Discovery matrix that costs 65s to read fully,
+ * because it never builds the values a grid cell does not display.
+ *
+ * It cannot tell `measured` from `partial`; the response says so. Render the
+ * difference as not-yet-read, never as a state nobody established.
+ */
+export const getBulkStates = (slugs, analysisIds = []) => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true' });
+  if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
+  return get(`/api/analyses/facts?${qs}`);
+};
+
 export const getBulkFacts = (slugs, analysisIds = []) => {
   const qs = new URLSearchParams({ slugs: [...slugs].join(',') });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));

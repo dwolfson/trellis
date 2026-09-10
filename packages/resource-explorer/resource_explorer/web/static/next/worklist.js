@@ -28,6 +28,7 @@ import {
   getBatchProgress,
   getQuestions,
   getBulkFacts,
+  getBulkStates,
   getWorkList,
   listAnalyses,
   listWorkLists,
@@ -35,6 +36,7 @@ import {
   publishWorkList,
   setDisposition,
 } from '/static/re-api.js';
+import { ago, daysSince } from '/static/next/format.js';
 
 /* ── Cell state ─────────────────────────────────────────────────────────
  *
@@ -54,6 +56,11 @@ export const CELL = {
   unclassified:  { glyph: '·', tone: 'text-ink-muted',  label: 'unclassified' },
   running:       { glyph: '◔', tone: 'text-accent-ink', label: 'running' },
   unknown:       { glyph: '?', tone: 'text-ink-muted',  label: 'could not read' },
+  // Stored output exists; which of measured/partial it is has NOT been
+  // established, because establishing it costs 47s for one analysis. Its own
+  // glyph rather than a tick: a tick would claim `answered`, which is
+  // precisely the state nobody has read.
+  stored:        { glyph: '▪', tone: 'text-ink-muted',  label: 'has results · not read' },
 };
 
 /**
@@ -115,11 +122,14 @@ export const grid = {
   heldPerspectives: [],  // which perspectives narrowed the columns
   commonRationale: null, // a rationale every member shares, shown once
   pendingAnalyses: new Set(),  // slow columns still arriving
+  states: {},            // the cheap projection, per resource
+  statesError: null,
   slowError: null,
   questionsUnfiltered: null,
   batch: null,           // the running set's progress
   poll: null,            // its interval handle
   note: '',
+  ctx: null,             // the pane context, for actions raised from a popup
 };
 
 /* ── Rendering ──────────────────────────────────────────────────────── */
@@ -303,7 +313,6 @@ async function loadGrid(ctx) {
   // arriving. The cells that are still coming show their pending marker,
   // which the grid already distinguishes from every other state.
   const needed = [...new Set(qsAnalysisIds(grid.questions))];
-  const slow = needed.filter((a) => EXPENSIVE_ANALYSES.has(a));
   const quick = needed.filter((a) => !EXPENSIVE_ANALYSES.has(a));
 
   const applyBulk = (bulk) => {
@@ -325,23 +334,28 @@ async function loadGrid(ctx) {
   };
 
   const slugs = wl.members.map((m) => m.entity_slug);
-  grid.pendingAnalyses = new Set(slow);
+
+  // PASS 1 — the cheap projection over EVERY column. Instant, and it carries
+  // `measured_at`, so the grid can say how current it is before it knows what
+  // it says.
   try {
-    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); renderGrid(); }
+    const proj = await getBulkStates(slugs, needed);
+    grid.states = proj.states || {};
+    renderGrid();
   } catch (err) {
-    for (const m of wl.members) grid.rows.set(m.entity_slug, { error: err.message });
-    renderGrid();
+    grid.statesError = err.message;
   }
-  if (slow.length) {
-    try {
-      applyBulk(await getBulkFacts(slugs, slow));
-    } catch (err) {
-      // The slow columns failing must not blank the ones already on screen.
-      grid.slowError = err.message;
-    }
-    grid.pendingAnalyses = new Set();
-    renderGrid();
+
+  // PASS 2 — the full read, but ONLY for the analyses that are cheap to read.
+  // The expensive ones keep the projection's honest "has results, not read"
+  // rather than costing a minute to turn ▪ into ✓.
+  try {
+    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); }
+  } catch (err) {
+    grid.slowError = err.message;
   }
+  grid.pendingAnalyses = new Set();
+  renderGrid();
 }
 
 function renderGrid() {
@@ -415,6 +429,9 @@ function renderGrid() {
       </ol>
     </div>`;
 
+  host.querySelectorAll('button[data-cell]').forEach((b) => b.addEventListener('click', () => {
+    openCellDetail(b.dataset.cell, Number(b.dataset.q), grid.ctx);
+  }));
   host.querySelectorAll('input[data-row]').forEach((cb) => cb.addEventListener('change', () => {
     if (cb.checked) grid.selected.add(cb.dataset.row);
     else grid.selected.delete(cb.dataset.row);
@@ -425,27 +442,77 @@ function renderGrid() {
 function rowHtml(member, qs) {
   const slug = member.entity_slug;
   const row = grid.rows.get(slug);
-  const running = grid.batch?.runs?.find(
-    (r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state));
+  // Each cell carries ITS OWN measurement date, because each analysis ran
+  // when it ran. The Measured column summarises; this is where the fact is.
+  const per = grid.states?.[slug] || {};
+  const cellStamp = (q) => {
+    const stamps = (q.analysis_ids || [])
+      .map((a) => per[a]?.measured_at || '').filter(Boolean);
+    return stamps.length ? stamps.sort()[0] : '';   // oldest input to this answer
+  };
+  const stampNote = (q) => {
+    const iso = cellStamp(q);
+    if (!iso) return '';
+    const d = daysSince(iso);
+    return `\nmeasured ${ago(iso)} (${iso})${
+      d !== null && d >= STALE_DAYS ? ' — stale' : ''}`;
+  };
 
-  const cells = qs.map((q) => {
-    if (!row) {
-      return '<td class="wl-cell p-[6px] text-ink-muted">…</td>';
+  const cells = qs.map((q, qi) => {
+    const stale = (() => {
+      const d = daysSince(cellStamp(q));
+      return d !== null && d >= STALE_DAYS;
+    })();
+    // A stale cell keeps its own state glyph and gains a mark. Recolouring it
+    // would conflate "this answer is old" with "this answer is bad".
+    const mark = stale ? '<span class="text-state-warn">·</span>' : '';
+
+    // KIND FIRST. A question with no surveyor, or one only a person can
+    // answer, has no analysis to read and no facts to wait for — it is
+    // settled before any of the fact logic below applies. Losing this branch
+    // left such a column showing `…` forever, because "still loading" is what
+    // the fall-through says when nothing is known and nothing ever will be.
+    const kindState = { gap: 'no-surveyor', human: 'human', unknown: 'unclassified' }[q.kind];
+    if (kindState || !(q.analysis_ids || []).length) {
+      const c = CELL[kindState] || CELL.unclassified;
+      return `<td class="wl-cell p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
     }
-    if (row.error) {
+    if (row?.error) {
       // A resource whose facts could not be read is NOT a resource with no
       // results. One state for "we could not look", never blank.
       return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}" title="${esc(row.error)}">${CELL.unknown.glyph}</td>`;
     }
-    // A column still arriving is PENDING, not "not run". Without this the
-    // slow columns would show `○ not run` for a minute and then change their
-    // minds, which is a confident wrong answer with a delay on it.
-    const stillComing = (q.analysis_ids || []).some((a) => grid.pendingAnalyses.has(a))
-      && !(q.analysis_ids || []).some((a) => row.factsById.has(a));
-    if (stillComing) return '<td class="wl-cell p-[6px] text-ink-muted" title="still loading">…</td>';
-    const st = running ? 'running' : cellState(q, row.factsById);
-    const c = CELL[st] || CELL.unclassified;
-    return `<td class="wl-cell p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
+    const running = !!grid.batch?.runs?.find(
+      (r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state));
+    if (running) {
+      return `<td class="wl-cell p-[6px] ${CELL.running.tone}" title="${esc(q.question)} — ${esc(CELL.running.label)}">${CELL.running.glyph}</td>`;
+    }
+    // Full facts, when they have been read.
+    const haveFacts = row && (q.analysis_ids || []).some((a) => row.factsById.has(a));
+    if (haveFacts) {
+      const c = CELL[cellState(q, row.factsById)] || CELL.unclassified;
+      return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+click for the latest results">${c.glyph}${mark}</button></td>`;
+    }
+    // Otherwise the CHEAP PROJECTION answers, and only as far as it honestly
+    // can: there is stored output, or there provably is not. It cannot tell
+    // `measured` from `partial`, so it never claims `answered`.
+    const proj = (q.analysis_ids || []).map((a) => per[a]).filter(Boolean);
+    if (proj.length) {
+      if (proj.some((v) => v.has_results)) {
+        const c = CELL.stored;
+        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+click for the latest results">${c.glyph}${mark}</button></td>`;
+      }
+      if (proj.every((v) => v.certain_never_run)) {
+        const c = CELL.unrun;
+        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}
+click for the latest results">${c.glyph}</button></td>`;
+      }
+    }
+    // Nothing known yet — still loading. Never "not run": that would be a
+    // confident wrong answer with a delay on it.
+    return '<td class="wl-cell p-[6px] text-ink-muted" title="still loading">…</td>';
   }).join('');
 
   const answered = row && !row.error
@@ -464,6 +531,189 @@ function rowHtml(member, qs) {
     <td class="p-[6px] tnum text-ink-muted">${
       answered === null ? '—' : `${answered} of ${qs.length}`}</td>
   </tr>`;
+}
+
+/** Staleness threshold, for the mark on a cell and the wording in its popup.
+ *
+ * There is deliberately NO per-resource "as of" date. Each analysis ran when
+ * it ran — on one row here the newest measurement is from today and the oldest
+ * from 31 August — so a single date per row is wrong whichever end it takes.
+ * The date belongs to the cell, and the cell shows it on click.
+ */
+const STALE_DAYS = 7;
+
+
+/* ── One cell, opened ────────────────────────────────────────────────────
+ *
+ * A glyph says which state a question is in; it cannot say what the answer
+ * WAS. This is where the answer lives — for one resource, one question, on
+ * demand.
+ *
+ * On demand is the point. Reading full facts for the whole matrix costs 47s
+ * on the expensive analyses; reading them for ONE cell is instant, and it is
+ * the only cell anyone is looking at. The grid stays cheap and the detail
+ * stays complete, instead of trading one for the other.
+ */
+
+const STATE_WORD = {
+  measured: 'measured',
+  nothing_found: 'ran, found nothing',
+  partial: 'partial',
+  not_established: 'ran, could not establish a result',
+  never_run: 'never run',
+};
+
+function closeCellDetail() {
+  document.getElementById('wl-detail')?.remove();
+  document.removeEventListener('keydown', detailKeys);
+}
+
+function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
+
+async function openCellDetail(slug, qi, ctx) {
+  const q = grid.questions[qi];
+  if (!q) return;
+  closeCellDetail();
+
+  const el = document.createElement('div');
+  el.id = 'wl-detail';
+  el.className = 'fixed inset-0 z-50 flex items-start justify-center '
+    + 'bg-black/40 p-s4 overflow-auto';
+  el.innerHTML = `
+    <div class="mt-[6vh] w-full max-w-[640px] rounded bg-paper p-s4 shadow-lg"
+      role="dialog" aria-modal="true" aria-label="Latest results">
+      <div class="flex items-start justify-between gap-s3">
+        <div>
+          <div class="font-heading text-answer text-ink">${esc(q.question)}</div>
+          <div class="mt-[2px] font-mono text-[11px] text-ink-muted">${esc(slug)}</div>
+        </div>
+        <button type="button" data-act="close"
+          class="text-ink-muted hover:text-ink" aria-label="Close">×</button>
+      </div>
+      <div id="wl-detail-body" class="mt-s3 text-caveat text-ink-muted">reading…</div>
+    </div>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', (e) => {
+    // The backdrop closes; the panel does not close itself out from under a
+    // click meant for its own contents.
+    if (e.target === el || e.target.closest('[data-act="close"]')) closeCellDetail();
+  });
+  document.addEventListener('keydown', detailKeys);
+
+  const body = el.querySelector('#wl-detail-body');
+  const ids = q.analysis_ids || [];
+  if (!ids.length) {
+    body.innerHTML = `<p>No analysis answers this question yet, so there is
+      nothing to read. That is a gap in the catalog, not a finding about
+      ${esc(slug)}.</p>`;
+    return;
+  }
+  let facts;
+  try {
+    const res = await getBulkFacts([slug], ids);
+    facts = res.subjects?.[slug] || [];
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">Could not read the results:
+      ${esc(err.message)}</p>`;
+    return;
+  }
+  // Fold what we just paid for back into the grid: a cell you have opened
+  // stops being `▪ not read`, because now it HAS been read. Cheaper than the
+  // matrix-wide read and it accumulates exactly where attention went.
+  if (facts.length) {
+    const prev = grid.rows.get(slug);
+    const byId = prev?.factsById || new Map();
+    for (const f of facts) byId.set(f.analysis_id, f);
+    grid.rows.set(slug, { facts: [...byId.values()], factsById: byId });
+    renderGrid();
+  }
+  if (!facts.length) {
+    body.innerHTML = `<p>Nothing stored for ${esc(ids.join(', '))} on this
+      resource.</p>`;
+    return;
+  }
+  body.innerHTML = facts.map((f) => factDetailHtml(f, slug)).join('')
+    + `<div class="mt-s3 border-t border-rule pt-s2">
+        <button type="button" data-act="rerun"
+          class="text-caveat text-accent-ink underline">Re-run for this resource</button>
+      </div>`;
+  el.querySelector('[data-act="rerun"]')?.addEventListener('click', () => {
+    closeCellDetail();
+    rerunOne(slug, ids, ctx);
+  });
+}
+
+/** One analysis's contribution, shown as what it is rather than summarised.
+ *  The measurement date is HERE, per analysis, because that is the only place
+ *  it is true — each one ran when it ran. */
+function factDetailHtml(f, slug) {
+  // WHEN this was measured, from the stronger of the two records.
+  //
+  // They disagree, and not rarely. `last_run_at` comes from the run registry;
+  // `surveyed_at` is stamped on the result rows themselves. On amundsen's
+  // repository_health the run registry said 24 August while the metrics rows
+  // were written 10 September at 02:57 — something wrote results without
+  // recording a run. The rows are the harder evidence: they exist because a
+  // measurement happened. So they win, and `last_run_at` is the fallback.
+  //
+  // Using the same source as the cell also means the popup and the grid can
+  // never show one date each for the same measurement.
+  const measured = grid.states?.[slug]?.[f.analysis_id]?.measured_at || '';
+  const when = measured || f.last_run_at || '';
+  const d = daysSince(when);
+  const stale = d !== null && d >= STALE_DAYS;
+  const bits = [];
+  if (f.headline) bits.push(`<p class="text-answer text-ink">${esc(f.headline)}</p>`);
+  const verdict = f.value && f.value.verdict;
+  const detail = f.value && (f.value.detail || f.value.summary);
+  if (!f.headline && (verdict || detail)) {
+    bits.push(`<p class="text-answer text-ink">${
+      verdict ? `<strong class="font-semibold">${esc(String(verdict))}</strong>` : ''}${
+      verdict && detail ? ' — ' : ''}${detail ? esc(String(detail)) : ''}</p>`);
+  }
+  if (!bits.length) {
+    bits.push(`<p>This analysis recorded measures but no written summary, so
+      there is no sentence to show. Its values are in the resource's own
+      results view.</p>`);
+  }
+  return `<div class="mb-s3">
+    <div class="text-caps text-ink-muted">
+      <span class="font-mono">${esc(f.analysis_id || 'unknown')}</span>
+      · ${esc(STATE_WORD[f.state] || f.state || 'unknown')}
+      · ${when
+          ? `<span class="${stale ? 'text-state-warn' : ''}" title="${esc(when)}"
+              >${esc(ago(when))}${stale ? ' — stale' : ''}</span>`
+          : 'run time not recorded'}
+    </div>
+    ${bits.join('')}
+  </div>`;
+}
+
+/** Re-run exactly the analyses behind one cell, for one resource — the
+ *  narrowest version of "bring this up to date". Same batch machinery the
+ *  whole-list run uses, so it queues rather than blocking the page. */
+async function rerunOne(slug, ids, ctx) {
+  let last = null;
+  try {
+    // One batch per analysis: enqueueBatch takes a single analysis id, and a
+    // question can be answered by more than one.
+    for (const aid of ids) {
+      last = await enqueueBatch(aid, [slug], grid.workList.slug);
+    }
+  } catch (err) {
+    const networkish = /load failed|failed to fetch|networkerror/i.test(err.message || '');
+    note(networkish
+      ? `<span class="text-state-warn">The server could not be reached, so nothing was
+         enqueued (${esc(err.message)}). If it was restarting, try again.</span>`
+      : `<span class="text-state-warn">The re-run was refused: ${esc(err.message)}</span>`);
+    return;
+  }
+  note(`Queued <span class="font-mono">${esc(ids.join(', '))}</span> for
+        <span class="font-mono">${esc(slug)}</span>.`);
+  // Watches the LAST set only — the progress line shows one set at a time,
+  // and saying so is better than silently reporting one of several as if it
+  // were the whole re-run.
+  if (last?.set_id) watchBatch(ctx, last.set_id);
 }
 
 /* ── Actions ────────────────────────────────────────────────────────── */
@@ -631,6 +881,7 @@ export async function openWorkList(ctx, slug) {
   grid.selected.clear();
   clearInterval(grid.poll);
   window.__wlCtx = ctx;
+  grid.ctx = ctx;   // the cell popup's re-run needs it, and it is not passed down
   await renderWorkListPane(ctx);
 }
 

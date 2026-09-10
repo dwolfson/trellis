@@ -24,6 +24,7 @@
 // own module: it is the one surface that reads a SET rather than a resource,
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList } from '/static/next/worklist.js';
+import { ago } from '/static/next/format.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -163,20 +164,6 @@ function tnum(html) {
   return html.replace(/(\d[\d,.]*%?)/g, '<span class="tnum">$1</span>');
 }
 
-/** "5d ago" / "3h ago" / "just now" — or "" when there is no timestamp,
- *  which is a real state and must not render as "now". */
-function ago(iso) {
-  if (!iso) return '';
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return '';
-  const secs = Math.max(0, (Date.now() - then) / 1000);
-  if (secs < 90) return 'just now';
-  const mins = secs / 60;
-  if (mins < 90) return `${Math.round(mins)}m ago`;
-  const hours = mins / 60;
-  if (hours < 36) return `${Math.round(hours)}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
 
 /* ────────────────────────────────────────────────────────────────────────
  * Icons
