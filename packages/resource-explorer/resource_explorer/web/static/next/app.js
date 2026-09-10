@@ -23,7 +23,7 @@
 // The Scouting slice — work lists, batch runs and the comparison grid. Its
 // own module: it is the one surface that reads a SET rather than a resource,
 // and it goes when the experiment goes.
-import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail }
+import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
 import { ago } from '/static/next/format.js';
 import {
@@ -37,7 +37,6 @@ import {
   getDispositionHistory,
   getSurveyCandidates,
   getSurveyDashboards,
-  getSurveySummary,
   runSurveyDefinition,
   getMe,
   getQuestions,
@@ -2695,6 +2694,45 @@ async function launchSurvey(slug, ref) {
   }
 }
 
+/** Invalidates an in-flight dashboard read when the pane or resource changes. */
+let dashToken = 0;
+
+/* ── Dashboard ────────────────────────────────────────────────────────────
+ *
+ * THREE KINDS OF THING, THREE RANKS. Prose-as-peer worked and then everything
+ * levelled up to meet it: twelve identical bordered cards, so a composed
+ * score and "no specification file found" carried the same weight. Equal rank
+ * for prose was the goal; equal rank for everything is what shipped.
+ *
+ *   headline  — the composed score, once, at size
+ *   findings  — judgements, unresolved first, in the MATRIX'S OWN GLYPHS
+ *   counts    — reference material, as a table, at reference weight
+ *
+ * Twelve bordered cards holding one number each IS a table, drawn expensively.
+ */
+
+/** Findings whose label means "nobody established this" sort to the top. */
+const UNRESOLVED_LABELS = new Set([
+  'not_established', 'unknown', 'none', 'not_measured', 'unavailable']);
+
+/** ONE STATE VOCABULARY ACROSS BOTH SURFACES.
+ *
+ * The dashboard was shouting its enum — `— NOT_ESTABLISHED`, `— SOLE`,
+ * `— PERIODIC` — as machine tokens welded to a title. They are the same kind
+ * of fact the matrix encodes as glyphs, and someone who has learned the grid
+ * should not have to learn a second language one click away.
+ */
+function findingGlyph(label) {
+  const l = String(label || '').toLowerCase();
+  if (UNRESOLVED_LABELS.has(l)) return CELL.nothing;          // ∅ ran, established nothing
+  if (/^(fail|gap|missing|no|absent|gone)$/.test(l)) return CELL.human;   // ⚠ needs a person
+  if (/(sole|risk|low|weak|stale|declining|concentrat)/.test(l)) return CELL.partial;
+  return CELL.answered;                                        // ✓
+}
+
+/** `not_established` -> `not established`; `SOLE` -> `sole`. */
+const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
+
 async function loadDashboardPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -2702,174 +2740,179 @@ async function loadDashboardPane() {
   const slug = state.selectedSlug;
   const stage = state.stage;
 
-  // THREE INDEPENDENT READS, each filling its own region as it lands.
-  //
-  // They were a Promise.all, which meant the pane showed one line for as long
-  // as the slowest took — and on Analysis that is not a moment. Measured on
-  // kafka: the headline tiles take 30s and the dashboards 109s, because this
-  // aggregation layer re-runs the very results readers whose cost the matrix
-  // projection exists to avoid. Two minutes of "Reading survey results…" is
-  // indistinguishable from a hung pane.
-  //
-  // So the skeleton renders first, each region says what it is waiting for,
-  // and one failing cannot blank the others: they answer different questions
-  // and any of them alone is worth showing.
+  // Two independent reads, each filling its own region as it lands. They were
+  // a Promise.all, which showed one line for as long as the slowest took —
+  // and on Analysis the dashboards read costs 109s.
   const token = ++dashToken;
   el.innerHTML = subTabsHtml() + `
     <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">
       Survey results · ${esc(stage)}</div>
-    <div id="dash-tiles" class="mb-s4 text-caveat text-ink-muted">Reading the headlines…</div>
-    <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>
-    <div class="mt-s4">
-      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Health</div>
-      <div id="dash-chart" class="text-caveat text-ink-muted">Reading the health figure…</div>
-    </div>`;
+    <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>`;
   bindSubTabs();
 
   const live = () => token === dashToken && state.subTab === 'dashboard';
-  const TONE = { ok: 'text-state-ok', warn: 'text-state-warn', info: 'text-ink' };
 
-  // Headlines.
-  (async () => {
-    let summary;
-    try {
-      summary = await getSurveySummary(slug, stage);
-    } catch (err) {
-      if (live()) $('dash-tiles').innerHTML =
-        `<span class="text-state-warn">The headlines could not be read: ${esc(err.message)}</span>`;
-      return;
-    }
-    if (!live()) return;
-    const tiles = summary.tiles || [];
-    $('dash-tiles').innerHTML = tiles.length
-      ? `<div class="grid gap-s2" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
-          ${tiles.map((t) => `<div class="border border-rule p-s2">
-            <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(t.analysis_name || t.analysis_id)}</div>
-            <div class="mt-[3px] ${TONE[t.status] || 'text-ink'}">${tnum(esc(t.label || ''))}</div>
-          </div>`).join('')}
-        </div>`
-      : `No analysis has written a headline for ${esc(stage)} yet.`;
-  })();
+  let data;
+  try {
+    data = await getSurveyDashboards(slug, stage, { includeEmpty: true });
+  } catch (err) {
+    if (live()) $('dash-boards').innerHTML =
+      `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!live()) return;
+  const boards = data.dashboards || [];
+  if (!boards.length) {
+    $('dash-boards').innerHTML = `No dashboard is registered for ${esc(stage)}.`;
+    return;
+  }
 
-  // Dashboards. `include_empty` is ON deliberately: a dashboard with nothing
-  // measured is a real and useful state — "registered, never run" — and the
-  // default omits those, which renders absence as non-existence.
-  (async () => {
-    let data;
-    try {
-      data = await getSurveyDashboards(slug, stage, { includeEmpty: true });
-    } catch (err) {
-      if (live()) $('dash-boards').innerHTML =
-        `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
-      return;
-    }
-    if (!live()) return;
-    const boards = data.dashboards || [];
-    $('dash-boards').innerHTML = boards.length
-      ? boards.map((b) => `
-        <div class="mb-s4 border-b border-rule pb-s3">
-          <div class="flex flex-wrap items-baseline gap-s2">
-            <span class="font-heading text-answer text-ink">${esc(b.title || b.id)}</span>
-            ${b.has_results
-              ? `<span class="text-provenance text-ink-muted">${
-                  b.last_surveyed_at ? `measured ${esc(ago(b.last_surveyed_at))}` : 'has results'}</span>`
-              : `<span class="text-provenance text-state-warn">registered, never run</span>`}
-            ${b.last_published_at
-              ? `<span class="text-provenance text-ink-muted">· published ${esc(ago(b.last_published_at))}</span>` : ''}
-          </div>
-          ${b.description ? `<p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
-          <div class="wl-cards mt-s2">
-            ${(b.analyses || []).map((a) => dashboardAnalysisHtml(a)).join('')}
-          </div>
-        </div>`).join('')
-      : `No dashboard is registered for ${esc(stage)}.`;
-  })();
-
-  // The radar figure, through the same themer the Understanding pane uses —
-  // Plotly's own template is a theme of its own and looks imported on paper.
-  (async () => {
-    try {
-      // Plotly is loaded on demand, not in the page. Calling newPlot without
-      // this is the "Cannot read properties of undefined" every pane that
-      // borrows a chart hits exactly once.
-      await loadScript('/static/vendor/plotly.min.js');
-      const fig = await getChart(slug, 'health');
-      if (!live()) return;
-      const body = $('dash-chart');
-      if (!body) return;
-      if (!fig || !(fig.data || []).length) {
-        body.textContent = 'The health series exists and has nothing in it yet.';
-        return;
+  // Every measurement on the pane, so a NAME REPORTED TWICE WITH DIFFERENT
+  // VALUES can be marked where it is displayed rather than left for a reader
+  // to notice or not.
+  const seen = new Map();
+  for (const b of boards) {
+    for (const a of b.analyses || []) {
+      for (const [k, v] of Object.entries(a.results || {})) {
+        if (typeof v !== 'number') continue;
+        const rec = seen.get(k) || [];
+        rec.push({ analysis: a.analysis_id, value: v });
+        seen.set(k, rec);
       }
-      body.innerHTML = '';
-      await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
-                                  { displayModeBar: false, responsive: true });
-    } catch (err) {
-      if (!live()) return;
-      const body = $('dash-chart');
-      if (body) body.innerHTML = `<span class="text-state-warn">The health figure could not
-        be read: ${esc(err.message)}</span>`;
     }
-  })();
+  }
+  const disputed = new Map();
+  for (const [k, rec] of seen) {
+    if (rec.length > 1 && new Set(rec.map((x) => x.value)).size > 1) disputed.set(k, rec);
+  }
+
+  $('dash-boards').innerHTML = boards.map((b) => {
+    const analyses = b.analyses || [];
+    // THE GROUP HEADER CARRIES NO DATE. "Health & Maturity — measured 12h ago"
+    // over cards from three analyses is the per-resource as-of date deleted
+    // from the matrix, returned one level up. Dates belong on measurements.
+    const headline = analyses.find((a) => typeof (a.results || {}).overall === 'number');
+    const findings = [];
+    const counts = [];
+    for (const a of analyses) {
+      const res = a.results || {};
+      if (a === headline) continue;
+      if (Array.isArray(res.findings) && res.findings.length) {
+        for (const f of res.findings) findings.push({ ...f, analysis_id: a.analysis_id, when: a.last_surveyed_at });
+        continue;
+      }
+      for (const [k, v] of Object.entries(res)) {
+        if (typeof v === 'number' || typeof v === 'boolean') {
+          counts.push({ key: k, value: v, analysis_id: a.analysis_id, when: a.last_surveyed_at });
+        }
+      }
+    }
+    findings.sort((x, y) => {
+      const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
+      const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
+      return ux - uy;
+    });
+
+    return `
+      <section class="mb-s5">
+        <div class="text-answer text-ink">${esc(b.title || b.id)}</div>
+        ${b.description ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
+        ${!b.has_results ? `<p class="mt-s1 text-caveat text-state-warn">Registered, never run.</p>` : ''}
+
+        ${headline ? headlineHtml(headline) : ''}
+
+        ${findings.length ? `
+          <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Findings · unresolved first</div>
+          ${findings.map((f) => {
+            const c = findingGlyph(f.label);
+            return `<div class="flex items-baseline gap-s2 border-b border-rule py-s2">
+              <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
+              <span class="min-w-0 flex-1 text-ink">
+                <strong class="font-semibold">${
+                  f.check_name
+                    ? `${esc(f.check_name.replace(/_/g, ' '))}${
+                        f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
+                    : esc(humanLabel(f.label) || f.analysis_id)}.</strong>
+                ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}</span>
+              <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(f.analysis_id)}${
+                f.when ? ` · ${esc(ago(f.when))}` : ''}</span>
+            </div>`;
+          }).join('')}` : ''}
+
+        ${counts.length ? `
+          <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Counts</div>
+          <table class="w-full border-collapse text-caveat">
+            ${(() => {
+              // A disputed name is ONE row carrying every value, not one row
+              // per analysis saying the same thing mirrored.
+              const shown = new Set();
+              return counts.map((c) => {
+                const rec = disputed.get(c.key);
+                if (rec) {
+                  if (shown.has(c.key)) return '';
+                  shown.add(c.key);
+                  return `<tr class="border-b border-rule bg-[rgba(168,113,42,.07)]">
+                    <td class="py-[5px] pr-s3 text-ink"><span class="text-state-warn">⚠</span>
+                      ${esc(c.key.replace(/_/g, ' '))}
+                      <span class="text-provenance text-ink-muted">— <span class="tnum">${
+                        rec.length}</span> analyses report this name with different values;
+                        they may not be measuring the same thing</span></td>
+                    <td class="tnum py-[5px] pr-s3 text-right text-ink">${
+                      esc(rec.map((x) => fmtScalar(x.value)).join(' / '))}</td>
+                    <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
+                      esc(rec.map((x) => x.analysis).join(' / '))}</td>
+                  </tr>`;
+                }
+                // Two analyses AGREEING on a name is one fact, not two rows.
+                // Both are named, so the agreement itself stays visible.
+                if (shown.has(c.key)) return '';
+                shown.add(c.key);
+                const agree = (seen.get(c.key) || []).filter((x) => x.analysis !== c.analysis_id);
+                return `<tr class="border-b border-rule">
+                  <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
+                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value))}</td>
+                  <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
+                    esc([c.analysis_id, ...agree.map((x) => x.analysis)].join(' · '))}${
+                    c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
+                </tr>`;
+              }).join('');
+            })()}
+          </table>` : ''}
+      </section>`;
+  }).join('');
 }
 
-/** Invalidates an in-flight dashboard read when the pane or resource changes. */
-let dashToken = 0;
-
-/** One analysis inside a dashboard, as a CARD in the same grid as the others.
+/** The composed score, once, at size — with its own sub-scores beside it.
  *
- * A prose measurement is a PEER OF THE TILE, not a fallback beneath it: same
- * border, same weight, same rank, its own measurement date. It is just wider,
- * because a sentence needs a measure to be read at.
+ * The radar chart is GONE. `repository_health` composes four sub-scores on
+ * 0–100; the chart plotted five different axes on 0–10, on white, in a
+ * foreign typeface — two incompatible definitions of the same word forty
+ * pixels apart. If it returns it plots these four, on their own scale, in
+ * this app's palette, and is then a picture of the number rather than a rival
+ * to it.
  *
- * This matters more than layout. "Not measurable, and here is why" is a
- * result, not an absence — often the most decision-relevant one on the pane,
- * because it says what a whole line of enquiry would cost to open. Three
- * analyses here carry no numbers at all, and a tile grid that can only hold
- * numbers pushes exactly those findings to the bottom of the page.
+ * The summary tiles are gone for the same reason: they rendered `Health
+ * 82/100` while the card below said `82.2` — one measurement at two
+ * precisions, which costs trust in both.
  */
-function dashboardAnalysisHtml(a) {
-  const id = a.analysis_id || 'unknown';
-  const results = a.results || {};
-  const when = a.last_surveyed_at || a.surveyed_at || '';
-  const stamp = `<div class="mt-[6px] text-provenance text-ink-muted">
-    <span class="font-mono">${esc(id)}</span>${when ? ` · ${esc(ago(when))}` : ''}</div>`;
-
-  const scalars = Object.entries(results)
-    .filter(([, v]) => typeof v === 'number' || typeof v === 'boolean')
+function headlineHtml(a) {
+  const r = a.results || {};
+  const subs = Object.entries(r)
+    .filter(([k, v]) => k !== 'overall' && typeof v === 'number')
     .slice(0, 6);
-  const findings = Array.isArray(results.findings) ? results.findings : [];
-
-  if (scalars.length) {
-    // The headline number gets the size; the rest ride under it.
-    const [k0, v0] = scalars[0];
-    const rest = scalars.slice(1);
-    return `<div class="wl-card border border-rule p-s3">
-      <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(k0.replace(/_/g, ' '))}</div>
-      <div class="tnum font-heading text-name text-ink">${esc(fmtScalar(v0))}</div>
-      ${rest.length ? `<div class="mt-[4px] flex flex-wrap gap-s2 text-caveat text-ink-muted">
-        ${rest.map(([k, v]) => `<span>${esc(k.replace(/_/g, ' '))}
-          <span class="tnum text-ink">${esc(fmtScalar(v))}</span></span>`).join('')}</div>` : ''}
-      ${stamp}
-    </div>`;
-  }
-
-  if (findings.length) {
-    return findings.slice(0, 6).map((f) => `
-      <div class="wl-card wl-card-wide border border-rule p-s3">
-        <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(
-          (f.check_name || id).replace(/_/g, ' '))}${
-          f.label ? ` — ${esc(f.label)}` : ''}</div>
-        ${f.summary ? `<div class="mt-[6px] text-answer text-ink">${tnum(esc(f.summary))}</div>` : ''}
-        ${stamp}
-      </div>`).join('');
-  }
-
-  return `<div class="wl-card border border-rule p-s3">
-    <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(id)}</div>
-    <div class="mt-[6px] text-caveat text-ink-muted">Measured, with nothing scalar and no
-      written finding to show.</div>
-    ${stamp}
+  return `<div class="mt-s3 flex flex-wrap items-baseline gap-s5 border-b border-rule pb-s3">
+    <div>
+      <div class="text-caps uppercase tracking-caps text-ink-muted">${
+        esc((a.analysis_id || '').replace(/_/g, ' '))}</div>
+      <div class="tnum font-heading text-ink" style="font-size:44px;line-height:1.05">${
+        esc(fmtScalar(r.overall))}</div>
+    </div>
+    <div class="text-caveat text-ink">
+      ${subs.map(([k, v]) => `<span class="mr-s3">${esc(k.replace(/_/g, ' '))}
+        <strong class="tnum font-semibold">${esc(fmtScalar(v))}</strong></span>`).join('')}
+      <div class="mt-[3px] font-mono text-provenance text-ink-muted">${esc(a.analysis_id)}${
+        a.last_surveyed_at ? ` · ${esc(ago(a.last_surveyed_at))}` : ''}</div>
+    </div>
   </div>`;
 }
 
