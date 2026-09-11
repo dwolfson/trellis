@@ -41,12 +41,22 @@ log = logging.getLogger(__name__)
 #: gaps, and the <state> slot was filled by invention ("ran and found
 #: nothing" for a packed analysis) in 7 of the run's 8 missing-result
 #: claims. docs/experiments/compiled-vs-rag.md, run 3.
+#:
+#: The 'structure only' sentence was replaced 2026-09-10 (audit
+#: docs/experiments/audits/2026-09-09-run4-unsupported-claims-vs-packed-text.md,
+#: pattern A): telling the model that a section "is not a result" did not stop
+#: it narrating `architecture_recovery`'s field names as an architecture, and
+#: for the section that WOULD have answered the question (row 16,
+#: `dependency_analysis`) it left the model with nothing but names, so it
+#: answered from a neighbouring section instead. The rung now carries real
+#: first entries, so the instruction it needs is about partiality, not about
+#: non-results.
 _INSTRUCTIONS = (
     "Answer using only the evidence below. Every section states which analysis "
-    "produced it. A section marked 'structure only' lists the parts of a result "
-    "without their values; it is not a result — do not quote, count or summarise "
-    "it as one. If the evidence does not answer the question, say so and name "
-    "what is missing — do not infer from absence."
+    "produced it. A section marked 'abridged' shows only the first few entries "
+    "of each list or mapping — its counts and entries are partial, so do not "
+    "report an abridged list as complete. If the evidence does not answer the "
+    "question, say so and name what is missing — do not infer from absence."
 )
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small
@@ -54,9 +64,19 @@ _INSTRUCTIONS = (
 #: rung a tight budget fails the compile outright instead of degrading — the
 #: one section that used to be exempt from the ladder now climbs it too.
 _INSTRUCTIONS_SHORT = (
-    "Answer using only the evidence below; name the analysis behind each point. "
-    "If it does not answer the question, say which analysis would and whether "
-    "it has run. Do not infer from absence."
+    "Answer only from the evidence below; name the analysis behind each point. "
+    "'Abridged' sections show first entries only. If it does not answer, say "
+    "which analysis would and whether it has run. Do not infer from absence."
+)
+
+#: The barest form, for a budget too small even for the short one. Added
+#: 2026-09-10 with the coverage line: instructions are REQUIRED, so every
+#: character added to the top of that section is a budget below which the
+#: whole compile raises instead of degrading. A third rung is what keeps the
+#: ladder's promise for the one section that cannot be dropped.
+_INSTRUCTIONS_BARE = (
+    "Answer only from the evidence below; 'abridged' sections are partial. "
+    "Do not infer from absence."
 )
 
 #: How many evidence sections a compile packs, counted after ranking. Ranking
@@ -195,6 +215,15 @@ def _question_relevance(question: str, catalog_question: str, analysis_ids: list
     zero means for ranking.
     """
     import re
+    # The catalog's own wording is a full match by definition -- checked
+    # before stopwords, because "What does this repository do?" is made of
+    # nothing else and stripped to no tokens at all, so the verbatim catalog
+    # question scored 0.0 against itself and the compile reported "no
+    # catalog question matches" (acceptance run over the run-4 audit rows,
+    # 2026-09-10). Punctuation and case do not carry meaning here.
+    if re.sub(r"[^a-z0-9]+", " ", question.lower()).strip() == \
+            re.sub(r"[^a-z0-9]+", " ", catalog_question.lower()).strip():
+        return 1.0
     q_tokens = set(re.findall(r"[a-z0-9]+", question.lower())) - _STOPWORDS
     if not q_tokens:
         return 0.0
@@ -280,6 +309,191 @@ def _has_content(results) -> bool:
     return False
 
 
+#: How much of a container the FULL rung shows before it says how much it is
+#: holding back. Truncation is always marked — an elided list that looked
+#: complete is the same failure this module keeps finding in other forms.
+MAX_FULL_LIST_ITEMS = 20      # lists of scalars, rendered inline
+MAX_FULL_DICT_ITEMS = 10      # lists of mappings, rendered one block each
+#: How many entries of each list/mapping the abridged (SUMMARY) rung carries.
+ABRIDGED_ENTRIES = 3
+
+
+def _scalar(value, limit: int = 200) -> str:
+    """One value as a reader sees it — including the empties, said out loud.
+
+    `None` and `""` are rendered as words rather than as nothing at all: a
+    blank after a colon reads as a measured emptiness, which is exactly the
+    reading this module exists to prevent.
+    """
+    if value is None:
+        return "(none)"
+    if isinstance(value, str) and not value.strip():
+        return "(empty)"
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _compact(value, limit: int = 120) -> str:
+    """A nested container squeezed onto one line, for depths past the first."""
+    if isinstance(value, (list, dict)):
+        if not value:
+            return "(empty list)" if isinstance(value, list) else "(empty mapping)"
+        return _scalar(json.dumps(value, default=str, sort_keys=True), limit)
+    return _scalar(value, limit)
+
+
+#: Keys that identify an entry rather than describe it. Alphabetical order put
+#: `blueprint`/`candidate_blueprints`/`confidence`/`depth` in front of `name`
+#: for architecture_recovery's components — four fields about a thing whose
+#: identity did not fit on the line. Generic, not per-analysis: no shape
+#: knowledge lives here, only the observation that a reader needs to know WHICH
+#: entry before anything else about it.
+_IDENTITY_KEYS = ("name", "id", "key", "title", "label", "check_name",
+                  "cluster_name", "dep_name", "path", "file", "slug", "kind")
+
+
+def _entry_summary(item, limit: int = 140) -> str:
+    """One list entry on one line: `k=v, k=v` for a mapping, the value itself
+    otherwise. Identity fields lead."""
+    if isinstance(item, dict):
+        lead = [k for k in _IDENTITY_KEYS if k in item]
+        rest = [k for k in sorted(item) if k not in lead]
+        pairs = [f"{k}={_scalar(item[k], 40)}" for k in (lead + rest)[:4]]
+        return _scalar(", ".join(pairs), limit)
+    return _scalar(item, limit)
+
+
+def _status_line(status) -> str:
+    """`_status` (surveyors/result_status.attach) kept as a plain line, not a
+    bullet: it describes the RUN, not a field of the result, and the whole
+    reason it exists is that "measured and empty" must not read like "never
+    looked"."""
+    if not isinstance(status, dict):
+        return f"_status: {_scalar(status)}"
+    parts = [f"{k}={status[k]}" for k in ("state", "outcome", "cause", "hint")
+             if status.get(k)]
+    return "_status: " + (", ".join(parts) if parts else _compact(status))
+
+
+def _render_entry(key: str, value, depth: int = 0) -> list[str]:
+    """One top-level field as flat `- key: value` lines.
+
+    Nested mappings flatten one level (`- detail.forks: 4745`) so a number and
+    its name stay on the same line. A container one level down is rendered by
+    the same rules under its dotted key — `dependency_analysis` keeps its whole
+    payload under `by_ecosystem.<eco>`, and compacting that onto one clipped
+    line would have hidden every dependency in the section a dependency
+    question ranks first (run-4 audit, row 16). Deeper than that is compacted:
+    the rung is evidence, not a serialisation.
+    """
+    if isinstance(value, dict):
+        if not value:
+            return [f"- {key}: (empty mapping)"]
+        lines: list[str] = []
+        for k in sorted(value):
+            sub = value[k]
+            if isinstance(sub, (list, dict)) and depth < 1:
+                lines.extend(_render_entry(f"{key}.{k}", sub, depth + 1))
+            else:
+                lines.append(f"- {key}.{k}: {_compact(sub)}")
+        return lines
+    if isinstance(value, list):
+        n = len(value)
+        if n == 0:
+            return [f"- {key}: (empty list)"]
+        if not any(isinstance(v, dict) for v in value):
+            shown = ", ".join(_scalar(v, 60) for v in value[:MAX_FULL_LIST_ITEMS])
+            if n > MAX_FULL_LIST_ITEMS:
+                shown += f" … and {n - MAX_FULL_LIST_ITEMS} more"
+            return [f"- {key}: {shown}"]
+        lines = [f"- {key}: {n} item(s)"]
+        for i, item in enumerate(value[:MAX_FULL_DICT_ITEMS], 1):
+            lines.append(f"  - item {i}:")
+            if isinstance(item, dict):
+                lines.extend(f"    - {k}: {_compact(item[k], 200)}" for k in sorted(item))
+            else:
+                lines.append(f"    - {_scalar(item)}")
+        if n > MAX_FULL_DICT_ITEMS:
+            lines.append(f"  … and {n - MAX_FULL_DICT_ITEMS} more")
+        return lines
+    return [f"- {key}: {_scalar(value)}"]
+
+
+def _full_lines(results: dict) -> list[str]:
+    lines: list[str] = []
+    for key in sorted(k for k in results if k != "_status"):
+        lines.extend(_render_entry(key, results[key]))
+    if "_status" in results:
+        lines.append(_status_line(results["_status"]))
+    return lines
+
+
+def _abridged_lines(results: dict) -> list[str]:
+    """Scalars with their values, then each container's first few entries.
+
+    The rung this replaced named containers `(list)`/`(mapping)` and showed no
+    entry at all, on the reasoning that a COUNT gets narrated as a value. The
+    run-4 audit found the cost of that: with nothing to read, the model read
+    the field names instead (`blueprints, interfaces, documentation` narrated
+    as an architecture) or borrowed content from the section next door. Real
+    entries with an explicit `(first 3 of 62)` marker give it something true
+    to say and say plainly that it is a prefix.
+    """
+    scalars: list[str] = []
+    containers: list[tuple[str, object]] = []
+    for key in sorted(k for k in results if k != "_status"):
+        value = results[key]
+        if isinstance(value, (list, dict)):
+            containers.append((key, value))
+        else:
+            scalars.append(f"- {key}: {_scalar(value, 120)}")
+    lines = list(scalars)
+    for key, value in containers:
+        n = len(value)
+        if n == 0:
+            lines.append(f"- {key}: "
+                         + ("(empty list)" if isinstance(value, list) else "(empty mapping)"))
+            continue
+        if n > ABRIDGED_ENTRIES:
+            marker = f"(first {ABRIDGED_ENTRIES} of {n})"
+        else:
+            marker = f"({n} entr{'y' if n == 1 else 'ies'}, complete)"
+        lines.append(f"- {key}: {marker}")
+        if isinstance(value, dict):
+            for k in sorted(value)[:ABRIDGED_ENTRIES]:
+                lines.append(f"  - {k}: {_compact(value[k], 80)}")
+        else:
+            for item in value[:ABRIDGED_ENTRIES]:
+                lines.append(f"  - {_entry_summary(item)}")
+    if "_status" in results:
+        lines.append(_status_line(results["_status"]))
+    return lines
+
+
+def _with_headline(rungs: dict[Rung, str], headline: dict | None) -> dict[Rung, str]:
+    """The analysis's own one-sentence verdict, as the first line under the
+    heading of every rung that has room for it.
+
+    The knowledge is NOT re-derived here: `REPO_ANALYSIS_HEADLINE_MAP`'s
+    functions already own each shape's meaning, including its coverage —
+    `_cve_scan_headline` answers "none in 0 of 61 declared dependenc(ies)"
+    with tone `warn`, which is exactly the sentence the model needed and
+    invented the opposite of (run-4 audit, row 08).
+    """
+    if not headline or not headline.get("label"):
+        return rungs
+    tone = headline.get("tone")
+    line = f"headline: {headline['label']}" + (f" ({tone})" if tone else "")
+    out = {}
+    for rung, text in rungs.items():
+        if rung is Rung.IDENTIFIERS:
+            out[rung] = text
+            continue
+        head, sep, rest = text.partition("\n")
+        out[rung] = f"{head}\n{line}{sep}{rest}" if head.startswith("## ") else f"{line}\n{text}"
+    return out
+
+
 def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     """Three rungs from an analysis's own results reader.
 
@@ -293,9 +507,21 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     had already measured that 12 analyses have no finding `kind` at all.
 
     The shapes are heterogeneous by design, so the rungs are structural rather
-    than field-aware: FULL is the payload, SUMMARY names each top-level part
-    with its size, IDENTIFIERS names the parts. A reader that knew each shape
-    would be a fourth place to keep that knowledge in sync.
+    than field-aware: FULL is the payload flattened to one `- key: value` line
+    per field, SUMMARY is the same fields with only the first few entries of
+    each list/mapping (marked as such), IDENTIFIERS names the parts. A reader
+    that knew each shape would be a fourth place to keep that knowledge in
+    sync — which is why the per-analysis HEADLINE function, not this, supplies
+    the one field-aware sentence a section gets (see compile_context).
+
+    FULL was a fenced ```json dump until 2026-09-10. The run-4 audit's pattern
+    B is what changed it: `cve_scan`'s `{"checked": 0, "unqueryable": 61,
+    "findings": []}` was read as "the CVE scan found no vulnerabilities", and
+    `repository_health`'s nested `detail` produced "65964 stars, forks,
+    watchers" from `stars: 65964` / `forks: 4745`. Flat, one fact per line,
+    with nesting spelled out as `detail.forks`, removes the two structural
+    invitations to that: a wall of braces to skim, and sibling numbers whose
+    keys are visually far from their values.
 
     ONE exception, and it is a shape, not an analysis: `{"findings": [...]}`
     with `check_name`/`label`/`summary` per item is the same finding shape
@@ -325,41 +551,24 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
             rungs[Rung.FULL] += "\n(also: " + ", ".join(other) + ")"
         return rungs
 
-    # SUMMARY carries only what is safe to read as a value. A scalar IS a
-    # value and is shown; a list or mapping is named and its kind given, with
-    # NO count. The counts were the bug: "- lines_of_code_by_language: 5
-    # key(s)" was narrated as "5 lines of code by language" (kafka, run
-    # full-20260908, judged 2 and cites_evidence=true) and "649 component(s)"
-    # as an inventory. Under `unsupported_claims` compiled answers scored
-    # worse than RAG-only (0.82 vs 0.58) and this shape was the named cause.
-    # The rung is headed "structure only" so the instructions can refer to it
-    # by name; the IDENTIFIERS rung below is the same names with no values.
-    def _part(value) -> str:
-        if isinstance(value, list):
-            return "(list)"
-        if isinstance(value, dict):
-            return "(mapping)"
-        text = str(value)
-        return text if len(text) <= 80 else text[:77] + "..."
-
     keys = sorted(results)
-    # Fenced, not bare -- this text reaches two readers: the model, for which a
-    # ```json block is exactly as parseable as a bare dump, and now the Chat
-    # panel's own "show packed text" toggle, which renders it through
-    # marked.parse(). Unfenced, a raw JSON dump reads as a run-on paragraph of
-    # braces; fenced, marked.js gives it a monospace block. Same bytes reach
-    # the model either way -- this is a display fix, not a content change.
-    return {
-        Rung.FULL: f"## {analysis_id}\n```json\n"
-                   + json.dumps(results, indent=2, default=str, sort_keys=True)
-                   + "\n```",
-        Rung.SUMMARY: f"## {analysis_id}\n"
-                      f"(structure only: part names and scalar values; lists and "
-                      f"mappings are named, not counted — read {analysis_id} for "
-                      f"their contents)\n"
-                      + "\n".join(f"- {k}: {_part(results[k])}" for k in keys),
+    full = f"## {analysis_id}\n" + "\n".join(_full_lines(results))
+    abridged = (
+        f"## {analysis_id}\n"
+        f"(abridged: first entries only; read {analysis_id} for the rest)\n"
+        + "\n".join(_abridged_lines(results))
+    )
+    rungs = {
+        Rung.FULL: full,
         Rung.IDENTIFIERS: f"## {analysis_id}\nreports: " + ", ".join(keys),
     }
+    # The middle rung has to BE a middle: a section whose abridged form is
+    # nearly as long as its FULL one buys the packer no choice, and paying a
+    # partial-evidence warning for a rung that saves nothing is the worst of
+    # both. Let the packer pick FULL or IDENTIFIERS in that case.
+    if len(abridged) <= len(full) * 0.8:
+        rungs[Rung.SUMMARY] = abridged
+    return rungs
 
 
 #: Which analyses have a real, addressable view to point at. Deliberately
@@ -424,6 +633,49 @@ def _judge_gap(fact_layer, slug: str, analysis_id: str) -> dict:
     return gap
 
 
+#: How the question catalog says a question is answered, when the answer is
+#: not a stored analysis. These are the kinds whose `analysis_ids` are empty
+#: BY DECLARATION — the catalog is not silent about them, the compiler was.
+_COVERAGE_PHRASING = {
+    "human": "human input",
+    "direct": "a direct field",
+    "chart": "a chart",
+    "gap": "nothing yet (gap)",
+}
+
+
+def _coverage(entry: dict | None, relevance: float) -> tuple[dict, str, str]:
+    """What the catalog itself says answers this question, and — when that is
+    not a stored analysis — one line at the top of the evidence saying so.
+
+    An empty `gaps` list means "no section we offered was missing", which is
+    not the same as "the question is covered". Three of the run-4 audit's five
+    inventions are exactly that difference: nothing in the pack addressed what
+    was asked, nothing said so, and the model filled the void from the repo
+    name, an invented survey tier, and global star counts.
+    """
+    if entry is None or relevance <= 0.0:
+        return ({"kind": "none", "question": "", "note": ""},
+                ("Coverage: no catalog question matches what you asked, so no stored "
+                 "analysis answers it; the sections below are the nearest-ranked "
+                 "evidence, not an answer.\n"),
+                "Coverage: no stored analysis answers this question.\n")
+    answering = entry.get("answering") or {}
+    kind = answering.get("kind") or "unknown"
+    cov = {"kind": kind, "question": entry.get("question", ""),
+           "note": answering.get("note", "")}
+    phrase = _COVERAGE_PHRASING.get(kind)
+    if phrase is None:
+        # analysis / mixed / partial: a stored analysis does answer it, and the
+        # sections below are that answer. The kind is recorded; nothing is said.
+        return cov, "", ""
+    return cov, (
+        f'Coverage: the question catalog answers "{cov["question"]}" by {phrase}, '
+        f"not by stored analyses; the sections below are the nearest-ranked "
+        f"evidence, not an answer.\n"
+    ), f"Coverage: the catalog answers this by {phrase}, not by stored analyses.\n"
+
+
 def compile_context(
     registry,
     slug: str,
@@ -474,13 +726,27 @@ def compile_context(
     _actions = {a["id"] for a in get_analyses("repo", include_egeria_live=False)
                 if a.get("action") == "publish"}
 
+    #: The best-matching catalog entry OVER THE WHOLE CATALOG, including the
+    #: entries the loop below skips for having no analysis to dispatch to.
+    #: Those are the ones that matter here: the catalog has already recorded
+    #: that this question is answered by a human, a direct field, a chart, or
+    #: not yet at all. Skipping them left the compile with no way to say so,
+    #: and the run-4 audit's pattern C is what fills that silence — "surveyed
+    #: at Tier 1", "a documentation platform", organizational adoption read
+    #: off global GitHub counts, with `gaps: []` in every case because no
+    #: analysis was ever mapped to the need.
+    best_entry, best_relevance = None, 0.0
+
     for position, entry in enumerate(entries):
         d = entry.get("derivation") or {}
         ids = [i for i in (d.get("analysis_ids") or []) if i not in _actions]
+        entry_relevance = _question_relevance(question, entry["question"], ids)
+        if entry_relevance > best_relevance:
+            best_entry, best_relevance = entry, entry_relevance
         if not ids:
             continue
         # Weight decays with rank but never reaches zero.
-        relevance = _question_relevance(question, entry["question"], ids)
+        relevance = entry_relevance
         # relevance dominates position by design: a question that names what
         # it wants ("documentation") must outrank an unrelated question that
         # merely sits earlier in the YAML. Position still breaks ties among
@@ -524,10 +790,19 @@ def compile_context(
     # `rank` comment above: this reorders the LIST, not the `rank` field.
     derivation.sort(key=lambda d2: -max((weights.get(a, 0.0) for a in d2["analysis_ids"]), default=0.0))
 
+    coverage, coverage_line, coverage_line_short = _coverage(best_entry, best_relevance)
+
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
+    # The coverage line rides INSIDE the instructions candidate rather than
+    # being appended to the packed text afterwards, so it is part of what
+    # `_compile_id` hashes: two compiles of the same question over the same
+    # stored state stay one compile, and a compile whose coverage changed is a
+    # different one.
     candidates: dict[str, Candidate] = {
-        "instructions": Candidate("instructions", {Rung.FULL: _INSTRUCTIONS,
-                                                   Rung.SUMMARY: _INSTRUCTIONS_SHORT}),
+        "instructions": Candidate("instructions",
+                                  {Rung.FULL: coverage_line + _INSTRUCTIONS,
+                                   Rung.SUMMARY: coverage_line_short + _INSTRUCTIONS_SHORT,
+                                   Rung.IDENTIFIERS: _INSTRUCTIONS_BARE}),
     }
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
     cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
@@ -538,6 +813,8 @@ def compile_context(
     ]
     if cap > 0:
         ranked = ranked[:cap]
+    # Failures the compile survived but the caller must be able to see.
+    extra_notes: list[str] = []
     for analysis_id, weight in ranked:
         sections.append(Section(analysis_id, role="evidence", weight=weight))
         findings = registry.query_findings(slug, analysis_id)
@@ -564,6 +841,7 @@ def compile_context(
         # findings are slight, and keep whichever says more.
         if len(rungs.get(Rung.FULL, "")) < THIN_FINDINGS_CHARS:
             from resource_explorer.surveyors.repo_survey_definition_adapter import (
+                REPO_ANALYSIS_HEADLINE_MAP,
                 REPO_ANALYSIS_RESULTS_MAP,
             )
             entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
@@ -584,7 +862,26 @@ def compile_context(
                     # that a THIN finding also reaches here, a reader with less
                     # to say must not displace the little that was real.
                     if len(from_reader.get(Rung.FULL, "")) > len(rungs.get(Rung.FULL, "")):
-                        rungs = from_reader
+                        # The analysis's own headline goes first, ahead of the
+                        # fields it summarises. Same fail-soft discipline as
+                        # the reader above: a headline that raises costs this
+                        # section its verdict line, not the compile.
+                        headline = None
+                        hl = REPO_ANALYSIS_HEADLINE_MAP.get(analysis_id)
+                        if hl is not None:
+                            try:
+                                headline = hl(registry, slug)
+                            except Exception as exc:
+                                log.warning("headline reader for %s failed on %s: %s",
+                                            analysis_id, slug, exc)
+                                # Visible in the manifest, not only in a log:
+                                # a section missing its verdict line must be
+                                # distinguishable from one that never had one.
+                                extra_notes.append(
+                                    f"headline for {analysis_id} unavailable "
+                                    f"({type(exc).__name__}); section packed "
+                                    f"without its verdict line")
+                        rungs = _with_headline(from_reader, headline)
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
 
@@ -619,11 +916,15 @@ def compile_context(
             # packed, dropped nor a gap. Listed so "why these?" can show what
             # was left out and where it ranked.
             "deferred": deferred,
+            # What the catalog says answers this question at all. `gaps` says
+            # which offered sections had nothing; this says whether the
+            # question was ever a question stored analyses answer.
+            "coverage": coverage,
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.
             "gaps": [_judge_gap(_facts, slug, g["key"]) for g in m.gaps],
-            "notes": list(m.notes),
+            "notes": list(m.notes) + extra_notes,
         },
         derivation=derivation,
     )

@@ -10,6 +10,41 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Provenance: stamp the producing run on results rows
+
+**Argued as provenance, not as UI polish** — it is the same class of fact as
+`surveyed_at` and the disposition trail, and it should not be costed as a
+convenience feature, because it will lose that argument and the loop it closes
+will stay open.
+
+A measurement cannot currently name the run that produced it. `project_analysis_
+findings` / `_metrics` carry `surveyed_at`; the runs queue (`/api/runs/`) carries
+timings and state but no per-step detail; and the step detail that exists lives
+in the activity log, keyed to neither. The only available correlation is
+timestamp proximity.
+
+**Timestamp correlation is exactly what must not be built here.** The two-clocks
+defect (2026-09-10: a run registry saying 24 August while the metric rows for the
+same analysis were written 10 September at 02:57) is the demonstration — the two
+clocks disagree by weeks, and a link inferred from them would be a guess wearing
+a link's clothing. A UI that offers "open the run that produced this value" is
+claiming causation the data cannot support.
+
+**What it unlocks**, once a run id is on the row:
+
+- a measurement opens the run that produced it, and the run names every step and
+  what each found — the level that regressed when the old Survey pane was
+  replaced by a definitions list;
+- "what changed since the last run" becomes exact rather than inferred from a
+  metric series;
+- a failed step can say which previous measurement is still current and was not
+  overwritten, which is currently only assertable in prose.
+
+Until then `/next` offers "Runs on this resource" — honestly a list, with no
+claimed link to the value it was opened from.
+
+---
+
 ## Next up — priorities as of 2026-08-26
 
 Marked at the end of the architecture-recovery thread. Findings 96–119 in
@@ -4504,6 +4539,213 @@ slug returns an empty answer rather than an error. Any claim of the form "X is
 missing for repo R" needs R proven to exist in the same session as the query
 that found X missing.
 
+## Phoenix: RE traces into its own project — FIXED 2026-09-09
+
+Phoenix buckets spans by project and anything that does not name one lands in
+`default`, which is shared. Measured 2026-09-09: this machine's `default` held
+106 spans from an unrelated BeeAI **tutorial** run in December 2025
+(`OpenMeteoTool`, `DuckDuckGo`, 7 error spans) — and RE's first real span landed
+among them. Anyone opening Phoenix cold would reasonably read the tutorial's
+token counts as RE's.
+
+`init_phoenix()` now stamps `openinference.project.name` on the TracerProvider's
+`Resource` (not per-span, so it cannot be forgotten at a call site), from the new
+`PhoenixConfig.project_name`, default `resource-explorer`. Verified live: the
+collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
+history is deleted; the two simply stop sharing a bucket.
+
+## Funnel tier vocabulary — resolved from the catalog, §2 and §4 answered 2026-09-10
+
+**`activity_log.intent` cannot be used to tier a run.** It is stamped at write
+time and never revisited, so it holds what the catalog said that day; the
+catalog has been retagged twice (rule 17: three analyses `assessment` →
+`discovery` on 2026-08-20, `architecture_recovery` `discovery` → `analysis` on
+2026-08-30). Measured over 1,217 rows: **174 of the 348 attributable rows — 50%
+— disagree with the catalog's current tier**, and reading the column finds **no
+`analysis` tier at all** while 11 analyses declare it and it is in fact the
+largest tier by rows.
+
+`resource_explorer/tier_resolution.py` resolves instead of reading: an
+`analysis_run` row through its `analysis_id`, a `survey` row through step
+OWNERSHIP (never `REPO_ANALYSIS_SOURCE_STEPS` — that would credit
+`architecture_diagram` for the recovery's steps again). Four states, and the
+middle two are the point: `attributed` / `unattributable` (a survey predating
+step recording — which analyses ran is unknowable, NOT none) /
+`unknown-analysis` / `not-a-run`. `TierCoverage.considered` keeps the
+unattributable in the denominator, because dropping them is the difference
+between "no repo reached Analysis" and "we cannot say for most of them".
+
+    resolved over the whole log:  attributed 348 · unattributable 265
+                                  not-a-run 604 · unknown 0
+    rows per CURRENT tier:        analysis 169 · assessment 123
+                                  discovery 86 · scouting 70
+
+**The spec's assumed ladder does not exist.** It ranks
+scouting/discovery/analysis/**understanding** and excludes **assessment**. No
+analysis declares `understanding` — it is canonical per rule 17 but uncosted —
+while `assessment` has the **most** analyses of any tier (15). Ranking must come
+from the tiers that have analyses; `assessment` and `analysis` are peers on rule
+17's own axis (both reason over already-collected data), not a sequence.
+
+**§2 — is it narrowing? No.**
+
+    repos reaching:  scouting 22 · discovery 18 · analysis 25 · assessment 18
+    retention:       scouting -> discovery   17 of 22  (77%)
+                     discovery -> analysis   18 of 18  (100%)
+                     discovery -> assessment 16 of 18  (89%)
+    deepest tier:    all 26 attributable repos reach analysis/assessment
+
+100% retention into the deepest tier, and MORE repos reach `analysis` (25) than
+`scouting` (22) — the ladder is inverted at the top. **Caveat that limits this
+hard:** only 26 repos have any attributable run, against 63 with unattributable
+surveys, so this is a small and non-random slice — the repos surveyed recently
+enough to have step recording. The honest headline is "the funnel does not
+narrow on the repos we can see", not "the funnel does not narrow".
+
+**§4 — where do decisions happen?** 13 terminal transitions against 24
+non-terminal (`tracking`/`investigating`/`undecided` — a queue, not decisions).
+**8 of the 13 had no attributable run before them at all**; 5 were decided at
+analysis/assessment depth. The spec's prediction about rationales is
+**confirmed**: `abandoned` 2/3 and `ignored` 1/1 carry a reason, `recommended`
+0/4 and `using` 0/5 carry none — negative states prompt, positive ones do not.
+13 is too small to conclude more than the shape.
+
+**§1 remains unanswerable** — the `runs` table holds 12 rows, the queue being
+~6 days old.
+
+## Source-acquisition accounting — cold vs warm per run, DONE 2026-09-10
+
+The cheap half of the funnel-cost spec's §6. That section asks for *bytes
+fetched*; the thing it actually needs bytes FOR — separating "slow because it
+downloaded" from "slow because it worked" — is settled by one bit, and
+`SourceCache` already knew it.
+
+Rule 17 measured the stakes: acquisition **22.64s cold against 1.28s warm**, one
+repo's full route 110.5s → 30s → **14.4s** as caching landed. A tier median that
+pools those two populations measures how many of its runs happened to be first,
+not the tier. The spec calls caching its single biggest confounder and it is
+right.
+
+`SourceCache.hits`/`.misses` have existed since the class was written and
+**nothing has ever read them** — and they could not have answered this anyway:
+the cache is deliberately shared across `SurveyOrchestrator.run()` calls, so
+they are process-wide totals and sampling them either side of a run would race
+any concurrent run. `observability/acquisition.py` is a ContextVar scope
+attributing each lookup to the run that made it — the same shape as
+`llm_usage`, deliberately one pattern rather than two. The shared counters are
+kept for debugging the cache itself.
+
+**Three states, and the third is the point.** `cold` (anything missed — one
+miss means a real download), `warm` (all hits), and **`not-consulted`** (the run
+never touched the cache at all). A database survey does no source acquisition,
+and defaulting it to `warm` would file every one of them in the cheap bucket of
+a comparison they never entered. `cold` is deliberately "any miss", not "all
+misses": a run warm on the zipball and cold on the clone still paid for the
+download.
+
+Logged per run beside the token counts — counts as metrics, `source_acquisition`
+and `source_kinds_fetched` as params, so a cost query can *filter* cold runs out
+of a tier median rather than averaging them in. The run-cost log fires on
+`usage.calls or acquired.lookups`: a run that downloaded a large zipball and
+made no LLM call is exactly the expensive case §1 cares about, and gating on
+tokens alone dropped it.
+
+Verified end-to-end through the real cache: cold 2 misses, warm 2 hits,
+SHA-moved 1 hit + 1 miss reading `cold` with `source_kinds_fetched:
+[git_clone_root]`, and a no-lookup run reading `not-consulted`.
+
+**Bytes fetched is still not instrumented**, and is now much less urgent: the
+confounder it was wanted for is handled. It remains the honest answer if two
+tiers ever come out indistinguishable *within* the same acquisition state.
+
+## LLM token accounting — complete() and streaming both counted
+
+Built 2026-09-09 at the project owner's direction, closing half of the
+funnel-cost spec's §6 ("the instrumentation that doesn't exist").
+
+**Why not just Phoenix.** Phoenix is running and does capture token counts, but
+`BeeAIInstrumentor` instruments BeeAI and nothing else. Measured, same process,
+same prompt, same model, Phoenix instrumented for both: a BeeAI
+`OllamaChatModel.run()` produced one span carrying `prompt=17 completion=2
+total=19`; a `get_llm().complete()` produced **no span at all** (106 spans
+before, 106 after). `llm_client` is where the chat path and ten agent call
+sites live, and several of those are the agents' `fallback_prompt` path — so
+tracing alone would have measured the minority of RE's LLM work, biased toward
+runs that succeeded.
+
+`observability/llm_usage.py` accumulates per-scope totals; all three backends
+record in `complete()`. Verified end-to-end against real Ollama:
+`{'llm_prompt_tokens': 17, 'llm_completion_tokens': 2, 'llm_total_tokens': 19,
+'llm_usage_complete': True, 'llm_models': ['llama3.1:8b']}` — matching the
+Phoenix span for the same prompt exactly, two independent measurements agreeing.
+
+**Streaming landed 2026-09-10**, in each backend's own shape. Ollama reports the
+counts on the final `done` chunk; OpenAI sends them only when the REQUEST passes
+`stream_options={"include_usage": True}`, and then in a final chunk whose
+`choices` list is **empty** — the previous `chunk.choices[0]` would have raised
+IndexError on it, so the loop now tests `chunk.choices` before indexing;
+Anthropic reassembles them from `message_start`/`message_delta` via
+`get_final_message()`.
+
+**Every `stream()` records from a `finally`, and that is the load-bearing
+detail.** A `stream()` is a generator: a consumer that breaks out of the loop
+closes it, GeneratorExit is raised *at the yield*, and anything written after
+the loop never runs. A trailing `record(...)` would therefore drop the call from
+the accounting **entirely** — strictly worse than counting it as uncounted,
+because the run then looks like it made fewer LLM calls than it did. With the
+`finally`, an abandoned or failed stream still appears, both counts still None,
+booked UNCOUNTED.
+
+Verified against live Ollama: a completed stream records
+`prompt 21 / completion 10 / total 31, complete=True`; the same stream closed
+after one chunk records `1 call, 0 tokens, uncounted 1, complete=False` — the
+model id is kept either way, so an abandoned call is still attributable.
+
+So `uncounted` did not become dead weight: it now means "a call we could not
+price" — an abandoned stream, a failed one, or a response omitting either half
+— rather than "a whole category we have not instrumented".
+
+**Two scopes are open** so the counter is not inert: `run_queue` around the
+handler (per-run attribution, what §6 asked for) and `RAGSystem.query` around
+its route.
+
+**Persisted to MLflow 2026-09-09** — chosen over the `activity_log` because it
+needs no schema migration, is already live with thousands of RE runs, and is
+where a cost analysis would look. `log_query(..., usage=)` carries the chat
+path; `log_run_usage()` writes a **separate** `<experiment>-runs` experiment,
+because pooling runs with chat queries would make "median cost per run" quietly
+include every chat message. Token counts go in as **metrics** (they aggregate);
+`llm_usage_complete` and the model list go in as **params** (they filter) — a
+run whose total is a floor rather than a measurement has to be excludable by
+query, or the aggregate silently mixes the two. A cache hit passes `usage=None`
+and logs nothing rather than zeros: a free answer does not belong in the same
+population as a paid one. Verified end-to-end against the live MLflow:
+`llm_prompt_tokens 17, llm_completion_tokens 2, llm_total_tokens 19,
+llm_counted_calls 1, llm_uncounted_calls 0`.
+
+Three structural faults found while wiring it, all worth remembering. The
+MLflow call was first placed INSIDE the `try` whose `except` marks a run
+**failed** — a metrics sink able to report a completed run as crashed. `_track`
+must receive `usage` **by value**: it runs on a bare `threading.Thread` and
+cannot read the ContextVar itself.
+
+And the caller's own defensive `try/except` around the sink was itself the
+defect: it made `execute_run` — which returns a `RunOutcome` — a
+broad-except/log-only/value-returning site, which the silent-success ratchet
+caught on the next full run (108 → 109). The fix was not to narrow the wrapper
+but to delete it: `log_run_usage` now guards its **whole** body, config read and
+reachability probe included, so it cannot raise and the call site needs nothing.
+**Protection belongs in the sink, not at every call site** — a guard at each
+caller multiplies the silent sites instead of removing them. Four tests prove
+the sink survives a broken config, an exploding reachability probe and a
+malformed usage dict, and one fails if a wrapper is ever re-added.
+
+**The ContextVar trap this ran into.** `RAGSystem.query` hands off to a bare
+`threading.Thread`, which does NOT inherit ContextVars (asyncio tasks and
+`asyncio.to_thread` do). Reading the scope from inside `_track` would find
+nothing and report every query as free, so the read is synchronous in `query`
+itself, with a test pinning the ordering and another pinning the trap.
+
 ## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first — ATTRIBUTION FIXED 2026-09-09, freshness still open
 
 Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took
@@ -4567,10 +4809,74 @@ Three things, in dependency order, none done:
    owns and derives a key, so it passed with the guard removed; it now
    constructs the case via monkeypatch, with a separate test asserting the real
    catalogue has no such entry.
-2. **Consult the freshness that is already known** before dispatching — skip, or
+2. ~~**Consult the freshness that is already known** before dispatching~~ **DONE
+   2026-09-10, skip-by-default, user-initiated runs only.** Two decisions from
+   the project owner: *skip by default* (not warn-and-run), and *leave the
+   scheduler alone* — gating nightly sweeps changes what "nightly" means, which
+   is a different question from sparing someone a redundant click, and
+   `RunsConfig.gate_user_runs` names that scope.
+
+   `workflows.analysis.assess_freshness()` returns a verdict **and its
+   evidence** — three states (`never-run` / `stale` / `fresh`), the age, and
+   `via`: the id whose run supplied the freshness. For a derived analysis that
+   is its SOURCE, so `architecture_diagram` reports being fresh because
+   `architecture_recovery` ran rather than claiming a run it never had. That
+   inheritance only works because of the 2026-09-09 attribution fix above.
+
+   Never counts as fresh: a run whose latest attempt **errored** (its data is
+   the old data, and pressing Run after a failure must run), a **future**
+   timestamp (clock skew would otherwise wedge an analysis into never running
+   again), and an unparseable one.
+
+   `POST .../run` answers `{"status": "skipped", "reason": "already-fresh",
+   "detail": ...}` with null ids, and `?force=true` always runs. All **three**
+   frontend callers handle it — the card grid, the chat answer button and the
+   gap-analysis button — each offering "Run anyway". Two of those three share a
+   byte-identical fetch block, and the first attempt patched one of the pair;
+   the guard is derived over every function that polls `activity_id`, not a
+   list.
+
+   Original item, for the record:
+   **Consult the freshness that is already known** before dispatching — skip, or
    warn with the age, when the source data is newer than a threshold. Whether
    the default is skip-with-override or warn-and-run is a product decision;
    silently re-running for 90s is the one option that is clearly wrong.
+
+   **Measured 2026-09-10, which turns the threshold from a guess into a
+   reading.** Over the 1,207 successful runs in `activity_log`, grouped per
+   (repo, analysis):
+
+       within  5 min of an identical prior run:  250 runs  (20.7%)
+       within  1 hour:                           330       (27.3%)
+       within  6 hours:                          347       (28.7%)
+       within 24 hours:                          418       (34.6%)
+       within  7 days:                           669       (55.4%)
+
+   The 1h→6h step is +1.4pp — a flat region separating burst duplication from
+   the legitimate daily cadence, so a threshold anywhere in it behaves much the
+   same. **1 hour** is the suggested global default, overridable per analysis;
+   per-tier thresholds are the right long-term answer but need §5's rot
+   measurement, which needs material-difference detection that does not exist.
+
+   **And a trap worth recording, because the first reading said the opposite.**
+   Comparing consecutive findings sets by hash gave a *change* rate of 27% at
+   <5min against 12% at 5min–1h — i.e. findings apparently rotting faster in
+   five minutes than in an hour, which cannot be true. 75 of those 92 "changes"
+   (82%) were one logical run seen as two: the architecture pipeline writes
+   `architecture_recovery`, `architecture_decisions`, `architecture_blueprints`,
+   `architecture_interfaces` and `architecture_diagram` from
+   `arch_recovery/persist.py` (both `repo_arch_detect` and `repo_arch_coupling`
+   call it) plus `architecture_summary` from `sub_surveyors/arch_summary.py`,
+   each at its own `surveyed_at`. A first attempt to control for this checked
+   `REPO_ANALYSIS_STEP_MAP` for analyses owning >1 step — and missed all of them,
+   because those are **finding kinds, not analysis ids**. Corrected, the real
+   <5min change rate is **~5%**, below the 12–13% at longer intervals, which is
+   the direction that makes sense.
+
+   So: **a fifth of all runs are near-duplicates and ~95% of them produce
+   nothing new.** Anyone re-deriving this must group by the pipeline that wrote
+   the findings, not by `kind`, or they will measure the step boundary instead
+   of the rot.
 3. **Separate "view" from "refresh" on derived cards.** `architecture_diagram`
    is `live_read`, so its Results tab already renders with no run at all — the
    Run button offers a 90-second refresh where the reader wanted a picture. At
@@ -4751,3 +5057,79 @@ every other status branch shows the hint, and a reader that took the trouble to
 write one ("No architecture diagram yet — run the analysis.") has it dropped.
 Changing it touches every kind's empty state, so it is a deliberate call for
 the presentation session, not a side effect of adding one card.
+
+
+## The architecture diagram cannot be rendered by this Kroki — REOPENS "drawn by a path no test exercises end-to-end"
+
+Measured 2026-09-10 against the live `egeria-shared-kroki` on :6002. The
+**exact payload the shipping UI POSTs** — `renderPendingArchDiagrams()`'s
+`%%{init: …}%%` prefix plus the stored `mermaid` source — returns
+`400 Internal Server Error`. Not a slow render, not a large-diagram limit:
+a refusal.
+
+There are **three independent causes, each sufficient on its own**, and each
+was isolated by bisecting down to a two-node diagram rather than inferred:
+
+| cause | evidence |
+|---|---|
+| Any line beginning `%%` | `flowchart TD / A[a] --> B[b]` renders (200). The same two lines with `%%{init: {"theme":"dark"}}%%` prefixed, or even a plain `%% comment`, return 400. So the UI's own theming directive breaks every render it is applied to. |
+| A literal `%` in a node label | `A["x 40% y"]` alone returns 400. Escape it as **`&percnt;`** — `&#37;` is also accepted (200) but comes back rendered as `40&%`, and the status code cannot tell the two apart. The difference is only visible by reading the text nodes of the returned SVG. |
+| A `class` directive naming more than 20 nodes | 20 renders, 21 does not, deterministically, whether on one line or split across several. A real diagram styles 53. |
+
+Cause 2 is **unconditional in the generator**:
+`surveyors/arch_recovery/mermaid.py:160` is `conf = f"{c.confidence}%"`, with
+no branch — so every component node of every diagram carries a literal `%`.
+Confirmed against stored data, not only read off the source: `milvus` (10
+literal `%`), `sqlglot` (3) and `marquez` (7) each return 400 from their real
+diagram. There is no repo for which this source renders.
+
+Cause 3 is narrower but independent: across the 53 repos holding a stored
+diagram, **7 also exceed the 20-node `class` ceiling** — `openmetadata` styles
+63. Those seven would still fail after cause 2 is fixed.
+
+*(A first pass at that survey reported "0 repos affected by `%`", which was a
+bug in the survey: the regex used a `(?<![&#\d])` lookbehind, and every real
+occurrence is `40%` — a digit immediately before the `%`, so the instrument
+excluded exactly the case it was looking for. Recorded because the wrong
+number looked entirely reasonable and agreed with no other evidence.)*
+
+**This reopens the entry above** ("CLOSED 2026-09-09, verified live"), which
+records the project owner confirming on :8810 that the diagram materialises.
+That verification and today's measurement cannot both describe the same
+system, and this entry does not guess which changed — the Kroki containers
+have been up three days, spanning both. What is certain is that the shipping
+UI's diagram does not render **today**, by direct measurement of its own
+payload, and the closed entry's conclusion should not be relied on until
+someone signed in re-checks it.
+
+**Where the fix belongs: the generator, not the caller.** A renderer that
+refuses `%` is a constraint on what may be emitted, and emitting the
+confidence as `40%` when `&#37;` renders identically is a free change.
+The `%%{init}%%` theming is the UI's, and has to move to styling the returned
+SVG — `/next` does this in `static/next/worklist.js`'s `themeSvgElement()`,
+scoped to the SVG's own id, and the two traps found doing it are worth
+copying: an SVG `<style>` is not scoped (it restyles the whole document), and
+prefixing a comma-separated selector list only scopes the FIRST selector.
+
+Worked around at the render boundary in `/next` (`mermaidForKroki()`), which
+strips `%%` lines, escapes `%`, and caps the class assignments while naming
+how many node styles it dropped. That is a workaround in one consumer, not a
+fix — the second consumer will hit all three again.
+
+## `exceeds_renderer_limit` reports the opposite of the truth
+
+`architecture_diagram`'s fact value carries `exceeds_renderer_limit: false`
+for a diagram that no renderer available here will accept — measured on
+`egeria_workspaces_git`, 9,384 characters, `false`, and a hard 400 from
+Kroki.
+
+Whatever that flag measures, it is not "will this render", which is what its
+name promises and what a caller will read it as. A guard that is confidently
+wrong in the safe-looking direction is worse than no guard: a UI that trusts
+it will not offer the fallback it would otherwise have offered.
+
+Either the flag should mean what it says — checked against the renderer's
+actual constraints, which per the entry above are `%%` lines, literal `%`,
+and a 20-node ceiling on `class` — or it should be renamed to whatever it
+does measure (a character count against some other bound) so nobody reads it
+as a rendering guarantee.

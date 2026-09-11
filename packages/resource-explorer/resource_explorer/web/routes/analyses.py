@@ -9,6 +9,12 @@ from resource_explorer.surveyors.analysis_catalog_reader import (
     list_perspectives,
 )
 
+import logging
+from concurrent.futures import as_completed
+
+from resource_explorer import concurrency
+
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -136,6 +142,163 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     return get_questions(resource_type)
 
 
+#: Most resources one bulk read will serve. Beyond this the request is
+#: REFUSED with the cap named, rather than quietly truncated — a matrix that
+#: silently drops rows past 200 is worse than one that says it cannot.
+BULK_FACTS_MAX_SUBJECTS = 200
+
+
+@router.get("/facts")
+def bulk_resource_facts(
+    slugs: str = Query(..., description="comma-separated resource slugs"),
+    analysis_ids: str = Query("", description="comma-separated; omit for every analysis"),
+    states_only: bool = Query(
+        False,
+        description="cheap projection: is there output and when was it measured, "
+                    "without running the results readers",
+    ),
+) -> dict:
+    """What is known about SEVERAL resources, in one call.
+
+    Exists for the comparison matrix, which is rows x questions and was making
+    one request per row. Twelve rows is twelve round trips; four hundred is
+    four hundred.
+
+    **Scope `analysis_ids` if you can.** The cost here is dominated by a
+    couple of analyses whose results readers are genuinely expensive —
+    measured on `egeria_git`, `architecture_recovery` takes 47s and
+    `architecture_diagram` 22s, while the other 32 together take under a
+    second. Reading all 34 for one resource is 70s; reading the 5 that
+    Scouting's questions actually use is 0.5s. A caller that knows which
+    analyses it will display should say so.
+
+    A GET rather than a POST because it is a read, and this app has a
+    read-only mode that a POST would put it out of reach of. The cost of that
+    choice is the URL length, hence the cap.
+    """
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+
+    subjects = [s.strip() for s in slugs.split(",") if s.strip()]
+    # Deduped, order preserved: a repeated slug in the request should not mean
+    # the work is done twice.
+    subjects = list(dict.fromkeys(subjects))
+    if not subjects:
+        raise HTTPException(status_code=400, detail="slugs is required")
+    if len(subjects) > BULK_FACTS_MAX_SUBJECTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(subjects)} resources requested; this endpoint serves at "
+                   f"most {BULK_FACTS_MAX_SUBJECTS} at a time",
+        )
+
+    ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
+    ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+
+    if states_only:
+        # THE CHEAP PATH. Two grouped queries for the whole matrix instead of
+        # one results reader per (resource, analysis). The readers are what
+        # cost — `architecture_recovery` at 47s on a large repo — and they
+        # build a value a grid cell never displays.
+        #
+        # DELIBERATELY LESS INFORMATIVE, and it says so in the response. This
+        # separates "there is output" from "there is none"; it does NOT
+        # separate `measured` from `partial`, because that lives in the
+        # results dict's own `_status` and only the reader produces it. A
+        # caller must render the difference as not-yet-read. Claiming a state
+        # nobody established is the exact failure this layer exists to stop,
+        # and doing it for speed would be a poor trade.
+        from resource_explorer.registry import ProjectRegistry
+
+        registry = ProjectRegistry()
+        summary = registry.analysis_result_summary(subjects, ids)
+        layer = FactLayer()
+        states: dict[str, dict] = {}
+        for slug in subjects:
+            runs = layer._last_run(slug)
+            per: dict[str, dict] = {}
+            for aid in ids:
+                hit = summary.get((slug, aid)) or {}
+                run = runs.get(aid) or {}
+                per[aid] = {
+                    "has_results": bool(hit.get("rows")),
+                    "rows": hit.get("rows", 0),
+                    # How current this cell is — the question a matrix of
+                    # stored results has to answer before anyone trusts it.
+                    "measured_at": hit.get("measured_at") or run.get("last_run_at", ""),
+                    "last_run_at": run.get("last_run_at", ""),
+                    # CERTAIN, not inferred: nothing stored and nothing run.
+                    "certain_never_run": not hit.get("rows") and not run.get("last_run_at"),
+                }
+            states[slug] = per
+        return {
+            "states": {s: states[s] for s in subjects if s in states},
+            "analysis_ids": ids,
+            "requested": len(subjects),
+            "returned": len(states),
+            "projection": True,
+            "projection_note": (
+                "has_results and measured_at only — `measured` vs `partial` is "
+                "not established here. Read the full facts for that."
+            ),
+        }
+
+    out: dict[str, list] = {}
+    failed: dict[str, str] = {}
+
+    def read_one(slug: str):
+        # A FactLayer per thread rather than one shared: it holds a registry
+        # handle, and a DB connection is not something to share across
+        # threads on the strength of it probably being fine.
+        return slug, [f.as_dict() for f in FactLayer().facts(slug, ids)]
+
+    # Fanned out across resources, because the cost here is dominated by a
+    # couple of readers that are slow rather than by many that are quick —
+    # `architecture_recovery` is 47s on a large repo and `architecture_diagram`
+    # 22s, and Discovery's questions route to BOTH. Twelve resources serially
+    # is a quarter of an hour; the work is DB- and IO-bound, so threads
+    # actually buy something here.
+    #
+    # THE PROCESS'S SHARED POOL, not one of our own.
+    #
+    # `docs/process-model.md` §1.3 inventoried the ad-hoc pools this codebase
+    # used to build and replaced them with one bounded, daemon-worker pool;
+    # `test_no_module_builds_its_own_bridging_pool` keeps new ones out, by
+    # AST rather than by substring, and caught this route the moment the
+    # fan-out landed.
+    #
+    # The bound matters for the same reason it did when it was local: this
+    # shares a Postgres with two apps and several sessions, and an unbounded
+    # fan-out would trade one slow page for everyone else's connections. The
+    # shared pool is already sized for that, so there is nothing to cap here.
+    pool = concurrency.get_pool()
+    futures = {pool.submit(read_one, slug): slug for slug in subjects}
+    for fut in as_completed(futures):
+        slug = futures[fut]
+        try:
+            slug, facts = fut.result()
+            out[slug] = facts
+        except Exception as exc:
+            # One unreadable resource is one unreadable resource. Named, and
+            # kept OUT of `subjects`, so a caller cannot mistake "we could not
+            # read it" for "it has no results" — the distinction this whole
+            # layer exists to preserve.
+            log.warning("bulk facts failed for %s: %s", slug, exc)
+            failed[slug] = f"{type(exc).__name__}: {exc}"
+
+    return {
+        # Requested order, not completion order — the grid renders rows in the
+        # order it asked for them.
+        "subjects": {s: out[s] for s in subjects if s in out},
+        "analysis_ids": ids,
+        "requested": len(subjects),
+        "returned": len(out),
+        "unreadable": failed,
+    }
+
+
 @router.get("/facts/{slug}")
 def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> dict:
     """What is known about this resource, and how well it is known.
@@ -188,7 +351,43 @@ def list_analyses(
     perspective:  all | dba | data_scientist | steward | security
     """
     result = get_analyses(resource_type, intent=intent, perspective=perspective)
+    _attach_trend_support(resource_type, result)
     return result
+
+
+def _attach_trend_support(resource_type: str, entries: list[dict]) -> None:
+    """Declare, per analysis, whether a series is kept for it.
+
+    THE ANALYSIS KNOWS. `REPO_ANALYSIS_RESULTS_MAP` registers a trend reader,
+    or registers `None` deliberately for a current-state classification whose
+    history would be a flat, near-meaningless line. That is a property of the
+    analysis, so it belongs in the analysis's descriptor — and then a client
+    never has to ask a trend endpoint a question whose answer is "no", and
+    never has to render an error to say "correctly, there is nothing".
+
+    Same shape as putting the tier on a survey row instead of warning that the
+    stage filter failed: the fact moves to where it is known, and the failure
+    it used to produce stops existing.
+
+    Three states, not two — `series`, `first measurement`, and `not tracked` —
+    and only the first two involve a request at all.
+    """
+    if resource_type != "repo":
+        # Only the repo adapter registers trend readers today. Unknown is not
+        # the same as untracked, so these say nothing rather than guessing.
+        return
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_RESULTS_MAP)
+    except Exception:                                        # pragma: no cover
+        return
+    for entry in entries:
+        record = REPO_ANALYSIS_RESULTS_MAP.get(entry.get("id"))
+        if record is None:
+            entry["trend"] = "unknown"          # not in the results map at all
+            continue
+        _, trend_reader = record
+        entry["trend"] = "tracked" if trend_reader is not None else "not_tracked"
 
 
 @router.get("/{resource_type}/egeria-status")

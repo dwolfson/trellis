@@ -142,6 +142,14 @@ class TestOwnershipMapIsOnlyUsedForAttribution:
         # Names one analysis explicitly (language_file_classification), which
         # owns its own steps — ownership and source are the same list there.
         "resource_explorer/scheduler.py",
+        # Added 2026-09-10. Resolves a recorded run to its CURRENT funnel tier
+        # by asking the catalog rather than reading activity_log.intent, which
+        # is a write-time snapshot 50% of whose rows now disagree with the
+        # catalog. It needs the OWNERSHIP map on purpose — "whose work was this
+        # step" is attribution; the source map answers the different question
+        # of what to run, and using it here would credit architecture_diagram
+        # for the recovery's steps all over again.
+        "resource_explorer/tier_resolution.py",
     }
 
     def test_no_new_module_reads_the_ownership_map(self):

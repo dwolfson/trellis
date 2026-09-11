@@ -291,7 +291,11 @@ established the tiering precedent.
   compiler's instructions section, was tried in run 3 and reverted: it over-triggered, turning 107
   of 156 compiled answers into pure-template refusals and inventing gap states for analyses that
   had actually been packed. Run 4 of the experiment measures the three changes that stayed against
-  the run-2 baseline; its numbers go in the experiment doc, not here.
+  the run-2 baseline; its numbers go in the experiment doc, not here. *(Outcome, 2026-09-10: the run-2 "more unsupported claims" finding
+  was an artefact of a judge that never saw the packed text — an audit found 89% of the flagged
+  claims in the evidence. Re-judged with the text, compiled beats RAG on every content metric in
+  both runs, and the three packing changes are neutral on answer quality; they stay for cost and
+  manifest honesty. Details and caveats in the experiment doc.)*
 
 ---
 
