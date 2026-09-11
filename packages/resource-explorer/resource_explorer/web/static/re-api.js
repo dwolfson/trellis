@@ -200,6 +200,14 @@ export const setDisposition = (githubUrl, disposition, reason = '') =>
 export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}) =>
   patch(`/api/context/repo/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
 
+/* ── The journal ──────────────────────────────────────────────────────────
+ * Append-only prose on a resource, with a server-stamped author. A
+ * suggestion is routed by perspective or person and arrives as a work-list
+ * entry for them — never a notification. */
+export const getJournal = (slug) => get(`/api/journal/repo/${encodeURIComponent(slug)}`);
+export const writeJournal = (slug, body, suggestTo = []) =>
+  post(`/api/journal/repo/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
 
