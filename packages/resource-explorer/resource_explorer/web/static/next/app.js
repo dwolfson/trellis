@@ -252,6 +252,7 @@ const GLYPH = {
   answered: '✓',
   automatic: '✓',
   unrun: '○',
+  partial: '◐',
   human: '⚠',
   'no-surveyor': '○',
   unclassified: '·',
@@ -272,6 +273,7 @@ const GLYPH = {
  */
 const STATE_TONE = {
   answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  partial:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   human:         { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
@@ -402,7 +404,12 @@ function readEnvelope(entry, env) {
   }
   // NOTE: `lines.answer` is HTML, already escaped by each branch above.
   // Do not run it through esc() or answerHtml() again downstream.
-  lines.answer = sentences.join(' ');
+  // Joined on ' · ', not ' '. Six analyses' sentences run together read as
+  // one broken sentence — "all 3 checks pass one contributor writes most of
+  // the code" — and a reader cannot tell where one claim ends. The separator
+  // makes the boundaries visible without deciding how the claims combine,
+  // which is the judgement still owed (Dashboard Round Three).
+  lines.answer = sentences.join(' · ');
 
   // The caveat — the most important content on the screen. These sentences
   // already exist in the survey output; they used to sit three panes away in
@@ -3012,16 +3019,32 @@ async function historyHtml(slug, analysisId, metric = '') {
       be a trend; there isn't one yet.</p>`;
   }
   series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
+  // A history is interesting exactly where it steps. Thirty rows of which
+  // twenty-eight are identical HIDE the two that matter — the dependency
+  // count went 57 to 68 over five weeks and a reader had to read thirty
+  // figures to notice. So the transitions lead: each value the series ever
+  // took, dated where it first appeared, and the count of runs and changes.
+  // The full table stays one click on, for the reader who wants every run.
+  const val = (r) => r.metric_value ?? r.value;
+  const steps = [];
+  for (const r of series) {
+    if (!steps.length || steps[steps.length - 1].v !== val(r)) steps.push({ v: val(r), at: r.surveyed_at, m: r.metric });
+  }
+  const changes = steps.length - 1;
+  const transitions = steps.map((st) => `<span class="tnum">${esc(fmtScalar(st.v, st.m || metric))}</span>
+      <span class="text-ink-muted">${esc(String(st.at).slice(5, 10))}</span>`).join(' → ');
   return `
-    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">History · oldest first ·
-      <span class="tnum">${series.length}</span> recorded</div>
+    <div class="mb-s1 text-caveat text-ink">${transitions}
+      <span class="text-ink-muted">· <span class="tnum">${series.length}</span> runs, <span class="tnum">${changes}</span> change${changes === 1 ? '' : 's'}</span></div>
+    <details><summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">Every run · oldest first ·
+      <span class="tnum">${series.length}</span> recorded</summary>
     <table class="w-full border-collapse text-caveat">
       ${series.map((r, i) => `<tr class="border-b border-rule">
         <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
         <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
           esc(fmtScalar(r.metric_value ?? r.value, r.metric || metric))}</td>
       </tr>`).join('')}
-    </table>`;
+    </table></details>`;
 }
 
 /** The inline delta beside a value: what it was, and when.
@@ -3419,8 +3442,7 @@ function findingRowHtml(f, analysisId, when) {
         f.check_name
           ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
           : esc(humanLabel(f.label) || analysisId)}.</strong>
-      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
-      <span class="block text-provenance text-ink-muted" data-delta="${esc(analysisId)}|${esc(f.check_name || '')}">·</span></span>
+      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}</span>
     <span class="shrink-0 text-provenance text-ink-muted">›</span>
   </button>`;
 }
@@ -3510,7 +3532,13 @@ function analysisUnderQuestionHtml(fact, id, checks) {
   let findings = Array.isArray(value.findings) ? value.findings : [];
   if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
   findings = sortUnresolvedFirst(findings);
-  const { numbers, flags, unset } = checks ? { numbers: [], flags: [], unset: [] } : splitScalars(value);
+  const { numbers: allNumbers, flags, unset } = checks ? { numbers: [], flags: [], unset: [] } : splitScalars(value);
+  // An analysis whose state is "nothing found" has said so in its sentence.
+  // Four zeros under "Nothing ingested from site" restate it as a table, and
+  // a zero that means "nothing happened" reads as a measurement of nothing.
+  // The zeros are dropped only in that state; a zero from a measured run is
+  // a value and stays.
+  const numbers = fact.state === 'nothing_found' ? allNumbers.filter((c) => c.value !== 0) : allNumbers;
   const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
       data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
       data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
@@ -3569,10 +3597,16 @@ function disputeHtml(key, rec, when) {
 }
 
 /** The section's state, for the anchor rail: the worst thing in it. */
-function sectionState(answerEnv, facts, ids) {
+function sectionState(q, answerEnv, facts, ids) {
   const known = (answerEnv && answerEnv.facts || []).filter((f) => f.is_known);
   if (ids.some((id) => facts.get(id)?.state === 'error')) return 'error';
   if (!known.length) return 'unrun';
+  // A question the catalog itself calls `mixed` or `partial` is not answered
+  // by its analyses reporting; they are pieces of an answer. A tick here
+  // said "answered" over prose that said "nothing detects one", and the
+  // glyph is the one people read. Half-filled, in the accent — attention,
+  // not completion.
+  if (q && (q.kind === 'mixed' || q.kind === 'partial')) return 'partial';
   return 'answered';
 }
 
@@ -3685,18 +3719,23 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
       return n + (Array.isArray(v.findings) ? v.findings.length : 0)
         + Object.entries(v).filter(([k, x]) => k !== 'findings' && (typeof x === 'number' || typeof x === 'boolean')).length;
     }, 0);
-    const st = sectionState(env, facts, ids);
-    return `<section id="dq-${qi}" class="mb-s5 scroll-mt-[8px]">
-      <div class="flex items-baseline gap-s2">
-        <span class="w-[16px] shrink-0 ${tone(st, 'paper')}">${GLYPH[st] || '·'}</span>
+    const st = sectionState(q, env, facts, ids);
+    // Separation (Repo Handoff, item 2): a hairline above every question with
+    // air above it, the glyph out in the margin, and weight in the order the
+    // reader needs — the answer heaviest, the question next, the meta last.
+    return `<section id="dq-${qi}" class="mt-s4 border-t border-rule pt-s3 scroll-mt-[8px]">
+      <div class="flex items-baseline gap-s2 -ml-[22px] pl-0">
+        <span class="w-[22px] shrink-0 text-right ${tone(st, 'paper')}">${GLYPH[st] || '·'}</span>
         <div class="min-w-0 flex-1">
           <div class="text-answer text-ink">${esc(q.question)}</div>
-          ${answerLine}
+          ${answerLine.replace('text-answer text-ink"', 'text-answer font-semibold text-ink"')}
           <div class="text-provenance text-ink-muted"><span class="tnum">${ids.length}</span> analys${ids.length === 1 ? 'is' : 'es'} ·
             <span class="tnum">${nMeasures}</span> measurements${lines && lines.lastRun ? ` · latest ${esc(ago(lines.lastRun))}` : ''}</div>
         </div>
       </div>
-      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] pl-[22px] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${q.catalog_history ? `<details class="pl-[22px]"><summary class="cursor-pointer text-provenance text-ink-muted">catalog history</summary>
+        <p class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(q.catalog_history)}</p></details>` : ''}
       ${disputeBlocks}
       <details class="mt-s1"><summary class="cursor-pointer text-caveat text-ink-muted">detail</summary>${body}</details>
     </section>`;
@@ -3709,7 +3748,14 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
         nothing in the question catalog names them. Either a question is missing, or the analysis is
         evidence for a judgement rather than an answer to a question. Listed so the gap is a fact
         rather than a surprise.</p>
-      ${unasked.map((id) => analysisUnderQuestionHtml(facts.get(id), id, null)).join('')}
+      ${unasked.map((id) => {
+        const f = facts.get(id); const g = f ? factGlyph(f.state) : { glyph: '·', tone: 'text-ink-muted' };
+        return `<details class="mt-s2"><summary class="flex cursor-pointer items-baseline gap-s2 list-none">
+            <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+            <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(f?.headline || f?.state || 'not read'))}</span>
+            <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${f?.last_run_at ? ` · ${esc(ago(f.last_run_at))}` : ''} ›</span>
+          </summary><div class="pl-[22px]">${analysisUnderQuestionHtml(f, id, null)}</div></details>`;
+      }).join('')}
     </section>` : '';
 
   // The anchor rail: five questions, five glyphs, jump to any. The same
@@ -3717,14 +3763,15 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
   // seen whole.
   const rail = measured.length > 1 ? `<nav class="mb-s3 flex flex-wrap gap-x-s3 gap-y-[2px] text-caveat">
       ${measured.map((q, qi) => {
-        const st = sectionState(answers[qi], facts, q.analysis_ids || []);
+        const st = sectionState(q, answers[qi], facts, q.analysis_ids || []);
         return `<a href="#dq-${qi}" class="text-ink no-underline"><span class="${tone(st, 'paper')}">${GLYPH[st] || '·'}</span> ${esc(q.question)}</a>`;
       }).join('')}${unasked.length ? `<a href="#dq-unasked" class="text-ink-muted no-underline">· unasked (${unasked.length})</a>` : ''}
     </nav>` : '';
 
   host.innerHTML = `<div class="mb-s2 text-caveat text-ink-muted">
-      <span class="tnum">${measured.length}</span> question${measured.length === 1 ? '' : 's'} with measurements${
-      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered without one` : ''}${
+      <span class="tnum">${questions.length}</span> question${questions.length === 1 ? '' : 's'} at this stage ·
+      <span class="tnum">${measured.length}</span> measured${
+      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered another way — a direct fact, a person, or not yet` : ''}${
       unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}${
       disputes.size ? ` · <span class="text-state-warn tnum">${disputes.size}</span> disagreement${disputes.size === 1 ? '' : 's'}` : ''}
       ${purposeLegendHtmlFor(questions)}</div>
