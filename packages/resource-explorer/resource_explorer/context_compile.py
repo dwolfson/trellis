@@ -661,6 +661,34 @@ def _clip_caveat(text: str, limit: int) -> str:
     return cut + " […]"
 
 
+def _with_caveat(rungs: dict[Rung, str], caveat: str) -> dict[Rung, str]:
+    """The matched question's caveat INSIDE the section it qualifies, under
+    the headline, at FULL (400 chars) and SUMMARY (160), never IDENTIFIERS.
+
+    Beside the value, not in a preamble. A caveat about declared-only CVE
+    coverage that sits three sections above the cve_scan numbers is help
+    text; the same line under `## cve_scan` is the number's own limit --
+    the shape the /next design round built for, applied to the prompt
+    (dwolfson-c6, 2026-09-11). The preamble keeps the caveat only when the
+    matched question maps to no packed section at all.
+    """
+    if not caveat:
+        return rungs
+    out = {}
+    for rung, text in rungs.items():
+        if rung is Rung.IDENTIFIERS:
+            out[rung] = text
+            continue
+        line = "caveat: " + _clip_caveat(
+            caveat, CAVEAT_CHARS_FULL if rung is Rung.FULL else CAVEAT_CHARS_SHORT)
+        lines = text.split("\n")
+        at = 1 if lines and lines[0].startswith("## ") else 0
+        if len(lines) > at and lines[at].startswith("headline: "):
+            at += 1
+        out[rung] = "\n".join(lines[:at] + [line] + lines[at:])
+    return out
+
+
 def _caveat_lines(entry: dict | None, relevance: float) -> tuple[str, str, str]:
     """The catalog's own statement of what an answer to this question can and
     cannot claim, as two lines for the instructions (FULL and SUMMARY rungs)
@@ -834,19 +862,17 @@ def compile_context(
 
     coverage, coverage_line, coverage_line_short = _coverage(best_entry, best_relevance)
     caveat_line, caveat_line_short, coverage["caveat"] = _caveat_lines(best_entry, best_relevance)
+    # The sections the matched question's caveat qualifies: the analyses the
+    # catalog maps that question to. The caveat goes INSIDE those sections
+    # (see _with_caveat); it stays in the preamble only if none of them ends
+    # up with a candidate.
+    caveat_ids: set[str] = set()
+    if coverage["caveat"] and best_entry is not None:
+        caveat_ids = {i for i in ((best_entry.get("derivation") or {}).get("analysis_ids") or [])
+                      if i not in _actions}
 
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
-    # The coverage line rides INSIDE the instructions candidate rather than
-    # being appended to the packed text afterwards, so it is part of what
-    # `_compile_id` hashes: two compiles of the same question over the same
-    # stored state stay one compile, and a compile whose coverage changed is a
-    # different one.
-    candidates: dict[str, Candidate] = {
-        "instructions": Candidate("instructions",
-                                  {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
-                                   Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
-                                   Rung.IDENTIFIERS: _INSTRUCTIONS_BARE}),
-    }
+    candidates: dict[str, Candidate] = {}
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
     cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
     deferred = [
@@ -928,6 +954,8 @@ def compile_context(
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
 
+        if rungs and analysis_id in caveat_ids:
+            rungs = _with_caveat(rungs, coverage["caveat"])
         if rungs:
             candidates[analysis_id] = Candidate(
                 analysis_id, rungs, provenance=provenance,
@@ -936,6 +964,23 @@ def compile_context(
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing
         # behind it, is information.
+
+    # The instructions candidate is built last because its text depends on
+    # where the caveat went. The coverage line (and the caveat, when it has no
+    # section to live in) ride INSIDE this candidate rather than being
+    # appended to the packed text afterwards, so they are part of what
+    # `_compile_id` hashes: two compiles of the same question over the same
+    # stored state stay one compile, and a compile whose coverage changed is
+    # a different one.
+    placed = sorted(caveat_ids & set(candidates))
+    coverage["caveat_placed_in"] = placed if placed else (["instructions"] if coverage["caveat"] else [])
+    if placed:
+        caveat_line = caveat_line_short = ""
+    candidates["instructions"] = Candidate(
+        "instructions",
+        {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
+         Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
+         Rung.IDENTIFIERS: _INSTRUCTIONS_BARE})
 
     spec = ContextSpec(
         spec_id=f"adoption-gate:{slug}", version=1,
