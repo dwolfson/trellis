@@ -1930,8 +1930,14 @@ def _sub_resource_survey_trend(registry, slug: str) -> list[dict]:
         r["surveyed_at"]: r["metric_value"]
         for r in registry.query_metrics_history(slug, "repo_sub_resource_survey", "file_count")
     }
+    # `metric` names what `value` IS. Without it the UI rendered
+    # `was 189190480 7d ago` on every sub-resource row: a right number that
+    # nobody reads as 180 MB, because the formatter was handed the value and
+    # not its name. The other trend readers' values are counts and scores,
+    # which read correctly unnamed; this is the one that carries a unit.
     return [
-        {"surveyed_at": ts, "value": value, "file_count": count_history.get(ts)}
+        {"surveyed_at": ts, "value": value, "metric": "total_size_bytes",
+         "file_count": count_history.get(ts)}
         for ts, value in sorted(size_history.items())
     ]
 

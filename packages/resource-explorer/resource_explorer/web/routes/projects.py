@@ -453,6 +453,12 @@ class QuestionChecklistEntry(BaseModel):
     perspectives: list[str] = []
     kind: str  # analysis | direct | registry | human | chart | gap | partial | mixed | unknown
     analysis_ids: list[str] = []
+    # `analysis_id:check_name` refs from the catalog — the finer key. When a
+    # question declares these, a consumer can show just those findings from
+    # an analysis that also answers five other questions, instead of the whole
+    # analysis six times. Empty means "no check refs authored", not "no
+    # checks apply" — fall back to analysis_ids.
+    checks: list[str] = []
     note: str = ""
     answering_mechanism: str = ""
     # What this answer can and cannot claim, from the catalog's
@@ -524,6 +530,7 @@ async def get_scouting_questions(
             perspectives=e["perspectives"],
             kind=answering["kind"],
             analysis_ids=answering["analysis_ids"],
+            checks=list(answering.get("checks") or []),
             note=answering["note"],
             answering_mechanism=e.get("answering_mechanism", ""),
             rationale=e.get("rationale", ""),
