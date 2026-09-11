@@ -1057,25 +1057,40 @@ class ProjectRegistry:
                     egeria_report_guid TEXT NOT NULL DEFAULT ''
                 )
             """)
-            # Migration 2026-09-11: two AnnotationType values were shortened
-            # forms of the Egeria type name ("SchemaAnalysis",
-            # "RequestForAction") while the catalog declared the full names.
-            # Rows written under the short names are renamed so the
-            # declared-vs-received join reads them. Idempotent: a second run
-            # matches nothing.
-            for short, full in (
-                ("SchemaAnalysis", "SchemaAnalysisAnnotation"),
-                ("RequestForAction", "RequestForActionAnnotation"),
-            ):
-                conn.execute(
-                    "UPDATE project_published_annotation_types SET annotation_type = ? "
-                    "WHERE annotation_type = ?",
-                    (full, short),
-                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
                 "ON project_published_annotation_types(project_slug, annotation_type)"
             )
+            # Migration 2026-09-11: two AnnotationType values were shortened
+            # forms of the Egeria type name ("SchemaAnalysis",
+            # "RequestForAction") while the catalog declared the full names.
+            # Rows written under the short names are renamed so the
+            # declared-vs-received join reads them.
+            #
+            # Guarded by a read, and placed AFTER the index. The first version
+            # ran the UPDATE unconditionally, before CREATE INDEX IF NOT
+            # EXISTS, and deadlocked every process that opened the registry
+            # concurrently: an UPDATE takes RowExclusiveLock even when it
+            # matches no rows, CREATE INDEX wants ShareLock, and two openers
+            # each held the first while waiting for the second. The answer
+            # layer opens one registry per question, sixteen at a time, so
+            # the Dashboard by question hit it on every load. Now a process
+            # that finds nothing to rename takes no write lock at all, which
+            # is every process after the first.
+            for short, full in (
+                ("SchemaAnalysis", "SchemaAnalysisAnnotation"),
+                ("RequestForAction", "RequestForActionAnnotation"),
+            ):
+                stale = conn.execute(
+                    "SELECT 1 FROM project_published_annotation_types WHERE annotation_type = ? LIMIT 1",
+                    (short,),
+                ).fetchone()
+                if stale:
+                    conn.execute(
+                        "UPDATE project_published_annotation_types SET annotation_type = ? "
+                        "WHERE annotation_type = ?",
+                        (full, short),
+                    )
             # Which ANALYSES a publish covered, recorded directly.
             #
             # project_published_annotation_types above answers the same

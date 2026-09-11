@@ -2635,13 +2635,13 @@ function subTabsHtml() {
         class="cursor-pointer bg-transparent text-ink-muted"
         style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
     }).join('')}
-    <span class="ml-auto text-caps uppercase tracking-caps text-ink-muted">${
-      SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length
-        ? `${SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length} of these are not built in /next`
-        : 'all panes built'}</span>
   </div>`;
 }
 
+/* The header no longer says "N of these are not built in /next". That
+ * sentence was review-speak — correct in a handoff, unreadable in the
+ * product to anyone who was not in the conversation — and the dashed
+ * underline on a deferred tab already carries the fact (design rule 6). */
 /** Sub-tab clicks: the real one switches, a deferred one says it is deferred. */
 function bindSubTabs() {
   const el = $('content');
@@ -3390,26 +3390,22 @@ const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
  */
 const DASH_VIEW_KEY = 're-next.dashView';
 
-function factGlyph(state) {
-  switch (state) {
-    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
-    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
-    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
-    default: return { glyph: '·', tone: 'text-ink-muted' };
-  }
-}
 
-function subResourceSummaryHtml(fact) {
-  const rows = (fact.value && fact.value.findings) || [];
-  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
-  return `<div class="mt-s1 text-caveat text-ink">
-      <span class="tnum">${rows.length}</span> sub-resources assessed ·
-      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
-      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
-        they belong with the verdict loop.</span>
-      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
-    </div>`;
-}
+
+/* Round two of the dashboard (DASHBOARD-ROUND-TWO.md): presentation, not
+ * structure. The grouping by question stands; what was missing was the tier
+ * it was meant to unlock — a reader still assembled every answer themselves
+ * from raw rows, 2,300 pixels deep. Five rules, each a function below:
+ *
+ *   1. every section opens with its answer — the answer LAYER's sentence,
+ *      the same one the Evidence rail shows, not one composed here;
+ *   2. findings that agree collapse to one row with a count;
+ *   3. provenance is section-level; the analysis name leaves every row;
+ *   4. a disagreement is the section's headline, shown once and pointed to
+ *      from any other question that reaches the same conflict;
+ *   5. booleans and unsets leave the counts table — they are part of the
+ *      answer, or they are "not recorded", never a number.
+ */
 
 function findingRowHtml(f, analysisId, when) {
   const c = findingGlyph(f.label);
@@ -3425,55 +3421,159 @@ function findingRowHtml(f, analysisId, when) {
           : esc(humanLabel(f.label) || analysisId)}.</strong>
       ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
       <span class="block text-provenance text-ink-muted" data-delta="${esc(analysisId)}|${esc(f.check_name || '')}">·</span></span>
-    <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(analysisId)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+    <span class="shrink-0 text-provenance text-ink-muted">›</span>
   </button>`;
 }
 
-function sortUnresolvedFirst(findings) {
-  return [...findings].sort((x, y) => {
-    const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
-    const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
-    return ux - uy;
-  });
+function isUnresolved(f) {
+  return UNRESOLVED_LABELS.has(String(f.label || '').toLowerCase());
+}
+
+/** Rule 2. Unresolved findings stay individual and first — each is a
+ *  decision. The rest group by verdict: two or more that agree become one
+ *  row naming the count and the checks, with the full rows behind a
+ *  disclosure. "Five passes" is one fact, not five. */
+function findingsHtml(findings, analysisId, when) {
+  const open = findings.filter(isUnresolved);
+  const rest = findings.filter((f) => !isUnresolved(f));
+  const groups = new Map();
+  for (const f of rest) {
+    const k = String(f.label || '').toLowerCase();
+    groups.set(k, [...(groups.get(k) || []), f]);
+  }
+  const out = [...open.map((f) => findingRowHtml(f, analysisId, when))];
+  for (const [label, rows] of groups) {
+    if (rows.length === 1) { out.push(findingRowHtml(rows[0], analysisId, when)); continue; }
+    const c = findingGlyph(label);
+    const names = rows.map((f) => (f.check_name || '').replace(/_/g, ' ')).filter(Boolean);
+    out.push(`<details class="border-b border-rule py-s2">
+      <summary class="flex cursor-pointer items-baseline gap-s2 list-none">
+        <span class="w-[16px] shrink-0 ${c.tone}">${c.glyph}</span>
+        <span class="min-w-0 flex-1 text-ink"><strong class="font-semibold tnum">${rows.length} checks — ${esc(humanLabel(label))}.</strong>
+          <span class="text-ink-muted">${esc(names.join(', '))}</span></span>
+        <span class="shrink-0 text-provenance text-ink-muted">show ${rows.length}</span>
+      </summary>
+      <div class="pl-[22px]">${rows.map((f) => findingRowHtml(f, analysisId, when)).join('')}</div>
+    </details>`);
+  }
+  return out.join('');
+}
+
+function subResourceSummaryHtml(fact) {
+  const rows = (fact.value && fact.value.findings) || [];
+  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
+  return `<div class="mt-s1 text-caveat text-ink">
+      <span class="tnum">${rows.length}</span> sub-resources assessed ·
+      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
+      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
+        they belong with the verdict loop.</span>
+      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
+    </div>`;
+}
+
+function factGlyph(state) {
+  switch (state) {
+    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
+    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
+    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
+    default: return { glyph: '·', tone: 'text-ink-muted' };
+  }
+}
+
+/** Rule 5. Split an analysis's scalar results three ways: numbers for the
+ *  counts table; booleans, which ARE part of the answer; and unsets — null
+ *  or empty — which are "not recorded" and must never render as a number.
+ *  A zero is left as a zero: whether it means "none" or "not set" is the
+ *  producer's to say, and guessing here would be the lie the round names. */
+function splitScalars(value) {
+  const numbers = []; const flags = []; const unset = [];
+  for (const [k, v] of Object.entries(value || {})) {
+    if (k === 'findings' || k === 'overall') continue;
+    if (typeof v === 'number') numbers.push({ key: k, value: v });
+    else if (typeof v === 'boolean') flags.push({ key: k, value: v });
+    else if (v == null || v === '') unset.push(k);
+  }
+  return { numbers, flags, unset };
 }
 
 /** One analysis, under one question. `checks` is the set of check names this
- *  question declares for it, or null for the whole analysis. */
+ *  question declares for it, or null for the whole analysis. Provenance is
+ *  NOT on the rows (rule 3): the analysis is named once, here, in the head
+ *  line, and in the popup beside the run. */
 function analysisUnderQuestionHtml(fact, id, checks) {
   if (!fact) {
     return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · not read</div>`;
   }
   const g = factGlyph(fact.state);
   const when = fact.last_run_at || '';
-  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
-      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
-      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
-      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
-      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}</span>
-      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
-    </button>`;
-  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
   const value = (fact.value && typeof fact.value === 'object') ? fact.value : {};
   let findings = Array.isArray(value.findings) ? value.findings : [];
   if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
   findings = sortUnresolvedFirst(findings);
-  const counts = checks ? [] : Object.entries(value)
-    .filter(([k, v]) => k !== 'findings' && k !== 'overall' && (typeof v === 'number' || typeof v === 'boolean'))
-    .map(([k, v]) => ({ key: k, value: v }));
-  // Under a check-scoped question the whole-analysis sentence is not the
-  // answer — "1 of 5 conventions need attention" said three times under three
-  // questions that each asked about ONE convention. The scoped finding IS the
-  // answer, and it carries the analysis id and time itself. The sentence
-  // stays where the whole analysis is shown.
+  const { numbers, flags, unset } = checks ? { numbers: [], flags: [], unset: [] } : splitScalars(value);
+  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
+      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
+      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}${
+        flags.length ? ` <span class="text-caveat text-ink-muted">· ${flags.map((f) => `${esc(f.key.replace(/_/g, ' '))}: ${f.value ? 'yes' : 'no'}`).join(' · ')}</span>` : ''}</span>
+      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+    </button>`;
+  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
   const scopedAndFound = checks && findings.length;
   return (scopedAndFound ? '' : head)
-    + (findings.length ? findings.map((f) => findingRowHtml(f, id, when)).join('') : '')
-    + (counts.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${counts.map((c) => `
+    + (findings.length ? findingsHtml(findings, id, when) : '')
+    + (unset.length ? `<div class="mt-s1 text-caveat text-ink-muted">not recorded: ${esc(unset.map((k) => k.replace(/_/g, ' ')).join(', '))}</div>` : '')
+    + (numbers.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${numbers.map((c) => `
         <tr class="wl-countrow cursor-pointer border-b border-rule" data-measure="${esc(id)}" data-metric="${esc(c.key)}"
           data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
           <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
           <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
         </tr>`).join('')}</table>` : '');
+}
+
+function sortUnresolvedFirst(findings) {
+  return [...findings].sort((x, y) => (isUnresolved(x) ? 0 : 1) - (isUnresolved(y) ? 0 : 1));
+}
+
+/** Rule 4. Every scalar name reported by more than one analysis with
+ *  different values, across ALL the facts on the pane — so a conflict is
+ *  found wherever it lives and shown wherever it is reached. */
+function findDisputes(facts) {
+  const seen = new Map();
+  for (const [id, f] of facts) {
+    const value = (f && f.value && typeof f.value === 'object') ? f.value : {};
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v !== 'number') continue;
+      seen.set(k, [...(seen.get(k) || []), { analysis: id, value: v }]);
+    }
+  }
+  const disputes = new Map();
+  for (const [k, rec] of seen) {
+    if (rec.length > 1 && new Set(rec.map((x) => x.value)).size > 1) disputes.set(k, rec);
+  }
+  return disputes;
+}
+
+function disputeHtml(key, rec, when) {
+  return `<div class="mt-s2 border-l-2 border-state-warn pl-s2">
+      <div class="text-caps uppercase tracking-caps text-state-warn">Disagreement · ${esc(key.replace(/_/g, ' '))}</div>
+      <div class="mt-[2px] flex flex-wrap items-baseline gap-s3 text-answer text-ink">
+        ${rec.map((x) => `<button type="button" class="cursor-pointer border-0 bg-transparent p-0 text-left"
+            data-measure="${esc(x.analysis)}" data-metric="${esc(key)}" data-title="${esc(key.replace(/_/g, ' '))}" data-when="${esc(when || '')}">
+            <strong class="tnum font-semibold">${esc(fmtScalar(x.value, key))}</strong>
+            <span class="font-mono text-provenance text-ink-muted">${esc(x.analysis)} ›</span></button>`).join('')}
+      </div>
+      <div class="text-caveat text-ink-muted">${rec.length} analyses report this name with different values; they may not be measuring the same thing. Open either to see what each counted.</div>
+    </div>`;
+}
+
+/** The section's state, for the anchor rail: the worst thing in it. */
+function sectionState(answerEnv, facts, ids) {
+  const known = (answerEnv && answerEnv.facts || []).filter((f) => f.is_known);
+  if (ids.some((id) => facts.get(id)?.state === 'error')) return 'error';
+  if (!known.length) return 'unrun';
+  return 'answered';
 }
 
 async function renderDashboardByQuestion(slug, stage, host, live) {
@@ -3495,8 +3595,6 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
   const unmeasured = questions.length - measured.length;
   const asked = new Set(measured.flatMap((q) => q.analysis_ids || []));
 
-  // Everything the stage measures, so what nobody asks for can be listed
-  // rather than lost. A catalog read, not a results read — it is the cheap one.
   let stageIds = [];
   try {
     const cat = await listAnalyses('repo', { intent: stage });
@@ -3505,44 +3603,106 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
   const unasked = stageIds.filter((id) => !asked.has(id));
 
   host.innerHTML = `<span class="text-caveat text-ink-muted">Reading ${asked.size + unasked.length} measurements…</span>`;
-  let facts = new Map();
+  const facts = new Map();
+  let answers;
   try {
-    const res = await getBulkFacts([slug], [...asked, ...unasked]);
+    // The facts, and — rule 1 — each question's ANSWER from the same layer
+    // the Evidence rail reads. Fetched together; the answers are per
+    // question and independent, so a slow one does not hold the rest.
+    const [res, envs, ctx] = await Promise.all([
+      getBulkFacts([slug], [...asked, ...unasked]),
+      Promise.allSettled(measured.map((q) => getAnswer(slug, q.question))),
+      getContext('repo', slug).catch(() => ({})),
+    ]);
+    state.contextAnswers = ctx?.question_answers || {};
     for (const f of (res.subjects || {})[slug] || []) facts.set(f.analysis_id, f);
+    answers = envs.map((e) => (e.status === 'fulfilled' ? e.value : null));
   } catch (err) {
     if (live()) host.innerHTML = `<span class="text-state-warn">The measurements could not be read: ${esc(err.message)}</span>`;
     return;
   }
   if (!live()) return;
 
-  const shownWhole = new Map();   // analysis id -> question index that rendered it in full
+  const disputes = findDisputes(facts);
+  const disputeShownIn = new Map();     // key -> question index that rendered it
+  const shownWhole = new Map();
   const sections = measured.map((q, qi) => {
     const ids = q.analysis_ids || [];
+    const env = answers[qi];
     const declared = (q.checks || []).map((c) => String(c).split(':'));
     const checksFor = (id) => {
       const mine = declared.filter(([a]) => a === id).map(([, c]) => c).filter(Boolean);
       return mine.length ? new Set(mine) : null;
     };
+
+    // Rule 1: the answer sentence, relayed from the answer layer — the same
+    // one the Evidence rail shows. `lines.answer` is already HTML, escaped
+    // by readEnvelope branch by branch, so it is NOT escaped again here.
+    // Where the layer has nothing, say what was looked in — "0 of 3
+    // reported" is a state. A human-answered question is a different case:
+    // its answer is what a person said, and the analyses under it are
+    // informants, not the answer.
+    const lines = env ? readEnvelope(q, env) : null;
+    const reported = ids.filter((id) => facts.get(id)?.state === 'measured').length;
+    const human = q.kind === 'human' ? (state.contextAnswers || {})[questionKey(q.question)] : null;
+    const answerLine = human && human.answer
+      ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${tnum(esc(human.answer))}
+           <span class="text-provenance text-ink-muted">· answered ${esc(ago(human.answered_at))}</span></p>`
+      : q.kind === 'human'
+        ? `<p class="mt-[2px] text-answer text-ink-muted">needs a person to answer — the analyses below inform it, they do not decide it</p>`
+      : lines && lines.answer
+        ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${lines.answer}</p>`
+        : `<p class="mt-[2px] text-answer text-ink-muted">not answered — <span class="tnum">${reported}</span> of <span class="tnum">${ids.length}</span> analyses reported</p>`;
+
+    // Rule 4: the section's disagreements, once, above the detail.
+    const mine = [...disputes].filter(([, rec]) => rec.some((x) => ids.includes(x.analysis)));
+    const disputeBlocks = mine.map(([key, rec]) => {
+      const prior = disputeShownIn.get(key);
+      if (prior !== undefined) {
+        return `<div class="mt-s2 text-caveat text-state-warn">Same disagreement on <em>${esc(key.replace(/_/g, ' '))}</em> as under
+          <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a>.</div>`;
+      }
+      disputeShownIn.set(key, qi);
+      return disputeHtml(key, rec, facts.get(rec[0].analysis)?.last_run_at);
+    }).join('');
+
     const body = ids.map((id) => {
       const checks = checksFor(id);
       if (!checks) {
         const prior = shownWhole.get(id);
         if (prior !== undefined && prior !== qi) {
           return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · shown in full under
-            <em>${esc(measured[prior].question)}</em></div>`;
+            <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a></div>`;
         }
         shownWhole.set(id, qi);
       }
       return analysisUnderQuestionHtml(facts.get(id), id, checks);
     }).join('');
-    return `<section class="mb-s5">
-      <div class="text-answer text-ink">${esc(q.question)}</div>
-      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
-      ${body}
-    </section>`;
-  }).join('');
 
-  const trailing = unasked.length ? `<section class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
+    // Rule 3: provenance at section level.
+    const nMeasures = ids.reduce((n, id) => {
+      const v = facts.get(id)?.value; if (!v || typeof v !== 'object') return n;
+      return n + (Array.isArray(v.findings) ? v.findings.length : 0)
+        + Object.entries(v).filter(([k, x]) => k !== 'findings' && (typeof x === 'number' || typeof x === 'boolean')).length;
+    }, 0);
+    const st = sectionState(env, facts, ids);
+    return `<section id="dq-${qi}" class="mb-s5 scroll-mt-[8px]">
+      <div class="flex items-baseline gap-s2">
+        <span class="w-[16px] shrink-0 ${tone(st, 'paper')}">${GLYPH[st] || '·'}</span>
+        <div class="min-w-0 flex-1">
+          <div class="text-answer text-ink">${esc(q.question)}</div>
+          ${answerLine}
+          <div class="text-provenance text-ink-muted"><span class="tnum">${ids.length}</span> analys${ids.length === 1 ? 'is' : 'es'} ·
+            <span class="tnum">${nMeasures}</span> measurements${lines && lines.lastRun ? ` · latest ${esc(ago(lines.lastRun))}` : ''}</div>
+        </div>
+      </div>
+      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${disputeBlocks}
+      <details class="mt-s1"><summary class="cursor-pointer text-caveat text-ink-muted">detail</summary>${body}</details>
+    </section>`;
+  });
+
+  const trailing = unasked.length ? `<section id="dq-unasked" class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
       <div class="text-caps uppercase tracking-caps text-ink-muted">Measured, but no question asks ·
         <span class="tnum">${unasked.length}</span></div>
       <p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">These analyses run at this stage and
@@ -3552,12 +3712,24 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
       ${unasked.map((id) => analysisUnderQuestionHtml(facts.get(id), id, null)).join('')}
     </section>` : '';
 
-  host.innerHTML = `<div class="mb-s3 text-caveat text-ink-muted">
+  // The anchor rail: five questions, five glyphs, jump to any. The same
+  // vocabulary as the matrix, and the reason a 2,300-pixel page can be
+  // seen whole.
+  const rail = measured.length > 1 ? `<nav class="mb-s3 flex flex-wrap gap-x-s3 gap-y-[2px] text-caveat">
+      ${measured.map((q, qi) => {
+        const st = sectionState(answers[qi], facts, q.analysis_ids || []);
+        return `<a href="#dq-${qi}" class="text-ink no-underline"><span class="${tone(st, 'paper')}">${GLYPH[st] || '·'}</span> ${esc(q.question)}</a>`;
+      }).join('')}${unasked.length ? `<a href="#dq-unasked" class="text-ink-muted no-underline">· unasked (${unasked.length})</a>` : ''}
+    </nav>` : '';
+
+  host.innerHTML = `<div class="mb-s2 text-caveat text-ink-muted">
       <span class="tnum">${measured.length}</span> question${measured.length === 1 ? '' : 's'} with measurements${
       unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered without one` : ''}${
-      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}
+      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}${
+      disputes.size ? ` · <span class="text-state-warn tnum">${disputes.size}</span> disagreement${disputes.size === 1 ? '' : 's'}` : ''}
       ${purposeLegendHtmlFor(questions)}</div>
-    ${sections || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
+    ${rail}
+    ${sections.join('') || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
     ${trailing}`;
 
   host.querySelectorAll('[data-measure]').forEach((n) => {
@@ -3566,14 +3738,12 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
       metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
     }));
   });
-  // Work lists live under the Investigation frame — the matrix — not under a
-  // sub-tab of this resource. Promotion is a decision about a set.
-  host.querySelector('[data-goto-worklist]')?.addEventListener('click', () => {
+  host.querySelectorAll('[data-goto-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.stage = 'investigation';
     writeUrl();
     renderIntentNav();
     loadPane();
-  });
+  }));
   for (const n of host.querySelectorAll('[data-delta]')) {
     const [analysisId] = n.dataset.delta.split('|');
     deltaFor(slug, analysisId).then((text) => {
