@@ -45,6 +45,8 @@ import {
   runSurveyDefinition,
   getMe,
   getBulkFacts,
+  getMemberChildren,
+  getMembers,
   getQuestions,
   getScoutingOverview,
   listActivity,
@@ -3489,6 +3491,7 @@ function subResourceSummaryHtml(fact) {
       <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
       <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
         they belong with the verdict loop.</span>
+      <button type="button" data-members="sub_resource_survey" data-title="sub-resources" class="cursor-pointer bg-transparent text-accent-ink underline">which ›</button>
       <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
     </div>`;
 }
@@ -3546,17 +3549,22 @@ function analysisUnderQuestionHtml(fact, id, checks) {
       <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}${
         flags.length ? ` <span class="text-caveat text-ink-muted">· ${flags.map((f) => `${esc(f.key.replace(/_/g, ' '))}: ${f.value ? 'yes' : 'no'}`).join(' · ')}</span>` : ''}</span>
       <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
-    </button>`;
+    </button>
+    <div class="pl-[22px] text-provenance">
+      <button type="button" data-members="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">members ›</button>
+    </div>`;
   if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
   const scopedAndFound = checks && findings.length;
   return (scopedAndFound ? '' : head)
     + (findings.length ? findingsHtml(findings, id, when) : '')
     + (unset.length ? `<div class="mt-s1 text-caveat text-ink-muted">not recorded: ${esc(unset.map((k) => k.replace(/_/g, ' ')).join(', '))}</div>` : '')
     + (numbers.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${numbers.map((c) => `
-        <tr class="wl-countrow cursor-pointer border-b border-rule" data-measure="${esc(id)}" data-metric="${esc(c.key)}"
+        <tr class="wl-countrow cursor-pointer border-b border-rule" data-members="${esc(id)}" data-metric="${esc(c.key)}"
           data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
           <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
+          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}
+            <span class="text-provenance text-ink-muted">members ›</span></td>
         </tr>`).join('')}</table>` : '');
 }
 
@@ -3588,11 +3596,11 @@ function disputeHtml(key, rec, when) {
       <div class="text-caps uppercase tracking-caps text-state-warn">Disagreement · ${esc(key.replace(/_/g, ' '))}</div>
       <div class="mt-[2px] flex flex-wrap items-baseline gap-s3 text-answer text-ink">
         ${rec.map((x) => `<button type="button" class="cursor-pointer border-0 bg-transparent p-0 text-left"
-            data-measure="${esc(x.analysis)}" data-metric="${esc(key)}" data-title="${esc(key.replace(/_/g, ' '))}" data-when="${esc(when || '')}">
+            data-members="${esc(x.analysis)}" data-metric="${esc(key)}" data-title="${esc(key.replace(/_/g, ' '))}" data-when="${esc(when || '')}">
             <strong class="tnum font-semibold">${esc(fmtScalar(x.value, key))}</strong>
             <span class="font-mono text-provenance text-ink-muted">${esc(x.analysis)} ›</span></button>`).join('')}
       </div>
-      <div class="text-caveat text-ink-muted">${rec.length} analyses report this name with different values; they may not be measuring the same thing. Open either to see what each counted.</div>
+      <div class="text-caveat text-ink-muted">${rec.length} analyses report this name with different values; they may not be measuring the same thing. Open either to see what each counted — the members list in the rail.</div>
     </div>`;
 }
 
@@ -3608,6 +3616,113 @@ function sectionState(q, answerEnv, facts, ids) {
   // not completion.
   if (q && (q.kind === 'mixed' || q.kind === 'partial')) return 'partial';
   return 'answered';
+}
+
+/* ── The third door: the things a count counted ──────────────────────────
+ *
+ * There are three "show me more" requests on this pane and only one had a
+ * path. About the MEASUREMENT — where did 68 come from, has it changed,
+ * re-run it — is the popup. A question nobody asked — is this safe for
+ * customer data? — is chat. The one in the middle, and the most common:
+ * WHICH 68? Which 18 advisories, which 90 files, which three sub-resources
+ * were not worthy? Nothing opened that. The popup looked like the door and
+ * opened the number's history instead, so a reader learned that 18 had been
+ * 18 for a fortnight.
+ *
+ * Members render in the right rail, which on Analysis held an empty ask box
+ * and eighteen hundred pixels of nothing. Click a count, the rail lists the
+ * members; the centre column keeps its place. No modal, no navigation.
+ *
+ * Members nest — file → symbol today; endpoint → operation → schema when
+ * those are measured — and PURPOSE decides how much of the tree you see:
+ * intent to use wants the public surface, intent to maintain wants that
+ * plus the internal structure. One tree, two default expansions, because
+ * maintain is a superset. Only symbols carry a public/internal marker, and
+ * that marker is inferred from naming — the rail says so.
+ *
+ * This is also where two disagreeing counts get settled: "open either to
+ * see what each counted" was already the instruction on the disagreement
+ * block, and until now it could not be followed.
+ */
+function memberScope() {
+  return currentPurposes().includes('Maintain') ? 'all' : 'public';
+}
+
+async function openMembers({ slug, analysisId, metric = '', title = '' }) {
+  const out = $('rail-evidence');
+  if (!out) return;
+  const scope = state.memberScope || memberScope();
+  out.innerHTML = `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`;
+  let data;
+  try {
+    data = await getMembers(slug, analysisId, { metric, scope });
+  } catch (err) {
+    out.innerHTML = `<div class="text-caps text-state-warn-on-dark">The members could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  const groups = data.groups || [];
+  const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
+      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}</span>
+      <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
+    </div>
+    <div class="mb-s2 text-caps text-chrome-muted">
+      <span class="font-mono">${esc(data.analysis_id)}</span>
+      · <button data-act="member-history" class="cursor-pointer bg-transparent text-accent-on-dark underline">measurement ›</button>
+      · scope
+      <button data-scope="public" aria-pressed="${scope === 'public'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">use</button>
+      <button data-scope="all" aria-pressed="${scope === 'all'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">maintain</button>
+      ${data.scope_honoured ? '' : `<span class="text-chrome-muted">· scope not applicable to this set</span>`}
+    </div>
+    ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
+    <div class="flex flex-col gap-s1">
+      ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
+        <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
+        <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
+          ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
+            ${m.children_key
+              ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
+                 <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
+              : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+            ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
+          </li>`).join('')}
+          ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
+        </ul>
+      </details>`).join('')}
+    </div>
+    ${shown < data.total && !groups.some((g) => g.truncated)
+      ? `<div class="mt-s1 text-caps text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${data.total}</span> listed; the rest are nested under what is shown</div>` : ''}
+    <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>`;
+
+  out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
+  out.querySelector('[data-act="member-history"]')?.addEventListener('click', () => openMeasurementDetail({
+    slug, analysisId, title: title || analysisId, metric,
+  }));
+  out.querySelectorAll('[data-scope]').forEach((b) => b.addEventListener('click', () => {
+    state.memberScope = b.dataset.scope;
+    openMembers({ slug, analysisId, metric, title });
+  }));
+  // One level down, on demand: a file opens its symbols in place.
+  out.querySelectorAll('[data-children]').forEach((b) => b.addEventListener('click', async () => {
+    const li = b.closest('li');
+    if (li.querySelector('ul')) { li.querySelector('ul').remove(); return; }
+    b.textContent = `${b.textContent} …`;
+    let rows;
+    try { rows = (await getMemberChildren(slug, analysisId, b.dataset.children, { scope })).members || []; }
+    catch (err) { rows = [{ name: `could not read: ${err.message}`, detail: '' }]; }
+    b.textContent = b.textContent.replace(/ …$/, '');
+    const ul = document.createElement('ul');
+    ul.className = 'm-0 mt-[2px] w-full list-none p-0 pl-s3';
+    ul.innerHTML = rows.map((m) => `<li class="flex items-baseline gap-s2 py-[1px] text-caps">
+        <span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>
+        ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}</li>`).join('')
+      || `<li class="text-caps text-chrome-muted">nothing at this level</li>`;
+    li.appendChild(ul);
+  }));
+  // The rail may be closed on a narrow shell; a members request opens it.
+  if (typeof setRailOpen === 'function') setRailOpen(true);
 }
 
 async function renderDashboardByQuestion(slug, stage, host, live) {
@@ -3783,6 +3898,11 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
     n.addEventListener('click', () => openMeasurementDetail({
       slug, analysisId: n.dataset.measure, title: n.dataset.title || n.dataset.measure,
       metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
+    }));
+  });
+  host.querySelectorAll('[data-members]').forEach((n) => {
+    n.addEventListener('click', () => openMembers({
+      slug, analysisId: n.dataset.members, metric: n.dataset.metric || '', title: n.dataset.title || n.dataset.members,
     }));
   });
   host.querySelectorAll('[data-goto-worklist]').forEach((b) => b.addEventListener('click', () => {

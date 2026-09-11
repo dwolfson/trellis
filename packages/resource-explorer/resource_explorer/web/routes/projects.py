@@ -1409,3 +1409,38 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
     if not kind:
         return {}
     return registry.query_metrics(slug, kind, scope_locator=locator)
+
+
+@router.get("/{slug}/members/{analysis_id}")
+async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str = "public",
+                      limit: int = 200) -> dict:
+    """The things a count counted — see resource_explorer/members.py.
+
+    `scope` is `public` or `all`; the response says whether it was honoured,
+    because today only symbols carry a public/internal marker. Read from
+    the registry, not the display-shaped results, since those drop the
+    detail this needs.
+    """
+    from resource_explorer.members import members_for
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return await asyncio.to_thread(
+        lambda: members_for(registry, slug, analysis_id, metric, scope=scope, limit=min(max(limit, 1), 1000)).to_dict())
+
+
+@router.get("/{slug}/members/{analysis_id}/children")
+async def get_member_children(slug: str, analysis_id: str, key: str, scope: str = "public",
+                              limit: int = 200) -> dict:
+    """One level down a member tree. `key` is opaque — whatever the parent
+    row's `children_key` said."""
+    from resource_explorer.members import children_for
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    rows = await asyncio.to_thread(lambda: children_for(registry, slug, analysis_id, key, scope=scope, limit=min(max(limit, 1), 1000)))
+    return {"key": key, "members": rows}
