@@ -38,11 +38,13 @@ import {
   getDispositionHistory,
   enqueueBatch,
   getAnalysisTrend,
+  getDeclaredVsReceived,
   getResourceRuns,
   getSurveyCandidates,
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
+  getBulkFacts,
   getQuestions,
   getScoutingOverview,
   listActivity,
@@ -60,6 +62,9 @@ import {
   sendFeedback,
   setDisposition,
   setWorkingSetHidden,
+  getContext,
+  questionKey,
+  saveQuestionAnswer,
 } from '/static/re-api.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -2714,8 +2719,22 @@ function lastRunHtml(c) {
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
 }
 
+/** The union of annotation types a definition's steps declare — RE steps carry
+ *  their own `annotation_types`, native (Egeria-executed) steps carry theirs
+ *  nested one level down, in `egeria_produced_annotation_types[].annotation_type`.
+ *  De-duplicated because two steps commonly declare the same type. */
+function producesTypes(c) {
+  const seen = new Set();
+  for (const s of c.steps || []) {
+    for (const t of s.annotation_types || []) if (t) seen.add(t);
+    for (const p of s.egeria_produced_annotation_types || []) if (p && p.annotation_type) seen.add(p.annotation_type);
+  }
+  return [...seen];
+}
+
 function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
+  const produces = producesTypes(c);
   return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
     <div class="min-w-0 flex-1">
       <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
@@ -2723,6 +2742,8 @@ function surveyRowHtml(c) {
       <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
         c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
           class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
+      <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
+        produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
     </div>
     <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step(s)</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
@@ -2998,7 +3019,7 @@ async function historyHtml(slug, analysisId, metric = '') {
       ${series.map((r, i) => `<tr class="border-b border-rule">
         <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
         <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
-          esc(fmtScalar(r.metric_value ?? r.value))}</td>
+          esc(fmtScalar(r.metric_value ?? r.value, r.metric || metric))}</td>
       </tr>`).join('')}
     </table>`;
 }
@@ -3022,13 +3043,63 @@ async function deltaFor(slug, analysisId, metric = '') {
     const prior = [...series].reverse().find(
       (r) => (r.metric_value ?? r.value) !== (now.metric_value ?? now.value));
     if (!prior) return `unchanged across ${series.length} runs`;
-    return `was ${fmtScalar(prior.metric_value ?? prior.value)} ${ago(prior.surveyed_at)}`;
+    // A row may name its own metric (the trend reader knows what `value`
+    // is even when the caller does not); prefer that over the caller's.
+    return `was ${fmtScalar(prior.metric_value ?? prior.value, prior.metric || metric)} ${ago(prior.surveyed_at)}`;
   } catch (_) {
     return '';
   }
 }
 
 /** One measurement, opened: what it says, its evidence, its history. */
+/* ── What a measurement is entitled to claim ──────────────────────────────
+ *
+ * The catalog's Rationale/Source column carries, per question, what its
+ * answer can and cannot mean: secret_scan never claims "no secrets", only no
+ * matches against this ruleset in this snapshot; cve_scan sees declared
+ * dependencies only, so a zero is "none found in what we can see".
+ *
+ * Those sentences have existed in the CSV since the catalog was authored and
+ * have never reached a screen. They are the difference between a finding and
+ * a claim, so they belong beside the value — as the second line of the
+ * answer, not as help text.
+ *
+ * Keyed by analysis id because that is what a measurement knows about
+ * itself. One analysis can answer several questions, so the value is a list
+ * and duplicates are collapsed: two questions often share a rationale, and
+ * printing it twice reads as two separate caveats.
+ */
+const RATIONALE_BY_ANALYSIS = new Map();
+
+function rememberRationales(questions) {
+  for (const q of questions || []) {
+    const text = (q.rationale || '').trim();
+    if (!text) continue;
+    for (const id of q.analysis_ids || []) {
+      const held = RATIONALE_BY_ANALYSIS.get(id) || [];
+      if (!held.includes(text)) held.push(text);
+      RATIONALE_BY_ANALYSIS.set(id, held);
+    }
+  }
+}
+
+/** The caveat block for one analysis, or '' when the catalog states none.
+ *
+ * Empty is rendered as nothing rather than as "no caveats recorded": this
+ * cache is filled by whichever checklists have been loaded this session, so
+ * an empty result means "not loaded here", NOT "this measurement claims
+ * without limit". Saying the latter would be the fast-path-that-lies shape
+ * the matrix was built to avoid.
+ */
+function rationaleHtml(analysisId) {
+  const held = RATIONALE_BY_ANALYSIS.get(analysisId) || [];
+  if (!held.length) return '';
+  return `<div class="mt-s2 border-l-2 border-accent pl-s2">
+      <div class="uppercase tracking-caps text-caps text-ink-muted">What this can claim</div>
+      ${held.map((t) => `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${tnum(esc(t))}</p>`).join('')}
+    </div>`;
+}
+
 async function openMeasurementDetail({ slug, analysisId, title, metric = '',
                                        glyph = '', summary = '', when = '' }) {
   const el = openDialog(title, `${slug} · ${analysisId}`);
@@ -3040,6 +3111,7 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
       ${when ? `<span class="ml-auto text-provenance text-ink-muted">measured ${esc(ago(when))}</span>` : ''}
     </div>
     ${summary ? `<p class="mt-s1 max-w-[70ch] text-ink">${tnum(esc(summary))}</p>` : ''}
+    ${rationaleHtml(analysisId)}
     ${trendSupport(analysisId) === 'not_tracked'
       // Said, flatly, once. No history SECTION — an empty section implies
       // something should be there — but not silence either: a reader who
@@ -3082,6 +3154,92 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
  * The per-step detail is in the activity log's own `detail` payload — steps
  * with their statuses — so this is wiring too, not new persistence.
  */
+/*
+ * Declared vs received — DECLARED IS NOT PROMISED. A step's `declared`
+ * annotation types are "this step is capable of emitting these", not "this
+ * run definitely produced them". Whether it actually did can only be read
+ * from the run's own Egeria report, and two of the six verdicts below are not
+ * "zero" even when they render on the empty side of the line: `not-published`
+ * means the run has no report to check at all, and `not-recorded` means it
+ * has one but predates the publish bookkeeping (2026-09-07) that would let us
+ * trust an absence. Both say "cannot be known" — never "no" — and never count
+ * toward a total the way a real zero would.
+ */
+
+/** One `types[]` entry from GET …/declared-vs-received, rendered as a line:
+ *  glyph, the type in mono, and a short plain-English reading of the verdict. */
+function declaredVsReceivedLineHtml(t) {
+  let glyph = '<span class="text-ink-muted">·</span>';
+  let phrase;
+  switch (t.verdict) {
+    case 'received':
+      glyph = '<span class="text-state-ok">✓</span>';
+      phrase = 'received';
+      break;
+    case 'step-did-not-finish': {
+      glyph = '<span class="text-state-warn">⚠</span>';
+      const statuses = t.step_statuses || {};
+      const failing = (t.declared_by || []).filter((s) => statuses[s] && statuses[s] !== 'ok');
+      const detail = (failing.length ? failing : (t.declared_by || []))
+        .map((s) => `${s}${statuses[s] ? ` (${statuses[s]})` : ''}`).join(', ');
+      phrase = `the declaring step did not finish — ${detail}`;
+      break;
+    }
+    case 'step-not-in-run':
+      phrase = 'declared, but this run never reached the step that produces it';
+      break;
+    case 'nothing-of-this-type':
+      phrase = 'ran clean, found nothing of this type';
+      break;
+    case 'not-published':
+      phrase = 'cannot be known — this run has no Egeria report to check';
+      break;
+    case 'not-recorded':
+      phrase = 'cannot be known — published before publish bookkeeping began (2026-09-07)';
+      break;
+    default:
+      phrase = String(t.verdict || '');
+  }
+  return `<li class="flex gap-s2">
+    <span class="w-[16px] shrink-0">${glyph}</span>
+    <span class="min-w-0 font-mono text-provenance">${esc(t.annotation_type)}</span>
+    <span class="text-ink-muted">— ${tnum(esc(phrase))}</span>
+  </li>`;
+}
+
+/** The whole declared-vs-received block for one run. `data` is the parsed
+ *  response of GET …/declared-vs-received. */
+function declaredVsReceivedHtml(data) {
+  const s = data.summary || {};
+  const didNotFinish = s['step-did-not-finish'] || 0;
+  // When the run has no report (`published` false) or predates publish
+  // bookkeeping (`recorded` false), every "unknown" type says the identical
+  // thing — so it is said ONCE, not once per type, to avoid drowning the
+  // defect lines (which ARE knowable from the run record and always shown).
+  const collapseUnknown = !data.published || !data.recorded;
+  let unknownShown = false;
+  const rows = (data.types || []).map((t) => {
+    if (collapseUnknown && (t.verdict === 'not-published' || t.verdict === 'not-recorded')) {
+      if (unknownShown) return '';
+      unknownShown = true;
+      const reason = !data.published
+        ? 'this run has no Egeria report, so what it produced cannot be listed from here'
+        : 'this run was published before publish bookkeeping began (2026-09-07), so absence here means nothing';
+      return `<li class="flex gap-s2">
+        <span class="w-[16px] shrink-0 text-ink-muted">·</span>
+        <span class="min-w-0 text-ink-muted">The rest cannot be known — ${esc(reason)}.</span>
+      </li>`;
+    }
+    return declaredVsReceivedLineHtml(t);
+  }).join('');
+  return `
+    <div class="mt-s2 text-caps uppercase tracking-caps text-ink-muted">Declared vs received</div>
+    <div class="mt-s1 text-provenance text-ink-muted">
+      <span class="tnum">${esc(s.declared ?? 0)} declared</span> · <span class="tnum">${esc(s.received ?? 0)} received</span>${
+        didNotFinish ? ` · <span class="tnum text-state-warn">${esc(didNotFinish)} did not finish</span>` : ''}</div>
+    <ul class="m-0 mt-s1 list-none p-0 text-caveat">${rows}</ul>`;
+}
+
 async function openRunsList(slug) {
   const el = openDialog('Runs', slug);
   const body = el.querySelector('#wl-detail-body');
@@ -3125,8 +3283,35 @@ async function openRunsList(slug) {
           </li>`).join('')}
         </ul>`
         : '<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>'}
+      <div data-dvr="${esc(r.id)}"></div>
     </details>`;
   }).join('');
+
+  // Lazily fetched, per run, on first open — the reconciliation is a second
+  // request per row and most rows in a list of 12 are never expanded. `toggle`
+  // fires on both open and close, and on close-then-reopen, so a `fetched`
+  // flag closed over the one placeholder guards against firing it twice.
+  body.querySelectorAll('details').forEach((det) => {
+    const holder = det.querySelector('[data-dvr]');
+    if (!holder) return;
+    const entryId = holder.dataset.dvr;
+    let fetched = false;
+    det.addEventListener('toggle', async () => {
+      if (!det.open || fetched) return;
+      fetched = true;
+      let dvr;
+      try {
+        dvr = await getDeclaredVsReceived(entryId);
+      } catch (err) {
+        // A 409 means this activity entry is not a survey run with a step
+        // list — not an error worth showing, just nothing to reconcile.
+        if (err instanceof ApiError && err.status === 409) return;
+        holder.innerHTML = `<p class="mt-s1 text-caveat text-ink-muted">Could not read the declaration: ${esc(err.message)}</p>`;
+        return;
+      }
+      holder.innerHTML = declaredVsReceivedHtml(dvr);
+    });
+  });
 }
 
 /** Invalidates an in-flight dashboard read when the pane or resource changes. */
@@ -3168,6 +3353,250 @@ function findingGlyph(label) {
 /** `not_established` -> `not established`; `SOLE` -> `sole`. */
 const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
 
+/* ── The dashboard, by question ────────────────────────────────────────────
+ *
+ * The diagnosis, in one line: the dashboard was organised by the PRODUCER
+ * while every other pane is organised by the CONSUMER. A question has one
+ * answer even when six analyses contribute; on the authored boards that
+ * answer was six paragraphs apart in six sections — and one analysis that
+ * answers six questions (`repo_conventions`) appeared on two boards in full,
+ * both times, under neither question.
+ *
+ * This view is generated, not authored. It reads the stage's questions, the
+ * analyses they name, and the facts for those analyses — the same projection
+ * the matrix reads, keyed by analysis id and independent of which board an
+ * analysis was filed under. Adding an analysis to the catalog and naming it
+ * on a question puts it here with no UI change, which was the bar.
+ *
+ * Three ranks per question, as before: the analysis's OWN sentence first
+ * (`headline` — the annotation writes its summary, we render it rather than
+ * re-composing from fields, which is where 82 / 82.2 came from), then
+ * findings unresolved-first, then counts as a table.
+ *
+ * When one analysis serves several questions, the catalog's `checks` decide
+ * what each question shows: a question declaring `repo_conventions:doc_breadth`
+ * shows that finding and not the other four. A question that declares no
+ * check takes the whole analysis — once. Later questions naming the same
+ * analysis get a pointer to where it is shown, because the same five
+ * findings rendered six times is the thing this view exists to stop.
+ *
+ * Two things deliberately NOT on this pane:
+ *  - the ~40 `sub_resource_survey` worthy / not-worthy rows are promotion
+ *    candidates and belong with the verdict loop; here they are one line
+ *    with a count and a pointer to the work list;
+ *  - nothing is hidden. An analysis the stage measures that no question
+ *    asks for is listed at the end under its own heading, because that list
+ *    is the standing check the catalog needs and it found nine on first run.
+ */
+const DASH_VIEW_KEY = 're-next.dashView';
+
+function factGlyph(state) {
+  switch (state) {
+    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
+    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
+    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
+    default: return { glyph: '·', tone: 'text-ink-muted' };
+  }
+}
+
+function subResourceSummaryHtml(fact) {
+  const rows = (fact.value && fact.value.findings) || [];
+  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
+  return `<div class="mt-s1 text-caveat text-ink">
+      <span class="tnum">${rows.length}</span> sub-resources assessed ·
+      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
+      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
+        they belong with the verdict loop.</span>
+      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
+    </div>`;
+}
+
+function findingRowHtml(f, analysisId, when) {
+  const c = findingGlyph(f.label);
+  return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
+    data-measure="${esc(analysisId)}" data-check="${esc(f.check_name || '')}"
+    data-title="${esc((f.check_name || analysisId).replace(/_/g, ' '))}"
+    data-summary="${esc(f.summary || '')}" data-when="${esc(when || '')}">
+    <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
+    <span class="min-w-0 flex-1 text-ink">
+      <strong class="font-semibold">${
+        f.check_name
+          ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
+          : esc(humanLabel(f.label) || analysisId)}.</strong>
+      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
+      <span class="block text-provenance text-ink-muted" data-delta="${esc(analysisId)}|${esc(f.check_name || '')}">·</span></span>
+    <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(analysisId)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+  </button>`;
+}
+
+function sortUnresolvedFirst(findings) {
+  return [...findings].sort((x, y) => {
+    const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
+    const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
+    return ux - uy;
+  });
+}
+
+/** One analysis, under one question. `checks` is the set of check names this
+ *  question declares for it, or null for the whole analysis. */
+function analysisUnderQuestionHtml(fact, id, checks) {
+  if (!fact) {
+    return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · not read</div>`;
+  }
+  const g = factGlyph(fact.state);
+  const when = fact.last_run_at || '';
+  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
+      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
+      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}</span>
+      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+    </button>`;
+  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
+  const value = (fact.value && typeof fact.value === 'object') ? fact.value : {};
+  let findings = Array.isArray(value.findings) ? value.findings : [];
+  if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
+  findings = sortUnresolvedFirst(findings);
+  const counts = checks ? [] : Object.entries(value)
+    .filter(([k, v]) => k !== 'findings' && k !== 'overall' && (typeof v === 'number' || typeof v === 'boolean'))
+    .map(([k, v]) => ({ key: k, value: v }));
+  // Under a check-scoped question the whole-analysis sentence is not the
+  // answer — "1 of 5 conventions need attention" said three times under three
+  // questions that each asked about ONE convention. The scoped finding IS the
+  // answer, and it carries the analysis id and time itself. The sentence
+  // stays where the whole analysis is shown.
+  const scopedAndFound = checks && findings.length;
+  return (scopedAndFound ? '' : head)
+    + (findings.length ? findings.map((f) => findingRowHtml(f, id, when)).join('') : '')
+    + (counts.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${counts.map((c) => `
+        <tr class="wl-countrow cursor-pointer border-b border-rule" data-measure="${esc(id)}" data-metric="${esc(c.key)}"
+          data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
+          <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
+          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
+        </tr>`).join('')}</table>` : '');
+}
+
+async function renderDashboardByQuestion(slug, stage, host, live) {
+  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading the questions…</span>`;
+  let questions;
+  try {
+    const res = await getQuestions(slug, {
+      phase: stage, perspectives: [...state.activePerspectives], purposes: currentPurposes(),
+    });
+    questions = res.questions || [];
+  } catch (err) {
+    if (live()) host.innerHTML = `<span class="text-state-warn">The questions could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!live()) return;
+  rememberRationales(questions);
+
+  const measured = questions.filter((q) => (q.analysis_ids || []).length);
+  const unmeasured = questions.length - measured.length;
+  const asked = new Set(measured.flatMap((q) => q.analysis_ids || []));
+
+  // Everything the stage measures, so what nobody asks for can be listed
+  // rather than lost. A catalog read, not a results read — it is the cheap one.
+  let stageIds = [];
+  try {
+    const cat = await listAnalyses('repo', { intent: stage });
+    stageIds = (cat.analyses || cat || []).map((a) => a.id || a.analysis_id).filter(Boolean);
+  } catch (_) { /* the trailing section is then just what the questions named */ }
+  const unasked = stageIds.filter((id) => !asked.has(id));
+
+  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading ${asked.size + unasked.length} measurements…</span>`;
+  let facts = new Map();
+  try {
+    const res = await getBulkFacts([slug], [...asked, ...unasked]);
+    for (const f of (res.subjects || {})[slug] || []) facts.set(f.analysis_id, f);
+  } catch (err) {
+    if (live()) host.innerHTML = `<span class="text-state-warn">The measurements could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!live()) return;
+
+  const shownWhole = new Map();   // analysis id -> question index that rendered it in full
+  const sections = measured.map((q, qi) => {
+    const ids = q.analysis_ids || [];
+    const declared = (q.checks || []).map((c) => String(c).split(':'));
+    const checksFor = (id) => {
+      const mine = declared.filter(([a]) => a === id).map(([, c]) => c).filter(Boolean);
+      return mine.length ? new Set(mine) : null;
+    };
+    const body = ids.map((id) => {
+      const checks = checksFor(id);
+      if (!checks) {
+        const prior = shownWhole.get(id);
+        if (prior !== undefined && prior !== qi) {
+          return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · shown in full under
+            <em>${esc(measured[prior].question)}</em></div>`;
+        }
+        shownWhole.set(id, qi);
+      }
+      return analysisUnderQuestionHtml(facts.get(id), id, checks);
+    }).join('');
+    return `<section class="mb-s5">
+      <div class="text-answer text-ink">${esc(q.question)}</div>
+      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${body}
+    </section>`;
+  }).join('');
+
+  const trailing = unasked.length ? `<section class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
+      <div class="text-caps uppercase tracking-caps text-ink-muted">Measured, but no question asks ·
+        <span class="tnum">${unasked.length}</span></div>
+      <p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">These analyses run at this stage and
+        nothing in the question catalog names them. Either a question is missing, or the analysis is
+        evidence for a judgement rather than an answer to a question. Listed so the gap is a fact
+        rather than a surprise.</p>
+      ${unasked.map((id) => analysisUnderQuestionHtml(facts.get(id), id, null)).join('')}
+    </section>` : '';
+
+  host.innerHTML = `<div class="mb-s3 text-caveat text-ink-muted">
+      <span class="tnum">${measured.length}</span> question${measured.length === 1 ? '' : 's'} with measurements${
+      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered without one` : ''}${
+      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}
+      ${purposeLegendHtmlFor(questions)}</div>
+    ${sections || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
+    ${trailing}`;
+
+  host.querySelectorAll('[data-measure]').forEach((n) => {
+    n.addEventListener('click', () => openMeasurementDetail({
+      slug, analysisId: n.dataset.measure, title: n.dataset.title || n.dataset.measure,
+      metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
+    }));
+  });
+  // Work lists live under the Investigation frame — the matrix — not under a
+  // sub-tab of this resource. Promotion is a decision about a set.
+  host.querySelector('[data-goto-worklist]')?.addEventListener('click', () => {
+    state.stage = 'investigation';
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  });
+  for (const n of host.querySelectorAll('[data-delta]')) {
+    const [analysisId] = n.dataset.delta.split('|');
+    deltaFor(slug, analysisId).then((text) => {
+      if (!live()) return;
+      n.textContent = text || '';
+      n.className = text === 'first measurement' ? 'block text-provenance text-ink-muted' : 'block text-provenance text-ink';
+    });
+  }
+}
+
+/** The purpose legend for a question list that is not `state.questions`. */
+function purposeLegendHtmlFor(questions) {
+  const purposes = currentPurposes();
+  if (!purposes.length || !questions.length) return '';
+  const lead = questions.filter((q) => q.derivation?.purpose_ranked).length;
+  if (!lead) return `· <span class="text-ink-muted">none serve ${esc(purposes.join(', '))}</span>`;
+  return `· <span class="text-ink-muted">ordered by purpose · ${esc(purposes.join(', '))} · <span class="tnum">${lead}</span> lead</span>`;
+}
+
+function dashView() {
+  try { return localStorage.getItem(DASH_VIEW_KEY) === 'analysis' ? 'analysis' : 'question'; } catch { return 'question'; }
+}
+
 async function loadDashboardPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -3179,13 +3608,30 @@ async function loadDashboardPane() {
   // a Promise.all, which showed one line for as long as the slowest took —
   // and on Analysis the dashboards read costs 109s.
   const token = ++dashToken;
+  const view = dashView();
   el.innerHTML = subTabsHtml() + `
-    <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">
-      Survey results · ${esc(stage)}</div>
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey results · ${esc(stage)}</span>
+      <span class="ml-auto flex gap-[6px] text-caveat">
+        <button type="button" data-dashview="question" aria-pressed="${view === 'question'}"
+          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by question</button>
+        <button type="button" data-dashview="analysis" aria-pressed="${view === 'analysis'}"
+          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by analysis</button>
+      </span>
+    </div>
     <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>`;
   bindSubTabs();
+  el.querySelectorAll('[data-dashview]').forEach((b) => b.addEventListener('click', () => {
+    try { localStorage.setItem(DASH_VIEW_KEY, b.dataset.dashview); } catch { /* per-viewer convenience only */ }
+    loadDashboardPane();
+  }));
 
   const live = () => token === dashToken && state.subTab === 'dashboard';
+
+  if (view === 'question') {
+    await renderDashboardByQuestion(slug, stage, $('dash-boards'), live);
+    return;
+  }
 
   let data;
   try {
@@ -3298,7 +3744,7 @@ async function loadDashboardPane() {
                         rec.length}</span> analyses report this name with different values;
                         they may not be measuring the same thing</span></td>
                     <td class="tnum py-[5px] pr-s3 text-right text-ink">${
-                      esc(rec.map((x) => fmtScalar(x.value)).join(' / '))}</td>
+                      esc(rec.map((x) => fmtScalar(x.value, c.key)).join(' / '))}</td>
                     <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
                       esc(rec.map((x) => x.analysis).join(' / '))}</td>
                   </tr>`;
@@ -3312,7 +3758,7 @@ async function loadDashboardPane() {
                   data-measure="${esc(c.analysis_id)}" data-metric="${esc(c.key)}"
                   data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
                   <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value))}</td>
+                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
                   <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
                     esc([c.analysis_id, ...agree.map((x) => x.analysis)].join(' · '))}${
                     c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
@@ -3384,10 +3830,43 @@ function headlineHtml(a) {
   </div>`;
 }
 
-/** Numbers to one decimal, booleans as words. */
-function fmtScalar(v) {
+/** A stored value rendered as what it IS, not as the number that stores it.
+ *
+ *  `was 21438268 8d ago` on ~40 sub_resource_survey rows was the defect: that
+ *  is `total_size_bytes`, and 21,438,268 is a correct number that nobody can
+ *  read as 21.4 MB at a glance. The formatter had no way to know, because it
+ *  was handed the value and not the name — every call site HAD the name in
+ *  scope and none passed it.
+ *
+ *  Rules, in order:
+ *  - booleans as words;
+ *  - a name ending in `bytes` renders as a size (B / KB / MB / GB / TB, one
+ *    decimal above KB);
+ *  - an integer at or above 1,000 gets digit grouping, so a count of files is
+ *    read as a count and not as a code;
+ *  - everything else to one decimal, as before.
+ *
+ *  Only the name's SUFFIX is read. Anything cleverer — guessing a unit from a
+ *  magnitude — is exactly how a byte count becomes a "score" somewhere. With
+ *  no name, only the grouping rule can apply: a bare 21,438,268 is still
+ *  better than 21438268, and grouping is never wrong the way a unit can be. */
+function fmtScalar(v, name = '') {
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
-  return String(Math.round(v * 10) / 10);
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  if (/bytes$/i.test(name)) return fmtBytes(n);
+  if (Number.isInteger(n) && Math.abs(n) >= 1000) return n.toLocaleString('en-US');
+  return String(Math.round(n * 10) / 10);
+}
+
+function fmtBytes(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let x = Math.abs(n);
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1; }
+  const shown = i === 0 ? String(Math.round(x)) : (Math.round(x * 10) / 10).toFixed(1);
+  return `${n < 0 ? '-' : ''}${shown} ${units[i]}`;
 }
 
 /** What a deferred sub-tab shows when you click it. */
@@ -3466,9 +3945,15 @@ function renderLegend() {
       <span class="tnum">${pending}</span> still loading</span>`);
   }
 
+  // The ordering legend sits beside the state key, not inside it: the key
+  // says what the glyphs mean, this says why the rows are in this order.
+  // Separated by a middle dot so it reads as a second clause, not a seventh
+  // glyph.
+  const order = purposeLegendHtml();
   el.innerHTML = items.length
-    ? `<span class="text-caps uppercase tracking-caps text-ink-muted">Key</span>${items.join('')}`
-    : '';
+    ? `<span class="text-caps uppercase tracking-caps text-ink-muted">Key</span>${items.join('')}${
+      order ? `<span class="text-ink-muted">·</span>${order}` : ''}`
+    : order;
 }
 
 function paneMessage(title, body) {
@@ -3651,6 +4136,7 @@ async function loadPane() {
     checklist = await getQuestions(slug, {
       phase: state.stage,
       perspectives: [...state.activePerspectives],
+      purposes: currentPurposes(),
     });
   } catch (err) {
     $('question-rows').innerHTML = `<div class="py-s3 text-answer text-accent-ink">
@@ -3660,6 +4146,18 @@ async function loadPane() {
   if (slug !== state.selectedSlug) return;   // a faster click won
 
   state.questions = checklist.questions || [];
+  rememberRationales(state.questions);
+
+  // Human answers for this resource, so a `human` row can show what was
+  // already said rather than offering a blank box over the top of it. A
+  // failure here leaves the rows answerable and unanswered, which is the
+  // truthful degradation: we could not read them, so we do not claim any.
+  try {
+    const ctx = await getContext('repo', slug);
+    state.contextAnswers = ctx?.question_answers || {};
+  } catch {
+    state.contextAnswers = {};
+  }
 
   // The residue count needs the unfiltered total. One extra call, only when
   // a perspective is held — the number is the whole point of the chip row.
@@ -3689,6 +4187,7 @@ async function loadPane() {
   }
 
   rows.innerHTML = state.questions.map((q, i) => rowShell(q, i)).join('');
+  wireHumanAnswers(rows, slug);
   updateAnsweredCount();
   renderLegend();
 
@@ -3697,11 +4196,122 @@ async function loadPane() {
   state.questions.forEach((q, i) => loadAnswer(q, i, slug));
 }
 
+/* ── Answering a question that only a person can answer ───────────────────
+ *
+ * Seven catalog questions are Human-Supplied: do we already support these
+ * dependencies, what does it cost to run, do we have the skills, does it fit
+ * our monitoring / security / governance, does it fit or extend the estate.
+ * They had nowhere to be stored — the Enrichment context form holds
+ * environment, sensitivity, backup status and location, none of which appears
+ * in the catalog at all — so the rows said "not built in /next" and stopped.
+ *
+ * Delegated from the container because rows re-render independently as their
+ * answers land; binding per row would attach to elements that are about to be
+ * replaced. Attached ONCE and marked, because the pane re-renders on every
+ * perspective toggle and a second listener would save twice per click — the
+ * same stacked-listener bug the sidebar toggle had.
+ */
+function wireHumanAnswers(host, slug) {
+  if (host.dataset.humanWired === '1') return;
+  host.dataset.humanWired = '1';
+  host.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('[data-human-edit]');
+    if (!btn) return;
+    const question = btn.getAttribute('data-human-edit');
+    const key = questionKey(question);
+    const prior = (state.contextAnswers || {})[key]?.answer || '';
+    const next = window.prompt(question, prior);
+    if (next === null) return;              // cancelled — not an empty answer
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      await saveQuestionAnswer('repo', slug, question, next.trim());
+      state.contextAnswers = {
+        ...(state.contextAnswers || {}),
+        [key]: { question, answer: next.trim(), answered_at: new Date().toISOString() },
+      };
+      // Redraw just this row, the way an arriving answer does. A whole-pane
+      // reload would refetch every other answer to show one that is already
+      // in hand.
+      const i = state.questions.findIndex((q) => q.question === question);
+      if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
+    } catch (err) {
+      // Left on the button rather than raised as a page error: the failure is
+      // this one save, and the rest of the checklist is unaffected.
+      btn.disabled = false;
+      btn.textContent = err.status === 401 ? 'Not signed in' : `Not saved: ${err.message}`;
+      setTimeout(() => { btn.textContent = label; }, 4000);
+    }
+  });
+}
+
 function rowKey(i) { return `qrow-${i}`; }
+
+/* ── Purpose orders; Perspective filters ──────────────────────────────────
+ *
+ * The catalog carries a Purposes column — Explore, Select, Learn, Assess,
+ * Certify, Deploy, Maintain, Share, Attest — and the reader has honoured it
+ * since 2026-08-24: entries serving the investigation's purposes sort first,
+ * the rest follow in catalog order, nothing is hidden. YAML, reader, route and
+ * `getQuestions()` all carried it. This screen passed `phase` and
+ * `perspectives` and not `purposes`, so the ordering never happened.
+ *
+ * Why ORDER and not FILTER is a recorded measurement, not a preference:
+ * docs/investigation-framing-design.md §3 measured Purpose's overlap at 0.22
+ * and Perspective's at 0.37 with strictly nested sets. Filtering on the axis
+ * that discriminates hardest would hide the most; ordering on it puts the
+ * dozen questions the task needs at the top and leaves the rest below,
+ * deprioritised rather than gone. Perspective then filters, as built.
+ *
+ * The purposes come from the current investigation. No investigation, or one
+ * with none set, means catalog order — and the legend says nothing, because
+ * "not ordered" is the absence of a claim, not a claim of its own.
+ */
+function currentPurposes() {
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  return [...(inv?.purposes || [])];
+}
+
+/** The ordering, said out loud. An ordering with no legend is
+ *  indistinguishable from an arbitrary one. */
+function purposeLegendHtml() {
+  const purposes = currentPurposes();
+  if (!purposes.length) return '';
+  const lead = state.questions.filter((q) => q.derivation?.purpose_ranked).length;
+  const total = state.questions.length;
+  if (!total) return '';
+  // Zero promoted is a real answer — this stage's questions serve none of the
+  // investigation's purposes — and "0 of 7 lead" is not how anyone would say
+  // it. Measured: Assessment has 0 of 7 for Explore + Learn.
+  if (!lead) {
+    return `<span class="text-ink-muted">none of these serve ${esc(purposes.join(', '))} ·
+      catalog order</span>`;
+  }
+  return `<span class="text-ink-muted">ordered by purpose · ${esc(purposes.join(', '))} ·
+    <span class="tnum">${lead}</span> of <span class="tnum">${total}</span> lead${
+    lead < total ? ', the rest follow in catalog order' : ''}</span>`;
+}
+
+/** The boundary between the questions the investigation's purposes promoted
+ *  and the ones they did not. Rendered ONCE, at the first unranked row, and
+ *  only when both groups are non-empty — a rule above the first row or below
+ *  the last says nothing. Without this the second group reads as a
+ *  continuation, or as an oversight; with it, it reads as what it is. */
+function purposeBreakHtml(i) {
+  if (!currentPurposes().length) return '';
+  const q = state.questions[i];
+  const prev = state.questions[i - 1];
+  if (!prev || !prev.derivation?.purpose_ranked || q.derivation?.purpose_ranked) return '';
+  return `<div class="mt-s2 mb-s1 flex items-baseline gap-s2 text-caps uppercase tracking-caps text-ink-muted">
+    <span>Not among this investigation's purposes</span>
+    <span class="h-px flex-1 bg-rule"></span>
+  </div>`;
+}
 
 function rowShell(entry, i) {
   const last = i === state.questions.length - 1;
-  return `<div id="${rowKey(i)}" class="py-s3 ${last ? '' : 'border-b border-rule'}">
+  return `${purposeBreakHtml(i)}<div id="${rowKey(i)}" class="py-s3 ${last ? '' : 'border-b border-rule'}">
     ${rowInner(entry, i, 'loading')}
   </div>`;
 }
@@ -3782,10 +4392,31 @@ function bodyLines(entry, i, st, env) {
 
   if (st === 'human') {
     const why = entry.note || 'This is answered by someone stating it, not by a survey.';
+    const key = questionKey(entry.question);
+    const held = (state.contextAnswers || {})[key];
+    const declared = (entry.answering_mechanism || '');
+    // The mechanism column declares "Egeria Queries" on six of these seven
+    // questions, and none of the six names an analysis. So there is nothing
+    // to run first, and the honest render says which — an empty state that
+    // says what it looked in, per this round's own rule. Claiming a query
+    // ran, or silently offering only the text box, would both misdescribe it.
+    const wanted = /egeria quer/i.test(declared) && !(entry.analysis_ids || []).length;
     return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>
-      <div class="${indent} text-provenance text-ink-muted">
-        Enrichment · answer inline · not built in /next
-      </div>`;
+      ${held?.answer
+        ? `<div class="${indent} mt-s1 text-answer text-ink">${tnum(esc(held.answer))}</div>
+           <div class="${indent} text-provenance text-ink-muted">answered ${esc(ago(held.answered_at))}
+             · <button type="button" data-human-edit="${esc(entry.question)}"
+                 class="cursor-pointer bg-transparent text-accent-ink underline">change</button></div>`
+        : `<div class="${indent} mt-s1">
+             <button type="button" data-human-edit="${esc(entry.question)}"
+               class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+               >Answer this →</button>
+           </div>`}
+      ${wanted
+        ? `<div class="${indent} text-provenance text-ink-muted">The catalog says
+             ${esc(declared)}, but no analysis is attached to this question, so
+             nothing was queried — the answer here is yours alone.</div>`
+        : ''}`;
   }
 
   if (st === 'unclassified') {

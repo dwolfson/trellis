@@ -66,6 +66,29 @@ class DefinitionDoc:
     #: (e.g. in tests) — every document actually read through
     #: documented_definitions() gets a real inferred value.
     resource_type: str = "repo"
+    #: The process's Display Name — what `Link Element To Scope` names as its
+    #: Target Element.
+    display_name: str = ""
+    #: From the process block's Additional Properties table. These are the two
+    #: filters the candidates lookup applies, so they are read from the same
+    #: place the publisher reads them.
+    technology_type: str = ""
+    survey_kind: str = ""
+    #: The Questions this definition is ScopedBy, as authored — the Scope
+    #: Reference of every `Link Element To Scope` block. This is the SAME fact
+    #: Egeria's ScopedBy relationships hold, because these blocks are what
+    #: create them. Until 2026-09-11 the candidates lookup asked Egeria for it
+    #: one question at a time — 45 round trips, ~1s each, on a warm cache —
+    #: for something authored in the file it had already parsed.
+    scoped_by: list = field(default_factory=list)
+    #: The process's own Description, as authored.
+    description: str = ""
+    #: Per step key: display_name, executes_at, re_analysis_step — the
+    #: fields the Survey pane renders. Read here so the pane can list a
+    #: definition without fetching its published copy from Egeria, which
+    #: cost 8.4s per definition (measured 2026-09-11) for facts this file
+    #: already states.
+    step_info: dict = field(default_factory=dict)
 
     @property
     def branches(self) -> bool:
@@ -78,6 +101,29 @@ class DefinitionDoc:
     @property
     def real_guards(self) -> list:
         return sorted({g for _, _, g in self.links if g and g != UNCONDITIONAL_GUARD})
+
+
+LINK_SCOPE = "## Link Element To Scope"
+
+
+def _additional_property(lines: list, start: int, name: str) -> str:
+    """One row of the `### Additional Properties` table that follows a block
+    heading — `| supported_technology_type | Git Repository |` -> the value.
+    Empty when the table or the row is absent."""
+    i = start + 1
+    while i < len(lines) and not lines[i].startswith("## "):
+        if lines[i].strip() == "### Additional Properties":
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith("## "):
+                cells = [c.strip() for c in lines[j].strip().strip("|").split("|")]
+                if len(cells) >= 2 and cells[0] == name:
+                    return cells[1]
+                if lines[j].strip().startswith("### "):
+                    break
+                j += 1
+            return ""
+        i += 1
+    return ""
 
 
 def _section_value(lines: list, start: int, heading: str) -> str:
@@ -132,11 +178,31 @@ def parse_document(path) -> DefinitionDoc:
                 key = _key(qualified)
                 doc.steps.append(key)
                 doc.descriptions[key] = _section_value(lines, i, "### Description")
+                doc.step_info[key] = {
+                    "qualified_name": qualified,
+                    "display_name": _section_value(lines, i, "### Display Name"),
+                    "executes_at": _additional_property(lines, i, "executes_at"),
+                    "re_analysis_step": _additional_property(lines, i, "re_analysis_step") or None,
+                }
 
         elif heading == CREATE_PROCESS:
             qualified = _section_value(lines, i, "### Qualified Name")
             if qualified.startswith(_PROCESS_PREFIX):
                 doc.process = _key(qualified)
+                doc.display_name = _section_value(lines, i, "### Display Name")
+                doc.description = _section_value(lines, i, "### Description")
+                doc.technology_type = _additional_property(lines, i, "supported_technology_type")
+                doc.survey_kind = _additional_property(lines, i, "survey_kind")
+
+        elif heading == LINK_SCOPE:
+            # One document declares one process, so every scope link in it
+            # belongs to that process; the Target Element is checked only to
+            # skip a block that names something else.
+            target = _section_value(lines, i, "### Target Element")
+            question = _section_value(lines, i, "### Scope Reference")
+            if question and (not doc.display_name or target == doc.display_name):
+                if question not in doc.scoped_by:
+                    doc.scoped_by.append(question)
 
         elif heading == LINK_NEXT:
             prev = _section_value(lines, i, "### Governance Action Process Step")

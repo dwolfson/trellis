@@ -1077,3 +1077,87 @@ class TestCveHeadlineLeadsWithCoverage:
     def test_an_advisory_still_leads_with_the_advisory(self):
         h = self._headline(5, 5, advisories=1)
         assert h["label"].startswith("1 advisory") and h["tone"] == "bad"
+
+
+class TestTheCatalogCaveatReachesTheInstructions:
+    """Runs 5 and 6 (2026-09-10/11): with cve_scan's coverage in the headline,
+    the 8B model still answered "No"/"Yes" to "Are there outstanding CVEs?".
+    The catalog's Rationale/Source column already says what such an answer
+    may claim ("DECLARED dependencies only, so a zero is 'none found in what
+    we can see'"); the instructions are where the model reads it."""
+
+    def _questions(self, monkeypatch, rationale):
+        from resource_explorer.surveyors import question_catalog_reader as qcr
+        real = qcr.get_questions("repo")
+        entries = []
+        for e in real:
+            e = dict(e)
+            if e["question"] == "Are there outstanding CVEs?":
+                e["rationale"] = rationale
+            else:
+                e["rationale"] = ""
+            entries.append(e)
+        monkeypatch.setattr(qcr, "get_questions", lambda *a, **k: entries)
+
+    def test_with_no_section_to_live_in_the_caveat_leads_the_instructions(self, monkeypatch):
+        # cve_scan has no stored result here, so it is a gap: the caveat has
+        # no section to sit beside and stays in the preamble.
+        self._questions(monkeypatch, "DECLARED dependencies only, so a zero is none found in what we can see.")
+        c = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=6000)
+        assert "Caveat for this question, from the catalog: DECLARED dependencies only" in c.text
+        assert c.text.index("Caveat") < c.text.index("Answer using only")
+        assert c.manifest["coverage"]["caveat"].startswith("DECLARED dependencies only")
+        assert c.manifest["coverage"]["caveat_placed_in"] == ["instructions"]
+
+    def test_beside_the_value_when_the_section_is_packed(self, monkeypatch):
+        """A caveat that limits a number belongs under that number, not in a
+        preamble three sections away (the /next design round's rule, applied
+        to the prompt)."""
+        self._questions(monkeypatch, "DECLARED dependencies only, so a zero is none found in what we can see.")
+        reg = _registry({"cve_scan": [_finding("python:click", "unrated", "1 advisory for click")]})
+        c = compile_context(reg, "x", "Are there outstanding CVEs?", budget=6000)
+        section = c.text[c.text.index("## cve_scan"):]
+        section = section[:section.find("\n## ")] if "\n## " in section else section
+        assert section.splitlines()[1].startswith("caveat: DECLARED dependencies only")
+        assert "Caveat for this question" not in c.text          # not in the preamble too
+        assert c.manifest["coverage"]["caveat_placed_in"] == ["cve_scan"]
+
+    def test_the_caveat_sits_under_the_headline_when_there_is_one(self):
+        from resource_explorer.context_compile import _with_caveat
+        from trellis_artifact_tree.model import Rung
+        rungs = {Rung.FULL: "## cve_scan\nheadline: not checked (warn)\n- checked: 0",
+                 Rung.SUMMARY: "## cve_scan\n- checked: 0",
+                 Rung.IDENTIFIERS: "## cve_scan\nreports: checked"}
+        out = _with_caveat(rungs, "DECLARED only")
+        assert out[Rung.FULL].splitlines()[2] == "caveat: DECLARED only"
+        assert out[Rung.SUMMARY].splitlines()[1] == "caveat: DECLARED only"
+        assert out[Rung.IDENTIFIERS] == rungs[Rung.IDENTIFIERS]
+
+    def test_a_different_question_does_not_get_it(self, monkeypatch):
+        self._questions(monkeypatch, "DECLARED dependencies only.")
+        c = compile_context(_registry({}), "x", "How well documented is it?", budget=6000)
+        assert "Caveat" not in c.text
+        assert c.manifest["coverage"]["caveat"] == ""
+
+    def test_a_long_caveat_is_clipped_and_says_so(self, monkeypatch):
+        from resource_explorer.context_compile import CAVEAT_CHARS_FULL
+        self._questions(monkeypatch, "word " * 300)
+        c = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=6000)
+        line = next(l for l in c.text.splitlines() if l.startswith("Caveat"))
+        assert line.endswith("[…]") and len(line) < CAVEAT_CHARS_FULL + 60
+        assert c.manifest["coverage"]["caveat"] == ("word " * 300).strip()  # verbatim in the manifest
+
+    def test_the_caveat_is_part_of_the_compile_id(self, monkeypatch):
+        self._questions(monkeypatch, "one caveat")
+        a = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=6000).compile_id
+        self._questions(monkeypatch, "another caveat")
+        b = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=6000).compile_id
+        assert a != b
+
+    def test_the_short_rung_carries_a_shorter_caveat(self, monkeypatch):
+        self._questions(monkeypatch, "DECLARED dependencies only, so a zero is none found in what we can see. " * 4)
+        c = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=700)
+        rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"]
+        assert rung in {"SUMMARY", "IDENTIFIERS"}
+        if rung == "SUMMARY":
+            assert "Caveat: DECLARED" in c.text and "Caveat for this question" not in c.text

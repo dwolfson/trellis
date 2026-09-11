@@ -177,8 +177,10 @@ Per-row differences:
   11, release cadence 0, freshness 100), `MATURITY`, `COMMUNITY SUPPORT`,
   `CHAOSS METRICS`, and a star-growth chart.
 - **Disposition** — six buttons plus a dated **HISTORY** list
-  (`👁 Tracking — 2026-08-11T00:40:55`). `/next` has the picker but **no
-  history**.
+  (`👁 Tracking — 2026-08-11T00:40:55`). `/next` had the picker but no
+  history **when this walk was made**; it was built in `ee3a2d5`, committed
+  one second after this document. `/next` now renders the same dated trail
+  under the picker.
 
 Worth noting: the caveat sentences the redesign puts in the row already exist
 verbatim in `/`'s Dashboard — *"Issue and pull-request response times are not
@@ -226,9 +228,12 @@ walk, which is the behaviour that was wanted.
    one selection away.
 3. **`/`'s "Search" is repo discovery, not resource search.** `/next`'s
    deferred message inherits the label and therefore mis-describes it.
-4. **Disposition history exists in `/` and nowhere in `/next`.** It was not
-   among the nine, and it is the only place the *sequence* of verdicts is
-   visible.
+4. **Disposition history existed in `/` and nowhere in `/next`** — the only
+   place the *sequence* of verdicts is visible, and not among the nine.
+   **Fixed:** `ee3a2d5` built it, one second after this walk was committed.
+   This entry is kept because the walk is what found it; the gap it names is
+   closed. Nothing else in this document has been re-verified since
+   2026-09-09 — treat the rest as of that date.
 5. **The per-row stage label is gone from `/next`.** Fine while the pane is
    one stage at a time; it is the thing that would be missing first if rows
    from several stages were ever shown together.

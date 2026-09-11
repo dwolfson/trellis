@@ -114,3 +114,75 @@ class TestScoutingQuestionsRoute:
         )
         for q in gaps:
             assert q["has_data"] is None, q["question"]
+
+
+class TestRationaleReachesTheRoute:
+    """The catalog's Rationale/Source column — what an answer can and cannot
+    claim — carried through to the UI on 2026-09-11.
+
+    It had existed in docs/dr-egeria/resource_questions.csv since the catalog
+    was authored and stopped at the generator: the YAML never held it, so no
+    reader, route or screen could show it. These assert the whole chain, not
+    just the field's presence, because the interesting failure is a generator
+    regenerated without it -- which would silently empty every caveat while
+    every other test still passed.
+    """
+
+    def test_every_question_carries_its_rationale(self, client):
+        resp = client.get("/api/projects/myproj/scouting-questions")
+        assert resp.status_code == 200
+        questions = resp.json()["questions"]
+        assert questions
+        missing = [q["question"] for q in questions if not (q.get("rationale") or "").strip()]
+        assert not missing, f"questions with no rationale: {missing}"
+
+    def test_rationale_is_distinct_from_the_note(self, client):
+        """`note` says HOW a question is answered; `rationale` says what the
+        answer is not entitled to mean. Collapsing them would lose the
+        caveat, so they must not be the same string."""
+        questions = client.get("/api/projects/myproj/scouting-questions").json()["questions"]
+        same = [q["question"] for q in questions
+                if (q.get("note") or "").strip()
+                and q["note"].strip() == (q.get("rationale") or "").strip()]
+        assert not same, f"rationale duplicates note on: {same}"
+
+    def test_the_caveat_sentences_survive_the_chain(self):
+        """The specific sentences the design round asked for. Named
+        explicitly: a generic 'is non-empty' assertion passes on placeholder
+        text, and these are the rows where the caveat carries the meaning."""
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+        joined = " ".join((q.get("rationale") or "") for q in get_questions("repo"))
+        assert "secret_scan" in joined
+        # secret_scan never claims "no secrets" -- only no matches against
+        # this ruleset, in this snapshot.
+        assert "no matches against this ruleset" in joined
+        # cve_scan reports DECLARED dependencies only.
+        assert "DECLARED dependencies only" in joined
+
+
+class TestChecksReachTheRoute:
+    """`analysis_id:check_name` refs, carried through on 2026-09-11 for the
+    dashboard-by-question view. They are the finer key: a question declaring
+    `repo_conventions:doc_breadth` can show that one finding from an analysis
+    that also answers five other questions, instead of the whole analysis six
+    times."""
+
+    def test_checks_are_present_and_well_formed(self, client):
+        qs = client.get("/api/projects/myproj/scouting-questions",
+                        params={"phase": "analysis"}).json()["questions"]
+        with_checks = [q for q in qs if q.get("checks")]
+        assert with_checks, "the Analysis stage authors check refs; none reached the route"
+        for q in with_checks:
+            for ref in q["checks"]:
+                analysis, _, check = ref.partition(":")
+                assert analysis and check, f"malformed check ref {ref!r}"
+                # A check ref implies its analysis, which the generator adds
+                # to analysis_ids — so the two can never disagree.
+                assert analysis in q["analysis_ids"], (
+                    f"{ref!r} names an analysis not in analysis_ids {q['analysis_ids']}")
+
+    def test_empty_checks_means_no_refs_authored_not_no_checks_apply(self, client):
+        """Empty is the common case and must stay a list, not None, so a
+        consumer can fall back to analysis_ids without a null check."""
+        qs = client.get("/api/projects/myproj/scouting-questions").json()["questions"]
+        assert all(isinstance(q.get("checks"), list) for q in qs)

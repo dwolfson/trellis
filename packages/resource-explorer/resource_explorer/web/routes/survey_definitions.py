@@ -331,16 +331,57 @@ async def list_candidates(
         # the button and the behaviour cannot disagree.
         auto_publishes = _reg.has_assigned_egeria_project(entity_type, slug)
 
+        # The steps a definition lists, read from its authored document rather
+        # than fetched from Egeria. Both hold the same fact — the document is
+        # what publishes the definition — and the fetch cost 8.4s per
+        # definition (measured 2026-09-11), nine candidates deep, every five
+        # minutes when its cache expired. That was the whole cold cost of this
+        # pane after the scoping walk was made local. fetch() is what RUNS a
+        # definition and is untouched; this is only what LISTS one. A
+        # definition with no document (none today) still falls back to the
+        # fetch, so the list is never shorter than it was.
+        from resource_explorer.surveyors.survey_definition_docs import (
+            _PROCESS_PREFIX, documented_definitions,
+        )
+        docs_by_qn = {f"{_PROCESS_PREFIX}{n}": d for n, d in documented_definitions().items()}
+
+        class _DocStep:
+            __slots__ = ("qualified_name", "display_name", "description", "executes_at", "re_analysis_step")
+            def __init__(self, key, doc):
+                info = doc.step_info.get(key, {})
+                self.qualified_name = info.get("qualified_name") or key
+                self.display_name = info.get("display_name") or key
+                self.description = doc.descriptions.get(key, "")
+                self.executes_at = info.get("executes_at") or ""
+                self.re_analysis_step = info.get("re_analysis_step")
+
+        class _DocDef:
+            __slots__ = ("steps", "description", "survey_kind", "perspectives")
+            def __init__(self, doc):
+                self.steps = [_DocStep(k, doc) for k in doc.steps]
+                self.description = doc.description
+                self.survey_kind = doc.survey_kind or None
+                # The document authors no perspectives tag; the fetched copy
+                # keeps one only as an escape hatch for a definition with no
+                # ScopedBy links. Every documented definition IS scoped (the
+                # route derives perspectives from matched_questions first), so
+                # the empty fallback here changes nothing for them.
+                self.perspectives = []
+
         detailed = []
         for c in thin_candidates:
-            try:
-                survey_def = reader.fetch(c["guid"])
-            except Exception as exc:
-                # Don't let one malformed/unsupported (e.g. branching) Survey
-                # Definition hide the rest of the list — surface it as an
-                # errored candidate instead.
-                detailed.append({**c, "description": "", "error": str(exc), "steps": []})
-                continue
+            doc = docs_by_qn.get(c.get("qualified_name", ""))
+            if doc is not None and doc.steps:
+                survey_def = _DocDef(doc)
+            else:
+                try:
+                    survey_def = reader.fetch(c["guid"])
+                except Exception as exc:
+                    # Don't let one malformed/unsupported (e.g. branching) Survey
+                    # Definition hide the rest of the list — surface it as an
+                    # errored candidate instead.
+                    detailed.append({**c, "description": "", "error": str(exc), "steps": []})
+                    continue
 
             steps = []
             for s in survey_def.steps:

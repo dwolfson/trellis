@@ -80,6 +80,51 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run6-20260911 — coverage-first cve_scan headline (3f53e52); otherwise run 5 repeated
+
+Same compiler as run 5 except `_cve_scan_headline`'s wording; same judge (v3), same seed, text
+on every row. `data/experiments/compiled_vs_rag_run6/results.jsonl`. 312 rows, 0 errors,
+replayability 156 of 156. 111 of 156 compiles differ from run 5 by compile id — every compile
+that packed `cve_scan` — and 45 are byte-identical, which is the replayability contract holding
+across a code change that touched exactly one section.
+
+| metric (v3) | run 6 compiled | run 6 rag | run 5 compiled | run 5 rag |
+|---|---:|---:|---:|---:|
+| answers_question (0–2) | 0.99 | 0.31 | 1.04 | 0.28 |
+| supported_claims (mean) | 1.81 | 0.33 | 1.66 | 0.31 |
+| unsupported_claims (mean) | 0.35 | 0.81 | 0.29 | 0.86 |
+| misread_claims (mean) | 0.03 | 0.03 | 0.02 | 0.06 |
+| cites_evidence | 61% | 6% | 62% | 5% |
+| declines | 31% | 63% | 35% | 60% |
+
+Paired on all 156 questions (compiled, run 6 minus run 5): answers_question −0.04 (7 up, 15
+down, 134 tied); supported_claims +0.15 (18/16/122); unsupported +0.05 (9/5/142); misread +0.01;
+cites −0.01. **Run 6 reproduces run 5 within noise on every metric**, so the run-5 numbers stand
+as the fixed compiler's baseline, and the compiled-versus-RAG gap reproduces for the third time on
+a text-reading judge.
+
+**The headline change, on the three CVE rows it was for:**
+
+- kafka (11 of 36 checked): "No, according to the evidence from the cve_scan analysis, there are
+  no advisories in the 11 of 36 declared dependencies that could be checked." — the coverage is
+  now in the answer. Run 5 said "there are no outstanding CVEs." Fixed.
+- docling (0 of 61 checked): run 5 said "No, there are no outstanding CVEs."; run 6 says **"Yes"**.
+  Neither is right — nothing could be checked. The judge now scores it 0 with one unsupported
+  claim, where run 5's "No" scored 2 as supported. So the honest headline made the wrong answer
+  *detectable*; it did not make the answer right.
+- egeria (1 advisory): "Yes", scored 0 for giving no evidence, both runs.
+
+The residual is a bare yes/no with no evidence line, on an 8B answerer, for a question phrased as
+a yes/no. That is not a compiler defect and not a rubric defect; it is the answering prompt (a
+one-word answer to a yes/no question cannot carry a coverage caveat). Two options, neither taken
+here: an instruction in `_INSTRUCTIONS` that a yes/no answer must be followed by the evidence line
+it rests on, or a larger answering model. Both are one-variable experiments.
+
+Also seen: docling's "Does it fit into our security infrastructure?" answer recites the
+`Coverage:` line nearly verbatim ("The question catalog answers … by human input, not by stored
+analyses"). That is the intended behaviour — a grounded decline — and rubric v3 scores it 0
+(its over-firing decline rule, for v4).
+
 ### run5-20260910 — the fixed compiler (ce5f42b), judge held at rubric v3, text on every row
 
 Same seed, repos and judge as run 4's v3 re-judge; only the compiler changed (the eleven audit
