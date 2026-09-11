@@ -3518,9 +3518,15 @@ function renderLegend() {
       <span class="tnum">${pending}</span> still loading</span>`);
   }
 
+  // The ordering legend sits beside the state key, not inside it: the key
+  // says what the glyphs mean, this says why the rows are in this order.
+  // Separated by a middle dot so it reads as a second clause, not a seventh
+  // glyph.
+  const order = purposeLegendHtml();
   el.innerHTML = items.length
-    ? `<span class="text-caps uppercase tracking-caps text-ink-muted">Key</span>${items.join('')}`
-    : '';
+    ? `<span class="text-caps uppercase tracking-caps text-ink-muted">Key</span>${items.join('')}${
+      order ? `<span class="text-ink-muted">·</span>${order}` : ''}`
+    : order;
 }
 
 function paneMessage(title, body) {
@@ -3703,6 +3709,7 @@ async function loadPane() {
     checklist = await getQuestions(slug, {
       phase: state.stage,
       perspectives: [...state.activePerspectives],
+      purposes: currentPurposes(),
     });
   } catch (err) {
     $('question-rows').innerHTML = `<div class="py-s3 text-answer text-accent-ink">
@@ -3814,9 +3821,70 @@ function wireHumanAnswers(host, slug) {
 
 function rowKey(i) { return `qrow-${i}`; }
 
+/* ── Purpose orders; Perspective filters ──────────────────────────────────
+ *
+ * The catalog carries a Purposes column — Explore, Select, Learn, Assess,
+ * Certify, Deploy, Maintain, Share, Attest — and the reader has honoured it
+ * since 2026-08-24: entries serving the investigation's purposes sort first,
+ * the rest follow in catalog order, nothing is hidden. YAML, reader, route and
+ * `getQuestions()` all carried it. This screen passed `phase` and
+ * `perspectives` and not `purposes`, so the ordering never happened.
+ *
+ * Why ORDER and not FILTER is a recorded measurement, not a preference:
+ * docs/investigation-framing-design.md §3 measured Purpose's overlap at 0.22
+ * and Perspective's at 0.37 with strictly nested sets. Filtering on the axis
+ * that discriminates hardest would hide the most; ordering on it puts the
+ * dozen questions the task needs at the top and leaves the rest below,
+ * deprioritised rather than gone. Perspective then filters, as built.
+ *
+ * The purposes come from the current investigation. No investigation, or one
+ * with none set, means catalog order — and the legend says nothing, because
+ * "not ordered" is the absence of a claim, not a claim of its own.
+ */
+function currentPurposes() {
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  return [...(inv?.purposes || [])];
+}
+
+/** The ordering, said out loud. An ordering with no legend is
+ *  indistinguishable from an arbitrary one. */
+function purposeLegendHtml() {
+  const purposes = currentPurposes();
+  if (!purposes.length) return '';
+  const lead = state.questions.filter((q) => q.derivation?.purpose_ranked).length;
+  const total = state.questions.length;
+  if (!total) return '';
+  // Zero promoted is a real answer — this stage's questions serve none of the
+  // investigation's purposes — and "0 of 7 lead" is not how anyone would say
+  // it. Measured: Assessment has 0 of 7 for Explore + Learn.
+  if (!lead) {
+    return `<span class="text-ink-muted">none of these serve ${esc(purposes.join(', '))} ·
+      catalog order</span>`;
+  }
+  return `<span class="text-ink-muted">ordered by purpose · ${esc(purposes.join(', '))} ·
+    <span class="tnum">${lead}</span> of <span class="tnum">${total}</span> lead${
+    lead < total ? ', the rest follow in catalog order' : ''}</span>`;
+}
+
+/** The boundary between the questions the investigation's purposes promoted
+ *  and the ones they did not. Rendered ONCE, at the first unranked row, and
+ *  only when both groups are non-empty — a rule above the first row or below
+ *  the last says nothing. Without this the second group reads as a
+ *  continuation, or as an oversight; with it, it reads as what it is. */
+function purposeBreakHtml(i) {
+  if (!currentPurposes().length) return '';
+  const q = state.questions[i];
+  const prev = state.questions[i - 1];
+  if (!prev || !prev.derivation?.purpose_ranked || q.derivation?.purpose_ranked) return '';
+  return `<div class="mt-s2 mb-s1 flex items-baseline gap-s2 text-caps uppercase tracking-caps text-ink-muted">
+    <span>Not among this investigation's purposes</span>
+    <span class="h-px flex-1 bg-rule"></span>
+  </div>`;
+}
+
 function rowShell(entry, i) {
   const last = i === state.questions.length - 1;
-  return `<div id="${rowKey(i)}" class="py-s3 ${last ? '' : 'border-b border-rule'}">
+  return `${purposeBreakHtml(i)}<div id="${rowKey(i)}" class="py-s3 ${last ? '' : 'border-b border-rule'}">
     ${rowInner(entry, i, 'loading')}
   </div>`;
 }
