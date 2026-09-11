@@ -3001,7 +3001,7 @@ async function historyHtml(slug, analysisId, metric = '') {
       ${series.map((r, i) => `<tr class="border-b border-rule">
         <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
         <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
-          esc(fmtScalar(r.metric_value ?? r.value))}</td>
+          esc(fmtScalar(r.metric_value ?? r.value, metric))}</td>
       </tr>`).join('')}
     </table>`;
 }
@@ -3025,7 +3025,7 @@ async function deltaFor(slug, analysisId, metric = '') {
     const prior = [...series].reverse().find(
       (r) => (r.metric_value ?? r.value) !== (now.metric_value ?? now.value));
     if (!prior) return `unchanged across ${series.length} runs`;
-    return `was ${fmtScalar(prior.metric_value ?? prior.value)} ${ago(prior.surveyed_at)}`;
+    return `was ${fmtScalar(prior.metric_value ?? prior.value, metric)} ${ago(prior.surveyed_at)}`;
   } catch (_) {
     return '';
   }
@@ -3350,7 +3350,7 @@ async function loadDashboardPane() {
                         rec.length}</span> analyses report this name with different values;
                         they may not be measuring the same thing</span></td>
                     <td class="tnum py-[5px] pr-s3 text-right text-ink">${
-                      esc(rec.map((x) => fmtScalar(x.value)).join(' / '))}</td>
+                      esc(rec.map((x) => fmtScalar(x.value, c.key)).join(' / '))}</td>
                     <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
                       esc(rec.map((x) => x.analysis).join(' / '))}</td>
                   </tr>`;
@@ -3364,7 +3364,7 @@ async function loadDashboardPane() {
                   data-measure="${esc(c.analysis_id)}" data-metric="${esc(c.key)}"
                   data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
                   <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value))}</td>
+                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
                   <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
                     esc([c.analysis_id, ...agree.map((x) => x.analysis)].join(' · '))}${
                     c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
@@ -3436,10 +3436,43 @@ function headlineHtml(a) {
   </div>`;
 }
 
-/** Numbers to one decimal, booleans as words. */
-function fmtScalar(v) {
+/** A stored value rendered as what it IS, not as the number that stores it.
+ *
+ *  `was 21438268 8d ago` on ~40 sub_resource_survey rows was the defect: that
+ *  is `total_size_bytes`, and 21,438,268 is a correct number that nobody can
+ *  read as 21.4 MB at a glance. The formatter had no way to know, because it
+ *  was handed the value and not the name — every call site HAD the name in
+ *  scope and none passed it.
+ *
+ *  Rules, in order:
+ *  - booleans as words;
+ *  - a name ending in `bytes` renders as a size (B / KB / MB / GB / TB, one
+ *    decimal above KB);
+ *  - an integer at or above 1,000 gets digit grouping, so a count of files is
+ *    read as a count and not as a code;
+ *  - everything else to one decimal, as before.
+ *
+ *  Only the name's SUFFIX is read. Anything cleverer — guessing a unit from a
+ *  magnitude — is exactly how a byte count becomes a "score" somewhere. With
+ *  no name, only the grouping rule can apply: a bare 21,438,268 is still
+ *  better than 21438268, and grouping is never wrong the way a unit can be. */
+function fmtScalar(v, name = '') {
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
-  return String(Math.round(v * 10) / 10);
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  if (/bytes$/i.test(name)) return fmtBytes(n);
+  if (Number.isInteger(n) && Math.abs(n) >= 1000) return n.toLocaleString('en-US');
+  return String(Math.round(n * 10) / 10);
+}
+
+function fmtBytes(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let x = Math.abs(n);
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1; }
+  const shown = i === 0 ? String(Math.round(x)) : (Math.round(x * 10) / 10).toFixed(1);
+  return `${n < 0 ? '-' : ''}${shown} ${units[i]}`;
 }
 
 /** What a deferred sub-tab shows when you click it. */
