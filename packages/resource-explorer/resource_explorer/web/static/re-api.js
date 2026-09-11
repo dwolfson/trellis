@@ -50,6 +50,12 @@ const post = (path, body) =>
     headers: JSON_HEADERS,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+const patch = (path, body) =>
+  request(path, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 
 /* ────────────────────────────────────────────────────────────────────────
  * A small TTL cache.
@@ -187,6 +193,13 @@ export const setDisposition = (githubUrl, disposition, reason = '') =>
  * read-modify-write rather than posting a single field: posting one answer
  * alone would silently blank environment, sensitivity and the rest.
  */
+/** Save ONE enrichment field. The server stamps author and date from the
+ *  signed-in identity and does the read-modify-write, so two people setting
+ *  two fields do not clobber each other. 401 when anonymous: a judgement
+ *  needs an author. */
+export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}) =>
+  patch(`/api/context/repo/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
 

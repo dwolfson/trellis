@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from resource_explorer.auth import get_current_user
 
 from resource_explorer.activity_logger import log_rfa
 from resource_explorer.registry import ProjectRegistry
@@ -39,6 +41,47 @@ class QuestionAnswer(BaseModel):
     answered_at: str = ""
 
 
+class EnrichmentField(BaseModel):
+    """One enrichment field as testimony, not paperwork.
+
+    Two kinds, and the kind is not configuration — a field is a JUDGEMENT if
+    a person's opinion is the value (sensitivity, criticality, intended use,
+    actual use, owner, notes) and an OBSERVATION if a person is supplying a
+    fact about the world (licence, environment, retention). Judgements are
+    perishable: they carry an author, a date, and the measurements that were
+    on screen when they were made, so that when those measurements move the
+    judgement is not invalidated but FLAGGED for review, and the flag can say
+    what moved. Observations carry a source instead.
+
+    `author` and `set_at` are stamped by the server from the signed-in
+    identity, never taken from the client: testimony without an author is
+    not testimony, and an author the client asserts is not an author.
+    """
+    value: str = ""
+    kind: str = "judgement"          # judgement | observation
+    author: str = ""                 # server-stamped
+    set_at: str = ""                 # server-stamped, ISO
+    source: str = ""                 # observations: where the fact came from ("license_classification", "user")
+    # analysis_id -> last_run_at, as shown when the judgement was made.
+    evidence: dict[str, str] = Field(default_factory=dict)
+    interim: bool = False            # owner only: the investigator standing in
+
+
+class FieldWrite(BaseModel):
+    key: str
+    value: str = ""
+    kind: str = "judgement"
+    source: str = ""
+    evidence: dict[str, str] = Field(default_factory=dict)
+    interim: bool = False
+
+
+# The flat keys `/`'s form reads, mirrored from the enrichment record so the
+# two UIs keep agreeing on the fields they share.
+_MIRROR = {"sensitivity": "sensitivity", "environment": "environment",
+           "owner": "org_owner", "intended_use": "purpose", "notes": "notes"}
+
+
 class ContextData(BaseModel):
     environment:           str = ""   # production | staging | dev | research | archive | unknown
     org_owner:             str = ""
@@ -56,6 +99,10 @@ class ContextData(BaseModel):
     # catalog actually asks a human — dependencies, cost, skills, monitoring,
     # security, governance, estate fit — which had nowhere to be stored.
     question_answers: dict[str, QuestionAnswer] = {}
+    # Enrichment as testimony (2026-09-11): each field with its kind, its
+    # author and date, and the evidence on screen when a judgement was made.
+    # See EnrichmentField. Saved one field at a time through PATCH .../field.
+    enrichment: dict[str, EnrichmentField] = {}
 
 
 @router.get("/{entity_type}/{slug}")
@@ -100,3 +147,40 @@ def save_context(entity_type: str, slug: str, data: ContextData) -> dict:
         "context": context,
         "rfa_fields": rfa_fields,
     }
+
+
+@router.patch("/{entity_type}/{slug}/field")
+def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request) -> dict:
+    """Save ONE enrichment field. Eight independent facts should not share a
+    Save: a person who knows the owner and not the sensitivity can say so
+    and leave. Read-modify-write on the server, so two people setting two
+    fields do not clobber each other the way two whole-document POSTs would.
+
+    The author is the signed-in user, stamped here. Anonymous writes are
+    refused with 401 rather than recorded as nobody's: a judgement with no
+    author is the thing this model exists to prevent.
+    """
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to record enrichment — a judgement needs an author.")
+    if write.kind not in ("judgement", "observation"):
+        raise HTTPException(status_code=422, detail="kind must be judgement or observation")
+    key = write.key.strip().lower().replace(" ", "_")
+    if not key or len(key) > 64:
+        raise HTTPException(status_code=422, detail="key is required")
+
+    registry = ProjectRegistry()
+    context = registry.get_context(entity_type, slug) or {}
+    fields = dict(context.get("enrichment") or {})
+    fields[key] = EnrichmentField(
+        value=write.value.strip(), kind=write.kind, author=author,
+        set_at=datetime.now(timezone.utc).isoformat(), source=write.source.strip(),
+        evidence=dict(write.evidence), interim=bool(write.interim),
+    ).model_dump()
+    context["enrichment"] = fields
+    if key in _MIRROR:
+        context[_MIRROR[key]] = write.value.strip()
+    context["updated_at"] = datetime.now(timezone.utc).isoformat()
+    registry.save_context(entity_type, slug, context)
+    return {"key": key, "field": fields[key]}
