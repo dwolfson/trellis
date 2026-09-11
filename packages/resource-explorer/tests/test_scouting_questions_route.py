@@ -151,13 +151,20 @@ class TestRationaleReachesTheRoute:
         explicitly: a generic 'is non-empty' assertion passes on placeholder
         text, and these are the rows where the caveat carries the meaning."""
         from resource_explorer.surveyors.question_catalog_reader import get_questions
-        joined = " ".join((q.get("rationale") or "") for q in get_questions("repo"))
-        assert "secret_scan" in joined
+        qs = get_questions("repo")
+        limits = " ".join((q.get("rationale") or "") for q in qs)
+        history = " ".join((q.get("catalog_history") or "") for q in qs)
         # secret_scan never claims "no secrets" -- only no matches against
-        # this ruleset, in this snapshot.
-        assert "no matches against this ruleset" in joined
+        # this ruleset, in this snapshot. That is a LIMIT and stays in the
+        # rationale.
+        assert "no matches against this ruleset" in limits
         # cve_scan reports DECLARED dependencies only.
-        assert "DECLARED dependencies only" in joined
+        assert "DECLARED dependencies only" in limits
+        # Which analysis shipped when is HISTORY. Since 2026-09-11 it lives
+        # in catalog_history, not beside the limit -- the reader deciding
+        # how far to trust an answer is not handed the build's changelog.
+        assert "secret_scan shipped" in history
+        assert "secret_scan shipped" not in limits
 
 
 class TestChecksReachTheRoute:
@@ -186,3 +193,32 @@ class TestChecksReachTheRoute:
         consumer can fall back to analysis_ids without a null check."""
         qs = client.get("/api/projects/myproj/scouting-questions").json()["questions"]
         assert all(isinstance(q.get("checks"), list) for q in qs)
+
+
+class TestLimitAndHistoryAreSeparate:
+    """Dashboard Round Three: the rationale mixed two things that need
+    different homes. The limit -- what this answer does and does not cover,
+    present tense, for a reader -- stays in `rationale`. The history -- what
+    used to be wrong, which analysis landed when -- moves to
+    `catalog_history`, for a maintainer. These pin the split for the
+    sixteen Analysis-stage questions it was made on."""
+
+    def test_no_analysis_stage_limit_reads_as_a_changelog(self, client):
+        qs = client.get("/api/projects/myproj/scouting-questions",
+                        params={"phase": "analysis"}).json()["questions"]
+        measured = [q for q in qs if q["analysis_ids"]]
+        assert len(measured) == 16
+        tells = ("shipped 2026", "was marked GAP", "landed 2026", "could not parse",
+                 "Closed 2026", "before any question referenced")
+        leaked = [q["question"] for q in measured
+                  if any(t in (q.get("rationale") or "") for t in tells)]
+        assert leaked == [], f"history still in the limit on: {leaked}"
+
+    def test_history_is_carried_and_only_where_authored(self, client):
+        qs = client.get("/api/projects/myproj/scouting-questions",
+                        params={"phase": "analysis"}).json()["questions"]
+        assert all(isinstance(q.get("catalog_history"), str) for q in qs)
+        with_history = [q for q in qs if q["analysis_ids"] and q["catalog_history"]]
+        # 15 of the 16: the security-infrastructure question is a person's to
+        # answer and has no build history to record.
+        assert len(with_history) == 15

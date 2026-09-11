@@ -467,6 +467,8 @@ class QuestionChecklistEntry(BaseModel):
     # mean. secret_scan never claims "no secrets", only no matches against
     # this ruleset in this snapshot.
     rationale: str = ""
+    # The catalog's own changelog for this row — past tense, maintainer-facing.
+    catalog_history: str = ""
     # None = not applicable (direct/registry/human/chart/gap kinds — no RE
     # analysis backs these, so there's nothing to check); True/False only
     # for analysis/partial/mixed kinds, computed best-effort per resource.
@@ -534,6 +536,7 @@ async def get_scouting_questions(
             note=answering["note"],
             answering_mechanism=e.get("answering_mechanism", ""),
             rationale=e.get("rationale", ""),
+            catalog_history=e.get("catalog_history", ""),
             has_data=has_data,
             purposes=e.get("purposes", []),
             derivation=e.get("derivation", {}),
