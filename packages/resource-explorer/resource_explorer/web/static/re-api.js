@@ -175,6 +175,48 @@ export const VALID_DISPOSITIONS = [
 export const setDisposition = (githubUrl, disposition, reason = '') =>
   post('/api/discovery/disposition', { github_url: githubUrl, disposition, reason });
 
+/* ── Enrichment context ───────────────────────────────────────────────────
+ *
+ * Human-provided metadata for one resource. `question_answers` holds answers
+ * to the catalog's Human-Supplied questions, keyed by a slug of the question
+ * text — the catalog has no stable question id, so each stored answer also
+ * carries the wording it was given for.
+ *
+ * POST replaces the whole document, so a caller changing one answer must
+ * send back everything it read. That is why saveQuestionAnswer below does a
+ * read-modify-write rather than posting a single field: posting one answer
+ * alone would silently blank environment, sensitivity and the rest.
+ */
+export const getContext = (entityType, slug) =>
+  get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
+
+export const saveContext = (entityType, slug, data) =>
+  post(`/api/context/${entityType}/${encodeURIComponent(slug)}`, data);
+
+/** Slug for one catalog question. Lowercased words, non-alphanumerics
+ *  collapsed to '-'. Must match nothing else in the system: it is only ever
+ *  compared against itself. */
+export function questionKey(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
+/** Read-modify-write one answer. See the caution above: the POST replaces
+ *  the document, so everything read must be sent back. */
+export async function saveQuestionAnswer(entityType, slug, question, answer) {
+  const current = await getContext(entityType, slug).catch(() => ({}));
+  const answers = { ...(current.question_answers || {}) };
+  const key = questionKey(question);
+  answers[key] = {
+    question,
+    answer,
+    answered_at: new Date().toISOString(),
+  };
+  const next = { ...current, question_answers: answers };
+  delete next.updated_at;   // server-stamped; sending it back is meaningless
+  return saveContext(entityType, slug, next);
+}
+
 export const getDispositionHistory = (githubUrl) =>
   get(`/api/discovery/disposition-history?github_url=${encodeURIComponent(githubUrl)}`);
 

@@ -60,6 +60,9 @@ import {
   sendFeedback,
   setDisposition,
   setWorkingSetHidden,
+  getContext,
+  questionKey,
+  saveQuestionAnswer,
 } from '/static/re-api.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -3029,6 +3032,54 @@ async function deltaFor(slug, analysisId, metric = '') {
 }
 
 /** One measurement, opened: what it says, its evidence, its history. */
+/* ── What a measurement is entitled to claim ──────────────────────────────
+ *
+ * The catalog's Rationale/Source column carries, per question, what its
+ * answer can and cannot mean: secret_scan never claims "no secrets", only no
+ * matches against this ruleset in this snapshot; cve_scan sees declared
+ * dependencies only, so a zero is "none found in what we can see".
+ *
+ * Those sentences have existed in the CSV since the catalog was authored and
+ * have never reached a screen. They are the difference between a finding and
+ * a claim, so they belong beside the value — as the second line of the
+ * answer, not as help text.
+ *
+ * Keyed by analysis id because that is what a measurement knows about
+ * itself. One analysis can answer several questions, so the value is a list
+ * and duplicates are collapsed: two questions often share a rationale, and
+ * printing it twice reads as two separate caveats.
+ */
+const RATIONALE_BY_ANALYSIS = new Map();
+
+function rememberRationales(questions) {
+  for (const q of questions || []) {
+    const text = (q.rationale || '').trim();
+    if (!text) continue;
+    for (const id of q.analysis_ids || []) {
+      const held = RATIONALE_BY_ANALYSIS.get(id) || [];
+      if (!held.includes(text)) held.push(text);
+      RATIONALE_BY_ANALYSIS.set(id, held);
+    }
+  }
+}
+
+/** The caveat block for one analysis, or '' when the catalog states none.
+ *
+ * Empty is rendered as nothing rather than as "no caveats recorded": this
+ * cache is filled by whichever checklists have been loaded this session, so
+ * an empty result means "not loaded here", NOT "this measurement claims
+ * without limit". Saying the latter would be the fast-path-that-lies shape
+ * the matrix was built to avoid.
+ */
+function rationaleHtml(analysisId) {
+  const held = RATIONALE_BY_ANALYSIS.get(analysisId) || [];
+  if (!held.length) return '';
+  return `<div class="mt-s2 border-l-2 border-accent pl-s2">
+      <div class="uppercase tracking-caps text-caps text-ink-muted">What this can claim</div>
+      ${held.map((t) => `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${tnum(esc(t))}</p>`).join('')}
+    </div>`;
+}
+
 async function openMeasurementDetail({ slug, analysisId, title, metric = '',
                                        glyph = '', summary = '', when = '' }) {
   const el = openDialog(title, `${slug} · ${analysisId}`);
@@ -3040,6 +3091,7 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
       ${when ? `<span class="ml-auto text-provenance text-ink-muted">measured ${esc(ago(when))}</span>` : ''}
     </div>
     ${summary ? `<p class="mt-s1 max-w-[70ch] text-ink">${tnum(esc(summary))}</p>` : ''}
+    ${rationaleHtml(analysisId)}
     ${trendSupport(analysisId) === 'not_tracked'
       // Said, flatly, once. No history SECTION — an empty section implies
       // something should be there — but not silence either: a reader who
@@ -3660,6 +3712,18 @@ async function loadPane() {
   if (slug !== state.selectedSlug) return;   // a faster click won
 
   state.questions = checklist.questions || [];
+  rememberRationales(state.questions);
+
+  // Human answers for this resource, so a `human` row can show what was
+  // already said rather than offering a blank box over the top of it. A
+  // failure here leaves the rows answerable and unanswered, which is the
+  // truthful degradation: we could not read them, so we do not claim any.
+  try {
+    const ctx = await getContext('repo', slug);
+    state.contextAnswers = ctx?.question_answers || {};
+  } catch {
+    state.contextAnswers = {};
+  }
 
   // The residue count needs the unfiltered total. One extra call, only when
   // a perspective is held — the number is the whole point of the chip row.
@@ -3689,12 +3753,63 @@ async function loadPane() {
   }
 
   rows.innerHTML = state.questions.map((q, i) => rowShell(q, i)).join('');
+  wireHumanAnswers(rows, slug);
   updateAnsweredCount();
   renderLegend();
 
   // Fetch each answer independently and replace its row as it lands.
   state.answers.clear();
   state.questions.forEach((q, i) => loadAnswer(q, i, slug));
+}
+
+/* ── Answering a question that only a person can answer ───────────────────
+ *
+ * Seven catalog questions are Human-Supplied: do we already support these
+ * dependencies, what does it cost to run, do we have the skills, does it fit
+ * our monitoring / security / governance, does it fit or extend the estate.
+ * They had nowhere to be stored — the Enrichment context form holds
+ * environment, sensitivity, backup status and location, none of which appears
+ * in the catalog at all — so the rows said "not built in /next" and stopped.
+ *
+ * Delegated from the container because rows re-render independently as their
+ * answers land; binding per row would attach to elements that are about to be
+ * replaced. Attached ONCE and marked, because the pane re-renders on every
+ * perspective toggle and a second listener would save twice per click — the
+ * same stacked-listener bug the sidebar toggle had.
+ */
+function wireHumanAnswers(host, slug) {
+  if (host.dataset.humanWired === '1') return;
+  host.dataset.humanWired = '1';
+  host.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('[data-human-edit]');
+    if (!btn) return;
+    const question = btn.getAttribute('data-human-edit');
+    const key = questionKey(question);
+    const prior = (state.contextAnswers || {})[key]?.answer || '';
+    const next = window.prompt(question, prior);
+    if (next === null) return;              // cancelled — not an empty answer
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      await saveQuestionAnswer('repo', slug, question, next.trim());
+      state.contextAnswers = {
+        ...(state.contextAnswers || {}),
+        [key]: { question, answer: next.trim(), answered_at: new Date().toISOString() },
+      };
+      // Redraw just this row, the way an arriving answer does. A whole-pane
+      // reload would refetch every other answer to show one that is already
+      // in hand.
+      const i = state.questions.findIndex((q) => q.question === question);
+      if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
+    } catch (err) {
+      // Left on the button rather than raised as a page error: the failure is
+      // this one save, and the rest of the checklist is unaffected.
+      btn.disabled = false;
+      btn.textContent = err.status === 401 ? 'Not signed in' : `Not saved: ${err.message}`;
+      setTimeout(() => { btn.textContent = label; }, 4000);
+    }
+  });
 }
 
 function rowKey(i) { return `qrow-${i}`; }
@@ -3782,10 +3897,31 @@ function bodyLines(entry, i, st, env) {
 
   if (st === 'human') {
     const why = entry.note || 'This is answered by someone stating it, not by a survey.';
+    const key = questionKey(entry.question);
+    const held = (state.contextAnswers || {})[key];
+    const declared = (entry.answering_mechanism || '');
+    // The mechanism column declares "Egeria Queries" on six of these seven
+    // questions, and none of the six names an analysis. So there is nothing
+    // to run first, and the honest render says which — an empty state that
+    // says what it looked in, per this round's own rule. Claiming a query
+    // ran, or silently offering only the text box, would both misdescribe it.
+    const wanted = /egeria quer/i.test(declared) && !(entry.analysis_ids || []).length;
     return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>
-      <div class="${indent} text-provenance text-ink-muted">
-        Enrichment · answer inline · not built in /next
-      </div>`;
+      ${held?.answer
+        ? `<div class="${indent} mt-s1 text-answer text-ink">${tnum(esc(held.answer))}</div>
+           <div class="${indent} text-provenance text-ink-muted">answered ${esc(ago(held.answered_at))}
+             · <button type="button" data-human-edit="${esc(entry.question)}"
+                 class="cursor-pointer bg-transparent text-accent-ink underline">change</button></div>`
+        : `<div class="${indent} mt-s1">
+             <button type="button" data-human-edit="${esc(entry.question)}"
+               class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+               >Answer this →</button>
+           </div>`}
+      ${wanted
+        ? `<div class="${indent} text-provenance text-ink-muted">The catalog says
+             ${esc(declared)}, but no analysis is attached to this question, so
+             nothing was queried — the answer here is yours alone.</div>`
+        : ''}`;
   }
 
   if (st === 'unclassified') {

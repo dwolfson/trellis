@@ -93,6 +93,19 @@ repos. Repos are the reference implementation here, not the deviation.
 Not proposed as this round's work — recorded so it is not rediscovered as a
 surprise when the matrix is asked to span resource types.
 
+## A second consumer, reported independently
+
+The context-compiler session reached the same gap from the other side: a
+compiled section cannot say which survey run produced it beyond a timestamp,
+because the compiler's provenance is *analysis id + surveyed_at* — which is
+precisely the timestamp correlation rejected above, and for the same reason
+(the two clocks disagree). It does not affect the current experiment, but it
+is the gap underneath the compiled-context design's as-of-time section if
+evidence ever needs to point at a specific survey report.
+
+Two independent consumers now want the same missing key: the measurement
+detail in `/next`, and the compiler's evidence manifest.
+
 ## Recommendation
 
 1. **Write the correspondence key on publish.** Call `mark_finding_guid()`
