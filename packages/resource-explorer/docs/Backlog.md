@@ -4554,6 +4554,65 @@ token counts as RE's.
 collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
 history is deleted; the two simply stop sharing a bucket.
 
+## Funnel tier vocabulary — resolved from the catalog, §2 and §4 answered 2026-09-10
+
+**`activity_log.intent` cannot be used to tier a run.** It is stamped at write
+time and never revisited, so it holds what the catalog said that day; the
+catalog has been retagged twice (rule 17: three analyses `assessment` →
+`discovery` on 2026-08-20, `architecture_recovery` `discovery` → `analysis` on
+2026-08-30). Measured over 1,217 rows: **174 of the 348 attributable rows — 50%
+— disagree with the catalog's current tier**, and reading the column finds **no
+`analysis` tier at all** while 11 analyses declare it and it is in fact the
+largest tier by rows.
+
+`resource_explorer/tier_resolution.py` resolves instead of reading: an
+`analysis_run` row through its `analysis_id`, a `survey` row through step
+OWNERSHIP (never `REPO_ANALYSIS_SOURCE_STEPS` — that would credit
+`architecture_diagram` for the recovery's steps again). Four states, and the
+middle two are the point: `attributed` / `unattributable` (a survey predating
+step recording — which analyses ran is unknowable, NOT none) /
+`unknown-analysis` / `not-a-run`. `TierCoverage.considered` keeps the
+unattributable in the denominator, because dropping them is the difference
+between "no repo reached Analysis" and "we cannot say for most of them".
+
+    resolved over the whole log:  attributed 348 · unattributable 265
+                                  not-a-run 604 · unknown 0
+    rows per CURRENT tier:        analysis 169 · assessment 123
+                                  discovery 86 · scouting 70
+
+**The spec's assumed ladder does not exist.** It ranks
+scouting/discovery/analysis/**understanding** and excludes **assessment**. No
+analysis declares `understanding` — it is canonical per rule 17 but uncosted —
+while `assessment` has the **most** analyses of any tier (15). Ranking must come
+from the tiers that have analyses; `assessment` and `analysis` are peers on rule
+17's own axis (both reason over already-collected data), not a sequence.
+
+**§2 — is it narrowing? No.**
+
+    repos reaching:  scouting 22 · discovery 18 · analysis 25 · assessment 18
+    retention:       scouting -> discovery   17 of 22  (77%)
+                     discovery -> analysis   18 of 18  (100%)
+                     discovery -> assessment 16 of 18  (89%)
+    deepest tier:    all 26 attributable repos reach analysis/assessment
+
+100% retention into the deepest tier, and MORE repos reach `analysis` (25) than
+`scouting` (22) — the ladder is inverted at the top. **Caveat that limits this
+hard:** only 26 repos have any attributable run, against 63 with unattributable
+surveys, so this is a small and non-random slice — the repos surveyed recently
+enough to have step recording. The honest headline is "the funnel does not
+narrow on the repos we can see", not "the funnel does not narrow".
+
+**§4 — where do decisions happen?** 13 terminal transitions against 24
+non-terminal (`tracking`/`investigating`/`undecided` — a queue, not decisions).
+**8 of the 13 had no attributable run before them at all**; 5 were decided at
+analysis/assessment depth. The spec's prediction about rationales is
+**confirmed**: `abandoned` 2/3 and `ignored` 1/1 carry a reason, `recommended`
+0/4 and `using` 0/5 carry none — negative states prompt, positive ones do not.
+13 is too small to conclude more than the shape.
+
+**§1 remains unanswerable** — the `runs` table holds 12 rows, the queue being
+~6 days old.
+
 ## Source-acquisition accounting — cold vs warm per run, DONE 2026-09-10
 
 The cheap half of the funnel-cost spec's §6. That section asks for *bytes
