@@ -69,6 +69,12 @@ _QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15
 _question_guid_cache: dict[str, tuple[float, str | None]] = {}
 _candidates_cache: dict[tuple, tuple[float, list]] = {}
 _fetch_cache: dict[str, tuple[float, object]] = {}  # process_guid -> (cached_at, SurveyDefinition)
+# qualified_name -> (cached_at, guid or None). A definition's GUID changes only
+# when it is re-published, and a None is cached too: "not published" is an
+# answer, and re-asking Egeria for it on every candidates call would put the
+# round trips back that the local lookup below removed.
+_process_guid_cache: dict[str, tuple[float, str | None]] = {}
+_PROCESS_GUID_CACHE_TTL_SECONDS = 3600
 
 
 def clear_caches() -> None:
@@ -76,6 +82,7 @@ def clear_caches() -> None:
     _question_guid_cache.clear()
     _candidates_cache.clear()
     _fetch_cache.clear()
+    _process_guid_cache.clear()
 
 
 # pyegeria's lookup helpers signal "nothing matched" by returning a human
@@ -748,6 +755,89 @@ class SurveyDefinitionReader:
         return guid
 
     def find_candidate_process_guids_by_questions(
+        self, questions: list[str], technology_type: str, survey_kind: str | None = None,
+    ) -> list:
+        """Which Survey Definitions answer any of these questions — read from
+        the authored documents, not from Egeria.
+
+        Every definition document declares its own ScopedBy links
+        (`## Link Element To Scope` / `### Scope Reference`), and those blocks
+        are what CREATE the relationships in Egeria. So the local file and the
+        graph hold the same fact, and until 2026-09-11 this asked the graph
+        for it one question at a time: the reader's own log said
+        "45 sequential get_scoped_elements call(s) took 44.4s" — on a WARM
+        cache, ~1s a round trip, every five minutes when the candidates cache
+        expired. Pooling did not help, because pyegeria drives one shared
+        httpx.AsyncClient from whichever thread calls it and concurrent use
+        serialises or fails. The document read is microseconds.
+
+        One Egeria call per MATCHED definition remains — resolving its GUID —
+        because the document cannot say whether the definition is published,
+        and an unpublished one cannot run. Cached for an hour, including the
+        "not published" answer. At most ten definitions exist; the old path
+        made forty-five calls before touching any of them.
+
+        Falls back to the Egeria walk (`_find_candidates_via_egeria`) only
+        when no documents are readable, so a deployment without the docs
+        directory behaves as before rather than returning nothing.
+
+        Returns the same shape as before: [{qualified_name, display_name,
+        guid, matched_questions}], with `matched_questions` in the order the
+        caller asked, which is what the cache key and the UI both rely on.
+        """
+        from resource_explorer.surveyors.survey_definition_docs import (
+            _PROCESS_PREFIX, documented_definitions,
+        )
+
+        docs = documented_definitions()
+        if not docs:
+            return self._find_candidates_via_egeria(questions, technology_type, survey_kind)
+
+        wanted = list(dict.fromkeys(q for q in questions if q))
+        cache_key = ("local", tuple(wanted), technology_type, survey_kind)
+        now = time.monotonic()
+        cached = _candidates_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        candidates: list = []
+        for name, doc in sorted(docs.items()):
+            if doc.technology_type != technology_type:
+                continue
+            if survey_kind is not None and doc.survey_kind != survey_kind:
+                continue
+            scoped = set(doc.scoped_by)
+            matched = [q for q in wanted if q in scoped]
+            if not matched:
+                continue
+            qualified_name = f"{_PROCESS_PREFIX}{name}"
+            guid = self._process_guid_cached(qualified_name)
+            if not guid:
+                # Authored but not published: it cannot be run, so it is not
+                # a candidate — and that is said in the log rather than
+                # silently, because "the survey I wrote is not offered" is a
+                # question someone will ask.
+                log.info("survey definition %s is documented but not resolvable in Egeria; not offered", qualified_name)
+                continue
+            candidates.append({
+                "qualified_name": qualified_name,
+                "display_name": doc.display_name or name,
+                "guid": guid,
+                "matched_questions": matched,
+            })
+        _candidates_cache[cache_key] = (now, candidates)
+        return candidates
+
+    def _process_guid_cached(self, qualified_name: str) -> str | None:
+        now = time.monotonic()
+        hit = _process_guid_cache.get(qualified_name)
+        if hit is not None and now - hit[0] < _PROCESS_GUID_CACHE_TTL_SECONDS:
+            return hit[1]
+        guid = self.find_process_guid_by_name(qualified_name)
+        _process_guid_cache[qualified_name] = (now, guid)
+        return guid
+
+    def _find_candidates_via_egeria(
         self, questions: list[str], technology_type: str, survey_kind: str | None = None,
     ) -> list:
         """D2's scoped alternative to find_candidate_process_guids()'s

@@ -64,3 +64,37 @@ class TestDocumentedDefinitionsSetsResourceType:
         directory = _write(tmp_path, "filesystem-survey-definition-x.md")
         docs = D.documented_definitions(directory)
         assert docs["X"].resource_type == "filesystem"
+
+
+class TestDocumentsCarryTheirOwnScoping:
+    """The `Link Element To Scope` blocks ARE the ScopedBy relationships —
+    they are what publish them — so the document is the source and the graph
+    the copy. Asserted against the real docs directory, not a fixture, because
+    the count is the check that the parser reads every block: 96 across ten
+    documents on 2026-09-11, matching `grep -c 'Link Element To Scope'`."""
+
+    def test_every_documented_definition_declares_its_filters_and_scoping(self):
+        from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+        docs = documented_definitions()
+        assert len(docs) >= 10
+        total_links = 0
+        for name, doc in docs.items():
+            assert doc.technology_type, f"{name}: no supported_technology_type read"
+            assert doc.survey_kind, f"{name}: no survey_kind read"
+            assert doc.display_name, f"{name}: no Display Name read"
+            assert set(doc.step_info) == set(doc.steps), f"{name}: step_info does not cover steps"
+            for key, info in doc.step_info.items():
+                assert info["qualified_name"].endswith(key)
+                assert info["executes_at"], f"{name}/{key}: no executes_at"
+            total_links += len(doc.scoped_by)
+        # Refresh is the one definition scoped by nothing — by design, it
+        # answers no question — and everything else is scoped by at least one.
+        assert docs["RepoRefreshSurvey"].scoped_by == []
+        assert total_links >= 90, total_links
+
+    def test_a_known_link_is_read_verbatim(self):
+        from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+        doc = documented_definitions()["RepoAnalysisSurvey"]
+        assert "What dependencies does this require?" in doc.scoped_by
+        assert doc.technology_type == "Git Repository"
+        assert doc.survey_kind == "analysis"

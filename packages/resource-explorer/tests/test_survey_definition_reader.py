@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 import pytest
 
+import resource_explorer.surveyors.survey_definition_reader as sdr
+
 from resource_explorer.surveyors.survey_definition_reader import (
     SurveyDefinitionReader,
     SurveyDefinitionReaderError,
@@ -382,7 +384,14 @@ class TestResolveQuestionGuid:
 
 
 class TestFindCandidateProcessGuidsByQuestions:
-    """D2 — scoped candidate lookup via ClassificationExplorer.get_scoped_elements,
+    """The Egeria walk — now the FALLBACK, exercised directly.
+
+    Since 2026-09-11 find_candidate_process_guids_by_questions answers from
+    the authored documents and only walks Egeria when no documents are
+    readable. These tests pin the walk's own behaviour, so they call it by
+    its new name; the local path has its own class below.
+
+    D2 — scoped candidate lookup via ClassificationExplorer.get_scoped_elements,
     replacing the search_string="*" full scan for a phase/perspective-narrowed
     query. D3 — short-TTL cached."""
 
@@ -398,7 +407,7 @@ class TestFindCandidateProcessGuidsByQuestions:
     def test_no_resolvable_question_returns_empty(self):
         fake = _FakeClassificationExplorer()
         reader = _reader_with_fake_classification_explorer(fake)
-        assert reader.find_candidate_process_guids_by_questions(["Unknown question"], "Git Repository") == []
+        assert reader._find_candidates_via_egeria(["Unknown question"], "Git Repository") == []
         # Never even attempts a scoped-elements call with no resolvable guid.
         assert fake.get_scoped_elements_calls == 0
 
@@ -413,7 +422,7 @@ class TestFindCandidateProcessGuidsByQuestions:
             },
         )
         reader = _reader_with_fake_classification_explorer(fake)
-        candidates = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        candidates = reader._find_candidates_via_egeria(["Q1"], "Git Repository")
         assert [c["qualified_name"] for c in candidates] == ["GovActionProcess::A"]
 
     def test_survey_kind_filter_applied(self):
@@ -427,7 +436,7 @@ class TestFindCandidateProcessGuidsByQuestions:
             },
         )
         reader = _reader_with_fake_classification_explorer(fake)
-        candidates = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository", survey_kind="discovery")
+        candidates = reader._find_candidates_via_egeria(["Q1"], "Git Repository", survey_kind="discovery")
         assert [c["qualified_name"] for c in candidates] == ["GovActionProcess::A"]
 
     def test_dedupes_survey_definition_scoped_by_multiple_questions(self):
@@ -439,7 +448,7 @@ class TestFindCandidateProcessGuidsByQuestions:
             },
         )
         reader = _reader_with_fake_classification_explorer(fake)
-        candidates = reader.find_candidate_process_guids_by_questions(["Q1", "Q2"], "Git Repository")
+        candidates = reader._find_candidates_via_egeria(["Q1", "Q2"], "Git Repository")
         assert len(candidates) == 1
 
     def test_result_is_cached_across_calls(self):
@@ -448,8 +457,8 @@ class TestFindCandidateProcessGuidsByQuestions:
             scoped_elements_by_guid={"q1-guid": [self._survey_definition_element("GovActionProcess::A", "Git Repository")]},
         )
         reader = _reader_with_fake_classification_explorer(fake)
-        reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
-        reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        reader._find_candidates_via_egeria(["Q1"], "Git Repository")
+        reader._find_candidates_via_egeria(["Q1"], "Git Repository")
         assert fake.get_scoped_elements_calls == 1
 
     def test_string_response_treated_as_no_elements_found(self):
@@ -461,7 +470,7 @@ class TestFindCandidateProcessGuidsByQuestions:
         )
         fake.get_scoped_elements = lambda scope_guid, **_kw: "No elements found"
         reader = _reader_with_fake_classification_explorer(fake)
-        assert reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository") == []
+        assert reader._find_candidates_via_egeria(["Q1"], "Git Repository") == []
 
 
 class _FakeClock:
@@ -486,7 +495,10 @@ class _FakeClock:
 
 
 class TestSlowCallInstrumentation:
-    """2026-09-04, after a real stuck-server incident with no way to tell
+    """Instrumentation on the Egeria walk, which is now the fallback path
+    (`_find_candidates_via_egeria`) and is called by that name here.
+
+    2026-09-04, after a real stuck-server incident with no way to tell
     'slow' from 'hung': a get_scoped_elements call over 5s, or the whole
     sequential loop over 10s, must log a WARNING naming which question and
     how long — the diagnostic this incident needed and didn't have. Asserts
@@ -507,7 +519,7 @@ class TestSlowCallInstrumentation:
 
         with patch.object(time_module, "monotonic", clock.monotonic), \
              patch.object(sdr, "log") as mock_log:
-            reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+            reader._find_candidates_via_egeria(["Q1"], "Git Repository")
 
         assert mock_log.warning.call_count == 1
         args = mock_log.warning.call_args[0]
@@ -522,7 +534,7 @@ class TestSlowCallInstrumentation:
         )
         reader = _reader_with_fake_classification_explorer(fake)
         with patch.object(sdr, "log") as mock_log:
-            reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+            reader._find_candidates_via_egeria(["Q1"], "Git Repository")
         mock_log.warning.assert_not_called()
 
     def test_the_total_loop_duration_is_logged_when_slow_even_if_no_single_call_is(self):
@@ -544,7 +556,7 @@ class TestSlowCallInstrumentation:
 
         with patch.object(time_module, "monotonic", clock.monotonic), \
              patch.object(sdr, "log") as mock_log:
-            reader.find_candidate_process_guids_by_questions(["Q1", "Q2", "Q3"], "Git Repository")
+            reader._find_candidates_via_egeria(["Q1", "Q2", "Q3"], "Git Repository")
 
         # No per-call warning (each call is 4s, under the 5s threshold) — only
         # the loop-total warning (12s, over the 10s threshold) fires.
@@ -689,3 +701,101 @@ class TestReconcileStepLinks:
         reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
         reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
         assert meta.deleted_guids == []
+
+
+
+class TestFindCandidatesFromDocuments:
+    """The local path: which definitions answer these questions, read from the
+    authored documents' `Link Element To Scope` blocks — the same fact the
+    Egeria walk read one question at a time, 45 round trips deep.
+
+    A fake documented_definitions() stands in for the docs directory, and the
+    only Egeria call left — resolving a matched definition's GUID — is
+    stubbed, so these assert the selection logic and nothing else.
+    """
+
+    @pytest.fixture(autouse=True)
+    def docs(self, monkeypatch):
+        from resource_explorer.surveyors.survey_definition_docs import DefinitionDoc
+
+        def doc(name, tech, kind, scoped):
+            d = DefinitionDoc()
+            d.process = name
+            d.display_name = f"{name} Survey"
+            d.technology_type = tech
+            d.survey_kind = kind
+            d.scoped_by = list(scoped)
+            return d
+
+        fake = {
+            "A": doc("A", "Git Repository", "scouting", ["Q1", "Q2"]),
+            "B": doc("B", "Git Repository", "discovery", ["Q2"]),
+            "C": doc("C", "PostgreSQL Database", "scouting", ["Q1"]),
+            "U": doc("U", "Git Repository", "scouting", ["Q9"]),   # unpublished
+        }
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.survey_definition_docs.documented_definitions", lambda: fake)
+        sdr.clear_caches()
+        yield fake
+        sdr.clear_caches()
+
+    def _reader(self, monkeypatch, published=("A", "B", "C")):
+        reader = sdr.SurveyDefinitionReader()
+        monkeypatch.setattr(
+            reader, "find_process_guid_by_name",
+            lambda qn: f"guid-{qn.split('::')[-1]}" if qn.split("::")[-1] in published else None)
+        return reader
+
+    def test_matches_by_scoped_question_and_technology_type(self, monkeypatch):
+        reader = self._reader(monkeypatch)
+        out = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        assert [c["qualified_name"] for c in out] == ["GovActionProcess::A"]   # not C: wrong tech
+        assert out[0]["guid"] == "guid-A"
+        assert out[0]["matched_questions"] == ["Q1"]
+
+    def test_matched_questions_accumulate_in_asked_order(self, monkeypatch):
+        reader = self._reader(monkeypatch)
+        out = reader.find_candidate_process_guids_by_questions(["Q2", "Q1"], "Git Repository")
+        by = {c["qualified_name"]: c["matched_questions"] for c in out}
+        assert by["GovActionProcess::A"] == ["Q2", "Q1"]
+        assert by["GovActionProcess::B"] == ["Q2"]
+
+    def test_survey_kind_filter(self, monkeypatch):
+        reader = self._reader(monkeypatch)
+        out = reader.find_candidate_process_guids_by_questions(["Q2"], "Git Repository", survey_kind="discovery")
+        assert [c["qualified_name"] for c in out] == ["GovActionProcess::B"]
+
+    def test_unpublished_definition_is_not_offered(self, monkeypatch):
+        """Documented but with no GUID in Egeria: it cannot run, so it is not
+        a candidate. The document cannot know this; the one Egeria call left
+        is exactly for it."""
+        reader = self._reader(monkeypatch)
+        assert reader.find_candidate_process_guids_by_questions(["Q9"], "Git Repository") == []
+
+    def test_no_egeria_walk_is_made(self, monkeypatch):
+        """The point of the change. get_scoped_elements must not be called."""
+        reader = self._reader(monkeypatch)
+        called = []
+        monkeypatch.setattr(reader, "_find_candidates_via_egeria",
+                            lambda *a, **k: called.append(a) or [])
+        reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        assert called == []
+
+    def test_falls_back_to_egeria_when_no_documents(self, monkeypatch):
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.survey_definition_docs.documented_definitions", lambda: {})
+        reader = self._reader(monkeypatch)
+        monkeypatch.setattr(reader, "_find_candidates_via_egeria",
+                            lambda qs, tech, survey_kind=None: [{"qualified_name": "via-egeria"}])
+        out = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        assert out == [{"qualified_name": "via-egeria"}]
+
+    def test_guid_lookup_is_cached_including_not_published(self, monkeypatch):
+        reader = self._reader(monkeypatch)
+        calls = []
+        real = reader.find_process_guid_by_name
+        monkeypatch.setattr(reader, "find_process_guid_by_name", lambda qn: calls.append(qn) or real(qn))
+        reader.find_candidate_process_guids_by_questions(["Q9"], "Git Repository")
+        sdr._candidates_cache.clear()          # force the selection to run again
+        reader.find_candidate_process_guids_by_questions(["Q9"], "Git Repository")
+        assert calls == ["GovActionProcess::U"], "the None answer must be cached too"
