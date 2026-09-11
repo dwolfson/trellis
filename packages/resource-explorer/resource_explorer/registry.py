@@ -1057,6 +1057,21 @@ class ProjectRegistry:
                     egeria_report_guid TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Migration 2026-09-11: two AnnotationType values were shortened
+            # forms of the Egeria type name ("SchemaAnalysis",
+            # "RequestForAction") while the catalog declared the full names.
+            # Rows written under the short names are renamed so the
+            # declared-vs-received join reads them. Idempotent: a second run
+            # matches nothing.
+            for short, full in (
+                ("SchemaAnalysis", "SchemaAnalysisAnnotation"),
+                ("RequestForAction", "RequestForActionAnnotation"),
+            ):
+                conn.execute(
+                    "UPDATE project_published_annotation_types SET annotation_type = ? "
+                    "WHERE annotation_type = ?",
+                    (full, short),
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
                 "ON project_published_annotation_types(project_slug, annotation_type)"
@@ -5169,6 +5184,30 @@ class ProjectRegistry:
                 (slug, report_guid),
             ).fetchone()
         return row is not None
+
+    def get_published_annotation_types_for_report(self, slug: str, report_guid: str) -> set[str]:
+        """The annotation types actually published under ONE SurveyReport.
+
+        This is the run-keyed half of declared-vs-received. A run's activity
+        row carries `egeria_report_guid`, and record_published_annotation_types()
+        stamps every row with the report it went into, so what a run produced
+        can be read back exactly — by report, not by timestamp. Measured
+        2026-09-11: all 152 rows carry a report GUID, across 104 reports.
+
+        Empty set for an unpublished run, which the caller must treat as
+        "cannot be listed from here" rather than "nothing was produced": the
+        two are different claims and only publishing makes the first one
+        answerable."""
+        slug = self._normalize_slug(slug)
+        if not report_guid:
+            return set()
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT annotation_type FROM project_published_annotation_types
+                   WHERE project_slug = ? AND egeria_report_guid = ?""",
+                (slug, report_guid),
+            ).fetchall()
+        return {r["annotation_type"] if isinstance(r, dict) else r[0] for r in rows}
 
     def get_latest_project_stats(self, slug: str) -> dict | None:
         """Return the most recent project_stats row as a dict, or None."""
