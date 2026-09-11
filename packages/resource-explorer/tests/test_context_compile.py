@@ -1041,3 +1041,39 @@ class TestAnAllStopwordQuestionStillMatchesItself:
         c = compile_context(_registry({}), "x", "What does this repository do?", budget=6000)
         assert c.manifest["coverage"]["kind"] == "direct"
         assert c.text.startswith("Coverage:")
+
+
+class TestCveHeadlineLeadsWithCoverage:
+    """Run 5 (2026-09-10): with `headline: none in 0 of 61 declared
+    dependenc(ies) (warn)` leading docling's cve_scan section, the model
+    answered "No, there are no outstanding CVEs" and the judge agreed. The
+    word "none" led; the coverage that reverses it trailed."""
+
+    def _headline(self, checked, recorded, advisories=0):
+        from resource_explorer.surveyors import repo_survey_definition_adapter as a
+        reg = MagicMock()
+        reg.query_findings.return_value = []
+        reg.query_metrics.return_value = {"advisories": advisories, "checked": checked,
+                                          "packages_affected": 1 if advisories else 0,
+                                          "unqueryable": recorded - checked,
+                                          "detail": {"recorded": recorded, "scanned": True}}
+        return a._cve_scan_headline(reg, "x")
+
+    def test_nothing_checked_says_so_first_and_never_says_none(self):
+        h = self._headline(0, 61)
+        assert h["label"].startswith("not checked: 0 of 61")
+        assert "no CVE result exists" in h["label"]
+        assert not h["label"].startswith("none") and h["tone"] == "warn"
+
+    def test_partial_scan_names_what_could_not_be_queried(self):
+        h = self._headline(11, 36)
+        assert "11 of 36" in h["label"] and "25 could not be queried" in h["label"]
+        assert h["tone"] == "warn"
+
+    def test_full_clean_scan_is_the_only_good_tone(self):
+        h = self._headline(36, 36)
+        assert h["tone"] == "good" and "all 36" in h["label"]
+
+    def test_an_advisory_still_leads_with_the_advisory(self):
+        h = self._headline(5, 5, advisories=1)
+        assert h["label"].startswith("1 advisory") and h["tone"] == "bad"

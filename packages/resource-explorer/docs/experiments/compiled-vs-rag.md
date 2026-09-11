@@ -80,6 +80,53 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run5-20260910 — the fixed compiler (ce5f42b), judge held at rubric v3, text on every row
+
+Same seed, repos and judge as run 4's v3 re-judge; only the compiler changed (the eleven audit
+fixes: headline-first sections, flat FULL, abridged middle rung, coverage line, exact-match
+relevance). `data/experiments/compiled_vs_rag_run5/results.jsonl`. 312 rows, 0 errors,
+replayability 156 of 156, evidence text stored on all 312 rows (no reconstruction needed, ever).
+11–12 sections per compile, 81% at FULL.
+
+Whole run, all three repos (run 5 is the first run where every row is judged with exact text):
+
+| metric (v3) | compiled | rag |
+|---|---:|---:|
+| answers_question (0–2) | 1.04 | 0.28 |
+| supported_claims (mean) | 1.66 | 0.31 |
+| unsupported_claims (mean) | 0.29 | 0.86 |
+| misread_claims (mean) | 0.02 | 0.06 |
+| cites_evidence | 62% | 5% |
+| claims_missing_result | 1% | 2% |
+| declines | 35% | 60% |
+
+**Paired against run 4 on the 104 egeria+kafka questions where run 4 had exact text** (compiled,
+run 5 minus run 4): answers_question **+0.10** (22 up, 11 down, 71 tied); unsupported_claims
+**−0.11** (21 down, 11 up, 72 tied); misread_claims −0.01 (the one misread gone); supported_claims
+and cites_evidence flat. Every change is in the right direction and none is large; on the
+protocol's own rule the answers_question and unsupported moves are inside the noise band and
+should be read as "the fixes did no harm and probably a little good", pending a reproduction.
+The RAG control moved the other way on the same questions (unsupported 0.93 → 1.10), which is the
+day-to-day variance of an 8B answerer and a reminder that compiled-versus-RAG, not run-versus-run,
+is the stable comparison.
+
+**The coverage line works as intended.** 66 compiled rows carried a `Coverage:` line (the catalog
+marks the question direct/human/chart/gap); 45 of them declined, up from run 4's 33 total declines,
+and those declines now say why. answers_question on those rows is 0.70 — rubric v3 still scores a
+correct decline as 0 in some of them (its over-firing rule, noted above), so this number is a floor.
+
+**What the fixes did not do: the absence-read-as-zero on `cve_scan` survives the headline.**
+docling's section now leads with `headline: none in 0 of 61 declared dependenc(ies) (warn)` and
+the model still answered "No, there are no outstanding CVEs." kafka, with `none in 11 of 36`,
+answered the same. The judge scored both 2 with one supported claim — it read "none" the same way
+the model did. Two conclusions: the headline's wording leads with the word an 8B model latches
+onto ("none") and buries the coverage; and rubric v3 cannot see an absence asserted over evidence
+that says nothing was checked. The first is a presentation fix in the analysis's own headline
+function, where the UI card would benefit too; the second is a v4 rubric rule ("an absence or a
+clean result stated where the evidence says 0 checked / N unqueryable is a misread"). egeria, with
+a real advisory, answered "Yes" and was scored 0 for giving no evidence — terseness, not the
+compiler.
+
 ### Runs 2 and 4 re-judged under rubric v3 (judge sees the packed text) — the compiler change is neutral; compiled-versus-RAG is not
 
 `results.v3-2026-09-09.jsonl` in both run directories; run 2 also keeps `results.v3-2026-09-09.blind.jsonl`,

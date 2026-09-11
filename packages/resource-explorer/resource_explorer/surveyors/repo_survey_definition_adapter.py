@@ -1676,9 +1676,24 @@ def _cve_scan_headline(registry, slug: str) -> dict | None:
                          f"across {int(data.get('packages_affected') or 0)} "
                          f"{_plural('package', int(data.get('packages_affected') or 0))}",
                 "tone": "bad"}
-    # A clean result never states itself without its coverage.
-    return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
-            "tone": "good" if checked == recorded else "warn"}
+    # A clean result never states itself without its coverage -- and the
+    # coverage comes FIRST. The earlier wording, "none in 0 of 61 declared
+    # dependenc(ies)", was read by an 8B model (and by the 32B judge grading
+    # it) as "no CVEs": the word the reader latches onto led, and the "0 of
+    # 61" that reverses its meaning trailed (compiled-vs-RAG run 5,
+    # 2026-09-10, docling and kafka). Say what was NOT checked before saying
+    # what was clean, and never use the bare word "none" for a partial scan.
+    if checked == 0:
+        return {"label": f"not checked: 0 of {recorded} declared dependenc(ies) could be "
+                         f"queried, so no CVE result exists",
+                "tone": "warn"}
+    if checked < recorded:
+        return {"label": f"no advisories in the {checked} of {recorded} declared "
+                         f"dependenc(ies) that could be checked; {recorded - checked} "
+                         f"could not be queried",
+                "tone": "warn"}
+    return {"label": f"no advisories in all {checked} declared dependenc(ies)",
+            "tone": "good"}
 
 
 def _refresh_plan_results(registry, slug: str) -> dict:
