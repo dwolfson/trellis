@@ -349,3 +349,31 @@ def get_activity_entry(entry_id: str) -> dict:
     if entry is None:
         raise HTTPException(status_code=404, detail="Activity entry not found")
     return entry
+
+
+@router.get("/{entry_id}/declared-vs-received")
+def get_declared_vs_received(entry_id: str) -> dict:
+    """One completed survey run held against its own declaration.
+
+    Per declared annotation type: received under this run's SurveyReport, or
+    not — and if not, WHY, from the run's own step statuses. "Ran and produced
+    nothing of this type" is an answer; "the step did not finish" is a defect;
+    the two were indistinguishable before this route and the second was
+    invisible. See run_reconciliation.py for what is deliberately not claimed.
+
+    404 for an unknown entry; 409 for an entry that is not a survey run with a
+    step list, because there is nothing to reconcile against and an empty
+    reconciliation would read as "everything matched".
+    """
+    from resource_explorer.run_reconciliation import reconcile_run
+
+    entry = _registry().get_activity(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Activity entry not found")
+    rec = reconcile_run(entry, _registry())
+    if rec is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This activity entry is not a survey run with a step list, so there is no declaration to hold it against.",
+        )
+    return rec.to_dict()

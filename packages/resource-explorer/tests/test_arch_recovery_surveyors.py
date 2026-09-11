@@ -47,7 +47,7 @@ class TestArchDetectSurveyor:
     def test_no_local_path_raises_an_rfa_not_an_exception(self, project, registry):
         results = ArchDetectSurveyor(project, registry, local_path=None).run()
         assert len(results) == 1
-        assert results[0].annotation_type.value == "RequestForAction"
+        assert results[0].annotation_type.value == "RequestForActionAnnotation"
 
     def test_manifest_component_persists_a_component_finding_and_metric(self, tmp_path, project, registry):
         root = str(tmp_path)
@@ -103,7 +103,7 @@ class TestArchCouplingSurveyor:
     def test_no_local_path_raises_an_rfa_not_an_exception(self, project, registry):
         results = ArchCouplingSurveyor(project, registry, source_path=None, history_path=None).run()
         assert len(results) == 1
-        assert results[0].annotation_type.value == "RequestForAction"
+        assert results[0].annotation_type.value == "RequestForActionAnnotation"
 
     def test_cohesive_subpackage_is_proposed_and_persisted(self, tmp_path, project, registry):
         root = self._git_repo_with_two_cohesive_subpackages(tmp_path)

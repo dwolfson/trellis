@@ -38,6 +38,7 @@ import {
   getDispositionHistory,
   enqueueBatch,
   getAnalysisTrend,
+  getDeclaredVsReceived,
   getResourceRuns,
   getSurveyCandidates,
   getSurveyDashboards,
@@ -2717,8 +2718,22 @@ function lastRunHtml(c) {
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
 }
 
+/** The union of annotation types a definition's steps declare — RE steps carry
+ *  their own `annotation_types`, native (Egeria-executed) steps carry theirs
+ *  nested one level down, in `egeria_produced_annotation_types[].annotation_type`.
+ *  De-duplicated because two steps commonly declare the same type. */
+function producesTypes(c) {
+  const seen = new Set();
+  for (const s of c.steps || []) {
+    for (const t of s.annotation_types || []) if (t) seen.add(t);
+    for (const p of s.egeria_produced_annotation_types || []) if (p && p.annotation_type) seen.add(p.annotation_type);
+  }
+  return [...seen];
+}
+
 function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
+  const produces = producesTypes(c);
   return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
     <div class="min-w-0 flex-1">
       <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
@@ -2726,6 +2741,8 @@ function surveyRowHtml(c) {
       <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
         c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
           class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
+      <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
+        produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
     </div>
     <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step(s)</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
@@ -3134,6 +3151,92 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
  * The per-step detail is in the activity log's own `detail` payload — steps
  * with their statuses — so this is wiring too, not new persistence.
  */
+/*
+ * Declared vs received — DECLARED IS NOT PROMISED. A step's `declared`
+ * annotation types are "this step is capable of emitting these", not "this
+ * run definitely produced them". Whether it actually did can only be read
+ * from the run's own Egeria report, and two of the six verdicts below are not
+ * "zero" even when they render on the empty side of the line: `not-published`
+ * means the run has no report to check at all, and `not-recorded` means it
+ * has one but predates the publish bookkeeping (2026-09-07) that would let us
+ * trust an absence. Both say "cannot be known" — never "no" — and never count
+ * toward a total the way a real zero would.
+ */
+
+/** One `types[]` entry from GET …/declared-vs-received, rendered as a line:
+ *  glyph, the type in mono, and a short plain-English reading of the verdict. */
+function declaredVsReceivedLineHtml(t) {
+  let glyph = '<span class="text-ink-muted">·</span>';
+  let phrase;
+  switch (t.verdict) {
+    case 'received':
+      glyph = '<span class="text-state-ok">✓</span>';
+      phrase = 'received';
+      break;
+    case 'step-did-not-finish': {
+      glyph = '<span class="text-state-warn">⚠</span>';
+      const statuses = t.step_statuses || {};
+      const failing = (t.declared_by || []).filter((s) => statuses[s] && statuses[s] !== 'ok');
+      const detail = (failing.length ? failing : (t.declared_by || []))
+        .map((s) => `${s}${statuses[s] ? ` (${statuses[s]})` : ''}`).join(', ');
+      phrase = `the declaring step did not finish — ${detail}`;
+      break;
+    }
+    case 'step-not-in-run':
+      phrase = 'declared, but this run never reached the step that produces it';
+      break;
+    case 'nothing-of-this-type':
+      phrase = 'ran clean, found nothing of this type';
+      break;
+    case 'not-published':
+      phrase = 'cannot be known — this run has no Egeria report to check';
+      break;
+    case 'not-recorded':
+      phrase = 'cannot be known — published before publish bookkeeping began (2026-09-07)';
+      break;
+    default:
+      phrase = String(t.verdict || '');
+  }
+  return `<li class="flex gap-s2">
+    <span class="w-[16px] shrink-0">${glyph}</span>
+    <span class="min-w-0 font-mono text-provenance">${esc(t.annotation_type)}</span>
+    <span class="text-ink-muted">— ${tnum(esc(phrase))}</span>
+  </li>`;
+}
+
+/** The whole declared-vs-received block for one run. `data` is the parsed
+ *  response of GET …/declared-vs-received. */
+function declaredVsReceivedHtml(data) {
+  const s = data.summary || {};
+  const didNotFinish = s['step-did-not-finish'] || 0;
+  // When the run has no report (`published` false) or predates publish
+  // bookkeeping (`recorded` false), every "unknown" type says the identical
+  // thing — so it is said ONCE, not once per type, to avoid drowning the
+  // defect lines (which ARE knowable from the run record and always shown).
+  const collapseUnknown = !data.published || !data.recorded;
+  let unknownShown = false;
+  const rows = (data.types || []).map((t) => {
+    if (collapseUnknown && (t.verdict === 'not-published' || t.verdict === 'not-recorded')) {
+      if (unknownShown) return '';
+      unknownShown = true;
+      const reason = !data.published
+        ? 'this run has no Egeria report, so what it produced cannot be listed from here'
+        : 'this run was published before publish bookkeeping began (2026-09-07), so absence here means nothing';
+      return `<li class="flex gap-s2">
+        <span class="w-[16px] shrink-0 text-ink-muted">·</span>
+        <span class="min-w-0 text-ink-muted">The rest cannot be known — ${esc(reason)}.</span>
+      </li>`;
+    }
+    return declaredVsReceivedLineHtml(t);
+  }).join('');
+  return `
+    <div class="mt-s2 text-caps uppercase tracking-caps text-ink-muted">Declared vs received</div>
+    <div class="mt-s1 text-provenance text-ink-muted">
+      <span class="tnum">${esc(s.declared ?? 0)} declared</span> · <span class="tnum">${esc(s.received ?? 0)} received</span>${
+        didNotFinish ? ` · <span class="tnum text-state-warn">${esc(didNotFinish)} did not finish</span>` : ''}</div>
+    <ul class="m-0 mt-s1 list-none p-0 text-caveat">${rows}</ul>`;
+}
+
 async function openRunsList(slug) {
   const el = openDialog('Runs', slug);
   const body = el.querySelector('#wl-detail-body');
@@ -3177,8 +3280,35 @@ async function openRunsList(slug) {
           </li>`).join('')}
         </ul>`
         : '<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>'}
+      <div data-dvr="${esc(r.id)}"></div>
     </details>`;
   }).join('');
+
+  // Lazily fetched, per run, on first open — the reconciliation is a second
+  // request per row and most rows in a list of 12 are never expanded. `toggle`
+  // fires on both open and close, and on close-then-reopen, so a `fetched`
+  // flag closed over the one placeholder guards against firing it twice.
+  body.querySelectorAll('details').forEach((det) => {
+    const holder = det.querySelector('[data-dvr]');
+    if (!holder) return;
+    const entryId = holder.dataset.dvr;
+    let fetched = false;
+    det.addEventListener('toggle', async () => {
+      if (!det.open || fetched) return;
+      fetched = true;
+      let dvr;
+      try {
+        dvr = await getDeclaredVsReceived(entryId);
+      } catch (err) {
+        // A 409 means this activity entry is not a survey run with a step
+        // list — not an error worth showing, just nothing to reconcile.
+        if (err instanceof ApiError && err.status === 409) return;
+        holder.innerHTML = `<p class="mt-s1 text-caveat text-ink-muted">Could not read the declaration: ${esc(err.message)}</p>`;
+        return;
+      }
+      holder.innerHTML = declaredVsReceivedHtml(dvr);
+    });
+  });
 }
 
 /** Invalidates an in-flight dashboard read when the pane or resource changes. */

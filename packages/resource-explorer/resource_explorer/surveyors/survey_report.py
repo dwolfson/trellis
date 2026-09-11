@@ -13,13 +13,28 @@ from typing import Any, Sequence
 
 
 class AnnotationType(str, Enum):
+    """RE's annotation kinds. Each value is the Egeria open metadata type
+    name it publishes as, so the value can be compared directly against
+    analysis_catalog.yaml's `annotation_types` and against what
+    record_published_annotation_types() writes.
+
+    Two values were not, until 2026-09-11: SCHEMA_ANALYSIS was
+    "SchemaAnalysis" and REQUEST_FOR_ACTION was "RequestForAction". Found by
+    the declared-vs-received reconciliation, which reported both as "never
+    published, ever" — 92 verdicts across 150 runs — when both had been
+    published every time under the shorter name. The catalog and the
+    bookkeeping disagreed on 2 of 7 names and nothing had ever joined them.
+    The publish path never used the value as an Egeria type (it maps the
+    member to a Properties class), so the only things the old values reached
+    were two log lines and the bookkeeping table, which is migrated on open.
+    """
     RESOURCE_MEASURE = "ResourceMeasureAnnotation"
     CLASSIFICATION = "ClassificationAnnotation"
-    SCHEMA_ANALYSIS = "SchemaAnalysis"
+    SCHEMA_ANALYSIS = "SchemaAnalysisAnnotation"
     DATA_CLASS = "DataClassAnnotation"
     QUALITY_SCORE = "QualityScoreAnnotation"
     RELATIONSHIP = "RelationshipAnnotation"
-    REQUEST_FOR_ACTION = "RequestForAction"
+    REQUEST_FOR_ACTION = "RequestForActionAnnotation"
 
 
 @dataclass

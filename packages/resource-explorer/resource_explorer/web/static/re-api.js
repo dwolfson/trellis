@@ -397,6 +397,10 @@ export const getAnalysisTrend = (slug, analysisId, metric = '') =>
 export const getResourceRuns = (slug, limit = 40) =>
   get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
 
+/** One run's declared-vs-received reconciliation: what each step promised vs what the report actually got. */
+export const getDeclaredVsReceived = (entryId) =>
+  get(`/api/activity/${encodeURIComponent(entryId)}/declared-vs-received`);
+
 /* ── Work lists and batch runs ───────────────────────────────────────── */
 
 export const listWorkLists = (investigation = '') =>
