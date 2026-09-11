@@ -644,6 +644,48 @@ _COVERAGE_PHRASING = {
 }
 
 
+#: How much of the catalog's caveat reaches the instructions at each rung.
+#: The Rationale/Source column runs 46-913 characters (median 172, measured
+#: 2026-09-11); the longest are histories, and the instructions section is
+#: required, so a caveat must never be what pushes a tight budget into
+#: failure. Clipped text is marked, never silent.
+CAVEAT_CHARS_FULL = 400
+CAVEAT_CHARS_SHORT = 160
+
+
+def _clip_caveat(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return cut + " […]"
+
+
+def _caveat_lines(entry: dict | None, relevance: float) -> tuple[str, str, str]:
+    """The catalog's own statement of what an answer to this question can and
+    cannot claim, as two lines for the instructions (FULL and SUMMARY rungs)
+    and the verbatim text for the manifest.
+
+    The question catalog's Rationale/Source column carries exactly the
+    caveat the run-5/6 CVE rows needed and did not get from the evidence
+    alone: "DECLARED dependencies only, so a zero is 'none found in what we
+    can see'"; secret_scan "never claims 'no secrets'". Until 2026-09-11 it
+    lived in the CSV and the /next UI; the compiled instructions are the one
+    place the answering model reads, so it goes here too -- for the MATCHED
+    question only, since a caveat about the wrong question is noise.
+    """
+    if entry is None or relevance <= 0.0:
+        return "", "", ""
+    text = (entry.get("rationale") or "").strip()
+    if not text:
+        return "", "", ""
+    return (
+        f"Caveat for this question, from the catalog: {_clip_caveat(text, CAVEAT_CHARS_FULL)}\n",
+        f"Caveat: {_clip_caveat(text, CAVEAT_CHARS_SHORT)}\n",
+        text,
+    )
+
+
 def _coverage(entry: dict | None, relevance: float) -> tuple[dict, str, str]:
     """What the catalog itself says answers this question, and — when that is
     not a stored analysis — one line at the top of the evidence saying so.
@@ -791,6 +833,7 @@ def compile_context(
     derivation.sort(key=lambda d2: -max((weights.get(a, 0.0) for a in d2["analysis_ids"]), default=0.0))
 
     coverage, coverage_line, coverage_line_short = _coverage(best_entry, best_relevance)
+    caveat_line, caveat_line_short, coverage["caveat"] = _caveat_lines(best_entry, best_relevance)
 
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
     # The coverage line rides INSIDE the instructions candidate rather than
@@ -800,8 +843,8 @@ def compile_context(
     # different one.
     candidates: dict[str, Candidate] = {
         "instructions": Candidate("instructions",
-                                  {Rung.FULL: coverage_line + _INSTRUCTIONS,
-                                   Rung.SUMMARY: coverage_line_short + _INSTRUCTIONS_SHORT,
+                                  {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
+                                   Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
                                    Rung.IDENTIFIERS: _INSTRUCTIONS_BARE}),
     }
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))

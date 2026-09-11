@@ -106,6 +106,13 @@ experiment (`packages/resource-explorer/docs/experiments/audits/`, 2026-09-08 an
   `manifest.coverage` carries the kind, the matched question and the catalog's note. Without it,
   a question nothing covers arrived with an empty gap list and the model answered from the
   nearest-ranked sections.
+- **The matched question's catalog caveat rides in the instructions.** The question catalog's
+  Rationale/Source column says what an answer may and may not claim ("DECLARED dependencies
+  only, so a zero is 'none found in what we can see'"; secret_scan "never claims 'no secrets'").
+  Since 2026-09-11 the best-matching question's caveat is the second line of the instructions
+  (`Caveat for this question, from the catalog: …`, clipped at 400 characters and marked; 160 at
+  the SUMMARY rung), verbatim in `manifest.coverage.caveat`, and part of the compile id. Only the
+  matched question's caveat: one about another question would be noise.
 - **The refusal wording is deliberately loose** (*"say so and name what is missing — do not
   infer from absence"*). A one-shape template was tried in run 3 and reverted: it turned two
   thirds of answers into refusals, including questions whose answering analysis was packed.
