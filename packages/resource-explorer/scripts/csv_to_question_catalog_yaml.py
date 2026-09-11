@@ -260,6 +260,7 @@ def generate(rows: list[dict]) -> str:
             "purposes": _parse_purposes(row.get("Purposes", "")),
             "answering": _parse_answering(row.get("Answering Analysis", ""), known_checks),
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
+            "rationale": (row.get("Rationale/Source") or "").strip(),
         })
 
     header = (
@@ -312,7 +313,14 @@ def generate(rows: list[dict]) -> str:
         "#                   Egeria Queries / Local Registry Query / Human-Supplied /\n"
         "#                   Direct Field / Trend Chart / Gap / Automate Change\n"
         "#                   Detection, or a \"+\"-joined combination) — orthogonal to\n"
-        "#                   stage and to answering.kind, added 2026-08-14.\n\n"
+        "#                   stage and to answering.kind, added 2026-08-14.\n"
+        "#   rationale   - the CSV's \"Rationale/Source\" column, verbatim — what a\n"
+        "#                   question's answer CAN and CANNOT claim. secret_scan\n"
+        "#                   never claims \"no secrets\", only no matches against\n"
+        "#                   this ruleset in this snapshot; cve_scan sees declared\n"
+        "#                   dependencies only. These are the caveats that turn a\n"
+        "#                   finding into a claim, so they are carried to the UI\n"
+        "#                   rather than left in the CSV. Added 2026-09-11.\n\n"
     )
     body = yaml.safe_dump({"repo_questions": entries}, sort_keys=False, allow_unicode=True, width=100)
     return header + body

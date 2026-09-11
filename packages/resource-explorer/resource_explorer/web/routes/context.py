@@ -20,6 +20,25 @@ _CRITICAL_FIELDS: dict[str, str] = {
 }
 
 
+class QuestionAnswer(BaseModel):
+    """One human answer to one catalog question.
+
+    The question TEXT is stored alongside the answer, not just used as the
+    key. The catalog has no stable question id — `question_catalog.yaml`
+    entries carry question/stage/perspectives/purposes/answering and nothing
+    identifying — so the key here is a slug derived from the wording. Reword
+    the CSV and the slug changes, which would orphan the answer.
+
+    Storing the text makes that orphaning visible and recoverable rather than
+    silent: the answer is still there, still readable, and still says which
+    question it was given for. A stable id in the catalog would be the real
+    fix; this records why it is wanted.
+    """
+    question: str = ""
+    answer: str = ""
+    answered_at: str = ""
+
+
 class ContextData(BaseModel):
     environment:           str = ""   # production | staging | dev | research | archive | unknown
     org_owner:             str = ""
@@ -29,6 +48,14 @@ class ContextData(BaseModel):
     sensitivity:           str = ""   # public | internal | confidential | restricted | unknown
     purpose:               str = ""   # free text — what is this resource for?
     notes:                 str = ""   # free text — anything else
+    # Answers to the catalog's Human-Supplied questions, keyed by a slug of
+    # the question text (see QuestionAnswer). Deliberately separate from the
+    # fixed fields above: those are the catalog-time asset record
+    # (environment, sensitivity, backup status, location), and NONE of them
+    # appears in the question catalog. These are the seven questions the
+    # catalog actually asks a human — dependencies, cost, skills, monitoring,
+    # security, governance, estate fit — which had nowhere to be stored.
+    question_answers: dict[str, QuestionAnswer] = {}
 
 
 @router.get("/{entity_type}/{slug}")

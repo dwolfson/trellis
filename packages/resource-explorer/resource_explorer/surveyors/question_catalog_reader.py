@@ -68,6 +68,10 @@ class QuestionCatalogEntry:
     answering: QuestionAnswering
     purposes: list[str] = field(default_factory=list)
     answering_mechanism: str = ""
+    # What this question's answer can and cannot claim — the CSV's
+    # Rationale/Source column. Carried to the UI because a caveat that lives
+    # only in the catalog is a caveat nobody reading the answer ever sees.
+    rationale: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +81,7 @@ class QuestionCatalogEntry:
             "purposes": self.purposes,
             "answering": self.answering.to_dict(),
             "answering_mechanism": self.answering_mechanism,
+            "rationale": self.rationale,
         }
 
 
@@ -94,6 +99,7 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
             note=answering_raw.get("note", ""),
         ),
         answering_mechanism=raw.get("answering_mechanism", ""),
+        rationale=raw.get("rationale", ""),
     )
 
 

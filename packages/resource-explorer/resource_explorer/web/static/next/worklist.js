@@ -1465,14 +1465,33 @@ async function runRefresh(byAnalysis, ctx) {
   if (last?.set_id) watchBatch(ctx, last.set_id);
 }
 
+/** What this question's answer is entitled to claim.
+ *
+ * The catalog's Rationale/Source column, carried through since 2026-09-11.
+ * Rendered ABOVE the results and in every branch — including the two empty
+ * ones — because the caveat is most load-bearing exactly when there is
+ * nothing to read: "no matches against this ruleset in this snapshot" and
+ * "nothing stored" are very different statements, and without the first the
+ * second reads as an all-clear.
+ */
+function rationaleBlock(q) {
+  const text = (q?.rationale || '').trim();
+  if (!text) return '';
+  return `<div class="mb-s2 border-l-2 border-accent pl-s2">
+      <div class="uppercase tracking-caps text-caps text-ink-muted">What this can claim</div>
+      <p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(text)}</p>
+    </div>`;
+}
+
 async function openCellDetail(slug, qi, ctx) {
   const q = grid.questions[qi];
   if (!q) return;
   const el = openDialog(q.question, slug);
   const body = el.querySelector('#wl-detail-body');
+  const why = rationaleBlock(q);
   const ids = q.analysis_ids || [];
   if (!ids.length) {
-    body.innerHTML = `<p>No analysis answers this question yet, so there is
+    body.innerHTML = why + `<p>No analysis answers this question yet, so there is
       nothing to read. That is a gap in the catalog, not a finding about
       ${esc(slug)}.</p>`;
     return;
@@ -1482,7 +1501,7 @@ async function openCellDetail(slug, qi, ctx) {
     const res = await getBulkFacts([slug], ids);
     facts = res.subjects?.[slug] || [];
   } catch (err) {
-    body.innerHTML = `<p class="text-state-warn">Could not read the results:
+    body.innerHTML = why + `<p class="text-state-warn">Could not read the results:
       ${esc(err.message)}</p>`;
     return;
   }
@@ -1497,7 +1516,7 @@ async function openCellDetail(slug, qi, ctx) {
     renderGrid();
   }
   if (!facts.length) {
-    body.innerHTML = `<p>Nothing stored for ${esc(ids.join(', '))} on this
+    body.innerHTML = why + `<p>Nothing stored for ${esc(ids.join(', '))} on this
       resource.</p>`;
     return;
   }
@@ -1507,7 +1526,7 @@ async function openCellDetail(slug, qi, ctx) {
   // them and says how many. "Re-run for this resource" said neither, and
   // quietly queued every one of them.
   const runnable = facts.map((f) => f.analysis_id).filter(Boolean);
-  body.innerHTML = facts.map((f) => factDetailHtml(f, slug)).join('')
+  body.innerHTML = why + facts.map((f) => factDetailHtml(f, slug)).join('')
     + (runnable.length > 1
         ? `<div class="mt-s3 border-t border-rule pt-s2 text-caveat text-ink-muted">
             <button type="button" data-act="rerun"
