@@ -44,6 +44,7 @@ import {
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
+  getBulkFacts,
   getQuestions,
   getScoutingOverview,
   listActivity,
@@ -3018,7 +3019,7 @@ async function historyHtml(slug, analysisId, metric = '') {
       ${series.map((r, i) => `<tr class="border-b border-rule">
         <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
         <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
-          esc(fmtScalar(r.metric_value ?? r.value, metric))}</td>
+          esc(fmtScalar(r.metric_value ?? r.value, r.metric || metric))}</td>
       </tr>`).join('')}
     </table>`;
 }
@@ -3042,7 +3043,9 @@ async function deltaFor(slug, analysisId, metric = '') {
     const prior = [...series].reverse().find(
       (r) => (r.metric_value ?? r.value) !== (now.metric_value ?? now.value));
     if (!prior) return `unchanged across ${series.length} runs`;
-    return `was ${fmtScalar(prior.metric_value ?? prior.value, metric)} ${ago(prior.surveyed_at)}`;
+    // A row may name its own metric (the trend reader knows what `value`
+    // is even when the caller does not); prefer that over the caller's.
+    return `was ${fmtScalar(prior.metric_value ?? prior.value, prior.metric || metric)} ${ago(prior.surveyed_at)}`;
   } catch (_) {
     return '';
   }
@@ -3350,6 +3353,250 @@ function findingGlyph(label) {
 /** `not_established` -> `not established`; `SOLE` -> `sole`. */
 const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
 
+/* ── The dashboard, by question ────────────────────────────────────────────
+ *
+ * The diagnosis, in one line: the dashboard was organised by the PRODUCER
+ * while every other pane is organised by the CONSUMER. A question has one
+ * answer even when six analyses contribute; on the authored boards that
+ * answer was six paragraphs apart in six sections — and one analysis that
+ * answers six questions (`repo_conventions`) appeared on two boards in full,
+ * both times, under neither question.
+ *
+ * This view is generated, not authored. It reads the stage's questions, the
+ * analyses they name, and the facts for those analyses — the same projection
+ * the matrix reads, keyed by analysis id and independent of which board an
+ * analysis was filed under. Adding an analysis to the catalog and naming it
+ * on a question puts it here with no UI change, which was the bar.
+ *
+ * Three ranks per question, as before: the analysis's OWN sentence first
+ * (`headline` — the annotation writes its summary, we render it rather than
+ * re-composing from fields, which is where 82 / 82.2 came from), then
+ * findings unresolved-first, then counts as a table.
+ *
+ * When one analysis serves several questions, the catalog's `checks` decide
+ * what each question shows: a question declaring `repo_conventions:doc_breadth`
+ * shows that finding and not the other four. A question that declares no
+ * check takes the whole analysis — once. Later questions naming the same
+ * analysis get a pointer to where it is shown, because the same five
+ * findings rendered six times is the thing this view exists to stop.
+ *
+ * Two things deliberately NOT on this pane:
+ *  - the ~40 `sub_resource_survey` worthy / not-worthy rows are promotion
+ *    candidates and belong with the verdict loop; here they are one line
+ *    with a count and a pointer to the work list;
+ *  - nothing is hidden. An analysis the stage measures that no question
+ *    asks for is listed at the end under its own heading, because that list
+ *    is the standing check the catalog needs and it found nine on first run.
+ */
+const DASH_VIEW_KEY = 're-next.dashView';
+
+function factGlyph(state) {
+  switch (state) {
+    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
+    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
+    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
+    default: return { glyph: '·', tone: 'text-ink-muted' };
+  }
+}
+
+function subResourceSummaryHtml(fact) {
+  const rows = (fact.value && fact.value.findings) || [];
+  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
+  return `<div class="mt-s1 text-caveat text-ink">
+      <span class="tnum">${rows.length}</span> sub-resources assessed ·
+      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
+      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
+        they belong with the verdict loop.</span>
+      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
+    </div>`;
+}
+
+function findingRowHtml(f, analysisId, when) {
+  const c = findingGlyph(f.label);
+  return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
+    data-measure="${esc(analysisId)}" data-check="${esc(f.check_name || '')}"
+    data-title="${esc((f.check_name || analysisId).replace(/_/g, ' '))}"
+    data-summary="${esc(f.summary || '')}" data-when="${esc(when || '')}">
+    <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
+    <span class="min-w-0 flex-1 text-ink">
+      <strong class="font-semibold">${
+        f.check_name
+          ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
+          : esc(humanLabel(f.label) || analysisId)}.</strong>
+      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
+      <span class="block text-provenance text-ink-muted" data-delta="${esc(analysisId)}|${esc(f.check_name || '')}">·</span></span>
+    <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(analysisId)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+  </button>`;
+}
+
+function sortUnresolvedFirst(findings) {
+  return [...findings].sort((x, y) => {
+    const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
+    const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
+    return ux - uy;
+  });
+}
+
+/** One analysis, under one question. `checks` is the set of check names this
+ *  question declares for it, or null for the whole analysis. */
+function analysisUnderQuestionHtml(fact, id, checks) {
+  if (!fact) {
+    return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · not read</div>`;
+  }
+  const g = factGlyph(fact.state);
+  const when = fact.last_run_at || '';
+  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
+      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
+      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}</span>
+      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+    </button>`;
+  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
+  const value = (fact.value && typeof fact.value === 'object') ? fact.value : {};
+  let findings = Array.isArray(value.findings) ? value.findings : [];
+  if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
+  findings = sortUnresolvedFirst(findings);
+  const counts = checks ? [] : Object.entries(value)
+    .filter(([k, v]) => k !== 'findings' && k !== 'overall' && (typeof v === 'number' || typeof v === 'boolean'))
+    .map(([k, v]) => ({ key: k, value: v }));
+  // Under a check-scoped question the whole-analysis sentence is not the
+  // answer — "1 of 5 conventions need attention" said three times under three
+  // questions that each asked about ONE convention. The scoped finding IS the
+  // answer, and it carries the analysis id and time itself. The sentence
+  // stays where the whole analysis is shown.
+  const scopedAndFound = checks && findings.length;
+  return (scopedAndFound ? '' : head)
+    + (findings.length ? findings.map((f) => findingRowHtml(f, id, when)).join('') : '')
+    + (counts.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${counts.map((c) => `
+        <tr class="wl-countrow cursor-pointer border-b border-rule" data-measure="${esc(id)}" data-metric="${esc(c.key)}"
+          data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
+          <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
+          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
+        </tr>`).join('')}</table>` : '');
+}
+
+async function renderDashboardByQuestion(slug, stage, host, live) {
+  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading the questions…</span>`;
+  let questions;
+  try {
+    const res = await getQuestions(slug, {
+      phase: stage, perspectives: [...state.activePerspectives], purposes: currentPurposes(),
+    });
+    questions = res.questions || [];
+  } catch (err) {
+    if (live()) host.innerHTML = `<span class="text-state-warn">The questions could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!live()) return;
+  rememberRationales(questions);
+
+  const measured = questions.filter((q) => (q.analysis_ids || []).length);
+  const unmeasured = questions.length - measured.length;
+  const asked = new Set(measured.flatMap((q) => q.analysis_ids || []));
+
+  // Everything the stage measures, so what nobody asks for can be listed
+  // rather than lost. A catalog read, not a results read — it is the cheap one.
+  let stageIds = [];
+  try {
+    const cat = await listAnalyses('repo', { intent: stage });
+    stageIds = (cat.analyses || cat || []).map((a) => a.id || a.analysis_id).filter(Boolean);
+  } catch (_) { /* the trailing section is then just what the questions named */ }
+  const unasked = stageIds.filter((id) => !asked.has(id));
+
+  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading ${asked.size + unasked.length} measurements…</span>`;
+  let facts = new Map();
+  try {
+    const res = await getBulkFacts([slug], [...asked, ...unasked]);
+    for (const f of (res.subjects || {})[slug] || []) facts.set(f.analysis_id, f);
+  } catch (err) {
+    if (live()) host.innerHTML = `<span class="text-state-warn">The measurements could not be read: ${esc(err.message)}</span>`;
+    return;
+  }
+  if (!live()) return;
+
+  const shownWhole = new Map();   // analysis id -> question index that rendered it in full
+  const sections = measured.map((q, qi) => {
+    const ids = q.analysis_ids || [];
+    const declared = (q.checks || []).map((c) => String(c).split(':'));
+    const checksFor = (id) => {
+      const mine = declared.filter(([a]) => a === id).map(([, c]) => c).filter(Boolean);
+      return mine.length ? new Set(mine) : null;
+    };
+    const body = ids.map((id) => {
+      const checks = checksFor(id);
+      if (!checks) {
+        const prior = shownWhole.get(id);
+        if (prior !== undefined && prior !== qi) {
+          return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · shown in full under
+            <em>${esc(measured[prior].question)}</em></div>`;
+        }
+        shownWhole.set(id, qi);
+      }
+      return analysisUnderQuestionHtml(facts.get(id), id, checks);
+    }).join('');
+    return `<section class="mb-s5">
+      <div class="text-answer text-ink">${esc(q.question)}</div>
+      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${body}
+    </section>`;
+  }).join('');
+
+  const trailing = unasked.length ? `<section class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
+      <div class="text-caps uppercase tracking-caps text-ink-muted">Measured, but no question asks ·
+        <span class="tnum">${unasked.length}</span></div>
+      <p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">These analyses run at this stage and
+        nothing in the question catalog names them. Either a question is missing, or the analysis is
+        evidence for a judgement rather than an answer to a question. Listed so the gap is a fact
+        rather than a surprise.</p>
+      ${unasked.map((id) => analysisUnderQuestionHtml(facts.get(id), id, null)).join('')}
+    </section>` : '';
+
+  host.innerHTML = `<div class="mb-s3 text-caveat text-ink-muted">
+      <span class="tnum">${measured.length}</span> question${measured.length === 1 ? '' : 's'} with measurements${
+      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered without one` : ''}${
+      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}
+      ${purposeLegendHtmlFor(questions)}</div>
+    ${sections || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
+    ${trailing}`;
+
+  host.querySelectorAll('[data-measure]').forEach((n) => {
+    n.addEventListener('click', () => openMeasurementDetail({
+      slug, analysisId: n.dataset.measure, title: n.dataset.title || n.dataset.measure,
+      metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
+    }));
+  });
+  // Work lists live under the Investigation frame — the matrix — not under a
+  // sub-tab of this resource. Promotion is a decision about a set.
+  host.querySelector('[data-goto-worklist]')?.addEventListener('click', () => {
+    state.stage = 'investigation';
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  });
+  for (const n of host.querySelectorAll('[data-delta]')) {
+    const [analysisId] = n.dataset.delta.split('|');
+    deltaFor(slug, analysisId).then((text) => {
+      if (!live()) return;
+      n.textContent = text || '';
+      n.className = text === 'first measurement' ? 'block text-provenance text-ink-muted' : 'block text-provenance text-ink';
+    });
+  }
+}
+
+/** The purpose legend for a question list that is not `state.questions`. */
+function purposeLegendHtmlFor(questions) {
+  const purposes = currentPurposes();
+  if (!purposes.length || !questions.length) return '';
+  const lead = questions.filter((q) => q.derivation?.purpose_ranked).length;
+  if (!lead) return `· <span class="text-ink-muted">none serve ${esc(purposes.join(', '))}</span>`;
+  return `· <span class="text-ink-muted">ordered by purpose · ${esc(purposes.join(', '))} · <span class="tnum">${lead}</span> lead</span>`;
+}
+
+function dashView() {
+  try { return localStorage.getItem(DASH_VIEW_KEY) === 'analysis' ? 'analysis' : 'question'; } catch { return 'question'; }
+}
+
 async function loadDashboardPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -3361,13 +3608,30 @@ async function loadDashboardPane() {
   // a Promise.all, which showed one line for as long as the slowest took —
   // and on Analysis the dashboards read costs 109s.
   const token = ++dashToken;
+  const view = dashView();
   el.innerHTML = subTabsHtml() + `
-    <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">
-      Survey results · ${esc(stage)}</div>
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey results · ${esc(stage)}</span>
+      <span class="ml-auto flex gap-[6px] text-caveat">
+        <button type="button" data-dashview="question" aria-pressed="${view === 'question'}"
+          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by question</button>
+        <button type="button" data-dashview="analysis" aria-pressed="${view === 'analysis'}"
+          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by analysis</button>
+      </span>
+    </div>
     <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>`;
   bindSubTabs();
+  el.querySelectorAll('[data-dashview]').forEach((b) => b.addEventListener('click', () => {
+    try { localStorage.setItem(DASH_VIEW_KEY, b.dataset.dashview); } catch { /* per-viewer convenience only */ }
+    loadDashboardPane();
+  }));
 
   const live = () => token === dashToken && state.subTab === 'dashboard';
+
+  if (view === 'question') {
+    await renderDashboardByQuestion(slug, stage, $('dash-boards'), live);
+    return;
+  }
 
   let data;
   try {
