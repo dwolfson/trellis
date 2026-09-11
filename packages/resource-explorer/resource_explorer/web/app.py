@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
 
 
@@ -139,10 +140,17 @@ def _install_login_required_middleware() -> None:
 
     Hence the order in this file, bottom to top of the stack:
 
-        CORS  (added last  → outermost)
-          └── LoginRequiredMiddleware   (this)
-                └── _identity_middleware (added first → innermost)
-                      └── routes
+        _revalidate_experimental_assets  (added last → outermost)
+          └── CORS
+                └── LoginRequiredMiddleware   (this)
+                      └── _identity_middleware (added first → innermost)
+                            └── routes
+
+    (`_revalidate_experimental_assets` is declared below the routers, so it
+    is added last and therefore wraps everything. It only sets a response
+    header on the way out, so its position does not matter to correctness —
+    but it is listed here because a stack diagram that omits a layer is how
+    the next person gets the ordering wrong.)
 
     * The login gate is outside `_identity_middleware`, so a rejected request
       never sets an identity at all.
@@ -194,6 +202,7 @@ app.include_router(investigations.router, prefix="/api/investigations", tags=["i
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
 app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
 app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
+app.include_router(work_lists_routes.router, prefix="/api/work-lists", tags=["work-lists"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
@@ -239,3 +248,48 @@ async def index() -> FileResponse:
 @app.get("/admin/feedback")
 async def admin_feedback() -> FileResponse:
     return FileResponse(_STATIC / "admin-feedback.html")
+
+
+@app.middleware("http")
+async def _revalidate_experimental_assets(request, call_next):
+    """Make `/next`'s assets revalidate instead of being served from cache.
+
+    `StaticFiles` sets no `Cache-Control`, so a browser applies heuristic
+    freshness — and an ES module, once in a page's module map, is stickier
+    still. The effect during this experiment was a tester (and the person
+    building it) loading `app.js` against a CACHED `re-api.js`, which fails
+    as `does not provide an export named ...` — an error that describes a
+    stale cache but reads like a code bug, and which a plain reload does not
+    clear.
+
+    `no-cache` means "revalidate", not "do not store": the browser still
+    caches and still gets a 304 when nothing changed. Scoped to the
+    experimental UI's own files by exact prefix, so the rest of `/static`
+    keeps whatever caching it has. Remove this along with `/next` if the
+    experiment is dropped; if `/next` ever becomes the default, replace it
+    with real cache-busting (a content hash in the filename) rather than
+    keeping revalidation forever.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/next/") or path == "/static/re-api.js":
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.get("/next")
+async def next_ui() -> FileResponse:
+    """The experimental `/next` UI — skin 1c, and the Questions pane rebuilt
+    to report the ANSWER rather than the mechanism.
+
+    Served alongside `/`, not instead of it. The whole UI is a consumer of
+    `/api/*`: this route adds no endpoint, touches no schema, and shares this
+    app's session, so the experiment is additive and reversible — if it is a
+    dead end, this function and `static/next/` go away together.
+
+    Same shape as `/admin/feedback` above, which is the precedent for a second
+    static page here. Its assets live under `/static/next/`, already public by
+    the shared `/static/` prefix; the shell itself is listed in
+    `RE_PUBLIC_PATHS` for the same reason `/` is.
+    """
+    return FileResponse(_STATIC / "next" / "index.html")

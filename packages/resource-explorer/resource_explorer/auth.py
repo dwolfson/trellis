@@ -99,9 +99,16 @@ POLICY_ENV_PREFIX = "EXPLORER"
 #: separately-mounted A2A app).
 #:
 #: `/healthz` is RE's second liveness name, used by the A2A role.
+#: `/next` is the experimental UI's shell, and is public for exactly the same
+#: reason `/` is: the shell has to load in order to render the login form that
+#: obtains the token. It is a bare HTML document that names no data — every
+#: `/api/*` call it makes is gated exactly as the current UI's are. Listed as
+#: an exact match, not a `/next/` prefix, so it cannot quietly make some
+#: future `/next/export` public too.
 RE_PUBLIC_PATHS = (
     "/",
     "/index.html",
+    "/next",
     "/healthz",
     "/api/auth/me",
     "/api/auth/defaults",

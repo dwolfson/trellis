@@ -1705,6 +1705,26 @@ document.addEventListener('DOMContentLoaded', () => {
   Auth.init(_startApp);
 });
 
+/** Select the repo named by `?resource=` on load, if there is one.
+ *
+ *  Waits for the project list rather than racing it: `loadProjects()` is
+ *  async and `selectProject()` needs the row to exist. Gives up quietly
+ *  after a few seconds — a slug that is not registered is a stale link, not
+ *  an error worth interrupting anyone over. */
+async function _restoreResourceFromUrl() {
+  let slug;
+  try { slug = new URLSearchParams(location.search).get('resource'); } catch (e) { return; }
+  if (!slug) return;
+  for (let i = 0; i < 25; i++) {
+    if (Array.isArray(_allProjectSummaries) && _allProjectSummaries.some(p => p.slug === slug)) {
+      selectProject(slug);
+      return;
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  console.info('?resource=%s did not match a registered repo; ignoring', slug);
+}
+
 function _startApp() {
   checkBackendHealth();
   _startBackendHealthPoll();
@@ -1729,6 +1749,18 @@ function _startApp() {
   // Land on Investigation, not Scouting: the frame comes before the search.
   setNavIntent('scouting');
   showMainView('investigations');
+  // ?resource=<slug> — the only URL state this UI reads.
+  //
+  // Added so the experimental /next UI can link here ON THE SAME RESOURCE.
+  // Navigation state otherwise lives in JavaScript variables, so there was no
+  // way to hand someone a link to a screen; the deferred panes in /next were
+  // reduced to telling people to reselect by hand.
+  //
+  // Deliberately narrow and additive: it selects a resource and nothing else,
+  // it runs after the normal boot rather than replacing any of it, and an
+  // unknown or absent slug leaves the app exactly as it was. It does not
+  // write the URL back, so nothing about the existing behaviour changes.
+  _restoreResourceFromUrl();
   // Surface the current investigation immediately — a result read without
   // knowing which body of work it belongs to is the ambiguity this frame exists
   // to remove, so the label must be right before anything else renders.
