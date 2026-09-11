@@ -235,17 +235,25 @@ function renderActions(ctx) {
       ${loaded && !runnable ? `<option value="">no analyses for ${esc(ctx.stage)}</option>` : ''}
       ${analyses.map((a) => `<option value="${esc(a.id || a.analysis_id)}">${esc(a.display_name || a.name || a.id || a.analysis_id)}</option>`).join('')}
     </select>
-    <button data-act="run" ${runnable ? '' : 'disabled'}
-      class="cursor-pointer rounded-sm border ${runnable ? 'border-accent text-accent-ink' : 'border-dashed border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px]"
+    ${
+      // Disabled still LOOKS like a control — greyed but clickable-shaped,
+      // inviting the click it cannot honor. With zero runnable analyses for
+      // this stage there is nothing "Run across" or "Bring up to date" could
+      // ever enqueue, so both are absent rather than disabled. `promote` and
+      // `publish` below stay: they act on the work list itself, not on
+      // analyses, so they remain meaningful even here.
+      runnable ? `
+    <button data-act="run"
+      class="cursor-pointer rounded-sm border border-accent text-accent-ink bg-transparent px-2 py-[2px]"
       >Run across <span class="tnum">${n || grid.workList.members.length}</span></button>
     <button data-act="refresh"
       class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink"
       title="Re-run only what is stale, for ${n ? 'the selected rows' : 'every row'}. Shows the plan first."
-      >Bring up to date</button>
+      >Bring up to date</button>` : ''}
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">${esc(ctx.stage)} has no analyses in the catalog — by design for Enrichment, Understanding and Automate, which are served elsewhere</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, Understanding and Automate, which are served elsewhere</span>`
       : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}
@@ -259,8 +267,8 @@ function renderActions(ctx) {
         >${grid.workList.egeria_guid ? 're-publish' : 'publish to Egeria'}</button>
     </span>`;
 
-  host.querySelector('[data-act="run"]').addEventListener('click', () => runBatch(ctx));
-  host.querySelector('[data-act="refresh"]').addEventListener('click', () => openRefreshPlan(ctx));
+  host.querySelector('[data-act="run"]')?.addEventListener('click', () => runBatch(ctx));
+  host.querySelector('[data-act="refresh"]')?.addEventListener('click', () => openRefreshPlan(ctx));
   host.querySelector('[data-act="promote"]')?.addEventListener('click', () => promote(ctx));
   host.querySelector('[data-act="publish"]')?.addEventListener('click', () => publish(ctx));
   host.querySelector('#wl-disposition')?.addEventListener('change', (e) => {
