@@ -394,6 +394,23 @@ export const getAnalysisTrend = (slug, analysisId, metric = '') =>
     encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
 
 /** Recent activity for one resource — the runs, with their per-step detail. */
+/* ── Members: the things a count counted ─────────────────────────────────
+ *
+ * The measurement popup opens a number's history; this opens its members.
+ * `scope` is "public" or "all" — purpose decides the default (Maintain wants
+ * all) — and the response says whether the scope was honoured, since only
+ * symbols carry a public/internal marker today.
+ */
+export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}) => {
+  const qs = new URLSearchParams({ scope, limit: String(limit) });
+  if (metric) qs.set('metric', metric);
+  return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
+};
+
+export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
+    new URLSearchParams({ key, scope, limit: String(limit) })}`);
+
 export const getResourceRuns = (slug, limit = 40) =>
   get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
 
