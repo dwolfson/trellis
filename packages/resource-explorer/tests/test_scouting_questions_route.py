@@ -207,7 +207,10 @@ class TestLimitAndHistoryAreSeparate:
         qs = client.get("/api/projects/myproj/scouting-questions",
                         params={"phase": "analysis"}).json()["questions"]
         measured = [q for q in qs if q["analysis_ids"]]
-        assert len(measured) == 16
+        # 17 since 2026-09-12: "Do we already support these dependencies?"
+        # went from `human` to `mixed` when dependency_support gave it a
+        # machine starting point, so it now carries an analysis id.
+        assert len(measured) == 17
         tells = ("shipped 2026", "was marked GAP", "landed 2026", "could not parse",
                  "Closed 2026", "before any question referenced")
         leaked = [q["question"] for q in measured
@@ -219,6 +222,8 @@ class TestLimitAndHistoryAreSeparate:
                         params={"phase": "analysis"}).json()["questions"]
         assert all(isinstance(q.get("catalog_history"), str) for q in qs)
         with_history = [q for q in qs if q["analysis_ids"] and q["catalog_history"]]
-        # 15 of the 16: the security-infrastructure question is a person's to
-        # answer and has no build history to record.
-        assert len(with_history) == 15
+        # 16 of the 17: the security-infrastructure question is a person's to
+        # answer and has no build history to record. (Was 15 of 16 until
+        # 2026-09-12, when the dependencies question joined `measured` already
+        # carrying history from its Analysis/Enrichment stage change.)
+        assert len(with_history) == 16

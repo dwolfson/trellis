@@ -291,5 +291,10 @@ instance_keyed_not_checks:
   # dependency set happens to contain — not a fixed set of checks that
   # could be enumerated here.
   - cve_scan
+  # One finding per matched TECHNOLOGY (label = the technology's name), so
+  # the keys are whatever the curated mapping in dependency_support.yaml
+  # happens to match for this repo — plus one `coverage` row. Same shape as
+  # cve_scan: the instance set is the dependency list's, not a fixed list.
+  - dependency_support
   - architecture_recovery
   - sub_resource_survey

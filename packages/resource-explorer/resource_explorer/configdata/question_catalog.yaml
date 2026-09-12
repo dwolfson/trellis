@@ -314,20 +314,19 @@ repo_questions:
     analysis_ids:
     - dependency_support
     checks: []
-    note: Machine-informed, human-confirmed. dependency_support cross-references the dependency
-      list against a curated technology mapping (configdata/dependency_support.yaml) linked to
-      Egeria's technology types, and reports what each dependency INDICATES plus a ranked list of
-      names nobody has classified yet. Whether a technology is supported remains a human judgement
-      — the analysis is the starting point the project owner asked for (2026-09-11), not the answer.
-      Was `human` until 2026-09-12; the earlier note read —
-      N/A — human-supplied via Enrichment Context form - may also be a new Agent over RAG content.
-      Cross-reference against Egeria's catalog of already-supported dependencies, validated/completed
-      by human input — likely needs a per-dependency answer, not one blanket answer for the whole question.
+    note: 'MIXED: dependency_support (machine starting point — each dependency name matched against a
+      curated technology mapping in configdata/dependency_support.yaml, linked to Egeria''s technology
+      types; reports what each dependency INDICATES plus a ranked list of names nobody has classified
+      yet) + human-supplied corroboration via the Enrichment Context form — whether a technology is supported
+      remains a human judgement, and likely needs a per-dependency answer rather than one blanket answer
+      for the whole question. May also become an Agent over RAG content.'
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Needs the org's own tech inventory — human-supplied cross-reference, not resource-derivable.
   catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
-    pane, under a heading that promised the catalog''s questions for a person.'
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-12: answering
+    became MIXED — dependency_support added as the machine starting point (project owner: ''A now, shaped
+    to seed B''); the human corroboration stays.'
 - question: What deployment styles does this support?
   stage: Analysis
   perspectives:
