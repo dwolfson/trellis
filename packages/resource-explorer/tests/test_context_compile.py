@@ -1161,3 +1161,22 @@ class TestTheCatalogCaveatReachesTheInstructions:
         assert rung in {"SUMMARY", "IDENTIFIERS"}
         if rung == "SUMMARY":
             assert "Caveat: DECLARED" in c.text and "Caveat for this question" not in c.text
+
+
+class TestAYesNoAnswerMustCarryItsEvidenceLine:
+    """Run 8's one variable. Runs 5-7: honest headline, caveat beside it, and
+    the answer to "Are there outstanding CVEs?" on docling was still a bare
+    "No" and then a bare "Yes"."""
+
+    def test_full_and_short_rungs_ask_for_the_line(self):
+        from resource_explorer.context_compile import (
+            _INSTRUCTIONS, _INSTRUCTIONS_SHORT, _INSTRUCTIONS_BARE)
+        assert "a bare yes or no is not an answer" in _INSTRUCTIONS
+        assert "coverage limit or caveat" in _INSTRUCTIONS
+        assert "yes/no answer must state the evidence line" in _INSTRUCTIONS_SHORT
+        # The bare rung is the budget floor and stays as it was.
+        assert "yes" not in _INSTRUCTIONS_BARE.lower()
+
+    def test_it_reaches_the_packed_text(self):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
+        assert "a bare yes or no is not an answer" in c.text
