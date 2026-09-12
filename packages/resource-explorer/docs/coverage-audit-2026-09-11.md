@@ -189,6 +189,19 @@ third of the machine-answerable catalogued surface.
 
 - **Answer quality.** "Ran on N repos" is presence, not correctness; a run
   that produced `unverified` for every check counts here as coverage.
+- **Which regime a repo's numbers are in.** As of `90a0716` — the base this
+  audit was taken at — #36 and #39 changed what "the repository's own code"
+  means everywhere a walk measures it: vendored paths (`node_modules`,
+  `vendor`, `.venv`, `dist`, `site-packages`, the set in
+  `ingestion/vendored.py`) are now skipped by the symbol extractor, RAG
+  ingestion, the data profiler, manifest detection, the conventions parser and
+  the file count, with the inventory carrying a `vendored` flag. On
+  `egeria-workspaces` that took symbols 26,564 → 5,910 and files 6,423 → 1,998
+  on re-survey. Every other repo keeps its pre-#36 figures until re-surveyed.
+  The *presence* counts here are unaffected — a run is a run — but any
+  extension of this audit into answer **content** is describing two regimes
+  depending on when each repo was last indexed, and only `egeria_workspaces_git`
+  is on the new one. (Flagged by the session that landed #36/#39.)
 - **Chat coverage itself.** Purpose 1 is real and is not measured here — there
   is no catalogue of ad-hoc chat questions to audit against. If one existed
   (even a sample of what people actually asked), the "orphan" analyses could
