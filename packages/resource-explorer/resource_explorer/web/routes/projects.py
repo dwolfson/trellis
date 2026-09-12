@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -1490,7 +1491,18 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    line = provenance_line(analysis_id=analysis_id, run_at=body.run_at, total=body.total,
+    # The date is the server's: what the registry says this analysis last ran,
+    # not what the browser sent (which was never populated off one path).
+    from resource_explorer.members import last_run_at
+    run_at = last_run_at(registry, slug, analysis_id) or body.run_at
+    if body.suggest_to:
+        # An audience is a perspective or a person; a free string minted a
+        # work list named suggested-to-<anything> for any signed-in caller.
+        from resource_explorer.surveyors.analysis_catalog_reader import EGERIA_PERSPECTIVES
+        bad = [t for t in body.suggest_to if t not in EGERIA_PERSPECTIVES and not re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", t)]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"suggest_to must name a perspective or a user id: {bad}")
+    line = provenance_line(analysis_id=analysis_id, run_at=run_at, total=body.total,
                            members=body.members, facet=body.facet, metric=body.metric)
     name = body.name.strip() or proposed_name(project.display_name or slug, total=body.total,
                                               members=body.members, facet=body.facet, metric=body.metric)
@@ -1507,7 +1519,7 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
                          items=[{"kind": "member", "analysis_id": analysis_id, "name": m} for m in body.members[:50]])
         return {"action": "rfa", "name": name, "provenance": line, "rfa": rfa_id}
 
-    entry = Journal(registry).write("repo", slug, author=author, body=f"{name}. {line}", suggest_to=body.suggest_to)
+    entry = Journal(registry).write("repo", slug, author=author, body=f"{name} · {line}", suggest_to=body.suggest_to)
     return {"action": "journal", "name": name, "provenance": line, "journal": entry.get("id"),
             "work_lists": entry.get("work_lists", [])}
 

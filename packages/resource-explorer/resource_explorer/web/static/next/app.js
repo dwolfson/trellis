@@ -3836,34 +3836,62 @@ function memberScope() {
  * judgement with an author and a date — and belongs to the perishable-field
  * machinery, not a toolbar.
  */
-function facetsHtml(groups) {
+function facetsHtml(groups, data) {
   const leaf = groups.flatMap((g) => g.members.filter((m) => !m.children_key).map((m) => ({ ...m, group: g.name })));
-  if (!leaf.length) return '';
+  const hasTree = groups.some((g) => g.members.some((m) => m.children_key));
+  // A tree-shaped list has no leaves at this level; say so rather than
+  // rendering no facet row and no checkboxes with nothing marking why.
+  if (!leaf.length) {
+    return hasTree
+      ? `<div class="mb-s2 text-caps text-chrome-muted">this list is a tree · promotion selects leaves — open a branch to pick from it</div>`
+      : '';
+  }
   const byDetail = new Map();
   for (const m of leaf) if (m.detail) byDetail.set(m.detail, (byDetail.get(m.detail) || 0) + 1);
   const detailFacets = [...byDetail.entries()].filter(([, n]) => n < leaf.length).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const groupFacets = groups.filter((g) => g.members.some((m) => !m.children_key) && groups.length > 1).slice(0, 8);
-  if (!detailFacets.length && !groupFacets.length) return '';
+  // The detail facets are counted over the members LISTED, which the 200-row
+  // cap and truncated groups bound; the group facets use the group's own
+  // count, which the server knows in full. Where the two differ, say which.
+  const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  const capped = (data?.total || 0) > shown || groups.some((g) => g.truncated);
+  if (!detailFacets.length && !groupFacets.length) {
+    return `<div class="mb-s2 text-caps text-chrome-muted">no facets · ${byDetail.size === 1 ? 'one value across the list' : 'nothing to select by'}${
+      hasTree ? ' · this list is a tree; promotion selects leaves' : ''}</div>`;
+  }
   return `<div class="mb-s2 flex flex-wrap items-baseline gap-x-s2 gap-y-[2px] text-caps">
     <span class="text-chrome-muted">select</span>
     ${detailFacets.map(([d, n]) => `<button data-facet-detail="${esc(d)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">${esc(d)} <span class="tnum text-chrome-muted">${n}</span></button>`).join('')}
-    ${groupFacets.map((g) => `<button data-facet-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-muted underline">${esc(g.name.split(' ')[0])} <span class="tnum">${g.members.filter((m) => !m.children_key).length}</span></button>`).join('')}
-    <button data-facet-all class="cursor-pointer bg-transparent p-0 font-mono text-chrome-muted underline">all <span class="tnum">${leaf.length}</span></button>
-    <button data-facet-none class="cursor-pointer bg-transparent p-0 text-chrome-muted underline">none</button>
+    ${groupFacets.map((g) => `<button data-facet-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">${esc(g.name)} <span class="tnum text-chrome-muted">${g.count}</span></button>`).join('')}
+    <button data-facet-all class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">all <span class="tnum text-chrome-muted">${leaf.length}</span></button>
+    <button data-facet-none class="cursor-pointer bg-transparent p-0 text-chrome-ink underline">none</button>
+    ${capped ? `<span class="text-chrome-muted">· counts are of the <span class="tnum">${shown}</span> shown</span>` : ''}
+    ${hasTree ? `<span class="text-chrome-muted">· a tree: leaves only</span>` : ''}
   </div>`;
 }
 
 function wireSelection(out, { slug, analysisId, metric, data }) {
   const picks = () => [...out.querySelectorAll('[data-pick]:checked')];
   const footer = out.querySelector('#member-selection');
-  let facet = '';
   const project = state.projects.find((x) => x.slug === slug);
   const total = data.total || 0;
-  const runAt = state.enrichmentFacts?.[analysisId]?.last_run_at || data.run_at || '';
+  // The server's date, on the payload. The line is composed on the server so
+  // it cannot be forged; taking its date from the browser undid that.
+  const runAt = data.run_at || '';
+  // The facets ARE the selection and hand-picking refines it. So the facet is
+  // remembered with the set it selected, and a refinement is described --
+  // "high, plus 1 added by hand" -- rather than forgotten.
+  let facetBase = '';
+  let facetSet = null;      // Set of names the facet selected, or null for none
+  // A typed name wins until it is cleared. Touched is tracked, not inferred
+  // from the string -- the proposal starts with the display name too.
+  let touched = false;
+  let typed = '';
 
   const setFacet = (pred, label) => {
     out.querySelectorAll('[data-pick]').forEach((c) => { c.checked = pred(c); });
-    facet = label;
+    facetBase = label;
+    facetSet = label ? new Set(picks().map((c) => c.dataset.pick)) : null;
     render();
   };
   out.querySelector('[data-facet-all]')?.addEventListener('click', () => setFacet(() => true, ''));
@@ -3871,22 +3899,43 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
   out.querySelectorAll('[data-facet-detail]').forEach((b) => b.addEventListener('click', () =>
     setFacet((c) => c.dataset.detail === b.dataset.facetDetail, b.dataset.facetDetail)));
   out.querySelectorAll('[data-facet-group]').forEach((b) => b.addEventListener('click', () =>
-    setFacet((c) => c.dataset.group === b.dataset.facetGroup, b.dataset.facetGroup.split(' ')[0])));
-  out.querySelectorAll('[data-pick]').forEach((c) => c.addEventListener('change', () => { facet = ''; render(); }));
+    setFacet((c) => c.dataset.group === b.dataset.facetGroup, b.dataset.facetGroup)));
+  out.querySelectorAll('[data-pick]').forEach((c) => c.addEventListener('change', () => render()));
 
+  function facetLabel() {
+    if (!facetBase || !facetSet) return '';
+    const now = new Set(picks().map((c) => c.dataset.pick));
+    const added = [...now].filter((n) => !facetSet.has(n)).length;
+    const removed = [...facetSet].filter((n) => !now.has(n)).length;
+    return facetBase
+      + (added ? `, plus ${added} added by hand` : '')
+      + (removed ? `, less ${removed} removed by hand` : '');
+  }
+  // Mirrors members.singular(): only the last word, ies -> y, es after a
+  // sibilant, else drop the s. The server proposes the same name on save.
+  const singular = (noun) => {
+    const i = noun.lastIndexOf(' ');
+    const head = i >= 0 ? noun.slice(0, i + 1) : '';
+    let last = i >= 0 ? noun.slice(i + 1) : noun;
+    if (/ies$/.test(last) && last.length > 3) last = last.slice(0, -3) + 'y';
+    else if (/(ses|xes|ches|shes)$/.test(last)) last = last.slice(0, -2);
+    else if (/s$/.test(last) && !/ss$/.test(last)) last = last.slice(0, -1);
+    return head + last;
+  };
   function proposed(n) {
     const what = (metric || data.metric || 'members').replace(/_/g, ' ');
-    return `${project?.display_name || slug} — ${n} ${what}${facet ? `, ${facet}` : ''}`;
+    const f = facetLabel();
+    return `${project?.display_name || slug} — ${n} ${n === 1 ? singular(what) : what}${f ? `, ${f}` : ''}`;
   }
   function render() {
     const sel = picks();
     if (!sel.length) { footer.hidden = true; footer.innerHTML = ''; return; }
     footer.hidden = false;
-    const keep = footer.querySelector('#promote-name')?.value;
+    const facet = facetLabel();
     footer.innerHTML = `
       <div class="mb-[3px] text-caps text-chrome-ink"><span class="tnum">${sel.length}</span> selected${facet ? ` · ${esc(facet)}` : ''}
-        <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · ${esc(ago(runAt))}` : ''} · a snapshot, not a query</span></div>
-      <input id="promote-name" type="text" value="${esc(keep && !keep.startsWith(project?.display_name || slug) ? keep : proposed(sel.length))}"
+        <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · <span class="tnum">${esc(ago(runAt))}</span>` : ' · run date not recorded'} · a snapshot, not a query</span></div>
+      <input id="promote-name" type="text" value="${esc(touched && typed ? typed : proposed(sel.length))}"
         class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink">
       <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
         <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
@@ -3894,14 +3943,16 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
         <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
         <span id="promote-status" class="text-chrome-muted"></span>
       </div>`;
+    const nameEl = footer.querySelector('#promote-name');
+    nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
     footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
       const status = footer.querySelector('#promote-status');
       const members = picks().map((c) => c.dataset.pick);
       b.disabled = true; status.textContent = '…';
       try {
         const out2 = await promoteMembers(slug, analysisId, {
-          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet, runAt,
-          name: footer.querySelector('#promote-name').value.trim(),
+          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
+          name: nameEl.value.trim(),
         });
         // Say where it went, not "sent".
         const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
@@ -3944,13 +3995,14 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
       ${data.scope_honoured ? '' : `<span class="text-chrome-muted">· scope not applicable to this set</span>`}
     </div>
     ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
-    ${facetsHtml(groups)}
+    ${facetsHtml(groups, data)}
+    ${groups.length ? '' : `<div class="text-caps text-chrome-muted">Nothing listed — <span class="font-mono">${esc(data.source)}</span> holds no rows for this analysis on this resource.</div>`}
     <div class="flex flex-col gap-s1">
       ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
         <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
         <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
           ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
-            ${m.children_key ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0 accent-accent">`}
+            ${m.children_key ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0">`}
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
