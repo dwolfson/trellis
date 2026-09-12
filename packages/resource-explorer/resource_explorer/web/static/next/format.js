@@ -6,9 +6,22 @@
 
 /** "5d ago" / "3h ago" / "just now" — or "" when there is no timestamp,
  *  which is a real state and must not render as "now". */
+/** Milliseconds for a registry timestamp, or NaN. The registry writes
+ *  three spellings -- `...Z`, `...+00:00`, and NAIVE (`datetime.utcnow()`
+ *  with no zone) -- and Date.parse reads a naive ISO string as LOCAL time,
+ *  so a naive UTC stamp compared with a zoned one is off by the zone
+ *  offset in whichever direction the viewer sits. Every comparison and
+ *  every age goes through here; a naive stamp is UTC. */
+export function whenMs(iso) {
+  if (!iso) return NaN;
+  const s = String(iso);
+  const zoned = /(Z|[+-]\d\d:?\d\d)$/.test(s);
+  return Date.parse(zoned ? s : `${s}Z`);
+}
+
 export function ago(iso) {
   if (!iso) return '';
-  const then = Date.parse(iso);
+  const then = whenMs(iso);
   if (Number.isNaN(then)) return '';
   const secs = Math.max(0, (Date.now() - then) / 1000);
   if (secs < 90) return 'just now';
@@ -23,7 +36,7 @@ export function ago(iso) {
  *  this to decide staleness; `ago` is for showing it. */
 export function daysSince(iso) {
   if (!iso) return null;
-  const then = Date.parse(iso);
+  const then = whenMs(iso);
   if (Number.isNaN(then)) return null;
   return (Date.now() - then) / 86400000;
 }

@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago } from '/static/next/format.js';
+import { ago, whenMs } from '/static/next/format.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -363,7 +363,7 @@ function readEnvelope(entry, env) {
   for (const f of facts) {
     if (f.can_run && f.can_run.length) lines.canRun.push(...f.can_run);
     if (f.analysis_id) lines.sources.push(f.analysis_id);
-    if (f.last_run_at && f.last_run_at > lines.lastRun) lines.lastRun = f.last_run_at;
+    if (f.last_run_at && (!lines.lastRun || whenMs(f.last_run_at) > whenMs(lines.lastRun))) lines.lastRun = f.last_run_at;
   }
   lines.sources = [...new Set(lines.sources)];
   lines.canRun = [...new Set(lines.canRun)];
@@ -2795,7 +2795,7 @@ async function renderJournalEntries(slug) {
       data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
     ${entries.map((e) => `<div class="border-t border-rule py-s2">
       <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
-      <div class="text-provenance text-ink-muted">${esc(e.author)} · ${esc(ago(e.written_at))}${
+      <div class="text-provenance text-ink-muted">${esc(e.author)} · <span class="tnum">${esc(ago(e.written_at))}</span>${
         e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
     </div>`).join('')}`;
 }
@@ -4025,7 +4025,7 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
     const human = q.kind === 'human' ? (state.contextAnswers || {})[questionKey(q.question)] : null;
     const answerLine = human && human.answer
       ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${tnum(esc(human.answer))}
-           <span class="text-provenance text-ink-muted">· answered ${esc(ago(human.answered_at))}</span></p>`
+           <span class="text-provenance text-ink-muted">· answered <span class="tnum">${esc(ago(human.answered_at))}</span></span></p>`
       : q.kind === 'human'
         ? `<p class="mt-[2px] text-answer text-ink-muted">needs a person to answer — the analyses below inform it, they do not decide it</p>`
       : lines && lines.answer
@@ -4873,53 +4873,92 @@ function movedSince(field) {
   const moved = [];
   for (const [id, at] of Object.entries(field.evidence || {})) {
     const now = state.enrichmentFacts?.[id]?.last_run_at;
-    if (now && now > at) moved.push(id);
+    // Instants, not strings: `Z`, `+00:00` and naive stamps all occur, and
+    // a string compare between spellings fires or fails on the suffix.
+    if (now && whenMs(now) > whenMs(at)) moved.push(id);
   }
   return moved;
 }
 
-function fieldControlHtml(def, field) {
+function fieldControlHtml(def, field, kind = 'judgement') {
   const v = field?.value || '';
+  // Judgements are the larger set on purpose; the recorded facts sit a
+  // step down, at provenance size, so the split is visible, not narrated.
+  const size = kind === 'judgement' ? 'text-answer' : 'text-provenance';
   if (def.options) {
-    return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink">
+    return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
       <option value="">—</option>
       ${def.options.map((o) => `<option value="${o}" ${o === v ? 'selected' : ''}>${o}</option>`).join('')}
     </select>`;
   }
   return `<input data-field="${def.key}" type="text" value="${esc(v)}" placeholder="${esc(def.placeholder || '')}"
-    class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">`;
+    class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
 }
 
 function fieldRowHtml(def, kind) {
   const field = (state.enrichment || {})[def.key];
   const moved = field && kind === 'judgement' ? movedSince(field) : [];
-  const who = field?.author ? `${esc(field.author)}${field.interim ? ' · interim' : ''} · ${esc(ago(field.set_at))}` : '';
+  // Judgements carry an author; observations carry a source. The server
+  // stamps `author` on every field, so a source-only branch was dead code
+  // and a confirmed licence read as "alice · 2d ago" with its source stored
+  // and invisible. Both halves render now, in that order.
+  const when = field?.set_at ? `<span class="tnum">${esc(ago(field.set_at))}</span>` : '';
+  const who = field?.author
+    ? [kind === 'observation' && field.source ? `from ${esc(field.source)}` : '',
+       `${esc(field.author)}${field.interim ? ' · interim' : ''}`, when].filter(Boolean).join(' · ')
+    : '';
   const proposed = def.fromAnalysis && !field?.value ? proposedFrom(def.fromAnalysis) : null;
+  // "What we judge" is the larger of the two sets -- the split's whole
+  // argument -- so its labels are body size in ink, not caption size muted.
+  const labelCls = kind === 'judgement' ? 'text-question font-heading text-ink' : 'text-provenance text-ink-muted';
   return `<div class="grid grid-cols-[130px_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
-    <div class="text-caveat text-ink-muted">${esc(def.label)}</div>
+    <div class="${labelCls}">${esc(def.label)}</div>
     <div class="min-w-0">
-      <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field)}
+      <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field, kind)}
         <button type="button" data-save="${def.key}" data-kind="${kind}"
           class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button></div>
       <div class="text-provenance text-ink-muted">
         ${moved.length ? `<span class="text-state-warn">⚠ review — evidence moved: ${esc(moved.join(', '))}</span> · ` : ''}
-        ${who || (field?.source ? `from ${esc(field.source)}` : '')}
-        ${proposed ? `<span>from survey: <em>${esc(proposed.value)}</em> ·
+        ${who}
+        ${proposed ? `<span>from survey: <span class="text-ink">${esc(proposed.value)}</span> ·
           <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(proposed.value)}"
             class="cursor-pointer bg-transparent p-0 text-accent-ink underline">confirm</button></span>` : ''}
       </div>
+      ${def.key === 'owner' ? ownerNoteHtml(field) : ''}
     </div>
   </div>`;
 }
 
-/** A fact a survey already established, offered to confirm — not applied. */
+/** Owner candidates from contributor data are DEFERRED, and a deferred
+ *  affordance is marked, never omitted (the sub-tab rule, app.js above).
+ *  Until one is named, the investigator stands as interim owner -- offered
+ *  as a one-click act by the signed-in person, not inferred from a blank. */
+function ownerNoteHtml(field) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const offer = !field?.value && me
+    ? ` · <button type="button" data-owner-interim="${esc(me)}"
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">stand as interim owner</button>`
+    : '';
+  return `<div class="text-provenance text-ink-muted"><span class="border-b border-dashed border-current">owner candidates
+    from contributor data · not built in /next</span>${offer}</div>`;
+}
+
+/** A fact a survey already established, offered to confirm — not applied.
+ *  Gated on a CLASSIFIED licence: "No license detected on this repository."
+ *  is a measured finding too, and offering it to confirm would write that
+ *  sentence into the licence field. The tier finding's label says which. */
 function proposedFrom(analysisId) {
   const f = state.enrichmentFacts?.[analysisId];
   if (!f || f.state !== 'measured') return null;
+  const tier = (f.value?.findings || []).find((x) => x.check_name === 'license_risk_tier');
+  // `none` is both "no licence" and "nothing examined"; `unknown` is a
+  // licence that IS present and unclassified -- its name is still a fact.
+  if (!tier || !tier.label || String(tier.label) === 'none') return null;
   // The licence itself, not its risk tier: the finding's label is
   // "permissive" and its summary is "Apache License 2.0 — Permissive". The
   // part before the dash is the fact a person would confirm.
-  const raw = f.headline || (f.value?.findings || [])[0]?.summary || '';
+  const raw = tier.summary || f.headline || '';
+  if (!raw.includes(' — ')) return null;
   const value = String(raw).split(' — ')[0].trim();
   return value ? { value } : null;
 }
@@ -4935,11 +4974,12 @@ async function renderEnrichment(slug) {
   if (slug !== state.selectedSlug) return;
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   host.innerHTML = `
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalogue until you catalogue it (Curate).
       What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
     <div class="mb-s1 flex items-baseline gap-s2">
-      <span class="text-caps uppercase tracking-caps text-ink">What we judge</span>
+      <span class="font-heading text-question text-ink">What we judge</span>
       <span class="text-provenance text-ink-muted"><span class="tnum">${setJ}</span> of <span class="tnum">${JUDGEMENTS.length}</span> set · perishable</span>
     </div>
     ${JUDGEMENTS.map((d) => fieldRowHtml(d, 'judgement')).join('')}
@@ -4959,7 +4999,9 @@ async function renderEnrichment(slug) {
     try {
       const out = await saveEnrichmentField(slug, key, {
         value, kind, evidence: kind === 'judgement' ? evidenceSnapshot() : {},
-        interim: key === 'owner' && !value,
+        // Interim means "the investigator stands in", which is a person
+        // naming themself -- not a blank. A blank owner is no owner.
+        interim: key === 'owner' && !!value && value === me,
         source: kind === 'observation' ? 'user' : '',
       });
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
@@ -4967,6 +5009,19 @@ async function renderEnrichment(slug) {
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not saved: ${err.message}`;
+    }
+  }));
+  host.querySelectorAll('[data-owner-interim]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'recording…';
+    try {
+      const out = await saveEnrichmentField(slug, 'owner', {
+        value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
+      });
+      state.enrichment = { ...(state.enrichment || {}), owner: out.field };
+      renderEnrichment(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
     }
   }));
   host.querySelectorAll('[data-confirm]').forEach((b) => b.addEventListener('click', async () => {
@@ -4992,23 +5047,26 @@ async function renderEnrichment(slug) {
 function renderEnrichmentEvidence(slug) {
   const out = $('rail-evidence');
   if (!out) return;
+  // Rail state is a persisted preference; "new since you judged" written
+  // into a closed drawer is the perishability signal nobody sees.
+  if (!railIsOpen()) setRailOpen(true);
   const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
   const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
-      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence</span>
-      <span class="text-caps text-chrome-muted">material, not proposals</span>
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
+      <span class="text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span> · material, not proposals</span>
     </div>
     ${items.length ? items.map((f) => {
       const g = factGlyph(f.state);
       const seen = judged.some((j) => j.evidence?.[f.analysis_id]);
-      const fresh = judged.some((j) => j.evidence?.[f.analysis_id] && f.last_run_at > j.evidence[f.analysis_id]);
+      const fresh = judged.some((j) => j.evidence?.[f.analysis_id] && whenMs(f.last_run_at) > whenMs(j.evidence[f.analysis_id]));
       return `<div class="border-b border-chrome-line-soft py-[4px]">
         <div class="flex items-baseline gap-s2 text-subtab text-chrome-ink">
           <span class="${g.tone === 'text-state-ok' ? 'text-state-ok-on-dark' : g.tone === 'text-state-warn' ? 'text-state-warn-on-dark' : 'text-chrome-muted'}">${g.glyph}</span>
           <span class="min-w-0 flex-1">${tnum(esc(f.headline || f.state))}</span></div>
         <div class="pl-[20px] text-caps text-chrome-muted"><span class="font-mono">${esc(f.analysis_id)}</span>${
-          f.last_run_at ? ` · ${esc(ago(f.last_run_at))}` : ''}${
+          f.last_run_at ? ` · <span class="tnum">${esc(ago(f.last_run_at))}</span>` : ''}${
           fresh ? ` · <span class="text-accent-on-dark">new since you judged</span>` : seen ? '' : ''}</div>
       </div>`;
     }).join('') : `<div class="text-caps text-chrome-muted">No measurements to show yet.</div>`}
