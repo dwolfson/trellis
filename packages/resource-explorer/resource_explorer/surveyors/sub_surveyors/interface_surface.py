@@ -184,10 +184,7 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
         out: list[Annotation] = []
         try:
             slug = self.project.slug
-            with self.registry._conn() as conn:
-                paths = [r["file_path"] for r in conn.execute(
-                    "SELECT file_path FROM project_file_inventory WHERE project_slug = ? AND COALESCE(vendored, 0) = 0",
-                    (slug,)).fetchall()]
+            paths = self.registry.get_file_inventory(slug)   # own files only; the registry holds the filter
             deps = [d.get("dep_name") for d in (self.registry.query_dependencies(slug) or [])]
 
             if not paths and not deps:

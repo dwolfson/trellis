@@ -51,6 +51,7 @@ class MemberSet:
     groups: list = field(default_factory=list)
     note: str = ""
     source: str = ""              # what was read: a table or the findings
+    inventory: str = ""           # the short form: "6,423 files · 4,425 vendored"
 
     def to_dict(self) -> dict:
         return {
@@ -58,7 +59,7 @@ class MemberSet:
             "total": self.total, "scope": self.scope, "scope_honoured": self.scope_honoured,
             "groups": [{"name": g.name, "count": g.count, "members": g.members, "truncated": g.truncated}
                        for g in self.groups],
-            "note": self.note, "source": self.source,
+            "note": self.note, "source": self.source, "inventory": self.inventory,
         }
 
 
@@ -154,15 +155,30 @@ def _symbol_members(registry, slug, scope, limit) -> MemberSet:
     # 2026-09-11 still counts vendored code as its own until re-indexed, and
     # the inventory summary is how the rail says so rather than hiding it.
     inv = registry.file_inventory_summary(slug)
-    provenance = (f"{inv['own']:,} of {inv['total']:,} files are this repository's own; "
-                  f"{inv['vendored']:,} vendored and not counted." if inv["vendored"]
-                  else f"{nfiles} files. Indexed {inv['indexed_at'][:10] or 'unknown'}; an index before "
-                       "2026-09-11 counts vendored code as the repository's own until re-indexed.")
+    provenance = inventory_sentence(inv, nfiles)
     return MemberSet("api_structure", "symbol_count",
                      "symbols, by language and file" + ("" if scope == "all" else " — public only"),
                      int(total or 0), scope, True, groups,
                      note=f"{provenance} `public` is inferred from naming conventions, not declared; a maintainer's marking would be better.",
-                     source="project_code_symbols")
+                     source="project_code_symbols", inventory=inv.get("short", ""))
+
+
+def inventory_sentence(inv: dict, nfiles=None) -> str:
+    """The rail's sentence about the inventory, saying WHICH kind of
+    not-own. Vendored is a provenance claim (somebody else's code checked
+    in); generated is the repository's own build output. "4,425 vendored"
+    about dist/ was a wrong sentence with a defensible number."""
+    kinds = []
+    if inv.get("vendored"):
+        kinds.append(f"{inv['vendored']:,} vendored")
+    if inv.get("generated"):
+        kinds.append(f"{inv['generated']:,} generated")
+    if kinds:
+        return (f"{inv['own']:,} of {inv['total']:,} files are this repository's own; "
+                f"{' and '.join(kinds)}, not counted.")
+    n = inv.get("total") or nfiles or 0
+    return (f"{n:,} files. Indexed {(inv.get('indexed_at') or '')[:10] or 'unknown'}; an index before "
+            "2026-09-11 counts vendored code as the repository's own until re-indexed.")
 
 
 def _symbols_in_file(registry, slug, file_path, scope, limit) -> list[dict]:

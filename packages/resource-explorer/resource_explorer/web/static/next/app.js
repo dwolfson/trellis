@@ -3928,7 +3928,8 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
-      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}</span>
+      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}${
+        data.inventory ? ` · ${tnum(esc(data.inventory))}` : ''}</span>
       <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
     </div>
     <div class="mb-s2 text-caps text-chrome-muted">

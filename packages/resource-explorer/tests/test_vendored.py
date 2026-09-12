@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from resource_explorer.ingestion.vendored import VENDORED_DIRS, is_vendored, is_vendored_abs
+from resource_explorer.ingestion.vendored import (GENERATED, GENERATED_DIRS, OWN, SKIPPED_DIRS, VENDORED,
+                                                  VENDORED_DIRS, is_vendored, is_vendored_abs, provenance)
 from resource_explorer.registry import Project, ProjectRegistry
 
 
@@ -29,13 +30,63 @@ class TestTheRule:
 
     def test_the_line_census_reads_the_same_set(self):
         from resource_explorer.ingestion import line_census
-        assert line_census._EXCLUDED_DIRS is VENDORED_DIRS
+        assert line_census._EXCLUDED_DIRS is SKIPPED_DIRS
 
     def test_abs_form_is_relative_to_the_walk_root(self, tmp_path):
         (tmp_path / "node_modules").mkdir()
         f = tmp_path / "node_modules" / "x.js"; f.write_text("")
         assert is_vendored_abs(f, tmp_path)
         assert not is_vendored_abs(tmp_path / "x.js", tmp_path)
+
+    def test_a_path_outside_the_root_is_a_caller_bug_not_a_no(self, tmp_path):
+        """It failed open: the extra-docs PDF walk passed the clone root for
+        a directory outside it and every file came back "not vendored"."""
+        with pytest.raises(ValueError):
+            is_vendored_abs(tmp_path / "elsewhere" / "node_modules" / "x.js", tmp_path / "clone")
+
+
+class TestVendoredIsNotGenerated:
+    """Two claims, two sets (review, 2026-09-12): vendored is provenance --
+    somebody else's code checked in -- and generated is the repository's own
+    build output. Every walk skips both; the inventory records which."""
+
+    def test_the_sets_are_disjoint_and_together_are_what_walks_skip(self):
+        assert not (VENDORED_DIRS & GENERATED_DIRS)
+        assert SKIPPED_DIRS == VENDORED_DIRS | GENERATED_DIRS
+        assert "node_modules" in VENDORED_DIRS and "dist" in GENERATED_DIRS
+
+    def test_provenance_names_the_kind(self):
+        assert provenance("node_modules/x/y.js") == VENDORED
+        assert provenance("dist/bundle.js") == GENERATED
+        assert provenance("src/app.py") == OWN
+        assert provenance("vendor/lib/build/out.js") == VENDORED   # somebody else's build output is still theirs
+        assert provenance("build/vendor.js") == GENERATED           # a FILE named vendor under our build dir
+        assert is_vendored("dist/x") and is_vendored("vendor/x") and not is_vendored("src/x")
+
+    def test_the_summary_and_the_rail_say_which(self, db):
+        from resource_explorer.members import inventory_sentence
+        db.upsert_file_inventory("p", [("src/a.py", 1), ("node_modules/t/b.js", 1), ("node_modules/t/c.js", 1), ("dist/d.js", 1)])
+        inv = db.file_inventory_summary("p")
+        assert (inv["total"], inv["own"], inv["vendored"], inv["generated"]) == (4, 1, 2, 1)
+        assert inv["short"] == "4 files · 2 vendored · 1 generated"
+        assert inventory_sentence(inv) == "1 of 4 files are this repository's own; 2 vendored and 1 generated, not counted."
+        # the other branch: an inventory that predates the flag
+        assert inventory_sentence({"total": 9, "own": 9, "vendored": 0, "generated": 0, "indexed_at": "2026-09-01T00:00:00"}) == (
+            "9 files. Indexed 2026-09-01; an index before 2026-09-11 counts vendored code as the repository's own until re-indexed.")
+        # and the readers still see only own code
+        assert db.get_file_inventory("p") == ["src/a.py"]
+
+
+class TestFoldersAreJudgedByTheirOwnName:
+    """One `src/x/node_modules/y.js` marked all of `src` not worthy ·
+    vendored. A folder that contains vendored code is still ours."""
+
+    def test_a_folder_containing_vendored_code_is_not_itself_vendored(self):
+        from resource_explorer.surveyors.sub_surveyors import sub_resource_survey as srs
+        src = (srs.__file__ and open(srs.__file__, encoding="utf-8").read())
+        assert "vendored_tops" not in src
+        assert "if folder in VENDORED_DIRS" in src and "elif folder in GENERATED_DIRS" in src
+
 
 
 @pytest.fixture
@@ -49,8 +100,8 @@ class TestInventoryRecordsProvenance:
     def test_vendored_files_are_kept_marked_and_excluded_from_readers(self, db):
         db.upsert_file_inventory("p", [("src/a.py", 10), ("node_modules/t.js", 99), ("docs/x.md", 5)])
         # recorded, not dropped
-        assert db.file_inventory_summary("p") == {"total": 3, "own": 2, "vendored": 1,
-                                                  "indexed_at": db.file_inventory_summary("p")["indexed_at"]}
+        inv = db.file_inventory_summary("p")
+        assert (inv["total"], inv["own"], inv["vendored"], inv["generated"]) == (3, 2, 1, 0)
         # readers see the repository's own files by default
         assert sorted(db.get_file_inventory("p")) == ["docs/x.md", "src/a.py"]
 
@@ -275,3 +326,18 @@ class TestExtraDocsPaths:
         from resource_explorer.ingestion.pipeline import IngestionPipeline
         f = tmp_path / "README.md"; f.write_text("hi\n")
         assert IngestionPipeline._local_files_for_paths(object(), [("readme", f)], [".md"]) == [("readme", "hi\n")]
+
+
+class TestDocumentationCoverageSaysWhatItCounted:
+    """"40.4% of the public API documented" over a mostly-TypeScript repo
+    reads as a claim about the repository; only Python and Java are
+    measured for docstrings. The headline now says so (review, 2026-09-12)."""
+
+    def test_the_headline_names_the_languages_and_the_count(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _coverage_clause
+        c = {"label": "40.4%", "summary": "392 of 971 public symbols carry a docstring (40.4%), measured over java, python. Not counted for javascript — ..."}
+        assert _coverage_clause(c) == "40.4% of public Java and Python symbols carry a docstring (971 measured; other languages not measured)"
+
+    def test_an_older_summary_shape_falls_back_rather_than_inventing_a_scope(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _coverage_clause
+        assert _coverage_clause({"label": "12%", "summary": "something else"}) == "12% of the public API documented"

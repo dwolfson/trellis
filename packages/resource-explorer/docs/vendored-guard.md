@@ -89,3 +89,44 @@ introduced by #36 with no test on that branch — and the extra-path PDF walk
 checked vendored-ness against `local_root` when the extra directory lives
 outside it, so `is_vendored_abs` failed open and never excluded anything.
 Both now test against the extra directory itself.
+
+## Record: the orphan collections, dropped 2026-09-12
+
+The retired slug `egeria_workspaces` (re-registered as `egeria_workspaces_git`)
+left six pgvector collections that nothing searched: 12,515 chunks, 99% of
+the JavaScript ones vendored TypeScript. The correction in PR #36's body was
+that chat was **not** citing vendored code today — because these were the
+only vendored chunks, and they were orphaned. Keeping them kept alive the
+thing that was nearly a citation defect. Before the drop, every text column
+in the registry that names a slug or a collection (69 columns) was checked
+for a reference to the retired slug: none.
+
+```
+dropped at 2026-09-12T20:03:52+00:00
+egeria_workspaces_java_code                       28 chunks  -> dropped, exists now: False
+egeria_workspaces_javascript_code              5,064 chunks  -> dropped, exists now: False
+egeria_workspaces_markdown_docs                5,873 chunks  -> dropped, exists now: False
+egeria_workspaces_pdfs                         1,437 chunks  -> dropped, exists now: False
+egeria_workspaces_python_code                    103 chunks  -> dropped, exists now: False
+egeria_workspaces_release_notes                   10 chunks  -> dropped, exists now: False
+total                                         12,515
+remaining egeria_workspaces*: ['egeria_workspaces_git_java_code', 'egeria_workspaces_git_javascript_code', 'egeria_workspaces_git_markdown_docs', 'egeria_workspaces_git_pdfs', 'egeria_workspaces_git_python_code', 'egeria_workspaces_git_release_notes']
+```
+
+Dropped by the project owner's instruction, via `MultiCollectionStore.drop_collection`,
+recorded here rather than left to disappear quietly — the same instinct as
+the PR-body correction.
+
+## The split, 2026-09-12
+
+`VENDORED_DIRS` conflated generated with vendored — `dist`, `build`,
+`target`, `.git` sat beside `node_modules`. The rail then said *vendored
+and not counted* about a repository's own build output: a defensible number
+under a wrong sentence. The rule is now two sets, `VENDORED_DIRS` (a
+provenance claim) and `GENERATED_DIRS` (the repository's own output), with
+`SKIPPED_DIRS` as their union for every walk. The inventory column stores
+which (`1` vendored, `2` generated; rows indexed 2026-09-11 carry `1` for
+either until re-indexed), the summary reports both, and the rail says
+*4,425 vendored and 12 generated, not counted*. `is_vendored()` keeps its
+name and its meaning — "should a measurement skip this?" — and is true for
+both.

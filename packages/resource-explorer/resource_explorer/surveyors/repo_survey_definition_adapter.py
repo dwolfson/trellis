@@ -3587,8 +3587,27 @@ def _documentation_headline(registry, slug: str) -> dict | None:
     if quality:
         parts.append(f"{quality.get('label')} documentation artifacts")
     if coverage:
-        parts.append(f"{coverage.get('label')} of the public API documented")
+        parts.append(_coverage_clause(coverage))
     return {"label": ", ".join(parts), "status": "info"}
+
+
+def _coverage_clause(coverage: dict) -> str:
+    """"40.4% of the public API documented" over a repository that is mostly
+    TypeScript reads as a claim about the repository. The finding's summary
+    already says what was counted -- "392 of 971 public symbols carry a
+    docstring (40.4%), measured over java, python." -- and the headline
+    dropped it (review, 2026-09-12). Say the languages and the count, so the
+    number stops overclaiming; a summary in an older shape falls back to the
+    bare phrase rather than inventing a scope."""
+    import re
+    summary = coverage.get("summary") or ""
+    m = re.search(r"of ([\d,]+) public symbols .*?measured over ([^.]+)\.", summary)
+    if not m:
+        return f"{coverage.get('label')} of the public API documented"
+    langs = [x.strip() for x in m.group(2).split(",")]
+    names = " and ".join(l.capitalize() for l in langs)
+    return (f"{coverage.get('label')} of public {names} symbols carry a docstring "
+            f"({m.group(1)} measured; other languages not measured)")
 
 
 # The four GAP analyses. `noun` is chosen so the headline reads honestly when the

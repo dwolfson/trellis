@@ -357,12 +357,13 @@ class FossScorecardSurveyor(BaseSurveyor):
             # inventory containing no SBOM" are opposite answers, and a bare
             # empty list would make the first read as the second.
             paths = None
-            with self.registry._conn() as conn:
-                rows = conn.execute(
-                    "SELECT file_path FROM project_file_inventory "
-                    "WHERE project_slug = ? AND COALESCE(vendored, 0) = 0", (slug,)).fetchall()
+            # Through the registry, not a second copy of its filter: a
+            # reader that spells COALESCE(vendored, 0) = 0 itself is one
+            # more place to forget when the rule changes (#39 was about
+            # exactly that shape).
+            rows = self.registry.get_file_inventory(slug)
             if rows:
-                paths = [r["file_path"] for r in rows]
+                paths = list(rows)
 
             results = []
             for check in CHECKS:

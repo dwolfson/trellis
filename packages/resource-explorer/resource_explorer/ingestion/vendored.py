@@ -26,32 +26,63 @@ from __future__ import annotations
 
 from pathlib import Path
 
-#: Directory names that mean "not this repository's own code". Matched on
-#: any path segment, so `a/b/node_modules/c.js` is vendored and so is
-#: `node_modules/c.js`. Kept deliberately short and conventional; a repo
-#: with an unusual vendoring layout is a case for a per-repo rule, not for
-#: growing this list until it matches everything.
+#: Two sets, because they are two different claims (review, 2026-09-12).
+#: VENDORED is provenance -- somebody else's code checked in. GENERATED is
+#: this repository's own output -- build artefacts, caches, tool state --
+#: which is not source but is not somebody else's either. Every walk skips
+#: both; the inventory records WHICH, so the rail can say "vendored" about
+#: node_modules and "generated" about dist/ rather than calling a
+#: repository's own build output vendored. Matched on any path segment, so
+#: `a/b/node_modules/c.js` is vendored and so is `node_modules/c.js`. Kept
+#: deliberately short and conventional; a repo with an unusual layout is a
+#: case for a per-repo rule, not for growing these until they match
+#: everything.
 VENDORED_DIRS = frozenset({
-    ".git", ".hg", ".svn",
-    ".venv", "venv", "env", "virtualenv", "site-packages",
     "node_modules", "bower_components", "vendor",
+    ".venv", "venv", "env", "virtualenv", "site-packages",
+})
+GENERATED_DIRS = frozenset({
+    ".git", ".hg", ".svn",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     "dist", "build", "target", "out", ".next", ".nuxt",
     ".idea", ".vscode", ".gradle", ".eggs",
 })
+#: Everything a walk over "this repository's code" skips.
+SKIPPED_DIRS = VENDORED_DIRS | GENERATED_DIRS
+
+#: How the inventory column `vendored` spells the two. 0 is own code; a
+#: row indexed before 2026-09-12 carries 1 for either kind.
+OWN, VENDORED, GENERATED = 0, 1, 2
+
+
+def provenance(rel_path: str | Path) -> int:
+    """OWN, VENDORED or GENERATED for a path relative to the walk root. Only
+    DIRECTORIES on the path are tested, never the file's own name: a file
+    called `vendor` is not vendored and a file inside `vendor/` is. The
+    first matching segment from the root decides, so `vendor/build/x.js`
+    is vendored (somebody else's build output is still somebody else's)."""
+    for part in Path(rel_path).parts[:-1]:
+        if part in VENDORED_DIRS:
+            return VENDORED
+        if part in GENERATED_DIRS:
+            return GENERATED
+    return OWN
 
 
 def is_vendored(rel_path: str | Path) -> bool:
-    """True when any DIRECTORY on the path is a vendored name. The file's own
-    name is never tested, so a file called `vendor` is not vendored and a
-    file inside `vendor/` is."""
-    parts = Path(rel_path).parts
-    return any(p in VENDORED_DIRS for p in parts[:-1])
+    """True when the path is not this repository's own source -- vendored OR
+    generated. The name predates the split; every walk that asks "should I
+    measure this?" wants both answers to be no, so it keeps meaning that."""
+    return provenance(rel_path) != OWN
 
 
 def is_vendored_abs(path: Path, root: Path) -> bool:
-    """The same test for an absolute path under a walk root."""
+    """The same test for an absolute path under a walk root. A path that is
+    not under `root` is a caller bug -- the extra-docs PDF walk passed the
+    clone root for a directory outside it and this silently returned False
+    for every file -- so it raises rather than failing open."""
     try:
-        return is_vendored(path.relative_to(root))
-    except ValueError:
-        return False
+        rel = path.relative_to(root)
+    except ValueError as e:
+        raise ValueError(f"{path} is not under walk root {root}; pass the root the walk started from") from e
+    return is_vendored(rel)
