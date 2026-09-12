@@ -306,6 +306,12 @@ def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str
     }
 
 
+#: Keys that describe a run rather than carry a result. Kept identical to the
+#: set inside facts._has_content (tests/test_context_compile.py pins that the
+#: two functions agree on an envelope-only dict).
+_ENVELOPE_KEYS = frozenset({"_status", "surveyed_at", "detail", "scoped_to", "run_outcomes"})
+
+
 def _has_content(results) -> bool:
     """Whether a results dict says anything, as opposed to merely existing.
 
@@ -323,7 +329,21 @@ def _has_content(results) -> bool:
     """
     if not isinstance(results, dict):
         return bool(results)
-    for value in results.values():
+    for key, value in results.items():
+        # Envelope keys describe the RUN, not a result. `{"_status": {"state":
+        # "never_run", ...}}` is a reader saying "nothing yet" in the
+        # result_status.py convention, and until 2026-09-13 this function
+        # counted that dict as content -- so a never-run analysis whose reader
+        # follows the convention was PACKED as a section headed "_status:
+        # state=never_run" instead of judged as a gap. Found by #46's CI: a
+        # new envelope-returning reader (dependency_support) displaced
+        # documentation_coverage under the 12-section cap and a test lost the
+        # word "readme". Same key set as facts._has_content, which has
+        # exempted these since it was written; the docstring above, written
+        # when "the readers do not carry that distinction", is now wrong for
+        # architecture_diagram, architecture_recovery and dependency_support.
+        if key in _ENVELOPE_KEYS:
+            continue
         # Each type is decided exactly once. An earlier version put the
         # numeric test in an `elif ... and value` and then had a catch-all
         # `elif value is not None`, so a zero failed the numeric branch and was

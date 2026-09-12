@@ -428,6 +428,9 @@ class TestHasContent:
     @pytest.mark.parametrize("value,expected", [
         ({"by_ecosystem": {}, "total": 0}, False),
         ({"findings": []}, False),
+        ({"_status": {"state": "never_run", "outcome": "not_run"}}, False),   # envelope only
+        ({"_status": {"state": "measured"}, "surveyed_at": "2026-09-13", "detail": {"x": 1}}, False),
+        ({"_status": {"state": "measured"}, "total": 3}, True),                # envelope + a result
         ({}, False),
         ({"x": None}, False),
         ({"s": ""}, False),
@@ -1219,3 +1222,29 @@ class TestInstructionVariants:
     def test_an_unknown_variant_is_an_error_not_a_default(self):
         with pytest.raises(ValueError):
             compile_context(_registry({}), "x", "q", budget=6000, instructions_variant="nope")
+
+
+class TestAStatusOnlyEnvelopeIsAGapNotASection:
+    """#46's CI (2026-09-13): a never-run reader returning the result_status
+    envelope was packed as a section headed "_status: state=never_run",
+    displaced documentation_coverage under the section cap, and a test lost
+    "readme". Diagnosed by dwolfson-4c; the compiler's _has_content lacked the
+    envelope exemption facts._has_content has always had."""
+
+    def test_the_two_content_checks_agree_on_an_envelope(self):
+        from resource_explorer.context_compile import _has_content as compiler_has
+        from resource_explorer.facts import _has_content as facts_has
+        env = {"_status": {"state": "never_run", "outcome": "not_run", "reason": "no rows"}}
+        assert compiler_has(env) is False and facts_has(env) is False
+        real = {"_status": {"state": "measured"}, "total": 62}
+        assert compiler_has(real) is True and facts_has(real) is True
+
+    def test_a_never_run_reader_lands_in_gaps_not_packed(self, monkeypatch):
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP, "dependency_analysis",
+                            (lambda reg, slug: {"_status": {"state": "never_run", "outcome": "not_run"}}, None))
+        c = cc.compile_context(_registry({}), "x", "What dependencies does this require?", budget=6000)
+        assert "dependency_analysis" not in {p["key"] for p in c.manifest["packed"]}
+        assert "dependency_analysis" in {g["key"] for g in c.manifest["gaps"]}
+        assert "state=never_run" not in c.text
