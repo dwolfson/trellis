@@ -80,6 +80,45 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run7-20260911 — the catalog caveat beside the evidence (branch re/compiler-catalog-caveats, 2c9ca21)
+
+Same judge (v3), seed and repos as run 6; the compiler gained one thing: the matched question's
+catalog caveat (the Rationale/Source column) placed inside the section it qualifies, under the
+headline, or in the preamble when no packed section carries it. Run from a worktree of the branch
+before its PR merged; the results apply to the merged code unchanged.
+`data/experiments/compiled_vs_rag_run7/results.jsonl`. 312 rows, 0 errors, replayability 156 of
+156. The caveat sat inside a section in 92 compiles and in the preamble in 61.
+
+| metric (v3) | run 7 compiled | run 7 rag | run 6 compiled | run 6 rag |
+|---|---:|---:|---:|---:|
+| answers_question (0–2) | **1.12** | 0.30 | 0.99 | 0.31 |
+| supported_claims (mean) | **1.98** | 0.33 | 1.81 | 0.33 |
+| unsupported_claims (mean) | 0.28 | 0.79 | 0.35 | 0.81 |
+| misread_claims (mean) | 0.03 | 0.04 | 0.03 | 0.03 |
+| cites_evidence | 67% | 5% | 61% | 6% |
+| declines | 31% | 60% | 31% | 63% |
+
+Paired on all 156 questions (compiled, run 7 minus run 6): answers_question **+0.13** (32 up, 15
+down, 109 tied); supported_claims **+0.17** (37/25/94); unsupported −0.06 (15 up, 21 down, 120
+tied); cites +6 points; misread flat. This is the largest run-over-run movement in the series and
+the first where every metric moves the right way with more rows up than down on the answer
+score; it is still inside the protocol's ten-point noise band on answers_question and should be
+reproduced before it is quoted as an effect. The RAG control is flat, as it should be.
+
+**Where the caveat shows.** The secrets question, whose caveat says the scan "never claims 'no
+secrets' — only 'no matches against this ruleset, in this snapshot'", now answers with the
+limit in it: kafka "46 secret matches … using a vendored gitleaks ruleset over the HEAD snapshot
+of tracked files"; egeria "7 secret matches against the gitleaks ruleset". Those are the caveat's
+own words reaching the answer.
+
+**Where it does not.** "Are there outstanding CVEs?" on docling — headline "not checked: 0 of 61",
+caveat "DECLARED dependencies only, so a zero is 'none found in what we can see'" directly under
+it — still gets "Yes, there are outstanding CVEs." (run 6: "Yes"). kafka answers correctly with its
+coverage, egeria's real advisory gets a bare "Yes". Three compilers' worth of honest evidence has
+not moved an 8B model off a one-word answer to a yes/no question, which settles that the residual
+is the answering side. The two options stand: an instruction that a yes/no answer must carry the
+evidence line it rests on, or a larger answering model. Either is a one-variable run.
+
 ### run6-20260911 — coverage-first cve_scan headline (3f53e52); otherwise run 5 repeated
 
 Same compiler as run 5 except `_cve_scan_headline`'s wording; same judge (v3), same seed, text
