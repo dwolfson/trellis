@@ -310,10 +310,17 @@ repo_questions:
   - Select
   - Deploy
   answering:
-    kind: human
-    analysis_ids: []
+    kind: mixed
+    analysis_ids:
+    - dependency_support
     checks: []
-    note: N/A — human-supplied via Enrichment Context form - may also be a new Agent over RAG content.
+    note: Machine-informed, human-confirmed. dependency_support cross-references the dependency
+      list against a curated technology mapping (configdata/dependency_support.yaml) linked to
+      Egeria's technology types, and reports what each dependency INDICATES plus a ranked list of
+      names nobody has classified yet. Whether a technology is supported remains a human judgement
+      — the analysis is the starting point the project owner asked for (2026-09-11), not the answer.
+      Was `human` until 2026-09-12; the earlier note read —
+      N/A — human-supplied via Enrichment Context form - may also be a new Agent over RAG content.
       Cross-reference against Egeria's catalog of already-supported dependencies, validated/completed
       by human input — likely needs a per-dependency answer, not one blanket answer for the whole question.
   answering_mechanism: Egeria Queries + Human-Supplied
