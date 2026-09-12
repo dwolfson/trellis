@@ -1166,6 +1166,13 @@ class ProjectRegistry:
             # DBs created before the repo scope-narrowing funnel plan
             # (docs/repo-scope-narrowing-funnel.md), D5/D6 — '' = whole-
             # resource, matching every pre-existing row unchanged.
+            # Migration (2026-09-11): the inventory records whether a file is
+            # the repository's own or somebody else's library checked in.
+            # DEFAULT 0 = own, matching every pre-existing row until its
+            # project is re-indexed; readers exclude vendored rows by default.
+            inv_cols = self._get_table_columns(conn, "project_file_inventory")
+            if "vendored" not in inv_cols:
+                conn.execute("ALTER TABLE project_file_inventory ADD COLUMN vendored INTEGER DEFAULT 0")
             existing_findings_cols = self._get_table_columns(conn, "project_analysis_findings")
             if "scope_locator" not in existing_findings_cols:
                 conn.execute(
@@ -3938,6 +3945,8 @@ class ProjectRegistry:
         mode data (e.g. a purely local filesystem walk) simply omits it and
         every row gets file_mode='' (Assessment sub-resource cataloging
         plan, D9 Tier 1)."""
+        from resource_explorer.ingestion.vendored import is_vendored
+
         slug = self._normalize_slug(slug)
         indexed_at = datetime.utcnow().isoformat()
         modes_by_path = modes_by_path or {}
@@ -3947,20 +3956,37 @@ class ProjectRegistry:
             )
             conn.executemany(
                 "INSERT INTO project_file_inventory "
-                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode, vendored) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (slug, path, size, indexed_at, modes_by_path.get(path, ""))
+                    (slug, path, size, indexed_at, modes_by_path.get(path, ""), 1 if is_vendored(path) else 0)
                     for path, size in paths_with_sizes
                 ],
             )
+
+    def file_inventory_summary(self, slug: str) -> dict:
+        """{total, own, vendored} — the honest number beside the misleading
+        one. `vendored` is 0 for a project indexed before 2026-09-11 until it
+        is re-indexed, and `indexed_at` says when that was."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN COALESCE(vendored, 0) = 1 THEN 1 ELSE 0 END) AS vendored, "
+                "MAX(indexed_at) AS indexed_at "
+                "FROM project_file_inventory WHERE project_slug = ?", (slug,)
+            ).fetchone()
+        row = dict(row) if not isinstance(row, dict) else row
+        total = int(row.get("total") or 0)
+        vendored = int(row.get("vendored") or 0)
+        return {"total": total, "own": total - vendored, "vendored": vendored, "indexed_at": row.get("indexed_at") or ""}
 
     def get_file_inventory(self, slug: str) -> list[str]:
         """Return all file paths from the stored inventory for a project."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path FROM project_file_inventory WHERE project_slug = ?",
+                "SELECT file_path FROM project_file_inventory WHERE project_slug = ? AND COALESCE(vendored, 0) = 0",
                 (slug,),
             ).fetchall()
         return [r["file_path"] for r in rows]
@@ -3980,7 +4006,7 @@ class ProjectRegistry:
             placeholders = ",".join("?" * len(candidate_paths))
             rows = conn.execute(
                 f"SELECT file_path FROM project_file_inventory "  # noqa: S608
-                f"WHERE project_slug = ? AND file_path IN ({placeholders})",
+                f"WHERE project_slug = ? AND COALESCE(vendored, 0) = 0 AND file_path IN ({placeholders})",
                 (slug, *candidate_paths),
             ).fetchall()
         found = {r["file_path"] for r in rows}
@@ -4457,7 +4483,7 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
+    def get_file_inventory_with_sizes(self, slug: str, *, include_vendored: bool = False) -> list[dict]:
         """Return file paths, sizes, and git mode bits from the inventory for a project.
 
         Each dict has keys: ``file_path`` (str), ``file_size_bytes`` (int),
@@ -4467,8 +4493,9 @@ class ProjectRegistry:
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path, file_size_bytes, file_mode FROM project_file_inventory "
-                "WHERE project_slug = ?",
+                "SELECT file_path, file_size_bytes, file_mode, COALESCE(vendored, 0) AS vendored "
+                "FROM project_file_inventory WHERE project_slug = ?"
+                + ("" if include_vendored else " AND COALESCE(vendored, 0) = 0"),
                 (slug,),
             ).fetchall()
         return [
@@ -4476,6 +4503,7 @@ class ProjectRegistry:
                 "file_path": r["file_path"],
                 "file_size_bytes": r["file_size_bytes"] or 0,
                 "file_mode": r["file_mode"] or "",
+                "vendored": bool(r["vendored"]),
             }
             for r in rows
         ]

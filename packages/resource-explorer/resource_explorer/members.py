@@ -150,10 +150,18 @@ def _symbol_members(registry, slug, scope, limit) -> MemberSet:
     for lang, items in sorted(by_lang.items(), key=lambda kv: -sum(i["n"] for i in kv[1])):
         groups.append(Group(lang, sum(i["n"] for i in items), [
             {"name": f["file_path"], "count": f["n"], "children_key": f"file:{f['file_path']}"} for f in items], False))
+    # The honest number beside the misleading one: a project indexed before
+    # 2026-09-11 still counts vendored code as its own until re-indexed, and
+    # the inventory summary is how the rail says so rather than hiding it.
+    inv = registry.file_inventory_summary(slug)
+    provenance = (f"{inv['own']:,} of {inv['total']:,} files are this repository's own; "
+                  f"{inv['vendored']:,} vendored and not counted." if inv["vendored"]
+                  else f"{nfiles} files. Indexed {inv['indexed_at'][:10] or 'unknown'}; an index before "
+                       "2026-09-11 counts vendored code as the repository's own until re-indexed.")
     return MemberSet("api_structure", "symbol_count",
                      "symbols, by language and file" + ("" if scope == "all" else " — public only"),
                      int(total or 0), scope, True, groups,
-                     note=f"{nfiles} files. `public` is inferred from naming conventions, not declared; a maintainer's marking would be better.",
+                     note=f"{provenance} `public` is inferred from naming conventions, not declared; a maintainer's marking would be better.",
                      source="project_code_symbols")
 
 

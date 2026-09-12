@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from resource_explorer.configdata.collection_config import CollectionType
+from resource_explorer.ingestion.vendored import is_vendored, is_vendored_abs
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
 
@@ -449,7 +450,7 @@ class IngestionPipeline:
         file_count = 0
         line_count = 0
         for p in local_root.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or is_vendored_abs(p, local_root):
                 continue
             file_count += 1
             if p.suffix.lower() in self._TEXT_SUFFIXES:
@@ -538,7 +539,7 @@ class IngestionPipeline:
         limit_bytes = _MAX_PROFILE_SIZE_MB * 1_048_576
 
         for p in local_root.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or is_vendored_abs(p, local_root):
                 continue
             ext = p.suffix.lstrip(".").lower()
             if ext not in _DATA_EXTENSIONS:
@@ -592,6 +593,10 @@ class IngestionPipeline:
                 continue
             if p.suffix.lower() not in extensions:
                 continue
+            # Somebody else's library checked in is not this repository's
+            # code: not its symbols, not its chunks, not a citation.
+            if is_vendored_abs(p, local_root):
+                continue
             try:
                 content = p.read_text(encoding="utf-8", errors="ignore")
                 results.append((str(p.relative_to(local_root)), content))
@@ -619,7 +624,7 @@ class IngestionPipeline:
                         pass
             elif abs_path.is_dir():
                 for f in abs_path.rglob("*"):
-                    if not f.is_file() or f.suffix.lower() not in extensions:
+                    if not f.is_file() or f.suffix.lower() not in extensions or is_vendored_abs(f, local_root):
                         continue
                     try:
                         content = f.read_text(encoding="utf-8", errors="ignore")

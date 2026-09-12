@@ -717,7 +717,7 @@ class TestFileInventoryModes:
             sample_project.slug, [("a.py", 123)], modes_by_path={"a.py": "100644"},
         )
         rows = db.get_file_inventory_with_sizes(sample_project.slug)
-        assert rows == [{"file_path": "a.py", "file_size_bytes": 123, "file_mode": "100644"}]
+        assert rows == [{"file_path": "a.py", "file_size_bytes": 123, "file_mode": "100644", "vendored": False}]
 
     def test_repeated_upsert_replaces_not_appends(self, db, sample_project):
         db.add(sample_project)

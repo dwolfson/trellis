@@ -186,7 +186,7 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
             slug = self.project.slug
             with self.registry._conn() as conn:
                 paths = [r["file_path"] for r in conn.execute(
-                    "SELECT file_path FROM project_file_inventory WHERE project_slug = ?",
+                    "SELECT file_path FROM project_file_inventory WHERE project_slug = ? AND COALESCE(vendored, 0) = 0",
                     (slug,)).fetchall()]
             deps = [d.get("dep_name") for d in (self.registry.query_dependencies(slug) or [])]
 

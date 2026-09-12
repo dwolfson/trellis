@@ -360,7 +360,7 @@ class FossScorecardSurveyor(BaseSurveyor):
             with self.registry._conn() as conn:
                 rows = conn.execute(
                     "SELECT file_path FROM project_file_inventory "
-                    "WHERE project_slug = ?", (slug,)).fetchall()
+                    "WHERE project_slug = ? AND COALESCE(vendored, 0) = 0", (slug,)).fetchall()
             if rows:
                 paths = [r["file_path"] for r in rows]
 
