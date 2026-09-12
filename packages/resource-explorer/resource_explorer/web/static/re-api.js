@@ -428,6 +428,14 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
   return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
 };
 
+/** Promote a member-list selection. Three acts, one provenance line
+ *  composed on the server: work_list (I will deal with this), rfa (someone
+ *  must), journal (worth knowing). `members` is a snapshot of names, never
+ *  a query. 401 when anonymous. */
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote`,
+    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
+
 export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}) =>
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
     new URLSearchParams({ key, scope, limit: String(limit) })}`);
