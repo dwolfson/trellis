@@ -1,0 +1,233 @@
+# Dependency → technology mapping: the human knowledge that lets RE say
+# "this repo depends on PostgreSQL" when what it actually sees is `psycopg2`.
+#
+# WHY THIS FILE EXISTS — measured 2026-09-12 before anything was built. Against
+# the 2,894 distinct dependency names in the registry, Egeria's technology-type
+# catalog (213 entries) matched TWO by exact name. Token overlap matched 373 and
+# nearly all were wrong: `apache_atlas` → "Apache Airflow" via the word
+# "apache", `@babel/plugin-proposal-function-bind` → "Unity Catalog Function".
+# Dependency names and technology names live in different vocabularies, and no
+# string method bridges them — `psycopg2` ↔ PostgreSQL is knowledge, not
+# similarity. This file IS that knowledge, curated by people, and every match
+# it produces is high-precision because a person wrote the pattern.
+#
+# Decision (project owner, 2026-09-12): "A now, shaped to seed B" — keep the
+# mapping here in RE for now, but shape each entry so it can later be promoted
+# into an Egeria "Supported Technologies" collection without redesign. That is
+# what `egeria_technology_type` is for: it names the deployedImplementationType
+# valid value that already exists in Egeria (displayName, verified live), and
+# an entry with no such type yet is one Egeria will need created — Egeria
+# already types `pyegeria` as a SoftwareLibrary, which is the natural open
+# metadata type for a library dependency.
+#
+# What a match MEANS, and what it does not. A match says "this repository
+# depends on a library that indicates technology X". It does not say the
+# organisation supports X — that is the human corroboration the project owner
+# named ("still need corroboration and augmentation by people"). And an
+# UNMATCHED dependency means "no curated technology corresponds to this name",
+# never "unsupported": most of the 2,894 are unmatched simply because nobody
+# has classified them yet, and the ranked unmatched list is the queue for
+# doing so.
+#
+# Pattern syntax: matched against the dependency name lower-cased. A pattern
+# ending in `*` is a prefix; otherwise it is an exact match. Maven coordinates
+# match on the artifact after the colon as well as the full `group:artifact`.
+# `ecosystems` is optional and restricts a technology's patterns to those
+# ecosystems when a short name would otherwise collide (e.g. `pg`).
+
+technologies:
+
+  - name: PostgreSQL
+    egeria_technology_type: "PostgreSQL Server"
+    patterns:
+      - psycopg2
+      - psycopg2-binary
+      - psycopg
+      - psycopg-binary
+      - asyncpg
+      - pg8000
+      - postgresql
+      - org.postgresql:postgresql
+      - pgvector
+      - node-postgres
+      - github.com/lib/pq
+      - github.com/jackc/pgx*
+    # `pg` alone is deliberately NOT a pattern: two letters collide with too
+    # much. Add it under `ecosystems: [javascript]` if node-postgres users need
+    # it, which is the collision-scoping the field exists for.
+
+  - name: Apache Kafka
+    egeria_technology_type: "Apache Kafka Topic"
+    patterns:
+      - kafka-python
+      - confluent-kafka
+      - aiokafka
+      - kafkajs
+      - org.apache.kafka:*
+      - github.com/segmentio/kafka-go
+      - github.com/confluentinc/confluent-kafka-go*
+      - faust
+      - faust-streaming
+
+  - name: Apache Airflow
+    egeria_technology_type: "Apache Airflow Server"
+    patterns:
+      - apache-airflow
+      - apache-airflow-*
+      - airflow
+
+  - name: Apache Superset
+    egeria_technology_type: "Apache Superset"
+    patterns:
+      - apache-superset
+      - superset
+
+  - name: Docker
+    egeria_technology_type: "Docker Container"
+    patterns:
+      - docker
+      - docker-py
+      - dockerode
+      - github.com/docker/docker*
+      - com.github.docker-java:*
+      - testcontainers
+      - testcontainers-python
+      - org.testcontainers:*
+
+  - name: Kubernetes
+    egeria_technology_type: "Kubernetes Cluster"
+    patterns:
+      - kubernetes
+      - kubernetes-client
+      - "@kubernetes/client-node"
+      - io.kubernetes:*
+      - io.fabric8:kubernetes-client
+      - k8s.io/*
+      - sigs.k8s.io/*
+
+  - name: DuckDB
+    egeria_technology_type: "DuckDB Relational Database"
+    patterns:
+      - duckdb
+      - duckdb-engine
+      - org.duckdb:duckdb_jdbc
+
+  - name: Microsoft SQL Server
+    egeria_technology_type: "Microsoft SQL Server"
+    patterns:
+      - pymssql
+      - pyodbc
+      - mssql
+      - tedious
+      - com.microsoft.sqlserver:mssql-jdbc
+      - github.com/denisenkom/go-mssqldb
+      - github.com/microsoft/go-mssqldb
+
+  - name: Oracle Database
+    egeria_technology_type: "Oracle Database Server"
+    patterns:
+      - cx_oracle
+      - oracledb
+      - com.oracle.database.jdbc:*
+      - com.oracle.ojdbc:*
+      - github.com/godror/godror
+
+  - name: Marquez
+    egeria_technology_type: "Marquez Server"
+    patterns:
+      - marquez-python
+      - marquez-airflow
+      - io.github.marquezproject:*
+
+  - name: OpenLineage
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - openlineage-python
+      - openlineage-airflow
+      - openlineage-dbt
+      - openlineage-sql
+      - io.openlineage:*
+      - apache-airflow-providers-openlineage
+
+  - name: Unity Catalog
+    egeria_technology_type: "Unity Catalog Server"
+    patterns:
+      - unitycatalog
+      - unitycatalog-client
+      - io.unitycatalog:*
+
+  - name: Egeria (pyegeria)
+    egeria_technology_type: "pyegeria"
+    patterns:
+      - pyegeria
+      - org.odpi.egeria:*
+
+  - name: Jupyter
+    egeria_technology_type: "Jupyter Notebook File"
+    patterns:
+      - jupyter
+      - jupyterlab
+      - notebook
+      - ipykernel
+      - nbformat
+      - nbconvert
+      - papermill
+
+  - name: MLflow
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - mlflow
+      - mlflow-skinny
+      - org.mlflow:*
+
+  - name: Apache Spark
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - pyspark
+      - org.apache.spark:*
+      - delta-spark
+      - io.delta:*
+
+  - name: Redis
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - redis
+      - redis-py
+      - aioredis
+      - ioredis
+      - redis.clients:jedis
+      - io.lettuce:lettuce-core
+      - github.com/redis/go-redis*
+      - github.com/go-redis/redis*
+
+  - name: Elasticsearch / OpenSearch
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - elasticsearch
+      - elasticsearch-dsl
+      - opensearch-py
+      - "@elastic/elasticsearch"
+      - "@opensearch-project/opensearch"
+      - org.elasticsearch:*
+      - org.opensearch:*
+      - github.com/elastic/go-elasticsearch*
+
+  - name: MongoDB
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - pymongo
+      - motor
+      - mongoose
+      - mongodb
+      - org.mongodb:*
+      - go.mongodb.org/mongo-driver*
+
+  - name: RabbitMQ / AMQP
+    egeria_technology_type: null          # no Egeria type yet — promotion candidate
+    patterns:
+      - pika
+      - aio-pika
+      - amqplib
+      - com.rabbitmq:amqp-client
+      - github.com/rabbitmq/amqp091-go
+      - github.com/streadway/amqp

@@ -3215,6 +3215,10 @@ const _REPO_RESULTS_RENDER_MODE = {
   // picture is the shape that makes a card look populated while withholding
   // the only thing it exists to show. See _renderArchitectureDiagramResults.
   architecture_diagram: 'custom',
+  // Three states a reader must tell apart — matched technology, unmatched
+  // (unclassified, NOT unsupported), and Egeria-could-not-check — which no
+  // generic mode renders. See _renderDependencySupportResults.
+  dependency_support: 'custom',
   // Added 2026-08-23 — repo_manifest_parse's card (project_dependencies +
   // project_analysis_findings kind="ci_quality"/"repo_conventions", all in
   // one run). Same shape as code_symbol_extraction's own results.
@@ -3664,6 +3668,71 @@ function _renderManifestParseSub(label, sub) {
       ${st && st.hint ? `<div class="text-[11px] ${
         notEstablished ? 'text-amber-400/70' : 'text-slate-500'} leading-snug">${_esc(st.hint)}</div>` : ''}
     </div>`;
+}
+
+// _renderDependencySupportResults — kind-plugin for `dependency_support`.
+//
+// The question is "do we already support these dependencies?" and the honest
+// answer is a STARTING POINT, not a verdict — the project owner's words
+// (2026-09-11). So the card leads with what the mapping indicated, keeps the
+// Egeria check state visible at the top rather than buried per-row, and
+// renders the unmatched list as "not yet classified" with a count, because
+// most of them are simply names nobody has mapped — and calling them
+// "unsupported" would be the confident wrong answer this codebase exists to
+// avoid.
+function _renderDependencySupportResults(data) {
+  if (!data || (!data.technologies && !data.coverage)) return _renderEmptyResultState(data);
+  const cov = data.coverage || {};
+  const techs = data.technologies || [];
+  const check = cov.egeria_check || 'skipped';
+
+  if (cov.label === 'no-dependencies') {
+    return `<div class="text-xs text-amber-400/90 leading-snug">No dependency rows are held for this `
+      + `repository, so there is nothing to assess — run <span class="mono">manifest_parse</span> first.</div>`;
+  }
+
+  const checkBadge = check === 'checked'
+    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">Egeria checked</span>`
+    : check === 'unreachable'
+      ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300" title="${_esc(cov.egeria_check_detail || '')}">Egeria could not be checked</span>`
+      : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">Egeria not consulted</span>`;
+
+  const head = `<div class="flex items-center gap-2 mb-2">`
+    + `<div class="text-xs text-slate-300">${_esc(cov.summary || '')}</div>${checkBadge}</div>`
+    + `<div class="text-[10px] text-slate-500 leading-snug mb-2">${_esc(data.message || '')}</div>`;
+
+  const stateLabel = { present: 'in Egeria', absent: 'not in Egeria', unchecked: 'unchecked',
+                       'no-type': 'no Egeria type yet' };
+  const rows = techs.map(t => {
+    const st = t.egeria_state || 'unchecked';
+    const cls = st === 'present' ? 'text-emerald-300' : st === 'absent' ? 'text-amber-300' : 'text-slate-500';
+    const deps = (t.dependencies || []);
+    return `<div class="py-1 border-b border-slate-800/60">`
+      + `<div class="flex items-baseline gap-2"><span class="text-sm text-slate-200">${_esc(t.technology)}</span>`
+      + `<span class="text-[10px] ${cls}">${_esc(stateLabel[st] || st)}</span>`
+      + (t.egeria_technology_type ? `<span class="text-[10px] text-slate-600 mono">${_esc(t.egeria_technology_type)}</span>` : '')
+      + `</div>`
+      + `<div class="text-[11px] text-slate-400 mono">${_esc(deps.slice(0, 8).join(', '))}${deps.length > 8 ? ` +${deps.length - 8} more` : ''}</div>`
+      + `</div>`;
+  }).join('');
+  const techBlock = techs.length
+    ? `<div class="mb-2">${rows}</div>`
+    : `<div class="text-xs text-slate-500 italic mb-2">No dependency matched a curated technology.</div>`;
+
+  // Unmatched: null means "could not derive", which is different from "none".
+  let unmatchedBlock;
+  if (data.unmatched === null || data.unmatched === undefined) {
+    unmatchedBlock = `<div class="text-[11px] text-slate-500 italic">Unclassified list could not be derived.</div>`;
+  } else if (!data.unmatched.length) {
+    unmatchedBlock = `<div class="text-[11px] text-slate-500">Every dependency matched a curated technology.</div>`;
+  } else {
+    const u = data.unmatched;
+    unmatchedBlock = `<details><summary class="text-[11px] text-slate-400 cursor-pointer select-none">`
+      + `${u.length} dependenc${u.length === 1 ? 'y' : 'ies'} not yet classified — a curation queue, not a verdict</summary>`
+      + `<div class="text-[11px] text-slate-500 mono leading-relaxed mt-1" style="max-height:200px;overflow:auto">`
+      + `${_esc(u.join(', '))}</div></details>`;
+  }
+  return head + techBlock + unmatchedBlock;
 }
 
 function _renderManifestParseResults(data) {
@@ -4524,6 +4593,7 @@ const _CUSTOM_RESULT_RENDERERS = {
   manifest_parse: _renderManifestParseResults,
   architecture_recovery: _renderArchitectureRecoveryResults,
   architecture_diagram: _renderArchitectureDiagramResults,
+  dependency_support: _renderDependencySupportResults,
   dependency_analysis: _renderDependencyAnalysisResults,
   data_file_profiling: _renderDataFileProfilingResults,
   language_file_classification: _renderLanguageFileClassificationResults,

@@ -36,6 +36,7 @@ narrow (no native-survey side effect).
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable
@@ -80,6 +81,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     LanguageSurveyor,
     LicenseClassifierSurveyor,
     RepoClassificationSurveyor,
+    DependencySupportSurveyor,
     MaturitySurveyor,
     RagIngestionSurveyor,
     RepoConventionsSurveyor,
@@ -95,6 +97,11 @@ from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
 )
+
+# Three call sites below (the STEP-introspection warnings) used `log` without
+# ever defining it — latent NameErrors on their warning paths since they were
+# written. Defined here 2026-09-12 when a fourth use was added.
+log = logging.getLogger(__name__)
 
 
 # qualified_name of the "Repo Coarse Scout" Survey Definition (a
@@ -763,6 +770,18 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "from repo_created_at — a CHAOSS-informed Discovery-tier signal.",
         ["ClassificationAnnotation"],
         # Reads project_stats.repo_created_at — no fetch of its own.
+    ),
+    "repo_dependency_support": StepInfo(
+        "repo_dependency_support", DependencySupportSurveyor,
+        "Which curated technologies the dependency list indicates (psycopg2 -> "
+        "PostgreSQL, kafka-python -> Apache Kafka), and whether Egeria already "
+        "holds a technology type for each. A starting point for people, not an "
+        "answer: a match says the repo indicates X, not that X is supported, and "
+        "an unmatched dependency has simply not been classified yet.",
+        ["ClassificationAnnotation"],
+        # Reads project_dependencies (repo_manifest_parse's output) and the
+        # curated mapping; asks Egeria's technology-type catalog once. No fetch
+        # of the repository itself — Discovery tier under rule 17.
     ),
     "repo_conventions": StepInfo(
         "repo_conventions", RepoConventionsSurveyor,
@@ -1843,6 +1862,101 @@ def _ci_quality_trend(registry, slug: str) -> list[dict]:
         {"surveyed_at": ts, "value": counts["passing"], "total_checks": counts["total"]}
         for ts, counts in sorted(by_run.items())
     ]
+
+
+def _parse_detail_json(row: dict) -> dict:
+    """The findings table stores `detail_json` as text; a row from
+    query_findings() has no parsed `detail`. Tolerates both shapes so a reader
+    works whether it is handed a raw row or one something already parsed."""
+    d = row.get("detail")
+    if isinstance(d, dict):
+        return d
+    raw = row.get("detail_json")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _dependency_support_results(registry, slug: str) -> dict:
+    """Matched technologies + coverage from the persisted findings, and the
+    UNMATCHED list re-derived live from project_dependencies minus the mapping.
+
+    Unmatched is derived rather than stored on purpose (see the surveyor): the
+    mapping is curated and grows, so a name unmatched at survey time may match
+    today, and a stored list would report stale gaps. Deriving it also means the
+    same function serves the cross-repo "nobody has classified this yet" queue.
+    """
+    from resource_explorer.surveyors import dependency_support as ds
+
+    rows = registry.query_findings(slug, "dependency_support")
+    if not rows:
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No dependency-support assessment yet — run the analysis."}}
+
+    technologies, coverage = [], {}
+    for r in rows:
+        # query_findings hands back `detail_json` as a JSON string, not a
+        # parsed `detail` dict — the first version of this reader read the
+        # wrong key and every technology came back `unchecked` with no
+        # dependencies. Caught by running it against a real repo, not by tests.
+        detail = _parse_detail_json(r)
+        if r["check_name"] == "technology":
+            technologies.append({
+                "technology": r["label"], "summary": r["summary"],
+                "dependencies": detail.get("dependencies") or [],
+                "egeria_technology_type": detail.get("egeria_technology_type"),
+                "egeria_state": detail.get("egeria_state") or "unchecked",
+                "confidence": r.get("confidence"),
+            })
+        elif r["check_name"] == "coverage":
+            coverage = {**detail, "summary": r["summary"], "label": r["label"]}
+
+    # Re-derive unmatched against TODAY's mapping.
+    try:
+        deps = registry.query_dependencies(slug) or []
+        live = ds.assess(deps, egeria_types=None, egeria_check="not-consulted")
+        unmatched = live.unmatched
+    except Exception:  # a derivation failure must not hide the persisted rows
+        log.debug("dependency_support: could not re-derive unmatched for %s", slug, exc_info=True)
+        unmatched = None
+
+    return {
+        "technologies": technologies,
+        "coverage": coverage,
+        # None, not [], when it could not be derived — a reader must be able to
+        # tell "nothing unmatched" from "could not compute".
+        "unmatched": unmatched,
+        "unmatched_count": len(unmatched) if unmatched is not None else None,
+        "surveyed_at": rows[0].get("surveyed_at", "") if rows else "",
+        # What the reader is looking at. A human corroborates; this does not
+        # claim support.
+        "message": ("A starting point: each technology below is INDICATED by a "
+                    "dependency name via a curated mapping. Whether it is supported "
+                    "is a human judgement. Unmatched names have not been classified, "
+                    "which is not the same as unsupported."),
+    }
+
+
+def _dependency_support_headline(registry, slug: str) -> dict | None:
+    res = _dependency_support_results(registry, slug)
+    cov = res.get("coverage") or {}
+    if not cov and not res.get("technologies"):
+        return None
+    check = cov.get("egeria_check") or "skipped"
+    n_t = len(res.get("technologies") or [])
+    n_u = res.get("unmatched_count")
+    if cov.get("label") == "no-dependencies":
+        return {"label": "No dependency rows held — nothing to assess", "status": "warn"}
+    label = (f"{n_t} technolog{'y' if n_t == 1 else 'ies'} indicated"
+             + (f", {n_u} dependencies unclassified" if n_u is not None else ""))
+    if check == "unreachable":
+        label += " — Egeria could not be checked"
+        return {"label": label, "status": "warn"}
+    return {"label": label, "status": "info" if n_t else "warn"}
 
 
 def _maturity_results(registry, slug: str) -> dict:
@@ -4066,6 +4180,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # recovery's own evidence, and giving it a separate id is what lets a
     # question ask for "the picture" without also pulling in the full,
     # possibly 100+-component list that answers a different question.
+    "dependency_support": AnalysisKind(
+        "dependency_support", ["repo_dependency_support"],
+        results=AnalysisKindResults(
+            _dependency_support_results, None, "custom",
+            headline_reader=_dependency_support_headline,
+        ),
+    ),
     "architecture_diagram": AnalysisKind(
         # OWNS NO STEPS, and derives from architecture_recovery's two.
         #
@@ -4350,8 +4471,12 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
     ),
     "dependencies": SurveyResultDashboard(
         "dependencies", "Dependencies",
-        "Package dependencies per ecosystem.",
-        ["dependency_analysis"],
+        "Package dependencies per ecosystem, and which curated technologies they indicate — "
+        "a starting point for 'do we already support these?', not an answer.",
+        # dependency_support added 2026-09-12: it reads the same
+        # project_dependencies rows dependency_analysis reports on, so the two
+        # are one question asked twice — what is here, and what does it mean.
+        ["dependency_analysis", "dependency_support"],
     ),
     # interface_surface added 2026-08-31, same Backlog entry — "what can be
     # talked to, and whether the contract is written down" is the same

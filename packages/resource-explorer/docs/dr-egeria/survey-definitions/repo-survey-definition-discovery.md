@@ -112,6 +112,25 @@ What can be talked to, and whether the contract is written down — from the fil
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Repo Discovery Survey — Repo Dependency Support
+
+### Qualified Name
+GovActionProcessStep::RepoDiscoverySurvey::repo_dependency_support
+
+### Description
+Which curated technologies the dependency list indicates (psycopg2 -> PostgreSQL, kafka-python -> Apache Kafka), and whether Egeria already holds a technology type for each. A starting point for people, not an answer: a match says the repo indicates X, not that X is supported, and an unmatched dependency has simply not been classified yet.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_dependency_support |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Repo Discovery Survey
@@ -193,6 +212,18 @@ GovActionProcessStep::RepoDiscoverySurvey::repo_community_support
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoDiscoverySurvey::repo_interface_surface
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_interface_surface
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_dependency_support
 
 ### Guard
 Any
@@ -322,4 +353,13 @@ Repo Discovery Survey
 
 ### Scope Reference
 What are the public interfaces?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Do we already support these dependencies?
 
