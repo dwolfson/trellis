@@ -9,6 +9,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from resource_explorer.github.analyzer import RepoAnalyzer
+from resource_explorer.ingestion.vendored import is_vendored_abs
 from resource_explorer.registry import Project, ProjectRegistry
 
 
@@ -245,7 +246,7 @@ class OnboardingWizard:
                     found_exts.add(p.suffix.lower())
                 elif p.is_dir():
                     for f in p.rglob("*"):
-                        if f.is_file():
+                        if f.is_file() and not is_vendored_abs(f, p):
                             found_exts.add(f.suffix.lower())
             for name in candidates:
                 if name not in proposed_names:
