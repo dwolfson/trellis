@@ -587,3 +587,17 @@ export async function pollActivity(entryId, {
 /* ── Investigations ──────────────────────────────────────────────────── */
 
 export const listInvestigations = () => get('/api/investigations/');
+
+/* ── Curate ─────────────────────────────────────────────────────────────── */
+
+/** The review-and-commit plan: three columns, the manifest, the record. A
+ *  local read on the server, so it renders when Egeria is down. */
+export const getCuratePlan = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/curate/plan`);
+
+/** Catalogue →. Returns {curation, activity_id, run_id}; 401 anonymous,
+ *  409 outside the population. */
+export const curateCommit = (slug, selection) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/curate/commit`, selection);
+
+export const getCuration = (slug, id) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(id)}`);

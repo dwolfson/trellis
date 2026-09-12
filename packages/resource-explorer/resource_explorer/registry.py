@@ -2396,6 +2396,7 @@ class ProjectRegistry:
         "scouting_scan",
         "stage_batch",
         "discovery_expand",
+        "curate_commit",
     )
 
     #: States that occupy a user's one fairness slot.

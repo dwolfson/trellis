@@ -207,10 +207,16 @@ def _component_members(registry, slug, scope, limit) -> MemberSet:
                      source="architecture_materialized_components")
 
 
+#: Analyses whose findings are stored under a different kind than their
+#: id. The fallback reader looked up `sub_resource_survey` and found nothing
+#: (found 2026-09-12 from the Curate screen's "review 31 ›").
+_FINDINGS_KIND = {"sub_resource_survey": "repo_sub_resource_survey"}
+
+
 def _findings_members(registry, slug, analysis_id, scope, limit) -> MemberSet:
     """The fallback: a finding row per member, grouped by verdict, with the
     detail the display readers drop."""
-    rows = [_row(r) for r in registry.query_findings(slug, analysis_id)]
+    rows = [_row(r) for r in registry.query_findings(slug, _FINDINGS_KIND.get(analysis_id, analysis_id))]
     by_label: dict[str, list] = {}
     for r in rows:
         by_label.setdefault(str(r.get("label") or ""), []).append(r)
