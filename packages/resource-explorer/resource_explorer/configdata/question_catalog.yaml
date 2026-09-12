@@ -301,7 +301,7 @@ repo_questions:
   rationale: The declared dependency list, per ecosystem, from the manifests present.
   catalog_history: Answered by DependencySurveyor (Analysis tier).
 - question: Do we already support these dependencies?
-  stage: Analysis
+  stage: Analysis/Enrichment
   perspectives:
   - Security
   - Architecture
@@ -318,7 +318,9 @@ repo_questions:
       by human input — likely needs a per-dependency answer, not one blanket answer for the whole question.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Needs the org's own tech inventory — human-supplied cross-reference, not resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person.'
 - question: What deployment styles does this support?
   stage: Analysis
   perspectives:
@@ -342,7 +344,7 @@ repo_questions:
   catalog_history: Presence became a cheap Discovery-tier signal through repo_conventions' deployment_docker
     check; a content read of Dockerfiles and deployment docs remains a RAG-tier gap.
 - question: Do we know what the cost to run it is?
-  stage: Analysis
+  stage: Analysis/Enrichment
   perspectives:
   - Financial
   - Admin
@@ -356,7 +358,9 @@ repo_questions:
     note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
   answering_mechanism: Human-Supplied
   rationale: Human-supplied/derived — not resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person.'
 - question: Is there a validation / deployment test for it?
   stage: Analysis
   perspectives:
