@@ -93,31 +93,154 @@ class TestEveryWalkReadsTheRule:
     """PR #36 fixed the pipeline's walks and missed the survey step's
     duplicate of one of them, which put 20,654 vendored symbols back one
     survey later. A walk that measures the repository's content and does
-    not consult the rule is the shape of that regression, so this lists
-    every whole-tree walk and requires each file to read `is_vendored`,
-    or to be on the short allowlist of walks that have their own rule.
-    """
-    ALLOWED_WITHOUT = {
-        "ingestion/line_census.py",                 # reads VENDORED_DIRS by its old name
-        "ingestion/dependency_parser.py",           # excludes vendor/node_modules ad hoc per manifest
-        "surveyors/arch_recovery/spring_app.py",    # arch recovery has its own exclusion module
-        "surveyors/arch_recovery/exclusion.py",
-    }
+    not consult the rule is the shape of that regression.
 
-    def test_whole_tree_walks_consult_the_rule(self):
-        import re
+    The first version of this guard (#39) was two regex literals and a
+    file-level substring test: a file with any walk had to mention
+    `is_vendored` somewhere. Reviewed 2026-09-12, it missed exactly the
+    shape it was for -- a sixth bare walk appended to pipeline.py, which
+    already mentions the rule five times, was invisible -- and it never saw
+    `rglob("*.pdf")`, `glob("**/*")`, `Path.walk()`, or anything outside
+    surveyors/ and ingestion/ (cli/wizard.py walked a docs directory with
+    no rule). This version walks the AST of every module in the package:
+    each FUNCTION that contains a tree walk must reach the rule through its
+    own call graph, resolved transitively within the module. The allowlist
+    is per function and every entry must still name a walk that exists, so
+    a rename cannot retire an exemption silently. The recorded failures
+    that proved the detector fires are in docs/vendored-guard.md.
+    """
+    #: (module, function) -> why this walk may skip the rule.
+    ALLOWED_WITHOUT = {
+        ("ingestion/line_census.py", "census_tree"): "reads VENDORED_DIRS by its old name _EXCLUDED_DIRS (pinned by test_line_census_reads_the_same_rule)",
+        ("ingestion/dependency_parser.py", "parse"): "manifest walk; excludes vendor/node_modules ad hoc per manifest kind",
+        ("ingestion/pipeline.py", "_store_file_inventory"): "records EVERY file on purpose -- provenance, not exclusion; registry.upsert_file_inventory stamps the flag",
+        ("surveyors/arch_recovery/exclusion.py", "_walk"): "IS the arch-recovery exclusion rule",
+        ("surveyors/arch_recovery/spring_app.py", "_spring_entry_points"): "arch recovery has its own exclusion module",
+        ("surveyors/arch_recovery/spring_app.py", "_properties_files"): "arch recovery has its own exclusion module",
+        ("surveyors/arch_recovery/spring_app.py", "_style_references"): "arch recovery has its own exclusion module",
+        ("github/source_cache.py", "_entries"): "sums the on-disk size of cache entries; not a measurement of repository content",
+    }
+    RULE_NAMES = {"is_vendored", "is_vendored_abs", "VENDORED_DIRS"}
+
+    @staticmethod
+    def _is_tree_walk(call: "ast.Call") -> bool:
+        import ast
+        f = call.func
+        if not isinstance(f, ast.Attribute):
+            return False
+        if f.attr == "rglob":
+            return True
+        if f.attr == "walk":
+            # os.walk(root) and Path.walk(). tree-sitter's node.walk() /
+            # tree.walk() is a cursor over a syntax tree, not a filesystem:
+            # a no-argument .walk() on a receiver not named like a path is
+            # left alone. (`root.walk()` and `path.walk()` still count.)
+            if isinstance(f.value, ast.Name) and f.value.id == "os":
+                return True
+            if isinstance(f.value, ast.Name) and f.value.id == "ast":
+                return False        # Python's own ast.walk(node): a syntax tree
+            if call.args:
+                return True
+            recv = f.value.id if isinstance(f.value, ast.Name) else getattr(f.value, "attr", "")
+            return any(k in recv.lower() for k in ("path", "root", "dir"))
+        if f.attr == "glob":
+            return any(isinstance(a, ast.Constant) and isinstance(a.value, str) and "**" in a.value
+                       for a in call.args)
+        return False
+
+    @classmethod
+    def _functions_with_walks(cls, tree: "ast.Module"):
+        """Yield (name, walks, callees, reads_rule) per function. Nested
+        functions are folded into their enclosing function -- a walk inside
+        a local helper is the enclosing function's walk."""
+        import ast
+        for node in tree.body:
+            fns = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fns.append(node)
+            elif isinstance(node, ast.ClassDef):
+                fns.extend(n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+            for fn in fns:
+                walks, callees, reads_rule = [], set(), False
+                for sub in ast.walk(fn):
+                    if isinstance(sub, ast.Call):
+                        if cls._is_tree_walk(sub):
+                            walks.append(sub.lineno)
+                        f = sub.func
+                        if isinstance(f, ast.Name):
+                            callees.add(f.id)
+                        elif isinstance(f, ast.Attribute):
+                            callees.add(f.attr)     # self._helper(...) -> _helper
+                    if isinstance(sub, ast.Name) and sub.id in cls.RULE_NAMES:
+                        reads_rule = True
+                    if isinstance(sub, ast.Attribute) and sub.attr in cls.RULE_NAMES:
+                        reads_rule = True
+                yield fn.name, walks, callees, reads_rule
+
+    @classmethod
+    def _scan(cls, root):
+        """Return (offenders, seen): offenders are (module, function,
+        first_walk_line) that contain a walk and never reach the rule; seen
+        is every (module, function) that contains a walk."""
+        import ast
+        offenders, seen = [], set()
+        for f in sorted(root.rglob("*.py")):
+            rel = str(f.relative_to(root))
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+            fns = {name: (walks, callees, reads) for name, walks, callees, reads in cls._functions_with_walks(tree)}
+
+            def reaches(name, stack=()):
+                # transitive closure within the module: a function reaches
+                # the rule if it reads it or calls a same-module function that does
+                walks, callees, reads = fns[name]
+                if reads:
+                    return True
+                return any(c in fns and c not in stack and reaches(c, stack + (name,)) for c in callees)
+
+            for name, (walks, callees, reads) in fns.items():
+                if not walks:
+                    continue
+                seen.add((rel, name))
+                if (rel, name) in cls.ALLOWED_WITHOUT:
+                    continue
+                if not reaches(name):
+                    offenders.append((rel, name, walks[0]))
+        return offenders, seen
+
+    def test_every_walk_reaches_the_rule(self):
         from pathlib import Path
         root = Path(__file__).resolve().parents[1] / "resource_explorer"
-        offenders = []
-        for f in list((root / "surveyors").rglob("*.py")) + list((root / "ingestion").rglob("*.py")):
-            rel = str(f.relative_to(root))
-            src = f.read_text(encoding="utf-8")
-            walks = re.findall(r'\.rglob\("\*"\)|\.rglob\(\'\*\'\)|os\.walk\(', src)
-            if not walks or rel in self.ALLOWED_WITHOUT:
-                continue
-            if "is_vendored" not in src and "VENDORED_DIRS" not in src:
-                offenders.append(rel)
-        assert offenders == [], f"whole-tree walks that never consult the vendored rule: {offenders}"
+        offenders, seen = self._scan(root)
+        assert offenders == [], (
+            "functions that walk a tree and never reach the vendored rule "
+            "(module, function, line of first walk): " + ", ".join(f"{m}:{fn}@{ln}" for m, fn, ln in offenders))
+        stale = sorted(k for k in self.ALLOWED_WITHOUT if k not in seen)
+        assert stale == [], f"allowlist entries that no longer name a walk (renamed or removed?): {stale}"
+
+    def test_the_detector_fires_on_a_bare_walk_in_a_file_that_already_reads_the_rule(self, tmp_path):
+        """The shape the first guard missed. One module, one function that
+        reads the rule, one that walks without it."""
+        (tmp_path / "m.py").write_text(
+            "from resource_explorer.ingestion.vendored import is_vendored_abs\n"
+            "def good(root):\n"
+            "    return [p for p in root.rglob('*') if not is_vendored_abs(p, root)]\n"
+            "def helper(root):\n"
+            "    return [p for p in root.rglob('*.pdf') if not is_vendored_abs(p, root)]\n"
+            "def via_helper(root):\n"
+            "    return helper(root)\n"
+            "class C:\n"
+            "    def bad(self, root):\n"
+            "        return list(root.rglob('*.py'))\n"
+            "def bad_glob(root):\n"
+            "    return list(root.glob('**/*.md'))\n"
+            "def fine_glob(root):\n"
+            "    return list(root.glob('*.md'))\n"
+        )
+        offenders, seen = self._scan(tmp_path)
+        assert [(m, fn) for m, fn, _ in offenders] == [("m.py", "bad"), ("m.py", "bad_glob")]
+        # `seen` is "contains a walk": via_helper reaches the rule but has no
+        # walk of its own, and a single-level glob is not a tree walk
+        assert seen == {("m.py", "good"), ("m.py", "helper"), ("m.py", "bad"), ("m.py", "bad_glob")}
 
     def test_the_survey_symbol_walk_skips_vendored(self, tmp_path):
         from resource_explorer.surveyors.sub_surveyors.symbol_extraction import _local_files
@@ -125,3 +248,30 @@ class TestEveryWalkReadsTheRule:
         (tmp_path / "src" / "own.py").write_text("x = 1\n")
         (tmp_path / "node_modules" / "t" / "theirs.py").write_text("y = 2\n")
         assert [p for p, _ in _local_files(tmp_path, [".py"])] == ["src/own.py"]
+
+
+class TestExtraDocsPaths:
+    """`_local_files_for_paths` is the reader for extra_docs_paths. Its
+    directory branch referenced `local_root`, unbound in that method -- a
+    NameError on any extra docs DIRECTORY, shipped by #36 with no test on
+    the branch (found in the designer's 2026-09-12 review). An extra path
+    lives outside the clone, so vendored-ness is relative to the extra
+    directory itself, not to local_root; against local_root the check
+    failed open and excluded nothing."""
+
+    def test_a_directory_entry_is_read_and_its_vendored_files_skipped(self, tmp_path):
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+        docs = tmp_path / "elsewhere" / "docs"
+        (docs / "guide").mkdir(parents=True)
+        (docs / "node_modules" / "x").mkdir(parents=True)
+        (docs / "guide" / "a.md").write_text("# own\n")
+        (docs / "node_modules" / "x" / "b.md").write_text("# theirs\n")
+        (docs / "skip.txt").write_text("not a doc\n")
+        got = IngestionPipeline._local_files_for_paths(
+            object(), [("docs", docs)], [".md"])
+        assert got == [("docs/guide/a.md", "# own\n")]
+
+    def test_a_file_entry_still_works(self, tmp_path):
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+        f = tmp_path / "README.md"; f.write_text("hi\n")
+        assert IngestionPipeline._local_files_for_paths(object(), [("readme", f)], [".md"]) == [("readme", "hi\n")]

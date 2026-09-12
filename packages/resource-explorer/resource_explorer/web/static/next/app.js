@@ -2496,8 +2496,13 @@ function resourceHeaderHtml(slug) {
 }
 
 /** The dated verdict trail for one repo. */
-async function renderDispositionHistory(githubUrl) {
-  const el = $('disposition-history');
+// `target` names the element to fill. Two places show the trail -- the
+// header popover and the Disposition pane -- and they carried the same id
+// until 2026-09-12; getElementById found the popover's (earlier in the
+// DOM) once it had been opened, so the pane's trail never refreshed again
+// and the no-URL message landed in the popover instead of the pane.
+async function renderDispositionHistory(githubUrl, target = 'disposition-history') {
+  const el = $(target);
   if (!el) return;
   let rows;
   try {
@@ -2554,13 +2559,13 @@ function bindResourceHeader() {
               : 'border border-rule-strong text-ink hover:border-accent'}"
           >${esc(d)}</button>`).join('')}
       </div>
-      <div id="disposition-history" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
+      <div id="disposition-history-popover" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
     // The HISTORY, alongside the picker. It exists in the current UI and
     // nowhere in /next, and it is the only place the SEQUENCE of verdicts is
     // visible — which is the rationale trail, not decoration. A single
     // current value cannot say that something was abandoned and then picked
     // back up.
-    renderDispositionHistory(p.github_url);
+    renderDispositionHistory(p.github_url, 'disposition-history-popover');
     slot.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
       const value = b.dataset.disp;
       note('Saving…');
