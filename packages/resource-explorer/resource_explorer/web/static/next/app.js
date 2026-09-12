@@ -47,6 +47,9 @@ import {
   getBulkFacts,
   getMemberChildren,
   getMembers,
+  getCuratePlan,
+  curateCommit,
+  getCuration,
   promoteMembers,
   getQuestions,
   getScoutingOverview,
@@ -4788,11 +4791,14 @@ async function loadPane() {
   renderPerspectiveRow();
 
   const rows = $('question-rows');
+  // Curate's screen is a review-and-commit, not a question list; it renders
+  // whether or not the catalog has rows for the stage (today it has none).
+  if (state.stage === 'curate') renderCurate(slug);
   if (!state.questions.length) {
-    rows.innerHTML = `<div class="py-s3 text-answer text-ink">
+    rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
-    $('answered-count').textContent = `0 questions · ${stageLabel()}`;
+    $('answered-count').textContent = state.stage === 'curate' ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;
   }
 
@@ -5111,6 +5117,181 @@ function renderEnrichmentEvidence(slug) {
       </div>`;
     }).join('') : `<div class="text-caps text-chrome-muted">No measurements to show yet.</div>`}
     <div class="mt-s2 text-caps text-chrome-muted">Material to read, not answers to accept. No "apply suggestion".</div>`;
+}
+
+
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Curate — review and commit
+ *
+ * One decision, one screen, one commit — and the commit has consequences in
+ * two directions, so the screen's whole job is to show both before the
+ * press. Three columns answer one question, "what should the catalogue know
+ * about this?": what it IS, what it HOLDS, what it is MADE OF. Then how it
+ * relates, then the manifest of what gets written. Almost everything on it
+ * was decided earlier; this is where it is seen assembled.
+ *
+ * Rules held (Enrichment and Curate Wireframes; Repo Handoff item 6):
+ * - Candidates with evidence, never auto-applied: every row names its
+ *   analysis, its state, and opens its members. "Infrastructure Asset? 15
+ *   Dockerfiles", with the question mark.
+ * - Testimony is copied, measurements are linked, unresolved things travel.
+ * - Only worthy things get curated: the population is `tracking` or `using`,
+ *   and the pane says so rather than hiding the resource or the button.
+ * - The commit is asynchronous and can fail elsewhere: the record shows each
+ *   step as it lands, and a failed step is a failed step, not a lost act.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+// `pick` marks the one column whose rows are confirmed one by one; the
+// others are counts whose members are reviewed, and the contained set is
+// taken whole (the checkbox under the manifest) -- the wireframe's shape.
+const CURATE_COLUMNS = [
+  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalogue', pick: true },
+  { key: 'what_it_holds', title: "what's in it",    sub: 'each becomes its own asset, related to this one' },
+  { key: 'made_of',       title: "what it's made of", sub: 'components, with ports and wires derived — review stays on Architecture verdicts' },
+  { key: 'relates',       title: 'how it relates',  sub: '' },
+];
+
+function curateRowHtml(r, selected, pick) {
+  const g = factGlyph(r.state);
+  const mark = pick && r.candidate
+    ? `<input type="checkbox" data-curate-pick="${esc(r.kind)}" ${selected ? 'checked' : ''}
+         class="mt-[3px] shrink-0 cursor-pointer">`
+    : `<span class="w-[13px] shrink-0 text-center ${r.candidate ? 'text-ink' : 'text-ink-muted'}">${r.candidate ? '✓' : '·'}</span>`;
+  const members = r.members?.analysis_id
+    ? ` · <button type="button" data-curate-members="${esc(r.members.analysis_id)}" data-metric="${esc(r.members.metric || '')}"
+          class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${r.count != null ? `review ${tnum(String(r.count))}` : 'members'} ›</button>`
+    : '';
+  return `<div class="flex items-start gap-s2 border-b border-rule py-s2">
+    ${mark}
+    <div class="min-w-0 flex-1">
+      <div class="text-answer text-ink">${tnum(esc(r.label))}</div>
+      <div class="text-provenance text-ink-muted">
+        <span class="${g.tone}">${g.glyph}</span> <span class="font-mono">${esc(r.source)}</span>
+        ${r.evidence ? ` · ${esc(r.evidence)}` : ''}${members}</div>
+    </div>
+  </div>`;
+}
+
+function curateWritesHtml(plan, picks, subCount) {
+  const w = plan.writes || {};
+  const cls = w.classifications || [];
+  const lines = [];
+  lines.push(`<span class="tnum">${picks.length}</span> entit${picks.length === 1 ? 'y' : 'ies'}${picks.length ? ` · ${picks.map(esc).join(', ')}` : ''}`);
+  lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} (sub-resources)`);
+  lines.push(cls.length
+    ? `<span class="tnum">${cls.length}</span> authored classification${cls.length === 1 ? '' : 's'} · ${cls.map((c) =>
+        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
+    : `no authored classifications — nothing set on the Enrichment pane yet`);
+  lines.push(w.owner?.value
+    ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
+    : `Owner · the person who catalogues, as interim`);
+  lines.push(w.licence ? `Licence · ${esc(w.licence)}` : `Licence · not confirmed on the Enrichment pane`);
+  lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
+    w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>` : ''}${
+    w.catalogued ? ` · <span class="font-mono">${esc(String(w.asset_guid).slice(0, 8))}…</span> is the asset` : ' · no asset yet'}`);
+  return lines.map((l) => `<div class="text-caveat text-ink">${l}</div>`).join('');
+}
+
+function curateRecordHtml(rec) {
+  if (!rec) return '';
+  const tone = { done: 'text-state-ok', failed: 'text-state-warn', running: 'text-accent-ink', skipped: 'text-ink-muted', pending: 'text-ink-muted' };
+  const glyph = { done: '✓', failed: '✗', running: '◐', skipped: '○', pending: '○' };
+  return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
+    <div class="text-provenance text-ink-muted">catalogued by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
+      · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
+    ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
+      <span class="${tone[st.state] || ''}">${glyph[st.state] || '·'}</span>
+      <span class="font-mono text-ink">${esc(st.name)}</span>
+      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></div>`).join('')}
+  </div>`;
+}
+
+async function renderCurate(slug) {
+  const host = $('enrichment-form');
+  if (!host) return;
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
+  let plan;
+  try {
+    plan = await getCuratePlan(slug);
+  } catch (err) {
+    host.innerHTML = `<div class="text-answer text-accent-ink">The plan could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;
+  state.curate = state.curate || {};
+  const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
+  const subs = plan.what_it_holds.find((r) => r.kind === 'SubResource');
+  const subLocators = subs?.detail?.worthy || [];
+  const latest = (plan.commits || [])[0];
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+
+  const draw = () => {
+    host.innerHTML = `
+      <div class="mb-s2 text-caveat text-ink-muted">
+        <span class="text-ink">${esc(plan.technology_type)}</span> · disposition <span class="text-ink">${esc(plan.disposition)}</span>${
+          plan.last_surveyed_at ? ` · surveyed <span class="tnum">${esc(ago(plan.last_surveyed_at))}</span>` : ' · never surveyed'}
+      </div>
+      ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
+        disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
+        sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
+      ${CURATE_COLUMNS.map((c) => `
+        <div class="mb-s1 mt-s3 flex items-baseline gap-s2">
+          <span class="font-heading text-question text-ink">${esc(c.title)}</span>
+          ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
+          ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
+        </div>
+        ${(plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
+      <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
+        <span class="font-heading text-question text-ink">what gets written</span>
+        <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
+      </div>
+      ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
+      <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
+        <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
+      <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
+      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloguing, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
+      <div class="mt-s3 flex items-baseline gap-s3">
+        <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
+          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalogue →</button>
+        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
+      </div>
+      ${curateRecordHtml(latest)}`;
+
+    host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
+      if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
+      state.curate.picks = [...picks]; draw();
+    }));
+    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); });
+    host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
+      openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
+    }));
+    host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Cataloguing…';
+      try {
+        const out = await curateCommit(slug, {
+          confirm: [...picks], sub_resources: state.curate.subs === false ? [] : subLocators, data_files: false,
+        });
+        plan.commits = [out.curation, ...(plan.commits || [])];
+        draw();
+        await pollActivity(out.activity_id, { onTick: async () => {
+          try {
+            const rec = await getCuration(slug, out.curation.id);
+            plan.commits[0] = rec;
+            const slot = host.querySelector('[data-curate-record]');
+            if (slot) slot.outerHTML = curateRecordHtml(rec);
+          } catch { /* the next tick will */ }
+        } });
+        plan.commits[0] = await getCuration(slug, out.curation.id);
+        draw();
+      } catch (err) {
+        b.disabled = false; b.textContent = 'Catalogue →';
+        const why = err.status === 401 ? 'sign in to catalogue' : err.status === 409 ? err.message : `not catalogued: ${err.message}`;
+        host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
+      }
+    });
+  };
+  draw();
 }
 
 function rowKey(i) { return `qrow-${i}`; }

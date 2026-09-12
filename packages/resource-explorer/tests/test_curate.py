@@ -248,3 +248,17 @@ class TestTheDistributionParser:
         assert py["detail"]["scripts"] == ["hey"] and py["detail"]["packages"] == ["pyegeria"]
         assert found["javascript:@odpi/ui"]["label"] == "declared"
         assert "1 command-line entry point(s): hey" in py["summary"]
+
+
+class TestTheMembersBehindTheCounts:
+    """Every count on the Curate screen is a link to its members (the design:
+    "you cannot confirm ninety contained datasets without reading them").
+    The sub-resource count opened an empty rail because the findings are
+    stored as `repo_sub_resource_survey`, not `sub_resource_survey`."""
+
+    def test_the_sub_resource_count_opens_its_members(self, registry):
+        _seed(registry)
+        from resource_explorer.members import members_for
+        ms = members_for(registry, "p", "sub_resource_survey", scope="all")
+        assert ms.total == 3
+        assert {g.name: g.count for g in ms.groups} == {"worthy": 2, "not_worthy": 1}
