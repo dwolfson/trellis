@@ -81,7 +81,7 @@ _LANGUAGE_BY_SUFFIX: dict[str, tuple[str, str]] = {
 #: or `node_modules/` would inflate exactly the same way — and "how much code
 #: is there" answered with somebody else's library is a wrong answer, not a
 #: generous one.
-from resource_explorer.ingestion.vendored import VENDORED_DIRS as _EXCLUDED_DIRS  # noqa: E402 — one rule, shared since 2026-09-11
+from resource_explorer.ingestion.vendored import SKIPPED_DIRS as _EXCLUDED_DIRS  # noqa: E402 — one rule, shared since 2026-09-11
 
 
 def _is_excluded(path: Path, root: Path) -> bool:

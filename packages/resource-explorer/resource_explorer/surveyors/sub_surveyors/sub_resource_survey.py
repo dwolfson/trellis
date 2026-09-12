@@ -24,6 +24,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.ingestion.vendored import GENERATED_DIRS, VENDORED_DIRS
 from resource_explorer.step_outcome import from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
@@ -255,23 +256,27 @@ class SubResourceSurveyor(BaseSurveyor):
 
         # Depth-1 folders.
         folder_counts: dict[str, int] = {}
-        vendored_tops: set[str] = set()
         for entry in inventory:
             path = entry["file_path"].replace("\\", "/")
             if "/" not in path:
                 continue
             top = path.split("/", 1)[0]
             folder_counts[top] = folder_counts.get(top, 0) + 1
-            if entry.get("vendored"):
-                vendored_tops.add(top)
 
         folder_entries: dict[str, dict] = {}
         for folder, count in sorted(folder_counts.items()):
-            if folder in vendored_tops:
+            # By the folder's own NAME. The first version marked a top folder
+            # vendored when ANY file under it was -- one src/x/node_modules/
+            # y.js made all of src/ "not worthy · vendored" (review,
+            # 2026-09-12). A folder that CONTAINS vendored code is still the
+            # repository's own folder.
+            if folder in VENDORED_DIRS:
                 # Somebody else's library checked in. Listed, and said why —
                 # a promotion candidate this is not, but a fact about the
                 # repository it is.
                 worthy, reason = False, "vendored"
+            elif folder in GENERATED_DIRS:
+                worthy, reason = False, "generated"
             elif count < _FOLDER_MIN_FILES:
                 worthy, reason = False, "too_small"
             elif count > _FOLDER_MAX_FILES:

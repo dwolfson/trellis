@@ -3945,7 +3945,7 @@ class ProjectRegistry:
         mode data (e.g. a purely local filesystem walk) simply omits it and
         every row gets file_mode='' (Assessment sub-resource cataloging
         plan, D9 Tier 1)."""
-        from resource_explorer.ingestion.vendored import is_vendored
+        from resource_explorer.ingestion.vendored import provenance
 
         slug = self._normalize_slug(slug)
         indexed_at = datetime.utcnow().isoformat()
@@ -3959,27 +3959,40 @@ class ProjectRegistry:
                 "(project_slug, file_path, file_size_bytes, indexed_at, file_mode, vendored) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (slug, path, size, indexed_at, modes_by_path.get(path, ""), 1 if is_vendored(path) else 0)
+                    (slug, path, size, indexed_at, modes_by_path.get(path, ""), provenance(path))
                     for path, size in paths_with_sizes
                 ],
             )
 
     def file_inventory_summary(self, slug: str) -> dict:
-        """{total, own, vendored} — the honest number beside the misleading
-        one. `vendored` is 0 for a project indexed before 2026-09-11 until it
-        is re-indexed, and `indexed_at` says when that was."""
+        """{total, own, vendored, generated, short} — the honest number beside
+        the misleading one, and WHICH kind of not-own: vendored is a
+        provenance claim, generated is the repository's own build output.
+        Both are 0 for a project indexed before 2026-09-11 until it is
+        re-indexed; one indexed between then and 2026-09-12 reports both
+        kinds as vendored. `indexed_at` says when."""
+        from resource_explorer.ingestion.vendored import GENERATED, VENDORED
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS total, "
-                "SUM(CASE WHEN COALESCE(vendored, 0) = 1 THEN 1 ELSE 0 END) AS vendored, "
+                f"SUM(CASE WHEN COALESCE(vendored, 0) = {VENDORED} THEN 1 ELSE 0 END) AS vendored, "
+                f"SUM(CASE WHEN COALESCE(vendored, 0) = {GENERATED} THEN 1 ELSE 0 END) AS generated, "
                 "MAX(indexed_at) AS indexed_at "
                 "FROM project_file_inventory WHERE project_slug = ?", (slug,)
             ).fetchone()
         row = dict(row) if not isinstance(row, dict) else row
         total = int(row.get("total") or 0)
         vendored = int(row.get("vendored") or 0)
-        return {"total": total, "own": total - vendored, "vendored": vendored, "indexed_at": row.get("indexed_at") or ""}
+        generated = int(row.get("generated") or 0)
+        own = total - vendored - generated
+        parts = [f"{total:,} files"]
+        if vendored:
+            parts.append(f"{vendored:,} vendored")
+        if generated:
+            parts.append(f"{generated:,} generated")
+        return {"total": total, "own": own, "vendored": vendored, "generated": generated,
+                "short": " · ".join(parts), "indexed_at": row.get("indexed_at") or ""}
 
     def get_file_inventory(self, slug: str) -> list[str]:
         """Return all file paths from the stored inventory for a project."""
