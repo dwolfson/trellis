@@ -92,8 +92,8 @@ def test_promised_fields_reach_a_reader(registry, kind, checks):
     seen = 0
     for p in registry.list_all():
         result = reader(registry, p.slug)
-        if result.get("state"):
-            continue                       # never run for this resource
+        if result.get("_status"):
+            continue                       # never run (or nothing found) for this resource
         items = result.get(list_key, []) if list_key else [result]
         for item in items:
             seen += 1

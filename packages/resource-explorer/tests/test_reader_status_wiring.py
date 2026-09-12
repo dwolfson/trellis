@@ -204,3 +204,68 @@ class TestLiveReadRequiresAnAbsenceGate:
             f"rather than surveyed_at, which discards the 'ran but could not "
             f"read the repo' outcome."
         )
+
+
+class TestSynthesisingReadersUseTheEnvelope:
+    """`_architecture_summary_results` and `_architecture_doc_lens_results`
+    said "nothing yet" as top-level `{"state": ..., "message": ...}` — the
+    pre-result_status shape. Neither facts._has_content nor
+    context_compile._has_content exempts those keys, so for a repo nobody had
+    surveyed the compiler packed a section headed "state: never_run" and the
+    fact layer called it measured. Found by the compiler session on 2026-09-12
+    while checking what #50's section cap was counting.
+
+    Checked by calling the readers on a stub registry, so the assertion is
+    about the shape they return and not about what Postgres holds today.
+    """
+
+    class _Empty:
+        def query_findings(self, *a, **k):
+            return []
+
+        def query_finding_scopes(self, *a, **k):
+            return []
+
+    class _LensRanAndNamedNothing(_Empty):
+        def query_findings(self, slug, kind, scope=None):
+            if kind == "architecture_doc_lens" and scope is None:
+                return [{"check_name": "lens_run", "surveyed_at": "2026-09-12T00:00:00+00:00"}]
+            return []
+
+    @pytest.mark.parametrize("reader_name", [
+        "_architecture_summary_results", "_architecture_doc_lens_results",
+    ])
+    def test_never_run_is_the_envelope_and_both_content_checks_call_it_empty(self, reader_name):
+        from resource_explorer import context_compile, facts
+        from resource_explorer.surveyors import repo_survey_definition_adapter as adapter
+        from resource_explorer.surveyors.result_status import NEVER_RUN
+
+        value = getattr(adapter, reader_name)(self._Empty(), "no_such_repo")
+        assert "state" not in value and "message" not in value, (
+            f"{reader_name} still uses top-level state/message: {value}")
+        assert value["_status"]["state"] == NEVER_RUN
+        assert value["_status"].get("hint"), "a never-run without a hint renders as a blank card"
+        assert not facts._has_content(value), "facts.py would call this MEASURED"
+        assert not context_compile._has_content(value), "the compiler would pack a section for it"
+
+    def test_doc_lens_nothing_found_survives_as_a_real_answer(self):
+        """The lens ran and named nothing: still the envelope (so the compiler
+        does not pack it), but `nothing_found`, so the card renders a ✓ and
+        the fact layer reports a measured absence rather than a missing run."""
+        from resource_explorer import context_compile, facts
+        from resource_explorer.surveyors import repo_survey_definition_adapter as adapter
+        from resource_explorer.surveyors.result_status import NOTHING_FOUND
+
+        value = adapter._architecture_doc_lens_results(self._LensRanAndNamedNothing(), "r")
+        assert value["_status"]["state"] == NOTHING_FOUND
+        assert not facts._has_content(value)
+        assert not context_compile._has_content(value)
+        # facts._state_for trusts the envelope over content: nothing_found, not never_run.
+        assert facts.FactLayer._state_for(value, {}) == NOTHING_FOUND
+
+    @pytest.mark.parametrize("headline_name", [
+        "_architecture_summary_headline", "_architecture_doc_lens_headline",
+    ])
+    def test_headlines_return_none_on_the_envelope(self, headline_name):
+        from resource_explorer.surveyors import repo_survey_definition_adapter as adapter
+        assert getattr(adapter, headline_name)(self._Empty(), "no_such_repo") is None

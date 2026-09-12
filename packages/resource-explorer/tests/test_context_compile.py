@@ -1179,7 +1179,14 @@ class TestTheCatalogCaveatReachesTheInstructions:
 
     def test_the_short_rung_carries_a_shorter_caveat(self, monkeypatch):
         self._questions(monkeypatch, "DECLARED dependencies only, so a zero is none found in what we can see. " * 4)
-        c = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=700)
+        # 500, not 700. At 700 this passed only because two readers
+        # (architecture_summary, architecture_doc_lens) answered an EMPTY
+        # registry with top-level `state: never_run`, which _has_content
+        # counted as content -- so ~300 chars of bogus sections were packed
+        # beside the instructions and squeezed them to SUMMARY. Measured
+        # 2026-09-12: instructions alone are 695 chars at FULL and 382 at
+        # SUMMARY, so 500 forces the demotion this test is actually about.
+        c = compile_context(_registry({}), "x", "Are there outstanding CVEs?", budget=500)
         rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["instructions"]
         assert rung in {"SUMMARY", "IDENTIFIERS"}
         if rung == "SUMMARY":
