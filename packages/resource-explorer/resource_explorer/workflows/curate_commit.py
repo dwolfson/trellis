@@ -87,7 +87,8 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
 
     # ── 1. the asset and its survey report ─────────────────────────────
     asset_guid = ""
-    cur.set_step(curation_id, "publish_asset", "running")
+    cur.set_step(curation_id, "publish_asset", "running",
+                 "surveying first, then publishing — minutes on a large repository; the existing publish path")
     try:
         context = registry.get_project_context("repo", slug)
         if not context or context.get("status") == "unset":
@@ -171,8 +172,13 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                 registry.catalog_sub_resource("repo", slug, loc, want[loc], source_finding="repo_sub_resource_survey")
             guids = EgeriaPublisher(registry=registry).publish_sub_resources(slug, project.github_url, asset_guid, sorted(want))
             missing = [l for l in locators if l not in guids]
+            ancestors = len(want) - len(locators)
+            # Count against what was SELECTED; the ancestor folders NestedFile
+            # needs are named separately ("32 of 31" on the first live press).
             cur.set_step(curation_id, "sub_resources", "failed" if missing else "done",
-                         f"{len(guids)} of {len(locators)} published" + (f" · not published: {', '.join(missing[:8])}" if missing else ""))
+                         f"{len(locators) - len(missing)} of {len(locators)} published"
+                         + (f" · plus {ancestors} ancestor folder{'s' if ancestors != 1 else ''}" if ancestors else "")
+                         + (f" · not published: {', '.join(missing[:8])}" if missing else ""))
         except Exception as exc:
             cur.set_step(curation_id, "sub_resources", "failed", f"{type(exc).__name__}: {exc}")
 

@@ -196,6 +196,7 @@ class TestTheCommitSteps:
         assert by["publish_asset"]["state"] == "done" and "report-9" in by["publish_asset"]["detail"]
         assert by["classifications"]["state"] == "done" and "Confidentiality · internal" in by["classifications"]["detail"]
         assert by["sub_resources"]["state"] == "done"
+        assert by["sub_resources"]["detail"] == "1 of 1 published · plus 1 ancestor folder"   # not "2 of 1"
         assert by["components"]["state"] == "skipped"
         assert out["state"] == "done"
         conf = next(c for c in calls if c[0] == "conf")

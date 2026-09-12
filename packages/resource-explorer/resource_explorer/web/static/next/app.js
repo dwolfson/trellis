@@ -5200,6 +5200,8 @@ function curateRecordHtml(rec) {
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
     <div class="text-provenance text-ink-muted">catalogued by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
+    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">◐ ${
+      esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
     ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
       <span class="${tone[st.state] || ''}">${glyph[st.state] || '·'}</span>
       <span class="font-mono text-ink">${esc(st.name)}</span>
@@ -5267,7 +5269,11 @@ async function renderCurate(slug) {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
     }));
     host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
-      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Cataloguing…';
+      const b = ev.currentTarget; b.disabled = true;
+      // The first step re-surveys before it publishes -- minutes on a large
+      // repository, and "nothing obvious happening" was the owner's report
+      // from the first live press. Say what is happening, from the record.
+      b.textContent = 'Cataloguing… surveying first, then publishing';
       try {
         const out = await curateCommit(slug, {
           confirm: [...picks], sub_resources: state.curate.subs === false ? [] : subLocators, data_files: false,
