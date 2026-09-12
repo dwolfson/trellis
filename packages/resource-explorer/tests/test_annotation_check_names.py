@@ -78,6 +78,8 @@ KNOWN_EXCLUSIVE = {
     ("sub_surveyors/manifest_parse.py", "dependency_manifest"),
     ("sub_surveyors/manifest_parse.py", "repo_conventions_manifest"),
     ("sub_surveyors/manifest_parse.py", "supply_chain_manifest"),
+    # the fifth sub-parse (2026-09-12): success `return` and except `return`
+    ("sub_surveyors/manifest_parse.py", "distribution_manifest"),
     ("sub_surveyors/rag_ingestion.py", "rag_ingestion"),
     ("sub_surveyors/secret_scan.py", "scan_summary"),
     ("sub_surveyors/security_hygiene.py", "ci_config"),
