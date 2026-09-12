@@ -1164,51 +1164,57 @@ class TestTheCatalogCaveatReachesTheInstructions:
 
 
 class TestAYesNoAnswerMustCarryItsEvidenceLine:
-    """Run 8's one variable. Runs 5-7: honest headline, caveat beside it, and
-    the answer to "Are there outstanding CVEs?" on docling was still a bare
-    "No" and then a bare "Yes"."""
+    """Run 8's sentence: added by PR #38, removed after run 9 (see
+    TestInstructionVariants). What this pins now is that production does
+    NOT carry it and the variant does."""
 
-    def test_full_and_short_rungs_ask_for_the_line(self):
+    def test_production_no_longer_carries_the_sentence(self):
         from resource_explorer.context_compile import (
-            _INSTRUCTIONS, _INSTRUCTIONS_SHORT, _INSTRUCTIONS_BARE)
-        assert "a bare yes or no is not an answer" in _INSTRUCTIONS
-        assert "coverage limit or caveat" in _INSTRUCTIONS
-        assert "yes/no answer must state the evidence line" in _INSTRUCTIONS_SHORT
-        # The bare rung is the budget floor and stays as it was.
-        assert "yes" not in _INSTRUCTIONS_BARE.lower()
+            _INSTRUCTIONS, _INSTRUCTIONS_SHORT, _INSTRUCTIONS_BARE, INSTRUCTION_VARIANTS)
+        for text in (_INSTRUCTIONS, _INSTRUCTIONS_SHORT, _INSTRUCTIONS_BARE):
+            assert "yes" not in text.lower()
+        assert "a bare yes or no is not an answer" in INSTRUCTION_VARIANTS["yesno_line"][0]
 
-    def test_it_reaches_the_packed_text(self):
-        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
-        assert "a bare yes or no is not an answer" in c.text
 
 
 class TestInstructionVariants:
     """Run 8 (2026-09-12) could not attribute its sentence because the stored
     state and the catalog moved between runs. Variants let one run carry two
     wordings over the same state; the variant is in the compile id because it
-    is in the instructions candidate's text. Production ("default") carries
-    the yes/no sentence since PR #38; "no_yesno_line" removes only it."""
+    is in the instructions candidate's text. Run 9 measured the sentence and
+    it left production; it stays as a variant."""
 
-    def test_default_is_production_wording_with_the_sentence(self):
+    def test_default_is_production_wording_without_the_sentence(self):
         from resource_explorer.context_compile import INSTRUCTION_VARIANTS, _INSTRUCTIONS
         assert INSTRUCTION_VARIANTS["default"][0] == _INSTRUCTIONS
         c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
-        assert "a bare yes or no is not an answer" in c.text
+        assert "a bare yes or no is not an answer" not in c.text
         assert c.manifest["instructions_variant"] == "default"
 
-    def test_the_plain_variant_drops_only_the_sentence_and_changes_the_id(self):
+    def test_the_yesno_variant_adds_only_the_sentence_and_changes_the_id(self):
         from resource_explorer.context_compile import INSTRUCTION_VARIANTS
-        full, short = INSTRUCTION_VARIANTS["no_yesno_line"]
-        assert "yes or no" not in full and "yes/no" not in short
-        assert "Do not infer from absence" in short and "do not infer from absence" in full
+        full, short = INSTRUCTION_VARIANTS["yesno_line"]
+        assert "a bare yes or no is not an answer" in full and "yes/no answer must state" in short
         reg = _registry({"repo_conventions": [_finding("a")]})
         a = compile_context(reg, "x", "q", budget=6000)
-        b = compile_context(reg, "x", "q", budget=6000, instructions_variant="no_yesno_line")
-        assert "a bare yes or no is not an answer" not in b.text
-        assert b.manifest["instructions_variant"] == "no_yesno_line"
+        b = compile_context(reg, "x", "q", budget=6000, instructions_variant="yesno_line")
+        assert "a bare yes or no is not an answer" in b.text
+        assert b.manifest["instructions_variant"] == "yesno_line"
         assert a.compile_id != b.compile_id
         strip = lambda c: c.text[c.text.index("## "):]
-        assert strip(a) == strip(b)          # same evidence; only the instructions differ
+        assert strip(a) == strip(b)          # same evidence at this budget; only the instructions differ
+
+    def test_instructions_are_paid_for_in_evidence(self):
+        """Run 9: 202 characters of instruction cost one section a rung in
+        135 of 156 compiles. Pinned so the next instruction is weighed
+        against the rung it displaces rather than assumed free."""
+        big = {f"a{i}": [_finding("c", summary="w" * 700)] for i in range(8)}
+        reg = _registry(big)
+        a = compile_context(reg, "x", "q", budget=3200)
+        b = compile_context(reg, "x", "q", budget=3200, instructions_variant="yesno_line")
+        full = lambda c: sum(p["rung"] == "FULL" for p in c.manifest["packed"] if p["role"] == "evidence")
+        assert full(a) >= full(b)
+        assert a.manifest["used"] <= 3200 and b.manifest["used"] <= 3200
 
     def test_an_unknown_variant_is_an_error_not_a_default(self):
         with pytest.raises(ValueError):

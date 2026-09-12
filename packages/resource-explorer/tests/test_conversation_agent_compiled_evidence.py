@@ -105,7 +105,7 @@ class TestInstructionsVariantPassthrough:
         def fake(registry, slug, question, **kw):
             seen.update(kw); raise RuntimeError("stop here")
         monkeypatch.setattr(cc, "compile_context", fake)
-        agent = ConversationAgent(resource_slug="x", instructions_variant="no_yesno_line")
+        agent = ConversationAgent(resource_slug="x", instructions_variant="yesno_line")
         assert agent._compiled_evidence("q", "x", []) == []          # fail-soft, as before
-        assert seen.get("instructions_variant") == "no_yesno_line"
+        assert seen.get("instructions_variant") == "yesno_line"
         assert ConversationAgent(resource_slug="x").instructions_variant == "default"

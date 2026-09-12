@@ -49,8 +49,8 @@ import requests
 #: that attributes anything here (the scheduler re-surveys repos and the
 #: catalog moves between runs).
 CONDITION_SPECS = {
-    "compiled": (True, "default"),            # production wording (carries the yes/no sentence since PR #38)
-    "compiled-plain": (True, "no_yesno_line"),  # the same without that sentence: the A/B's other arm
+    "compiled": (True, "default"),            # production wording
+    "compiled+yesno": (True, "yesno_line"),   # production plus run 8's yes/no sentence (run 9's other arm, then named compiled-plain/default the other way round)
     "rag": (False, "default"),
 }
 CONDITIONS = ("compiled", "rag")          # the default pair; --conditions overrides

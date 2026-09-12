@@ -55,19 +55,20 @@ _INSTRUCTIONS = (
     "Answer using only the evidence below. Every section states which analysis "
     "produced it. A section marked 'abridged' shows only the first few entries "
     "of each list or mapping — its counts and entries are partial, so do not "
-    "report an abridged list as complete. If the question asks yes or no, give "
-    "the yes or no and then the evidence line it rests on — the analysis, the "
-    "value, and any coverage limit or caveat shown beside it; a bare yes or no "
-    "is not an answer. If the evidence does not answer the question, say so and "
-    "name what is missing — do not infer from absence."
+    "report an abridged list as complete. If the evidence does not answer the "
+    "question, say so and name what is missing — do not infer from absence."
 )
-#: The yes/no sentence is the ONE variable of experiment run 8 (2026-09-11).
-#: Runs 5-7 put an honest headline ("not checked: 0 of 61 declared
-#: dependenc(ies) could be queried") and the catalog's own caveat directly
-#: under it, and the 8B answerer still replied "No", then "Yes", to "Are
-#: there outstanding CVEs?" on docling. Three compilers' worth of evidence
-#: did not move a one-word answer, so the instruction now asks for the line
-#: the answer rests on. Measured, not assumed: see the experiment doc.
+#: A sentence asking yes/no answers to carry their evidence line was added
+#: here by PR #38 (run 8) and removed after run 9's within-run A/B
+#: (2026-09-12): it cost one evidence section a rung in 135 of 156 compiles
+#: (instructions are a required section, so 202 characters of instruction
+#: are 202 characters less evidence), and even where packing was identical
+#: it made the 8B answerer terser everywhere (supported claims -0.58 paired,
+#: median answer 114 vs 180 chars) for a gain on two of three CVE rows. It
+#: survives as INSTRUCTION_VARIANTS["yesno_line"] so a later A/B can retest
+#: it, e.g. with a larger model. The general lesson: every instruction
+#: character is paid for in evidence, so an instruction has to beat the
+#: rung it displaces.
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small
 #: to carry the template. Instructions are required, so without a shorter
@@ -75,8 +76,7 @@ _INSTRUCTIONS = (
 #: one section that used to be exempt from the ladder now climbs it too.
 _INSTRUCTIONS_SHORT = (
     "Answer only from the evidence below; name the analysis behind each point. "
-    "'Abridged' sections show first entries only. A yes/no answer must state "
-    "the evidence line and its coverage limit. If it does not answer, say "
+    "'Abridged' sections show first entries only. If it does not answer, say "
     "which analysis would and whether it has run. Do not infer from absence."
 )
 
@@ -97,20 +97,22 @@ _INSTRUCTIONS_BARE = (
 #: the catalog moves, so run-over-run comparisons carry three variables.
 #: The variant changes the instructions candidate's text, so it is part of
 #: the compile id without any further bookkeeping; the manifest names it.
-#: "default" is production, which since PR #38 carries run 8's yes/no
-#: sentence; "no_yesno_line" is the same wording without it, so the A/B
-#: measures that sentence on its own.
+#: "default" is production (plain, since run 9); "yesno_line" adds run 8's
+#: sentence, so it can be retested without editing production wording.
 _YESNO_SENTENCE = (
     "If the question asks yes or no, give the yes or no and then the evidence "
     "line it rests on — the analysis, the value, and any coverage limit or caveat "
     "shown beside it; a bare yes or no is not an answer. "
 )
 _YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
-assert _YESNO_SENTENCE in _INSTRUCTIONS and _YESNO_SENTENCE_SHORT in _INSTRUCTIONS_SHORT
 INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
     "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
-    "no_yesno_line": (_INSTRUCTIONS.replace(_YESNO_SENTENCE, ""),
-                      _INSTRUCTIONS_SHORT.replace(_YESNO_SENTENCE_SHORT, "")),
+    "yesno_line": (
+        _INSTRUCTIONS.replace("If the evidence does not answer the question",
+                              _YESNO_SENTENCE + "If the evidence does not answer the question"),
+        _INSTRUCTIONS_SHORT.replace("If it does not answer",
+                                    _YESNO_SENTENCE_SHORT + "If it does not answer"),
+    ),
 }
 
 #: How many evidence sections a compile packs, counted after ranking. Ranking
