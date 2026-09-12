@@ -157,3 +157,29 @@ class TestMetricsFeedback:
         with mc._conn() as conn:
             row = conn.execute("SELECT feedback, compile_id FROM query_log WHERE query_hash = 'h1'").fetchone()
         assert (row[0], row[1]) == (1, "abc")
+
+
+class TestPauseAndResumeSchedules:
+    """For an experiment window. On 2026-09-11 the nightly RepoRefreshSurvey
+    re-surveyed two of three experiment repos while run 8 was answering."""
+
+    def test_pause_disables_only_enabled_and_resume_restores_next_run(self, tmp_path):
+        reg = _sqlite_registry(tmp_path)
+        reg.save_schedule("repo", "r1", "a_daily", "daily", enabled=True)
+        reg.save_schedule("repo", "r1", "b_manual", "manual", enabled=False)
+        reg.save_schedule("repo", "r2", "c_daily", "daily", enabled=True)
+        before = {s["analysis_id"]: s for s in reg.get_schedules("repo", "r1")}
+        saved = reg.pause_schedules("repo", "r1")
+        assert [s["analysis_id"] for s in saved] == ["a_daily"]
+        during = {s["analysis_id"]: s for s in reg.get_schedules("repo", "r1")}
+        assert during["a_daily"]["enabled"] == 0 and during["b_manual"]["enabled"] == 0
+        assert reg.get_schedules("repo", "r2")[0]["enabled"] == 1     # other resources untouched
+        assert reg.resume_schedules("repo", "r1", saved) == 1
+        after = {s["analysis_id"]: s for s in reg.get_schedules("repo", "r1")}
+        assert after["a_daily"]["enabled"] == 1
+        assert after["a_daily"]["next_run"] == before["a_daily"]["next_run"]  # cadence kept, not shifted
+        assert after["b_manual"]["enabled"] == 0                              # was disabled; stays so
+
+    def test_resume_with_nothing_saved_is_a_no_op(self, tmp_path):
+        reg = _sqlite_registry(tmp_path)
+        assert reg.resume_schedules("repo", "r1", []) == 0

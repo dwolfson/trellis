@@ -55,19 +55,20 @@ _INSTRUCTIONS = (
     "Answer using only the evidence below. Every section states which analysis "
     "produced it. A section marked 'abridged' shows only the first few entries "
     "of each list or mapping — its counts and entries are partial, so do not "
-    "report an abridged list as complete. If the question asks yes or no, give "
-    "the yes or no and then the evidence line it rests on — the analysis, the "
-    "value, and any coverage limit or caveat shown beside it; a bare yes or no "
-    "is not an answer. If the evidence does not answer the question, say so and "
-    "name what is missing — do not infer from absence."
+    "report an abridged list as complete. If the evidence does not answer the "
+    "question, say so and name what is missing — do not infer from absence."
 )
-#: The yes/no sentence is the ONE variable of experiment run 8 (2026-09-11).
-#: Runs 5-7 put an honest headline ("not checked: 0 of 61 declared
-#: dependenc(ies) could be queried") and the catalog's own caveat directly
-#: under it, and the 8B answerer still replied "No", then "Yes", to "Are
-#: there outstanding CVEs?" on docling. Three compilers' worth of evidence
-#: did not move a one-word answer, so the instruction now asks for the line
-#: the answer rests on. Measured, not assumed: see the experiment doc.
+#: A sentence asking yes/no answers to carry their evidence line was added
+#: here by PR #38 (run 8) and removed after run 9's within-run A/B
+#: (2026-09-12): it cost one evidence section a rung in 135 of 156 compiles
+#: (instructions are a required section, so 202 characters of instruction
+#: are 202 characters less evidence), and even where packing was identical
+#: it made the 8B answerer terser everywhere (supported claims -0.58 paired,
+#: median answer 114 vs 180 chars) for a gain on two of three CVE rows. It
+#: survives as INSTRUCTION_VARIANTS["yesno_line"] so a later A/B can retest
+#: it, e.g. with a larger model. The general lesson: every instruction
+#: character is paid for in evidence, so an instruction has to beat the
+#: rung it displaces.
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small
 #: to carry the template. Instructions are required, so without a shorter
@@ -75,8 +76,7 @@ _INSTRUCTIONS = (
 #: one section that used to be exempt from the ladder now climbs it too.
 _INSTRUCTIONS_SHORT = (
     "Answer only from the evidence below; name the analysis behind each point. "
-    "'Abridged' sections show first entries only. A yes/no answer must state "
-    "the evidence line and its coverage limit. If it does not answer, say "
+    "'Abridged' sections show first entries only. If it does not answer, say "
     "which analysis would and whether it has run. Do not infer from absence."
 )
 
@@ -89,6 +89,31 @@ _INSTRUCTIONS_BARE = (
     "Answer only from the evidence below; 'abridged' sections are partial. "
     "Do not infer from absence."
 )
+
+#: Named instruction variants, so an experiment can put two instruction
+#: wordings in ONE run over the same stored state -- the within-run A/B that
+#: run 8 (2026-09-12) showed is the only design that attributes anything
+#: here: between two runs the Automate scheduler re-surveys the repos and
+#: the catalog moves, so run-over-run comparisons carry three variables.
+#: The variant changes the instructions candidate's text, so it is part of
+#: the compile id without any further bookkeeping; the manifest names it.
+#: "default" is production (plain, since run 9); "yesno_line" adds run 8's
+#: sentence, so it can be retested without editing production wording.
+_YESNO_SENTENCE = (
+    "If the question asks yes or no, give the yes or no and then the evidence "
+    "line it rests on — the analysis, the value, and any coverage limit or caveat "
+    "shown beside it; a bare yes or no is not an answer. "
+)
+_YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
+INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
+    "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
+    "yesno_line": (
+        _INSTRUCTIONS.replace("If the evidence does not answer the question",
+                              _YESNO_SENTENCE + "If the evidence does not answer the question"),
+        _INSTRUCTIONS_SHORT.replace("If it does not answer",
+                                    _YESNO_SENTENCE_SHORT + "If it does not answer"),
+    ),
+}
 
 #: How many evidence sections a compile packs, counted after ranking. Ranking
 #: still orders and never excludes at the DERIVATION level — every catalog
@@ -768,6 +793,7 @@ def compile_context(
     target_model: str = "",
     session_id: str | None = None,
     max_sections: int | None = None,
+    instructions_variant: str = "default",
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
 
@@ -777,8 +803,14 @@ def compile_context(
     compile served, when there is one; it lands on the row, not in the hash.
     `max_sections` caps how many ranked evidence sections compete for the
     budget (default MAX_EVIDENCE_SECTIONS; 0 means no cap); the rest are
-    listed in the manifest as `deferred`.
+    listed in the manifest as `deferred`. `instructions_variant` selects a
+    wording from INSTRUCTION_VARIANTS (experiments only; production is
+    "default") and is named in the manifest.
     """
+    if instructions_variant not in INSTRUCTION_VARIANTS:
+        raise ValueError(f"unknown instructions_variant {instructions_variant!r}; "
+                         f"expected one of {sorted(INSTRUCTION_VARIANTS)}")
+    instr_full, instr_short = INSTRUCTION_VARIANTS[instructions_variant]
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(
@@ -989,8 +1021,8 @@ def compile_context(
         caveat_line = caveat_line_short = ""
     candidates["instructions"] = Candidate(
         "instructions",
-        {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
-         Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
+        {Rung.FULL: coverage_line + caveat_line + instr_full,
+         Rung.SUMMARY: coverage_line_short + caveat_line_short + instr_short,
          Rung.IDENTIFIERS: _INSTRUCTIONS_BARE})
 
     spec = ContextSpec(
@@ -1019,6 +1051,7 @@ def compile_context(
             # which offered sections had nothing; this says whether the
             # question was ever a question stored analyses answer.
             "coverage": coverage,
+            "instructions_variant": instructions_variant,
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.
