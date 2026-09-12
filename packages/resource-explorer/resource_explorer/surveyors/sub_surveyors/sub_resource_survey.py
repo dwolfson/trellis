@@ -146,7 +146,11 @@ class SubResourceSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
-            inventory = self.registry.get_file_inventory_with_sizes(self.project.slug)
+            # The WHOLE inventory, vendored included: a vendored folder is a
+            # real sub-resource of this repository, and the honest listing is
+            # "node_modules — not worthy — vendored", not its absence. Omitting
+            # it would make "34 sub-resources" silently mean "34 of 41".
+            inventory = self.registry.get_file_inventory_with_sizes(self.project.slug, include_vendored=True)
             if not inventory:
                 # confidence=50 used to be the only signal that this was a
                 # non-answer, and 50 is not a vocabulary — it reads as a
@@ -251,16 +255,24 @@ class SubResourceSurveyor(BaseSurveyor):
 
         # Depth-1 folders.
         folder_counts: dict[str, int] = {}
+        vendored_tops: set[str] = set()
         for entry in inventory:
             path = entry["file_path"].replace("\\", "/")
             if "/" not in path:
                 continue
             top = path.split("/", 1)[0]
             folder_counts[top] = folder_counts.get(top, 0) + 1
+            if entry.get("vendored"):
+                vendored_tops.add(top)
 
         folder_entries: dict[str, dict] = {}
         for folder, count in sorted(folder_counts.items()):
-            if count < _FOLDER_MIN_FILES:
+            if folder in vendored_tops:
+                # Somebody else's library checked in. Listed, and said why —
+                # a promotion candidate this is not, but a fact about the
+                # repository it is.
+                worthy, reason = False, "vendored"
+            elif count < _FOLDER_MIN_FILES:
                 worthy, reason = False, "too_small"
             elif count > _FOLDER_MAX_FILES:
                 worthy, reason = False, "too_broad"

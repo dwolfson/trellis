@@ -81,14 +81,7 @@ _LANGUAGE_BY_SUFFIX: dict[str, tuple[str, str]] = {
 #: or `node_modules/` would inflate exactly the same way — and "how much code
 #: is there" answered with somebody else's library is a wrong answer, not a
 #: generous one.
-_EXCLUDED_DIRS = frozenset({
-    ".git", ".hg", ".svn",
-    ".venv", "venv", "env", "virtualenv", "site-packages",
-    "node_modules", "bower_components", "vendor",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
-    "dist", "build", "target", "out", ".next", ".nuxt",
-    ".idea", ".vscode", ".gradle", ".eggs",
-})
+from resource_explorer.ingestion.vendored import VENDORED_DIRS as _EXCLUDED_DIRS  # noqa: E402 — one rule, shared since 2026-09-11
 
 
 def _is_excluded(path: Path, root: Path) -> bool:
