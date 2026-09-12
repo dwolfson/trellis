@@ -1510,3 +1510,85 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
     entry = Journal(registry).write("repo", slug, author=author, body=f"{name}. {line}", suggest_to=body.suggest_to)
     return {"action": "journal", "name": name, "provenance": line, "journal": entry.get("id"),
             "work_lists": entry.get("work_lists", [])}
+
+
+# ── Curate: review-and-commit ───────────────────────────────────────────
+#
+# One screen, three columns, one commit. The plan is a local read (facts,
+# findings, enrichment, verdicts, disposition) so it renders when Egeria is
+# down; the commit is a queued run whose steps write their outcomes to the
+# curation record as they land, because a handoff is asynchronous and can
+# fail elsewhere. See curate_plan.py for the design rules held.
+
+class CurateSelection(BaseModel):
+    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareLibrary, Endpoint, ...
+    sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
+    data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
+    note: str = ""
+
+
+@router.get("/{slug}/curate/plan")
+def curate_plan(slug: str) -> dict:
+    from resource_explorer.curate_plan import build_plan
+    from resource_explorer.registry import ProjectRegistry
+    try:
+        return build_plan(ProjectRegistry(), slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+
+@router.post("/{slug}/curate/commit")
+def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
+    """Catalogue →. Records the act (who, when, what was selected, what the
+    manifest said), logs an activity entry the pane polls, and enqueues the
+    run. Signed-in only: the record needs an author, and Ownership on the
+    asset is curation by default."""
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import CURATE_POPULATION, Curations, build_plan
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.curate_commit import STEPS
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to catalogue — the record needs an author, and the asset an owner.")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    plan = build_plan(registry, slug)
+    if not plan["in_population"]:
+        raise HTTPException(status_code=409, detail=(
+            f"Only worthy things get curated: Curate's population is disposition {' or '.join(CURATE_POPULATION)}, "
+            f"and this resource is '{plan['disposition']}'. Set its disposition first."))
+    known = {r["kind"] for r in plan["what_it_is"] if r["candidate"]}
+    unknown = [k for k in body.confirm if k not in known]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Not candidates on this resource: {unknown}")
+    manifest = {**plan["writes"], "entities": list(body.confirm),
+                "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
+                              "sub_resources": len(body.sub_resources)}}
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="curate", status="running",
+        summary=f"Cataloguing {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
+    )
+    rec = Curations(registry).create(
+        "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,
+        steps=list(STEPS), activity_id=activity_id)
+    run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
+                                  result_ref=activity_id, requested_by=_requested_by())
+    log.info("enqueued curate_commit %s for %s (activity %s)", run_id, slug, activity_id)
+    return {"curation": rec, "activity_id": activity_id, "run_id": run_id}
+
+
+@router.get("/{slug}/curate/commits/{curation_id}")
+def curate_commit_status(slug: str, curation_id: str) -> dict:
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.registry import ProjectRegistry
+    rec = Curations(ProjectRegistry()).get(curation_id)
+    if not rec or rec["entity_slug"] != slug:
+        raise HTTPException(status_code=404, detail="No such curation")
+    return rec
