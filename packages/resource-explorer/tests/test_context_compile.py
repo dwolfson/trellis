@@ -12,8 +12,25 @@ import pytest
 from resource_explorer.context_compile import compile_context
 
 
+class _NullMock(MagicMock):
+    """A registry double whose unconfigured methods return None, not another
+    mock. The results readers call a dozen registry methods; left as bare
+    MagicMocks those returned mocks, readers built dicts of "<MagicMock
+    name='mock.query_metrics().get()'>" values, _has_content counted them as
+    content, and compiles packed sections of mock garbage -- one test
+    depended on that without knowing (found by dwolfson-4c reproducing
+    #46's CI failure, 2026-09-13). A reader handed None either copes or
+    raises; the compiler treats both as "nothing stored", which is the
+    truth for a registry that holds only what the test put in it."""
+
+    def _get_child_mock(self, **kw):
+        child = _NullMock(**kw)
+        child.return_value = None
+        return child
+
+
 def _registry(findings_by_kind):
-    r = MagicMock()
+    r = _NullMock()
     r.query_findings.side_effect = lambda slug, kind, *a, **k: findings_by_kind.get(kind, [])
     return r
 
@@ -92,7 +109,10 @@ class TestQuestionRelevance:
         monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
                             "documentation_coverage", (lambda reg, slug: reader_output, None))
 
-        c = cc.compile_context(_registry({}), "egeria",
+        # repository_health needs a real finding to pack: until 2026-09-13 it
+        # packed anyway, from the fake registry's mock values (see _NullMock).
+        c = cc.compile_context(_registry({"repository_health": [_finding("overall", "85", "score 85/100")]}),
+                               "egeria",
                                "Show me all the documentation survey results for egeria",
                                budget=1200)
         packed_order = [p["key"] for p in c.manifest["packed"] if p["key"] != "instructions"]
@@ -1248,3 +1268,44 @@ class TestAStatusOnlyEnvelopeIsAGapNotASection:
         assert "dependency_analysis" not in {p["key"] for p in c.manifest["packed"]}
         assert "dependency_analysis" in {g["key"] for g in c.manifest["gaps"]}
         assert "state=never_run" not in c.text
+
+
+class TestGapsDoNotSpendCapSlots:
+    """#46's CI, second finding (dwolfson-4c, 2026-09-13): against an empty
+    registry eleven of the twelve cap slots went to gaps and the one analysis
+    with findings, ranked 13th, was deferred. The cap must count sections
+    with evidence."""
+
+    def test_the_only_analysis_with_findings_is_packed_however_low_it_ranks(self):
+        reg = _registry({"documentation_coverage": [_finding("readme", "present", "README.md found")]})
+        c = compile_context(reg, "x", "is this ready to adopt?", budget=6000)
+        packed = [p["key"] for p in c.manifest["packed"] if p["role"] == "evidence"]
+        # architecture_doc_lens and architecture_summary report content even
+        # from an empty registry (their readers synthesise defaults -- a
+        # reader-side question, not the compiler's), so the assertion is
+        # membership, not equality.
+        assert "documentation_coverage" in packed
+        assert "readme" in c.text
+        assert not any(d["key"] == "documentation_coverage" for d in c.manifest["deferred"])
+        # Gaps above it in the ranking are still reported; they cost nothing.
+        assert len(c.manifest["gaps"]) >= 12
+
+    def test_the_cap_still_bounds_sections_with_evidence(self):
+        from resource_explorer.context_compile import MAX_EVIDENCE_SECTIONS
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+        ids = set()
+        for e in get_questions("repo"):
+            ids.update((e.get("derivation") or {}).get("analysis_ids") or [])
+        reg = _registry({i: [_finding("c", summary="w" * 400)] for i in ids})
+        c = compile_context(reg, "x", "how well documented is it?", budget=6000)
+        evidence = [p for p in c.manifest["packed"] if p["role"] == "evidence"] + c.manifest["dropped"]
+        assert len(evidence) <= MAX_EVIDENCE_SECTIONS
+        assert c.manifest["deferred"]
+        # Deferred entries were never resolved: they sit below the point
+        # where the cap was reached, in rank order.
+        ranks = [d["rank"] for d in c.manifest["deferred"]]
+        assert ranks == sorted(ranks)
+
+    def test_a_fake_registry_does_not_leak_mocks_into_sections(self):
+        c = compile_context(_registry({}), "x", "is this ready to adopt?", budget=6000)
+        assert "MagicMock" not in c.text

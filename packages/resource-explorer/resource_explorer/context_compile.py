@@ -115,7 +115,8 @@ INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-#: How many evidence sections a compile packs, counted after ranking. Ranking
+#: How many evidence sections a compile packs, counted after ranking over the
+#: analyses that HAVE a candidate -- a gap does not spend a slot. Ranking
 #: still orders and never excludes at the DERIVATION level — every catalog
 #: question that reaches an analysis stays in `derivation`, and the sections
 #: past the cap are reported in the manifest as `deferred`, with their rank
@@ -938,17 +939,27 @@ def compile_context(
     candidates: dict[str, Candidate] = {}
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
     cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
-    deferred = [
-        {"key": k, "weight": round(w, 3), "rank": i,
-         "reason": f"below the section cap of {cap}"}
-        for i, (k, w) in enumerate(ranked) if cap > 0 and i >= cap
-    ]
-    if cap > 0:
-        ranked = ranked[:cap]
+    deferred: list[dict] = []
+    # The cap counts sections WITH EVIDENCE, and a gap costs nothing. The
+    # first version sliced the ranking to `cap` entries before resolving any,
+    # so an analysis that turned out to be a gap had already spent a slot:
+    # on a sparsely surveyed repo eleven of twelve slots went to gaps and the
+    # one analysis with real findings sat at rank 13, "deferred". Found by
+    # #46's CI against an empty registry, diagnosed by dwolfson-4c
+    # (2026-09-13). The cap=12 sweep that chose the value was on repos where
+    # every cited analysis had run, so it never showed there. Now the walk
+    # continues down the ranking until `cap` analyses have a candidate;
+    # gaps found on the way are still reported as gaps (they are information
+    # -- "should exist, has nothing behind it"); what remains below the
+    # point where the cap is reached is deferred unresolved.
+    packed_count = 0
     # Failures the compile survived but the caller must be able to see.
     extra_notes: list[str] = []
-    for analysis_id, weight in ranked:
-        sections.append(Section(analysis_id, role="evidence", weight=weight))
+    for rank, (analysis_id, weight) in enumerate(ranked):
+        if cap > 0 and packed_count >= cap:
+            deferred.append({"key": analysis_id, "weight": round(weight, 3), "rank": rank,
+                             "reason": f"below the section cap of {cap}"})
+            continue
         findings = registry.query_findings(slug, analysis_id)
         rungs = _findings_to_rungs(findings, analysis_id)
         provenance = _provenance(findings, analysis_id)
@@ -1019,14 +1030,16 @@ def compile_context(
 
         if rungs and analysis_id in caveat_ids:
             rungs = _with_caveat(rungs, coverage["caveat"])
+        sections.append(Section(analysis_id, role="evidence", weight=weight))
         if rungs:
             candidates[analysis_id] = Candidate(
                 analysis_id, rungs, provenance=provenance,
                 pointer=_pointer_for(analysis_id, slug, provenance),
             )
+            packed_count += 1
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing
-        # behind it, is information.
+        # behind it, is information -- and it does not count against the cap.
 
     # The instructions candidate is built last because its text depends on
     # where the caveat went. The coverage line (and the caveat, when it has no
