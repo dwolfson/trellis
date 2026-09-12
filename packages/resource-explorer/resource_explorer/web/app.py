@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -196,6 +196,7 @@ app.include_router(prefect_status.router, prefix="/api/prefect", tags=["prefect"
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
 app.include_router(outbox.router, prefix="/api/outbox", tags=["outbox"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
+app.include_router(journal.router, prefix="/api/journal", tags=["journal"])
 app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])

@@ -65,7 +65,9 @@ import {
   setDisposition,
   setWorkingSetHidden,
   getContext,
+  getJournal,
   questionKey,
+  writeJournal,
   saveEnrichmentField,
   saveQuestionAnswer,
 } from '/static/re-api.js';
@@ -147,7 +149,7 @@ const SUB_TABS = [
   { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them', built: true },
   { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts', built: true },
   { id: 'questions', label: 'Questions', does: 'The question checklist' },
-  { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, and its history' },
+  { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, its history, and the journal', built: true },
 ];
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -2678,6 +2680,125 @@ function bindSubTabs() {
  * ════════════════════════════════════════════════════════════════════════ */
 
 /** A resource must be selected and be a repo for either pane to mean anything. */
+/* ── Disposition and the journal ─────────────────────────────────────────
+ *
+ * The verdict and its dated trail were already in the resource header. What
+ * was missing is the journal: WHY a resource matters, written to be read by
+ * someone else. Everything else on these screens is written to be correct;
+ * this is the first thing written to be read. So the affordance shows it —
+ * room to write, no dropdown, a name on it.
+ *
+ * Append-only. An entry is a statement someone made on a date; later events
+ * do not invalidate it, they get a later entry. Outside the durable /
+ * perishable split entirely: no review flags, nothing to reconcile.
+ *
+ * Suggestion is a routing question and perspectives answer it — a note on a
+ * data-heavy repo is for Data Experts and Consumers, the same tags on every
+ * question row. It arrives as a WORK-LIST ENTRY for them, not a
+ * notification: work lists already exist, carry counts, and survive being
+ * ignored for a fortnight; a notification is a thing you dismiss. The UI
+ * says where it landed rather than "sent".
+ *
+ * Nothing prompts for an entry at cataloguing time, and nothing blocks on
+ * one. Advocacy written to satisfy a required field is "useful library" on
+ * two hundred assets. The empty state is visible instead.
+ */
+async function loadDispositionPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
+    <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
+      <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
+    </div>
+    <div id="journal-write"></div>
+    <div id="journal-entries" class="mt-s3 text-caveat text-ink-muted">Reading the journal…</div>`;
+  bindSubTabs();
+  bindResourceHeader();
+  const project = state.projects.find((x) => x.slug === slug);
+  if (project?.github_url) renderDispositionHistory(project.github_url);
+  else $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+  renderJournalWrite(slug);
+  await renderJournalEntries(slug);
+}
+
+function renderJournalWrite(slug) {
+  const host = $('journal-write');
+  if (!host) return;
+  const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const perspectives = (state.perspectives || []).map((p) => p.name || p.id || p).filter(Boolean);
+  host.innerHTML = `
+    <textarea id="journal-body" rows="4" placeholder="Worth using for anyone who… Note the… before depending on it."
+      class="w-full rounded-sm border border-rule-strong bg-transparent p-s2 text-answer text-ink placeholder:text-ink-muted"></textarea>
+    <div class="mt-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caveat">
+      <span class="text-ink-muted">suggest to</span>
+      ${perspectives.map((p) => `<label class="flex cursor-pointer items-baseline gap-[4px]">
+        <input type="checkbox" data-suggest="${esc(p)}"> ${esc(p)}</label>`).join('')}
+      <label class="flex items-baseline gap-[4px] text-ink-muted">+ <input id="journal-person" type="text" placeholder="a person…"
+        class="w-[12ch] rounded-sm border border-rule-strong bg-transparent px-[4px] text-caveat text-ink placeholder:text-ink-muted"></label>
+    </div>
+    <div class="mt-s2 flex items-baseline gap-s3">
+      <button id="journal-save" type="button"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Write</button>
+      <span class="text-provenance text-ink-muted">${who ? `as ${esc(who)}` : 'sign in to write — an entry needs an author'}
+        · a suggestion is a work-list entry for them, not a notification</span>
+    </div>`;
+  $('journal-save').addEventListener('click', async () => {
+    const body = $('journal-body').value.trim();
+    if (!body) { $('journal-body').focus(); return; }
+    const targets = [...host.querySelectorAll('[data-suggest]:checked')].map((c) => c.dataset.suggest);
+    const person = ($('journal-person').value || '').trim();
+    if (person) targets.push(person);
+    const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
+    try {
+      const out = await writeJournal(slug, body, targets);
+      $('journal-body').value = ''; $('journal-person').value = '';
+      host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
+      b.disabled = false; b.textContent = 'Write';
+      const where = (out.work_lists || []).map((w) => w.work_list).join(', ');
+      const note = document.createElement('div');
+      note.className = 'mt-s1 text-provenance text-ink-muted';
+      note.textContent = where ? `written · suggested — now in ${where}` : 'written';
+      host.appendChild(note);
+      setTimeout(() => note.remove(), 6000);
+      await renderJournalEntries(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to write' : `not written: ${err.message}`;
+    }
+  });
+}
+
+async function renderJournalEntries(slug) {
+  const host = $('journal-entries');
+  if (!host) return;
+  let data;
+  try { data = await getJournal(slug); }
+  catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  const entries = data.entries || [];
+  if (!entries.length) {
+    // Visible, and a fair thing for a corpus view to count: catalogued,
+    // never written about.
+    host.innerHTML = `<span class="text-ink-muted">Nobody has written about this resource yet.</span>`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">Earlier entries · <span class="tnum">${entries.length}</span>${
+      data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
+    ${entries.map((e) => `<div class="border-t border-rule py-s2">
+      <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
+      <div class="text-provenance text-ink-muted">${esc(e.author)} · ${esc(ago(e.written_at))}${
+        e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
+    </div>`).join('')}`;
+}
+
 function paneNeedsRepo() {
   if (state.resourceType !== 'repo') {
     return paneMessage('Repos only, in /next',
@@ -4369,6 +4490,7 @@ async function loadPane() {
 
   if (state.subTab === 'survey') { await loadSurveyPane(); return; }
   if (state.subTab === 'dashboard') { await loadDashboardPane(); return; }
+  if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
   if (state.subTab !== 'questions') {
     const tab = SUB_TABS.find((t) => t.id === state.subTab)
