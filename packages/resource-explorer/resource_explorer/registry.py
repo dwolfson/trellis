@@ -3315,6 +3315,44 @@ class ProjectRegistry:
             )
         return cur.rowcount > 0
 
+    def pause_schedules(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """Disable every enabled schedule on one resource and return what was
+        disabled (analysis_id, next_run) so `resume_schedules` can put it back
+        exactly. For an experiment window: on 2026-09-11 the nightly
+        RepoRefreshSurvey re-surveyed two of three experiment repos while a run
+        was answering, so its rows described two states. Pausing and restoring
+        keeps the schedule's own cadence — `save_schedule(enabled=True)` would
+        recompute next_run from now and silently shift it by a period."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT analysis_id, next_run FROM resource_schedules "
+                "WHERE entity_type=? AND entity_slug=? AND enabled=1",
+                (entity_type, entity_slug),
+            ).fetchall()
+            saved = [dict(r) for r in rows]
+            for r in saved:
+                conn.execute(
+                    "UPDATE resource_schedules SET enabled=0 "
+                    "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                    (entity_type, entity_slug, r["analysis_id"]),
+                )
+        return saved
+
+    def resume_schedules(self, entity_type: str, entity_slug: str, saved: list[dict]) -> int:
+        """Re-enable the schedules `pause_schedules` returned, with their
+        original next_run. A next_run already in the past simply becomes due,
+        which is the scheduler's normal case after downtime."""
+        n = 0
+        with self._conn() as conn:
+            for r in saved:
+                cur = conn.execute(
+                    "UPDATE resource_schedules SET enabled=1, next_run=? "
+                    "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                    (r.get("next_run") or "", entity_type, entity_slug, r["analysis_id"]),
+                )
+                n += cur.rowcount
+        return n
+
     def get_due_schedules(self) -> list[dict]:
         """Return all enabled schedules that are past their next_run time."""
         from datetime import timezone

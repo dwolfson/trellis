@@ -90,6 +90,29 @@ _INSTRUCTIONS_BARE = (
     "Do not infer from absence."
 )
 
+#: Named instruction variants, so an experiment can put two instruction
+#: wordings in ONE run over the same stored state -- the within-run A/B that
+#: run 8 (2026-09-12) showed is the only design that attributes anything
+#: here: between two runs the Automate scheduler re-surveys the repos and
+#: the catalog moves, so run-over-run comparisons carry three variables.
+#: The variant changes the instructions candidate's text, so it is part of
+#: the compile id without any further bookkeeping; the manifest names it.
+#: "default" is production, which since PR #38 carries run 8's yes/no
+#: sentence; "no_yesno_line" is the same wording without it, so the A/B
+#: measures that sentence on its own.
+_YESNO_SENTENCE = (
+    "If the question asks yes or no, give the yes or no and then the evidence "
+    "line it rests on — the analysis, the value, and any coverage limit or caveat "
+    "shown beside it; a bare yes or no is not an answer. "
+)
+_YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
+assert _YESNO_SENTENCE in _INSTRUCTIONS and _YESNO_SENTENCE_SHORT in _INSTRUCTIONS_SHORT
+INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
+    "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
+    "no_yesno_line": (_INSTRUCTIONS.replace(_YESNO_SENTENCE, ""),
+                      _INSTRUCTIONS_SHORT.replace(_YESNO_SENTENCE_SHORT, "")),
+}
+
 #: How many evidence sections a compile packs, counted after ranking. Ranking
 #: still orders and never excludes at the DERIVATION level — every catalog
 #: question that reaches an analysis stays in `derivation`, and the sections
@@ -768,6 +791,7 @@ def compile_context(
     target_model: str = "",
     session_id: str | None = None,
     max_sections: int | None = None,
+    instructions_variant: str = "default",
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
 
@@ -777,8 +801,14 @@ def compile_context(
     compile served, when there is one; it lands on the row, not in the hash.
     `max_sections` caps how many ranked evidence sections compete for the
     budget (default MAX_EVIDENCE_SECTIONS; 0 means no cap); the rest are
-    listed in the manifest as `deferred`.
+    listed in the manifest as `deferred`. `instructions_variant` selects a
+    wording from INSTRUCTION_VARIANTS (experiments only; production is
+    "default") and is named in the manifest.
     """
+    if instructions_variant not in INSTRUCTION_VARIANTS:
+        raise ValueError(f"unknown instructions_variant {instructions_variant!r}; "
+                         f"expected one of {sorted(INSTRUCTION_VARIANTS)}")
+    instr_full, instr_short = INSTRUCTION_VARIANTS[instructions_variant]
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(
@@ -989,8 +1019,8 @@ def compile_context(
         caveat_line = caveat_line_short = ""
     candidates["instructions"] = Candidate(
         "instructions",
-        {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
-         Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
+        {Rung.FULL: coverage_line + caveat_line + instr_full,
+         Rung.SUMMARY: coverage_line_short + caveat_line_short + instr_short,
          Rung.IDENTIFIERS: _INSTRUCTIONS_BARE})
 
     spec = ContextSpec(
@@ -1019,6 +1049,7 @@ def compile_context(
             # which offered sections had nothing; this says whether the
             # question was ever a question stored analyses answer.
             "coverage": coverage,
+            "instructions_variant": instructions_variant,
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.

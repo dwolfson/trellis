@@ -1180,3 +1180,36 @@ class TestAYesNoAnswerMustCarryItsEvidenceLine:
     def test_it_reaches_the_packed_text(self):
         c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
         assert "a bare yes or no is not an answer" in c.text
+
+
+class TestInstructionVariants:
+    """Run 8 (2026-09-12) could not attribute its sentence because the stored
+    state and the catalog moved between runs. Variants let one run carry two
+    wordings over the same state; the variant is in the compile id because it
+    is in the instructions candidate's text. Production ("default") carries
+    the yes/no sentence since PR #38; "no_yesno_line" removes only it."""
+
+    def test_default_is_production_wording_with_the_sentence(self):
+        from resource_explorer.context_compile import INSTRUCTION_VARIANTS, _INSTRUCTIONS
+        assert INSTRUCTION_VARIANTS["default"][0] == _INSTRUCTIONS
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
+        assert "a bare yes or no is not an answer" in c.text
+        assert c.manifest["instructions_variant"] == "default"
+
+    def test_the_plain_variant_drops_only_the_sentence_and_changes_the_id(self):
+        from resource_explorer.context_compile import INSTRUCTION_VARIANTS
+        full, short = INSTRUCTION_VARIANTS["no_yesno_line"]
+        assert "yes or no" not in full and "yes/no" not in short
+        assert "Do not infer from absence" in short and "do not infer from absence" in full
+        reg = _registry({"repo_conventions": [_finding("a")]})
+        a = compile_context(reg, "x", "q", budget=6000)
+        b = compile_context(reg, "x", "q", budget=6000, instructions_variant="no_yesno_line")
+        assert "a bare yes or no is not an answer" not in b.text
+        assert b.manifest["instructions_variant"] == "no_yesno_line"
+        assert a.compile_id != b.compile_id
+        strip = lambda c: c.text[c.text.index("## "):]
+        assert strip(a) == strip(b)          # same evidence; only the instructions differ
+
+    def test_an_unknown_variant_is_an_error_not_a_default(self):
+        with pytest.raises(ValueError):
+            compile_context(_registry({}), "x", "q", budget=6000, instructions_variant="nope")

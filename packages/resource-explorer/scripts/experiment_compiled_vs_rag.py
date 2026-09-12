@@ -42,10 +42,21 @@ from pathlib import Path
 
 import requests
 
-CONDITIONS = ("compiled", "rag")
+#: Every condition is (compiled_evidence, instructions_variant). A run names
+#: the ones it wants with --conditions; each question is answered under all
+#: of them back-to-back in one process, so two compiled arms see the same
+#: stored state -- the within-run A/B that run 8 showed is the only design
+#: that attributes anything here (the scheduler re-surveys repos and the
+#: catalog moves between runs).
+CONDITION_SPECS = {
+    "compiled": (True, "default"),            # production wording (carries the yes/no sentence since PR #38)
+    "compiled-plain": (True, "no_yesno_line"),  # the same without that sentence: the A/B's other arm
+    "rag": (False, "default"),
+}
+CONDITIONS = ("compiled", "rag")          # the default pair; --conditions overrides
 #: Bump when JUDGE_PROMPT changes in a way that alters scores; every judged row
 #: carries it, so runs judged under different rubrics are never averaged together.
-RUBRIC_VERSION = "v3-2026-09-09"
+RUBRIC_VERSION = "v4-2026-09-12"
 DEFAULT_REPOS = "egeria_python_git,kafka,docling"
 DEFAULT_OUT = Path("data/experiments/compiled_vs_rag")
 JUDGE_MODEL = os.environ.get("EXPERIMENT_JUDGE_MODEL", "qwen2.5:32b")
@@ -59,6 +70,7 @@ WHAT THE SYSTEM ACTUALLY HAS STORED FOR THIS REPOSITORY (ground truth, from the 
 - Analyses with stored results that were available as evidence: {packed}
 - Analyses with NO usable result for this repository (each one is a GAP): {gaps}
   (states: never_run = never executed; nothing_found = ran and found nothing; not_established = ran but cannot be credited; partial)
+- Analyses the question catalog maps to THIS question (the ones that would answer it if they have results): {mapped}
 
 THE STORED EVIDENCE ITSELF (the exact text compiled from those analyses; sections are headed "## <analysis id>"; a section marked "structure only" lists part names without values and is NOT a result):
 \"\"\"{evidence}\"\"\"
@@ -68,13 +80,13 @@ ASSISTANT'S ANSWER:
 
 Return ONLY a JSON object with these keys:
 - "declines": true/false — does the answer decline to answer, saying the evidence or stored analyses do not cover the question (in any wording)?
-- "answers_question": 0, 1 or 2. If it does NOT decline: 2 = directly and usefully answers what was asked; 1 = partially; 0 = does not address it. If it DOES decline: first check whether a section in THE STORED EVIDENCE above actually answers the question — if one does, the refusal is wrong and scores 0 whatever it names; otherwise 2 = declines AND names which analysis would answer it and/or what would have to run; 1 = declines and grounds the refusal in what is or is not stored; 0 = a bare refusal with no grounding. Never score a refusal higher for sounding thorough, and never score a guess higher for sounding confident.
+- "answers_question": 0, 1 or 2. If it does NOT decline: 2 = directly and usefully answers what was asked; 1 = partially; 0 = does not address it. If it DOES decline: first check whether one of the analyses the catalog MAPS to this question is in the evidence above with a section that answers it — if so, the refusal is wrong and scores 0 whatever it names. If no mapped analysis is in the evidence (the list is empty, or its entries are gaps), declining is right: 2 = declines AND names which analysis would answer it, what would have to run, or that the catalog answers this by human input / a direct field / nothing yet; 1 = declines and grounds the refusal in what is or is not stored; 0 = a bare refusal with no grounding. A section from an UNMAPPED analysis that merely touches the topic does not make a refusal wrong. Never score a refusal higher for sounding thorough, and never score a guess higher for sounding confident.
 - "cites_evidence": true/false — the answer names a specific analysis, finding, file, metric or source FOR A CLAIM IT MAKES. Naming analyses only to say they were not used does not count.
 - "missing_result_claims": list of gap analysis ids (from the GAP list above, exact ids) for which the answer states a concrete result AS IF MEASURED. This INCLUDES asserting absence or a zero — e.g. "there is no telemetry", "no CVEs were found", "provenance is handled via CLA" — for a gap whose state is never_run or not_established. Check every gap in the list individually. Empty list if none.
 - "claims_missing_result": true if missing_result_claims is non-empty, else false.
 - "acknowledges_limits": true/false — the answer says what it could not determine, what has not been checked, what is unknown or not available, or that the evidence does not cover the question. Any such hedge-shaped statement counts, including "no information available" and "not available in the provided data".
 - "supported_claims": integer — count of specific factual claims (numbers, names, files, statuses, findings, asserted absences) that ARE stated in, or are a faithful restatement or aggregation of, THE STORED EVIDENCE above.
-- "misread_claims": integer — count of specific claims that come from the evidence but get it wrong: a wrong value, a value attributed to the wrong analysis, a "structure only" line or a count of parts quoted as a result, a field name read as a finding, or a "0 checked / unqueryable" read as "none found".
+- "misread_claims": integer — count of specific claims that come from the evidence but get it wrong: a wrong value, a value attributed to the wrong analysis, an "abridged" or "structure only" line or a count of parts quoted as a complete result, a field name read as a finding, or — check this one deliberately — an absence or a clean result asserted ("no CVEs", "no vulnerabilities", "no secrets", "none found") where the evidence's headline, caveat or fields say that nothing or only part could be checked (e.g. "not checked: 0 of 61", "checked: 0", "unqueryable: 61", "N could not be queried"). That last case counts as a misread even if the words "none" or "no advisories" appear in the evidence, because the evidence qualifies them and the answer drops the qualification.
 - "unsupported_claims": integer — count of specific factual claims found NOWHERE in the stored evidence and not clearly labelled as general knowledge. Check each claim against the evidence text before counting it; a claim that appears in the evidence is supported, not unsupported, however specific it is. A statement that evidence is missing or does not cover the question is NOT a claim (count 0 for it). Every entry in missing_result_claims is also an unsupported claim; keep the two consistent. Do not count misread_claims here.
 - "rationale": one sentence naming the worst misread or unsupported claim if there is one.
 """
@@ -100,13 +112,20 @@ def load_questions(limit: int | None, seed: int) -> list[dict]:
     return rows[:limit] if limit else rows
 
 
-def reference_compile(registry, slug: str, question: str) -> dict:
+def reference_compile(registry, slug: str, question: str, variant: str = "default") -> dict:
     """The manifest a compile produces for this question — ground truth for
-    the judge in BOTH conditions. Persisted like any compile (same id as the
-    agent's own compile in the compiled condition, so `hits` goes up)."""
+    the judge in every condition. Persisted like any compile (same id as the
+    agent's own compile in a compiled condition, so `hits` goes up). One per
+    instructions variant, because the variant is in the compile id."""
     from resource_explorer.context_compile import compile_context
     c = compile_context(registry, slug, question, perspectives=[], budget=6000,
-                        session_id="experiment:compiled_vs_rag")
+                        session_id="experiment:compiled_vs_rag",
+                        instructions_variant=variant)
+    # The analyses the catalog maps to THIS question, for rubric v4's decline
+    # rule: the top derivation entry when it is the verbatim catalog question
+    # (relevance 1.0), else nothing -- a paraphrase's nearest entry is a guess.
+    top = c.derivation[0] if c.derivation else {}
+    mapped = list(top.get("analysis_ids") or []) if float(top.get("relevance") or 0) >= 1.0 else []
     packed = [p["key"] for p in c.manifest.get("packed", []) if p.get("role") == "evidence"]
     # The rung each section was packed at. Without it, "the rung was too
     # coarse to answer" cannot be told apart from "the model ignored it"
@@ -114,6 +133,8 @@ def reference_compile(registry, slug: str, question: str) -> dict:
     rungs = {p["key"]: str(p.get("rung")) for p in c.manifest.get("packed", []) if p.get("role") == "evidence"}
     gaps = [{"key": g["key"], "state": g.get("state"), "reason": g.get("reason")} for g in c.manifest.get("gaps", [])]
     return {"compile_id": c.compile_id, "packed": packed, "rungs": rungs, "gaps": gaps,
+            "mapped": mapped, "instructions_variant": variant,
+            "coverage_kind": (c.manifest.get("coverage") or {}).get("kind"),
             "used": c.manifest.get("used"), "budget": c.manifest.get("budget"),
             # Kept so the judge grades against the text the model saw
             # (rubric v3) without recompiling, and so a later re-judge does
@@ -123,7 +144,9 @@ def reference_compile(registry, slug: str, question: str) -> dict:
 
 def answer(slug: str, question: str, condition: str) -> tuple[str, float, str | None]:
     from resource_explorer.agents.conversation_agent import ConversationAgent
-    agent = ConversationAgent(resource_slug=slug, compiled_evidence=(condition == "compiled"))
+    compiled_on, variant = CONDITION_SPECS[condition]
+    agent = ConversationAgent(resource_slug=slug, compiled_evidence=compiled_on,
+                              instructions_variant=variant)
     agent.session_id = f"experiment:compiled_vs_rag:{condition}"
     t0 = time.perf_counter()
     text = agent.handle(question, resource_slug=slug, perspectives=[])
@@ -155,6 +178,7 @@ def judge(question: str, answer_text: str, ref: dict, evidence: str = "") -> dic
         question=question,
         packed=", ".join(ref["packed"]) or "(none)",
         gaps=", ".join(f'{g["key"]} ({g["state"]})' for g in ref["gaps"]) or "(none)",
+        mapped=", ".join(ref.get("mapped") or []) or "(none — the catalog maps no stored analysis to this question)",
         evidence=(evidence or "(none)")[:8000],
         answer=answer_text[:6000],
     )
@@ -226,22 +250,47 @@ def run(args) -> None:
         if registry.get(slug) is None:
             sys.exit(f"unknown resource slug: {slug}")
     questions = load_questions(args.limit, args.seed)
-    total = len(repos) * len(questions) * len(CONDITIONS)
-    print(f"{len(repos)} repos x {len(questions)} questions x {len(CONDITIONS)} conditions = {total} rows; "
-          f"{len(done)} already done; judge={JUDGE_MODEL}", flush=True)
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    unknown = [c for c in conditions if c not in CONDITION_SPECS]
+    if unknown:
+        sys.exit(f"unknown condition(s) {unknown}; known: {sorted(CONDITION_SPECS)}")
+    total = len(repos) * len(questions) * len(conditions)
+    print(f"{len(repos)} repos x {len(questions)} questions x {len(conditions)} conditions = {total} rows; "
+          f"{len(done)} already done; judge={JUDGE_MODEL}; rubric={RUBRIC_VERSION}", flush=True)
     if args.dry_run:
         return
+    # Hold the stored state still for the window: the Automate scheduler's
+    # nightly re-surveys moved two of three repos under run 8. Restored in
+    # `finally`, with their original next_run, whatever happens below.
+    paused: dict[str, list[dict]] = {}
+    if args.pause_schedules:
+        for slug in repos:
+            paused[slug] = registry.pause_schedules("repo", slug)
+        print("paused schedules: " + "; ".join(
+            f"{slug}: {[r['analysis_id'] for r in rows] or 'none'}" for slug, rows in paused.items()), flush=True)
+    try:
+        _run_rows(args, registry, repos, questions, conditions, done, out, total)
+    finally:
+        for slug, rows in paused.items():
+            n = registry.resume_schedules("repo", slug, rows)
+            print(f"resumed {n} schedule(s) on {slug}", flush=True)
+    summarise(out, args)
+
+
+def _run_rows(args, registry, repos, questions, conditions, done, out, total) -> None:
     i = 0
     for slug in repos:
         for q in questions:
-            ref = None
-            for condition in CONDITIONS:
+            refs: dict[str, dict] = {}
+            for condition in conditions:
                 i += 1
                 key = (slug, q["question"], condition)
                 if key in done:
                     continue
-                if ref is None:
-                    ref = reference_compile(registry, slug, q["question"])
+                variant = CONDITION_SPECS[condition][1]
+                if variant not in refs:
+                    refs[variant] = reference_compile(registry, slug, q["question"], variant)
+                ref = refs[variant]
                 try:
                     text, latency, cid = answer(slug, q["question"], condition)
                 except Exception as exc:  # record the failure as a row; do not stop the run
@@ -251,6 +300,7 @@ def run(args) -> None:
                     "run_id": args.run_id, "ts": datetime.now(timezone.utc).isoformat(),
                     "repo": slug, "question": q["question"], "stage": q["stage"],
                     "answering_kind": q["answering_kind"], "condition": condition,
+                    "instructions_variant": variant,
                     "answer": text, "latency_s": round(latency, 2),
                     "agent_compile_id": cid, "reference": ref,
                     "compile_id_matches_reference": (cid == ref["compile_id"]) if cid else None,
@@ -263,7 +313,6 @@ def run(args) -> None:
                 print(f"[{i}/{total}] {slug} | {condition:8s} | {latency:5.1f}s | aq={v.get('answers_question')} "
                       f"cites={v.get('cites_evidence')} missing={v.get('claims_missing_result')} "
                       f"unsupported={v.get('unsupported_claims')} | {q['question'][:60]}", flush=True)
-    summarise(out, args)
 
 
 def summarise(out: Path, args=None) -> None:
@@ -289,7 +338,8 @@ def summarise(out: Path, args=None) -> None:
         }
 
     print("\n=== By condition ===")
-    table = {c: agg([r for r in rows if r["condition"] == c]) for c in CONDITIONS if any(r["condition"] == c for r in rows)}
+    present = [c for c in CONDITION_SPECS if any(r["condition"] == c for r in rows)]
+    table = {c: agg([r for r in rows if r["condition"] == c]) for c in present}
     keys = list(next(iter(table.values())).keys())
     print(f"{'metric':28s} " + " ".join(f"{c:>10s}" for c in table))
     for k in keys:
@@ -298,13 +348,13 @@ def summarise(out: Path, args=None) -> None:
     kinds = sorted({r["answering_kind"] for r in rows})
     for kind in kinds:
         parts = []
-        for c in CONDITIONS:
+        for c in present:
             sub = [r for r in rows if r["condition"] == c and r["answering_kind"] == kind]
             if sub:
                 a = agg(sub)
                 parts.append(f"{c}: n={a['n']} aq={a['answers_question(0-2)']} cites={a['cites_evidence%']}% missing={a['claims_missing_result%']}% unsup={a['unsupported_claims(mean)']}")
         print(f"{kind:10s} | " + " || ".join(parts))
-    matches = [r for r in rows if r["condition"] == "compiled" and r.get("compile_id_matches_reference") is not None]
+    matches = [r for r in rows if CONDITION_SPECS.get(r["condition"], (False,))[0] and r.get("compile_id_matches_reference") is not None]
     if matches:
         ok = sum(1 for r in matches if r["compile_id_matches_reference"])
         print(f"\nreplayability: agent compile id == reference compile id in {ok}/{len(matches)} compiled rows")
@@ -342,6 +392,10 @@ def main() -> None:
     ap.add_argument("--summarise", action="store_true", help="only re-read results and print the tables")
     ap.add_argument("--summarise-file", default=None, help="results file to summarise (default results.jsonl)")
     ap.add_argument("--rejudge", action="store_true", help="re-score existing answers under the current rubric")
+    ap.add_argument("--conditions", default=",".join(CONDITIONS),
+                    help=f"comma-separated, answered back-to-back per question; known: {sorted(CONDITION_SPECS)}")
+    ap.add_argument("--no-pause-schedules", dest="pause_schedules", action="store_false",
+                    help="do not disable the repos' Automate schedules for the run window (default: pause and restore)")
     args = ap.parse_args()
     if args.summarise:
         summarise(Path(args.summarise_file) if args.summarise_file else Path(args.out) / "results.jsonl", args); return
