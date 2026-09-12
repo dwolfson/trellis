@@ -87,3 +87,41 @@ class TestSubResourceSurveyStillListsVendored:
         assert {r["file_path"].split("/")[0]: r["vendored"] for r in rows} == {"node_modules": True, "src": False}
         # and the default reader still hides it from everyone else
         assert all(not r["file_path"].startswith("node_modules") for r in db.get_file_inventory_with_sizes("p"))
+
+
+class TestEveryWalkReadsTheRule:
+    """PR #36 fixed the pipeline's walks and missed the survey step's
+    duplicate of one of them, which put 20,654 vendored symbols back one
+    survey later. A walk that measures the repository's content and does
+    not consult the rule is the shape of that regression, so this lists
+    every whole-tree walk and requires each file to read `is_vendored`,
+    or to be on the short allowlist of walks that have their own rule.
+    """
+    ALLOWED_WITHOUT = {
+        "ingestion/line_census.py",                 # reads VENDORED_DIRS by its old name
+        "ingestion/dependency_parser.py",           # excludes vendor/node_modules ad hoc per manifest
+        "surveyors/arch_recovery/spring_app.py",    # arch recovery has its own exclusion module
+        "surveyors/arch_recovery/exclusion.py",
+    }
+
+    def test_whole_tree_walks_consult_the_rule(self):
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1] / "resource_explorer"
+        offenders = []
+        for f in list((root / "surveyors").rglob("*.py")) + list((root / "ingestion").rglob("*.py")):
+            rel = str(f.relative_to(root))
+            src = f.read_text(encoding="utf-8")
+            walks = re.findall(r'\.rglob\("\*"\)|\.rglob\(\'\*\'\)|os\.walk\(', src)
+            if not walks or rel in self.ALLOWED_WITHOUT:
+                continue
+            if "is_vendored" not in src and "VENDORED_DIRS" not in src:
+                offenders.append(rel)
+        assert offenders == [], f"whole-tree walks that never consult the vendored rule: {offenders}"
+
+    def test_the_survey_symbol_walk_skips_vendored(self, tmp_path):
+        from resource_explorer.surveyors.sub_surveyors.symbol_extraction import _local_files
+        (tmp_path / "src").mkdir(); (tmp_path / "node_modules" / "t").mkdir(parents=True)
+        (tmp_path / "src" / "own.py").write_text("x = 1\n")
+        (tmp_path / "node_modules" / "t" / "theirs.py").write_text("y = 2\n")
+        assert [p for p, _ in _local_files(tmp_path, [".py"])] == ["src/own.py"]

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 # ── security_policy_content ─────────────────────────────────────────────
 # Checked in priority order — first file found wins (matches
@@ -70,7 +71,7 @@ def _any_file_present(local_root: Path, filenames: tuple[str, ...]) -> list[str]
     (monorepos, a `docker/` folder, etc.), not always at repo root."""
     found = []
     for p in local_root.rglob("*"):
-        if p.is_file() and p.name in filenames:
+        if p.is_file() and p.name in filenames and not is_vendored_abs(p, local_root):
             found.append(str(p.relative_to(local_root)))
     return found
 
@@ -158,7 +159,9 @@ class RepoConventionsParser:
         md_txt_count = 0
         docs_dir_present = False
         for p in local_root.rglob("*"):
-            if not p.is_file():
+            # doc_breadth counts READMEs and .md/.txt across the tree; 175
+            # of egeria-workspaces' markdown files were node_modules'.
+            if not p.is_file() or is_vendored_abs(p, local_root):
                 continue
             rel = str(p.relative_to(local_root)).replace("\\", "/")
             name = _basename(rel)
