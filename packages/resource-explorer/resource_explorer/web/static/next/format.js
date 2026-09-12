@@ -40,3 +40,24 @@ export function daysSince(iso) {
   if (Number.isNaN(then)) return null;
   return (Date.now() - then) / 86400000;
 }
+
+/** One disposition verdict, one line, the same in both views:
+ *  `tracking · 32d ago (2026-08-11) · who · reason`. The reason sits in
+ *  ink beside the word it explains -- a trail exists for the reasons, and
+ *  rendering them dimmer than the one-word verdict says the opposite.
+ *  `esc` is passed in because this module has no DOM helpers of its own. */
+export function verdictLineHtml(r, esc) {
+  const when = r.decided_at || '';
+  const rel = ago(when);
+  return `<span class="text-ink">${esc(r.disposition || '—')}</span>${
+    rel ? ` · <span class="tnum">${esc(rel)}</span>` : ''}${
+    when ? ` <span class="tnum">(${esc(String(when).slice(0, 10))})</span>` : ''}${
+    r.decided_by ? ` · ${esc(r.decided_by)}` : ''}${
+    r.reason ? ` · <span class="text-ink">${esc(r.reason)}</span>` : ''}`;
+}
+
+/** "changed once" / "changed 3 times" -- never `time(s)`. */
+export function changedTimesHtml(n) {
+  if (n < 1) return '';
+  return n === 1 ? 'changed once' : `changed <span class="tnum">${n}</span> times`;
+}

@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -56,6 +56,7 @@ import {
   listInvestigationMembers,
   listInvestigations,
   listPerspectives,
+  listAllPerspectives,
   listProjects,
   listRfas,
   pollActivity,
@@ -2517,19 +2518,43 @@ async function renderDispositionHistory(githubUrl, target = 'disposition-history
     el.textContent = 'No disposition has been recorded for this repo.';
     return;
   }
-  el.innerHTML = `<div class="mb-[3px] uppercase tracking-caps text-caps">History</div>`
-    + rows.map((r) => {
-      // The field is `decided_at` — verified against the endpoint, not
-      // guessed. `decided_by` is often empty; it is shown only when set,
-      // rather than rendering an empty attribution.
-      const when = r.decided_at || '';
-      const rel = ago(when);
-      return `<div><span class="text-ink">${esc(r.disposition || '—')}</span>
-        ${rel ? ` · <span class="tnum">${esc(rel)}</span>` : ''}
-        ${when ? ` <span class="tnum">(${esc(String(when).slice(0, 10))})</span>` : ''}
-        ${r.decided_by ? ` · ${esc(r.decided_by)}` : ''}
-        ${r.reason ? ` · ${esc(r.reason)}` : ''}</div>`;
-    }).join('');
+  // Oldest first, the same as the matrix's trail: the point is the
+  // sequence. One formatter for both views -- they had drifted into two
+  // layouts of one fact.
+  const ordered = [...rows].sort((a, b) => whenMs(a.decided_at) - whenMs(b.decided_at));
+  el.innerHTML = `<div class="mb-[3px] uppercase tracking-caps text-caps">History${
+      ordered.length > 1 ? ` · ${changedTimesHtml(ordered.length - 1)}` : ''}</div>`
+    + ordered.map((r) => `<div>${verdictLineHtml(r, esc)}</div>`).join('');
+}
+
+/** The verdict picker, as one thing: the popover and the Disposition pane
+ *  both show it, and a trail with no way to add to it was the drawing's
+ *  complaint about the pane. `onSet` runs after a successful write. */
+function dispositionPickerHtml(p) {
+  return `<div class="flex flex-wrap items-baseline gap-s2 text-caveat">
+    <span class="text-ink-muted">Set disposition</span>
+    ${VALID_DISPOSITIONS.map((d) => `<button data-disp="${esc(d)}"
+      class="cursor-pointer rounded-pill bg-transparent px-2 py-[1px] ${
+        d === (p.disposition || 'undecided')
+          ? 'border border-accent text-accent-ink'
+          : 'border border-rule-strong text-ink hover:border-accent'}"
+      >${esc(d)}</button>`).join('')}
+  </div>`;
+}
+
+function wireDispositionPicker(host, p, { note, onSet }) {
+  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
+    const value = b.dataset.disp;
+    note('Saving…');
+    try {
+      await setDisposition(p.github_url, value);
+      p.disposition = value;
+      renderSidebar();
+      await onSet(value);
+    } catch (err) {
+      note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
+    }
+  }));
 }
 
 /** The header's three write paths. `hide` is reversible, `disposition` is a
@@ -2550,15 +2575,7 @@ function bindResourceHeader() {
       return;
     }
     slot.innerHTML = `
-      <div class="flex flex-wrap items-baseline gap-s2 text-caveat">
-        <span class="text-ink-muted">Set disposition</span>
-        ${VALID_DISPOSITIONS.map((d) => `<button data-disp="${esc(d)}"
-          class="cursor-pointer rounded-pill bg-transparent px-2 py-[1px] ${
-            d === (p.disposition || 'undecided')
-              ? 'border border-accent text-accent-ink'
-              : 'border border-rule-strong text-ink hover:border-accent'}"
-          >${esc(d)}</button>`).join('')}
-      </div>
+      ${dispositionPickerHtml(p)}
       <div id="disposition-history-popover" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
     // The HISTORY, alongside the picker. It exists in the current UI and
     // nowhere in /next, and it is the only place the SEQUENCE of verdicts is
@@ -2566,21 +2583,12 @@ function bindResourceHeader() {
     // current value cannot say that something was abandoned and then picked
     // back up.
     renderDispositionHistory(p.github_url, 'disposition-history-popover');
-    slot.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
-      const value = b.dataset.disp;
-      note('Saving…');
-      try {
-        await setDisposition(p.github_url, value);
-        p.disposition = value;
-        renderSidebar();
-        el.innerHTML = '';        // rebuilt below by loadPane
-        await loadPane();
-        $('resource-action').innerHTML =
-          `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
-      } catch (err) {
-        note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
-      }
-    }));
+    wireDispositionPicker(slot, p, { note, onSet: async (value) => {
+      el.innerHTML = '';        // rebuilt below by loadPane
+      await loadPane();
+      $('resource-action').innerHTML =
+        `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
+    } });
   });
 
   el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
@@ -2718,6 +2726,7 @@ async function loadDispositionPane() {
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
+    <div id="disposition-picker" class="mb-s2"></div>
     <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
@@ -2728,8 +2737,23 @@ async function loadDispositionPane() {
   bindSubTabs();
   bindResourceHeader();
   const project = state.projects.find((x) => x.slug === slug);
-  if (project?.github_url) renderDispositionHistory(project.github_url);
-  else $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+  if (project?.github_url) {
+    // The picker WITH its trail, as drawn -- the header popover is a click
+    // away and above the heading; this is where a verdict is considered.
+    const mountPicker = () => {
+      const pick = $('disposition-picker');
+      if (!pick) return;
+      pick.innerHTML = dispositionPickerHtml(project);
+      wireDispositionPicker(pick, project, {
+        note: (html) => { const h = $('disposition-history'); if (h) h.innerHTML = html; },
+        onSet: async () => { mountPicker(); await renderDispositionHistory(project.github_url); },
+      });
+    };
+    mountPicker();
+    renderDispositionHistory(project.github_url);
+  } else {
+    $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+  }
   renderJournalWrite(slug);
   await renderJournalEntries(slug);
 }
@@ -2738,7 +2762,11 @@ function renderJournalWrite(slug) {
   const host = $('journal-write');
   if (!host) return;
   const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
-  const perspectives = (state.perspectives || []).map((p) => p.name || p.id || p).filter(Boolean);
+  // An AUDIENCE is the whole Egeria vocabulary, not the filter row's
+  // subset: someone is a Data Owner whether or not any analysis is tagged
+  // with it today. (The two are the same twelve at the moment; the point
+  // is which list this one follows when they diverge.)
+  const perspectives = (state.allPerspectives || state.perspectives || []).map((p) => p.name || p.id || p).filter(Boolean);
   host.innerHTML = `
     <textarea id="journal-body" rows="4" placeholder="Worth using for anyone who… Note the… before depending on it."
       class="w-full rounded-sm border border-rule-strong bg-transparent p-s2 text-answer text-ink placeholder:text-ink-muted"></textarea>
@@ -2767,12 +2795,17 @@ function renderJournalWrite(slug) {
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
       b.disabled = false; b.textContent = 'Write';
-      const where = (out.work_lists || []).map((w) => w.work_list).join(', ');
+      // Where it landed, by the list's NAME -- "Suggested to Data Expert"
+      // is what was created; the slug is how the server finds it. And it
+      // stays until the next write replaces it: this is the only record
+      // the writer gets, and six seconds is not long enough to read one.
+      const where = (out.work_lists || []).map((w) => w.name || w.work_list).join(', ');
+      host.querySelector('[data-journal-note]')?.remove();
       const note = document.createElement('div');
-      note.className = 'mt-s1 text-provenance text-ink-muted';
-      note.textContent = where ? `written · suggested — now in ${where}` : 'written';
+      note.className = 'mt-s1 text-provenance text-ink';
+      note.setAttribute('data-journal-note', '1');
+      note.textContent = where ? `written · suggested — now in “${where}”` : 'written';
       host.appendChild(note);
-      setTimeout(() => note.remove(), 6000);
       await renderJournalEntries(slug);
     } catch (err) {
       b.disabled = false;
@@ -4568,6 +4601,7 @@ async function loadPane() {
     try {
       await openWorkList({
         el,
+        subTabs: SUB_TABS.map((t) => ({ id: t.id, label: t.label })),
         stage: state.stage,
         perspectives: state.activePerspectives,
         projects: state.projects,
@@ -5671,7 +5705,7 @@ async function start() {
   state.investigation = currentInvestigation();
 
   const [me, projects, perspectives, activity, rfas, groups, investigations,
-         workLists, analyses] =
+         workLists, analyses, allPerspectives] =
     await Promise.allSettled([
       getMe(),
       // The FULL list — every disposition, hidden included — because the
@@ -5680,10 +5714,12 @@ async function start() {
       listProjects({ includeIgnored: true, includeHidden: true }),
       listPerspectives(), listActivity(ACTIVITY_LIMIT), listRfas(),
       listGroups(), listInvestigations(), listWorkLists(), listAnalyses('repo'),
+      listAllPerspectives(),
     ]);
 
   if (me.status === 'fulfilled') state.me = me.value;
   if (perspectives.status === 'fulfilled') state.perspectives = perspectives.value || [];
+  if (allPerspectives.status === 'fulfilled') state.allPerspectives = allPerspectives.value || [];
   // Both endpoints PAGE. A returned length equal to the limit is a page
   // that filled, not a total — rendering it as one would print an exact
   // figure that is exactly wrong, and nothing about the number would look

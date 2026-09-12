@@ -120,6 +120,10 @@ export const listFilesystems = () => get('/api/filesystems/');
 export const listPerspectives = () =>
   cached('perspectives', () => get('/api/analyses/perspectives'));
 
+/** The whole vocabulary -- an audience, not a filter. */
+export const listAllPerspectives = () =>
+  cached('perspectives-all', () => get('/api/analyses/perspectives?scope=all'));
+
 export const listAnalyses = (resourceType, { intent, perspective } = {}) => {
   const qs = new URLSearchParams();
   if (intent) qs.set('intent', intent);

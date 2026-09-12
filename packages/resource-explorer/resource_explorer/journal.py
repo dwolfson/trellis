@@ -128,16 +128,20 @@ class Journal:
         adding a second row — set_member upserts."""
         wl = WorkLists(self.registry)
         slug = audience_slug(target)
+        name = f"Suggested to {target}"
         existing = wl.get(slug)
         if existing is None:
-            wl.create(f"Suggested to {target}", [entity_slug], slug=slug, entity_type=entity_type,
+            wl.create(name, [entity_slug], slug=slug, entity_type=entity_type,
                       created_by=author, derived_from="journal",
                       description="Resources someone wrote about and suggested to this audience. "
                                   "Each member's rationale is their journal entry.",
                       rationale=body)
         else:
             wl.set_member(slug, entity_slug, rationale=body)
-        return {"target": target, "work_list": slug}
+            name = (existing.get("display_name") if isinstance(existing, dict)
+                    else getattr(existing, "display_name", None)) or name
+        # The NAME is where it landed; the slug is how the server finds it.
+        return {"target": target, "work_list": slug, "name": name}
 
     def suggested_targets(self, entity_type: str, entity_slug: str) -> list[str]:
         """Everyone this resource has ever been suggested to."""
