@@ -228,7 +228,12 @@ class TestTheSurveyor:
 
     def test_no_dependency_rows_is_unverified_not_zero_technologies(self, reg, slug, monkeypatch):
         anns = self._run(reg, slug, monkeypatch)
-        assert len(anns) == 1 and anns[0].check_name == "coverage"
+        # The ANNOTATION is `nothing_to_assess` — a different statement from the
+        # normal path's `coverage`, and two annotations sharing a check_name
+        # with no item key would publish one qualifiedName. The persisted
+        # FINDING row keeps check_name `coverage` / label `no-dependencies`,
+        # which is what the results reader keys on.
+        assert len(anns) == 1 and anns[0].check_name == "nothing_to_assess"
         assert anns[0].json_properties.get("outcome") == "unverified"
         rows = reg.query_findings(slug, "dependency_support")
         assert rows and rows[0]["label"] == "no-dependencies"

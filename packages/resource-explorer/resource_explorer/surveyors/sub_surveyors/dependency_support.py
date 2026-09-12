@@ -54,7 +54,13 @@ class DependencySupportSurveyor(BaseSurveyor):
                 results.append(ClassificationAnnotation(
                     summary="No dependency rows held for this repository — nothing to assess "
                             "(manifest parsing may not have run)",
-                    analysis_step=STEP, check_name="coverage",
+                    # Not "coverage": that name belongs to the normal path's
+                    # annotation below, and two annotations sharing a check_name
+                    # with no item key publish the same qualifiedName if both
+                    # ever run in one survey (test_annotation_check_names). This
+                    # branch says "nothing to assess", which is a different
+                    # statement from "here is how much was covered".
+                    analysis_step=STEP, check_name="nothing_to_assess",
                     candidate_classifications=[], confidence=0,
                     json_properties={"total_dependencies": 0, **outcome.as_row()},
                 ))

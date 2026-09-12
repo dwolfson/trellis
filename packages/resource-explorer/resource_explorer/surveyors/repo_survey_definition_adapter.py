@@ -4471,8 +4471,12 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
     ),
     "dependencies": SurveyResultDashboard(
         "dependencies", "Dependencies",
-        "Package dependencies per ecosystem.",
-        ["dependency_analysis"],
+        "Package dependencies per ecosystem, and which curated technologies they indicate — "
+        "a starting point for 'do we already support these?', not an answer.",
+        # dependency_support added 2026-09-12: it reads the same
+        # project_dependencies rows dependency_analysis reports on, so the two
+        # are one question asked twice — what is here, and what does it mean.
+        ["dependency_analysis", "dependency_support"],
     ),
     # interface_surface added 2026-08-31, same Backlog entry — "what can be
     # talked to, and whether the contract is written down" is the same
