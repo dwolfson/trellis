@@ -456,8 +456,19 @@ class TestTheSinkCannotRaise:
         monkeypatch.setattr(mlflow_tracking, "endpoint_reachable", _boom)
         mlflow_tracking.log_run_usage("r1", "analysis_run", {"llm_total_tokens": 5})
 
-    def test_a_malformed_usage_dict_does_not_propagate(self, monkeypatch):
+    def test_a_malformed_usage_dict_does_not_propagate(self, monkeypatch, tmp_path):
+        """The bad dict has to reach the sink for this to test anything, so
+        MLflow is pointed at a file store in tmp_path. Forcing the
+        reachability probe alone left the real REST client talking to
+        localhost:5025 -- present on a dev box, absent on CI, where urllib3's
+        retry backoff outran the 120s pytest timeout on every main run from
+        2026-09-11 on."""
+        from types import SimpleNamespace
         from resource_explorer.observability import mlflow_tracking
+
+        cfg = SimpleNamespace(observability=SimpleNamespace(mlflow=SimpleNamespace(
+            enabled=True, tracking_uri=tmp_path.as_uri(), experiment_name="t")))
+        monkeypatch.setattr(mlflow_tracking, "get_config", lambda: cfg)
         monkeypatch.setattr(mlflow_tracking, "endpoint_reachable", lambda _u: True)
         for bad in ({"llm_models": None}, {"llm_total_tokens": object()}, {"x": [1, 2]}):
             mlflow_tracking.log_run_usage("r1", "analysis_run", bad)
