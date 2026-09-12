@@ -54,12 +54,17 @@ gap:
 | kind | n | questions | reading |
 |---|---|---|---|
 | `human`, Analysis/Enrichment | 5 | monitoring fit, security fit, infrastructure fit, skills, governance fit | **by design** — rule 17: Enrichment is served by `context.py`, not analyses |
-| `human`, Analysis | 2 | *do we already support these dependencies?* · *do we know the cost to run it?* | human by nature of the question; a machine could *inform* but not answer |
-| `partial`, Analysis | 1 | *what kinds of integrations does it support?* | partially covered; not enumerated here |
-| **`gap`, Analysis** | **3** | ***what are similar repos, how does this differ?* · *what is the upgrade process?* · *for AI/ML assets, what licensing or usage constraints apply?*** | **nothing exists** |
+| `human`, Analysis | 1 | *do we know the cost to run it?* | human by nature of the question |
+| `human`, Analysis | 1 | *do we already support these dependencies?* | **Decision (project owner, 2026-09-11):** Egeria may hold a starting point — cross-reference `project_dependencies` against the technologies and assets already catalogued there — "that would still need corroboration and augmentation by people". A machine-informed, human-confirmed answer: candidate to move from `human` to `mixed` |
+| `partial`, Analysis | 1 | *what kinds of integrations does it support?* | **Decision (project owner, 2026-09-11):** "there are a number of things we could do to try to derive that — may not be complete but still useful". Signals already collected: client-library dependencies (`kafka-python`, `boto3`, `psycopg2`…), the API surface, compose/config files. Derivable, incomplete, worth having |
+| `gap`, Analysis | 1 | *what are similar repos, how does this differ?* | **Decision (project owner, 2026-09-11):** "we have to do some analysis and design work" first. Not a derivation from anything collected today |
+| `gap`, Analysis | 2 | *what is the upgrade process?* · *for AI/ML assets, what licensing or usage constraints apply?* | nothing exists; not yet discussed |
 
 So the honest count of questions with no survey or analytic is **three**, with
-one more partially covered.
+one more partially covered — but as of 2026-09-11 they are three different
+shapes, not one bucket: one has an Egeria-backed starting point, one is
+derivable-but-incomplete from data already held, and one needs design work
+before anything is built.
 
 ## 3. Coverage per stage
 
@@ -177,11 +182,22 @@ third of the machine-answerable catalogued surface.
 4. **Own the four unowned steps** under a Scouting-tier profile analysis so
    their runs attribute.
 5. **Retire `repo_profile_refresh`** (dead) and **decide `security_summary`**.
-6. **Only then consider new analyses**, and only for the three `gap`
-   questions. *Upgrade process* and *AI/ML licensing* are plausibly derivable
-   from data already collected (release notes; license and model-card files).
-   *Similar repos* is a different kind of problem and should not be built on
-   the strength of one question.
+6. **Only then consider new analyses — and the gap questions are now three
+   different kinds of work, per the owner's 2026-09-11 directions:**
+   - *Do we already support these dependencies?* — an **Egeria
+     cross-reference**: `project_dependencies` against the technologies and
+     assets Egeria already catalogues, presented as a starting point a person
+     corroborates and augments, never as the answer. Cheapest of the three; RE
+     already publishes to Egeria and already holds the dependency rows.
+   - *What kinds of integrations does it support?* — a **derivation from data
+     already collected**: client-library dependencies, API surface,
+     compose/config. Will be incomplete and should say so per finding (the
+     `partial` vocabulary already exists for it), but useful.
+   - *What are similar repos?* — **analysis and design work first**. Not a
+     derivation; do not build it on the strength of one question.
+   - *Upgrade process* and *AI/ML licensing* are plausibly derivable from data
+     already collected (release notes; license and model-card files) but have
+     not been discussed and are not scheduled.
 7. **Look at `repo_conventions`' seven checks** for independence — not to
    split it, but to know whether one broken check takes seven answers with it.
 
