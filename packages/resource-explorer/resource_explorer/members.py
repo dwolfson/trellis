@@ -236,3 +236,46 @@ def children_for(registry: ProjectRegistry, slug: str, analysis_id: str, key: st
     if key.startswith("file:") and analysis_id in ("api_structure", "code_symbol_extraction"):
         return _symbols_in_file(registry, slug, key[5:], scope, limit)
     return []
+
+
+# ── Promotion: a selection becomes a thing someone acts on ──────────────────
+#
+# A member list is the first place in the product where a person looks at
+# THINGS rather than NUMBERS, and things are what you act on. "18" is not a
+# work item; "three of these advisories have no fix" is. Three acts, and
+# they are different: ADD TO WORK LIST is "I will deal with this"; RAISE RFA
+# is "someone must"; NOTE IN JOURNAL is "this is worth knowing about the
+# resource" — the one with no obligation attached, and the likeliest used.
+#
+# A promoted selection keeps its PROVENANCE and does not keep its
+# MEMBERSHIP: the analysis, the run date and the members as they were, so
+# the item reads "3 of 18 advisories · high · from cve_scan, run 2026-09-03".
+# Never a live query. A work item that silently changes what it refers to
+# when the scan re-runs is unusable; five next time is a new observation
+# against the same item, not a mutation of it.
+#
+# Deliberately absent: "ignore" / "accept risk". That is a disposition on
+# the finding — a judgement with an author and a date — and belongs to the
+# perishable-field machinery, not a list's toolbar.
+
+def provenance_line(*, analysis_id: str, run_at: str, total: int, members: list[str],
+                    facet: str = "", metric: str = "") -> str:
+    """The sentence every promotion carries. Members are listed by name so the
+    item stays legible after the scan moves on."""
+    n = len(members)
+    what = metric.replace("_", " ") if metric else "members"
+    head = f"{n} of {total} {what}" if total and n != total else f"{n} {what}"
+    if facet:
+        head += f" · {facet}"
+    when = f", run {run_at[:10]}" if run_at else ""
+    names = ", ".join(members[:12]) + (f", and {n - 12} more" if n > 12 else "")
+    return f"{head} · from {analysis_id}{when}: {names}"
+
+
+def proposed_name(display_name: str, *, total: int, members: list[str], facet: str = "",
+                  metric: str = "") -> str:
+    """'egeria-workspaces — 3 advisories, high'. Editable before saving."""
+    what = (metric.replace("_", " ") if metric else "members")
+    n = len(members)
+    core = f"{n} {what}" if n != 1 else f"1 {what.rstrip('s') or what}"
+    return f"{display_name} — {core}" + (f", {facet}" if facet else "")

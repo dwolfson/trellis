@@ -5,8 +5,8 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -1444,3 +1444,69 @@ async def get_member_children(slug: str, analysis_id: str, key: str, scope: str 
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     rows = await asyncio.to_thread(lambda: children_for(registry, slug, analysis_id, key, scope=scope, limit=min(max(limit, 1), 1000)))
     return {"key": key, "members": rows}
+
+
+class PromoteSelection(BaseModel):
+    """A selection from a member list, with its provenance. `members` are the
+    names as they were when selected — a snapshot, never a query."""
+    action: str                      # work_list | rfa | journal
+    metric: str = ""
+    members: list[str] = Field(default_factory=list)
+    total: int = 0
+    facet: str = ""
+    run_at: str = ""
+    name: str = ""                   # the work item's name; proposed by the client, editable
+    suggest_to: list[str] = Field(default_factory=list)   # journal only
+
+
+@router.post("/{slug}/members/{analysis_id}/promote")
+def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request: Request) -> dict:
+    """Promote a member-list selection: to a work list (I will deal with
+    this), an RFA (someone must), or the journal (worth knowing). One
+    provenance line, composed here, travels with all three. See the
+    promotion note in resource_explorer/members.py.
+
+    Signed-in only: a work item, a request for action and a journal entry
+    all need someone to have made them.
+    """
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.journal import Journal
+    from resource_explorer.members import proposed_name, provenance_line
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.work_lists import WorkLists
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to promote a selection — it needs someone to have made it.")
+    if body.action not in ("work_list", "rfa", "journal"):
+        raise HTTPException(status_code=422, detail="action must be work_list, rfa or journal")
+    if not body.members:
+        raise HTTPException(status_code=422, detail="nothing is selected")
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    line = provenance_line(analysis_id=analysis_id, run_at=body.run_at, total=body.total,
+                           members=body.members, facet=body.facet, metric=body.metric)
+    name = body.name.strip() or proposed_name(project.display_name or slug, total=body.total,
+                                              members=body.members, facet=body.facet, metric=body.metric)
+
+    if body.action == "work_list":
+        wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
+                                        derived_from=f"members:{analysis_id}", rationale=line,
+                                        description=f"Promoted from the {analysis_id} member list.")
+        return {"action": "work_list", "name": name, "provenance": line, "work_list": wl.get("slug") if wl else None}
+
+    if body.action == "rfa":
+        rfa_id = log_rfa(registry, "repo", slug, project.display_name or slug, "open", name, detail=line,
+                         analysis_name=analysis_id,
+                         items=[{"kind": "member", "analysis_id": analysis_id, "name": m} for m in body.members[:50]])
+        return {"action": "rfa", "name": name, "provenance": line, "rfa": rfa_id}
+
+    entry = Journal(registry).write("repo", slug, author=author, body=f"{name}. {line}", suggest_to=body.suggest_to)
+    return {"action": "journal", "name": name, "provenance": line, "journal": entry.get("id"),
+            "work_lists": entry.get("work_lists", [])}

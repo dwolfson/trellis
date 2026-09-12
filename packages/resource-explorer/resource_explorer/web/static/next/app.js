@@ -47,6 +47,7 @@ import {
   getBulkFacts,
   getMemberChildren,
   getMembers,
+  promoteMembers,
   getQuestions,
   getScoutingOverview,
   listActivity,
@@ -3770,6 +3771,108 @@ function memberScope() {
   return currentPurposes().includes('Maintain') ? 'all' : 'public';
 }
 
+/* ── Promotion: the selection becomes a thing someone acts on ────────────
+ *
+ * A member list is the first place in the product where a person looks at
+ * THINGS rather than NUMBERS, and things are what you act on. "18" is not a
+ * work item; "three of these have no fix" is.
+ *
+ * The filters ARE the selection. "Everything matching the thing I noticed"
+ * should not need a click per row: a facet — a severity, a package — selects
+ * its members in one. Hand-picking stays. Facets come from the fields the
+ * annotation already stores; nothing is invented, which is also why "no
+ * fix" is not one here — cve_scan does not record fix availability, and a
+ * facet the data cannot back would select nothing and look broken.
+ *
+ * Three acts, and they are different: add to work list (I will deal with
+ * this), raise RFA (someone must), note in journal (worth knowing — no
+ * obligation, so the likeliest used). One provenance line, composed on the
+ * server, travels with all three. The selection is a SNAPSHOT of names,
+ * never a query: a work item that changes what it refers to when the scan
+ * re-runs is unusable.
+ *
+ * No "ignore" / "accept risk" here. That is a disposition on the finding — a
+ * judgement with an author and a date — and belongs to the perishable-field
+ * machinery, not a toolbar.
+ */
+function facetsHtml(groups) {
+  const leaf = groups.flatMap((g) => g.members.filter((m) => !m.children_key).map((m) => ({ ...m, group: g.name })));
+  if (!leaf.length) return '';
+  const byDetail = new Map();
+  for (const m of leaf) if (m.detail) byDetail.set(m.detail, (byDetail.get(m.detail) || 0) + 1);
+  const detailFacets = [...byDetail.entries()].filter(([, n]) => n < leaf.length).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const groupFacets = groups.filter((g) => g.members.some((m) => !m.children_key) && groups.length > 1).slice(0, 8);
+  if (!detailFacets.length && !groupFacets.length) return '';
+  return `<div class="mb-s2 flex flex-wrap items-baseline gap-x-s2 gap-y-[2px] text-caps">
+    <span class="text-chrome-muted">select</span>
+    ${detailFacets.map(([d, n]) => `<button data-facet-detail="${esc(d)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">${esc(d)} <span class="tnum text-chrome-muted">${n}</span></button>`).join('')}
+    ${groupFacets.map((g) => `<button data-facet-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-muted underline">${esc(g.name.split(' ')[0])} <span class="tnum">${g.members.filter((m) => !m.children_key).length}</span></button>`).join('')}
+    <button data-facet-all class="cursor-pointer bg-transparent p-0 font-mono text-chrome-muted underline">all <span class="tnum">${leaf.length}</span></button>
+    <button data-facet-none class="cursor-pointer bg-transparent p-0 text-chrome-muted underline">none</button>
+  </div>`;
+}
+
+function wireSelection(out, { slug, analysisId, metric, data }) {
+  const picks = () => [...out.querySelectorAll('[data-pick]:checked')];
+  const footer = out.querySelector('#member-selection');
+  let facet = '';
+  const project = state.projects.find((x) => x.slug === slug);
+  const total = data.total || 0;
+  const runAt = state.enrichmentFacts?.[analysisId]?.last_run_at || data.run_at || '';
+
+  const setFacet = (pred, label) => {
+    out.querySelectorAll('[data-pick]').forEach((c) => { c.checked = pred(c); });
+    facet = label;
+    render();
+  };
+  out.querySelector('[data-facet-all]')?.addEventListener('click', () => setFacet(() => true, ''));
+  out.querySelector('[data-facet-none]')?.addEventListener('click', () => setFacet(() => false, ''));
+  out.querySelectorAll('[data-facet-detail]').forEach((b) => b.addEventListener('click', () =>
+    setFacet((c) => c.dataset.detail === b.dataset.facetDetail, b.dataset.facetDetail)));
+  out.querySelectorAll('[data-facet-group]').forEach((b) => b.addEventListener('click', () =>
+    setFacet((c) => c.dataset.group === b.dataset.facetGroup, b.dataset.facetGroup.split(' ')[0])));
+  out.querySelectorAll('[data-pick]').forEach((c) => c.addEventListener('change', () => { facet = ''; render(); }));
+
+  function proposed(n) {
+    const what = (metric || data.metric || 'members').replace(/_/g, ' ');
+    return `${project?.display_name || slug} — ${n} ${what}${facet ? `, ${facet}` : ''}`;
+  }
+  function render() {
+    const sel = picks();
+    if (!sel.length) { footer.hidden = true; footer.innerHTML = ''; return; }
+    footer.hidden = false;
+    const keep = footer.querySelector('#promote-name')?.value;
+    footer.innerHTML = `
+      <div class="mb-[3px] text-caps text-chrome-ink"><span class="tnum">${sel.length}</span> selected${facet ? ` · ${esc(facet)}` : ''}
+        <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · ${esc(ago(runAt))}` : ''} · a snapshot, not a query</span></div>
+      <input id="promote-name" type="text" value="${esc(keep && !keep.startsWith(project?.display_name || slug) ? keep : proposed(sel.length))}"
+        class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink">
+      <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
+        <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
+        <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
+        <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
+        <span id="promote-status" class="text-chrome-muted"></span>
+      </div>`;
+    footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
+      const status = footer.querySelector('#promote-status');
+      const members = picks().map((c) => c.dataset.pick);
+      b.disabled = true; status.textContent = '…';
+      try {
+        const out2 = await promoteMembers(slug, analysisId, {
+          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet, runAt,
+          name: footer.querySelector('#promote-name').value.trim(),
+        });
+        // Say where it went, not "sent".
+        const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
+        status.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+      }
+    }));
+  }
+}
+
 async function openMembers({ slug, analysisId, metric = '', title = '' }) {
   const out = $('rail-evidence');
   if (!out) return;
@@ -3799,11 +3902,13 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
       ${data.scope_honoured ? '' : `<span class="text-chrome-muted">· scope not applicable to this set</span>`}
     </div>
     ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
+    ${facetsHtml(groups)}
     <div class="flex flex-col gap-s1">
       ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
         <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
         <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
           ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
+            ${m.children_key ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0 accent-accent">`}
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
@@ -3816,9 +3921,11 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
     </div>
     ${shown < data.total && !groups.some((g) => g.truncated)
       ? `<div class="mt-s1 text-caps text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${data.total}</span> listed; the rest are nested under what is shown</div>` : ''}
-    <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>`;
+    <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>
+    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2" hidden></div>`;
 
   out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
+  wireSelection(out, { slug, analysisId, metric, data });
   out.querySelector('[data-act="member-history"]')?.addEventListener('click', () => openMeasurementDetail({
     slug, analysisId, title: title || analysisId, metric,
   }));
