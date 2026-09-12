@@ -51,6 +51,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.step_outcome import RECOVERED, UNVERIFIED, StepOutcome, no_signal
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,9 @@ def _manifests_present(local_root: Path) -> list[str]:
     or was never selected."""
     found: set[str] = set()
     for p in local_root.rglob("*"):
-        if p.is_file() and p.name in _MANIFESTS:
+        # A vendored dependency's own package.json is not this repository's
+        # manifest; dependency_parser already skips these ad hoc.
+        if p.is_file() and p.name in _MANIFESTS and not is_vendored_abs(p, local_root):
             found.add(p.name)
     return sorted(found)
 

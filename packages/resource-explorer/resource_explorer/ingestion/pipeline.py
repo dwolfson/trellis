@@ -14,6 +14,7 @@ from resource_explorer.configdata.collection_config import CollectionType
 from resource_explorer.ingestion.vendored import is_vendored, is_vendored_abs
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 log = logging.getLogger(__name__)
 
@@ -843,12 +844,16 @@ class IngestionPipeline:
                 pass
 
         for path in local_root.rglob("*.pdf"):
+            if is_vendored_abs(path, local_root):
+                continue
             _handle(str(path.relative_to(local_root)), str(path))
         for display, abs_path in (extra_paths or []):
             if abs_path.is_file() and abs_path.suffix.lower() == ".pdf":
                 _handle(f"{display}/{abs_path.name}", str(abs_path))
             elif abs_path.is_dir():
                 for pdf in abs_path.rglob("*.pdf"):
+                    if is_vendored_abs(pdf, local_root):
+                        continue
                     _handle(f"{display}/{pdf.relative_to(abs_path)}", str(pdf))
 
         from resource_explorer.ingestion.artifact_tree_sink import (
