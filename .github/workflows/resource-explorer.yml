@@ -14,10 +14,14 @@ name: resource-explorer
 
 on:
   push:
-    # re/** as well as main: this workflow was added on a long-lived re/*
-    # feature branch, and a workflow that only triggers on main is untested
-    # YAML until the day it is merged — which is the worst moment to discover
-    # that a service container does not come up.
+    # Every branch, not just main and re/**: since 2026-09-10 all work lands
+    # on a branch + PR (main heads the upstream sync PR), and a suite that
+    # runs only on main runs only after merge. That is how a test that timed
+    # out on CI stayed red for 20 consecutive main runs while every branch PR
+    # showed "mergeable" with no test check at all — the fix/ branch carrying
+    # the repair could not run it either. (The earlier re/** entry existed for
+    # the same reason at smaller scale: a workflow that only triggers on main
+    # is untested YAML until the day it is merged.)
     #
     # No separate `pull_request:` trigger, deliberately (removed 2026-09-03):
     # every commit on an open PR from this repo already matches one of the
@@ -28,7 +32,7 @@ on:
     # checks on the PR merge box. This repo has no forks to cover, so `push:`
     # alone loses no coverage. If forked PRs are ever accepted, `pull_request:`
     # needs to come back — for a fork, `push:` never fires at all.
-    branches: [main, "re/**"]
+    branches: ["**"]
   workflow_dispatch:
 
 defaults:
