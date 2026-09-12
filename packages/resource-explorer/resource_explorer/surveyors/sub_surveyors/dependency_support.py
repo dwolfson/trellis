@@ -82,6 +82,14 @@ class DependencySupportSurveyor(BaseSurveyor):
                 results.append(ClassificationAnnotation(
                     summary=f"{m.technology.name} — indicated by {', '.join(sorted(m.dependencies)[:6])}",
                     analysis_step=STEP, check_name="technology",
+                    # One annotation per matched technology makes this check
+                    # list-shaped, and the publisher builds each qualifiedName
+                    # from (slug, run, check_name, item_key). Without the key,
+                    # any repo with two matched technologies collided and EVERY
+                    # publish of it — Curate, ☁ Publish, resync — was refused
+                    # before writing. Found on the first live press, not by the
+                    # static check-name guard, which sees sites and not loops.
+                    item_key=m.technology.name,
                     candidate_classifications=[m.technology.name],
                     confidence=85 if m.egeria_state == "present" else 70,
                     json_properties={

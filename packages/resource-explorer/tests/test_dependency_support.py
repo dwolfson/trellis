@@ -337,3 +337,61 @@ class TestAgainstLiveEgeria:
         assert not missing, (
             f"these mapping entries link to Egeria technology types that do not exist: {missing}. "
             f"Either the displayName is wrong or the type was removed.")
+
+
+class TestItsAnnotationsPublish:
+    """The regression #46 shipped: one ClassificationAnnotation per matched
+    technology, all check_name="technology", no item_key — so any repo with two
+    or more matched technologies produced two identical qualifiedNames and the
+    publisher refused the WHOLE publish (Curate, ☁ Publish, resync), before
+    writing anything. Found on the first live press of Curate → Catalogue on
+    egeria_workspaces_git, 2026-09-12 17:13, not by any test.
+
+    test_annotation_check_names did not catch it because it inspects static
+    emission sites, and this is a loop. So this test does what the publisher
+    does: runs the surveyor for real on a repo that matches ≥2 technologies and
+    hands its annotations to the publisher's own uniqueness check.
+    """
+
+    @pytest.fixture
+    def slug(self, request):
+        import re
+        return "dsp_" + re.sub(r"[^a-z0-9]+", "_", request.node.name.lower())[:44]
+
+    @pytest.fixture
+    def reg(self, pg_registry, slug):
+        from resource_explorer.registry import Project
+        pg_registry.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/x/{slug}"))
+        # Three technologies — the collision needs at least two.
+        pg_registry.upsert_dependencies(slug, [
+            {"dep_name": "psycopg2-binary", "dep_version": "2.9", "dep_type": "runtime",
+             "ecosystem": "python", "source_file": "requirements.txt"},
+            {"dep_name": "confluent-kafka", "dep_version": "2.3", "dep_type": "runtime",
+             "ecosystem": "python", "source_file": "requirements.txt"},
+            {"dep_name": "redis", "dep_version": "5.0", "dep_type": "runtime",
+             "ecosystem": "python", "source_file": "requirements.txt"},
+        ])
+        return pg_registry
+
+    def _annotations(self, reg, slug, monkeypatch):
+        from resource_explorer.surveyors.sub_surveyors.dependency_support import DependencySupportSurveyor
+        monkeypatch.setattr(ds, "egeria_technology_types_present",
+                            lambda names: ({n: True for n in names}, "checked", "stubbed"))
+        return DependencySupportSurveyor(project=reg.get(slug), registry=reg).run()
+
+    def test_multiple_matched_technologies_publish_under_distinct_qualified_names(self, reg, slug, monkeypatch):
+        from resource_explorer.surveyors.survey_report import assert_unique_qualified_names
+        anns = self._annotations(reg, slug, monkeypatch)
+        techs = [a for a in anns if a.check_name == "technology"]
+        assert len(techs) >= 2, "the fixture must produce the collision case"
+        # This is the exact call the publisher makes before writing; it raised
+        # ValueError on the shipped code.
+        assert_unique_qualified_names(f"Annotation::{slug}::2026-09-12T00:00:00", anns)
+
+    def test_every_per_technology_annotation_carries_its_own_item_key(self, reg, slug, monkeypatch):
+        anns = self._annotations(reg, slug, monkeypatch)
+        techs = [a for a in anns if a.check_name == "technology"]
+        keys = [a.item_key for a in techs]
+        assert all(keys), f"a per-technology annotation has no item_key: {keys}"
+        assert len(set(keys)) == len(keys), f"item_keys are not distinct: {keys}"
+        assert set(keys) == {"PostgreSQL", "Apache Kafka", "Redis"}
