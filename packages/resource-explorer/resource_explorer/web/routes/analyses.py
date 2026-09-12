@@ -117,12 +117,18 @@ def delete_annotation_type(type_name: str) -> dict:
 
 
 @router.get("/perspectives")
-def list_perspectives_route() -> list[str]:
+def list_perspectives_route(scope: str = "catalog") -> list[str]:
     """Distinct perspective values actually in the catalog — backs the UI's
     perspective selector so it's never a hardcoded, silently-stale list.
+    `scope=all` returns the whole Egeria vocabulary instead: an AUDIENCE
+    (the journal's "suggest to") is everyone who exists, not the subset
+    something is tagged with today.
     NOTE: declared before /{resource_type} deliberately — Starlette matches
     routes in declaration order, so a literal path after a path-param catch-all
     at the same position would never be reached."""
+    if scope == "all":
+        from resource_explorer.surveyors.analysis_catalog_reader import EGERIA_PERSPECTIVES
+        return list(EGERIA_PERSPECTIVES)
     return list_perspectives()
 
 

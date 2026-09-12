@@ -51,6 +51,9 @@ class TestSuggestionIsAWorkListEntry:
                       body="Worth using for anyone building against the Egeria API from Python.",
                       suggest_to=["Data Expert", "App/AI Builder"])
         assert [w["work_list"] for w in out["work_lists"]] == ["suggested-to-data-expert", "suggested-to-app-ai-builder"]
+        # The NAME travels back too: the UI says where it landed, and a
+        # machine slug is not where it landed (review, 2026-09-12).
+        assert [w["name"] for w in out["work_lists"]] == ["Suggested to Data Expert", "Suggested to App/AI Builder"]
         wl = WorkLists(registry).get("suggested-to-data-expert")
         assert wl["display_name"] == "Suggested to Data Expert"
         assert wl["derived_from"] == "journal" and wl["created_by"] == "peterprofile"
@@ -60,7 +63,8 @@ class TestSuggestionIsAWorkListEntry:
     def test_a_second_suggestion_to_the_same_audience_updates_not_duplicates(self, registry):
         j = Journal(registry)
         j.write("repo", "p", author="a", body="first note", suggest_to=["Consumer"])
-        j.write("repo", "p", author="b", body="second note, better", suggest_to=["Consumer"])
+        second = j.write("repo", "p", author="b", body="second note, better", suggest_to=["Consumer"])
+        assert second["work_lists"][0]["name"] == "Suggested to Consumer"   # the existing list's name, second time round
         j.write("repo", "q", author="b", body="a different resource", suggest_to=["Consumer"])
         wl = WorkLists(registry).get("suggested-to-consumer")
         members = {m["entity_slug"]: m["rationale"] for m in wl["members"]}
@@ -94,6 +98,20 @@ class TestRoute:
         r = client.post("/api/journal/repo/p", json={"body": "Note the sole-contributor risk.", "suggest_to": ["Steward"]})
         assert r.status_code == 200, r.text
         assert r.json()["author"] == "peterprofile"
-        assert r.json()["work_lists"] == [{"target": "Steward", "work_list": "suggested-to-steward"}]
+        assert r.json()["work_lists"] == [{"target": "Steward", "work_list": "suggested-to-steward", "name": "Suggested to Steward"}]
         listing = client.get("/api/journal/repo/p").json()
         assert len(listing["entries"]) == 1 and listing["suggested_to"] == ["Steward"]
+
+
+class TestTheAudienceIsTheWholeVocabulary:
+    client = TestRoute.client   # the same app, the same anonymous read
+
+    """`list_perspectives()` is a deliberate subset -- what can narrow a
+    filter row. An audience is not a filter: someone is a Data Owner whether
+    or not any analysis is tagged with it today. `scope=all` returns the
+    vocabulary; the default stays the subset."""
+
+    def test_scope_all_returns_every_egeria_perspective(self, client):
+        from resource_explorer.surveyors.analysis_catalog_reader import EGERIA_PERSPECTIVES, list_perspectives
+        assert client.get("/api/analyses/perspectives?scope=all").json() == list(EGERIA_PERSPECTIVES)
+        assert client.get("/api/analyses/perspectives").json() == list_perspectives()
