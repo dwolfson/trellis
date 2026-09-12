@@ -625,7 +625,10 @@ class IngestionPipeline:
                         pass
             elif abs_path.is_dir():
                 for f in abs_path.rglob("*"):
-                    if not f.is_file() or f.suffix.lower() not in extensions or is_vendored_abs(f, local_root):
+                    # An extra path lives outside local_root; vendored-ness is
+                    # relative to the extra directory itself. (Was `local_root`,
+                    # unbound here -- a NameError on any extra docs directory.)
+                    if not f.is_file() or f.suffix.lower() not in extensions or is_vendored_abs(f, abs_path):
                         continue
                     try:
                         content = f.read_text(encoding="utf-8", errors="ignore")
@@ -852,7 +855,7 @@ class IngestionPipeline:
                 _handle(f"{display}/{abs_path.name}", str(abs_path))
             elif abs_path.is_dir():
                 for pdf in abs_path.rglob("*.pdf"):
-                    if is_vendored_abs(pdf, local_root):
+                    if is_vendored_abs(pdf, abs_path):   # relative to the extra dir, not local_root
                         continue
                     _handle(f"{display}/{pdf.relative_to(abs_path)}", str(pdf))
 
