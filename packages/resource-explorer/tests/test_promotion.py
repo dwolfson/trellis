@@ -73,7 +73,7 @@ class TestThreeActs:
         assert r.status_code == 200, r.text
         e = Journal(registry).entries("repo", "p")[0]
         assert e["author"] == "peterprofile" and "from cve_scan, run 2026-09-03" in e["body"]
-        assert r.json()["work_lists"] == [{"target": "Security", "work_list": "suggested-to-security"}]
+        assert r.json()["work_lists"] == [{"target": "Security", "work_list": "suggested-to-security", "name": "Suggested to Security"}]
 
     def test_rfa_is_raised_with_the_line_as_detail(self, client, registry):
         r = client.post("/api/projects/p/members/cve_scan/promote", json={"action": "rfa", **SEL})
