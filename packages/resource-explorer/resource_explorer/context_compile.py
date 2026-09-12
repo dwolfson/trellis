@@ -55,9 +55,19 @@ _INSTRUCTIONS = (
     "Answer using only the evidence below. Every section states which analysis "
     "produced it. A section marked 'abridged' shows only the first few entries "
     "of each list or mapping — its counts and entries are partial, so do not "
-    "report an abridged list as complete. If the evidence does not answer the "
-    "question, say so and name what is missing — do not infer from absence."
+    "report an abridged list as complete. If the question asks yes or no, give "
+    "the yes or no and then the evidence line it rests on — the analysis, the "
+    "value, and any coverage limit or caveat shown beside it; a bare yes or no "
+    "is not an answer. If the evidence does not answer the question, say so and "
+    "name what is missing — do not infer from absence."
 )
+#: The yes/no sentence is the ONE variable of experiment run 8 (2026-09-11).
+#: Runs 5-7 put an honest headline ("not checked: 0 of 61 declared
+#: dependenc(ies) could be queried") and the catalog's own caveat directly
+#: under it, and the 8B answerer still replied "No", then "Yes", to "Are
+#: there outstanding CVEs?" on docling. Three compilers' worth of evidence
+#: did not move a one-word answer, so the instruction now asks for the line
+#: the answer rests on. Measured, not assumed: see the experiment doc.
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small
 #: to carry the template. Instructions are required, so without a shorter
@@ -65,7 +75,8 @@ _INSTRUCTIONS = (
 #: one section that used to be exempt from the ladder now climbs it too.
 _INSTRUCTIONS_SHORT = (
     "Answer only from the evidence below; name the analysis behind each point. "
-    "'Abridged' sections show first entries only. If it does not answer, say "
+    "'Abridged' sections show first entries only. A yes/no answer must state "
+    "the evidence line and its coverage limit. If it does not answer, say "
     "which analysis would and whether it has run. Do not infer from absence."
 )
 
