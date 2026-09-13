@@ -358,8 +358,13 @@ class CveScanSurveyor(BaseSurveyor):
                 # `recorded` because the manifest parser reads declarations.
                 "excludes_transitive": True,
             }
+            # supersedes_previous=True: this call IS the whole run's answer
+            # for (slug, "cve_scan", "") — the motivating case for the
+            # opt-in (docs/Backlog.md, 2026-09-13 defect: a clean run wrote
+            # zero rows and a 12-day-old advisory kept answering as current).
             self.registry.upsert_finding(slug, "cve_scan", findings,
-                                         surveyed_at=self._surveyed_at)
+                                         surveyed_at=self._surveyed_at,
+                                         supersedes_previous=True)
             self.registry.upsert_metric(
                 slug, "cve_scan",
                 {"advisories": float(advisory_count),

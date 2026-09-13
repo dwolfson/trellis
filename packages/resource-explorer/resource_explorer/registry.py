@@ -1200,6 +1200,22 @@ class ProjectRegistry:
                     "ALTER TABLE project_analysis_findings "
                     "ADD COLUMN egeria_annotation_guid TEXT DEFAULT NULL"
                 )
+            # Migration: add superseded_at — "a run that finds nothing
+            # retires the previous run's findings" (docs/Backlog.md,
+            # 2026-09-13 cve_scan defect). NULL = still current, matching
+            # every pre-existing row (nothing was ever superseded before
+            # this column existed). Set only by upsert_finding() when a
+            # caller opts in with supersedes_previous=True; see that
+            # method's docstring. query_findings() (the "current answer"
+            # reader) excludes rows where this is set; query_findings_
+            # history_raw() and query_findings_all_runs() do not — a
+            # superseded row is never deleted, only stopped being served
+            # as current.
+            if "superseded_at" not in existing_findings_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_findings "
+                    "ADD COLUMN superseded_at TEXT DEFAULT NULL"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
                 "ON project_analysis_findings(project_slug, kind)"
@@ -4131,7 +4147,7 @@ class ProjectRegistry:
 
     def upsert_finding(
         self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None,
-        scope_locator: str = "",
+        scope_locator: str = "", supersedes_previous: bool = False,
     ) -> None:
         """Append one survey run's findings for one analysis kind.
         findings: list of {check_name, label, summary="", confidence=100, detail: dict|None}.
@@ -4145,6 +4161,40 @@ class ProjectRegistry:
         sub-resource, kept distinct from whole-resource findings under the
         same `kind` rather than mixed together.
 
+        supersedes_previous (default False — opt-in per writer, docs/
+        Backlog.md "a run that finds nothing retires the previous run's
+        findings"): when True, this call is the caller's assertion that it
+        IS the complete answer for (slug, kind, scope_locator) as of
+        `surveyed_at`. Every earlier still-current row for that exact
+        (slug, kind, scope_locator) is stamped `superseded_at = surveyed_at`
+        BEFORE any new rows from this call are inserted — including when
+        `findings` is empty, which is the whole point: the plain
+        `if not findings: return` below writes nothing at all for a clean
+        run, so query_findings() (which serves only the newest surveyed_at)
+        keeps returning the previous run's rows forever. That is the exact
+        defect found live 2026-09-13 in cve_scan: a 2026-09-01 run found a
+        `click` advisory; the 2026-09-12 run found none, wrote zero rows,
+        and the stale advisory kept answering as current for 12 days.
+        `_architecture_doc_lens_results` (repo_survey_definition_adapter.py)
+        hit the same shape earlier and fixed it READ-side with a `lens_run`
+        marker row filtered on by the reader — this is the write-side
+        version, generic across kinds instead of one reader's bespoke fix.
+
+        Only correct for a caller whose SINGLE upsert_finding() call is the
+        whole run's result set for that (slug, kind, scope_locator) — a kind
+        written across several calls or several sub-surveyors must NOT set
+        this, because superseding here would retire a sibling call's still-
+        valid rows, not just this run's own previous ones.
+        `architecture_recovery` is the standing example (see
+        query_findings_all_runs' own docstring): two independent survey
+        steps can each contribute evidence for the SAME scope_locator at
+        different times, and are not required to run together.
+
+        This never deletes a row. `query_findings()` — the "current answer"
+        reader — excludes superseded rows; `query_findings_history_raw()`
+        and `query_findings_all_runs()` are untouched by this column and
+        keep returning every row ever written, superseded or not.
+
         Raises ValueError if `slug` isn't a registered project. Every known
         caller (SurveyOrchestrator.run(), run_survey_definition()) already
         validates this upfront the same way (registry.get(slug) is None ->
@@ -4156,7 +4206,7 @@ class ProjectRegistry:
         broad try/except-and-log-warning (e.g. SecurityHygieneSurveyor.
         _persist) silently absorbed as a generic warning instead of the
         actionable message this now gives them."""
-        if not findings:
+        if not findings and not supersedes_previous:
             return
         slug = self._normalize_slug(slug)
         if self.get(slug) is None:
@@ -4185,6 +4235,26 @@ class ProjectRegistry:
                 f"every real run of '{kind}' for '{slug}'."
             )
         with self._conn() as conn:
+            if supersedes_previous:
+                # Stamp every still-current row for this EXACT (slug, kind,
+                # scope_locator) as superseded, BEFORE inserting this run's
+                # own rows below — including when `findings` is empty, which
+                # is what lets a clean run retire a stale positive. Scoped
+                # tightly (all three columns) so a scoped run's completeness
+                # claim never reaches another scope's rows, and idempotent
+                # (`superseded_at IS NULL` guard) so re-running this against
+                # already-superseded rows is a no-op, not a timestamp churn.
+                conn.execute(
+                    "UPDATE project_analysis_findings SET superseded_at = :surveyed_at "
+                    "WHERE project_slug = :project_slug AND kind = :kind "
+                    "AND scope_locator = :scope_locator AND superseded_at IS NULL",
+                    {
+                        "surveyed_at": surveyed_at, "project_slug": slug,
+                        "kind": kind, "scope_locator": scope_locator,
+                    },
+                )
+            if not findings:
+                return
             conn.executemany(
                 "INSERT INTO project_analysis_findings "
                 "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json, scope_locator) "
@@ -4298,7 +4368,16 @@ class ProjectRegistry:
     def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
         """Latest run's findings for one analysis kind, scoped to
         scope_locator (default '' = whole-resource, matching every
-        pre-scope-aware caller unchanged)."""
+        pre-scope-aware caller unchanged).
+
+        Excludes superseded rows (`superseded_at IS NOT NULL` — see
+        upsert_finding's `supersedes_previous` docstring). `latest_ts` itself
+        is still computed over ALL rows, superseded or not: a writer that
+        opts in stamps `superseded_at` on the old rows WITHOUT writing a new
+        `surveyed_at`, on purpose, so a clean run that supersedes a stale
+        positive leaves `latest_ts` pointing at the now-fully-superseded
+        run and this correctly returns `[]` rather than reaching further
+        back for an even older row that was never the point."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             latest_ts = conn.execute(
@@ -4312,6 +4391,7 @@ class ProjectRegistry:
                 "SELECT check_name, label, summary, confidence, detail_json, surveyed_at, scope_locator "
                 "FROM project_analysis_findings "
                 "WHERE project_slug = ? AND kind = ? AND scope_locator = ? AND surveyed_at = ? "
+                "AND superseded_at IS NULL "
                 "ORDER BY check_name",
                 (slug, kind, scope_locator, latest_ts),
             ).fetchall()

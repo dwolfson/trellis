@@ -125,8 +125,12 @@ class SecurityFeaturesSurveyor(BaseSurveyor):
 
             if findings:
                 try:
+                    # supersedes_previous=True: security family (docs/
+                    # Backlog.md), this one call is the whole run's answer
+                    # for (slug, "security_features", "").
                     self.registry.upsert_finding(
                         slug, "security_features", findings, surveyed_at=self._surveyed_at,
+                        supersedes_previous=True,
                     )
                 except Exception as exc:
                     log.warning("Could not persist security features for %s: %s", slug, exc)

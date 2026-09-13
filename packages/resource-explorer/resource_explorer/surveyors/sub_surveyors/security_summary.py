@@ -267,8 +267,12 @@ class SecuritySummarySurveyor(BaseSurveyor):
             slug = self.project.slug
             summary = summarise(gather(self.registry, slug))
             findings = findings_for(summary)
+            # supersedes_previous=True: security family (docs/Backlog.md),
+            # this one call is the whole run's answer for
+            # (slug, "security_summary", "").
             self.registry.upsert_finding(slug, "security_summary", findings,
-                                         surveyed_at=self._surveyed_at)
+                                         surveyed_at=self._surveyed_at,
+                                         supersedes_previous=True)
             out.append(ClassificationAnnotation(
                 summary=summary["summary"],
                 analysis_step=STEP,

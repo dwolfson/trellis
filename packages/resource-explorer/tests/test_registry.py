@@ -903,6 +903,77 @@ class TestScopeLocatorOnFindingsAndMetrics:
     # location for why the blanket version was unsafe.
 
 
+class TestSupersedesPrevious:
+    """upsert_finding(..., supersedes_previous=True) — "a run that finds
+    nothing retires the previous run's findings" (docs/Backlog.md). The
+    cve_scan reproduction: a positive finding at T1, then a clean/empty
+    COMPLETE run at T2 must retire the T1 row from query_findings(), while
+    query_findings_history_raw() keeps seeing it."""
+
+    @pytest.fixture(autouse=True)
+    def _register_myproj(self, db):
+        db.add(Project(slug="myproj", display_name="My Project",
+                        github_url="https://github.com/test/myproj"))
+
+    def test_empty_supersedes_previous_run_retires_stale_positive(self, db):
+        db.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "click", "label": "advisory", "summary": "1 advisory"},
+        ], surveyed_at="2026-09-01T11:57:00")
+        assert len(db.query_findings("myproj", "cve_scan")) == 1
+
+        db.upsert_finding("myproj", "cve_scan", [], surveyed_at="2026-09-12T12:16:00",
+                          supersedes_previous=True)
+
+        assert db.query_findings("myproj", "cve_scan") == []
+        # History is untouched — the T1 row is still there, just no longer
+        # "current".
+        history = db.query_findings_history_raw("myproj", "cve_scan")
+        assert [r["check_name"] for r in history] == ["click"]
+
+    def test_supersedes_previous_does_not_cross_scopes(self, db):
+        db.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "click", "label": "advisory", "summary": "1 advisory"},
+        ], surveyed_at="2026-09-01T00:00:00", scope_locator="a")
+
+        # A complete-but-empty run for a DIFFERENT scope must not retire
+        # scope "a"'s rows.
+        db.upsert_finding("myproj", "cve_scan", [], surveyed_at="2026-09-12T00:00:00",
+                          supersedes_previous=True, scope_locator="b")
+
+        assert [r["check_name"] for r in db.query_findings("myproj", "cve_scan", "a")] == ["click"]
+        assert db.query_findings("myproj", "cve_scan", "b") == []
+
+    def test_non_empty_supersedes_previous_run_replaces_stale_positive(self, db):
+        db.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "click", "label": "advisory", "summary": "1 advisory"},
+        ], surveyed_at="2026-09-01T00:00:00")
+
+        db.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "requests", "label": "advisory", "summary": "a different one"},
+        ], surveyed_at="2026-09-12T00:00:00", supersedes_previous=True)
+
+        current = db.query_findings("myproj", "cve_scan")
+        assert [r["check_name"] for r in current] == ["requests"]
+        history = db.query_findings_history_raw("myproj", "cve_scan")
+        assert [r["check_name"] for r in history] == ["click", "requests"]
+
+    def test_default_is_byte_for_byte_old_behaviour(self, db):
+        """supersedes_previous defaults to False: an empty findings call
+        still no-ops entirely (no row, no exception, no side effect), and a
+        stale positive from an earlier run is NOT retired by a later empty
+        call that doesn't opt in."""
+        db.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "click", "label": "advisory", "summary": "1 advisory"},
+        ], surveyed_at="2026-09-01T00:00:00")
+
+        db.upsert_finding("myproj", "cve_scan", [], surveyed_at="2026-09-12T00:00:00")
+
+        # Old, buggy-but-unchanged behaviour: the stale positive is still
+        # served as current, because the T2 call wrote nothing and made no
+        # assertion of completeness.
+        assert [r["check_name"] for r in db.query_findings("myproj", "cve_scan")] == ["click"]
+
+
 class TestHasAssignedEgeriaProject:
     """The single gate both auto-publish paths use (survey_definition_executor.py
     and projects.py's Assessment/Analysis run route) — deliberately tighter than
