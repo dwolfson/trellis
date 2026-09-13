@@ -718,7 +718,48 @@ async def run_single_analysis(slug: str, analysis_id: str,
     log.info("enqueued analysis_run %s for %s/%s (activity %s, publish=%s)",
              run_id, slug, analysis_id, activity_id, publish)
 
-    return {"status": "started", "activity_id": activity_id, "run_id": run_id}
+    # The run dialog needs to say what a background publish saved — that
+    # requires the price on the enqueue response too, not just the
+    # freshness-skip path above. `estimate_run_cost` has no broad except by
+    # design (it should fail loudly if the queue/catalog can't be read), but
+    # a broken estimate must never take the run down with it: the run is
+    # already enqueued by this point, so failure here is recorded
+    # observably in the response instead of a bare log line — the
+    # silent-success ratchet (tests/test_no_silent_success.py) forbids
+    # swallowing it quietly.
+    try:
+        cost = _estimate_run_cost(registry, analysis_id)
+        result: dict = {
+            "rerun_cost_seconds": cost.seconds,
+            "rerun_steps_seconds": cost.steps_seconds,
+            "rerun_publish_seconds": cost.publish_seconds,
+            "rerun_cost_basis": cost.basis,
+            "rerun_cost_runs": cost.runs,
+            "rerun_split_runs": cost.split_runs,
+            # The "declared '{word}'" sentence variant needs the actual
+            # catalog word, not just the basis that names its kind — the
+            # frontend renders the sentence itself here (unlike the skip
+            # path above, which bakes it into `detail` server-side via
+            # cost.sentence()).
+            "rerun_cost_declared": cost.declared,
+        }
+    except Exception as exc:
+        log.warning("estimate_run_cost failed for %s/%s: %s", slug, analysis_id, exc)
+        result = {
+            "rerun_cost_seconds": None,
+            "rerun_steps_seconds": None,
+            "rerun_publish_seconds": None,
+            "rerun_cost_basis": "unavailable",
+            "rerun_cost_runs": 0,
+            "rerun_split_runs": 0,
+            "rerun_cost_declared": None,
+            "rerun_cost_error": str(exc),
+        }
+
+    return {
+        "status": "started", "activity_id": activity_id, "run_id": run_id,
+        **result,
+    }
 
 
 @router.post("/{slug}/analyses/stage/{stage}/run")

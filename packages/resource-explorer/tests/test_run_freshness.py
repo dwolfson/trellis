@@ -228,6 +228,66 @@ class TestTheGateIsWiredAndScopedCorrectly:
             "the scheduler now consults freshness — scheduled sweeps were "
             "deliberately left ungated")
 
+
+class TestTheEnqueueResponseCarriesThePrice:
+    """The run dialog's saved-time sentence (index.html) needs the price on
+    the SAME response that started the run — only the freshness-skip path
+    carried it before, so a plain first run (never skipped) had no estimate
+    to render against once it completed as `published: "queued"`."""
+
+    def test_the_started_response_carries_the_rerun_fields(self, reg, slug, monkeypatch):
+        import asyncio
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.web.routes import projects
+
+        monkeypatch.setattr(ProjectRegistry, "enqueue_run",
+                            lambda self, kind, target, **kw: "run-x")
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        # never-run — assess_freshness reports "never-run", so this reaches
+        # the enqueue path rather than the skip path.
+        out = asyncio.run(projects.run_single_analysis(slug, "security_scan"))
+        assert out["status"] == "started", f"unexpectedly declined: {out}"
+        for key in ("rerun_cost_seconds", "rerun_steps_seconds", "rerun_publish_seconds",
+                    "rerun_cost_basis", "rerun_cost_runs", "rerun_split_runs"):
+            assert key in out, (
+                f"the enqueue response is missing {key!r} — the run dialog's "
+                f"saved-time sentence has nothing to render")
+        assert out["rerun_cost_basis"] in ("measured", "declared", "unknown"), out
+
+    def test_a_raising_estimate_still_enqueues_and_says_so(self, reg, slug, monkeypatch):
+        """`estimate_run_cost` has no broad except by design — it should fail
+        loudly if the queue or catalog can't be read. But the run is already
+        enqueued by the time the estimate runs, so a broken estimate must not
+        take the run down with it, and must not be swallowed as a bare log
+        line either (tests/test_no_silent_success.py's ratchet)."""
+        import asyncio
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.web.routes import projects
+
+        monkeypatch.setattr(ProjectRegistry, "enqueue_run",
+                            lambda self, kind, target, **kw: "run-y")
+
+        def _boom(*a, **k):
+            raise RuntimeError("boom: catalog unreadable")
+
+        monkeypatch.setattr(projects, "_estimate_run_cost", _boom)
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        out = asyncio.run(projects.run_single_analysis(slug, "security_scan"))
+        assert out["status"] == "started", (
+            "a broken cost estimate must not prevent the run itself from "
+            f"being enqueued: {out}")
+        assert out["rerun_cost_basis"] == "unavailable"
+        assert out.get("rerun_cost_error") and "boom" in out["rerun_cost_error"], (
+            "the estimate failure must be recorded observably in the response, "
+            "not just logged — that's the silent-success ratchet"
+        )
+
+
+class TestTheFrontendRunCallersHandleASkip:
+    """Split out of TestTheGateIsWiredAndScopedCorrectly (unchanged content)
+    to make room for TestTheEnqueueResponseCarriesThePrice between the
+    route-level tests above and the frontend-derivation tests below."""
+
     def test_every_frontend_caller_of_the_run_route_handles_a_skip(self):
         """Derived, not listed. `activity_id` is null on a skip, so a caller
         that polls it regardless hangs forever. THREE functions reach this
