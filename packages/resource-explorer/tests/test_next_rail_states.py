@@ -115,3 +115,20 @@ class TestTheListSentence:
         import json
         assert self._run(f"listSentences({json.dumps(body)})", tmp_path) == []
         assert self._run(f"listSources({json.dumps(body)})", tmp_path) == ["cve_scan"]
+
+
+class TestTheRailScopeFollowsTheSelection:
+    """The rail header read "scoped to amundsen" under a pane showing
+    egeria_python (owner's screenshots, 2026-09-13): renderRail() ran at
+    boot and on clear only. The scope line is its own element, updated on
+    every path that changes the selection."""
+
+    def test_every_selection_change_updates_the_scope_line(self):
+        app = _app()
+        assert 'id="rail-scope"' in app and "function renderRailScope()" in app
+        i = app.index("state.selectedSlug = b.dataset.slug;")
+        assert "renderRailScope();" in app[i:i + 200]
+        for anchor in ("if (state.selectedSlug === slug) state.selectedSlug = null;",
+                       "state.selectedSlug = state.projects[0]?.slug || null;"):
+            j = app.index(anchor)
+            assert "renderRailScope();" in app[j:j + 260], anchor

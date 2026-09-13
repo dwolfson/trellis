@@ -1760,6 +1760,7 @@ function bindSidebar() {
     state.selectedSlug = b.dataset.slug;
     rerender();
     renderTopBar();
+    renderRailScope();
     loadPane();
   }));
   el.querySelector('#investigation-select')?.addEventListener('change', (e) => {
@@ -1909,6 +1910,7 @@ async function bulkDelete(slugs) {
   }
   renderSidebar();
   renderTopBar();
+  renderRailScope();
   sidebarNote(failed.length
     ? `<span class="text-accent-on-dark">${esc(failed.join('; '))}</span>`
     : `<span class="tnum">${slugs.length - failed.length}</span> removed.`);
@@ -2012,12 +2014,25 @@ function sessionId() {
  * transcript outlives the selection and an answer about a different repo
  * that is not marked as such is worse than no answer.
  */
+function railScopeText() {
+  return state.selectedSlug ? `scoped to ${esc(state.selectedSlug)}` : 'no resource selected';
+}
+
+/** The rail's scope line follows the selection. renderRail() runs at boot
+ *  and on clear only -- re-running it on every selection would wipe the
+ *  chat and the evidence slot -- so the line is updated on its own. It
+ *  read "scoped to amundsen" under a pane showing egeria_python (owner's
+ *  screenshots, 2026-09-13). */
+function renderRailScope() {
+  const el = $('rail-scope');
+  if (el) el.innerHTML = railScopeText();
+}
+
 function renderRail() {
   $('rail').innerHTML = `
     <div class="mb-s3 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Ask</span>
-      <span class="text-caps text-chrome-muted">${
-        state.selectedSlug ? `scoped to ${esc(state.selectedSlug)}` : 'no resource selected'}</span>
+      <span id="rail-scope" class="text-caps text-chrome-muted">${railScopeText()}</span>
       ${state.chat.length ? `<span class="ml-auto flex items-center gap-s2">
         <button data-act="copy-transcript" title="Copy the whole transcript as markdown, with each answer's source line"
           class="cursor-pointer bg-transparent text-caps text-chrome-muted hover:text-chrome-ink"
@@ -2790,6 +2805,7 @@ function bindResourceHeader() {
         state.selectedSlug = state.projects[0]?.slug || null;
         renderSidebar();
         renderTopBar();
+        renderRailScope();
         await loadPane();
       } catch (err) {
         note(`<span class="text-accent-ink">Not removed: ${esc(err.message)}</span>`);
