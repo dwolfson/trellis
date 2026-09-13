@@ -7531,6 +7531,61 @@ class ProjectRegistry:
             }
         return result
 
+    def analysis_run_activity_seconds(
+        self, analysis_ids: list[str], *, status: str = "ok", limit: int = 2000,
+    ) -> dict[str, list[tuple[float | None, float | None]]]:
+        """{analysis_id: [(steps_seconds, publish_seconds), ...]} from
+        `analysis_run` activity_log rows whose `detail` carries the per-phase
+        split — added when `execute_and_record_analysis` started writing
+        `steps_seconds`/`publish_seconds` into each terminal row's `detail`
+        (the designer's ruling, 2026-09-13: wall clock belongs where someone
+        is deciding, and always split). A row from before that change carries
+        neither key and is skipped here, the same way a row whose `detail`
+        fails to parse is skipped elsewhere in this class — absence of the
+        instrumentation is not a zero-second measurement.
+
+        Scoped to `analysis_ids` because every caller (today, just
+        `estimate_run_cost`) already knows exactly which ids it needs — an
+        analysis and its derived sources — cheaper than scanning every
+        analysis in the log. `status` defaults to `'ok'`, the terminal status
+        `execute_and_record_analysis` writes on success (`runs`' vocabulary
+        calls the same thing 'succeeded').
+
+        `publish_seconds` can be `None` inside an otherwise-qualifying row
+        (`publish_mode: "not-attempted"` — no assigned Egeria project, or no
+        annotations) — callers must drop those `None`s before taking a
+        publish median rather than let a not-attempted run count as an
+        instant one.
+        """
+        if not analysis_ids:
+            return {}
+        wanted = set(analysis_ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM activity_log WHERE operation = 'analysis_run' "
+                "AND status = ? ORDER BY ts DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        out: dict[str, list[tuple[float | None, float | None]]] = {
+            aid: [] for aid in analysis_ids
+        }
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            aid = detail.get("analysis_id")
+            if aid not in wanted:
+                continue
+            steps = detail.get("steps_seconds")
+            publish = detail.get("publish_seconds")
+            if steps is None and publish is None:
+                continue  # pre-split row — carries neither, not a data point
+            out[aid].append((steps, publish))
+        return out
+
     @staticmethod
     def _step_key_to_analysis_id() -> dict[str, str]:
         """Inverse of REPO_ANALYSIS_STEP_MAP."""
