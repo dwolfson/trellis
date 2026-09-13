@@ -2165,9 +2165,15 @@ function listSentenceHtml(l, i) {
     ${head}${
       partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
       l.members
+        // The control says what pressing it does; it is the only clickable
+        // part of the line, and the middot before it does the sentence
+        // break's work.
         ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
-            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">the full list is in the pane${icon('chevron-right', { size: 12 })}</button>`
-        : ` · <span class="text-chrome-muted">no list view for <span class="font-mono">${esc(l.key)}</span> yet — the pane cannot open it</span>`}
+            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`
+        // Case four on the sheet: metadata, not a control, in the slot the
+        // link would occupy -- the absence becomes a fact about that
+        // analysis, and a list of which readers to write next.
+        : ` · <span class="text-chrome-muted">No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.</span>`}
   </div>`;
 }
 

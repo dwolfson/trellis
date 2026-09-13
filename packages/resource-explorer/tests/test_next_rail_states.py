@@ -100,7 +100,7 @@ class TestTheListSentence:
         html = self._run(f"listSentenceHtml(listSentences({__import__('json').dumps(self.BODY)})[0], 'p')", tmp_path)
         assert '<span class="tnum">32</span> dependencies · in <span class="tnum">1</span> ecosystem' in html
         assert '<span class="tnum">10</span> shown to the model</span>' in html and "at summary" not in html
-        assert 'the full list is in the pane' in html and 'data-list-source="dependency_analysis"' in html
+        assert 'open the full list' in html and 'data-list-source="dependency_analysis"' in html
         assert '›' not in html and 'chevron-right' in html
 
     def test_a_section_without_a_member_view_says_so_rather_than_omitting_the_link(self, tmp_path):
@@ -108,7 +108,7 @@ class TestTheListSentence:
         body = {"compiled": {"manifest": {"packed": [{"key": "security_scan", "role": "evidence", "rung": "FULL"}],
                                           "lists": {"security_scan": {"findings": {"total": 3, "shown": {"FULL": 3, "SUMMARY": 3}}}}}}}
         html = self._run(f"listSentenceHtml(listSentences({json.dumps(body)})[0], 'p')", tmp_path)
-        assert "no list view for" in html and "security_scan" in html and "data-list-source" not in html
+        assert "No list to open — <span class=\"font-mono\">security_scan</span> has no member reader yet." in html and "data-list-source" not in html
 
     def test_a_manifest_without_lists_falls_back_to_the_bare_link(self, tmp_path):
         body = {"compiled": {"manifest": {"packed": [{"key": "cve_scan", "role": "evidence", "rung": "FULL"}]}}}
