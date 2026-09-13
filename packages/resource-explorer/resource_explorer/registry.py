@@ -1454,6 +1454,22 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_activity_log_ts "
                 "ON activity_log(ts DESC)"
             )
+            # publish_run_id: the outbox run_id (the annotation qualified_name
+            # prefix — see egeria_publisher.py's _create_annotations) a
+            # background/deferred run's activity row was tagged with when it
+            # reported `published: "queued"`. Lets
+            # complete_publish_run_if_done() find, by exact match, the one
+            # activity row to flip to `published: True` once every outbox row
+            # of that run (and its `::links` companion) has landed — without
+            # this, that lookup would have to scan every row's `detail` JSON.
+            # Empty for every row that never went through the deferred path.
+            existing_activity = self._get_table_columns(conn, "activity_log")
+            if "publish_run_id" not in existing_activity:
+                conn.execute("ALTER TABLE activity_log ADD COLUMN publish_run_id TEXT DEFAULT ''")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_log_publish_run_id "
+                "ON activity_log(publish_run_id)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_activity_log_entity "
                 "ON activity_log(entity_slug, entity_type)"
@@ -4932,6 +4948,93 @@ class ProjectRegistry:
                 (egeria_guid, datetime.utcnow().isoformat(), row_id),
             )
 
+    def mark_outbox_deferred(self, row_id: int, note: str) -> None:
+        """Hand one claimed row back to 'pending' without burning an attempt,
+        recording WHY: its referent(s) — another annotation this row's
+        `AnnotationExtension` link points at — have not been applied yet.
+
+        Distinct from `mark_outbox_failed`: this is not a failed attempt (no
+        `attempts` increment, no exponential backoff), because the row is not
+        broken — it is early, and will very likely succeed on the very next
+        drain once its referent lands (rows drain in id order, so a run's own
+        annotations normally apply before its own links are even attempted).
+        Distinct from `release_outbox_claim`: that one is for an outage with
+        no Egeria client reachable at all and hands back every claimed row
+        identically; this is a per-row, expected-to-resolve-itself wait, and
+        keeps the reason on the row so Admin -> Publish Queue shows it rather
+        than a bare 'pending' with no explanation.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
+                "WHERE id=?",
+                (note[:2000], row_id),
+            )
+
+    def complete_publish_run_if_done(self, publish_run_id: str) -> bool:
+        """When every `egeria_outbox` row belonging to `publish_run_id` — its
+        annotations AND its evidence-link companion run (`f"{publish_run_id}
+        ::links"`, see egeria_publisher.py's `_link_evidence_outbox`/
+        `_create_annotations`) — has reached a terminal state (done or dead;
+        neither is retried again), flip the activity row that reported this
+        run as `published: "queued"` to `published: True` and append when.
+
+        Returns False (a no-op) when: no rows exist for this run_id (nothing
+        was ever enqueued under it, or a typo); some row is still pending,
+        failed-and-backing-off, or running (not done yet); no activity row
+        carries this `publish_run_id`; or that activity row's `published` is
+        no longer `"queued"` (already flipped by an earlier pass, or was
+        never the deferred path to begin with). Idempotent — calling this
+        again after it has already flipped a row finds `published` no longer
+        `"queued"` and does nothing.
+
+        Dead rows count as "done draining" here, not as success: a
+        dead-lettered element already has its own visible surface (the RFA
+        drawer, via record_drain_outcome) and this method's job is only to
+        stop the row from saying "queued" once nothing further can happen to
+        it automatically — it does not invent a fifth `published` state for
+        "queued, then partially failed."
+        """
+        if not publish_run_id:
+            return False
+        links_run_id = f"{publish_run_id}::links"
+        with self._conn() as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox "
+                "WHERE run_id IN (?, ?) AND status IN ('pending', 'failed', 'running')",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
+            if remaining:
+                return False
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE run_id IN (?, ?)",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
+            if not total:
+                return False
+            row = conn.execute(
+                "SELECT id, summary, detail FROM activity_log "
+                "WHERE publish_run_id = ? ORDER BY ts DESC LIMIT 1",
+                (publish_run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                return False
+            if detail.get("published") != "queued":
+                return False
+            now = datetime.utcnow().isoformat()
+            detail["published"] = True
+            detail["published_at"] = now
+            summary = f"{row['summary'] or ''} Published at {now}."
+            conn.execute(
+                "UPDATE activity_log SET detail = ?, summary = ? WHERE id = ?",
+                (json.dumps(detail), summary, row["id"]),
+            )
+        return True
+
     def get_outbox_guids(self, row_ids: list[int]) -> dict[int, str]:
         """Map row id -> the GUID it resolved to, for rows that reached
         'done'. A row absent from the returned dict is 'not done' — pending,
@@ -7547,8 +7650,19 @@ class ProjectRegistry:
         summary: str = "",
         detail: str = "",
         annotations: list[dict] | None = None,
+        publish_run_id: str = "",
     ) -> None:
         """Finalise a 'running' activity entry.
+
+        `publish_run_id` (added for background/deferred publish — run-in-
+        background plan): the outbox run_id this entry's publish was enqueued
+        under, when `detail`'s `published` is `"queued"`. Lets
+        `complete_publish_run_if_done()` find this exact row later and flip it
+        to `published: True`, without scanning every row's `detail` JSON.
+        Empty (the default) leaves the column untouched, same CASE-guarded
+        convention `summary`/`detail`/`annotations_json` already use — a
+        caller with nothing to add must not erase what the entry already
+        carried.
 
         `annotations` added 2026-09-02. Without it, every Analyses-card run
         wrote its entry with an empty annotations list while its summary said
@@ -7577,10 +7691,11 @@ class ProjectRegistry:
                 "UPDATE activity_log SET status = ?, "
                 "summary = CASE WHEN ? != '' THEN ? ELSE summary END, "
                 "detail  = CASE WHEN ? != '' THEN ? ELSE detail  END, "
-                "annotations_json = CASE WHEN ? != '' THEN ? ELSE annotations_json END "
+                "annotations_json = CASE WHEN ? != '' THEN ? ELSE annotations_json END, "
+                "publish_run_id = CASE WHEN ? != '' THEN ? ELSE publish_run_id END "
                 "WHERE id = ?",
                 (status, summary, summary, detail, detail,
-                 anns_json, anns_json, entry_id),
+                 anns_json, anns_json, publish_run_id, publish_run_id, entry_id),
             )
 
     # reconcile_orphaned_running_activity() lived here briefly (2026-08-26) —

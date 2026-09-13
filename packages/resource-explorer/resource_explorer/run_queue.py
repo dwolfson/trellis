@@ -145,6 +145,7 @@ def _handle_analysis_run(target: dict, result_ref: str) -> RunOutcome:
 
     result = execute_and_record_analysis(
         target["slug"], target["analysis_id"], result_ref,
+        publish=target.get("publish"),
     )
     return RunOutcome(
         state="succeeded" if result.status == "ok" else "failed",

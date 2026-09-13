@@ -83,7 +83,7 @@ class TestAnalysisRunEnqueues:
         assert len(rows) == 1
         assert rows[0]["kind"] == "analysis_run"
         assert json.loads(rows[0]["target"]) == {
-            "slug": "myproj", "analysis_id": "security_scan",
+            "slug": "myproj", "analysis_id": "security_scan", "publish": None,
         }
 
     def test_the_response_still_carries_the_activity_id_the_frontend_polls(self, client, registry):
@@ -102,6 +102,36 @@ class TestAnalysisRunEnqueues:
         """An unknown id must be a 400, not a queued row that fails a minute
         later in another process where nobody is looking."""
         resp = client.post("/api/projects/myproj/analyses/not_a_real_analysis/run")
+        assert resp.status_code == 400
+        assert registry.list_runs() == []
+
+
+class TestPublishChoiceThreadsThroughTheQueueRow:
+    """run-in-background plan: `publish` travels in the queue row's `target`
+    dict exactly the way `force` already does — a query param, not run."""
+
+    def test_background_is_recorded_on_the_queued_row(self, client, registry):
+        resp = client.post(
+            "/api/projects/myproj/analyses/security_scan/run?publish=background"
+        )
+        assert resp.status_code == 200, resp.text
+        row = registry.list_runs(state="queued")[0]
+        assert json.loads(row["target"]) == {
+            "slug": "myproj", "analysis_id": "security_scan", "publish": "background",
+        }
+
+    def test_wait_is_recorded_on_the_queued_row(self, client, registry):
+        resp = client.post(
+            "/api/projects/myproj/analyses/security_scan/run?publish=wait"
+        )
+        assert resp.status_code == 200, resp.text
+        row = registry.list_runs(state="queued")[0]
+        assert json.loads(row["target"])["publish"] == "wait"
+
+    def test_an_invalid_publish_value_is_a_400_not_a_queued_row(self, client, registry):
+        resp = client.post(
+            "/api/projects/myproj/analyses/security_scan/run?publish=whenever"
+        )
         assert resp.status_code == 400
         assert registry.list_runs() == []
 

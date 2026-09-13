@@ -601,8 +601,9 @@ def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool,
     ).to_dict()
 
 
-def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str) -> None:
-    _run_single_analysis_background_impl(slug, analysis_id, activity_id)
+def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str,
+                                    *, publish: str | None = None) -> None:
+    _run_single_analysis_background_impl(slug, analysis_id, activity_id, publish=publish)
 
 
 def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
@@ -612,7 +613,7 @@ def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
 
 @router.post("/{slug}/analyses/{analysis_id}/run")
 async def run_single_analysis(slug: str, analysis_id: str,
-                              force: bool = False) -> dict:
+                              force: bool = False, publish: str | None = None) -> dict:
     """Queue one named analysis's mapped survey step(s) — the per-card "Run"
     action in Analysis/Assessment.
 
@@ -625,11 +626,24 @@ async def run_single_analysis(slug: str, analysis_id: str,
     What changed is who executes it — a `worker` role process claiming the row,
     which is the whole point of the queue.
 
+    `publish` ("wait" | "background", query param — same convention as
+    `force`): the per-run choice of whether to wait for the Egeria publish or
+    enqueue it and move on (project owner, 2026-09-13 — measured: the survey
+    steps take ~0.2s, the synchronous publish ~3min at ~3.6s/write for 53
+    writes). Omitted keeps `RunsConfig.publish_inline`'s default — unchanged
+    behaviour for every caller that does not ask.
+
     Validation still happens synchronously, so an unknown analysis_id is a 400
     rather than a queued row that fails a minute later in a different process.
     """
     from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
+
+    if publish is not None and publish not in ("wait", "background"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"publish must be 'wait' or 'background', got {publish!r}",
+        )
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -695,11 +709,11 @@ async def run_single_analysis(slug: str, analysis_id: str,
         f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
     )
     run_id = registry.enqueue_run(
-        "analysis_run", {"slug": slug, "analysis_id": analysis_id},
+        "analysis_run", {"slug": slug, "analysis_id": analysis_id, "publish": publish},
         result_ref=activity_id, requested_by=_requested_by(),
     )
-    log.info("enqueued analysis_run %s for %s/%s (activity %s)",
-             run_id, slug, analysis_id, activity_id)
+    log.info("enqueued analysis_run %s for %s/%s (activity %s, publish=%s)",
+             run_id, slug, analysis_id, activity_id, publish)
 
     return {"status": "started", "activity_id": activity_id, "run_id": run_id}
 

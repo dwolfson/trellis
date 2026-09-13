@@ -81,6 +81,25 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
+class OutboxNotReadyError(RuntimeError):
+    """A link row's referent annotation(s) have not been applied yet.
+
+    NOT a failure — `drain_outbox` catches this separately from
+    `OutboxApplyError`/other exceptions and hands the row back to 'pending'
+    via `mark_outbox_deferred` without burning an attempt (see
+    `mark_outbox_failed`'s exponential backoff, which this deliberately
+    avoids: the row isn't broken, it's just early). Raised by
+    `_resolve_link_referents` when a background/deferred publish enqueued an
+    `annotation_link` row keyed by its two referent annotations' OWN outbox
+    row ids (run in background — the annotations have not been drained yet,
+    so no real GUID exists to enqueue the link with) and one or both of those
+    referent rows have not reached 'done'. Rows drain in id order, so in
+    practice a run's own annotations apply before its own links are even
+    attempted — this exists for the pass where they do not (a referent that
+    itself failed and is backing off, or a drain that claimed the link row
+    before the annotation row in the same batch)."""
+
+
 #: Egeria's signature for "this qualifiedName is already taken".
 #:
 #: Matched on the message rather than a status code because the client
@@ -96,7 +115,39 @@ def _is_duplicate_qualified_name(exc: Exception) -> bool:
     return all(m in text for m in _DUPLICATE_NAME_MARKERS)
 
 
-def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str]) -> str:
+def _resolve_link_referents(payload: dict, resolve_row_guids) -> dict:
+    """An `annotation_link` payload enqueued in ROW-ID form (background/
+    deferred publish — see `enqueue_annotation_links`'s docstring) has no real
+    GUIDs yet. Resolve `summary_row_id`/`evidence_row_id` to real GUIDs via
+    `resolve_row_guids` (`registry.get_outbox_guids`), returning a payload
+    shaped exactly like the GUID form so `_create_annotation_link` needs no
+    knowledge of which form enqueued it.
+
+    Raises `OutboxNotReadyError` — not `OutboxApplyError` — when either
+    referent has not reached 'done' yet: this is not a broken row, it is an
+    early one, and the caller (`drain_outbox`) must not burn an attempt or
+    apply backoff for it.
+    """
+    if resolve_row_guids is None:
+        raise OutboxNotReadyError(
+            "this link was enqueued by row id but the drain was given no way "
+            "to resolve outbox row ids to GUIDs"
+        )
+    summary_row_id = payload["summary_row_id"]
+    evidence_row_id = payload["evidence_row_id"]
+    guids = resolve_row_guids([summary_row_id, evidence_row_id])
+    summary_guid = guids.get(summary_row_id)
+    evidence_guid = guids.get(evidence_row_id)
+    if not summary_guid or not evidence_guid:
+        raise OutboxNotReadyError(
+            f"referent annotation row(s) not yet applied: "
+            f"summary_row_id={summary_row_id} evidence_row_id={evidence_row_id}"
+        )
+    return {"summary_guid": summary_guid, "evidence_guid": evidence_guid}
+
+
+def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str],
+                  resolve_row_guids: "Callable[[list[int]], dict[int, str]] | None" = None) -> str:
     """Write one outbox row to Egeria and return the element's GUID.
 
     Lookup-then-create, in that order, always:
@@ -109,6 +160,15 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
     3. Only then create.
 
     Step 2 is the whole reason `qualified_name` is NOT NULL on the table.
+
+    `resolve_row_guids` (typically `registry.get_outbox_guids`) is consulted
+    ONLY for an `annotation_link` row whose payload carries
+    `summary_row_id`/`evidence_row_id` instead of real GUIDs — the shape a
+    background/deferred publish enqueues, since it has no real GUIDs to give
+    at enqueue time. See `_resolve_link_referents`. Raises
+    `OutboxNotReadyError` (not `OutboxApplyError`) when a referent is not yet
+    applied — `drain_outbox` treats that as "try again later", never as a
+    failed attempt.
     """
     existing = (row.get("egeria_guid") or "").strip()
     if existing:
@@ -144,6 +204,12 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
             f"No creator registered for element_kind {kind!r}. "
             f"Known kinds: {sorted(_CREATORS)}"
         )
+    if kind == "annotation_link" and "summary_row_id" in payload:
+        # Row-id form (background/deferred publish) — resolve to real GUIDs
+        # or bail out early (OutboxNotReadyError), never into the generic
+        # except-Exception branch below, which would misread "not ready yet"
+        # as a write failure and burn a retry attempt on it.
+        payload = _resolve_link_referents(payload, resolve_row_guids)
     try:
         return creator(clients, payload) or ""
     except Exception as exc:
@@ -308,7 +374,8 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     when not supplied — that publisher already owns a connected client and a
     proven `_find_element_guid`.
     """
-    summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0}
+    summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
+              "publish_run_check_failed": 0}
     try:
         rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id)
     except Exception:
@@ -336,9 +403,32 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             return summary
 
     troubled_runs: dict[str, str] = {}
+    #: run_ids (the annotation qualified_name_prefix, never its `::links`
+    #: companion — see below) touched by this pass, so completion can be
+    #: checked once per pass instead of once per row.
+    touched_run_ids: set[str] = set()
     for row in rows:
+        run_id = row.get("run_id") or ""
+        if run_id:
+            # `::links` is a companion run_id, not a run of its own (see
+            # egeria_publisher.py's `_link_evidence_outbox` / `_create_
+            # annotations`'s deferred branch) — completion is checked against
+            # the BASE run_id, which is what the activity row was tagged
+            # with (see registry.complete_publish_run_if_done).
+            touched_run_ids.add(run_id[: -len("::links")] if run_id.endswith("::links") else run_id)
         try:
-            guid = apply_element(row, clients, find_element_guid)
+            guid = apply_element(row, clients, find_element_guid,
+                                 resolve_row_guids=registry.get_outbox_guids)
+        except OutboxNotReadyError as exc:
+            # Not a failure: this link's referent annotation(s) have not
+            # landed yet. Hand it back to 'pending' with no attempt burned —
+            # see mark_outbox_deferred and OutboxNotReadyError's own
+            # docstring for why this is not routed through mark_outbox_failed.
+            registry.mark_outbox_deferred(row["id"], str(exc))
+            summary["skipped"] += 1
+            log.info("Outbox row %s (%s %s) deferred: %s",
+                     row["id"], row["element_kind"], row["qualified_name"], exc)
+            continue
         except Exception as exc:
             status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc}")
             summary["dead" if status == "dead" else "failed"] += 1
@@ -355,6 +445,26 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
                   "see registry.list_dead_outbox_elements()", summary["dead"])
     # Logging is not a surface here — see record_drain_outcome's docstring.
     record_drain_outcome(registry, summary, troubled_runs=troubled_runs)
+
+    # A background/deferred publish's activity row reports `published:
+    # "queued"` until every row of its run (its annotations AND its `::links`
+    # companion) has reached a terminal state — see egeria_publisher.py's
+    # `_create_annotations` docstring and workflows/analysis.py's
+    # AnalysisRunResult docstring for the three-state contract. Checked once
+    # per run_id touched by THIS pass, not on every pass, so an idle drain
+    # with nothing to claim does not re-scan every "queued" activity row.
+    for base_run_id in touched_run_ids:
+        try:
+            registry.complete_publish_run_if_done(base_run_id)
+        except Exception:
+            # Best-effort bookkeeping: a failure here must not fail the drain
+            # that already succeeded above, but it also must not vanish into
+            # a log line nobody reads (the exact failure this ratchet exists
+            # to catch) — counted so a caller inspecting the returned summary
+            # can tell "nothing to check" from "checked and failed".
+            summary["publish_run_check_failed"] += 1
+            log.exception("Could not check publish-run completion for run_id %s", base_run_id)
+
     return summary
 
 
@@ -473,31 +583,48 @@ def enqueue_annotation_links(
     """Record one outbox row per same-run `AnnotationExtension` link.
     Returns the row ids, in order. annotation-linking-plan Phase 2, Tier 1.
 
-    `links` are dicts with `summary_guid`/`evidence_guid` — both real Egeria
-    GUIDs already, because Tier 1 only links annotations created in THIS same
-    publish (both ends exist by the time this is called; see `_create_
-    annotation_link`'s docstring for direction). The caller (`egeria_
-    publisher.py::_create_annotations`) is responsible for filtering out any
-    pair where either GUID is missing (a failed create) BEFORE calling this —
-    enqueuing a link to a GUID that does not exist would just fail loudly
-    later for a reason this module cannot diagnose.
+    Each `link` dict is ONE of two shapes:
 
-    The qualifiedName is synthetic, same basis as `enqueue_resource_list`/
-    `enqueue_collection_members` below: `AnnotationExtension` has no
-    qualifiedName of its own, so this string exists purely as the outbox's
-    idempotency key. Replay safety comes from the relationship being uni-link
-    (see `_create_annotation_link`), not from this key resolving to anything
-    searchable in Egeria.
+    * ``{"summary_guid", "evidence_guid"}`` — both ends are real Egeria GUIDs
+      already, because the annotations were drained (inline publish) before
+      this is called; see `_create_annotation_link`'s docstring for
+      direction. The caller (`egeria_publisher.py::_link_evidence_outbox`) is
+      responsible for filtering out any pair where either GUID is missing (a
+      failed create) BEFORE calling this — enqueuing a link to a GUID that
+      does not exist would just fail loudly later for a reason this module
+      cannot diagnose.
+    * ``{"summary_row_id", "evidence_row_id"}`` — both ends are THIS RUN'S OWN
+      outbox row ids for the annotations that will be linked, used when a
+      background/deferred publish enqueues its annotations WITHOUT draining
+      them (see `egeria_publisher.py::_create_annotations`'s deferred
+      branch) — there is no real GUID to give yet. `apply_element` resolves
+      these to real GUIDs at APPLY time via `registry.get_outbox_guids`
+      (`_resolve_link_referents`); if a referent row has not reached 'done'
+      yet, the link row is left queued (`OutboxNotReadyError`, not a failure)
+      and retried on a later drain. Rows drain in id order, so in practice a
+      run's own annotations apply before its own links are even attempted.
+
+    The qualifiedName is synthetic either way, same basis as
+    `enqueue_resource_list`/`enqueue_collection_members` below:
+    `AnnotationExtension` has no qualifiedName of its own, so this string
+    exists purely as the outbox's idempotency key. Replay safety comes from
+    the relationship being uni-link (see `_create_annotation_link`), not from
+    this key resolving to anything searchable in Egeria. The row-id form's
+    qualifiedName is built from the row ids rather than GUIDs, since none
+    exist yet — still stable across retries of the same enqueue.
     """
     row_ids: list[int] = []
     for link in links:
-        summary_guid = link["summary_guid"]
-        evidence_guid = link["evidence_guid"]
-        qualified_name = f"AnnotationExtension::{summary_guid}::{evidence_guid}"
+        if "summary_guid" in link and "evidence_guid" in link:
+            summary_guid, evidence_guid = link["summary_guid"], link["evidence_guid"]
+            qualified_name = f"AnnotationExtension::{summary_guid}::{evidence_guid}"
+            payload = {"summary_guid": summary_guid, "evidence_guid": evidence_guid}
+        else:
+            summary_row_id, evidence_row_id = link["summary_row_id"], link["evidence_row_id"]
+            qualified_name = f"AnnotationExtension::row{summary_row_id}::row{evidence_row_id}"
+            payload = {"summary_row_id": summary_row_id, "evidence_row_id": evidence_row_id}
         row_ids.append(registry.enqueue_outbox_element(
-            entity_type, entity_slug, "annotation_link", qualified_name,
-            {"summary_guid": summary_guid, "evidence_guid": evidence_guid},
-            run_id=run_id,
+            entity_type, entity_slug, "annotation_link", qualified_name, payload, run_id=run_id,
         ))
     return row_ids
 

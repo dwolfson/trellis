@@ -315,10 +315,12 @@ class TestCreateAnnotationsOutboxPath:
         # contract and the test exists to catch a count going missing. The two
         # annotation_* keys were added 2026-09-02 with the outbox enqueue cap,
         # so the Activity summary can report what was PUBLISHED rather than
-        # what was produced.
+        # what was produced. `links_queued` (run-in-background plan) is
+        # always 0 on the INLINE path — it's the deferred/background path's
+        # count of links enqueued by row id rather than GUID.
         assert counts == {
             "links_attempted": 1, "links_created": 1, "links_failed": 0, "links_skipped": 0,
-            "annotations_produced": 2, "annotations_queued": 2,
+            "links_queued": 0, "annotations_produced": 2, "annotations_queued": 2,
         }
 
     def test_known_negative_a_failed_link_is_visible_not_silent_success(self, db, project):
@@ -379,7 +381,7 @@ class TestCreateAnnotationsOutboxPath:
 
         assert counts == {
             "links_attempted": 0, "links_created": 0, "links_failed": 0, "links_skipped": 0,
-            "annotations_produced": 1, "annotations_queued": 1,
+            "links_queued": 0, "annotations_produced": 1, "annotations_queued": 1,
         }
         assert not pub._metadata_expert.create_related_elements.called
 
