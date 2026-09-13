@@ -141,6 +141,21 @@ say *no verdict can be recorded for a database yet*, not render an empty chip se
 
 ## §1 — Cost per tier: a declared prior, and a first measurement
 
+> **Correction (2026-09-13, overnight).** Every *measured* figure in this section is **Egeria
+> publish latency, not analysis cost.** Profiled and then measured on one real run of
+> `language_file_classification` through the worker's own path (`scratchpad/lfc-publish/REPORT.md`,
+> reproduced in the Backlog): the three survey steps took **0.25 s**; the synchronous auto-publish
+> took **558 s** — 53 sequential Egeria writes (46 annotations + 7 evidence links) at a **median of
+> 9.4 s each** (p90 15.3 s, max 21.2 s, zero failures, zero concurrency). Every repo that has been
+> run has an assigned Egeria asset, so every row in `runs` includes this. The table below therefore
+> measures *what a run costs the person who pressed the button*; it says nothing yet about the
+> ladder. The `fast` label on `language_file_classification` was **right**. The remedy — per-phase
+> timings on the run's activity row (`steps_seconds` / `publish_seconds`) and an enqueue-only
+> auto-publish behind a flag — is on branch `re/auto-publish-enqueue-only`, default unchanged
+> pending the owner's decision. The freshness skip's price sentence stays true (that *is* what a
+> re-run costs) but prices the wait, not the thought.
+
+
 **Decision (designer, 2026-09-13):** the interim prior renders as **declared**, visually distinct
 from measured and labelled as such. A declared figure sitting in a cost chart that looks measured is
 the failure this spec was written to prevent.
@@ -190,10 +205,11 @@ What this says, and how far it can be trusted:
 - **The declared ladder is not monotonic and does not claim to be**: 29 of 37 analyses are declared
   `fast` regardless of tier. Declared `run_time` is an availability signal (rule 17: may a compiler
   run this inline), not a cost model, and it was split from `availability` for exactly this reason.
-- **The first measurement is inverted at the bottom**: scouting's median-of-medians (156 s) is
-  driven entirely by `language_file_classification` at 155.8 s over 5 runs, **declared `fast`** — a
-  correct label on a wrong number, or a scouting-tier analysis that is not cheap. Either way it is
-  the one figure here that changes a decision, and it is the first thing to look at.
+- **The first measurement is inverted at the bottom** — and the correction above explains it:
+  scouting's median-of-medians (156 s) is `language_file_classification`, whose steps take 0.25 s
+  and whose 46 annotations take ~9 minutes to publish. A scouting analysis produces *more*
+  annotations than a deep one and so pays more publish latency. The label is right; the clock was
+  timing Egeria.
 - **n is tiny**: 13 of the 24 measured analyses have n ≤ 2. Medians over n = 1 are the value, not a
   median. Wall time is still the proxy; the token and acquisition counters (§6) are accumulating
   but no run has enough of them yet to split *waited* from *thought*.
