@@ -825,7 +825,7 @@ function loadScript(src) {
 function answerForm(turn) {
   if (turn.mermaid) return 'diagram';
   if (turn.chart) return 'chart';
-  if (turn.candidates && turn.candidates.length) return 'list';
+  if (turn.listSources && turn.listSources.length) return 'list';
   return 'inline';
 }
 
@@ -2079,14 +2079,19 @@ function extractMermaid(text) {
   return m ? m[1].trim() : null;
 }
 
-/** Does this answer look like a list of resources worth acting on?
- *  Only then is "Open as candidates" offered — an action that appears on
- *  every answer teaches people to ignore it. */
-function listCandidates(text) {
-  const lines = String(text || '').split('\n')
-    .map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim())
-    .filter((l) => l && l.length < 80);
-  return lines.length >= 3 ? lines.slice(0, 25) : [];
+/** The analyses an answer was compiled from that have a member list. The
+ *  old "Open as candidates (N)" counted answer lines under 80 characters --
+ *  it read 11 for a lead sentence and ten bullets about 32 dependencies and
+ *  could deliver nothing, since dependency names match no registered
+ *  resource (REPLY-BLANK-RAIL, 2026-09-12). Deleted. What an answer can
+ *  honestly offer is the list it was answered FROM: the member tree of a
+ *  packed evidence section, which the pane already renders in full. */
+const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_profiling', 'api_structure',
+  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse']);
+function listSources(body) {
+  const packed = body?.compiled?.manifest?.packed;
+  if (!Array.isArray(packed)) return [];
+  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
 }
 
 function renderChatLog() {
@@ -2117,11 +2122,12 @@ function renderChatLog() {
                        text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
                 Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
             }
-            if (t.candidates && t.candidates.length) {
-              bits.push(`<button data-candidates="${i}"
+            for (const src of (t.listSources || [])) {
+              // The list this was answered from, whole, in the pane's own
+              // member tree -- counts open what they counted.
+              bits.push(`<button data-list-source="${esc(src)}" data-list-slug="${esc(t.slug || '')}"
                 class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-[10px] py-[4px]
-                       text-chip text-chrome-ink">Open as candidates
-                (<span class="tnum">${t.candidates.length}</span>)</button>`);
+                       text-chip text-chrome-ink">Open the list · <span class="font-mono">${esc(src)}</span> ›</button>`);
             }
             return bits.length ? `<div class="mt-s3 flex flex-wrap gap-s2">${bits.join('')}</div>` : '';
           })()}
@@ -2142,8 +2148,10 @@ function renderChatLog() {
   log.querySelectorAll('[data-vote]').forEach((b) => b.addEventListener('click', () => {
     vote(Number(b.dataset.turn), Number(b.dataset.vote));
   }));
-  log.querySelectorAll('[data-candidates]').forEach((b) => b.addEventListener('click', () => {
-    showCandidates(Number(b.dataset.candidates));
+  log.querySelectorAll('[data-list-source]').forEach((b) => b.addEventListener('click', () => {
+    const slug = b.dataset.listSlug || state.selectedSlug;
+    if (!slug) return;
+    openMembers({ slug, analysisId: b.dataset.listSource, title: b.dataset.listSource.replace(/_/g, ' ') });
   }));
   log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
     promoteToPane(state.chat[Number(b.dataset.promote)]);
@@ -2204,28 +2212,6 @@ async function vote(i, value) {
 }
 
 /** Narrow the sidebar to the resources an answer named. */
-function showCandidates(i) {
-  const turn = state.chat[i];
-  if (!turn) return;
-  const wanted = new Set();
-  for (const line of turn.candidates) {
-    for (const p of state.projects) {
-      if (line.includes(p.slug) || line.includes(p.display_name)) wanted.add(p.slug);
-    }
-  }
-  if (!wanted.size) {
-    turn.candidateNote = 'None of those match a registered resource.';
-    renderChatLog();
-    return;
-  }
-  state.selectMode = true;
-  state.selected = wanted;
-  state.scope = '';
-  state.dispositionFacet = 'all';
-  state.filter = '';
-  renderSidebar();
-}
-
 async function submitAsk() {
   const input = $('ask-input');
   const q = input.value.trim();
@@ -2251,7 +2237,7 @@ async function submitAsk() {
     // a vote lands under the same key however the answer was produced.
     turn.queryHash = body.query_hash || '';
     turn.compileId = body.compiled?.manifest?.compile_id || null;
-    turn.candidates = listCandidates(turn.answer);
+    turn.listSources = listSources(body);
     // The chart the server chose to attach (statistical/health/comparison
     // intents produce one). A Plotly figure, and far too wide for the rail.
     turn.chart = body.chart || null;
@@ -2354,6 +2340,53 @@ function initSeams() {
 
 function railIsOpen() {
   return LS.get('re-next.railOpen', 'true') !== 'false';
+}
+
+/** Is the rail actually showing? The PREFERENCE (localStorage) and the DOM
+ *  legitimately disagree on a narrow shell, where renderIntentNav closes the
+ *  drawer without persisting. A writer that guards on the preference then
+ *  declines to open a rail that is shut and writes into display:none --
+ *  the blank rail the owner photographed (REPLY-BLANK-RAIL, 2026-09-12). */
+function railIsShowing() {
+  const grid = $('app-grid');
+  return !!grid && !grid.classList.contains('rail-closed');
+}
+
+/** Open the rail if it is not showing. On a narrow shell this is a tap that
+ *  is not written back over the wide-screen preference. */
+function ensureRailShowing() {
+  if (!railIsShowing()) setRailOpen(true, { persist: !shellIsNarrow() });
+}
+
+/* The evidence slot has three writers -- showEvidence, openMembers and the
+ * enrichment rail -- and one slot. The rules that make blank impossible:
+ *   - the frame always renders: a heading naming WHAT is showing and FOR
+ *     WHAT, then a body. A writer replaces the body, never the frame.
+ *   - every terminal state is a sentence: loading, failed, empty, and
+ *     "nothing was requested" are four different things.
+ *   - a slot with three writers needs a request id: a writer takes a
+ *     ticket before its awaits and stands down if a later click took one.
+ *     Last CLICK wins, not last response. */
+let railTicket = 0;
+function railClaim() { return ++railTicket; }
+function railStale(ticket) { return ticket !== railTicket; }
+
+function railFrame(kind, forWhat, bodyHtml, { sub = '', actions = '' } = {}) {
+  const out = $('rail-evidence');
+  if (!out) return null;
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">${esc(kind)}</span>
+      <span class="min-w-0 truncate text-caps text-chrome-muted">for <span class="font-mono">${esc(forWhat)}</span>${sub ? ` · ${sub}` : ''}</span>
+      ${actions}
+      <button data-act="rail-clear" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
+    </div>
+    <div data-rail-body>${bodyHtml}</div>`;
+  out.querySelector('[data-act="rail-clear"]')?.addEventListener('click', () => {
+    railClaim();
+    out.innerHTML = '';
+  });
+  return out.querySelector('[data-rail-body]');
 }
 
 /** Below the drawer breakpoint the rail must not open ITSELF.
@@ -3917,21 +3950,25 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
 async function openMembers({ slug, analysisId, metric = '', title = '' }) {
   const out = $('rail-evidence');
   if (!out) return;
+  ensureRailShowing();
+  const ticket = railClaim();
   const scope = state.memberScope || memberScope();
-  out.innerHTML = `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`;
+  railFrame('Members', slug, `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`, { sub: 'loading' });
   let data;
   try {
     data = await getMembers(slug, analysisId, { metric, scope });
   } catch (err) {
-    out.innerHTML = `<div class="text-caps text-state-warn-on-dark">The members could not be read: ${esc(err.message)}</div>`;
+    if (railStale(ticket)) return;   // a later click owns the slot now
+    railFrame('Members', slug, `<div class="text-caps text-state-warn-on-dark">The members of ${esc(title || analysisId)} could not be read: ${esc(err.message)}</div>`, { sub: 'failed' });
     return;
   }
+  if (railStale(ticket)) return;
   const groups = data.groups || [];
   const shown = groups.reduce((n, g) => n + g.members.length, 0);
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
-      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}${
+      <span class="min-w-0 truncate text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span> · <span class="tnum">${data.total}</span> · ${esc(data.title)}${
         data.inventory ? ` · ${tnum(esc(data.inventory))}` : ''}</span>
       <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
     </div>
@@ -5094,8 +5131,10 @@ function renderEnrichmentEvidence(slug) {
   const out = $('rail-evidence');
   if (!out) return;
   // Rail state is a persisted preference; "new since you judged" written
-  // into a closed drawer is the perishability signal nobody sees.
-  if (!railIsOpen()) setRailOpen(true);
+  // into a closed drawer is the perishability signal nobody sees. The DOM,
+  // not the preference, says whether it is showing.
+  ensureRailShowing();
+  railClaim();
   const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
   const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
   out.innerHTML = `
@@ -5824,10 +5863,25 @@ function showDiagram(entry) {
 function showEvidence(entry) {
   const env = state.answers.get(entry.question);
   // Evidence lands in the rail, so open the drawer if it is closed —
-  // otherwise the link appears to do nothing.
-  if (!railIsOpen()) setRailOpen(true);
+  // otherwise the link appears to do nothing. The DOM, not the preference.
+  ensureRailShowing();
+  railClaim();
+  const forWhat = state.selectedSlug || '—';
+  // A failure is more owed a sentence than an emptiness is.
+  if (!env) {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-chrome-muted">Nothing was requested for this question yet — its answer has not been read.</div>`, { sub: 'nothing requested' });
+    return;
+  }
+  if (env === 'loading') {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-chrome-muted">Still reading this question's answer…</div>`, { sub: 'loading' });
+    return;
+  }
+  if (env.__error) {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-state-warn-on-dark">The answer for this question failed to read: ${esc(String(env.__error))}</div>`, { sub: 'failed' });
+    return;
+  }
   const out = $('rail-evidence');
-  if (!out || !env || env === 'loading' || env.__error) return;
+  if (!out) return;
 
   const facts = (env.facts || []).map((f) => {
     const value = f.value && Object.keys(f.value).length
@@ -5845,11 +5899,11 @@ function showEvidence(entry) {
     </div>`;
   }).join('');
 
-  out.innerHTML = `
+  const body = railFrame('Evidence', forWhat, '', { sub: esc(String(entry.question).slice(0, 48)) });
+  body.innerHTML = `
     <div class="rounded-sm border border-chrome-line p-s3">
-      <div class="mb-s2 font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence</div>
       <div class="mb-s3 text-subtab">${esc(entry.question)}</div>
-      ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope.</div>'}
+      ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope — the answer names no measurements.</div>'}
       ${factMermaid(env) ? `<button data-act="evidence-diagram"
         class="mb-s2 w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
                text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Open diagram in pane</button>` : ''}
