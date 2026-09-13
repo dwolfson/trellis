@@ -108,13 +108,27 @@ class PgVectorStore(BaseVectorStore):
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
+        """Build the connection pool (and run the bootstrap extension/schema
+        setup), bounded by ``self._config.connect_timeout`` on every
+        underlying ``psycopg2.connect()`` call.
+
+        On any failure here ``self._pool`` is left ``None`` — the
+        ``ThreadedConnectionPool(...)`` call and the bootstrap connection are
+        both inside the lock but neither assigns ``self._pool`` until both
+        succeed, so a failed attempt leaves the next caller free to retry
+        rather than wedging the store in a half-connected state. Without
+        ``connect_timeout``, a hung TCP/DNS/SSL negotiation here blocks the
+        calling thread forever with no exception ever raised — the 2026-09-13
+        :8810 incident: Postgres itself was healthy, but this call never
+        returned and never raised, freezing the worker thread waiting on it.
+        """
         if self._pool is not None:
             return
         with self._connect_lock:
             if self._pool is not None:  # re-check inside lock
                 return
             self._logger.info(f"Connecting to pgvector at {self._config.host}:{self._config.port}/{self._config.dbname}")
-            self._pool = ThreadedConnectionPool(
+            pool = ThreadedConnectionPool(
                 minconn=1,
                 maxconn=self._config.max_connections,
                 host=self._config.host,
@@ -122,14 +136,24 @@ class PgVectorStore(BaseVectorStore):
                 dbname=self._config.dbname,
                 user=self._config.user,
                 password=self._config.password,
+                connect_timeout=self._config.connect_timeout,
             )
-            with psycopg2.connect(
-                host=self._config.host, port=self._config.port, dbname=self._config.dbname,
-                user=self._config.user, password=self._config.password,
-            ) as bootstrap:
-                self._ensure_extension(bootstrap)
-                if self._config.schema:
-                    self._ensure_schema(bootstrap)
+            try:
+                with psycopg2.connect(
+                    host=self._config.host, port=self._config.port, dbname=self._config.dbname,
+                    user=self._config.user, password=self._config.password,
+                    connect_timeout=self._config.connect_timeout,
+                ) as bootstrap:
+                    self._ensure_extension(bootstrap)
+                    if self._config.schema:
+                        self._ensure_schema(bootstrap)
+            except Exception:
+                # Don't leak the pool's own connections if bootstrap fails —
+                # self._pool stays None either way, but closeall() releases
+                # what ThreadedConnectionPool.__init__ already opened.
+                pool.closeall()
+                raise
+            self._pool = pool
             self._logger.info(f"✓ Connected to pgvector at {self._config.host}:{self._config.port}/{self._config.dbname}")
 
     def disconnect(self) -> None:

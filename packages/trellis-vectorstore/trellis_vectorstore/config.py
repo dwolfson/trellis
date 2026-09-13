@@ -40,3 +40,11 @@ class PgVectorStoreConfig:
     max_connections: int = 10
     ef_search: int = 100
     embedding_dim: int = 384
+    # Seconds before psycopg2.connect() (both the pool's own connections and
+    # the bootstrap extension/schema connection in connect()) gives up and
+    # raises OperationalError, instead of blocking the calling thread
+    # indefinitely. Added 2026-09-13 after a live incident (RE's :8810 web
+    # process) where ThreadedConnectionPool's underlying connect() hung with
+    # Postgres itself healthy and reachable from every other process — see
+    # pg.py's connect() docstring for what None means here.
+    connect_timeout: int = 10

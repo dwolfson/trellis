@@ -1,6 +1,7 @@
 """Query endpoint — POST a question, get a response."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -188,6 +189,18 @@ def _pick_chart(query: str, intent: str, resource_slug: str) -> dict | None:
 
 @router.post("/", response_model=QueryResponse)
 async def ask(request: QueryRequest) -> QueryResponse:
+    """POST a question, get a response.
+
+    Both branches below are synchronous, potentially-slow code
+    (ConversationAgent.handle / RAGSystem.query, each of which can run
+    LLM calls and tool calls, including a Postgres vector_search) — they
+    run off the event loop via asyncio.to_thread, never awaited directly
+    on it. Before 2026-09-13 they were called straight from this `async
+    def`, which is exactly how a single stuck vector_search connect froze
+    every request the :8810 process was serving: this coroutine runs on
+    the one uvicorn event-loop thread, and a synchronous call on that
+    thread blocks the whole loop, not just this request.
+    """
     from resource_explorer.query_processor import QueryProcessor
     intent = QueryProcessor().classify(request.query)
     query_hash = hashlib.sha256(request.query.encode()).hexdigest()[:16]
@@ -195,13 +208,17 @@ async def ask(request: QueryRequest) -> QueryResponse:
     compiled = None
     if request.session_id:
         agent = _get_or_create_session(request.session_id, request.resource_slug)
-        response = agent.handle(request.query, resource_slug=request.resource_slug,
-                                perspectives=request.perspectives)
+        response = await asyncio.to_thread(
+            agent.handle, request.query, resource_slug=request.resource_slug,
+            perspectives=request.perspectives,
+        )
         _persist_turn(request.session_id, request.query, response, request.resource_slug)
         compiled = _compiled_payload(agent)
     else:
         from resource_explorer.rag_system import RAGSystem
-        response = RAGSystem().query(request.query, resource_slug=request.resource_slug)
+        response = await asyncio.to_thread(
+            RAGSystem().query, request.query, resource_slug=request.resource_slug,
+        )
 
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
     return QueryResponse(
@@ -227,8 +244,6 @@ async def stream(request: QueryRequest) -> StreamingResponse:
         answer -- None when there was no resource in scope, or nothing
         compiled (the RAGSystem fallback path, no session_id).
     """
-    import asyncio
-
     def _sse(obj: dict) -> str:
         return f"data: {json.dumps(obj)}\n\n"
 
