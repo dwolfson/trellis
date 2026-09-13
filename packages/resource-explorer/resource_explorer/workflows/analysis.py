@@ -61,6 +61,21 @@ class AnalysisRunResult:
     steps_seconds: float | None = None
     publish_seconds: float | None = None
     publish_mode: str = "not-attempted"
+    #: The outbox run_id this publish's annotations were enqueued under, when
+    #: `published == "queued"` — empty otherwise. Carried onto the activity
+    #: row (see execute_and_record_analysis) so a later drain can find that
+    #: exact row again and flip `published` to True once the run's own outbox
+    #: rows (and their `::links` companion) are all terminal — see
+    #: registry.complete_publish_run_if_done.
+    publish_run_id: str = ""
+    #: The badge-table writes (project_published_annotation_types/
+    #: project_published_analyses) a deferred publish has NOT yet made —
+    #: carried onto the activity row so registry.complete_publish_run_
+    #: if_done() can make them once the run's outbox rows verifiably land,
+    #: rather than EgeriaPublisher.publish() making them at enqueue time
+    #: (which flipped the ☁ Published badge before anything reached Egeria).
+    #: `None` for every non-deferred/no-op path.
+    pending_published_record: dict | None = None
 
     def to_dict(self) -> dict:
         """The exact dict shape `_run_single_analysis_sync` used to return, so
@@ -148,9 +163,18 @@ def run_analysis(
     is_ingest: bool | None = None,
     steps: list[str] | None = None,
     registry=None,
+    publish: str | None = None,
 ) -> AnalysisRunResult:
     """Run one analysis's mapped survey step(s) and, where the resource is
     assigned to an Egeria project, auto-publish what it produced.
+
+    `publish` is the per-RUN choice (project owner, 2026-09-13): `"wait"`
+    drains the Egeria publish inline before this returns (today's default
+    behaviour); `"background"` enqueues it and returns in ~seconds, with
+    `published` coming back `"queued"` rather than `True`. `None` (the
+    default — and what every caller that predates this choice still passes)
+    defers to `RunsConfig.publish_inline`, so nothing that does not ask for
+    the choice sees any change in behaviour.
 
     Never raises for an analysis-level failure — that comes back as
     `status="error"` — only for something genuinely unexpected, which the caller
@@ -209,10 +233,22 @@ def run_analysis(
     published = None
     publish_seconds = None
     publish_mode = "not-attempted"
+    publish_run_id = ""
+    pending_published_record = None
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         from resource_explorer.config import get_config
 
-        publish_mode = "inline" if get_config().runs.publish_inline else "enqueued"
+        # The per-run choice, threaded through from the route: "wait"/
+        # "background" override RunsConfig.publish_inline for this run only;
+        # not asked (None) falls back to the config default, which is what
+        # every pre-existing caller still does.
+        if publish == "background":
+            defer_drain = True
+        elif publish == "wait":
+            defer_drain = False
+        else:
+            defer_drain = not get_config().runs.publish_inline
+        publish_mode = "enqueued" if defer_drain else "inline"
         publish_start = time.perf_counter()
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
@@ -226,7 +262,7 @@ def run_analysis(
             # Egeria-bound project reached through this route, softly, into
             # `summary`, with the run still reporting ok.
             publisher = EgeriaPublisher(registry=registry)
-            publisher.publish(result)
+            publisher.publish(result, defer_drain=defer_drain)
             # `is True`, not truthy: a test double patching EgeriaPublisher
             # wholesale (several do, across this file and
             # test_analysis_run_auto_publish.py) has no `publish_deferred`
@@ -237,15 +273,18 @@ def run_analysis(
             # literal bool `True`/`False` (set in egeria_publisher.py's
             # __init__), so this is exact for it and safe for a loose mock.
             if publisher.publish_deferred is True:
-                # publish_inline=False: enqueued, not applied. "queued" is a
-                # THIRD state, not True — the annotations are durable but have
-                # not landed in Egeria yet, and every reader of `published`
-                # must be able to tell the difference (see config.py's
-                # RunsConfig.publish_inline docstring for the measurement).
+                # Enqueued, not applied. "queued" is a THIRD state, not True
+                # — the annotations are durable but have not landed in Egeria
+                # yet, and every reader of `published` must be able to tell
+                # the difference (see config.py's RunsConfig.publish_inline
+                # docstring for the measurement, and this run-in-background
+                # design for the per-run choice that can now also cause it).
                 published = "queued"
-                summary += (
-                    f" {len(result.annotations)} Egeria write(s) queued for "
-                    "publish (next drain ≤15 min)."
+                publish_run_id = getattr(publisher, "publish_run_id", "") or ""
+                pending_published_record = getattr(publisher, "pending_published_record", None)
+                summary = summary.rstrip(".") + (
+                    f"; {len(result.annotations)} Egeria write(s) queued for "
+                    "publish — next drain ≤ 15 min."
                 )
             else:
                 published = True
@@ -274,7 +313,8 @@ def run_analysis(
     return AnalysisRunResult(
         status="ok", summary=summary, published=published, annotations=ann_summary,
         steps_seconds=steps_seconds, publish_seconds=publish_seconds,
-        publish_mode=publish_mode,
+        publish_mode=publish_mode, publish_run_id=publish_run_id,
+        pending_published_record=pending_published_record,
     )
 
 
@@ -319,8 +359,14 @@ def run_stage_batch(
 
 
 def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
-                                *, registry=None) -> AnalysisRunResult:
-    """Run one analysis and write its terminal status onto `activity_id`."""
+                                *, registry=None, publish: str | None = None,
+                                ) -> AnalysisRunResult:
+    """Run one analysis and write its terminal status onto `activity_id`.
+
+    `publish` ("wait" | "background" | None) is the per-run choice, carried
+    here from the run queue's `target` dict (see run_queue.py's
+    `_handle_analysis_run`) — passed straight through to `run_analysis`.
+    """
     from resource_explorer.registry import ProjectRegistry
 
     registry = registry or ProjectRegistry()
@@ -328,6 +374,7 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
     try:
         result = run_analysis(
             slug, analysis_id, is_ingest=is_ingest, steps=steps, registry=None,
+            publish=publish,
         )
     except Exception as exc:  # pragma: no cover — genuinely unexpected
         log.exception("Analysis run crashed for %s/%s", slug, analysis_id)
@@ -350,9 +397,21 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
         detail["error"] = result.error or summary
     else:
         detail["message"] = summary
+    # Carried so registry.complete_publish_run_if_done() can make the badge-
+    # table writes (project_published_annotation_types/_analyses) at the
+    # point the run's outbox rows actually land, instead of EgeriaPublisher.
+    # publish() making them at enqueue time — see that method's own comment.
+    # Only present when queued; a run that never deferred has nothing to
+    # apply later.
+    if result.published == "queued" and result.pending_published_record:
+        detail["pending_published_record"] = result.pending_published_record
+    # publish_run_id only when queued — see registry.complete_publish_run_
+    # if_done, which reads it off this exact activity row to flip
+    # `published` from "queued" to True once the run's outbox rows land.
+    publish_run_id = result.publish_run_id if result.published == "queued" else ""
     registry.update_activity_status(
         activity_id, result.status, summary=summary, detail=json.dumps(detail),
-        annotations=result.annotations or None,
+        annotations=result.annotations or None, publish_run_id=publish_run_id,
     )
     return result
 

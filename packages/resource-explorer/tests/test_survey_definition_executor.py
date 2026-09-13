@@ -418,6 +418,80 @@ class TestPublishGatedOnAssignedEgeriaProject:
         assert any("egeria down" in e for e in result["errors"])
 
 
+class TestPublishChoiceThreeStates:
+    """run-in-background plan: `SurveyDefinitionExecutor.run(publish=...)`
+    honours the same per-run choice and the same three `published` states
+    (True/False/"queued") the Analyses-card path does — no unconditional
+    True. An adapter that predates the choice (a plain function with no
+    `defer_drain` parameter) must keep working exactly as before: the
+    executor detects that via signature inspection and never passes the
+    kwarg it cannot accept."""
+
+    def _run(self, registry, *, run_publish=None, adapter_publish=None):
+        adapter = ResourceTypeAdapter(
+            entity_type="fake_pub_choice",
+            technology_type="Fake Tech",
+            re_analysis_steps={"known_step": MagicMock(return_value={"annotations": ["a1"]})},
+            get_entity=lambda registry, slug: object(),
+            publish=adapter_publish or (lambda entity, outputs, at, reg, *, defer_drain=False: "report-guid"),
+        )
+        register_adapter(adapter)
+        survey_def = SurveyDefinition(
+            process_guid="proc-pub-choice",
+            display_name="Fake Survey Publish Choice",
+            qualified_name="GovActionProcess::FakePubChoice",
+            supported_technology_type="Fake Tech",
+            steps=[
+                SurveyStep(
+                    guid="s1", display_name="Known", qualified_name="Step::Known",
+                    executes_at="resource-explorer", re_analysis_step="known_step",
+                ),
+            ],
+        )
+        reader = _fake_reader(survey_def, candidates=[
+            {"guid": "proc-pub-choice", "qualified_name": "GovActionProcess::FakePubChoice",
+             "display_name": "FakePubChoice"},
+        ])
+        registry.has_assigned_egeria_project.return_value = True
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+        kwargs = {} if run_publish is None else {"publish": run_publish}
+        result = executor.run(entity_type="fake_pub_choice", slug="my-fake", **kwargs)
+        return result
+
+    def test_background_reports_queued_not_true(self):
+        result = self._run(_fake_registry(), run_publish="background")
+        assert result["published"] == "queued"
+        assert result["egeria_report_guid"] == "report-guid"
+
+    def test_wait_reports_true(self):
+        result = self._run(_fake_registry(), run_publish="wait")
+        assert result["published"] is True
+
+    def test_no_choice_matches_the_config_default(self):
+        """Byte-for-byte: an unset `publish` must behave exactly as it did
+        before this feature existed."""
+        result = self._run(_fake_registry())
+        assert result["published"] is True
+
+    def test_an_adapter_that_predates_defer_drain_is_never_passed_it(self):
+        """A plain 4-arg publish callable (every adapter before this plan,
+        and every test double using one) must not receive an unexpected
+        kwarg — and since it was never told to defer, `published` must
+        report True even when background was requested, which is the
+        honest answer for an adapter that cannot defer."""
+        calls = []
+
+        def old_style_publish(entity, step_outputs, surveyed_at, registry):
+            calls.append((entity, step_outputs, surveyed_at, registry))
+            return "report-guid-old"
+
+        result = self._run(_fake_registry(), run_publish="background",
+                           adapter_publish=old_style_publish)
+        assert len(calls) == 1
+        assert result["published"] is True
+        assert result["egeria_report_guid"] == "report-guid-old"
+
+
 def _guarded_survey_def(entity_type: str, upstream_guard: str, required_guard: str):
     """Two RE-side steps, `upstream` -> `downstream`, linked with a real
     (non-"Any") guard. `upstream_guard` is what the fake `upstream_runner`

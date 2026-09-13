@@ -911,3 +911,262 @@ class TestDefaultClientsIncludesCollectionManager:
         clients, _find_guid = mod._default_clients()
 
         assert clients.collection_manager == "the-real-collection-manager-client"
+
+
+class TestDeferredLinksWaitForTheirReferents:
+    """run-in-background plan: a background publish enqueues its evidence
+    links BEFORE the annotations they reference are applied, keyed by outbox
+    row id rather than GUID. `apply_element` must resolve those row ids at
+    APPLY time and leave the link queued — not failed, not dead — until both
+    referents have landed."""
+
+    def test_a_link_row_id_form_is_left_pending_until_referents_land(self, db, project):
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_annotation_links,
+        )
+
+        summary_id = _enqueue(db, project, qn="Annotation::p::1::0")
+        evidence_id = _enqueue(db, project, qn="Annotation::p::1::1")
+        [link_id] = enqueue_annotation_links(
+            db, "repo", project,
+            [{"summary_row_id": summary_id, "evidence_row_id": evidence_id}],
+            run_id="r::links",
+        )
+
+        # Neither annotation has been applied yet — draining just the link
+        # run_id must not fail or dead-letter it.
+        discovery = type("D", (), {"create_annotation": lambda *a, **k: "should-not-run"})()
+        summary = drain_outbox(db, OutboxClients(discovery=discovery),
+                               lambda qn: "", run_id="r::links")
+        assert summary["done"] == 0
+        assert summary["failed"] == 0
+        assert summary["dead"] == 0
+        assert summary["skipped"] == 1
+
+        row = db.claim_due_outbox_elements(run_id="r::links")
+        assert len(row) == 1, "the link must still be claimable — pending, not stuck"
+        assert row[0]["status"] == "running"  # claim_due_outbox_elements marks it
+        assert row[0]["attempts"] == 0, "a deferred row must not burn a retry attempt"
+        assert "not yet applied" in (row[0]["last_error"] or "")
+
+    def test_the_link_applies_once_both_referents_are_done(self, db, project):
+        from unittest.mock import MagicMock
+
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_annotation_links,
+        )
+
+        summary_id = _enqueue(db, project, qn="Annotation::p::1::0")
+        evidence_id = _enqueue(db, project, qn="Annotation::p::1::1")
+        db.mark_outbox_done(summary_id, "guid-summary")
+        db.mark_outbox_done(evidence_id, "guid-evidence")
+        enqueue_annotation_links(
+            db, "repo", project,
+            [{"summary_row_id": summary_id, "evidence_row_id": evidence_id}],
+            run_id="r::links",
+        )
+
+        metadata_expert = MagicMock()
+        metadata_expert.create_related_elements.return_value = "guid-link"
+        summary = drain_outbox(db, OutboxClients(metadata_expert=metadata_expert),
+                               lambda qn: "", run_id="r::links")
+        assert summary["done"] == 1
+        assert summary["skipped"] == 0
+        body = metadata_expert.create_related_elements.call_args.kwargs["body"]
+        assert body["metadataElement1GUID"] == "guid-summary"
+        assert body["metadataElement2GUID"] == "guid-evidence"
+
+    def test_a_link_with_no_registry_resolver_is_deferred_not_failed(self, db, project):
+        """apply_element called with no resolve_row_guids (the 3-positional-arg
+        form every pre-existing caller uses) must not misread a row-id-keyed
+        link as a write failure — it has no way to resolve it, and that is
+        exactly the "not ready" case, not a broken row."""
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, OutboxNotReadyError, apply_element,
+        )
+
+        row = {"id": 1, "egeria_guid": "", "qualified_name": "AnnotationExtension::row1::row2",
+               "element_kind": "annotation_link",
+               "payload_json": json.dumps({"summary_row_id": 1, "evidence_row_id": 2})}
+
+        with pytest.raises(OutboxNotReadyError):
+            apply_element(row, OutboxClients(), lambda qn: "")
+
+
+class TestCompletePublishRunIfDone:
+    """registry.complete_publish_run_if_done — the flip from `published:
+    "queued"` to `published: True` once a background publish's outbox rows
+    (annotations AND their `::links` companion) have all landed."""
+
+    def _activity_row(self, db, publish_run_id, published="queued"):
+        from resource_explorer.activity_logger import log_analysis_run
+
+        entry_id = log_analysis_run(
+            db, "repo", "p", "p", "ok", "2 annotation(s); 2 queued", "fake_analysis",
+            published=published,
+        )
+        db.update_activity_status(
+            entry_id, "ok", detail=json.dumps({"published": published}),
+            publish_run_id=publish_run_id,
+        )
+        return entry_id
+
+    def test_flips_to_true_once_every_row_is_terminal(self, db, project):
+        run_id = "Annotation::p::2026-01-01T00:00:00"
+        row = _enqueue(db, project, qn="Annotation::p::1::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-1")
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        entry = db.get_activity(entry_id)
+        detail = json.loads(entry["detail"])
+        assert detail["published"] is True
+        assert "published_at" in detail
+        assert "Published at" in entry["summary"]
+
+    def test_does_not_flip_while_a_row_is_still_pending(self, db, project):
+        run_id = "Annotation::p::2026-01-01T00:00:01"
+        _enqueue(db, project, qn="Annotation::p::2::0", run_id=run_id)  # never marked done
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is False
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] == "queued"
+
+    def test_waits_for_the_links_companion_run_too(self, db, project):
+        run_id = "Annotation::p::2026-01-01T00:00:02"
+        row = _enqueue(db, project, qn="Annotation::p::3::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-3")
+        # The evidence link, enqueued under the "::links" companion run_id,
+        # is still pending — the group is not done yet.
+        _enqueue(db, project, kind="annotation_link",
+                qn="AnnotationExtension::row1::row2", run_id=f"{run_id}::links")
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is False
+        assert json.loads(db.get_activity(entry_id)["detail"])["published"] == "queued"
+
+    def test_does_not_flip_an_activity_row_that_is_not_queued(self, db, project):
+        """Idempotent, and safe to call on a run that was never deferred at
+        all — an activity row whose `published` is already True/False must
+        not be touched."""
+        run_id = "Annotation::p::2026-01-01T00:00:03"
+        row = _enqueue(db, project, qn="Annotation::p::4::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-4")
+        entry_id = self._activity_row(db, run_id, published=True)
+
+        assert db.complete_publish_run_if_done(run_id) is False
+        assert json.loads(db.get_activity(entry_id)["detail"])["published"] is True
+
+    def test_no_rows_for_the_run_id_is_a_no_op(self, db):
+        assert db.complete_publish_run_if_done("never-enqueued") is False
+
+    def test_empty_run_id_is_a_no_op(self, db):
+        assert db.complete_publish_run_if_done("") is False
+
+    def test_drain_outbox_triggers_the_flip_on_its_own(self, db, project):
+        """The integration point: drain_outbox must call this itself once a
+        run's last row lands, not leave it to a separate caller."""
+        run_id = "Annotation::p::2026-01-01T00:00:04"
+        discovery = type("D", (), {"create_annotation": lambda *a, **k: "guid-5"})()
+        row = db.enqueue_outbox_element(
+            "repo", project, "annotation", "Annotation::p::5::0",
+            {"class": "NewElementRequestBody"}, run_id=run_id,
+        )
+        entry_id = self._activity_row(db, run_id)
+
+        from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
+
+        summary = drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "",
+                               run_id=run_id)
+        assert summary["done"] == 1
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] is True
+
+    def test_a_dead_row_reports_false_not_true(self, db, project):
+        """Review fix on 84f4851: a mix of done+dead is NOT success. All
+        terminal but one write permanently failed must flip `published` to
+        False (the existing 'needs a human' state, which renders the ☁
+        Publish retry button) — never to True, and never to a fifth state."""
+        run_id = "Annotation::p::2026-01-01T00:00:05"
+        good = _enqueue(db, project, qn="Annotation::p::6::0", run_id=run_id)
+        db.mark_outbox_done(good, "guid-6")
+        bad = _enqueue(db, project, qn="Annotation::p::6::1", run_id=run_id)
+        db.mark_outbox_failed(bad, "permission denied", max_attempts=1)
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] is False
+        assert detail["published_failed_count"] == 1
+        summary = db.get_activity(entry_id)["summary"]
+        assert "1 Egeria write(s) failed permanently" in summary
+        assert "Publish Queue" in summary
+
+    def test_all_done_with_no_dead_rows_still_reports_true(self, db, project):
+        """The other half of the same guard — sabotaging "any dead ->
+        False" into "any terminal -> False" would break this."""
+        run_id = "Annotation::p::2026-01-01T00:00:06"
+        row = _enqueue(db, project, qn="Annotation::p::7::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-7")
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] is True
+        assert "published_failed_count" not in detail
+
+    def test_pending_published_record_is_applied_on_the_true_flip(self, db, project):
+        """Review fix on 84f4851: the badge-table writes a deferred publish
+        stashed must be made HERE, at the point they become true — not at
+        enqueue time. Registry-only calls, exercised directly since
+        EgeriaPublisher's own version of this is covered in test_workflows.py."""
+        run_id = "Annotation::p::2026-01-01T00:00:07"
+        row = _enqueue(db, project, qn="Annotation::p::8::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-8")
+        entry_id = self._activity_row(db, run_id)
+        db.update_activity_status(
+            entry_id, "ok",
+            detail=json.dumps({
+                "published": "queued",
+                "pending_published_record": {
+                    "slug": project,
+                    "annotation_types": ["ResourceMeasureAnnotation"],
+                    "analyses": ["security_scan"],
+                    "report_guid": "report-guid-8",
+                },
+            }),
+        )
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        assert db.get_last_published_annotation_types(project)
+        assert db.get_last_published_analyses(project)
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert "pending_published_record" not in detail, (
+            "consumed at the flip, not left sitting in the detail forever"
+        )
+
+    def test_pending_published_record_is_not_applied_when_dead(self, db, project):
+        """The badge tables must not record a publish that did not actually
+        land — a dead row means the run's outbox rows did NOT all reach
+        Egeria, so there is nothing true to record yet."""
+        run_id = "Annotation::p::2026-01-01T00:00:08"
+        bad = _enqueue(db, project, qn="Annotation::p::9::0", run_id=run_id)
+        db.mark_outbox_failed(bad, "boom", max_attempts=1)
+        entry_id = self._activity_row(db, run_id)
+        db.update_activity_status(
+            entry_id, "ok",
+            detail=json.dumps({
+                "published": "queued",
+                "pending_published_record": {
+                    "slug": project,
+                    "annotation_types": ["ResourceMeasureAnnotation"],
+                    "analyses": ["security_scan"],
+                    "report_guid": "report-guid-9",
+                },
+            }),
+        )
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        assert db.get_last_published_annotation_types(project) == {}
+        assert db.get_last_published_analyses(project) == {}
