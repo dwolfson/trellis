@@ -12,6 +12,7 @@ to either.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -143,6 +144,187 @@ class TestAnalysisWorkflow:
         assert result.status == "error"
         assert "not found" in result.error
 
+
+class TestAnalysisRunTimingsAndPublishMode:
+    """`steps_seconds`/`publish_seconds`/`publish_mode` — added so a run's cost
+    can be split into "thought" (the survey steps) vs "waited" (the
+    synchronous Egeria drain). And `published`'s third state, "queued", for
+    `RunsConfig.publish_inline=False` (default stays True, unchanged). See
+    config.py's `RunsConfig.publish_inline` docstring for the 2026-09-13
+    measurement (inline drain: 546.61s of a 558.89s run) that motivated both.
+    """
+
+    def _survey_result(self, annotations=1, errors=None):
+        result = MagicMock()
+        result.annotations = [{"a": i} for i in range(annotations)]
+        result.errors = errors or []
+        return result
+
+    def test_timings_recorded_and_not_attempted_without_a_project(self, registry):
+        from resource_explorer.workflows.analysis import run_analysis
+
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as Orch, \
+             patch("resource_explorer.surveyors.survey_report.summarise_annotations",
+                   return_value=[]), \
+             patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as Pub:
+            Orch.return_value.run.return_value = self._survey_result()
+            result = run_analysis("myproj", "security_scan", is_ingest=False,
+                                  steps=["repo_security"], registry=registry)
+        assert result.steps_seconds is not None
+        assert result.steps_seconds >= 0
+        assert result.publish_seconds is None
+        assert result.publish_mode == "not-attempted"
+        Pub.assert_not_called()
+
+    def test_default_inline_publish_records_mode_and_positive_publish_seconds(self, registry):
+        """The unchanged default: drained inline, `published is True`,
+        `publish_mode == "inline"`."""
+        from resource_explorer.workflows.analysis import run_analysis
+
+        registry.has_assigned_egeria_project = lambda *a, **k: True
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as Orch, \
+             patch("resource_explorer.surveyors.survey_report.summarise_annotations",
+                   return_value=[]), \
+             patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as Pub:
+            Orch.return_value.run.return_value = self._survey_result()
+            Pub.return_value.publish_deferred = False  # real EgeriaPublisher's own default
+            result = run_analysis("myproj", "security_scan", is_ingest=False,
+                                  steps=["repo_security"], registry=registry)
+        assert result.published is True
+        assert result.publish_mode == "inline"
+        assert result.steps_seconds is not None and result.steps_seconds >= 0
+        assert result.publish_seconds is not None and result.publish_seconds >= 0
+
+    def test_publish_inline_false_records_published_as_queued(self, registry, monkeypatch):
+        """`RunsConfig.publish_inline=False`: EgeriaPublisher enqueues instead
+        of draining (see egeria_publisher.py's `_create_annotations`) and sets
+        `publish_deferred = True`; `run_analysis` must turn that into the
+        THIRD `published` state, "queued" — not True (nothing has landed in
+        Egeria yet) and not False (nothing failed either)."""
+        from resource_explorer.config import get_config
+        from resource_explorer.workflows.analysis import run_analysis
+
+        monkeypatch.setattr(get_config().runs, "publish_inline", False)
+        registry.has_assigned_egeria_project = lambda *a, **k: True
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as Orch, \
+             patch("resource_explorer.surveyors.survey_report.summarise_annotations",
+                   return_value=[]), \
+             patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as Pub:
+            Orch.return_value.run.return_value = self._survey_result()
+            Pub.return_value.publish_deferred = True
+            result = run_analysis("myproj", "security_scan", is_ingest=False,
+                                  steps=["repo_security"], registry=registry)
+        assert result.published == "queued"
+        assert result.published is not True  # a bool True must never collapse into this
+        assert result.publish_mode == "enqueued"
+        assert "queued for publish" in result.summary
+
+    def test_execute_and_record_analysis_writes_timings_onto_the_activity_detail(self, registry):
+        """The instrumentation only matters if it reaches the row a person (or
+        the frontend) actually reads — `update_activity_status`'s `detail`."""
+        from resource_explorer.activity_logger import log_analysis_run
+        from resource_explorer.workflows.analysis import execute_and_record_analysis
+
+        registry.has_assigned_egeria_project = lambda *a, **k: True
+        activity_id = log_analysis_run(
+            registry, "repo", "myproj", "My Project", "running",
+            "Running 'security_scan' on myproj…", "security_scan",
+        )
+        # execute_and_record_analysis's inner run_analysis() call always passes
+        # registry=None (see its source — a deliberate, pre-existing quirk
+        # unrelated to this change), so it builds its OWN ProjectRegistry()
+        # rather than reusing the one passed in here. Patched at its source so
+        # that fresh instance is this test's registry too.
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as Orch, \
+             patch("resource_explorer.surveyors.survey_report.summarise_annotations",
+                   return_value=[]), \
+             patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as Pub:
+            Orch.return_value.run.return_value = self._survey_result()
+            Pub.return_value.publish_deferred = False
+            execute_and_record_analysis(
+                "myproj", "security_scan", activity_id, registry=registry,
+            )
+        entry = registry.get_activity(activity_id)
+        detail = json.loads(entry["detail"])
+        assert detail["published"] is True
+        assert detail["publish_mode"] == "inline"
+        assert isinstance(detail["steps_seconds"], (int, float)) and detail["steps_seconds"] >= 0
+        assert isinstance(detail["publish_seconds"], (int, float)) and detail["publish_seconds"] >= 0
+
+
+class TestCreateAnnotationsEnqueueVsDrain:
+    """`EgeriaPublisher._create_annotations` — the narrowest place
+    `RunsConfig.publish_inline` can gate, since that's the one call already
+    doing enqueue-then-drain (see its docstring). Exercised directly rather
+    than through `run_analysis` (which mocks EgeriaPublisher entirely
+    elsewhere in this file): that would just be re-testing the same mock in a
+    longer path, not the decision this class actually makes.
+    """
+
+    def _publisher(self, registry):
+        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+        return EgeriaPublisher(platform_url="https://fake", registry=registry)
+
+    def _result(self):
+        from resource_explorer.surveyors.survey_report import (
+            ResourceMeasureAnnotation, SurveyResult,
+        )
+
+        result = SurveyResult(
+            resource_slug="myproj", project_display_name="My Project",
+            github_url="https://github.com/test/myproj",
+        )
+        result.add(ResourceMeasureAnnotation(
+            summary="1 file", analysis_step="a", resource_properties={"n": 1},
+        ))
+        return result
+
+    def test_publish_inline_false_enqueues_and_does_not_drain(self, registry, monkeypatch):
+        from resource_explorer.config import get_config
+
+        monkeypatch.setattr(get_config().runs, "publish_inline", False)
+
+        def _fail_if_called(*a, **k):
+            pytest.fail("drain_outbox must not be called when publish_inline is False")
+
+        monkeypatch.setattr("resource_explorer.egeria_outbox.drain_outbox", _fail_if_called)
+
+        publisher = self._publisher(registry)
+        counts = publisher._create_annotations(self._result(), "report-guid-1")
+
+        assert publisher.publish_deferred is True
+        assert counts["annotations_queued"] == 1
+        assert counts["annotations_produced"] == 1
+        assert counts["links_created"] == 0
+        assert counts["links_failed"] == 0
+
+    def test_publish_inline_true_still_drains(self, registry, monkeypatch):
+        """The unchanged default: sabotaging this (skipping the flag check)
+        would leave `drain_called` at 0 here just as it would falsely pass the
+        False-case test above — this is the other half of that guard."""
+        from resource_explorer.config import get_config
+
+        monkeypatch.setattr(get_config().runs, "publish_inline", True)
+
+        drain_called = {"n": 0}
+
+        def _spy(*a, **k):
+            drain_called["n"] += 1
+            return {"claimed": 1, "done": 1, "failed": 0, "dead": 0}
+
+        monkeypatch.setattr("resource_explorer.egeria_outbox.drain_outbox", _spy)
+
+        publisher = self._publisher(registry)
+        counts = publisher._create_annotations(self._result(), "report-guid-1")
+
+        assert drain_called["n"] == 1
+        assert publisher.publish_deferred is False
+        assert counts["annotations_queued"] == 1
+
+
+class TestStageBatchWorkflow:
     def test_a_stage_batch_with_some_errors_and_some_output_is_not_a_failure(self, registry):
         from resource_explorer.workflows.analysis import run_stage_batch
 

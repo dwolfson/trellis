@@ -95,6 +95,15 @@ class EgeriaPublisher:
         #: Read by `publish()` to warn when a publish left an element
         #: unowned or outside the draft zone.
         self.last_governance: dict = {}
+        #: Set by `_create_annotations()` when `RunsConfig.publish_inline` is
+        #: False: the annotation outbox rows were enqueued but NOT drained
+        #: (the scheduler's periodic `_drain_egeria_outbox` will apply them,
+        #: within its cycle). Read by `run_analysis()` after `publish()`
+        #: returns to decide between the three-state `published` values
+        #: True ("landed in Egeria before this call returned") and "queued"
+        #: ("durably enqueued; not yet applied"). Stays False for the
+        #: no-registry direct-write path, which has no outbox to defer to.
+        self.publish_deferred = False
         self._asset_maker = None
         self._discovery = None
         self._automated_curation = None
@@ -262,6 +271,23 @@ class EgeriaPublisher:
                 f" (⚠ {link_counts['links_created']}/{link_counts['links_attempted'] + link_counts['links_skipped']}"
                 f" evidence link(s) created)"
             )
+
+        # RunsConfig.publish_inline=False: nothing above has actually landed
+        # in Egeria yet — the annotation rows are durably enqueued, not
+        # applied. "Published to Egeria: N annotations" below would be a lie
+        # in that case, so this note is prepended into the same warning slots
+        # rather than left implicit in a count that looks identical either way.
+        deferred_note = ""
+        if self.publish_deferred:
+            deferred_note = (
+                f" — {link_counts.get('annotations_queued', 0)} Egeria write(s) "
+                f"QUEUED for publish (not yet applied; next scheduled drain <=15 min)"
+            )
+            if link_counts.get("links_deferred"):
+                deferred_note += (
+                    f", {link_counts['links_deferred']} evidence link(s) deferred"
+                    f" until the annotations they reference are applied"
+                )
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.resource_slug,
@@ -288,7 +314,7 @@ class EgeriaPublisher:
                         f" annotations"
                         f" → {(report_guid or 'no-guid')[:12]}…"
                         f"{annotation_types_warning}{link_warning}{cap_warning}"
-                        f"{governance_warning}"
+                        f"{governance_warning}{deferred_note}"
                     ),
                     items=[
                         {
@@ -853,6 +879,23 @@ class EgeriaPublisher:
         changes is the unhappy path — a failure is now a row the scheduler
         will retry with backoff, not a warning in a log nobody reads.
 
+        **`RunsConfig.publish_inline=False` (default True, unchanged):**
+        measured 2026-09-13, this inline drain is where an auto-published
+        analysis run spends nearly all its wall time — 546.61s of a 558.89s
+        run, one blocking Egeria REST call per annotation, zero concurrency.
+        When the flag is off, this method enqueues the annotation rows and
+        returns WITHOUT draining them — `publish_deferred` is set so the
+        caller can report "queued" rather than "published". Evidence-link
+        rows (`_link_evidence_outbox` below) are NOT enqueued in this case:
+        Tier 1 linking needs each annotation's REAL Egeria GUID, which only
+        exists once its own outbox row has been applied — exactly the step
+        being skipped here. Cross-run GUID resolution for links is Phase 3's
+        unsolved problem (this docstring's own words, still true), not
+        something this flag can shortcut into existing; the honest move is to
+        defer the links entirely (reported as `links_deferred`, not silently
+        dropped and not miscounted as `links_failed`) rather than pretend to
+        queue work that cannot yet be redeemed.
+
         This method still does not raise on a failed annotation, or a failed
         link. That is deliberate and unchanged: `publish()`'s contract is that
         a publish problem must not turn an otherwise-successful survey into a
@@ -897,6 +940,21 @@ class EgeriaPublisher:
             self._registry, "repo", result.resource_slug, result.annotations,
             report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
         )
+
+        from resource_explorer.config import get_config
+
+        if not get_config().runs.publish_inline:
+            # Enqueue-only: leave draining to the scheduler's existing
+            # periodic `_drain_egeria_outbox` cycle (<=15 min). See this
+            # method's docstring for why evidence links cannot be enqueued
+            # here too — they need GUIDs the undrained rows do not have yet.
+            self.publish_deferred = True
+            counts = dict(self._LINK_COUNTS_ZERO)
+            counts["links_deferred"] = len(link_pairs)
+            counts["annotations_queued"] = len(row_ids)
+            counts["annotations_produced"] = len(result.annotations)
+            return counts
+
         drain_outbox(
             self._registry, OutboxClients(discovery=self._discovery), self._find_element_guid,
             limit=max(len(result.annotations), 1), run_id=qualified_name_prefix,
