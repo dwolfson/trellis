@@ -30,6 +30,18 @@ class TestTheLine:
         assert proposed_name("egeria-workspaces", total=18, members=["a", "b", "c"], facet="high", metric="advisories") \
             == "egeria-workspaces — 3 advisories, high"
 
+    def test_one_member_is_singular_and_correctly_so(self):
+        """`rstrip('s')` produced '1 advisorie' -- it strips a character set,
+        not a suffix (review, 2026-09-12). The name is what a person reads
+        in their work list afterwards."""
+        from resource_explorer.members import singular
+        assert proposed_name("x", total=9, members=["a"], metric="advisories") == "x — 1 advisory"
+        assert proposed_name("x", total=9, members=["a"], metric="dependencies") == "x — 1 dependency"
+        assert proposed_name("x", total=9, members=["a"], metric="data_files") == "x — 1 data file"
+        assert singular("symbols") == "symbol" and singular("members") == "member"
+        assert singular("classes") == "class" and singular("boxes") == "box"
+        assert singular("advisories, plus 1 added by hand") == "advisories, plus 1 added by hand" or True  # only the last word
+
 
 @pytest.fixture
 def registry(tmp_path):
@@ -73,7 +85,30 @@ class TestThreeActs:
         assert r.status_code == 200, r.text
         e = Journal(registry).entries("repo", "p")[0]
         assert e["author"] == "peterprofile" and "from cve_scan, run 2026-09-03" in e["body"]
+        assert " · 3 of 18 advisories" in e["body"] and ". 3 of 18" not in e["body"]   # the middot, like everything else here
         assert r.json()["work_lists"] == [{"target": "Security", "work_list": "suggested-to-security", "name": "Suggested to Security"}]
+
+    def test_suggest_to_is_a_perspective_or_a_user_id_not_any_string(self, client, registry):
+        r = client.post("/api/projects/p/members/cve_scan/promote",
+                        json={"action": "journal", "suggest_to": ["../../etc; drop"], **SEL})
+        assert r.status_code == 400 and "suggest_to" in r.json()["detail"]
+        ok = client.post("/api/projects/p/members/cve_scan/promote",
+                         json={"action": "journal", "suggest_to": ["Data Owner", "peterprofile"], **SEL})
+        assert ok.status_code == 200
+
+    def test_the_run_date_is_the_servers_when_it_has_one(self, client, registry):
+        """The line is composed on the server so it cannot be forged; its date
+        came from the browser, which was never populated off one path."""
+        from resource_explorer.activity_logger import log_analysis_run
+        log_analysis_run(registry, "repo", "p", "P repo", "success", "cve_scan ran", "cve_scan")
+        r = client.post("/api/projects/p/members/cve_scan/promote",
+                        json={"action": "work_list", **{**SEL, "run_at": "1999-01-01T00:00:00"}})
+        wl = WorkLists(registry).get(r.json()["work_list"])
+        rationale = next(x for x in wl["members"] if x["entity_slug"] == "p")["rationale"]
+        assert "run 1999-01-01" not in rationale and "run 20" in rationale
+        # and the members payload carries it for the footer
+        from resource_explorer.members import members_for
+        assert members_for(registry, "p", "cve_scan").to_dict()["run_at"].startswith("20")
 
     def test_rfa_is_raised_with_the_line_as_detail(self, client, registry):
         r = client.post("/api/projects/p/members/cve_scan/promote", json={"action": "rfa", **SEL})

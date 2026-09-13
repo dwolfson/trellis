@@ -52,6 +52,7 @@ class MemberSet:
     note: str = ""
     source: str = ""              # what was read: a table or the findings
     inventory: str = ""           # the short form: "6,423 files · 4,425 vendored"
+    run_at: str = ""              # when the analysis this set came from last ran -- the server's date, not the browser's
 
     def to_dict(self) -> dict:
         return {
@@ -60,6 +61,7 @@ class MemberSet:
             "groups": [{"name": g.name, "count": g.count, "members": g.members, "truncated": g.truncated}
                        for g in self.groups],
             "note": self.note, "source": self.source, "inventory": self.inventory,
+            "run_at": self.run_at,
         }
 
 
@@ -242,13 +244,24 @@ _READERS = {
 }
 
 
+def last_run_at(registry: ProjectRegistry, slug: str, analysis_id: str) -> str:
+    """When this analysis last ran, from the registry's own bookkeeping. The
+    provenance line is composed on the server so it cannot be forged; a line
+    that took its date from the browser was not (review, 2026-09-12)."""
+    try:
+        runs = registry.get_analysis_last_run("repo", slug) or {}
+        return (runs.get(analysis_id) or {}).get("last_run_at", "") or ""
+    except Exception:
+        return ""
+
+
 def members_for(registry: ProjectRegistry, slug: str, analysis_id: str, metric: str = "",
                 scope: str = "public", limit: int = DEFAULT_LIMIT) -> MemberSet:
     scope = "all" if scope == "all" else "public"
     reader = _READERS.get((analysis_id, metric or None)) or _READERS.get((analysis_id, None))
-    if reader is not None:
-        return reader(registry, slug, scope, limit)
-    return _findings_members(registry, slug, analysis_id, scope, limit)
+    ms = reader(registry, slug, scope, limit) if reader is not None else _findings_members(registry, slug, analysis_id, scope, limit)
+    ms.run_at = last_run_at(registry, slug, analysis_id)
+    return ms
 
 
 def children_for(registry: ProjectRegistry, slug: str, analysis_id: str, key: str,
@@ -299,5 +312,20 @@ def proposed_name(display_name: str, *, total: int, members: list[str], facet: s
     """'egeria-workspaces — 3 advisories, high'. Editable before saving."""
     what = (metric.replace("_", " ") if metric else "members")
     n = len(members)
-    core = f"{n} {what}" if n != 1 else f"1 {what.rstrip('s') or what}"
+    core = f"{n} {what}" if n != 1 else f"1 {singular(what)}"
     return f"{display_name} — {core}" + (f", {facet}" if facet else "")
+
+
+def singular(noun: str) -> str:
+    """'advisories' -> 'advisory', 'dependencies' -> 'dependency', 'files' ->
+    'file'. The first version was `rstrip('s')`, which strips a character SET
+    and produced '1 advisorie' (review, 2026-09-12). Only the last word of a
+    phrase is singularised: 'data files' -> 'data file'."""
+    head, _, last = noun.rpartition(" ")
+    if last.endswith("ies") and len(last) > 3:
+        last = last[:-3] + "y"
+    elif last.endswith("ses") or last.endswith("xes") or last.endswith("ches") or last.endswith("shes"):
+        last = last[:-2]
+    elif last.endswith("s") and not last.endswith("ss"):
+        last = last[:-1]
+    return f"{head} {last}".strip()
