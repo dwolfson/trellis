@@ -98,3 +98,25 @@ class TestPromotionSelectionInTheShell:
         assert "accent-accent" not in members, "gold is not a fill on 200 checkboxes"
         assert "this list is a tree" in self._sel()
         assert "Nothing listed" in members
+
+
+class TestDispositionRulings:
+    """FUNNEL-COST-RULINGS §4 and §5 (designer, 2026-09-13). Verified in a
+    browser: 'Reversing using → abandoned — why?' with record / keep, an
+    empty reason refused, cancel restoring; the DBs sidebar reading the
+    sentence with no facet chips."""
+
+    def test_a_reason_is_asked_only_when_a_terminal_verdict_is_reversed(self):
+        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        body = app[app.index("function wireDispositionPicker("):app.index("async function loadDispositionPane(")]
+        assert "const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);" in app
+        assert "if (!TERMINAL_DISPOSITIONS.has(current)) { await commit(value); return; }" in body   # first verdicts never ask
+        assert "Reversing <em>${esc(current)}</em> → <em>${esc(value)}</em> — why?" in body
+        assert "a reversal needs a reason" in body and "setDisposition(p.github_url, value, reason)" in body
+
+    def test_a_non_repo_says_no_verdict_can_be_recorded_instead_of_empty_chips(self):
+        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        i = app.index("No verdict can be recorded for a")
+        assert "dispositions exist for repositories only" in app[i:i + 200]
+        # the chip row is inside the repo branch, so a database renders none
+        assert "${state.resourceType !== 'repo' ? `" in app[i - 400:i]

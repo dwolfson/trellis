@@ -1577,8 +1577,13 @@ function renderSidebar() {
 
     <div class="mb-[3px] text-caps uppercase tracking-caps text-chrome-muted"
       title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
-      Disposition · all registered repos
+      Disposition · ${state.resourceType === 'repo' ? 'all registered repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}
     </div>
+    ${state.resourceType !== 'repo' ? `
+    <div class="mb-s2 text-chip text-chrome-ink">
+      No verdict can be recorded for a ${state.resourceType === 'db' ? 'database' : 'filesystem'} yet — dispositions exist for repositories only.
+      <span class="text-chrome-muted">That is a fact about the mechanism, not about the data.</span>
+    </div>` : `
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
@@ -1592,7 +1597,7 @@ function renderSidebar() {
           ? `<button data-act="show-empty-facets" class="cursor-pointer bg-transparent text-chrome-muted underline"
               ><span class="tnum">${absent.length}</span> more…</button>`
           : ''}
-    </div>
+    </div>`}
 
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
       <button data-act="select-mode" class="cursor-pointer bg-transparent ${
@@ -2578,18 +2583,54 @@ function dispositionPickerHtml(p) {
   </div>`;
 }
 
+/** Verdicts that end a line of work. People explain why they stopped and
+ *  not why they continued, in every system anyone has built, so a first
+ *  verdict never asks for a reason. Where the absence costs something is
+ *  the REVERSAL -- a `using` repo later abandoned with nothing on the
+ *  record about why it was adopted -- so reversing one of these asks
+ *  (FUNNEL-COST-RULINGS §4, 2026-09-13). */
+const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);
+
 function wireDispositionPicker(host, p, { note, onSet }) {
-  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
-    const value = b.dataset.disp;
+  const commit = async (value, reason = '') => {
     note('Saving…');
     try {
-      await setDisposition(p.github_url, value);
+      await setDisposition(p.github_url, value, reason);
       p.disposition = value;
       renderSidebar();
       await onSet(value);
     } catch (err) {
       note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
     }
+  };
+  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
+    const value = b.dataset.disp;
+    const current = p.disposition || 'undecided';
+    if (value === current) return;
+    if (!TERMINAL_DISPOSITIONS.has(current)) { await commit(value); return; }
+    // A reversal: the record should say why the earlier verdict no longer
+    // holds. The prompt exists before there is data for it, on purpose.
+    host.querySelector('[data-reversal]')?.remove();
+    host.insertAdjacentHTML('beforeend', `
+      <div data-reversal class="mt-s2 flex flex-wrap items-baseline gap-s2 text-caveat">
+        <span class="text-ink">Reversing <em>${esc(current)}</em> → <em>${esc(value)}</em> — why?</span>
+        <input data-reversal-reason type="text" placeholder="what changed since it was ${esc(current)}"
+          class="w-[28ch] rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink placeholder:text-ink-muted">
+        <button data-reversal-go class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">record</button>
+        <button data-reversal-cancel class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">keep ${esc(current)}</button>
+      </div>`);
+    const box = host.querySelector('[data-reversal]');
+    const input = box.querySelector('[data-reversal-reason]');
+    input.focus();
+    const go = async () => {
+      const reason = input.value.trim();
+      if (!reason) { input.placeholder = 'a reversal needs a reason — one line'; input.focus(); return; }
+      box.remove();
+      await commit(value, reason);
+    };
+    box.querySelector('[data-reversal-go]').addEventListener('click', go);
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+    box.querySelector('[data-reversal-cancel]').addEventListener('click', () => box.remove());
   }));
 }
 
