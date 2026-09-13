@@ -2094,6 +2094,72 @@ function listSources(body) {
   return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
 }
 
+/** The lists an answer was compiled from, with their TOTAL and what the
+ *  model was shown -- one sentence each, the whole count, and a way out.
+ *  The compiler records `manifest.lists[section][field] = {total, shown:
+ *  {FULL, SUMMARY}}` for every packed reader-derived section, and the
+ *  section's packed rung says which `shown` applies. The prose channel
+ *  laundered "... and 22 more" into "here are some of them" with 32 in the
+ *  sentence and 10 on the page and nothing saying which was the list
+ *  (REPLY-BLANK-RAIL §2); this is the total said out loud beside the
+ *  answer, from the manifest rather than recounted, so the pane's member
+ *  tree and the rail agree by construction. */
+function listSentences(body) {
+  const m = body?.compiled?.manifest;
+  const lists = m?.lists;
+  if (!lists || typeof lists !== 'object' || !Array.isArray(m.packed)) return [];
+  const out = [];
+  for (const p of m.packed) {
+    if (!p || p.role !== 'evidence' || !lists[p.key]) continue;
+    const rung = String(p.rung || 'FULL').toUpperCase();
+    // One sentence per SECTION. Nested lists arrive one per sub-key
+    // (by_ecosystem.java, .javascript, .python); a person asked about the
+    // dependencies, not about Java's, so they are summed and the sub-keys
+    // counted -- "68 dependencies · in 3 ecosystems".
+    const byParent = new Map();
+    for (const [field, ext] of Object.entries(lists[p.key])) {
+      if (!ext || typeof ext.total !== 'number') continue;
+      const shown = ext.shown && typeof ext.shown === 'object'
+        ? (ext.shown[rung] ?? ext.shown.FULL ?? ext.total) : ext.total;
+      const dot = field.indexOf('.');
+      const parent = dot > 0 ? field.slice(0, dot) : field;
+      const cur = byParent.get(parent) || { total: 0, shown: 0, parts: 0 };
+      cur.total += ext.total; cur.shown += shown; cur.parts += dot > 0 ? 1 : 0;
+      byParent.set(parent, cur);
+    }
+    for (const [field, agg] of byParent) {
+      out.push({ key: p.key, field, total: agg.total, shown: agg.shown, parts: agg.parts, rung,
+                 members: MEMBER_LISTED.has(p.key) });
+    }
+  }
+  return out;
+}
+
+/** "32 dependencies · by ecosystem · 10 shown to the model · the full list
+ *  is in the pane". A field like `by_ecosystem.python` reads as "by
+ *  ecosystem · python". */
+const LIST_NOUNS = {
+  dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
+  api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
+  sub_resource_survey: 'sub-resources', manifest_parse: 'manifest entries',
+};
+function listSentenceHtml(l, i) {
+  const mapped = LIST_NOUNS[l.key];
+  // "68 dependencies · in 3 ecosystems" when the noun is known and the list
+  // was grouped; "3 findings · security scan" when it is not.
+  const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');
+  const head = mapped
+    ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
+    : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
+  const partial = l.shown < l.total;
+  return `<div class="mt-s2 text-chip text-chrome-ink">
+    ${head}${
+      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model at ${esc(l.rung.toLowerCase())}</span>` : ' · all shown to the model'}${
+      l.members ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
+        class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">the full list is in the pane ›</button>` : ''}
+  </div>`;
+}
+
 function renderChatLog() {
   const log = $('chat-log');
   if (!log) return;
@@ -2111,6 +2177,7 @@ function renderChatLog() {
       ${t.answer ? `
         <div class="rounded-sm border border-chrome-line p-s3 text-subtab">
           <div class="whitespace-pre-wrap text-chrome-ink">${tnum(esc(t.answer))}</div>
+          ${(t.lists || []).map((l) => listSentenceHtml(l, t.slug || '')).join('')}
           ${(() => {
             const form = answerForm(t);
             const bits = [];
@@ -2122,7 +2189,9 @@ function renderChatLog() {
                        text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
                 Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
             }
+            const said = new Set((t.lists || []).map((l) => l.key));
             for (const src of (t.listSources || [])) {
+              if (said.has(src)) continue;     // the sentence below carries the link
               // The list this was answered from, whole, in the pane's own
               // member tree -- counts open what they counted.
               bits.push(`<button data-list-source="${esc(src)}" data-list-slug="${esc(t.slug || '')}"
@@ -2238,6 +2307,7 @@ async function submitAsk() {
     turn.queryHash = body.query_hash || '';
     turn.compileId = body.compiled?.manifest?.compile_id || null;
     turn.listSources = listSources(body);
+    turn.lists = listSentences(body);
     // The chart the server chose to attach (statistical/health/comparison
     // intents produce one). A Plotly figure, and far too wide for the rail.
     turn.chart = body.chart || null;
