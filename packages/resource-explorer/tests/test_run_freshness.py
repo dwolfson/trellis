@@ -391,6 +391,12 @@ class TestTheSkipNamesThePrice:
         sentence = cost.sentence()
         assert sentence.startswith("A re-run takes about 0.1s to run and about"), sentence
         assert "to publish" in sentence and "in all" in sentence
+        # The halves and the total must come from the same rows. Here the
+        # `runs`-table median is 92s and the split sums to 90.27s: a sentence
+        # that said "1m 32s in all" beside "1m 30s to publish" would carry two
+        # numbers that disagree — the list-answer defect, in a toast.
+        assert "about 1m 30s in all" in sentence, sentence
+        assert "1m 32s" not in sentence, sentence
 
     def test_no_split_rows_leaves_the_sentence_byte_identical(self, pg_registry):
         """Old runs (predating the split instrumentation) must fall back to

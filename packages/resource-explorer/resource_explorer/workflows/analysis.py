@@ -486,11 +486,22 @@ class RunCost:
         if self.basis == "measured" and self.seconds is not None:
             n = f"median of {self.runs} run{'s' if self.runs != 1 else ''}"
             if self.steps_seconds is not None and self.publish_seconds is not None:
+                # The two halves and the total must come from the SAME rows,
+                # or the sentence carries numbers that disagree — the first
+                # draft said "0.1s to run and 1m 32s to publish; about 2m 36s
+                # in all", because "in all" was the `runs`-table median over
+                # five runs (three of them before the platform redeploy) while
+                # the split came from the one instrumented row. So the total
+                # here is the sum of the split, and `seconds` (the whole-run
+                # median, still what the button costs on average) stays in
+                # the payload for callers that want it, not in this sentence.
                 sn = f"median of {self.split_runs} run{'s' if self.split_runs != 1 else ''}"
                 return (
                     f"A re-run takes about {_humanise_split_seconds(self.steps_seconds)} "
                     f"to run and about {_humanise_split_seconds(self.publish_seconds)} "
-                    f"to publish ({sn}); about {_humanise_duration(self.seconds)} in all."
+                    f"to publish — about "
+                    f"{_humanise_duration(self.steps_seconds + self.publish_seconds)} "
+                    f"in all ({sn})."
                 )
             return f"A re-run costs about {_humanise_duration(self.seconds)} ({n})."
         if self.basis == "declared" and self.declared:
