@@ -68,6 +68,14 @@ class AnalysisRunResult:
     #: rows (and their `::links` companion) are all terminal — see
     #: registry.complete_publish_run_if_done.
     publish_run_id: str = ""
+    #: The badge-table writes (project_published_annotation_types/
+    #: project_published_analyses) a deferred publish has NOT yet made —
+    #: carried onto the activity row so registry.complete_publish_run_
+    #: if_done() can make them once the run's outbox rows verifiably land,
+    #: rather than EgeriaPublisher.publish() making them at enqueue time
+    #: (which flipped the ☁ Published badge before anything reached Egeria).
+    #: `None` for every non-deferred/no-op path.
+    pending_published_record: dict | None = None
 
     def to_dict(self) -> dict:
         """The exact dict shape `_run_single_analysis_sync` used to return, so
@@ -226,6 +234,7 @@ def run_analysis(
     publish_seconds = None
     publish_mode = "not-attempted"
     publish_run_id = ""
+    pending_published_record = None
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         from resource_explorer.config import get_config
 
@@ -272,6 +281,7 @@ def run_analysis(
                 # design for the per-run choice that can now also cause it).
                 published = "queued"
                 publish_run_id = getattr(publisher, "publish_run_id", "") or ""
+                pending_published_record = getattr(publisher, "pending_published_record", None)
                 summary = summary.rstrip(".") + (
                     f"; {len(result.annotations)} Egeria write(s) queued for "
                     "publish — next drain ≤ 15 min."
@@ -304,6 +314,7 @@ def run_analysis(
         status="ok", summary=summary, published=published, annotations=ann_summary,
         steps_seconds=steps_seconds, publish_seconds=publish_seconds,
         publish_mode=publish_mode, publish_run_id=publish_run_id,
+        pending_published_record=pending_published_record,
     )
 
 
@@ -386,6 +397,14 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
         detail["error"] = result.error or summary
     else:
         detail["message"] = summary
+    # Carried so registry.complete_publish_run_if_done() can make the badge-
+    # table writes (project_published_annotation_types/_analyses) at the
+    # point the run's outbox rows actually land, instead of EgeriaPublisher.
+    # publish() making them at enqueue time — see that method's own comment.
+    # Only present when queued; a run that never deferred has nothing to
+    # apply later.
+    if result.published == "queued" and result.pending_published_record:
+        detail["pending_published_record"] = result.pending_published_record
     # publish_run_id only when queued — see registry.complete_publish_run_
     # if_done, which reads it off this exact activity row to flip
     # `published` from "queued" to True once the run's outbox rows land.

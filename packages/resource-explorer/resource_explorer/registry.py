@@ -4976,24 +4976,35 @@ class ProjectRegistry:
         annotations AND its evidence-link companion run (`f"{publish_run_id}
         ::links"`, see egeria_publisher.py's `_link_evidence_outbox`/
         `_create_annotations`) — has reached a terminal state (done or dead;
-        neither is retried again), flip the activity row that reported this
-        run as `published: "queued"` to `published: True` and append when.
+        neither is retried again), resolve the activity row that reported
+        this run as `published: "queued"`:
+
+        * **All done, none dead** — the honest success case. Flips to
+          `published: True`, appends "Published at <ts>." to the summary,
+          and — if the row carries a `pending_published_record` (see
+          egeria_publisher.py's `publish()`) — makes the badge-table writes
+          (`record_published_annotation_types`/`record_published_analyses`)
+          NOW, at the point they are actually true, rather than at enqueue
+          time (which flipped the ☁ Published badge before anything had
+          reached Egeria — the bug this deferral exists to fix).
+        * **Any dead, and nothing still pending** — NOT success. Flips to
+          `published: False` (not a fifth state: `False` is what already
+          means "something needs a human", and it is what renders the ☁
+          Publish retry button — the right action here) and appends "N
+          Egeria write(s) failed permanently — see the Publish Queue" to the
+          summary. No badge-table writes: the run's outbox rows genuinely
+          did not all land, so the badge tables would be recording annotation
+          types this publish did not actually get to Egeria.
+        * **Still pending** — untouched; `published` stays `"queued"`.
 
         Returns False (a no-op) when: no rows exist for this run_id (nothing
         was ever enqueued under it, or a typo); some row is still pending,
         failed-and-backing-off, or running (not done yet); no activity row
         carries this `publish_run_id`; or that activity row's `published` is
         no longer `"queued"` (already flipped by an earlier pass, or was
-        never the deferred path to begin with). Idempotent — calling this
-        again after it has already flipped a row finds `published` no longer
-        `"queued"` and does nothing.
-
-        Dead rows count as "done draining" here, not as success: a
-        dead-lettered element already has its own visible surface (the RFA
-        drawer, via record_drain_outcome) and this method's job is only to
-        stop the row from saying "queued" once nothing further can happen to
-        it automatically — it does not invent a fifth `published` state for
-        "queued, then partially failed."
+        never the deferred path to begin with) — otherwise True, for either
+        of the two flips above. Idempotent either way: a later call finds
+        `published` no longer `"queued"` and does nothing.
         """
         if not publish_run_id:
             return False
@@ -5006,6 +5017,11 @@ class ProjectRegistry:
             ).fetchone()["n"]
             if remaining:
                 return False
+            dead = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox "
+                "WHERE run_id IN (?, ?) AND status = 'dead'",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
             total = conn.execute(
                 "SELECT COUNT(*) AS n FROM egeria_outbox WHERE run_id IN (?, ?)",
                 (publish_run_id, links_run_id),
@@ -5025,10 +5041,48 @@ class ProjectRegistry:
                 return False
             if detail.get("published") != "queued":
                 return False
-            now = datetime.utcnow().isoformat()
-            detail["published"] = True
-            detail["published_at"] = now
-            summary = f"{row['summary'] or ''} Published at {now}."
+
+            pending_record = detail.pop("pending_published_record", None)
+            base_summary = row["summary"] or ""
+            if dead:
+                # Not success: some element(s) exhausted their retries and
+                # will never apply on their own. False is the existing
+                # "needs a human" state — rendering the ☁ Publish retry
+                # button is the correct behaviour here, not a new state.
+                detail["published"] = False
+                detail["published_failed_count"] = dead
+                summary = f"{base_summary} {dead} Egeria write(s) failed permanently — see the Publish Queue."
+            else:
+                now = datetime.utcnow().isoformat()
+                detail["published"] = True
+                detail["published_at"] = now
+                summary = f"{base_summary} Published at {now}."
+                if pending_record:
+                    # Best-effort, same contract as the inline call site in
+                    # egeria_publisher.py's publish() — a bookkeeping failure
+                    # must never undo a publish that genuinely landed. The
+                    # error is recorded onto the SAME detail this call is
+                    # about to write, not merely logged, so it stays visible
+                    # to whoever reads this activity entry rather than only
+                    # to whoever thinks to check the server log.
+                    try:
+                        self.record_published_annotation_types(
+                            pending_record["slug"],
+                            set(pending_record.get("annotation_types") or []),
+                            pending_record.get("report_guid", ""),
+                        )
+                        self.record_published_analyses(
+                            pending_record["slug"],
+                            pending_record.get("analyses") or [],
+                            pending_record.get("report_guid", ""),
+                        )
+                    except Exception as exc:
+                        bookkeeping_error = str(exc)
+                        detail["pending_published_record_error"] = bookkeeping_error
+                        log.warning(
+                            "complete_publish_run_if_done: badge bookkeeping failed for "
+                            "run_id %s: %s", publish_run_id, bookkeeping_error,
+                        )
             conn.execute(
                 "UPDATE activity_log SET detail = ?, summary = ? WHERE id = ?",
                 (json.dumps(detail), summary, row["id"]),

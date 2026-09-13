@@ -124,6 +124,9 @@ class EgeriaPublisher:
         #: `published` from "queued" to True (registry.
         #: complete_publish_run_if_done).
         self.publish_run_id: str = ""
+        #: Set by `publish()` for a deferred publish only — see that
+        #: assignment's own comment for what it carries and why.
+        self.pending_published_record: dict | None = None
         self._asset_maker = None
         self._discovery = None
         self._automated_curation = None
@@ -239,25 +242,51 @@ class EgeriaPublisher:
         # published" until the next successful publish, or via
         # scripts/backfill_published_annotation_types.py.
         annotation_types_warning = ""
+        #: Set below ONLY for a deferred publish — what would have been
+        #: recorded into the badge tables, for `registry.
+        #: complete_publish_run_if_done()` to apply once the run's outbox
+        #: rows actually land. `None` for every other path (inline, no
+        #: registry, no annotations). Read by `run_analysis()` and carried
+        #: onto the activity row's detail so the flip has it later.
+        self.pending_published_record: dict | None = None
         if self._registry:
-            try:
-                self._registry.record_published_annotation_types(
-                    result.resource_slug,
-                    {a.annotation_type.value for a in result.annotations},
-                    report_guid,
-                )
-                # Which ANALYSES this publish covered, recorded directly rather
-                # than inferred later from shared annotation types. The
-                # orchestrator put the step keys on the result; mapping them is
-                # a lookup, not a guess.
-                self._registry.record_published_analyses(
-                    result.resource_slug,
-                    _analyses_for_steps(result.steps_run),
-                    report_guid,
-                )
-            except Exception as exc:
-                annotation_types_warning = f" (⚠ last-published tracking not recorded: {exc})"
-                log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
+            if self.publish_deferred:
+                # Nothing has reached Egeria yet — writing project_published_
+                # annotation_types/project_published_analyses now would flip
+                # the ☁ Published badge before any annotation actually
+                # landed, for exactly as long as the drain takes. Stash the
+                # SAME two calls' arguments instead; complete_publish_run_
+                # if_done() makes them once the run is verifiably done.
+                self.pending_published_record = {
+                    "slug": result.resource_slug,
+                    "annotation_types": sorted(
+                        {a.annotation_type.value for a in result.annotations}
+                    ),
+                    # Which ANALYSES this publish covers, recorded directly
+                    # rather than inferred later from shared annotation
+                    # types — same reasoning as the inline branch below.
+                    "analyses": sorted(_analyses_for_steps(result.steps_run)),
+                    "report_guid": report_guid,
+                }
+            else:
+                try:
+                    self._registry.record_published_annotation_types(
+                        result.resource_slug,
+                        {a.annotation_type.value for a in result.annotations},
+                        report_guid,
+                    )
+                    # Which ANALYSES this publish covered, recorded directly rather
+                    # than inferred later from shared annotation types. The
+                    # orchestrator put the step keys on the result; mapping them is
+                    # a lookup, not a guess.
+                    self._registry.record_published_analyses(
+                        result.resource_slug,
+                        _analyses_for_steps(result.steps_run),
+                        report_guid,
+                    )
+                except Exception as exc:
+                    annotation_types_warning = f" (⚠ last-published tracking not recorded: {exc})"
+                    log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
 
         # annotation-linking-plan Phase 2: partial link failure must stay
         # visible to a reader of the same summary a person actually looks

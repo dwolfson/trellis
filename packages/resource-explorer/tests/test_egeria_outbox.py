@@ -1082,3 +1082,91 @@ class TestCompletePublishRunIfDone:
         assert summary["done"] == 1
         detail = json.loads(db.get_activity(entry_id)["detail"])
         assert detail["published"] is True
+
+    def test_a_dead_row_reports_false_not_true(self, db, project):
+        """Review fix on 84f4851: a mix of done+dead is NOT success. All
+        terminal but one write permanently failed must flip `published` to
+        False (the existing 'needs a human' state, which renders the ☁
+        Publish retry button) — never to True, and never to a fifth state."""
+        run_id = "Annotation::p::2026-01-01T00:00:05"
+        good = _enqueue(db, project, qn="Annotation::p::6::0", run_id=run_id)
+        db.mark_outbox_done(good, "guid-6")
+        bad = _enqueue(db, project, qn="Annotation::p::6::1", run_id=run_id)
+        db.mark_outbox_failed(bad, "permission denied", max_attempts=1)
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] is False
+        assert detail["published_failed_count"] == 1
+        summary = db.get_activity(entry_id)["summary"]
+        assert "1 Egeria write(s) failed permanently" in summary
+        assert "Publish Queue" in summary
+
+    def test_all_done_with_no_dead_rows_still_reports_true(self, db, project):
+        """The other half of the same guard — sabotaging "any dead ->
+        False" into "any terminal -> False" would break this."""
+        run_id = "Annotation::p::2026-01-01T00:00:06"
+        row = _enqueue(db, project, qn="Annotation::p::7::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-7")
+        entry_id = self._activity_row(db, run_id)
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert detail["published"] is True
+        assert "published_failed_count" not in detail
+
+    def test_pending_published_record_is_applied_on_the_true_flip(self, db, project):
+        """Review fix on 84f4851: the badge-table writes a deferred publish
+        stashed must be made HERE, at the point they become true — not at
+        enqueue time. Registry-only calls, exercised directly since
+        EgeriaPublisher's own version of this is covered in test_workflows.py."""
+        run_id = "Annotation::p::2026-01-01T00:00:07"
+        row = _enqueue(db, project, qn="Annotation::p::8::0", run_id=run_id)
+        db.mark_outbox_done(row, "guid-8")
+        entry_id = self._activity_row(db, run_id)
+        db.update_activity_status(
+            entry_id, "ok",
+            detail=json.dumps({
+                "published": "queued",
+                "pending_published_record": {
+                    "slug": project,
+                    "annotation_types": ["ResourceMeasureAnnotation"],
+                    "analyses": ["security_scan"],
+                    "report_guid": "report-guid-8",
+                },
+            }),
+        )
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        assert db.get_last_published_annotation_types(project)
+        assert db.get_last_published_analyses(project)
+        detail = json.loads(db.get_activity(entry_id)["detail"])
+        assert "pending_published_record" not in detail, (
+            "consumed at the flip, not left sitting in the detail forever"
+        )
+
+    def test_pending_published_record_is_not_applied_when_dead(self, db, project):
+        """The badge tables must not record a publish that did not actually
+        land — a dead row means the run's outbox rows did NOT all reach
+        Egeria, so there is nothing true to record yet."""
+        run_id = "Annotation::p::2026-01-01T00:00:08"
+        bad = _enqueue(db, project, qn="Annotation::p::9::0", run_id=run_id)
+        db.mark_outbox_failed(bad, "boom", max_attempts=1)
+        entry_id = self._activity_row(db, run_id)
+        db.update_activity_status(
+            entry_id, "ok",
+            detail=json.dumps({
+                "published": "queued",
+                "pending_published_record": {
+                    "slug": project,
+                    "annotation_types": ["ResourceMeasureAnnotation"],
+                    "analyses": ["security_scan"],
+                    "report_guid": "report-guid-9",
+                },
+            }),
+        )
+
+        assert db.complete_publish_run_if_done(run_id) is True
+        assert db.get_last_published_annotation_types(project) == {}
+        assert db.get_last_published_analyses(project) == {}
