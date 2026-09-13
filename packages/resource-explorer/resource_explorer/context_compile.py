@@ -105,8 +105,21 @@ _YESNO_SENTENCE = (
     "shown beside it; a bare yes or no is not an answer. "
 )
 _YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
+_LIST_RULE = (
+    "A list marked 'N of M shown' is partial: give its total and what is "
+    "shown, and never present the shown items as the whole list. "
+)
 INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
     "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
+    # The prose half of the designer's rule "prose never enumerates", as a
+    # VARIANT: run 9 measured that 202 characters of instruction cost one
+    # evidence section a rung in 135 of 156 compiles, so a sentence enters
+    # production only after a within-run A/B says it beats the rung.
+    "list_rule": (
+        _INSTRUCTIONS.replace("If the evidence does not answer the question",
+                              _LIST_RULE + "If the evidence does not answer the question"),
+        _INSTRUCTIONS_SHORT,
+    ),
     "yesno_line": (
         _INSTRUCTIONS.replace("If the evidence does not answer the question",
                               _YESNO_SENTENCE + "If the evidence does not answer the question"),
@@ -391,11 +404,19 @@ def _scalar(value, limit: int = 200) -> str:
 
 
 def _compact(value, limit: int = 120) -> str:
-    """A nested container squeezed onto one line, for depths past the first."""
+    """A nested container squeezed onto one line, for depths past the first.
+
+    A list leads with its total: the clipped JSON that follows is a prefix,
+    and a prefix without its total is what the prose channel turns into
+    "here are some of them" (designer's note, 2026-09-12, §2 -- prose never
+    enumerates; a list-shaped fact is its total plus what is shown)."""
     if isinstance(value, (list, dict)):
         if not value:
             return "(empty list)" if isinstance(value, list) else "(empty mapping)"
-        return _scalar(json.dumps(value, default=str, sort_keys=True), limit)
+        text = _scalar(json.dumps(value, default=str, sort_keys=True), limit)
+        if isinstance(value, list):
+            return f"{len(value)} item(s): {text}"
+        return text
     return _scalar(value, limit)
 
 
@@ -455,23 +476,31 @@ def _render_entry(key: str, value, depth: int = 0) -> list[str]:
                 lines.append(f"- {key}.{k}: {_compact(sub)}")
         return lines
     if isinstance(value, list):
+        # The total sits on the OPENING line, beside the items, never as a
+        # trailing "… and 22 more". Measured 2026-09-12 (designer's note §2):
+        # with the elision at the bottom the model wrote "here are some of
+        # them" and the answer carried two numbers that disagreed (32 in the
+        # sentence, 10 on the page) with nothing saying which was the list.
+        # "10 of 32 shown" on the line the model reads first makes the
+        # sentence it can write "32 components, 10 shown here", which is the
+        # count plus provenance; the pane holds the items.
         n = len(value)
         if n == 0:
             return [f"- {key}: (empty list)"]
         if not any(isinstance(v, dict) for v in value):
             shown = ", ".join(_scalar(v, 60) for v in value[:MAX_FULL_LIST_ITEMS])
             if n > MAX_FULL_LIST_ITEMS:
-                shown += f" … and {n - MAX_FULL_LIST_ITEMS} more"
-            return [f"- {key}: {shown}"]
-        lines = [f"- {key}: {n} item(s)"]
+                return [f"- {key} ({MAX_FULL_LIST_ITEMS} of {n} shown): {shown}"]
+            return [f"- {key} ({n} total): {shown}"]
+        head = (f"- {key}: {n} item(s), {min(n, MAX_FULL_DICT_ITEMS)} of {n} shown here"
+                if n > MAX_FULL_DICT_ITEMS else f"- {key}: {n} item(s), all shown")
+        lines = [head]
         for i, item in enumerate(value[:MAX_FULL_DICT_ITEMS], 1):
-            lines.append(f"  - item {i}:")
+            lines.append(f"  - item {i} of {n}:")
             if isinstance(item, dict):
                 lines.extend(f"    - {k}: {_compact(item[k], 200)}" for k in sorted(item))
             else:
                 lines.append(f"    - {_scalar(item)}")
-        if n > MAX_FULL_DICT_ITEMS:
-            lines.append(f"  … and {n - MAX_FULL_DICT_ITEMS} more")
         return lines
     return [f"- {key}: {_scalar(value)}"]
 

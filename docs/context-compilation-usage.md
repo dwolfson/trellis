@@ -97,7 +97,13 @@ experiment (`packages/resource-explorer/docs/experiments/audits/`, 2026-09-08 an
   them rather than re-deriving it.
 - **FULL is flat bullets, not fenced JSON.** `- key: value`, one level of nesting as
   `- detail.forks: 4`, lists of scalars inline, lists of records as indented blocks, empties
-  said out loud (`(empty list)`), truncation always marked (`… and N more`).
+  said out loud (`(empty list)`). **A partial list carries its total on its opening line**
+  (`- components: 32 item(s), 10 of 32 shown here`, `- files (20 of 25 shown): …`), never a
+  trailing `… and N more`: the designer's rule is that prose never enumerates — a list-shaped
+  fact is its total plus what is shown, and the pane holds the items (2026-09-12, "The blank
+  rail, and what a list answer should be" §2). The matching prose sentence exists as
+  `INSTRUCTION_VARIANTS["list_rule"]`, not in production, until an A/B shows it beats the
+  evidence rung it would displace.
 - **The middle rung is `abridged`, not "structure only".** Headline, scalars with values, then
   the first three entries of each list or mapping with a `(first 3 of 62)` marker. A section
   whose abridged form is not materially smaller than FULL has no middle rung at all.

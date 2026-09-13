@@ -51,6 +51,7 @@ import requests
 CONDITION_SPECS = {
     "compiled": (True, "default"),            # production wording
     "compiled+yesno": (True, "yesno_line"),   # production plus run 8's yes/no sentence (run 9's other arm, then named compiled-plain/default the other way round)
+    "compiled+listrule": (True, "list_rule"),  # production plus the "prose never enumerates" sentence
     "rag": (False, "default"),
 }
 CONDITIONS = ("compiled", "rag")          # the default pair; --conditions overrides
