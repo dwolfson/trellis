@@ -4654,6 +4654,72 @@ function _renderAnalysisTrendChart(elId, runs, analysisId) {
   }, { displayModeBar: false, responsive: true });
 }
 
+// Humanises a duration in seconds the same way the Python side's
+// `_humanise_duration`/`_humanise_split_seconds` do (workflows/analysis.py),
+// so a figure computed on the server and one assembled here from the same
+// raw seconds never disagree in format. `_relTime` above is for timestamps
+// ("3d ago"), not durations — this is the duration counterpart.
+function _humaniseSeconds(seconds) {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+  const total = Math.round(seconds);
+  const m = Math.floor(total / 60), s = total % 60;
+  return `${m}m ${String(s).padStart(2, '0')}s`;
+}
+
+// Like `_humaniseSeconds`, but a sub-second figure keeps one decimal instead
+// of rounding up to "1s" — mirrors `_humanise_split_seconds`'s reasoning: a
+// 0.06s step rounded that way reads as sixteen times its real cost, exactly
+// the distortion the run/publish split exists to remove.
+function _humaniseSplitSeconds(seconds) {
+  if (seconds < 1) return `${seconds.toFixed(1)}s`;
+  return _humaniseSeconds(seconds);
+}
+
+// The saved-time line for a background-published run (designer's split
+// ruling, 2026-09-13: wall-clock cost only where someone is deciding, ALWAYS
+// split run vs publish, never one figure; a declared word is never a
+// number; every state gets a sentence). `started` is the enqueue POST
+// response (carries the `rerun_cost_*` estimate — see projects.py's
+// run_single_analysis); `data` is this run's own completed activity detail,
+// which may carry a real measured `steps_seconds` for the run that just
+// happened, preferred over the pre-run estimate when present.
+function _savedTimeSentence(started, data) {
+  const splitRuns = started?.rerun_split_runs || 0;
+  if (splitRuns > 0 && started?.rerun_publish_seconds != null) {
+    const publish = _humaniseSplitSeconds(started.rerun_publish_seconds);
+    const steps = (data && data.steps_seconds != null) ? data.steps_seconds : started?.rerun_steps_seconds;
+    const stepsStr = steps != null ? _humaniseSplitSeconds(steps) : 'a moment';
+    return `Publishing in the background — about ${publish} of waiting saved ` +
+      `(median of ${splitRuns} run${splitRuns !== 1 ? 's' : ''}); the run itself took ${stepsStr}.`;
+  }
+  if (started?.rerun_cost_basis === 'measured' && started?.rerun_cost_seconds != null) {
+    const n = started.rerun_cost_runs || 0;
+    return `Publishing in the background — the wait would have been about ` +
+      `${_humaniseSeconds(started.rerun_cost_seconds)} (median of ${n} run${n !== 1 ? 's' : ''}), unsplit.`;
+  }
+  if (started?.rerun_cost_basis === 'declared' && started?.rerun_cost_declared) {
+    return `Publishing in the background — declared '${_esc(started.rerun_cost_declared)}' in the catalog, not yet measured.`;
+  }
+  return `Publishing in the background — what the wait would have cost is not known yet.`;
+}
+
+// Jumps to the Activity tab and highlights one entry — used by the sticky
+// queued-for-publish toast's "View in Activity" link so the promise it makes
+// ("drains within 15 min") has somewhere to point. The activity list is
+// fetched async, so this awaits a reload rather than assuming the row from
+// an earlier fetch is still the one on screen.
+async function _openActivityEntry(activityId) {
+  showMainView('activity');
+  await loadActivityLog();
+  const el = document.getElementById(`activity-row-${activityId}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prevBg = el.style.backgroundColor;
+  el.style.transition = 'background-color 0.3s';
+  el.style.backgroundColor = 'rgba(34, 211, 238, 0.15)';
+  setTimeout(() => { el.style.backgroundColor = prevBg; }, 1200);
+}
+
 // For repos, "Run" triggers only the named analysis's sub-surveyor step(s)
 // (POST /api/projects/{slug}/analyses/{analysisId}/run — reuses the same
 // analysis_id -> step(s) map the scheduler's per-analysis-id dispatch uses),
@@ -4698,15 +4764,30 @@ function hideAnalysisRunModal() {
 // chat answer button and the gap-analysis button) — two of them share a
 // byte-identical fetch block, which is why they are patched by enclosing
 // function rather than by that block.
-function _handleFreshnessSkip(started, onForce) {
+// `onForceBackground` is optional (only the card-grid call site has a
+// background variant to offer) — when given, a second button runs the same
+// re-run with `publish:"background"`, so the decision prompt ("run anyway?")
+// also offers the faster of the two answers instead of only the default
+// one. This toast keeps its own 12s timer regardless (designer's ruling,
+// 2026-09-13): it is a decision prompt, not a promise about something
+// landing later, so it is not the "must not vanish on a timer" toast.
+function _handleFreshnessSkip(started, onForce, onForceBackground = null) {
   if (!started || started.status !== 'skipped') return false;
   const id = `force-${++_toastSeq}`;
   window[`_force_${id}`] = onForce;
+  let bgBtn = '';
+  if (onForceBackground) {
+    const bgId = `${id}-bg`;
+    window[`_force_${bgId}`] = onForceBackground;
+    bgBtn = ` <button id="${bgId}" class="underline ml-1"` +
+      ` onclick="const f=window['_force_${bgId}'];delete window['_force_${bgId}'];` +
+      `document.getElementById('${id}').remove();f&&f()">Run anyway in background</button>`;
+  }
   showToast('info',
     `${_esc(started.detail || 'Already up to date.')} ` +
     `<button id="${id}" class="underline ml-1"` +
     ` onclick="const f=window['_force_${id}'];delete window['_force_${id}'];` +
-    `document.getElementById('${id}').remove();f&&f()">Run anyway</button>`,
+    `document.getElementById('${id}').remove();f&&f()">Run anyway</button>${bgBtn}`,
     12000);
   return true;
 }
@@ -4745,7 +4826,8 @@ async function runAnalysisCatalogCard(analysisId, slug, force = false, publish =
       { method: 'POST' });
     started = await startRes.json();
     if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
-    if (_handleFreshnessSkip(started, () => runAnalysisCatalogCard(analysisId, slug, true, publish))) {
+    if (_handleFreshnessSkip(started, () => runAnalysisCatalogCard(analysisId, slug, true, publish),
+        publish === 'background' ? null : () => runAnalysisCatalogCard(analysisId, slug, true, 'background'))) {
       progress.classList.add('hidden');
       updateOp(opId, 'ok', `'${analysisId}' already up to date`, started.detail || '');
       return;
@@ -4788,11 +4870,27 @@ async function runAnalysisCatalogCard(analysisId, slug, force = false, publish =
     // ☁ Publish badge logic below treats it as its own third state too.
     const queued = data.published === 'queued';
     updateOp(opId, 'ok', `'${analysisId}' complete`, msg);
-    showToast(queued ? 'info' : 'success',
-      `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(msg)}`, 6000);
-    resultEl.innerHTML = queued
-      ? `<div class="text-amber-400">⏳ ${_esc(msg)}</div>`
-      : `<div class="text-emerald-400">${_esc(msg)}</div>`;
+    if (queued) {
+      // A message that says what will happen LATER must not vanish on a
+      // timer (owner, 2026-09-13: "I saw the queued after a few seconds and
+      // the toast went away before I could read it") — durationMs 0 means
+      // no auto-remove timer; every toast already carries a "×" dismiss
+      // (see showToast), so this is the sticky mode, not a new one.
+      const savedSentence = _savedTimeSentence(started, data);
+      const activityId = started.activity_id;
+      showToast('info',
+        `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(msg)} ` +
+        `${_esc(savedSentence)} ` +
+        `<button class="underline ml-1" onclick="_openActivityEntry('${_esc(activityId)}')">View in Activity →</button>`,
+        0);
+      resultEl.innerHTML =
+        `<div class="text-amber-400">⏳ ${_esc(msg)}</div>` +
+        `<div class="text-slate-400 mt-1">${_esc(savedSentence)}</div>`;
+    } else {
+      showToast('success',
+        `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(msg)}`, 6000);
+      resultEl.innerHTML = `<div class="text-emerald-400">${_esc(msg)}</div>`;
+    }
     resultEl.classList.remove('hidden');
     if (analysisId in _REPO_RESULTS_RENDER_MODE) {
       const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
@@ -7067,7 +7165,7 @@ function renderActivityLog() {
     const hasDetail = annHtml || itemsHtml || detailHtml;
     const detailId = `op-d-${(op.id||'').replace(/[^a-z0-9]/gi,'_').substring(0,20)}`;
 
-    return `<div class="op-row">
+    return `<div class="op-row" id="activity-row-${_esc(op.id || '')}">
       <div class="flex items-center gap-2">
         <span class="text-slate-500 shrink-0">${typeIcon[op.type] || '•'}</span>
         <span class="font-medium text-slate-300">${typeLabel[op.type] || op.type}</span>
