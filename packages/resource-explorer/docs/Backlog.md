@@ -5220,9 +5220,13 @@ Two things follow, and one decision:
 - Every "measured" cost in `docs/funnel-cost-measured.md` §1 is publish latency (corrected there).
   Per-phase timings (`steps_seconds` / `publish_seconds` / `publish_mode`) on the run's activity
   detail are on branch `re/auto-publish-enqueue-only` so the next measurement can split them.
-- **9.4 s per annotation create is a platform number** nobody has looked at. The Survey Definition
-  documents re-authored the same night ran at ~5 s per Dr.Egeria command on the same platform.
-  Undiagnosed. Worth a look at the platform (repository connector, audit log) before assuming RE.
+- **9.4 s per annotation create is a platform number.** **Decision context (project owner,
+  2026-09-13):** the dev Egeria platform is deliberately running an old codebase, kept so the
+  compiled-vs-RAG experiments share a common baseline; the slow writes are attributed to that, and a
+  redeploy to the current codebase is what picks up the fix — timed against the experiment schedule,
+  not against this finding. The Survey Definition documents re-authored the same night ran at ~5 s
+  per Dr.Egeria command on the same platform, consistent with that. Re-measure after the redeploy
+  before treating the inline-vs-enqueue decision as settled by these numbers.
 - **Decision needed (project owner):** should an inline analysis wait for its publish? Enqueue-only
   makes the same run ~15 s, with `published` becoming a third state — *queued for publish*, visible in
   Egeria within the next drain (≤ 15 min). Built behind `RunsConfig.publish_inline` (env
