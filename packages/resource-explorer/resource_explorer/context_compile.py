@@ -105,8 +105,21 @@ _YESNO_SENTENCE = (
     "shown beside it; a bare yes or no is not an answer. "
 )
 _YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
+_LIST_RULE = (
+    "A list marked 'N of M shown' is partial: give its total and what is "
+    "shown, and never present the shown items as the whole list. "
+)
 INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
     "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
+    # The prose half of the designer's rule "prose never enumerates", as a
+    # VARIANT: run 9 measured that 202 characters of instruction cost one
+    # evidence section a rung in 135 of 156 compiles, so a sentence enters
+    # production only after a within-run A/B says it beats the rung.
+    "list_rule": (
+        _INSTRUCTIONS.replace("If the evidence does not answer the question",
+                              _LIST_RULE + "If the evidence does not answer the question"),
+        _INSTRUCTIONS_SHORT,
+    ),
     "yesno_line": (
         _INSTRUCTIONS.replace("If the evidence does not answer the question",
                               _YESNO_SENTENCE + "If the evidence does not answer the question"),
@@ -391,11 +404,19 @@ def _scalar(value, limit: int = 200) -> str:
 
 
 def _compact(value, limit: int = 120) -> str:
-    """A nested container squeezed onto one line, for depths past the first."""
+    """A nested container squeezed onto one line, for depths past the first.
+
+    A list leads with its total: the clipped JSON that follows is a prefix,
+    and a prefix without its total is what the prose channel turns into
+    "here are some of them" (designer's note, 2026-09-12, §2 -- prose never
+    enumerates; a list-shaped fact is its total plus what is shown)."""
     if isinstance(value, (list, dict)):
         if not value:
             return "(empty list)" if isinstance(value, list) else "(empty mapping)"
-        return _scalar(json.dumps(value, default=str, sort_keys=True), limit)
+        text = _scalar(json.dumps(value, default=str, sort_keys=True), limit)
+        if isinstance(value, list):
+            return f"{len(value)} item(s): {text}"
+        return text
     return _scalar(value, limit)
 
 
@@ -455,25 +476,57 @@ def _render_entry(key: str, value, depth: int = 0) -> list[str]:
                 lines.append(f"- {key}.{k}: {_compact(sub)}")
         return lines
     if isinstance(value, list):
+        # The total sits on the OPENING line, beside the items, never as a
+        # trailing "… and 22 more". Measured 2026-09-12 (designer's note §2):
+        # with the elision at the bottom the model wrote "here are some of
+        # them" and the answer carried two numbers that disagreed (32 in the
+        # sentence, 10 on the page) with nothing saying which was the list.
+        # "10 of 32 shown" on the line the model reads first makes the
+        # sentence it can write "32 components, 10 shown here", which is the
+        # count plus provenance; the pane holds the items.
         n = len(value)
         if n == 0:
             return [f"- {key}: (empty list)"]
         if not any(isinstance(v, dict) for v in value):
             shown = ", ".join(_scalar(v, 60) for v in value[:MAX_FULL_LIST_ITEMS])
             if n > MAX_FULL_LIST_ITEMS:
-                shown += f" … and {n - MAX_FULL_LIST_ITEMS} more"
-            return [f"- {key}: {shown}"]
-        lines = [f"- {key}: {n} item(s)"]
+                return [f"- {key} ({MAX_FULL_LIST_ITEMS} of {n} shown): {shown}"]
+            return [f"- {key} ({n} total): {shown}"]
+        head = (f"- {key}: {n} item(s), {min(n, MAX_FULL_DICT_ITEMS)} of {n} shown here"
+                if n > MAX_FULL_DICT_ITEMS else f"- {key}: {n} item(s), all shown")
+        lines = [head]
         for i, item in enumerate(value[:MAX_FULL_DICT_ITEMS], 1):
-            lines.append(f"  - item {i}:")
+            lines.append(f"  - item {i} of {n}:")
             if isinstance(item, dict):
                 lines.extend(f"    - {k}: {_compact(item[k], 200)}" for k in sorted(item))
             else:
                 lines.append(f"    - {_scalar(item)}")
-        if n > MAX_FULL_DICT_ITEMS:
-            lines.append(f"  … and {n - MAX_FULL_DICT_ITEMS} more")
         return lines
     return [f"- {key}: {_scalar(value)}"]
+
+
+def _list_extents(results: dict) -> dict[str, dict]:
+    """For each list-valued field a reader returned (top level, and one level
+    down under a dotted key, mirroring _render_entry), its total and how many
+    entries each rung shows -- so a UI can say "M" by reading the manifest
+    rather than recounting the text (the /next session's rail sentence,
+    2026-09-13). Keys match the field names as rendered."""
+    out: dict[str, dict] = {}
+
+    def _record(key: str, value: list) -> None:
+        n = len(value)
+        cap = MAX_FULL_LIST_ITEMS if not any(isinstance(v, dict) for v in value) else MAX_FULL_DICT_ITEMS
+        out[key] = {"total": n, "shown": {"FULL": min(n, cap), "SUMMARY": min(n, ABRIDGED_ENTRIES)}}
+
+    for key in sorted(k for k in results if k != "_status"):
+        value = results[key]
+        if isinstance(value, list):
+            _record(key, value)
+        elif isinstance(value, dict):
+            for k, sub in value.items():
+                if isinstance(sub, list):
+                    _record(f"{key}.{k}", sub)
+    return out
 
 
 def _full_lines(results: dict) -> list[str]:
@@ -955,6 +1008,9 @@ def compile_context(
     packed_count = 0
     # Failures the compile survived but the caller must be able to see.
     extra_notes: list[str] = []
+    #: Per packed section, each list field's total and shown-per-rung
+    #: (`manifest["lists"]`), from the reader's results before rendering.
+    list_extents: dict[str, dict] = {}
     for rank, (analysis_id, weight) in enumerate(ranked):
         if cap > 0 and packed_count >= cap:
             deferred.append({"key": analysis_id, "weight": round(weight, 3), "rank": rank,
@@ -1000,6 +1056,7 @@ def compile_context(
                     results = None
                 if results is not None:
                     from_reader = _results_to_rungs(results, analysis_id)
+                    extents = _list_extents(results) if isinstance(results, dict) else {}
                     # Keep whichever says more. Overwriting unconditionally was
                     # safe only while this ran solely on empty findings; now
                     # that a THIN finding also reaches here, a reader with less
@@ -1027,6 +1084,8 @@ def compile_context(
                         rungs = _with_headline(from_reader, headline)
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
+                        if extents:
+                            list_extents[analysis_id] = extents
 
         if rungs and analysis_id in caveat_ids:
             rungs = _with_caveat(rungs, coverage["caveat"])
@@ -1080,6 +1139,11 @@ def compile_context(
             # packed, dropped nor a gap. Listed so "why these?" can show what
             # was left out and where it ranked.
             "deferred": deferred,
+            # {section key: {list field: {"total": M, "shown": {"FULL": N,
+            # "SUMMARY": N'}}}} for every packed reader-derived section --
+            # the "N of M shown" the text carries, as data, so the rail can
+            # say M without recounting (pick N by packed[i]["rung"]).
+            "lists": {k: v for k, v in list_extents.items() if k in candidates},
             # What the catalog says answers this question at all. `gaps` says
             # which offered sections had nothing; this says whether the
             # question was ever a question stored analyses answer.

@@ -916,7 +916,10 @@ class TestFlatFullRung:
         n = MAX_FULL_LIST_ITEMS + 7
         full = _results_to_rungs({"langs": [f"l{i}" for i in range(n)]}, "x")[Rung.FULL]
         assert "l0, l1" in full
-        assert "and 7 more" in full, "an elided list that looked complete is the bug"
+        # The truncation is marked on the OPENING line, as "20 of 27 shown",
+        # not as a trailing "… and 7 more" (designer's note 2026-09-12 §2:
+        # a trailing elision got laundered into "here are some of them").
+        assert "(20 of 27 shown)" in full, "an elided list that looked complete is the bug"
 
     def test_a_list_of_dicts_is_one_block_per_item(self):
         from resource_explorer.context_compile import MAX_FULL_DICT_ITEMS, _results_to_rungs
@@ -924,9 +927,9 @@ class TestFlatFullRung:
 
         items = [{"name": f"c{i}", "kind": "module"} for i in range(MAX_FULL_DICT_ITEMS + 3)]
         full = _results_to_rungs({"components": items}, "architecture_recovery")[Rung.FULL]
-        assert "- components: 13 item(s)" in full
-        assert "  - item 1:" in full and "    - name: c0" in full
-        assert "and 3 more" in full
+        assert "- components: 13 item(s), 10 of 13 shown here" in full
+        assert "  - item 1 of 13:" in full and "    - name: c0" in full
+        assert "… and" not in full          # the total is beside the items, not after them
 
     def test_status_survives_as_a_plain_line(self):
         from resource_explorer.context_compile import _results_to_rungs
@@ -1316,3 +1319,85 @@ class TestGapsDoNotSpendCapSlots:
     def test_a_fake_registry_does_not_leak_mocks_into_sections(self):
         c = compile_context(_registry({}), "x", "is this ready to adopt?", budget=6000)
         assert "MagicMock" not in c.text
+
+
+class TestAListNeverAppearsWithoutItsTotal:
+    """Designer's note "The blank rail, and what a list answer should be"
+    (2026-09-12) §2: the elision was honest ("… and 22 more") and the prose
+    channel laundered it into "here are some of them", with 32 in the
+    sentence and 10 on the page. The total now sits on the opening line of
+    every partial list, so the count and its provenance are what the model
+    reads first."""
+
+    def _rungs(self, results):
+        from resource_explorer.context_compile import _results_to_rungs
+        return _results_to_rungs(results, "architecture_recovery")
+
+    def test_a_long_list_of_records_opens_with_n_of_m_shown(self):
+        from trellis_artifact_tree.model import Rung
+        comps = [{"name": f"c{i}", "path": f"p{i}"} for i in range(32)]
+        full = self._rungs({"components": comps})[Rung.FULL]
+        lines = full.splitlines()
+        head = next(l for l in lines if l.startswith("- components"))
+        assert "32 item(s), 10 of 32 shown here" in head
+        assert "… and" not in full                       # no trailing elision anywhere
+        assert "item 1 of 32:" in full and "item 11 of 32:" not in full
+
+    def test_a_short_list_says_all_shown(self):
+        from trellis_artifact_tree.model import Rung
+        full = self._rungs({"components": [{"name": "a"}, {"name": "b"}]})[Rung.FULL]
+        assert "2 item(s), all shown" in full
+
+    def test_a_long_scalar_list_carries_its_total_on_the_line(self):
+        from trellis_artifact_tree.model import Rung
+        full = self._rungs({"files": [f"f{i}.py" for i in range(25)]})[Rung.FULL]
+        line = next(l for l in full.splitlines() if l.startswith("- files"))
+        assert line.startswith("- files (20 of 25 shown):") and "… and" not in line
+        short = self._rungs({"files": ["a.py", "b.py"]})[Rung.FULL]
+        assert "- files (2 total): a.py, b.py" in short
+
+    def test_a_nested_list_leads_with_its_count(self):
+        from resource_explorer.context_compile import _compact
+        assert _compact([{"dep_name": "x"}] * 36, 80).startswith("36 item(s): [")
+
+    def test_no_partial_list_anywhere_without_a_total_beside_it(self):
+        """The invariant, over a shape with every list form at once."""
+        import re
+        from trellis_artifact_tree.model import Rung
+        results = {"components": [{"name": f"c{i}"} for i in range(15)],
+                   "files": [f"f{i}" for i in range(30)],
+                   "by_eco": {"py": [{"dep_name": f"d{i}"} for i in range(40)]},
+                   "total": 15}
+        for rung, text in self._rungs(results).items():
+            if rung is Rung.IDENTIFIERS:
+                continue
+            assert "… and" not in text, rung
+            for line in text.splitlines():
+                if re.search(r"\bshown\b", line):
+                    assert re.search(r"\d+ of \d+ shown", line), line
+
+
+class TestTheManifestCarriesEveryListsTotal:
+    """The rail sentence (/next, 2026-09-13) needs M from the manifest, not
+    from re-counting the text: `manifest["lists"][section][field]`."""
+
+    def test_totals_and_shown_per_rung_are_in_the_manifest(self, monkeypatch):
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+        results = {"components": [{"name": f"c{i}"} for i in range(32)],
+                   "by_eco": {"py": [f"d{i}" for i in range(25)]},
+                   "total": 32, "_status": {"state": "measured"}}
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP, "architecture_recovery",
+                            (lambda reg, slug: results, None))
+        c = cc.compile_context(_registry({}), "x", "What components exist in this repository, and what kind is each?",
+                               budget=6000)
+        lists = c.manifest["lists"]["architecture_recovery"]
+        assert lists["components"] == {"total": 32, "shown": {"FULL": 10, "SUMMARY": 3}}
+        assert lists["by_eco.py"] == {"total": 25, "shown": {"FULL": 20, "SUMMARY": 3}}
+        assert "total" not in lists                     # scalars are not lists
+        rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["architecture_recovery"]
+        assert rung in lists["components"]["shown"]      # the UI picks N by the packed rung
+
+    def test_only_packed_sections_appear(self, monkeypatch):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
+        assert set(c.manifest["lists"]) <= {p["key"] for p in c.manifest["packed"]}
