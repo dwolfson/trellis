@@ -61,6 +61,23 @@ RUBRIC_VERSION = "v4-2026-09-12"
 DEFAULT_REPOS = "egeria_python_git,kafka,docling"
 DEFAULT_OUT = Path("data/experiments/compiled_vs_rag")
 JUDGE_MODEL = os.environ.get("EXPERIMENT_JUDGE_MODEL", "qwen2.5:32b")
+
+
+def answer_model() -> str:
+    """The Ollama model the agent will answer with, resolved the way the
+    agent resolves it (LLM__OLLAMA__MODEL, else the tier preset). Recorded
+    on every row and in the run header: the protocol has said "record the
+    answering model with each run" since 2026-09-08 and until run 10
+    (2026-09-13, first run on a larger model) nothing did."""
+    try:
+        from resource_explorer.config import resolve_llm_tier_config
+        cfg = resolve_llm_tier_config()
+        model = cfg.get("model") if isinstance(cfg, dict) else getattr(cfg, "model", None)
+        if model:
+            return str(model)
+    except Exception:
+        pass
+    return os.environ.get("LLM__OLLAMA__MODEL", "").strip() or "(tier default)"
 OLLAMA = os.environ.get("LLM__OLLAMA__BASE_URL", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
 
 JUDGE_PROMPT = """You are grading an assistant's answer about a software repository. Be strict and literal. Grade CONTENT, never fluency: two answers that say the same thing must get the same scores however they are phrased, and a hedged or specific correct statement is never worse than a confident general one.
@@ -257,7 +274,7 @@ def run(args) -> None:
         sys.exit(f"unknown condition(s) {unknown}; known: {sorted(CONDITION_SPECS)}")
     total = len(repos) * len(questions) * len(conditions)
     print(f"{len(repos)} repos x {len(questions)} questions x {len(conditions)} conditions = {total} rows; "
-          f"{len(done)} already done; judge={JUDGE_MODEL}; rubric={RUBRIC_VERSION}", flush=True)
+          f"{len(done)} already done; answerer={answer_model()}; judge={JUDGE_MODEL}; rubric={RUBRIC_VERSION}", flush=True)
     if args.dry_run:
         return
     # Hold the stored state still for the window: the Automate scheduler's
@@ -301,7 +318,7 @@ def _run_rows(args, registry, repos, questions, conditions, done, out, total) ->
                     "run_id": args.run_id, "ts": datetime.now(timezone.utc).isoformat(),
                     "repo": slug, "question": q["question"], "stage": q["stage"],
                     "answering_kind": q["answering_kind"], "condition": condition,
-                    "instructions_variant": variant,
+                    "instructions_variant": variant, "answer_model": answer_model(),
                     "answer": text, "latency_s": round(latency, 2),
                     "agent_compile_id": cid, "reference": ref,
                     "compile_id_matches_reference": (cid == ref["compile_id"]) if cid else None,
@@ -375,6 +392,7 @@ def _mlflow(table: dict, rows: list, args) -> None:
         for cond, m in table.items():
             with mlflow.start_run(run_name=f"{getattr(args, 'run_id', 'run')}-{cond}"):
                 mlflow.log_params({"condition": cond, "judge_model": JUDGE_MODEL,
+                                   "answer_model": answer_model(), "rubric": RUBRIC_VERSION,
                                    "repos": getattr(args, "repos", ""), "n": m["n"]})
                 mlflow.log_metrics({k.split("(")[0].replace("%", "_pct"): float(v) for k, v in m.items() if k != "n"})
         print(f"(mlflow: logged {len(table)} runs to experiment compiled_vs_rag)")
