@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -294,6 +295,20 @@ class SurveyDefinitionReader:
         self._automated_curation = None
         self._classification_explorer = None
         self._metadata_expert = None
+        # pyegeria ISSUE-96 (docs/qguid-flake report, 2026-09-12): a
+        # ClassificationExplorer's httpx.AsyncClient binds its connection
+        # pool's asyncio primitives to whichever event loop first drives it,
+        # and pyegeria's import-time nest_asyncio.apply() means every calling
+        # thread gets its own loop — so sharing ONE client across the shared
+        # run_sync pool's worker threads fails deterministically (measured:
+        # 52/52 names, 2 runs, 100% CLIENT_ERROR_400) while a client built
+        # AND always called from the same single thread never fails (0/104).
+        # This threading.local() gives each pool worker its own persistent
+        # client instead: constructed once per thread (same URL/server/
+        # credentials as _connect_classification_explorer), then reused by
+        # that thread only, so the pool keeps its 8-way parallelism and no
+        # thread ever touches another thread's client/loop.
+        self._thread_local_explorer = threading.local()
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -326,6 +341,19 @@ class SurveyDefinitionReader:
                 f"Could not connect to Egeria at {self.platform_url}: {exc}"
             ) from exc
 
+    def _new_classification_explorer(self):
+        """Construct one ClassificationExplorer, connected. The single
+        construction seam both ``_connect_classification_explorer`` (cached
+        on ``self``, main-thread callers) and ``_thread_local_classification_
+        explorer`` (cached per-thread, question-GUID lookups) call — tests
+        substitute this one method rather than either cache, so a fake works
+        no matter which thread ends up constructing it."""
+        from pyegeria.omvs.classification_explorer import ClassificationExplorer
+
+        client = ClassificationExplorer(self.view_server, self.platform_url, self.user_id, self.user_password)
+        client.create_egeria_bearer_token(self.user_id, self.user_password)
+        return client
+
     def _connect_classification_explorer(self):
         """Lazy, separate from connect() — only the D2 scoped-query path
         needs ClassificationExplorer (add_scope_to_element/get_scoped_elements/
@@ -333,11 +361,32 @@ class SurveyDefinitionReader:
         this client fails to construct for any reason."""
         if self._classification_explorer is not None:
             return self._classification_explorer
-        from pyegeria.omvs.classification_explorer import ClassificationExplorer
-
-        client = ClassificationExplorer(self.view_server, self.platform_url, self.user_id, self.user_password)
-        client.create_egeria_bearer_token(self.user_id, self.user_password)
+        client = self._new_classification_explorer()
         self._classification_explorer = client
+        return client
+
+    def _thread_local_classification_explorer(self):
+        """Per-thread ClassificationExplorer for question-GUID lookups only
+        (see pyegeria ISSUE-96 note on ``self._thread_local_explorer`` in
+        __init__). Same construction as ``_connect_classification_explorer``
+        (same URL/server/credentials/bearer token, via ``_new_classification_
+        explorer``), but memoised on ``threading.local()`` instead of
+        ``self`` — one client per pool worker thread, never shared, bounded
+        by the shared pool's own size (``EXPLORER_SYNC_POOL_SIZE``, default
+        8; see concurrency.py), so this adds at most one client per
+        already-existing worker thread, not one per call.
+
+        Only ``_lookup_question_guid`` (and, through it, the pooled
+        ``_resolve_one_pooled``) should call this. Every other caller of
+        ClassificationExplorer keeps using the shared, main-thread-cached
+        ``_connect_classification_explorer`` — those callers are never
+        invoked from the shared pool, so they never hit the cross-loop bug.
+        """
+        client = getattr(self._thread_local_explorer, "client", None)
+        if client is not None:
+            return client
+        client = self._new_classification_explorer()
+        self._thread_local_explorer.client = client
         return client
 
     def _connect_metadata_expert(self):
@@ -501,19 +550,34 @@ class SurveyDefinitionReader:
         What changed with the shared pool: an abandoned worker now holds a
         slot in a bounded pool instead of taking a throwaway pool with it.
         concurrency.stuck_worker_count() is where that shows up.
+
+        Uses ``_thread_local_classification_explorer`` rather than the
+        shared ``_connect_classification_explorer`` client — pyegeria
+        ISSUE-96: a client shared across threads breaks deterministically
+        here (100% failure, 52/52 names) because it can run on a pool
+        worker thread, and one client per calling thread is what measured
+        0% failure. See the note on ``self._thread_local_explorer`` in
+        __init__ for the full mechanism.
+
+        The client is looked up INSIDE ``_call`` (below), not here — this
+        method's caller is not always the thread that ends up executing
+        ``_call``: ``run_sync`` submits it to a shared-pool worker thread
+        unless the caller is already on one (``_resolve_one_pooled``'s
+        case). Fetching the thread-local client here would bind it to the
+        wrong thread's loop in the submit case, reintroducing the exact bug
+        this exists to avoid.
         """
         from concurrent.futures import TimeoutError as _FutureTimeoutError
 
         from resource_explorer.concurrency import run_sync
 
-        try:
-            client = self._connect_classification_explorer()
-        except Exception as exc:
-            log.debug("resolve_question_guid(%r) failed to connect: %s",
-                      question_display_name, exc)
-            return None
-
         def _call():
+            try:
+                client = self._thread_local_classification_explorer()
+            except Exception as exc:
+                log.debug("resolve_question_guid(%r) failed to connect: %s",
+                          question_display_name, exc)
+                return None
             return client.get_guid_for_name(
                 question_display_name,
                 property_name=["displayName"], type_name="GlossaryTerm",

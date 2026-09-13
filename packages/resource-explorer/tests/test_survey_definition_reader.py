@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -330,6 +331,13 @@ def _reader_with_fake_classification_explorer(fake) -> SurveyDefinitionReader:
     sdr.clear_caches()
     reader = _reader()
     reader._classification_explorer = fake  # short-circuits _connect_classification_explorer()
+    # _lookup_question_guid (unlike other ClassificationExplorer callers) goes
+    # through the thread-local path, which may construct on a shared-pool
+    # worker thread rather than this one (pyegeria ISSUE-96 mitigation) — stub
+    # the single construction seam so the fake is used no matter which thread
+    # asks for it, same as reader._classification_explorer does for the
+    # main-thread-cached path.
+    reader._new_classification_explorer = lambda: fake
     return reader
 
 
@@ -381,6 +389,123 @@ class TestResolveQuestionGuid:
         fake = _FakeClassificationExplorer(guid_by_name={"Q": {"guid": "x"}})
         reader = _reader_with_fake_classification_explorer(fake)
         assert reader.resolve_question_guid("Q") is None
+
+
+class _CountingClassificationExplorerFactory:
+    """Records one fresh fake per call to ``_new_classification_explorer``,
+    and which thread asked for it — for pinning per-thread client identity
+    (pyegeria ISSUE-96 mitigation) without touching real pyegeria/network."""
+
+    def __init__(self, guid_by_name=None):
+        self._guid_by_name = guid_by_name or {}
+        self.instances = []
+        self.calling_thread_idents = []
+
+    def __call__(self):
+        client = _FakeClassificationExplorer(guid_by_name=self._guid_by_name)
+        self.instances.append(client)
+        self.calling_thread_idents.append(threading.get_ident())
+        return client
+
+
+class TestThreadLocalClassificationExplorer:
+    """pyegeria ISSUE-96 mitigation: _lookup_question_guid must never share
+    one ClassificationExplorer (and so one httpx.AsyncClient / event loop)
+    across threads — see the mechanism note on
+    SurveyDefinitionReader._thread_local_explorer (__init__) and on
+    _thread_local_classification_explorer for the measured before/after
+    (100% failure shared -> 0% failure per-thread, 52 names x 2 runs)."""
+
+    def test_different_threads_get_different_clients(self):
+        factory = _CountingClassificationExplorerFactory()
+        reader = _reader()
+        reader._new_classification_explorer = factory
+
+        seen = {}
+
+        def call(key):
+            seen[key] = reader._thread_local_classification_explorer()
+
+        t1 = threading.Thread(target=call, args=("t1",))
+        t2 = threading.Thread(target=call, args=("t2",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert seen["t1"] is not seen["t2"]
+        assert len(factory.instances) == 2
+
+    def test_same_thread_reuses_its_own_client(self):
+        factory = _CountingClassificationExplorerFactory()
+        reader = _reader()
+        reader._new_classification_explorer = factory
+
+        seen = []
+
+        def call_twice():
+            seen.append(reader._thread_local_classification_explorer())
+            seen.append(reader._thread_local_classification_explorer())
+
+        t = threading.Thread(target=call_twice)
+        t.start()
+        t.join()
+
+        assert seen[0] is seen[1]
+        assert len(factory.instances) == 1  # constructed once, reused on the 2nd call
+
+    def test_main_thread_path_still_uses_the_cached_classification_explorer(self):
+        """Every OTHER ClassificationExplorer caller (e.g. the D2 scoped
+        walk) must keep using the shared, main-thread-cached attribute —
+        only question-GUID lookups switched to the thread-local path."""
+        fake = _FakeClassificationExplorer()
+        reader = _reader()
+        reader._classification_explorer = fake
+
+        assert reader._connect_classification_explorer() is fake
+        # A second call returns the SAME cached instance, never re-constructs.
+        reader._new_classification_explorer = lambda: (_ for _ in ()).throw(
+            AssertionError("must not reconstruct — _classification_explorer was already cached")
+        )
+        assert reader._connect_classification_explorer() is fake
+
+    def test_a_lookup_failure_on_one_thread_does_not_poison_another_threads_client(self):
+        class _FlakyThenFine:
+            """First construction raises on every call; every construction
+            after that succeeds — models one thread's client going bad
+            without affecting a client built fresh on another thread."""
+
+            _constructed = 0
+
+            def __init__(self):
+                _FlakyThenFine._constructed += 1
+                self._is_first = _FlakyThenFine._constructed == 1
+
+            def create_egeria_bearer_token(self, *_a, **_kw):
+                pass
+
+            def get_guid_for_name(self, name, **_kw):
+                if self._is_first:
+                    raise RuntimeError("bound to a different event loop")
+                return "guid-from-second-thread"
+
+        reader = _reader()
+        reader._new_classification_explorer = _FlakyThenFine
+
+        results = {}
+
+        def call(key):
+            results[key] = reader._lookup_question_guid("Q")
+
+        t1 = threading.Thread(target=call, args=("t1",))
+        t1.start()
+        t1.join()
+        assert results["t1"] is None  # failure degrades to not-found, never raises
+
+        t2 = threading.Thread(target=call, args=("t2",))
+        t2.start()
+        t2.join()
+        assert results["t2"] == "guid-from-second-thread"  # unaffected by t1's failure
 
 
 class TestFindCandidateProcessGuidsByQuestions:
