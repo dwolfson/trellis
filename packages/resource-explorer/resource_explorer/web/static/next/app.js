@@ -2157,11 +2157,17 @@ function listSentenceHtml(l, i) {
     ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
     : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
   const partial = l.shown < l.total;
+  // Three things the designer's read of #60 fixed: the packer's rung is
+  // internal and "at full" read as "shown fully"; a section with no member
+  // reader rendered nothing where the link would be (the silent-omission
+  // rule); and › was a text glyph doing an icon's job.
   return `<div class="mt-s2 text-chip text-chrome-ink">
     ${head}${
-      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model at ${esc(l.rung.toLowerCase())}</span>` : ' · all shown to the model'}${
-      l.members ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
-        class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">the full list is in the pane ›</button>` : ''}
+      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
+      l.members
+        ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">the full list is in the pane${icon('chevron-right', { size: 12 })}</button>`
+        : ` · <span class="text-chrome-muted">no list view for <span class="font-mono">${esc(l.key)}</span> yet — the pane cannot open it</span>`}
   </div>`;
 }
 

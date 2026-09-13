@@ -52,6 +52,9 @@ ICONS = {
     "panel-right-close": "close the chat drawer",
     "panel-right-open": "open the chat drawer",
     "maximize-2": "promote a rail answer into the pane",
+    # 2026-09-13: the list sentence's "the full list is in the pane" link used
+    # a text › doing an icon's job (designer, on #60); this is the icon.
+    "chevron-right": "opens the list this answer was compiled from, in the pane",
 }
 #: Icons renamed or absent upstream, mapped to the nearest real one.
 FALLBACK = {
