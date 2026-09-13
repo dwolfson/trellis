@@ -5225,8 +5225,11 @@ Two things follow, and one decision:
   compiled-vs-RAG experiments share a common baseline; the slow writes are attributed to that, and a
   redeploy to the current codebase is what picks up the fix — timed against the experiment schedule,
   not against this finding. The Survey Definition documents re-authored the same night ran at ~5 s
-  per Dr.Egeria command on the same platform, consistent with that. Re-measure after the redeploy
-  before treating the inline-vs-enqueue decision as settled by these numbers.
+  per Dr.Egeria command on the same platform, consistent with that. **Re-measured after the redeploy
+  (2026-09-13, same repo, same analysis, same script):** during startup 5.2 s median / 6.8 p90 / 10.1
+  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s** — the tail is
+  gone, the floor is ~3.5 s per annotation create. The inline-vs-enqueue decision therefore stands:
+  53 writes is still 3¼ minutes on a 0.2 s analysis.
 - **Decision needed (project owner):** should an inline analysis wait for its publish? Enqueue-only
   makes the same run ~15 s, with `published` becoming a third state — *queued for publish*, visible in
   Egeria within the next drain (≤ 15 min). Built behind `RunsConfig.publish_inline` (env
