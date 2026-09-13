@@ -585,6 +585,7 @@ from resource_explorer.workflows.analysis import (  # noqa: E402
     execute_and_record_analysis as _run_single_analysis_background_impl,
     execute_and_record_stage_batch as _run_stage_batch_background_impl,
     assess_freshness as _assess_freshness,
+    estimate_run_cost as _estimate_run_cost,
     resolve_analysis_plan as _resolve_analysis_plan,
     resolve_stage_step_keys as _resolve_stage_step_keys,
     run_analysis as _run_analysis_workflow,
@@ -668,13 +669,23 @@ async def run_single_analysis(slug: str, analysis_id: str,
         if freshness.fresh:
             log.info("declined analysis_run for %s/%s — fresh via %s (%.0fs old)",
                      slug, analysis_id, freshness.via, freshness.age_seconds or 0)
+            # The skip names the price (designer ruling, 2026-09-13): "too
+            # fresh" alone reads as an obstacle; "too fresh, and here is what
+            # a re-run costs" reads as the system being careful with someone's
+            # time. The basis travels with the figure so a declared word is
+            # never mistaken for a measurement.
+            cost = _estimate_run_cost(registry, analysis_id)
             return {
                 "status": "skipped",
                 "reason": "already-fresh",
-                "detail": freshness.reason(analysis_id),
+                "detail": f"{freshness.reason(analysis_id)} {cost.sentence()}",
                 "last_run_at": freshness.last_run_at,
                 "last_run_via": freshness.via,
                 "age_seconds": int(freshness.age_seconds or 0),
+                "rerun_cost_seconds": cost.seconds,
+                "rerun_cost_basis": cost.basis,
+                "rerun_cost_runs": cost.runs,
+                "rerun_cost_via": cost.via,
                 "activity_id": None,
                 "run_id": None,
             }
