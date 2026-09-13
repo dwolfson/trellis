@@ -16,6 +16,11 @@ See resource_explorer/surveyors/survey_definition_reconciler.py for the
 diff logic and resource_explorer/surveyors/survey_definition_reader.py's
 reconcile_step_links() for the live fetch+delete side.
 
+This reconciler compares step edges only. For a Survey Definition's
+`ScopedBy` links to the Question terms its document names (docs/Backlog.md,
+"Superseded Question term — unlinked and deleted 2026-09-13"), see the
+sibling script scripts/reconcile_survey_definition_scopes.py.
+
 Usage:
     uv run python scripts/reconcile_survey_definition_links.py [--dry-run]
 

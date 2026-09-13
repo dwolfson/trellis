@@ -25,6 +25,30 @@ This module is the pure, side-effect-free diff logic (the unit-testable
 seam, matching survey_definition_reader.py's own _parse_graph convention)
 — it decides *what* to delete. SurveyDefinitionReader.reconcile_step_links()
 does the actual fetch + delete against live Egeria.
+
+## Scope-link reconciliation (docs/Backlog.md, "Superseded Question term",
+2026-09-13) — a sibling pass to the step-edge one above, same shape (pure
+diff here, live fetch+write in the script/reader), but a different
+relationship: `ScopedBy`, not `NextGovernanceActionProcessStep`. Two live
+incidents motivate it:
+
+  * 2026-08-19 — the questions batch ran after the survey-definitions batch
+    once, so every `Link Element To Scope` command reported success against
+    Question terms that did not exist yet, and created nothing. The
+    definition's own canary was present throughout; only the scoped
+    candidate lookup silently returned empty.
+  * 2026-09-13 — "What is its internal architecture...?" was split into four
+    questions in the CSV; the old term's `ScopedBy` links from
+    RepoFullSurvey and RepoArchitectureDiscovery were never removed when the
+    replacement links were added, so both definitions stayed scoped to a
+    term the authored document no longer names.
+
+Neither incident produces a "branching" symptom the step-edge reconciler can
+see — `ScopedBy` isn't `NextGovernanceActionProcessStep`, and nothing about a
+missing or extra scope link makes `SurveyDefinitionReader.fetch()` raise.
+The definition just quietly answers the wrong (or fewer) questions. See
+`expected_scopes_from_document()` / `diff_scopes()` below and
+`scripts/reconcile_survey_definition_scopes.py`.
 """
 from __future__ import annotations
 
@@ -137,4 +161,146 @@ def diff_links(links: list[dict], expected_edges: set, process_qualified_name: s
             seen_edges.add(edge)
             result.kept += 1
 
+    return result
+
+
+# ── scope-link reconciliation (ScopedBy vs. an authored document) ──────────
+
+LINK_SCOPE_HEADING = "## Link Element To Scope"
+
+
+def expected_scopes_from_document(doc_text: str) -> set[str]:
+    """The Question display names a Survey Definition document's own
+    `## Link Element To Scope` blocks name as `### Scope Reference` — i.e.
+    the ScopedBy links the document *authors*, independent of whatever
+    `document_for()`/`DefinitionDoc.scoped_by` already parses (this takes raw
+    text, not a parsed doc, so it stays usable directly against a fixture
+    string or a file read by the caller, and never assumes anything about
+    Target Element — every block's Scope Reference counts, matching
+    dr_egeria_survey_publisher.render_scope_link_block(), which always
+    targets this document's own Survey Definition).
+
+    Every other command heading in the document (`## Create Governance
+    Action Process Step`, `## Link Next Process Step`, etc.) is ignored —
+    this function answers exactly one question: which Question display
+    names does this document say this definition is ScopedBy.
+    """
+    lines = doc_text.splitlines()
+    expected: set[str] = set()
+    for i, raw in enumerate(lines):
+        if raw.strip() != LINK_SCOPE_HEADING:
+            continue
+        for j in range(i + 1, len(lines)):
+            stripped = lines[j].strip()
+            if stripped.startswith("## ") or stripped == "___":
+                break
+            if stripped != "### Scope Reference":
+                continue
+            for k in range(j + 1, len(lines)):
+                candidate = lines[k].strip()
+                if candidate.startswith(("###", "## ")) or candidate == "___":
+                    break
+                if candidate:
+                    expected.add(candidate)
+                    break
+            break
+    return expected
+
+
+@dataclass
+class UnresolvableScope:
+    """A live ScopedBy'd element that cannot be matched against `expected` at
+    all — not a GlossaryTerm, or a GlossaryTerm with no displayName. Reported
+    separately from `extra`: an element like this might be exactly the
+    Question the document expects, just unreadable by this diff, and
+    counting it as "extra" would recommend removing a link that is actually
+    fine. See `find-absence-as-answer`: "could not tell" must never render as
+    "measured, and there was nothing" or as "measured, and it's wrong.\""""
+    guid: str | None
+    type_name: str | None
+    qualified_name: str | None
+    reason: str
+
+
+@dataclass
+class ExtraScope:
+    """One live ScopedBy link the document does not name — carries the term's
+    GUID and qualifiedName (not just its displayName) so a removal via
+    `ClassificationExplorer.clear_scope_from_element` can target the exact
+    relationship, never a name-based re-resolution that could hit a
+    different term of the same display name."""
+    guid: str
+    qualified_name: str | None
+    display_name: str
+
+
+@dataclass
+class ScopeReconcileResult:
+    process_qualified_name: str
+    kept: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    extra: list[ExtraScope] = field(default_factory=list)
+    unresolvable: list[UnresolvableScope] = field(default_factory=list)
+    error: str = ""
+
+
+def diff_scopes(live: list[dict], expected: set[str]) -> ScopeReconcileResult:
+    """Pure diff — no network calls. `live` is the raw list
+    `ClassificationExplorer.get_scopes(element_guid, page_size=...)` returns
+    (each item: `elementHeader.type.typeName`/`elementHeader.guid`,
+    `properties.qualifiedName`/`properties.displayName`); `expected` is
+    `expected_scopes_from_document()`'s output for this definition's own
+    document.
+
+    Matched on **displayName, exact** — never qualifiedName. Dr.Egeria's term
+    qualified names are `<Org>::Term::<Hyphenated-Display-Name>::<version>`
+    (see docs/dr-egeria/questions/_batch.json's canary-choice comment): the
+    org prefix and version are deployment-specific, so a qualifiedName
+    comparison would report every Question as missing on any deployment
+    other than the one that authored this diff's expectations, which is
+    exactly backwards for a check meant to run anywhere. displayName is also
+    what `render_scope_link_block()`'s `Scope Reference` names and what
+    Dr.Egeria resolves a `Link Element To Scope` command's Scope Reference
+    by, so it is the same identity the write path itself uses.
+
+    A live scope element that is not a GlossaryTerm, or is a GlossaryTerm
+    with no displayName, goes to `unresolvable` — never to `extra`. Reporting
+    it as extra would recommend removing a link this diff cannot actually
+    evaluate; `unresolvable` says "look at this by hand" instead of guessing.
+    """
+    result = ScopeReconcileResult(process_qualified_name="")
+    seen_display_names: set[str] = set()
+
+    for item in live:
+        if not isinstance(item, dict):
+            result.unresolvable.append(
+                UnresolvableScope(None, None, None, f"not a dict: {item!r}")
+            )
+            continue
+        header = item.get("elementHeader") or {}
+        props = item.get("properties") or {}
+        type_name = (header.get("type") or {}).get("typeName")
+        guid = header.get("guid")
+        qualified_name = props.get("qualifiedName")
+        display_name = props.get("displayName")
+
+        if type_name != "GlossaryTerm":
+            result.unresolvable.append(
+                UnresolvableScope(guid, type_name, qualified_name,
+                                  f"not a GlossaryTerm (type={type_name!r})")
+            )
+            continue
+        if not display_name:
+            result.unresolvable.append(
+                UnresolvableScope(guid, type_name, qualified_name, "GlossaryTerm has no displayName")
+            )
+            continue
+
+        if display_name in expected:
+            result.kept.append(display_name)
+            seen_display_names.add(display_name)
+        else:
+            result.extra.append(ExtraScope(guid, qualified_name, display_name))
+
+    result.missing = sorted(expected - seen_display_names)
     return result
