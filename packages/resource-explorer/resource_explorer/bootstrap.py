@@ -142,6 +142,13 @@ class Batch:
     files: list[str]
     idempotent: bool = True
     post_heal: dict | None = None
+    #: Report-only checks run after post_heal, e.g. the survey-definitions
+    #: batch's scope-link reconciler (scripts/reconcile_survey_definition_scopes.py,
+    #: report mode). Unlike post_heal, a check's non-zero exit does NOT fail
+    #: the batch heal — a check surfaces drift for a person to see, it does
+    #: not repair anything on this path, so "the check found drift" is not
+    #: the same failure as "the heal script itself errored".
+    post_heal_checks: list[dict] = field(default_factory=list)
 
     @property
     def has_canary(self) -> bool:
@@ -243,6 +250,7 @@ def discover_batches(docs_dir: Path = DOCS_DIR) -> list[Batch]:
             files=files,
             idempotent=bool(raw.get("idempotent", True)),
             post_heal=raw.get("post_heal"),
+            post_heal_checks=list(raw.get("post_heal_checks") or []),
         )
 
     ordered_names = _read_folder_order(docs_dir)
@@ -401,6 +409,54 @@ def _run_post_heal(batch: Batch) -> tuple[bool, str]:
     return True, "post_heal ok"
 
 
+def _run_post_heal_checks(batch: Batch) -> list[str]:
+    """Run every report-only check a batch declares, after post_heal.
+
+    Unlike `_run_post_heal`, a check's non-zero exit does not fail the batch
+    heal — these scripts (e.g. reconcile_survey_definition_scopes.py's
+    default report mode) never write to Egeria on this path; they surface
+    drift a heal cannot see (ScopedBy links vs. an authored document is not a
+    "branching" symptom, so it doesn't block SurveyDefinitionReader the way
+    duplicate step edges do) for a person to act on. Returns one detail
+    string per declared check, always — a script that fails to even run
+    (missing file, timeout, non-zero exit) is reported here exactly like one
+    that ran and found drift, never silently dropped.
+    """
+    details: list[str] = []
+    pkg_root = Path(__file__).resolve().parent.parent
+    for spec in batch.post_heal_checks:
+        script = spec.get("script")
+        if not script:
+            continue
+        script_path = pkg_root / script
+        if not script_path.is_file():
+            details.append(f"{script}: NOT FOUND")
+            continue
+
+        import sys as _sys
+
+        try:
+            proc = subprocess.run(
+                [_sys.executable, str(script_path)],
+                cwd=str(pkg_root),
+                capture_output=True,
+                text=True,
+                timeout=HEAL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            details.append(f"{script}: {type(exc).__name__}: {exc}")
+            continue
+
+        if proc.returncode == 0:
+            details.append(f"{script}: reconciled")
+        else:
+            tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+            details.append(
+                f"{script}: drift found (exit {proc.returncode}) — {tail[-1] if tail else 'see log'}"
+            )
+    return details
+
+
 def heal_batch(batch: Batch) -> tuple[bool, str]:
     """Re-execute every document in a batch, in order, then its post-heal step.
 
@@ -417,6 +473,10 @@ def heal_batch(batch: Batch) -> tuple[bool, str]:
     ok, detail = _run_post_heal(batch)
     if not ok:
         return False, detail
+
+    check_details = _run_post_heal_checks(batch)
+    if check_details:
+        detail = "; ".join([detail or "ok"] + check_details)
     return True, detail or "ok"
 
 

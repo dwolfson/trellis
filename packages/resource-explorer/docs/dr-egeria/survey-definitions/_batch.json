@@ -66,5 +66,11 @@
   "post_heal": {
     "script": "scripts/reconcile_survey_definition_links.py",
     "reason": "Link First/Next Process Step are not idempotent; strip duplicate step edges a heal may have created."
-  }
+  },
+  "post_heal_checks": [
+    {
+      "script": "scripts/reconcile_survey_definition_scopes.py",
+      "reason": "Report-only: ScopedBy links vs. each document's own 'Link Element To Scope' blocks. Neither the 2026-08-19 (questions batch absent) nor the 2026-09-13 (superseded term left linked) drift produces a 'branching' symptom the step-edge reconciler above can see, so it needs its own check. Never writes on this path — a heal must not silently remove or add scope links; it only surfaces drift for a person to act on (see docs/Backlog.md, 'Superseded Question term')."
+    }
+  ]
 }
