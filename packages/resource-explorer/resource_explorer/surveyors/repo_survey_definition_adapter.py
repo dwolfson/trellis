@@ -4678,7 +4678,13 @@ def _get_project_entity(registry, slug: str):
     return registry.get(slug)
 
 
-def _publish(project, step_outputs: list, surveyed_at: str, registry) -> str:
+def _publish(project, step_outputs: list, surveyed_at: str, registry, *,
+            defer_drain: bool = False) -> str:
+    """`defer_drain` is the run-in-background choice (see
+    survey_definition_executor.py's `SurveyDefinitionExecutor.run`,
+    `publish` parameter) — threaded straight through to EgeriaPublisher,
+    which is the one thing this adapter's publish path actually uses; see
+    that method for what it does with it."""
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
     from resource_explorer.surveyors.survey_report import SurveyResult
 
@@ -4692,7 +4698,7 @@ def _publish(project, step_outputs: list, surveyed_at: str, registry) -> str:
             result.add(ann)
 
     publisher = EgeriaPublisher(registry=registry)
-    return publisher.publish(result)
+    return publisher.publish(result, defer_drain=defer_drain)
 
 
 _ADAPTER = ResourceTypeAdapter(

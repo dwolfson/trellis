@@ -5227,9 +5227,12 @@ Two things follow, and one decision:
   not against this finding. The Survey Definition documents re-authored the same night ran at ~5 s
   per Dr.Egeria command on the same platform, consistent with that. **Re-measured after the redeploy
   (2026-09-13, same repo, same analysis, same script):** during startup 5.2 s median / 6.8 p90 / 10.1
-  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s** — the tail is
-  gone, the floor is ~3.5 s per annotation create. The inline-vs-enqueue decision therefore stands:
-  53 writes is still 3¼ minutes on a 0.2 s analysis.
+  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s**; +10 h later,
+  the morning re-measurement, **1.5 s median / 2.3 p90 / 3.0 max per write, run 92.7 s, steps 0.06 s**
+  — the tail is gone, the floor keeps dropping, and steps stays flat at essentially zero regardless of
+  the platform's write latency (per-phase timings, #67 — see `docs/funnel-cost-measured.md` §1). The
+  inline-vs-enqueue decision therefore stands: even at 1.5 s/write, 53 writes is 80 s on a 0.06 s
+  analysis.
 - **Decision needed (project owner):** should an inline analysis wait for its publish? Enqueue-only
   makes the same run ~15 s, with `published` becoming a third state — *queued for publish*, visible in
   Egeria within the next drain (≤ 15 min). Built behind `RunsConfig.publish_inline` (env

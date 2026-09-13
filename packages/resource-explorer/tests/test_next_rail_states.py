@@ -80,7 +80,7 @@ class TestTheListSentence:
         end = app.index("function renderChatLog(")
         src = app[start:end]
         mod = tmp_path / "lists.mjs"
-        mod.write_text("const esc = (s) => String(s);\n" + src + "\nexport { listSources, listSentences, listSentenceHtml };\n")
+        mod.write_text("const esc = (s) => String(s); const icon = (n) => `<svg data-icon='${n}'/>`;\n" + src + "\nexport { listSources, listSentences, listSentenceHtml };\n")
         script = f"import {{ listSources, listSentences, listSentenceHtml }} from '{mod.as_uri()}';\nconsole.log(JSON.stringify({expr}));"
         out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
         return json.loads(out.stdout)
@@ -99,8 +99,16 @@ class TestTheListSentence:
                        "rung": "SUMMARY", "members": True}]
         html = self._run(f"listSentenceHtml(listSentences({__import__('json').dumps(self.BODY)})[0], 'p')", tmp_path)
         assert '<span class="tnum">32</span> dependencies · in <span class="tnum">1</span> ecosystem' in html
-        assert '<span class="tnum">10</span> shown to the model at summary' in html
-        assert 'the full list is in the pane' in html and 'data-list-source="dependency_analysis"' in html
+        assert '<span class="tnum">10</span> shown to the model</span>' in html and "at summary" not in html
+        assert 'open the full list' in html and 'data-list-source="dependency_analysis"' in html
+        assert '›' not in html and 'chevron-right' in html
+
+    def test_a_section_without_a_member_view_says_so_rather_than_omitting_the_link(self, tmp_path):
+        import json
+        body = {"compiled": {"manifest": {"packed": [{"key": "security_scan", "role": "evidence", "rung": "FULL"}],
+                                          "lists": {"security_scan": {"findings": {"total": 3, "shown": {"FULL": 3, "SUMMARY": 3}}}}}}}
+        html = self._run(f"listSentenceHtml(listSentences({json.dumps(body)})[0], 'p')", tmp_path)
+        assert "No list to open — <span class=\"font-mono\">security_scan</span> has no member reader yet." in html and "data-list-source" not in html
 
     def test_a_manifest_without_lists_falls_back_to_the_bare_link(self, tmp_path):
         body = {"compiled": {"manifest": {"packed": [{"key": "cve_scan", "role": "evidence", "rung": "FULL"}]}}}

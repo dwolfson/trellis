@@ -61,6 +61,21 @@ class AnalysisRunResult:
     steps_seconds: float | None = None
     publish_seconds: float | None = None
     publish_mode: str = "not-attempted"
+    #: The outbox run_id this publish's annotations were enqueued under, when
+    #: `published == "queued"` — empty otherwise. Carried onto the activity
+    #: row (see execute_and_record_analysis) so a later drain can find that
+    #: exact row again and flip `published` to True once the run's own outbox
+    #: rows (and their `::links` companion) are all terminal — see
+    #: registry.complete_publish_run_if_done.
+    publish_run_id: str = ""
+    #: The badge-table writes (project_published_annotation_types/
+    #: project_published_analyses) a deferred publish has NOT yet made —
+    #: carried onto the activity row so registry.complete_publish_run_
+    #: if_done() can make them once the run's outbox rows verifiably land,
+    #: rather than EgeriaPublisher.publish() making them at enqueue time
+    #: (which flipped the ☁ Published badge before anything reached Egeria).
+    #: `None` for every non-deferred/no-op path.
+    pending_published_record: dict | None = None
 
     def to_dict(self) -> dict:
         """The exact dict shape `_run_single_analysis_sync` used to return, so
@@ -148,9 +163,18 @@ def run_analysis(
     is_ingest: bool | None = None,
     steps: list[str] | None = None,
     registry=None,
+    publish: str | None = None,
 ) -> AnalysisRunResult:
     """Run one analysis's mapped survey step(s) and, where the resource is
     assigned to an Egeria project, auto-publish what it produced.
+
+    `publish` is the per-RUN choice (project owner, 2026-09-13): `"wait"`
+    drains the Egeria publish inline before this returns (today's default
+    behaviour); `"background"` enqueues it and returns in ~seconds, with
+    `published` coming back `"queued"` rather than `True`. `None` (the
+    default — and what every caller that predates this choice still passes)
+    defers to `RunsConfig.publish_inline`, so nothing that does not ask for
+    the choice sees any change in behaviour.
 
     Never raises for an analysis-level failure — that comes back as
     `status="error"` — only for something genuinely unexpected, which the caller
@@ -209,10 +233,22 @@ def run_analysis(
     published = None
     publish_seconds = None
     publish_mode = "not-attempted"
+    publish_run_id = ""
+    pending_published_record = None
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         from resource_explorer.config import get_config
 
-        publish_mode = "inline" if get_config().runs.publish_inline else "enqueued"
+        # The per-run choice, threaded through from the route: "wait"/
+        # "background" override RunsConfig.publish_inline for this run only;
+        # not asked (None) falls back to the config default, which is what
+        # every pre-existing caller still does.
+        if publish == "background":
+            defer_drain = True
+        elif publish == "wait":
+            defer_drain = False
+        else:
+            defer_drain = not get_config().runs.publish_inline
+        publish_mode = "enqueued" if defer_drain else "inline"
         publish_start = time.perf_counter()
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
@@ -226,7 +262,7 @@ def run_analysis(
             # Egeria-bound project reached through this route, softly, into
             # `summary`, with the run still reporting ok.
             publisher = EgeriaPublisher(registry=registry)
-            publisher.publish(result)
+            publisher.publish(result, defer_drain=defer_drain)
             # `is True`, not truthy: a test double patching EgeriaPublisher
             # wholesale (several do, across this file and
             # test_analysis_run_auto_publish.py) has no `publish_deferred`
@@ -237,15 +273,18 @@ def run_analysis(
             # literal bool `True`/`False` (set in egeria_publisher.py's
             # __init__), so this is exact for it and safe for a loose mock.
             if publisher.publish_deferred is True:
-                # publish_inline=False: enqueued, not applied. "queued" is a
-                # THIRD state, not True — the annotations are durable but have
-                # not landed in Egeria yet, and every reader of `published`
-                # must be able to tell the difference (see config.py's
-                # RunsConfig.publish_inline docstring for the measurement).
+                # Enqueued, not applied. "queued" is a THIRD state, not True
+                # — the annotations are durable but have not landed in Egeria
+                # yet, and every reader of `published` must be able to tell
+                # the difference (see config.py's RunsConfig.publish_inline
+                # docstring for the measurement, and this run-in-background
+                # design for the per-run choice that can now also cause it).
                 published = "queued"
-                summary += (
-                    f" {len(result.annotations)} Egeria write(s) queued for "
-                    "publish (next drain ≤15 min)."
+                publish_run_id = getattr(publisher, "publish_run_id", "") or ""
+                pending_published_record = getattr(publisher, "pending_published_record", None)
+                summary = summary.rstrip(".") + (
+                    f"; {len(result.annotations)} Egeria write(s) queued for "
+                    "publish — next drain ≤ 15 min."
                 )
             else:
                 published = True
@@ -274,7 +313,8 @@ def run_analysis(
     return AnalysisRunResult(
         status="ok", summary=summary, published=published, annotations=ann_summary,
         steps_seconds=steps_seconds, publish_seconds=publish_seconds,
-        publish_mode=publish_mode,
+        publish_mode=publish_mode, publish_run_id=publish_run_id,
+        pending_published_record=pending_published_record,
     )
 
 
@@ -319,8 +359,14 @@ def run_stage_batch(
 
 
 def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
-                                *, registry=None) -> AnalysisRunResult:
-    """Run one analysis and write its terminal status onto `activity_id`."""
+                                *, registry=None, publish: str | None = None,
+                                ) -> AnalysisRunResult:
+    """Run one analysis and write its terminal status onto `activity_id`.
+
+    `publish` ("wait" | "background" | None) is the per-run choice, carried
+    here from the run queue's `target` dict (see run_queue.py's
+    `_handle_analysis_run`) — passed straight through to `run_analysis`.
+    """
     from resource_explorer.registry import ProjectRegistry
 
     registry = registry or ProjectRegistry()
@@ -328,6 +374,7 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
     try:
         result = run_analysis(
             slug, analysis_id, is_ingest=is_ingest, steps=steps, registry=None,
+            publish=publish,
         )
     except Exception as exc:  # pragma: no cover — genuinely unexpected
         log.exception("Analysis run crashed for %s/%s", slug, analysis_id)
@@ -350,9 +397,21 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
         detail["error"] = result.error or summary
     else:
         detail["message"] = summary
+    # Carried so registry.complete_publish_run_if_done() can make the badge-
+    # table writes (project_published_annotation_types/_analyses) at the
+    # point the run's outbox rows actually land, instead of EgeriaPublisher.
+    # publish() making them at enqueue time — see that method's own comment.
+    # Only present when queued; a run that never deferred has nothing to
+    # apply later.
+    if result.published == "queued" and result.pending_published_record:
+        detail["pending_published_record"] = result.pending_published_record
+    # publish_run_id only when queued — see registry.complete_publish_run_
+    # if_done, which reads it off this exact activity row to flip
+    # `published` from "queued" to True once the run's outbox rows land.
+    publish_run_id = result.publish_run_id if result.published == "queued" else ""
     registry.update_activity_status(
         activity_id, result.status, summary=summary, detail=json.dumps(detail),
-        annotations=result.annotations or None,
+        annotations=result.annotations or None, publish_run_id=publish_run_id,
     )
     return result
 
@@ -451,6 +510,19 @@ class RunCost:
 
     Medians, never means: one sixteen-minute Egeria survey would otherwise
     carry the figure for every run of that analysis.
+
+    **The split (designer's ruling, 2026-09-13):** "the wall clock belongs
+    where someone is deciding — the cost preview and the freshness price —
+    and ALWAYS SPLIT, never as one figure." Measured 2026-09-13: a run of
+    `language_file_classification` took steps 0.06s, publish 92.3s (53
+    writes, 1.5s median) — a single figure mixes 0.06s of analysis with ~80s
+    of publishing, and publish scales with annotation COUNT, not with tier.
+    `steps_seconds`/`publish_seconds` are the medians of that split across the
+    same rows `seconds` above is drawn from (`split_runs` says how many); they
+    are `None` until at least one activity row carries the instrumentation
+    (added when `execute_and_record_analysis` started writing it), and the
+    sentence falls back to the unsplit figure until then — a fabricated split
+    would be worse than none.
     """
 
     seconds: float | None
@@ -461,10 +533,35 @@ class RunCost:
     #: SOURCE — `architecture_diagram` costs what `architecture_recovery`
     #: costs, because that is what a re-run actually executes.
     via: str
+    steps_seconds: float | None = None
+    publish_seconds: float | None = None
+    #: How many activity_log rows carried the split — the "median of N runs"
+    #: in the split sentence, which can differ from `runs` (drawn from a
+    #: different table, `runs`, and only some activity rows predate the
+    #: instrumentation).
+    split_runs: int = 0
 
     def sentence(self) -> str:
         if self.basis == "measured" and self.seconds is not None:
             n = f"median of {self.runs} run{'s' if self.runs != 1 else ''}"
+            if self.steps_seconds is not None and self.publish_seconds is not None:
+                # The two halves and the total must come from the SAME rows,
+                # or the sentence carries numbers that disagree — the first
+                # draft said "0.1s to run and 1m 32s to publish; about 2m 36s
+                # in all", because "in all" was the `runs`-table median over
+                # five runs (three of them before the platform redeploy) while
+                # the split came from the one instrumented row. So the total
+                # here is the sum of the split, and `seconds` (the whole-run
+                # median, still what the button costs on average) stays in
+                # the payload for callers that want it, not in this sentence.
+                sn = f"median of {self.split_runs} run{'s' if self.split_runs != 1 else ''}"
+                return (
+                    f"A re-run takes about {_humanise_split_seconds(self.steps_seconds)} "
+                    f"to run and about {_humanise_split_seconds(self.publish_seconds)} "
+                    f"to publish — about "
+                    f"{_humanise_duration(self.steps_seconds + self.publish_seconds)} "
+                    f"in all ({sn})."
+                )
             return f"A re-run costs about {_humanise_duration(self.seconds)} ({n})."
         if self.basis == "declared" and self.declared:
             return (f"A re-run is declared '{self.declared}' in the catalog — "
@@ -477,6 +574,16 @@ def _humanise_duration(seconds: float) -> str:
         return f"{max(1, round(seconds))}s"
     m, s = divmod(round(seconds), 60)
     return f"{m}m {s:02d}s"
+
+
+def _humanise_split_seconds(seconds: float) -> str:
+    """Like `_humanise_duration`, but a sub-second figure keeps one decimal
+    instead of rounding up to "1s" — a 0.06s step rounded that way would read
+    as sixteen times its real cost, exactly the distortion the split exists
+    to remove."""
+    if seconds < 1:
+        return f"{seconds:.1f}s"
+    return _humanise_duration(seconds)
 
 
 def _median(values: list[float]) -> float:
@@ -530,8 +637,21 @@ def estimate_run_cost(registry, analysis_id: str, *, resource_type: str = "repo"
     # own costs what its source costs.
     for aid in candidates:
         if durations[aid]:
+            steps_seconds = publish_seconds = None
+            split_runs = 0
+            split_rows = registry.analysis_run_activity_seconds([aid]).get(aid, [])
+            if split_rows:
+                split_runs = len(split_rows)
+                steps_vals = [s for s, _ in split_rows if s is not None]
+                publish_vals = [p for _, p in split_rows if p is not None]
+                if steps_vals:
+                    steps_seconds = _median(steps_vals)
+                if publish_vals:
+                    publish_seconds = _median(publish_vals)
             return RunCost(_median(durations[aid]), "measured", len(durations[aid]),
-                           _declared_run_time(analysis_id, resource_type, get_analyses), aid)
+                           _declared_run_time(analysis_id, resource_type, get_analyses), aid,
+                           steps_seconds=steps_seconds, publish_seconds=publish_seconds,
+                           split_runs=split_runs)
 
     declared = _declared_run_time(analysis_id, resource_type, get_analyses)
     return RunCost(None, "declared" if declared else "unknown", 0, declared, analysis_id)
