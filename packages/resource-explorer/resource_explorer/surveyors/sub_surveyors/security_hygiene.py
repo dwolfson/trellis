@@ -245,10 +245,14 @@ class SecurityHygieneSurveyor(BaseSurveyor):
             # "label" here is the pass/gap/unverified verdict; other finding
             # kinds (e.g. documentation) use the same column for a different
             # kind of value, which is why the generic schema names it `label`.
+            # supersedes_previous=True: this one call is the whole run's
+            # answer for (slug, "security_hygiene", "") — part of the
+            # security family opted in alongside cve_scan (docs/Backlog.md).
             self.registry.upsert_finding(
                 self.project.slug, "security_hygiene",
                 findings_from_annotations(annotations),
                 surveyed_at=self._surveyed_at,
+                supersedes_previous=True,
             )
         except Exception as exc:
             log.warning("Could not persist security hygiene findings for %s: %s",
