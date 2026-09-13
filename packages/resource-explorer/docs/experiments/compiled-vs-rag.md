@@ -83,6 +83,60 @@ Runs judged under different rubrics are never averaged together.
 
 ## Runs
 
+### run10-20260913 — the yes/no sentence retested on a 32B answerer: neutral; the model is the effect
+
+Same within-run A/B as run 9 (two compiled arms answered back-to-back per question, schedules
+paused 20:42 → 11:42 and restored with their original `next_run`, rubric v4, text on every row),
+with one change: the answering model is **qwen2.5-coder:32b** instead of llama3.1:8b (the judge
+stays qwen2.5:32b — a different model of the same family, chosen so the judge does not grade its
+own answers; the only larger option installed). `--conditions compiled,compiled+yesno`; the RAG
+arm was left out because the question is the sentence, not retrieval. 312 rows, 0 errors,
+replayability 156 of 156 in both arms. Run from a worktree pinned at 3f080eb, so its catalog is
+run 9's whatever `main` did meanwhile — and the compiled arm's compile ids are **identical to run
+9's plain arm in all 156 questions**, which makes the 8B-versus-32B comparison one over
+byte-identical evidence. The harness now records the answering model on every row.
+
+| metric (v4) | 32B plain | 32B + sentence | 8B plain (run 9) |
+|---|---:|---:|---:|
+| answers_question (0–2) | 1.29 | 1.33 | 1.04 |
+| supported_claims (mean) | 2.37 | 2.40 | 2.12 |
+| unsupported_claims (mean) | 0.36 | 0.34 | 0.43 |
+| misread_claims (mean) | 0.04 | 0.02 | 0.04 |
+| cites_evidence | 71% | 70% | 68% |
+| acknowledges_limits | 71% | 67% | 48% |
+| declines | 47% | 45% | 32% |
+| median answer length (chars) | 360 | 308 | 181 |
+| bare one-word answers | 0 | 0 | 10 |
+
+**The sentence, paired at 32B:** answers_question +0.04 (25 up, 18 down, 113 tied); supported
++0.03 (36/48/72); unsupported −0.02; misread −0.03; cites −0.01; declines −0.03. Neutral on every
+metric, on the yes/no questions as much as the others — even though it still cost one evidence
+rung in 135 of 156 pairs. The larger model absorbs the lost rung and does not take the sentence
+as a style. Combined with run 9 (−0.58 supported on 8B), the decision stands: the sentence stays
+out of production; it neither helps a model that does not need it nor survives a model that
+cannot afford it.
+
+**The model is the effect.** On identical evidence, 32B over 8B: answers_question +0.25,
+supported +0.25, unsupported −0.07, no bare answers, twice the answer length, and every CVE row
+stating its coverage in both arms ("The CVE scan could not query 61 of the 61 declared
+dependencies"; "no advisories in the 11 of 36 … 25 could not be queried"). It also declines more
+(47% vs 32%) and acknowledges limits more (71% vs 48%), which on rubric v4 is scored as
+grounding, not evasion. The answering-side problem the yes/no sentence was written for is solved
+by the answering side.
+
+**A defect the 32B model exposed by being faithful.** egeria's compiled `cve_scan` section carried
+the headline "no advisories in the 2 of 32 declared dependenc(ies) that could be checked" and,
+directly beneath it, the finding "python:click: 1 advisory for click ==8.3.1: PYSEC-2026-2132".
+Both are in the registry: the finding is from 2026-09-01, the metrics behind the headline from
+2026-09-12, and the later run — which found no advisory — did not retire the earlier finding.
+The compiler merged a twelve-day-old positive with a fresh zero into one section and the model
+reproduced the contradiction ("no advisories … The evidence shows 1 advisory"); the judge scored
+it 2 with no misread, because both halves are in the evidence. This is the run-identity gap
+(`docs/annotation-identity-check.md`) in its worst form — stale positive beside fresh negative —
+and the fix is where findings are written, not in the compiler; handed to the adapter owner.
+The compiler could at most print a date per line, which would make the contradiction visible
+rather than absent.
+
 ### run9-20260912 — the within-run A/B: the yes/no sentence, measured on its own, comes out of production
 
 First run under the redesigned protocol: three conditions answered back-to-back per question in
