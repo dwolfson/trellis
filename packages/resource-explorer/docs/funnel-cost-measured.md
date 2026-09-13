@@ -154,7 +154,19 @@ say *no verdict can be recorded for a database yet*, not render an empty chip se
 > auto-publish behind a flag — is on branch `re/auto-publish-enqueue-only`, default unchanged
 > pending the owner's decision. The freshness skip's price sentence stays true (that *is* what a
 > re-run costs) but prices the wait, not the thought.
+>
+> **Ruling (designer, 2026-09-13):** publish stays out of the ladder; wall clock is shown only
+> where someone is deciding, and always split.
 
+The per-phase timings landed (#67): `execute_and_record_analysis` now writes `steps_seconds` /
+`publish_seconds` / `publish_mode` onto every run's activity row, and `estimate_run_cost` /
+`RunCost` split on them the moment at least one row carries them. Per the ruling above, the
+**measured** column below is "run (thought)" wherever a split exists, with a separate
+**publish (waited)** figure beside it — labelled as what pressing the button costs *this run*, not
+as a property of the tier, since publish scales with annotation count. Everything below §1 was
+measured before the split instrumentation existed, so it is still the single, publish-dominated
+figure the correction box above describes; **not yet split** marks a cell rather than implying the
+old figure was ever "just" analysis cost.
 
 **Decision (designer, 2026-09-13):** the interim prior renders as **declared**, visually distinct
 from measured and labelled as such. A declared figure sitting in a cost chart that looks measured is
@@ -163,13 +175,20 @@ the failure this spec was written to prevent.
 `runs` now holds 87 rows (12 on 2026-09-09), so a first measurement exists beside the prior — thin,
 and said to be.
 
-| tier | analyses | **declared** `run_time` fast / minutes / async | measured: analyses with ≥1 succeeded run | **measured** median of per-analysis medians |
-|---|---:|---|---|---:|
-| scouting | 3 | 2 / 1 / 0 | 2 of 3 | 156 s |
-| discovery | 8 | 8 / 0 / 0 | 4 of 8 | 18 s |
-| assessment | 14 | 11 / 3 / 0 | 11 of 14 | 22 s |
-| analysis | 11 | 8 / 3 / 0 | 7 of 11 | 49 s |
-| curate | 1 | 0 / 1 / 0 | 0 of 1 | — |
+| tier | analyses | **declared** `run_time` fast / minutes / async | measured: analyses with ≥1 succeeded run | **measured** median of per-analysis medians — run (thought) | **publish (waited)** — what the button costs, not a tier property |
+|---|---:|---|---|---:|---:|
+| scouting | 3 | 2 / 1 / 0 | 2 of 3 | 156 s — not yet split | not yet split |
+| discovery | 8 | 8 / 0 / 0 | 4 of 8 | 18 s — not yet split | not yet split |
+| assessment | 14 | 11 / 3 / 0 | 11 of 14 | 22 s — not yet split | not yet split |
+| analysis | 11 | 8 / 3 / 0 | 7 of 11 | 49 s — not yet split | not yet split |
+| curate | 1 | 0 / 1 / 0 | 0 of 1 | — | — |
+
+The one analysis with a split row so far, read live off the registry 2026-09-13 (one instrumented
+run): `language_file_classification` — steps (run) **0.06 s**, publish (waited) **92.3 s**; the
+sentence `estimate_run_cost` now produces is *"A re-run takes about 0.1s to run and about 1m 32s to
+publish (median of 1 run); about 2m 36s in all."* The whole-run median in the table above (156 s)
+predates this instrumented row and is a different sample of the same analysis — the two are not
+expected to reconcile until there are enough split rows to median over.
 
 All 37 repo analyses are `source: local` except the one `curate` entry. Per-analysis medians, n:
 

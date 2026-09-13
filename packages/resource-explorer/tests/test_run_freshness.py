@@ -276,6 +276,25 @@ def _succeeded_run(reg, analysis_id, seconds, slug="any"):
     return run_id
 
 
+def _split_activity(reg, analysis_id, steps_seconds, publish_seconds, slug="any"):
+    """One terminal `analysis_run` activity_log row carrying the per-phase
+    split in `detail`, the shape `execute_and_record_analysis` writes."""
+    import json as _json
+
+    from resource_explorer.activity_logger import log_analysis_run
+
+    entry_id = log_analysis_run(reg, "repo", slug, slug, "ok",
+                                f"ran {analysis_id}", analysis_id, published=None)
+    detail = _json.dumps({
+        "analysis_id": analysis_id, "published": None,
+        "steps_seconds": steps_seconds, "publish_seconds": publish_seconds,
+        "publish_mode": "not-attempted" if publish_seconds is None else "inline",
+    })
+    with reg._conn() as c:
+        c.execute("UPDATE activity_log SET detail = %s WHERE id = %s", (detail, entry_id))
+    return entry_id
+
+
 class TestTheSkipNamesThePrice:
     """Designer ruling (2026-09-13): "a gate that only says 'too fresh' reads
     as an obstacle; one that names the price reads as the system being careful
@@ -355,3 +374,64 @@ class TestTheSkipNamesThePrice:
         assert out["rerun_cost_runs"] == 1 and out["rerun_cost_via"] == "ci_quality"
         assert "A re-run costs about 33s" in out["detail"], (
             "the price has to be in the sentence the toast shows, not only in a field")
+
+    def test_the_split_leads_the_sentence_when_it_exists(self, pg_registry):
+        """Designer's ruling, 2026-09-13: the wall clock is always split, never
+        one figure — and the sentence has to LEAD with it."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_split_probe", 90)
+        _succeeded_run(pg_registry, "zz_split_probe", 94)
+        _split_activity(pg_registry, "zz_split_probe", 0.06, 92.3)
+        _split_activity(pg_registry, "zz_split_probe", 0.08, 88.1)
+        cost = estimate_run_cost(pg_registry, "zz_split_probe")
+        assert cost.basis == "measured"
+        assert cost.steps_seconds == 0.07 and cost.publish_seconds == pytest.approx(90.2)
+        assert cost.split_runs == 2
+        sentence = cost.sentence()
+        assert sentence.startswith("A re-run takes about 0.1s to run and about"), sentence
+        assert "to publish" in sentence and "in all" in sentence
+
+    def test_no_split_rows_leaves_the_sentence_byte_identical(self, pg_registry):
+        """Old runs (predating the split instrumentation) must fall back to
+        exactly today's sentence — not a mangled half-split one."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_nosplit_probe", 13)
+        cost = estimate_run_cost(pg_registry, "zz_nosplit_probe")
+        assert cost.steps_seconds is None and cost.publish_seconds is None
+        assert cost.sentence() == "A re-run costs about 13s (median of 1 run)."
+
+    def test_the_skip_payload_carries_the_split_fields(self, reg, slug, monkeypatch):
+        import asyncio
+        from resource_explorer.web.routes import projects
+
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        _log_run(reg, slug, "sla_content", minutes_ago=2)
+        _succeeded_run(reg, "sla_content", 92, slug=slug)
+        _split_activity(reg, "sla_content", 0.06, 92.3, slug=slug)
+        out = asyncio.run(projects.run_single_analysis(slug, "sla_content"))
+        assert out["status"] == "skipped"
+        assert out["rerun_steps_seconds"] == 0.06
+        assert out["rerun_publish_seconds"] == 92.3
+        assert out["rerun_split_runs"] == 1
+        assert "to run and about" in out["detail"] and "to publish" in out["detail"]
+
+    def test_a_not_attempted_publish_does_not_poison_the_publish_median(self, pg_registry):
+        """`publish_seconds=None` means "not attempted" (no assigned project, or
+        no annotations) — not a zero-second publish. It must not enter the
+        median as if it were a fast one, and it must not vanish from
+        `split_runs` either: the row is still a real, instrumented run."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 10)
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 12)
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 14)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, 40.0)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, 60.0)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, None)  # not-attempted
+        cost = estimate_run_cost(pg_registry, "zz_notattempted_probe")
+        assert cost.split_runs == 3, "the not-attempted row is a real instrumented run"
+        assert cost.publish_seconds == 50.0, (
+            f"the None publish row poisoned the median: got {cost.publish_seconds}")
+        assert cost.steps_seconds == 0.1

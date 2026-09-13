@@ -451,6 +451,19 @@ class RunCost:
 
     Medians, never means: one sixteen-minute Egeria survey would otherwise
     carry the figure for every run of that analysis.
+
+    **The split (designer's ruling, 2026-09-13):** "the wall clock belongs
+    where someone is deciding — the cost preview and the freshness price —
+    and ALWAYS SPLIT, never as one figure." Measured 2026-09-13: a run of
+    `language_file_classification` took steps 0.06s, publish 92.3s (53
+    writes, 1.5s median) — a single figure mixes 0.06s of analysis with ~80s
+    of publishing, and publish scales with annotation COUNT, not with tier.
+    `steps_seconds`/`publish_seconds` are the medians of that split across the
+    same rows `seconds` above is drawn from (`split_runs` says how many); they
+    are `None` until at least one activity row carries the instrumentation
+    (added when `execute_and_record_analysis` started writing it), and the
+    sentence falls back to the unsplit figure until then — a fabricated split
+    would be worse than none.
     """
 
     seconds: float | None
@@ -461,10 +474,24 @@ class RunCost:
     #: SOURCE — `architecture_diagram` costs what `architecture_recovery`
     #: costs, because that is what a re-run actually executes.
     via: str
+    steps_seconds: float | None = None
+    publish_seconds: float | None = None
+    #: How many activity_log rows carried the split — the "median of N runs"
+    #: in the split sentence, which can differ from `runs` (drawn from a
+    #: different table, `runs`, and only some activity rows predate the
+    #: instrumentation).
+    split_runs: int = 0
 
     def sentence(self) -> str:
         if self.basis == "measured" and self.seconds is not None:
             n = f"median of {self.runs} run{'s' if self.runs != 1 else ''}"
+            if self.steps_seconds is not None and self.publish_seconds is not None:
+                sn = f"median of {self.split_runs} run{'s' if self.split_runs != 1 else ''}"
+                return (
+                    f"A re-run takes about {_humanise_split_seconds(self.steps_seconds)} "
+                    f"to run and about {_humanise_split_seconds(self.publish_seconds)} "
+                    f"to publish ({sn}); about {_humanise_duration(self.seconds)} in all."
+                )
             return f"A re-run costs about {_humanise_duration(self.seconds)} ({n})."
         if self.basis == "declared" and self.declared:
             return (f"A re-run is declared '{self.declared}' in the catalog — "
@@ -477,6 +504,16 @@ def _humanise_duration(seconds: float) -> str:
         return f"{max(1, round(seconds))}s"
     m, s = divmod(round(seconds), 60)
     return f"{m}m {s:02d}s"
+
+
+def _humanise_split_seconds(seconds: float) -> str:
+    """Like `_humanise_duration`, but a sub-second figure keeps one decimal
+    instead of rounding up to "1s" — a 0.06s step rounded that way would read
+    as sixteen times its real cost, exactly the distortion the split exists
+    to remove."""
+    if seconds < 1:
+        return f"{seconds:.1f}s"
+    return _humanise_duration(seconds)
 
 
 def _median(values: list[float]) -> float:
@@ -530,8 +567,21 @@ def estimate_run_cost(registry, analysis_id: str, *, resource_type: str = "repo"
     # own costs what its source costs.
     for aid in candidates:
         if durations[aid]:
+            steps_seconds = publish_seconds = None
+            split_runs = 0
+            split_rows = registry.analysis_run_activity_seconds([aid]).get(aid, [])
+            if split_rows:
+                split_runs = len(split_rows)
+                steps_vals = [s for s, _ in split_rows if s is not None]
+                publish_vals = [p for _, p in split_rows if p is not None]
+                if steps_vals:
+                    steps_seconds = _median(steps_vals)
+                if publish_vals:
+                    publish_seconds = _median(publish_vals)
             return RunCost(_median(durations[aid]), "measured", len(durations[aid]),
-                           _declared_run_time(analysis_id, resource_type, get_analyses), aid)
+                           _declared_run_time(analysis_id, resource_type, get_analyses), aid,
+                           steps_seconds=steps_seconds, publish_seconds=publish_seconds,
+                           split_runs=split_runs)
 
     declared = _declared_run_time(analysis_id, resource_type, get_analyses)
     return RunCost(None, "declared" if declared else "unknown", 0, declared, analysis_id)
