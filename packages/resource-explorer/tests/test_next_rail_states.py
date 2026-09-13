@@ -62,3 +62,48 @@ class TestTheCandidateHeuristicIsGone:
         assert "p.role === 'evidence' && MEMBER_LISTED.has(p.key)" in app
         assert "data-list-source" in app and "openMembers({ slug, analysisId: b.dataset.listSource" in app
         assert "if (turn.listSources && turn.listSources.length) return 'list';" in app
+
+
+class TestTheListSentence:
+    """REPLY-BLANK-RAIL §2: the rail says the whole count and what the
+    model saw, from the compiler's manifest, and the pane holds the list.
+    Pinned by extracting the two pure functions and running them in node on
+    a manifest of the compiler's shape (context_compile._list_extents)."""
+
+    def _run(self, expr, tmp_path):
+        import json, shutil, subprocess
+        import pytest
+        if shutil.which("node") is None:
+            pytest.skip("node not installed")
+        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        start = app.index("const MEMBER_LISTED = new Set(")
+        end = app.index("function renderChatLog(")
+        src = app[start:end]
+        mod = tmp_path / "lists.mjs"
+        mod.write_text("const esc = (s) => String(s);\n" + src + "\nexport { listSources, listSentences, listSentenceHtml };\n")
+        script = f"import {{ listSources, listSentences, listSentenceHtml }} from '{mod.as_uri()}';\nconsole.log(JSON.stringify({expr}));"
+        out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    BODY = {"compiled": {"manifest": {
+        "packed": [{"key": "dependency_analysis", "role": "evidence", "rung": "SUMMARY"},
+                   {"key": "instructions", "role": "instructions", "rung": "FULL"},
+                   {"key": "repository_health", "role": "evidence", "rung": "FULL"}],
+        "lists": {"dependency_analysis": {"by_ecosystem.python": {"total": 32, "shown": {"FULL": 32, "SUMMARY": 10}}},
+                  "repository_health": {}},
+    }}}
+
+    def test_the_sentence_carries_the_total_and_what_the_model_saw(self, tmp_path):
+        ls = self._run(f"listSentences({__import__('json').dumps(self.BODY)})", tmp_path)
+        assert ls == [{"key": "dependency_analysis", "field": "by_ecosystem", "total": 32, "shown": 10, "parts": 1,
+                       "rung": "SUMMARY", "members": True}]
+        html = self._run(f"listSentenceHtml(listSentences({__import__('json').dumps(self.BODY)})[0], 'p')", tmp_path)
+        assert '<span class="tnum">32</span> dependencies · in <span class="tnum">1</span> ecosystem' in html
+        assert '<span class="tnum">10</span> shown to the model at summary' in html
+        assert 'the full list is in the pane' in html and 'data-list-source="dependency_analysis"' in html
+
+    def test_a_manifest_without_lists_falls_back_to_the_bare_link(self, tmp_path):
+        body = {"compiled": {"manifest": {"packed": [{"key": "cve_scan", "role": "evidence", "rung": "FULL"}]}}}
+        import json
+        assert self._run(f"listSentences({json.dumps(body)})", tmp_path) == []
+        assert self._run(f"listSources({json.dumps(body)})", tmp_path) == ["cve_scan"]
