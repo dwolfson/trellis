@@ -61,3 +61,40 @@ class TestTheFormatter:
         assert '(2026-08-11)' in html and '· dan' in html
         assert '<span class="text-ink">worth watching</span>' in html
         assert 'text-ink-muted' not in html
+
+
+class TestPromotionSelectionInTheShell:
+    """REVIEW-PROMOTION (2026-09-12): the half of promotion that lives in JS
+    had no tests. What a source read can hold it to; the composition itself
+    was exercised in the browser."""
+
+    def _sel(self):
+        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        return app[app.index("function facetsHtml("):app.index("async function openMembers(")]
+
+    def test_a_typed_name_is_tracked_not_inferred_from_the_string(self):
+        body = self._sel()
+        assert "let touched = false;" in body and "nameEl.addEventListener('input'" in body
+        assert "keep.startsWith(" not in body
+
+    def test_hand_picking_refines_the_facet_rather_than_erasing_it(self):
+        body = self._sel()
+        assert "plus ${added} added by hand" in body and "less ${removed} removed by hand" in body
+        assert "facet = ''; render();" not in body
+
+    def test_the_run_date_is_the_payloads_not_the_browsers(self):
+        body = self._sel()
+        assert "const runAt = data.run_at || '';" in body
+        assert "enrichmentFacts" not in body
+
+    def test_facet_labels_are_whole_and_counts_say_what_they_count(self):
+        body = self._sel()
+        assert ".split(' ')[0]" not in body
+        assert "counts are of the" in body and "${g.count}" in body
+
+    def test_house_rules(self):
+        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        members = app[app.index("async function openMembers("):app.index("function rowKey(i)")]
+        assert "accent-accent" not in members, "gold is not a fill on 200 checkboxes"
+        assert "this list is a tree" in self._sel()
+        assert "Nothing listed" in members
