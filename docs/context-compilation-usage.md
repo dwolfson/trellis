@@ -70,6 +70,9 @@ three things people actually ask.
 - **`manifest.coverage`** — `{kind, question, note}` for the best-matching catalog question;
   `kind` is the catalog's answering kind (`analysis`, `mixed`, `partial`, `direct`, `human`,
   `chart`, `gap`) or `none` when nothing matches
+- **`manifest.lists`** — `{section key: {list field: {total, shown: {FULL, SUMMARY}}}}` for every
+  packed reader-derived section: the "N of M shown" the text carries, as data, so a UI can say M
+  without recounting; pick N by that section's packed rung
 - **`manifest.gaps`** — sections the derivation says should exist, **judged**:
   `nothing_found` (ran, a real zero), `never_run`, `not_established`, each with
   `last_run_at` and `can_run` where known

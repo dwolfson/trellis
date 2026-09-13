@@ -1375,3 +1375,29 @@ class TestAListNeverAppearsWithoutItsTotal:
             for line in text.splitlines():
                 if re.search(r"\bshown\b", line):
                     assert re.search(r"\d+ of \d+ shown", line), line
+
+
+class TestTheManifestCarriesEveryListsTotal:
+    """The rail sentence (/next, 2026-09-13) needs M from the manifest, not
+    from re-counting the text: `manifest["lists"][section][field]`."""
+
+    def test_totals_and_shown_per_rung_are_in_the_manifest(self, monkeypatch):
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+        results = {"components": [{"name": f"c{i}"} for i in range(32)],
+                   "by_eco": {"py": [f"d{i}" for i in range(25)]},
+                   "total": 32, "_status": {"state": "measured"}}
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP, "architecture_recovery",
+                            (lambda reg, slug: results, None))
+        c = cc.compile_context(_registry({}), "x", "What components exist in this repository, and what kind is each?",
+                               budget=6000)
+        lists = c.manifest["lists"]["architecture_recovery"]
+        assert lists["components"] == {"total": 32, "shown": {"FULL": 10, "SUMMARY": 3}}
+        assert lists["by_eco.py"] == {"total": 25, "shown": {"FULL": 20, "SUMMARY": 3}}
+        assert "total" not in lists                     # scalars are not lists
+        rung = {p["key"]: p["rung"] for p in c.manifest["packed"]}["architecture_recovery"]
+        assert rung in lists["components"]["shown"]      # the UI picks N by the packed rung
+
+    def test_only_packed_sections_appear(self, monkeypatch):
+        c = compile_context(_registry({"repo_conventions": [_finding("a")]}), "x", "q", budget=6000)
+        assert set(c.manifest["lists"]) <= {p["key"] for p in c.manifest["packed"]}
