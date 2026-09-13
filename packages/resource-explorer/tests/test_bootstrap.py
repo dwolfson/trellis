@@ -9,6 +9,8 @@ resolve must not drive an infinite heal loop.
 from __future__ import annotations
 
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -340,3 +342,76 @@ class TestRealManifests:
         sd = {b.batch_id: b for b in bs.discover_batches(bs.DOCS_DIR)}["survey-definitions"]
         assert sd.idempotent is False
         assert (sd.post_heal or {}).get("script")
+
+
+class TestRunDrEgeriaExecutableResolution:
+    """A bootstrap auto-heal must run the venv's own `dr_egeria`, not
+    whatever `dr_egeria` happens to resolve to on PATH. On the dev box PATH
+    resolves to a pipx install on a different Python with a newer pyegeria
+    that died at bearer-token creation before running a single command
+    (verified 2026-09-12) — a heal picking that one up fails before it
+    writes anything."""
+
+    def test_prefers_the_copy_next_to_sys_executable(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / "venv-bin"
+        venv_bin.mkdir()
+        venv_dr_egeria = venv_bin / "dr_egeria"
+        venv_dr_egeria.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+        # Even if PATH would also resolve one, the venv copy must win.
+        monkeypatch.setattr(bs.shutil, "which", lambda name: "/usr/local/bin/dr_egeria")
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(bs.subprocess, "run", fake_run)
+
+        doc = tmp_path / "one.md"
+        doc.write_text("# one\n")
+        ok, _detail = bs._run_dr_egeria(doc)
+
+        assert ok is True
+        assert captured["argv"][0] == str(venv_dr_egeria)
+
+    def test_falls_back_to_path_when_venv_copy_absent(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / "venv-bin"
+        venv_bin.mkdir()
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(bs.shutil, "which", lambda name: "/usr/local/bin/dr_egeria")
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(bs.subprocess, "run", fake_run)
+
+        doc = tmp_path / "one.md"
+        doc.write_text("# one\n")
+        ok, _detail = bs._run_dr_egeria(doc)
+
+        assert ok is True
+        assert captured["argv"][0] == "/usr/local/bin/dr_egeria"
+
+    def test_names_both_locations_when_neither_exists(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / "venv-bin"
+        venv_bin.mkdir()
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(bs.shutil, "which", lambda name: None)
+
+        def fake_run(argv, **kwargs):
+            raise AssertionError("subprocess.run must not be called when no executable was found")
+
+        monkeypatch.setattr(bs.subprocess, "run", fake_run)
+
+        doc = tmp_path / "one.md"
+        doc.write_text("# one\n")
+        ok, detail = bs._run_dr_egeria(doc)
+
+        assert ok is False
+        assert str(venv_bin / "dr_egeria") in detail
+        assert "PATH" in detail

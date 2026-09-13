@@ -359,6 +359,9 @@ class SecretScanSurveyor(BaseSurveyor):
         writes through the same code path as a completed scan — otherwise
         "we could not check" would be the one outcome that left no row."""
         try:
+            # supersedes_previous=True: security family (docs/Backlog.md),
+            # this one call is the whole run's answer for
+            # (slug, FINDING_KIND, "").
             self.registry.upsert_finding(
                 self.project.slug, FINDING_KIND,
                 [
@@ -369,6 +372,7 @@ class SecretScanSurveyor(BaseSurveyor):
                     for f in findings
                 ],
                 surveyed_at=self._surveyed_at,
+                supersedes_previous=True,
             )
         except Exception as exc:
             log.warning("Could not persist secret scan findings for %s: %s",

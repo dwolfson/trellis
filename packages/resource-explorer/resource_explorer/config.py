@@ -447,6 +447,25 @@ class RunsConfig(BaseSettings):
     #: change what "nightly" means, which is a different decision from sparing
     #: someone a redundant click.
     gate_user_runs: bool = True
+    #: Whether `run_analysis`'s auto-publish drains the Egeria outbox inline,
+    #: synchronously, before the run returns (True — unchanged default) or only
+    #: enqueues the annotation outbox rows and leaves draining to the
+    #: scheduler's existing periodic `_drain_egeria_outbox` cycle (False). When
+    #: False, evidence-link rows are deferred entirely rather than enqueued —
+    #: Tier 1 linking needs each annotation's real Egeria GUID, which only
+    #: exists once its own row is applied (see egeria_publisher.py's
+    #: `_create_annotations` docstring).
+    #: Measured 2026-09-13 on a real `language_file_classification` publish
+    #: (`egeria_workspaces_git`, 53 outbox rows): the inline drain cost 546.61s
+    #: of the run's 558.89s total — the run-time cost of auto-publish is almost
+    #: entirely this synchronous drain, not the survey or the asset/report
+    #: setup ahead of it. Turning this off would cut what a user waits for the
+    #: "Run" action to ~15s, at the cost of the "published" state meaning
+    #: "queued for the next drain" rather than "landed in Egeria" at the moment
+    #: the run returns. The default stays True — unchanged behaviour — because
+    #: that trade is the project owner's call to make, not this flag's; it
+    #: exists so they can flip it once made, not to make it for them.
+    publish_inline: bool = Field(default=True, alias="RUNS_PUBLISH_INLINE")
 
 
 class RuntimeConfig(BaseSettings):

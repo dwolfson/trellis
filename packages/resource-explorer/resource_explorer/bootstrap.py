@@ -101,7 +101,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -314,13 +316,38 @@ def canary_present(batch: Batch, client=None) -> bool | None:
 
 # ── heal ────────────────────────────────────────────────────────────────────
 
+def _resolve_dr_egeria_executable() -> str | None:
+    """Find the `dr_egeria` executable to run.
+
+    Prefer the one installed next to the running interpreter over whatever
+    `dr_egeria` resolves to on PATH. They are not interchangeable: this
+    package pins a pyegeria version, and the venv's own `dr_egeria` is built
+    against it, while PATH can point anywhere. On the dev box PATH's
+    `dr_egeria` is a pipx install on a different Python with a newer
+    pyegeria that died at bearer-token creation with
+    `AsyncLibraryNotFoundError` before running a single command (verified
+    2026-09-12) — a bootstrap auto-heal picking that one up fails before it
+    writes anything.
+    """
+    venv_candidate = Path(sys.executable).parent / "dr_egeria"
+    if venv_candidate.is_file():
+        return str(venv_candidate)
+    return shutil.which("dr_egeria")
+
+
 def _run_dr_egeria(doc: Path) -> tuple[bool, str]:
     """Execute one document. Runs `dr_egeria` as a subprocess from the
     document's own directory, matching how these documents are run by hand and
     keeping relative paths resolving the same way."""
+    executable = _resolve_dr_egeria_executable()
+    if executable is None:
+        venv_candidate = Path(sys.executable).parent / "dr_egeria"
+        return False, f"dr_egeria CLI not found next to {venv_candidate} or on PATH"
+
+    log.info("bootstrap: running dr_egeria via %s", executable)
     try:
         proc = subprocess.run(
-            ["dr_egeria", "--process", "--summary-only", doc.name],
+            [executable, "--process", "--summary-only", doc.name],
             cwd=str(doc.parent),
             capture_output=True,
             text=True,

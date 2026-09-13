@@ -5203,3 +5203,70 @@ actual constraints, which per the entry above are `%%` lines, literal `%`,
 and a 20-node ceiling on `class` — or it should be renamed to whatever it
 does measure (a character count against some other bound) so nobody reads it
 as a rendering guarantee.
+
+### Auto-publish is 98% of an "inline" analysis's wall time (measured 2026-09-13)
+
+Profiling why `language_file_classification` (scouting, `run_time: fast`) took a 156 s median over
+5 queue runs: its three steps take 0.25 s. The rest is `run_analysis`'s synchronous auto-publish —
+`EgeriaPublisher._create_annotations` enqueues outbox rows and then calls `drain_outbox` inline, one
+Egeria REST call per row, sequential. One real run measured through the worker's own path:
+**559 s total; steps 0.25 s; publish setup 11.3 s; 53 writes (46 annotations + 7 evidence links)
+546.6 s at a median of 9.4 s per write** (p90 15.3 s, max 21.2 s, no failures). The scheduler already
+drains the same outbox every cycle. Evidence: `scratchpad/lfc-profile/REPORT.md`,
+`scratchpad/lfc-publish/REPORT.md` (timings.json) in the 2026-09-12 measuring session.
+
+Two things follow, and one decision:
+
+- Every "measured" cost in `docs/funnel-cost-measured.md` §1 is publish latency (corrected there).
+  Per-phase timings (`steps_seconds` / `publish_seconds` / `publish_mode`) on the run's activity
+  detail are on branch `re/auto-publish-enqueue-only` so the next measurement can split them.
+- **9.4 s per annotation create is a platform number.** **Decision context (project owner,
+  2026-09-13):** the dev Egeria platform is deliberately running an old codebase, kept so the
+  compiled-vs-RAG experiments share a common baseline; the slow writes are attributed to that, and a
+  redeploy to the current codebase is what picks up the fix — timed against the experiment schedule,
+  not against this finding. The Survey Definition documents re-authored the same night ran at ~5 s
+  per Dr.Egeria command on the same platform, consistent with that. **Re-measured after the redeploy
+  (2026-09-13, same repo, same analysis, same script):** during startup 5.2 s median / 6.8 p90 / 10.1
+  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s** — the tail is
+  gone, the floor is ~3.5 s per annotation create. The inline-vs-enqueue decision therefore stands:
+  53 writes is still 3¼ minutes on a 0.2 s analysis.
+- **Decision needed (project owner):** should an inline analysis wait for its publish? Enqueue-only
+  makes the same run ~15 s, with `published` becoming a third state — *queued for publish*, visible in
+  Egeria within the next drain (≤ 15 min). Built behind `RunsConfig.publish_inline` (env
+  `RUNS_PUBLISH_INLINE`), default `True` = today's behaviour, on the same branch. The designer
+  (FUNNEL-COST-STATUS, 2026-09-13) asked for the state vocabulary to gain *queued for publish* if it
+  flips — a fact about the mechanism that must not read as a fact about the catalog.
+
+### Question-GUID lookup fails on pool threads — pyegeria cross-loop bug (ISSUE-96 drafted)
+
+`SurveyDefinitionReader._lookup_question_guid` shares one pyegeria client across `run_sync` pool
+threads. pyegeria imports `nest_asyncio` at import time, so each thread silently gets its own event
+loop; the shared `httpx.AsyncClient`'s pool lock binds to the first loop and every other thread gets
+`RuntimeError: … bound to a different event loop`, which pyegeria's broad handler relabels
+`CLIENT_ERROR_400 / status code ''`. Measured 2026-09-13 (52 names × 2): shared client on pool
+threads **100 %** failure; main thread 0 %; a fresh client per worker thread **0 %**. pyegeria's own
+`mcp_server.py` (6.1.10) documents the same failure and uses a per-call client. Consequence until
+fixed: `resolve_question_guid` caches the None for its TTL and the scoped question→definition lookup
+silently falls back to the full scan (~20 s vs ~0.2 s). Mitigation (client per thread, no pyegeria
+patch) on branch `re/question-guid-client-per-thread`. The pyegeria issue text is drafted in
+`scratchpad/qguid-flake/REPORT.md` as ISSUE-96 for `localGit/egeria-python/PYEGERIA_ISSUES.md` —
+not filed; filing is the owner's call per the pyegeria-gaps rule.
+
+### Superseded Question term still scoped by two live Survey Definitions
+
+"What is its internal architecture — what components exist and how do they relate?" was split into
+four questions in the CSV (2026-09-08). The four now exist and are scoped (2026-09-12). The old term
+is still on the platform and a live `get_scoped_elements` check (2026-09-13) found `RepoFullSurvey`
+and `RepoArchitectureDiscovery` still carry `ScopedBy` links to it — leftovers from before the split,
+invisible to the authored `.md` documents and to the step-link reconciler, which does not touch scope
+links. Not deleted for that reason. **Decision needed:** unlink both, then delete the term; and the
+reconciler (or a sibling) should learn to compare ScopedBy links against the authored documents, since
+this is the second time a scope link has drifted silently (2026-08-19 was the first).
+
+### Question term descriptions on the platform now match the CSV (2026-09-13)
+
+19 of 52 terms had Description/Usage text from an older CSV. No "Update Term" command exists;
+`Create Glossary Term` is a verified upsert (tested on a throwaway term first — same GUID, fields
+updated in place). `docs/dr-egeria/questions/update-questions-2026-09-13.md` holds the 19 blocks,
+executed once (19/19), all 52 verified matching afterwards, GUIDs unchanged. Contains no Link
+commands, so it cannot duplicate anything; not in `_batch.json`.
