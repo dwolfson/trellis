@@ -262,3 +262,96 @@ class TestTheGateIsWiredAndScopedCorrectly:
         assert "force=true" in html, (
             "the frontend never sends force=true, so a reader who genuinely "
             "wants a re-run has no way to ask for one")
+
+
+def _succeeded_run(reg, analysis_id, seconds, slug="any"):
+    """One succeeded `runs` row whose wall time is `seconds`."""
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
+    run_id = reg.enqueue_run("analysis_run", {"slug": slug, "analysis_id": analysis_id})
+    with reg._conn() as c:
+        c.execute("UPDATE runs SET state='succeeded', started_at=%s, finished_at=%s WHERE id=%s",
+                  (t0.isoformat(), (t0 + timedelta(seconds=seconds)).isoformat(), run_id))
+    return run_id
+
+
+class TestTheSkipNamesThePrice:
+    """Designer ruling (2026-09-13): "a gate that only says 'too fresh' reads
+    as an obstacle; one that names the price reads as the system being careful
+    with your money." And the price must say how it was arrived at — a declared
+    catalog word dressed as a measurement is the failure the whole measurement
+    spec was written to prevent."""
+
+    def test_measured_is_the_median_of_succeeded_runs_never_the_mean(self, pg_registry):
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        # The fixture schema is shared across this module, so each test uses
+        # its own analysis id rather than inheriting a neighbour's rows.
+        for s in (10, 12, 14, 600):           # one 10-minute outlier
+            _succeeded_run(pg_registry, "zz_median_probe", s)
+        cost = estimate_run_cost(pg_registry, "zz_median_probe")
+        assert cost.basis == "measured" and cost.runs == 4
+        assert cost.seconds == 13.0, f"expected the median 13.0, got {cost.seconds} (mean would be 159)"
+        assert cost.sentence() == "A re-run costs about 13s (median of 4 runs)."
+
+    def test_failed_and_unfinished_runs_do_not_count(self, pg_registry):
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        from datetime import datetime, timezone
+
+        _succeeded_run(pg_registry, "zz_unfinished_probe", 20)
+        # A failed run with timestamps, and a running one with no finished_at.
+        # Neither is left `queued`: the pg schema is shared across this module
+        # and a claimable row here was picked up by test_run_queue's
+        # concurrent-claimers test, which then saw two winners.
+        now = datetime.now(timezone.utc).isoformat()
+        failed = pg_registry.enqueue_run("analysis_run", {"slug": "x", "analysis_id": "zz_unfinished_probe"})
+        running = pg_registry.enqueue_run("analysis_run", {"slug": "x", "analysis_id": "zz_unfinished_probe"})
+        with pg_registry._conn() as c:
+            c.execute("UPDATE runs SET state='failed', started_at=%s, finished_at=%s WHERE id=%s",
+                      (now, now, failed))
+            c.execute("UPDATE runs SET state='running', started_at=%s WHERE id=%s", (now, running))
+        cost = estimate_run_cost(pg_registry, "zz_unfinished_probe")
+        assert cost.runs == 1 and cost.seconds == 20.0
+
+    def test_declared_is_labelled_declared(self, pg_registry):
+        """`dependency_support` is in the catalog and has never run here."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        cost = estimate_run_cost(pg_registry, "dependency_support")
+        assert cost.basis == "declared" and cost.seconds is None and cost.runs == 0
+        assert cost.declared == "fast"
+        assert "declared" in cost.sentence() and "not yet measured" in cost.sentence()
+        assert "costs about" not in cost.sentence(), "a declared word must not read as a measurement"
+
+    def test_unknown_says_so_rather_than_guessing(self, pg_registry):
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        cost = estimate_run_cost(pg_registry, "no_such_analysis_zzz")
+        assert cost.basis == "unknown" and cost.seconds is None
+        assert "not known" in cost.sentence()
+
+    def test_a_derived_analysis_costs_what_its_source_costs(self, pg_registry):
+        """`architecture_diagram` runs the recovery's steps; with no runs of
+        its own, its price is the recovery's — and `via` says so."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "architecture_recovery", 49)
+        cost = estimate_run_cost(pg_registry, "architecture_diagram")
+        assert cost.basis == "measured" and cost.seconds == 49.0
+        assert cost.via == "architecture_recovery"
+
+    def test_the_skip_payload_carries_the_price_and_its_basis(self, reg, slug, monkeypatch):
+        import asyncio
+        from resource_explorer.web.routes import projects
+
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        _log_run(reg, slug, "ci_quality", minutes_ago=2)
+        _succeeded_run(reg, "ci_quality", 33, slug=slug)
+        out = asyncio.run(projects.run_single_analysis(slug, "ci_quality"))
+        assert out["status"] == "skipped"
+        assert out["rerun_cost_basis"] == "measured" and out["rerun_cost_seconds"] == 33.0
+        assert out["rerun_cost_runs"] == 1 and out["rerun_cost_via"] == "ci_quality"
+        assert "A re-run costs about 33s" in out["detail"], (
+            "the price has to be in the sentence the toast shows, not only in a field")

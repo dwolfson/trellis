@@ -825,7 +825,7 @@ function loadScript(src) {
 function answerForm(turn) {
   if (turn.mermaid) return 'diagram';
   if (turn.chart) return 'chart';
-  if (turn.candidates && turn.candidates.length) return 'list';
+  if (turn.listSources && turn.listSources.length) return 'list';
   return 'inline';
 }
 
@@ -1577,8 +1577,13 @@ function renderSidebar() {
 
     <div class="mb-[3px] text-caps uppercase tracking-caps text-chrome-muted"
       title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
-      Disposition · all registered repos
+      Disposition · ${state.resourceType === 'repo' ? 'all registered repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}
     </div>
+    ${state.resourceType !== 'repo' ? `
+    <div class="mb-s2 text-chip text-chrome-ink">
+      No verdict can be recorded for a ${state.resourceType === 'db' ? 'database' : 'filesystem'} yet — dispositions exist for repositories only.
+      <span class="text-chrome-muted">That is a fact about the mechanism, not about the data.</span>
+    </div>` : `
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
@@ -1592,7 +1597,7 @@ function renderSidebar() {
           ? `<button data-act="show-empty-facets" class="cursor-pointer bg-transparent text-chrome-muted underline"
               ><span class="tnum">${absent.length}</span> more…</button>`
           : ''}
-    </div>
+    </div>`}
 
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
       <button data-act="select-mode" class="cursor-pointer bg-transparent ${
@@ -2079,14 +2084,85 @@ function extractMermaid(text) {
   return m ? m[1].trim() : null;
 }
 
-/** Does this answer look like a list of resources worth acting on?
- *  Only then is "Open as candidates" offered — an action that appears on
- *  every answer teaches people to ignore it. */
-function listCandidates(text) {
-  const lines = String(text || '').split('\n')
-    .map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim())
-    .filter((l) => l && l.length < 80);
-  return lines.length >= 3 ? lines.slice(0, 25) : [];
+/** The analyses an answer was compiled from that have a member list. The
+ *  old "Open as candidates (N)" counted answer lines under 80 characters --
+ *  it read 11 for a lead sentence and ten bullets about 32 dependencies and
+ *  could deliver nothing, since dependency names match no registered
+ *  resource (REPLY-BLANK-RAIL, 2026-09-12). Deleted. What an answer can
+ *  honestly offer is the list it was answered FROM: the member tree of a
+ *  packed evidence section, which the pane already renders in full. */
+const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_profiling', 'api_structure',
+  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse']);
+function listSources(body) {
+  const packed = body?.compiled?.manifest?.packed;
+  if (!Array.isArray(packed)) return [];
+  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
+}
+
+/** The lists an answer was compiled from, with their TOTAL and what the
+ *  model was shown -- one sentence each, the whole count, and a way out.
+ *  The compiler records `manifest.lists[section][field] = {total, shown:
+ *  {FULL, SUMMARY}}` for every packed reader-derived section, and the
+ *  section's packed rung says which `shown` applies. The prose channel
+ *  laundered "... and 22 more" into "here are some of them" with 32 in the
+ *  sentence and 10 on the page and nothing saying which was the list
+ *  (REPLY-BLANK-RAIL §2); this is the total said out loud beside the
+ *  answer, from the manifest rather than recounted, so the pane's member
+ *  tree and the rail agree by construction. */
+function listSentences(body) {
+  const m = body?.compiled?.manifest;
+  const lists = m?.lists;
+  if (!lists || typeof lists !== 'object' || !Array.isArray(m.packed)) return [];
+  const out = [];
+  for (const p of m.packed) {
+    if (!p || p.role !== 'evidence' || !lists[p.key]) continue;
+    const rung = String(p.rung || 'FULL').toUpperCase();
+    // One sentence per SECTION. Nested lists arrive one per sub-key
+    // (by_ecosystem.java, .javascript, .python); a person asked about the
+    // dependencies, not about Java's, so they are summed and the sub-keys
+    // counted -- "68 dependencies · in 3 ecosystems".
+    const byParent = new Map();
+    for (const [field, ext] of Object.entries(lists[p.key])) {
+      if (!ext || typeof ext.total !== 'number') continue;
+      const shown = ext.shown && typeof ext.shown === 'object'
+        ? (ext.shown[rung] ?? ext.shown.FULL ?? ext.total) : ext.total;
+      const dot = field.indexOf('.');
+      const parent = dot > 0 ? field.slice(0, dot) : field;
+      const cur = byParent.get(parent) || { total: 0, shown: 0, parts: 0 };
+      cur.total += ext.total; cur.shown += shown; cur.parts += dot > 0 ? 1 : 0;
+      byParent.set(parent, cur);
+    }
+    for (const [field, agg] of byParent) {
+      out.push({ key: p.key, field, total: agg.total, shown: agg.shown, parts: agg.parts, rung,
+                 members: MEMBER_LISTED.has(p.key) });
+    }
+  }
+  return out;
+}
+
+/** "32 dependencies · by ecosystem · 10 shown to the model · the full list
+ *  is in the pane". A field like `by_ecosystem.python` reads as "by
+ *  ecosystem · python". */
+const LIST_NOUNS = {
+  dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
+  api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
+  sub_resource_survey: 'sub-resources', manifest_parse: 'manifest entries',
+};
+function listSentenceHtml(l, i) {
+  const mapped = LIST_NOUNS[l.key];
+  // "68 dependencies · in 3 ecosystems" when the noun is known and the list
+  // was grouped; "3 findings · security scan" when it is not.
+  const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');
+  const head = mapped
+    ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
+    : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
+  const partial = l.shown < l.total;
+  return `<div class="mt-s2 text-chip text-chrome-ink">
+    ${head}${
+      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model at ${esc(l.rung.toLowerCase())}</span>` : ' · all shown to the model'}${
+      l.members ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
+        class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">the full list is in the pane ›</button>` : ''}
+  </div>`;
 }
 
 function renderChatLog() {
@@ -2106,6 +2182,7 @@ function renderChatLog() {
       ${t.answer ? `
         <div class="rounded-sm border border-chrome-line p-s3 text-subtab">
           <div class="whitespace-pre-wrap text-chrome-ink">${tnum(esc(t.answer))}</div>
+          ${(t.lists || []).map((l) => listSentenceHtml(l, t.slug || '')).join('')}
           ${(() => {
             const form = answerForm(t);
             const bits = [];
@@ -2117,11 +2194,14 @@ function renderChatLog() {
                        text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
                 Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
             }
-            if (t.candidates && t.candidates.length) {
-              bits.push(`<button data-candidates="${i}"
+            const said = new Set((t.lists || []).map((l) => l.key));
+            for (const src of (t.listSources || [])) {
+              if (said.has(src)) continue;     // the sentence below carries the link
+              // The list this was answered from, whole, in the pane's own
+              // member tree -- counts open what they counted.
+              bits.push(`<button data-list-source="${esc(src)}" data-list-slug="${esc(t.slug || '')}"
                 class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-[10px] py-[4px]
-                       text-chip text-chrome-ink">Open as candidates
-                (<span class="tnum">${t.candidates.length}</span>)</button>`);
+                       text-chip text-chrome-ink">Open the list · <span class="font-mono">${esc(src)}</span> ›</button>`);
             }
             return bits.length ? `<div class="mt-s3 flex flex-wrap gap-s2">${bits.join('')}</div>` : '';
           })()}
@@ -2142,8 +2222,10 @@ function renderChatLog() {
   log.querySelectorAll('[data-vote]').forEach((b) => b.addEventListener('click', () => {
     vote(Number(b.dataset.turn), Number(b.dataset.vote));
   }));
-  log.querySelectorAll('[data-candidates]').forEach((b) => b.addEventListener('click', () => {
-    showCandidates(Number(b.dataset.candidates));
+  log.querySelectorAll('[data-list-source]').forEach((b) => b.addEventListener('click', () => {
+    const slug = b.dataset.listSlug || state.selectedSlug;
+    if (!slug) return;
+    openMembers({ slug, analysisId: b.dataset.listSource, title: b.dataset.listSource.replace(/_/g, ' ') });
   }));
   log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
     promoteToPane(state.chat[Number(b.dataset.promote)]);
@@ -2204,28 +2286,6 @@ async function vote(i, value) {
 }
 
 /** Narrow the sidebar to the resources an answer named. */
-function showCandidates(i) {
-  const turn = state.chat[i];
-  if (!turn) return;
-  const wanted = new Set();
-  for (const line of turn.candidates) {
-    for (const p of state.projects) {
-      if (line.includes(p.slug) || line.includes(p.display_name)) wanted.add(p.slug);
-    }
-  }
-  if (!wanted.size) {
-    turn.candidateNote = 'None of those match a registered resource.';
-    renderChatLog();
-    return;
-  }
-  state.selectMode = true;
-  state.selected = wanted;
-  state.scope = '';
-  state.dispositionFacet = 'all';
-  state.filter = '';
-  renderSidebar();
-}
-
 async function submitAsk() {
   const input = $('ask-input');
   const q = input.value.trim();
@@ -2251,7 +2311,8 @@ async function submitAsk() {
     // a vote lands under the same key however the answer was produced.
     turn.queryHash = body.query_hash || '';
     turn.compileId = body.compiled?.manifest?.compile_id || null;
-    turn.candidates = listCandidates(turn.answer);
+    turn.listSources = listSources(body);
+    turn.lists = listSentences(body);
     // The chart the server chose to attach (statistical/health/comparison
     // intents produce one). A Plotly figure, and far too wide for the rail.
     turn.chart = body.chart || null;
@@ -2354,6 +2415,53 @@ function initSeams() {
 
 function railIsOpen() {
   return LS.get('re-next.railOpen', 'true') !== 'false';
+}
+
+/** Is the rail actually showing? The PREFERENCE (localStorage) and the DOM
+ *  legitimately disagree on a narrow shell, where renderIntentNav closes the
+ *  drawer without persisting. A writer that guards on the preference then
+ *  declines to open a rail that is shut and writes into display:none --
+ *  the blank rail the owner photographed (REPLY-BLANK-RAIL, 2026-09-12). */
+function railIsShowing() {
+  const grid = $('app-grid');
+  return !!grid && !grid.classList.contains('rail-closed');
+}
+
+/** Open the rail if it is not showing. On a narrow shell this is a tap that
+ *  is not written back over the wide-screen preference. */
+function ensureRailShowing() {
+  if (!railIsShowing()) setRailOpen(true, { persist: !shellIsNarrow() });
+}
+
+/* The evidence slot has three writers -- showEvidence, openMembers and the
+ * enrichment rail -- and one slot. The rules that make blank impossible:
+ *   - the frame always renders: a heading naming WHAT is showing and FOR
+ *     WHAT, then a body. A writer replaces the body, never the frame.
+ *   - every terminal state is a sentence: loading, failed, empty, and
+ *     "nothing was requested" are four different things.
+ *   - a slot with three writers needs a request id: a writer takes a
+ *     ticket before its awaits and stands down if a later click took one.
+ *     Last CLICK wins, not last response. */
+let railTicket = 0;
+function railClaim() { return ++railTicket; }
+function railStale(ticket) { return ticket !== railTicket; }
+
+function railFrame(kind, forWhat, bodyHtml, { sub = '', actions = '' } = {}) {
+  const out = $('rail-evidence');
+  if (!out) return null;
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">${esc(kind)}</span>
+      <span class="min-w-0 truncate text-caps text-chrome-muted">for <span class="font-mono">${esc(forWhat)}</span>${sub ? ` · ${sub}` : ''}</span>
+      ${actions}
+      <button data-act="rail-clear" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
+    </div>
+    <div data-rail-body>${bodyHtml}</div>`;
+  out.querySelector('[data-act="rail-clear"]')?.addEventListener('click', () => {
+    railClaim();
+    out.innerHTML = '';
+  });
+  return out.querySelector('[data-rail-body]');
 }
 
 /** Below the drawer breakpoint the rail must not open ITSELF.
@@ -2545,18 +2653,54 @@ function dispositionPickerHtml(p) {
   </div>`;
 }
 
+/** Verdicts that end a line of work. People explain why they stopped and
+ *  not why they continued, in every system anyone has built, so a first
+ *  verdict never asks for a reason. Where the absence costs something is
+ *  the REVERSAL -- a `using` repo later abandoned with nothing on the
+ *  record about why it was adopted -- so reversing one of these asks
+ *  (FUNNEL-COST-RULINGS §4, 2026-09-13). */
+const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);
+
 function wireDispositionPicker(host, p, { note, onSet }) {
-  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
-    const value = b.dataset.disp;
+  const commit = async (value, reason = '') => {
     note('Saving…');
     try {
-      await setDisposition(p.github_url, value);
+      await setDisposition(p.github_url, value, reason);
       p.disposition = value;
       renderSidebar();
       await onSet(value);
     } catch (err) {
       note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
     }
+  };
+  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
+    const value = b.dataset.disp;
+    const current = p.disposition || 'undecided';
+    if (value === current) return;
+    if (!TERMINAL_DISPOSITIONS.has(current)) { await commit(value); return; }
+    // A reversal: the record should say why the earlier verdict no longer
+    // holds. The prompt exists before there is data for it, on purpose.
+    host.querySelector('[data-reversal]')?.remove();
+    host.insertAdjacentHTML('beforeend', `
+      <div data-reversal class="mt-s2 flex flex-wrap items-baseline gap-s2 text-caveat">
+        <span class="text-ink">Reversing <em>${esc(current)}</em> → <em>${esc(value)}</em> — why?</span>
+        <input data-reversal-reason type="text" placeholder="what changed since it was ${esc(current)}"
+          class="w-[28ch] rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink placeholder:text-ink-muted">
+        <button data-reversal-go class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">record</button>
+        <button data-reversal-cancel class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">keep ${esc(current)}</button>
+      </div>`);
+    const box = host.querySelector('[data-reversal]');
+    const input = box.querySelector('[data-reversal-reason]');
+    input.focus();
+    const go = async () => {
+      const reason = input.value.trim();
+      if (!reason) { input.placeholder = 'a reversal needs a reason — one line'; input.focus(); return; }
+      box.remove();
+      await commit(value, reason);
+    };
+    box.querySelector('[data-reversal-go]').addEventListener('click', go);
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+    box.querySelector('[data-reversal-cancel]').addEventListener('click', () => box.remove());
   }));
 }
 
@@ -3968,21 +4112,25 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
 async function openMembers({ slug, analysisId, metric = '', title = '' }) {
   const out = $('rail-evidence');
   if (!out) return;
+  ensureRailShowing();
+  const ticket = railClaim();
   const scope = state.memberScope || memberScope();
-  out.innerHTML = `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`;
+  railFrame('Members', slug, `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`, { sub: 'loading' });
   let data;
   try {
     data = await getMembers(slug, analysisId, { metric, scope });
   } catch (err) {
-    out.innerHTML = `<div class="text-caps text-state-warn-on-dark">The members could not be read: ${esc(err.message)}</div>`;
+    if (railStale(ticket)) return;   // a later click owns the slot now
+    railFrame('Members', slug, `<div class="text-caps text-state-warn-on-dark">The members of ${esc(title || analysisId)} could not be read: ${esc(err.message)}</div>`, { sub: 'failed' });
     return;
   }
+  if (railStale(ticket)) return;
   const groups = data.groups || [];
   const shown = groups.reduce((n, g) => n + g.members.length, 0);
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
-      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}${
+      <span class="min-w-0 truncate text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span> · <span class="tnum">${data.total}</span> · ${esc(data.title)}${
         data.inventory ? ` · ${tnum(esc(data.inventory))}` : ''}</span>
       <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
     </div>
@@ -5146,8 +5294,10 @@ function renderEnrichmentEvidence(slug) {
   const out = $('rail-evidence');
   if (!out) return;
   // Rail state is a persisted preference; "new since you judged" written
-  // into a closed drawer is the perishability signal nobody sees.
-  if (!railIsOpen()) setRailOpen(true);
+  // into a closed drawer is the perishability signal nobody sees. The DOM,
+  // not the preference, says whether it is showing.
+  ensureRailShowing();
+  railClaim();
   const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
   const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
   out.innerHTML = `
@@ -5876,10 +6026,25 @@ function showDiagram(entry) {
 function showEvidence(entry) {
   const env = state.answers.get(entry.question);
   // Evidence lands in the rail, so open the drawer if it is closed —
-  // otherwise the link appears to do nothing.
-  if (!railIsOpen()) setRailOpen(true);
+  // otherwise the link appears to do nothing. The DOM, not the preference.
+  ensureRailShowing();
+  railClaim();
+  const forWhat = state.selectedSlug || '—';
+  // A failure is more owed a sentence than an emptiness is.
+  if (!env) {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-chrome-muted">Nothing was requested for this question yet — its answer has not been read.</div>`, { sub: 'nothing requested' });
+    return;
+  }
+  if (env === 'loading') {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-chrome-muted">Still reading this question's answer…</div>`, { sub: 'loading' });
+    return;
+  }
+  if (env.__error) {
+    railFrame('Evidence', forWhat, `<div class="text-chip text-state-warn-on-dark">The answer for this question failed to read: ${esc(String(env.__error))}</div>`, { sub: 'failed' });
+    return;
+  }
   const out = $('rail-evidence');
-  if (!out || !env || env === 'loading' || env.__error) return;
+  if (!out) return;
 
   const facts = (env.facts || []).map((f) => {
     const value = f.value && Object.keys(f.value).length
@@ -5897,11 +6062,11 @@ function showEvidence(entry) {
     </div>`;
   }).join('');
 
-  out.innerHTML = `
+  const body = railFrame('Evidence', forWhat, '', { sub: esc(String(entry.question).slice(0, 48)) });
+  body.innerHTML = `
     <div class="rounded-sm border border-chrome-line p-s3">
-      <div class="mb-s2 font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence</div>
       <div class="mb-s3 text-subtab">${esc(entry.question)}</div>
-      ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope.</div>'}
+      ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope — the answer names no measurements.</div>'}
       ${factMermaid(env) ? `<button data-act="evidence-diagram"
         class="mb-s2 w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
                text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Open diagram in pane</button>` : ''}

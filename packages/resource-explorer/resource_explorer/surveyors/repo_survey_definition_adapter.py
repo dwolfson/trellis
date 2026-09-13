@@ -2421,8 +2421,14 @@ def _architecture_summary_results(registry, slug: str) -> dict:
     """
     rows = registry.query_findings(slug, "architecture_summary") or []
     if not rows:
-        return {"state": result_status.NEVER_RUN,
-                "message": "No architecture summary yet — run the analysis."}
+        # Nested under `_status`, not top-level `state`/`message`: neither
+        # facts._has_content nor context_compile._has_content exempts the
+        # latter, so the old shape read as CONTENT and the compiler packed a
+        # section headed "state: never_run" for a repo nobody had surveyed —
+        # the same trap _architecture_diagram_results documents. Found by the
+        # compiler session on 2026-09-12 while auditing #50's cap fix.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No architecture summary yet — run the analysis."}}
     row = rows[-1]
     detail = row.get("detail_json") or row.get("detail") or {}
     if isinstance(detail, str):
@@ -2501,20 +2507,29 @@ def _architecture_doc_lens_results(registry, slug: str) -> dict:
         # answer — the same distinction `never_run` vs `nothing_found` exists to
         # make, which this reader collapsed until the marker existed to tell
         # them apart.
+        #
+        # Both are carried in the `_status` envelope (result_status.py), not as
+        # top-level `state`/`message`: `_has_content` exempts the envelope and
+        # nothing else, so the old shape was packed by the compiler as a
+        # section about an unsurveyed repo. `nothing_found` stays a real answer
+        # — facts._state_for reads `_status.state` first, and the card renders
+        # it as "✓ <hint>" with no call to action (_renderEmptyResultState).
         if latest:
-            return {"state": result_status.NOTHING_FOUND,
-                    "message": "The architecture documentation was consulted and named "
-                               "none of the components recovered here. That is an answer "
-                               "about this project's documentation, not a missing run."}
-        return {"state": result_status.NEVER_RUN,
-                "message": "The architecture document has not been consulted for this "
-                           "resource yet."}
+            return {"_status": {
+                "state": result_status.NOTHING_FOUND,
+                "hint": "The architecture documentation was consulted and named "
+                        "none of the components recovered here. That is an answer "
+                        "about this project's documentation, not a missing run."}}
+        return {"_status": {
+            "state": result_status.NEVER_RUN,
+            "hint": "The architecture document has not been consulted for this "
+                    "resource yet."}}
     return {"findings": findings, "count": len(findings)}
 
 
 def _architecture_summary_headline(registry, slug: str) -> dict | None:
     r = _architecture_summary_results(registry, slug)
-    if r.get("state"):
+    if r.get("_status"):
         return None                      # never run — the card's own empty state
     n, doc = r.get("components", 0), r.get("documented", 0)
     if not r.get("complete", True):
@@ -2530,8 +2545,8 @@ def _architecture_summary_headline(registry, slug: str) -> dict | None:
 
 def _architecture_doc_lens_headline(registry, slug: str) -> dict | None:
     r = _architecture_doc_lens_results(registry, slug)
-    if r.get("state"):
-        return None
+    if r.get("_status"):
+        return None                      # never run, or nothing named — the card says which
     n = r.get("count", 0)
     return {"label": f"{n} {_plural('component', n)} named by the project's own documentation",
             "status": "info"}

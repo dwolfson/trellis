@@ -70,6 +70,9 @@ three things people actually ask.
 - **`manifest.coverage`** — `{kind, question, note}` for the best-matching catalog question;
   `kind` is the catalog's answering kind (`analysis`, `mixed`, `partial`, `direct`, `human`,
   `chart`, `gap`) or `none` when nothing matches
+- **`manifest.lists`** — `{section key: {list field: {total, shown: {FULL, SUMMARY}}}}` for every
+  packed reader-derived section: the "N of M shown" the text carries, as data, so a UI can say M
+  without recounting; pick N by that section's packed rung
 - **`manifest.gaps`** — sections the derivation says should exist, **judged**:
   `nothing_found` (ran, a real zero), `never_run`, `not_established`, each with
   `last_run_at` and `can_run` where known
@@ -97,7 +100,13 @@ experiment (`packages/resource-explorer/docs/experiments/audits/`, 2026-09-08 an
   them rather than re-deriving it.
 - **FULL is flat bullets, not fenced JSON.** `- key: value`, one level of nesting as
   `- detail.forks: 4`, lists of scalars inline, lists of records as indented blocks, empties
-  said out loud (`(empty list)`), truncation always marked (`… and N more`).
+  said out loud (`(empty list)`). **A partial list carries its total on its opening line**
+  (`- components: 32 item(s), 10 of 32 shown here`, `- files (20 of 25 shown): …`), never a
+  trailing `… and N more`: the designer's rule is that prose never enumerates — a list-shaped
+  fact is its total plus what is shown, and the pane holds the items (2026-09-12, "The blank
+  rail, and what a list answer should be" §2). The matching prose sentence exists as
+  `INSTRUCTION_VARIANTS["list_rule"]`, not in production, until an A/B shows it beats the
+  evidence rung it would displace.
 - **The middle rung is `abridged`, not "structure only".** Headline, scalars with values, then
   the first three entries of each list or mapping with a `(first 3 of 62)` marker. A section
   whose abridged form is not materially smaller than FULL has no middle rung at all.
