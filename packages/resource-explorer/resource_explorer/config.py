@@ -66,6 +66,13 @@ class PgVectorConfig(BaseSettings):
     schema_name: str = Field(default="resource_explorer", alias="PGVECTOR_SCHEMA")
     max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
     ef_search: int = Field(default=100, alias="PGVECTOR_EF_SEARCH")
+    # Bounds psycopg2's own connect() (libpq's connect_timeout, seconds) so a
+    # hung TCP/DNS/SSL negotiation raises OperationalError instead of
+    # blocking the calling thread forever. Added 2026-09-13 after the :8810
+    # incident where ThreadedConnectionPool's underlying psycopg2.connect
+    # never returned and never raised — see trellis_vectorstore/pg.py's
+    # connect() and the incident note in web/routes/query.py's history.
+    connect_timeout_seconds: int = Field(default=10, alias="PGVECTOR_CONNECT_TIMEOUT_SECONDS")
 
     model_config = _ENV_FILE_CONFIG
 
@@ -231,6 +238,14 @@ class AgentsConfig(BaseSettings):
     max_iterations: int = 20
     max_retries: int = 10
     stream_responses: bool = True
+    # Bounds ConversationAgent._run_persistent's wait for one chat turn
+    # (agent.run(), including every tool call it makes). Generous by
+    # design — this is the backstop for a STUCK tool (a hung DB connect,
+    # e.g.), not a latency budget for a normal slow LLM call. Added
+    # 2026-09-13 after the :8810 incident: vector_search's Postgres
+    # connect() never returned, and run_sync was waiting on it with no
+    # timeout at all, freezing the event-loop thread that called it.
+    chat_timeout_seconds: float = Field(default=300.0, alias="EXPLORER_CHAT_TIMEOUT_SECONDS")
 
 
 class EgeriaConfig(BaseSettings):

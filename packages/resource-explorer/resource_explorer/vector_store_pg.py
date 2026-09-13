@@ -76,6 +76,7 @@ class PgVectorStore(_SharedPgVectorStore):
         schema: str | None = None,
         max_connections: int | None = None,
         ef_search: int | None = None,
+        connect_timeout: int | None = None,
     ):
         cfg = get_config().pgvector
         config = PgVectorStoreConfig(
@@ -87,6 +88,7 @@ class PgVectorStore(_SharedPgVectorStore):
             schema=schema or cfg.schema_name,
             max_connections=max_connections or cfg.max_connections,
             ef_search=ef_search or cfg.ef_search,
+            connect_timeout=connect_timeout or cfg.connect_timeout_seconds,
         )
         super().__init__(
             config,

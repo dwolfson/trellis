@@ -277,7 +277,23 @@ class ConversationAgent(BaseExplorerAgent):
         return out
 
     def _run_persistent(self, prompt: str) -> str:
-        """Run the persistent agent, reusing the same instance so TokenMemory accumulates."""
+        """Run the persistent agent, reusing the same instance so TokenMemory
+        accumulates.
+
+        Bounded by config.agents.chat_timeout_seconds regardless of which
+        branch below runs: 2026-09-13's :8810 incident was a tool
+        (vector_search's Postgres connect()) that never returned and never
+        raised, with nothing here bounding the wait — the event-loop thread
+        that called this (the old synchronous `ask` route) froze for good.
+        `asyncio.wait_for` around `_inner()` is what actually times out the
+        stuck tool call itself, on either branch; the `run_sync` timeout
+        below is defense in depth (a little slack past it) for the case
+        `_inner()`'s own cancellation somehow doesn't land.
+        """
+        from resource_explorer.config import get_config
+
+        timeout = get_config().agents.chat_timeout_seconds
+
         async def _inner() -> str:
             agent = self._get_agent()
             result = await agent.run(prompt)
@@ -286,10 +302,19 @@ class ConversationAgent(BaseExplorerAgent):
                 return first.text if hasattr(first, "text") else str(first)
             return str(result)
 
+        async def _bounded() -> str:
+            try:
+                return await asyncio.wait_for(_inner(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(
+                    f"chat agent did not respond within {timeout}s "
+                    "(a tool call is likely stuck)"
+                ) from exc
+
         try:
             asyncio.get_running_loop()
             from resource_explorer.concurrency import run_sync
 
-            return run_sync(lambda: asyncio.run(_inner()))
+            return run_sync(lambda: asyncio.run(_bounded()), timeout=timeout + 5)
         except RuntimeError:
-            return asyncio.run(_inner())
+            return asyncio.run(_bounded())
