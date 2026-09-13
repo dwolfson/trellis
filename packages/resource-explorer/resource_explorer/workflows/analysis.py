@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -31,18 +32,35 @@ STAGE_BATCH_ANALYSIS_ID = "__stage_batch__"
 class AnalysisRunResult:
     """What one analysis run concluded.
 
-    `published` is three-state, not a bool: None (never attempted — the
+    `published` is FOUR-state, not a bool: None (never attempted — the
     resource has no assigned Egeria project, or the run produced no
-    annotations), False (attempted and failed), True (published). Callers
-    render the ☁ Publish button on False and None and hide it on True, so
-    collapsing the first two would hide the recovery path for a failure.
+    annotations), False (attempted and failed), True (attempted, drained
+    inline, and landed in Egeria before this call returned), "queued"
+    (`RunsConfig.publish_inline=False` — durably enqueued, not yet applied;
+    the scheduler's periodic drain will apply it, within its own cycle).
+    Callers render the ☁ Publish button on False and None and hide it on True
+    and "queued" alike (both mean "nothing for the user to retry by hand"),
+    so collapsing True/False would hide the recovery path for a failure, and
+    collapsing True/"queued" would tell a user work is done when it is only
+    scheduled.
+
+    `steps_seconds`/`publish_seconds`/`publish_mode` are instrumentation, not
+    behaviour: added so a run's cost can be split into "thought" (the survey
+    steps) vs "waited" (the synchronous Egeria drain) — see
+    `RunsConfig.publish_inline`'s docstring for the measurement that made the
+    split worth having. `publish_mode` is "not-attempted" (no assigned
+    project, or no annotations), "inline" (drained synchronously — the
+    unchanged default), or "enqueued" (`publish_inline=False`).
     """
 
     status: str  # "ok" | "error"
     summary: str = ""
     error: str = ""
-    published: bool | None = None
+    published: bool | str | None = None
     annotations: list[dict] = field(default_factory=list)
+    steps_seconds: float | None = None
+    publish_seconds: float | None = None
+    publish_mode: str = "not-attempted"
 
     def to_dict(self) -> dict:
         """The exact dict shape `_run_single_analysis_sync` used to return, so
@@ -165,9 +183,18 @@ def run_analysis(
 
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
+    # Timed separately from publish below so a run's cost can be split into
+    # "thought" (the survey steps) vs "waited" (the synchronous Egeria drain,
+    # when RunsConfig.publish_inline leaves it inline) — see that flag's
+    # docstring for the 2026-09-13 measurement that made the split worth
+    # having. Recorded even on the error return just below: the steps DID run.
+    steps_start = time.perf_counter()
     result = SurveyOrchestrator(registry).run(slug, steps=steps)
+    steps_seconds = time.perf_counter() - steps_start
     if result.errors:
-        return AnalysisRunResult(status="error", error="; ".join(result.errors))
+        return AnalysisRunResult(
+            status="error", error="; ".join(result.errors), steps_seconds=steps_seconds,
+        )
     summary = f"{len(result.annotations)} annotation(s)."
 
     # Auto-publish, gated the same way survey_definition_executor.py's Survey
@@ -180,7 +207,13 @@ def run_analysis(
     # Publish failure must not turn an otherwise-successful survey into a
     # reported error: the findings are real and stored either way.
     published = None
+    publish_seconds = None
+    publish_mode = "not-attempted"
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
+        from resource_explorer.config import get_config
+
+        publish_mode = "inline" if get_config().runs.publish_inline else "enqueued"
+        publish_start = time.perf_counter()
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
@@ -192,12 +225,36 @@ def run_analysis(
             # loop is already running" and fail auto-publish on every
             # Egeria-bound project reached through this route, softly, into
             # `summary`, with the run still reporting ok.
-            EgeriaPublisher(registry=registry).publish(result)
-            published = True
+            publisher = EgeriaPublisher(registry=registry)
+            publisher.publish(result)
+            # `is True`, not truthy: a test double patching EgeriaPublisher
+            # wholesale (several do, across this file and
+            # test_analysis_run_auto_publish.py) has no `publish_deferred`
+            # attribute of its own, and a bare Mock auto-vivifies one that is
+            # truthy by default — `if publisher.publish_deferred:` would have
+            # silently turned every one of those tests' expected `published
+            # is True` into "queued". The real attribute is only ever the
+            # literal bool `True`/`False` (set in egeria_publisher.py's
+            # __init__), so this is exact for it and safe for a loose mock.
+            if publisher.publish_deferred is True:
+                # publish_inline=False: enqueued, not applied. "queued" is a
+                # THIRD state, not True — the annotations are durable but have
+                # not landed in Egeria yet, and every reader of `published`
+                # must be able to tell the difference (see config.py's
+                # RunsConfig.publish_inline docstring for the measurement).
+                published = "queued"
+                summary += (
+                    f" {len(result.annotations)} Egeria write(s) queued for "
+                    "publish (next drain ≤15 min)."
+                )
+            else:
+                published = True
         except Exception as exc:
             published = False
             summary += f" (⚠ auto-publish to Egeria failed: {exc})"
             log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
+        finally:
+            publish_seconds = time.perf_counter() - publish_start
 
     # Carried out of here so the caller can write them onto the activity entry.
     # Without this the RFA drawer never saw a single annotation from an
@@ -216,6 +273,8 @@ def run_analysis(
 
     return AnalysisRunResult(
         status="ok", summary=summary, published=published, annotations=ann_summary,
+        steps_seconds=steps_seconds, publish_seconds=publish_seconds,
+        publish_mode=publish_mode,
     )
 
 
@@ -280,7 +339,13 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
         return AnalysisRunResult(status="error", error=str(exc))
 
     summary = result.summary or result.error or ""
-    detail = {"analysis_id": analysis_id, "published": result.published}
+    detail = {
+        "analysis_id": analysis_id,
+        "published": result.published,
+        "steps_seconds": result.steps_seconds,
+        "publish_seconds": result.publish_seconds,
+        "publish_mode": result.publish_mode,
+    }
     if result.status == "error":
         detail["error"] = result.error or summary
     else:
