@@ -7,6 +7,8 @@ from __future__ import annotations
 from resource_explorer.surveyors.survey_definition_reconciler import (
     compute_expected_edges,
     diff_links,
+    diff_scopes,
+    expected_scopes_from_document,
 )
 
 
@@ -119,3 +121,184 @@ class TestDiffLinks:
         second = diff_links(links, expected, "GovActionProcess::X")
         assert first.to_remove == second.to_remove == []
         assert first.kept == second.kept == 1
+
+
+FIXTURE_SCOPE_DOC = """## Create Governance Action Process Step
+### Display Name
+Repo Full Survey — Repo Health
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_health
+
+### Description
+Runs the repo_health analysis.
+
+___
+
+## Create Governance Action Process
+### Display Name
+Repo Full Survey
+
+### Qualified Name
+GovActionProcess::RepoFullSurvey
+
+### Description
+Runs every current STEP_REGISTRY step.
+
+___
+
+## Link First Process Step
+### Governance Action Process
+GovActionProcess::RepoFullSurvey
+
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_health
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+What does this repository do?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Is this repository actively maintained?
+
+___
+"""
+
+
+class TestExpectedScopesFromDocument:
+    def test_two_scope_blocks_and_unrelated_commands(self):
+        expected = expected_scopes_from_document(FIXTURE_SCOPE_DOC)
+        assert expected == {
+            "What does this repository do?",
+            "Is this repository actively maintained?",
+        }
+
+    def test_no_scope_blocks_is_empty(self):
+        doc = "## Create Governance Action Process Step\n### Display Name\nX\n"
+        assert expected_scopes_from_document(doc) == set()
+
+    def test_empty_document_is_empty(self):
+        assert expected_scopes_from_document("") == set()
+
+    def test_stops_at_next_heading_without_scope_reference(self):
+        """A 'Link Element To Scope' block missing its Scope Reference section
+        (malformed authoring) contributes nothing rather than borrowing a
+        LATER command's Scope Reference — the bound must be the next '## '
+        heading, not "keep scanning until one is found somewhere.\""""
+        doc = (
+            "## Link Element To Scope\n"
+            "### Target Element\n"
+            "Repo Full Survey\n"
+            "\n"
+            "## Some Other Command\n"
+            "### Scope Reference\n"
+            "Bogus value that must not leak into the malformed block above\n"
+            "\n"
+            "___\n"
+        )
+        assert expected_scopes_from_document(doc) == set()
+
+    def test_two_blocks_separated_by_an_unrelated_command_each_keep_only_their_own(self):
+        doc = (
+            "## Link Element To Scope\n"
+            "### Target Element\n"
+            "Repo Full Survey\n"
+            "\n"
+            "### Scope Reference\n"
+            "What does this repository do?\n"
+            "\n"
+            "___\n"
+            "\n"
+            "## Link Element To Scope\n"
+            "### Target Element\n"
+            "Repo Full Survey\n"
+            "\n"
+            "### Scope Reference\n"
+            "Is this repository actively maintained?\n"
+        )
+        assert expected_scopes_from_document(doc) == {
+            "What does this repository do?",
+            "Is this repository actively maintained?",
+        }
+
+
+def _scope(display_name, guid="guid-1", qualified_name=None, type_name="GlossaryTerm"):
+    return {
+        "elementHeader": {"guid": guid, "type": {"typeName": type_name}},
+        "properties": {"qualifiedName": qualified_name, "displayName": display_name},
+    }
+
+
+class TestDiffScopes:
+    def test_kept_missing_extra_unresolvable_all_present(self):
+        expected = {"Q1", "Q2"}
+        live = [
+            _scope("Q1", guid="g1", qualified_name="Org::Term::Q1::1.0"),
+            _scope("Q3", guid="g3", qualified_name="Org::Term::Q3::1.0"),  # extra
+            {  # unresolvable: not a GlossaryTerm
+                "elementHeader": {"guid": "g4", "type": {"typeName": "Perspective"}},
+                "properties": {"qualifiedName": "Perspective::X", "displayName": "X"},
+            },
+            {  # unresolvable: GlossaryTerm with no displayName
+                "elementHeader": {"guid": "g5", "type": {"typeName": "GlossaryTerm"}},
+                "properties": {"qualifiedName": "Org::Term::Weird::1.0"},
+            },
+        ]
+        result = diff_scopes(live, expected)
+        assert result.kept == ["Q1"]
+        assert result.missing == ["Q2"]
+        assert [e.display_name for e in result.extra] == ["Q3"]
+        assert result.extra[0].guid == "g3"
+        assert result.extra[0].qualified_name == "Org::Term::Q3::1.0"
+        assert len(result.unresolvable) == 2
+        reasons = {u.guid for u in result.unresolvable}
+        assert reasons == {"g4", "g5"}
+
+    def test_clean_match_has_nothing_missing_or_extra(self):
+        expected = {"Q1", "Q2"}
+        live = [_scope("Q1"), _scope("Q2", guid="g2")]
+        result = diff_scopes(live, expected)
+        assert sorted(result.kept) == ["Q1", "Q2"]
+        assert result.missing == []
+        assert result.extra == []
+        assert result.unresolvable == []
+
+    def test_no_live_scopes_reports_everything_missing(self):
+        # 2026-08-19 shape: the questions batch was absent, so every Link
+        # Element To Scope command created nothing.
+        result = diff_scopes([], {"Q1", "Q2"})
+        assert result.kept == []
+        assert sorted(result.missing) == ["Q1", "Q2"]
+        assert result.extra == []
+
+    def test_stale_term_left_linked_is_extra_not_missing(self):
+        # 2026-09-13 shape: a superseded term stayed ScopedBy after being
+        # replaced in the document by new questions.
+        expected = {"New question A", "New question B"}
+        live = [_scope("Superseded question", guid="term-guid", qualified_name="Org::Term::Superseded::1.0")]
+        result = diff_scopes(live, expected)
+        assert result.kept == []
+        assert sorted(result.missing) == ["New question A", "New question B"]
+        assert [e.display_name for e in result.extra] == ["Superseded question"]
+        assert result.extra[0].guid == "term-guid"
+
+    def test_non_dict_live_entry_is_unresolvable_not_extra(self):
+        result = diff_scopes(["not-a-dict"], {"Q1"})
+        assert result.extra == []
+        assert len(result.unresolvable) == 1
+        assert result.missing == ["Q1"]
+
+    def test_empty_everything_is_clean(self):
+        result = diff_scopes([], set())
+        assert result.kept == result.missing == [] and result.extra == result.unresolvable == []
