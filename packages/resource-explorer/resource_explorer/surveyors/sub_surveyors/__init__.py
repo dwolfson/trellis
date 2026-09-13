@@ -26,6 +26,7 @@ from resource_explorer.surveyors.sub_surveyors.license_classifier import License
 from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoClassificationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
+from resource_explorer.surveyors.sub_surveyors.dependency_support import DependencySupportSurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
 from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     SubResourceSurveyor,
@@ -67,6 +68,7 @@ __all__ = [
     "RepoClassificationSurveyor",
     "SecurityFeaturesSurveyor",
     "MaturitySurveyor",
+    "DependencySupportSurveyor",
     "RepoConventionsSurveyor",
     "SubResourceSurveyor",
     "FileInventorySurveyor",

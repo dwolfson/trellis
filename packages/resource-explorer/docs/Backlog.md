@@ -4554,6 +4554,76 @@ token counts as RE's.
 collector went from `['default']` to `['default', 'resource-explorer']`. Nobody's
 history is deleted; the two simply stop sharing a bucket.
 
+## "Do we already support these dependencies?" — `dependency_support`, BUILT 2026-09-12
+
+The first of the coverage audit's three gap questions to get an analytic, on
+the project owner's direction: Egeria may hold "a starting point that would
+still need corroboration and augmentation by people" (2026-09-11), and **"A
+now, shaped to seed B"** (2026-09-12) — a curated mapping in RE, each entry
+linked to the Egeria technology type it will later promote into.
+
+**The measurement that shaped it.** Before building, dependency names were
+matched against Egeria's technology-type catalog directly. 2,894 distinct
+names, 213 types: **2** exact matches; **373** by token overlap, nearly all
+wrong (`apache_atlas` → Apache Airflow via "apache", `@babel/plugin-proposal-
+function-bind` → "Unity Catalog Function", `antlr4-python3-runtime` →
+"Runtime Manager API"). Both of Egeria's candidate sources — technology types
+and software capabilities — are overwhelmingly **Egeria describing itself**
+(OMES, OMVS, connectors, integration groups); roughly ten are external
+products. `psycopg2` ↔ PostgreSQL is knowledge, not similarity, and the
+premise "Egeria's catalog of already-supported dependencies" does not yet
+exist as an artifact. A string matcher would have handed people ~370 false
+positives as a "starting point" — worse than nothing.
+
+**What was built.** `configdata/dependency_support.yaml` — 20 technologies,
+each with the dependency-name patterns that indicate it and, where one exists,
+the Egeria `deployedImplementationType` displayName (verified live). Strict
+loader: unknown keys, duplicate names and any pattern under three characters
+are errors, because a two-letter pattern is exactly how `apache` matched
+Airflow 105 times. `surveyors/dependency_support.py` is the pure matcher plus a
+separate Egeria check; `sub_surveyors/dependency_support.py` is the step
+(`repo_dependency_support`, Discovery tier — zero repo fetch, reads
+`project_dependencies`); the question moves from `human` to **`mixed`**.
+
+**Three states, kept apart on purpose.** A dependency that MATCHED ("this repo
+indicates X"); one that matched NOTHING ("no curated technology corresponds to
+this name" — almost always "nobody has classified it yet", **never
+"unsupported"**); and a technology whose Egeria type COULD NOT BE CHECKED
+(Egeria unreachable — not the same as absent). The coverage row carries the
+Egeria check state at the top so a reader never infers it from per-row states.
+Unmatched names are re-derived at read time against today's mapping rather than
+stored, so a stale "unclassified" cannot outlive the curation that classified
+it — and so the cross-repo ranked queue needs no table of its own.
+
+**Verified live on `egeria_python_git`:** 32 dependencies → PostgreSQL
+(psycopg2-binary), Jupyter, pyegeria, all three present in Egeria (211 types
+checked); 29 unclassified, listed. Across the 51 repos with dependency data:
+PostgreSQL indicated on 16, Jupyter 10, Redis 10, Docker 9, Kubernetes 9.
+
+**The curation queue is the real output**, and it surfaces a decision the
+mapping can express either way but someone has to make: the most-depended-on
+unclassified names are `pydantic` (27 repos), `pandas` (23), `requests` (23),
+`pytest` (22), `pyyaml` (20) — general-purpose **libraries**, not technologies
+in Egeria's `deployedImplementationType` sense. Whether "do we support this
+dependency" means Postgres/Kafka or pydantic/pandas is a curation choice.
+Clear technology signals next in the queue: `boto3` (12), `openai` (12),
+`sqlalchemy` (12), `transformers` (16), `torch` (12).
+
+**The B step this seeds.** Egeria already types `pyegeria` as a
+`SoftwareLibrary` `deployedImplementationType` valid value — the natural open
+metadata type for a library dependency. Promoting the mapping means creating
+those valid values for the entries marked `egeria_technology_type: null` and a
+"Supported Technologies" collection over them; the YAML carries everything
+needed and nothing has to be redesigned.
+
+**Two faults found on the way, both by running it rather than reading it.**
+The results reader first read a `detail` key where `query_findings` hands back
+`detail_json` as a string — every technology came back `unchecked` with no
+dependencies, and only the live read-back showed it. And the adapter had
+**three pre-existing latent `NameError`s**: `log` was used at three STEP-
+introspection warning sites and never defined; adding a fourth use surfaced all
+four under ruff, and one module-level line fixed them.
+
 ## Funnel tier vocabulary — resolved from the catalog, §2 and §4 answered 2026-09-10
 
 **`activity_log.intent` cannot be used to tier a run.** It is stamped at write

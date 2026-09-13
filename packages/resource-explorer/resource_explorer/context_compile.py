@@ -58,6 +58,17 @@ _INSTRUCTIONS = (
     "report an abridged list as complete. If the evidence does not answer the "
     "question, say so and name what is missing — do not infer from absence."
 )
+#: A sentence asking yes/no answers to carry their evidence line was added
+#: here by PR #38 (run 8) and removed after run 9's within-run A/B
+#: (2026-09-12): it cost one evidence section a rung in 135 of 156 compiles
+#: (instructions are a required section, so 202 characters of instruction
+#: are 202 characters less evidence), and even where packing was identical
+#: it made the 8B answerer terser everywhere (supported claims -0.58 paired,
+#: median answer 114 vs 180 chars) for a gain on two of three CVE rows. It
+#: survives as INSTRUCTION_VARIANTS["yesno_line"] so a later A/B can retest
+#: it, e.g. with a larger model. The general lesson: every instruction
+#: character is paid for in evidence, so an instruction has to beat the
+#: rung it displaces.
 
 #: The same instructions at the packer's SUMMARY rung, for budgets too small
 #: to carry the template. Instructions are required, so without a shorter
@@ -79,7 +90,33 @@ _INSTRUCTIONS_BARE = (
     "Do not infer from absence."
 )
 
-#: How many evidence sections a compile packs, counted after ranking. Ranking
+#: Named instruction variants, so an experiment can put two instruction
+#: wordings in ONE run over the same stored state -- the within-run A/B that
+#: run 8 (2026-09-12) showed is the only design that attributes anything
+#: here: between two runs the Automate scheduler re-surveys the repos and
+#: the catalog moves, so run-over-run comparisons carry three variables.
+#: The variant changes the instructions candidate's text, so it is part of
+#: the compile id without any further bookkeeping; the manifest names it.
+#: "default" is production (plain, since run 9); "yesno_line" adds run 8's
+#: sentence, so it can be retested without editing production wording.
+_YESNO_SENTENCE = (
+    "If the question asks yes or no, give the yes or no and then the evidence "
+    "line it rests on — the analysis, the value, and any coverage limit or caveat "
+    "shown beside it; a bare yes or no is not an answer. "
+)
+_YESNO_SENTENCE_SHORT = "A yes/no answer must state the evidence line and its coverage limit. "
+INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
+    "default": (_INSTRUCTIONS, _INSTRUCTIONS_SHORT),
+    "yesno_line": (
+        _INSTRUCTIONS.replace("If the evidence does not answer the question",
+                              _YESNO_SENTENCE + "If the evidence does not answer the question"),
+        _INSTRUCTIONS_SHORT.replace("If it does not answer",
+                                    _YESNO_SENTENCE_SHORT + "If it does not answer"),
+    ),
+}
+
+#: How many evidence sections a compile packs, counted after ranking over the
+#: analyses that HAVE a candidate -- a gap does not spend a slot. Ranking
 #: still orders and never excludes at the DERIVATION level — every catalog
 #: question that reaches an analysis stays in `derivation`, and the sections
 #: past the cap are reported in the manifest as `deferred`, with their rank
@@ -270,6 +307,12 @@ def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str
     }
 
 
+#: Keys that describe a run rather than carry a result. Kept identical to the
+#: set inside facts._has_content (tests/test_context_compile.py pins that the
+#: two functions agree on an envelope-only dict).
+_ENVELOPE_KEYS = frozenset({"_status", "surveyed_at", "detail", "scoped_to", "run_outcomes"})
+
+
 def _has_content(results) -> bool:
     """Whether a results dict says anything, as opposed to merely existing.
 
@@ -287,7 +330,21 @@ def _has_content(results) -> bool:
     """
     if not isinstance(results, dict):
         return bool(results)
-    for value in results.values():
+    for key, value in results.items():
+        # Envelope keys describe the RUN, not a result. `{"_status": {"state":
+        # "never_run", ...}}` is a reader saying "nothing yet" in the
+        # result_status.py convention, and until 2026-09-13 this function
+        # counted that dict as content -- so a never-run analysis whose reader
+        # follows the convention was PACKED as a section headed "_status:
+        # state=never_run" instead of judged as a gap. Found by #46's CI: a
+        # new envelope-returning reader (dependency_support) displaced
+        # documentation_coverage under the 12-section cap and a test lost the
+        # word "readme". Same key set as facts._has_content, which has
+        # exempted these since it was written; the docstring above, written
+        # when "the readers do not carry that distinction", is now wrong for
+        # architecture_diagram, architecture_recovery and dependency_support.
+        if key in _ENVELOPE_KEYS:
+            continue
         # Each type is decided exactly once. An earlier version put the
         # numeric test in an `elif ... and value` and then had a catch-all
         # `elif value is not None`, so a zero failed the numeric branch and was
@@ -757,6 +814,7 @@ def compile_context(
     target_model: str = "",
     session_id: str | None = None,
     max_sections: int | None = None,
+    instructions_variant: str = "default",
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
 
@@ -766,8 +824,14 @@ def compile_context(
     compile served, when there is one; it lands on the row, not in the hash.
     `max_sections` caps how many ranked evidence sections compete for the
     budget (default MAX_EVIDENCE_SECTIONS; 0 means no cap); the rest are
-    listed in the manifest as `deferred`.
+    listed in the manifest as `deferred`. `instructions_variant` selects a
+    wording from INSTRUCTION_VARIANTS (experiments only; production is
+    "default") and is named in the manifest.
     """
+    if instructions_variant not in INSTRUCTION_VARIANTS:
+        raise ValueError(f"unknown instructions_variant {instructions_variant!r}; "
+                         f"expected one of {sorted(INSTRUCTION_VARIANTS)}")
+    instr_full, instr_short = INSTRUCTION_VARIANTS[instructions_variant]
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(
@@ -875,17 +939,27 @@ def compile_context(
     candidates: dict[str, Candidate] = {}
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
     cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
-    deferred = [
-        {"key": k, "weight": round(w, 3), "rank": i,
-         "reason": f"below the section cap of {cap}"}
-        for i, (k, w) in enumerate(ranked) if cap > 0 and i >= cap
-    ]
-    if cap > 0:
-        ranked = ranked[:cap]
+    deferred: list[dict] = []
+    # The cap counts sections WITH EVIDENCE, and a gap costs nothing. The
+    # first version sliced the ranking to `cap` entries before resolving any,
+    # so an analysis that turned out to be a gap had already spent a slot:
+    # on a sparsely surveyed repo eleven of twelve slots went to gaps and the
+    # one analysis with real findings sat at rank 13, "deferred". Found by
+    # #46's CI against an empty registry, diagnosed by dwolfson-4c
+    # (2026-09-13). The cap=12 sweep that chose the value was on repos where
+    # every cited analysis had run, so it never showed there. Now the walk
+    # continues down the ranking until `cap` analyses have a candidate;
+    # gaps found on the way are still reported as gaps (they are information
+    # -- "should exist, has nothing behind it"); what remains below the
+    # point where the cap is reached is deferred unresolved.
+    packed_count = 0
     # Failures the compile survived but the caller must be able to see.
     extra_notes: list[str] = []
-    for analysis_id, weight in ranked:
-        sections.append(Section(analysis_id, role="evidence", weight=weight))
+    for rank, (analysis_id, weight) in enumerate(ranked):
+        if cap > 0 and packed_count >= cap:
+            deferred.append({"key": analysis_id, "weight": round(weight, 3), "rank": rank,
+                             "reason": f"below the section cap of {cap}"})
+            continue
         findings = registry.query_findings(slug, analysis_id)
         rungs = _findings_to_rungs(findings, analysis_id)
         provenance = _provenance(findings, analysis_id)
@@ -956,14 +1030,16 @@ def compile_context(
 
         if rungs and analysis_id in caveat_ids:
             rungs = _with_caveat(rungs, coverage["caveat"])
+        sections.append(Section(analysis_id, role="evidence", weight=weight))
         if rungs:
             candidates[analysis_id] = Candidate(
                 analysis_id, rungs, provenance=provenance,
                 pointer=_pointer_for(analysis_id, slug, provenance),
             )
+            packed_count += 1
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing
-        # behind it, is information.
+        # behind it, is information -- and it does not count against the cap.
 
     # The instructions candidate is built last because its text depends on
     # where the caveat went. The coverage line (and the caveat, when it has no
@@ -978,8 +1054,8 @@ def compile_context(
         caveat_line = caveat_line_short = ""
     candidates["instructions"] = Candidate(
         "instructions",
-        {Rung.FULL: coverage_line + caveat_line + _INSTRUCTIONS,
-         Rung.SUMMARY: coverage_line_short + caveat_line_short + _INSTRUCTIONS_SHORT,
+        {Rung.FULL: coverage_line + caveat_line + instr_full,
+         Rung.SUMMARY: coverage_line_short + caveat_line_short + instr_short,
          Rung.IDENTIFIERS: _INSTRUCTIONS_BARE})
 
     spec = ContextSpec(
@@ -1008,6 +1084,7 @@ def compile_context(
             # which offered sections had nothing; this says whether the
             # question was ever a question stored analyses answer.
             "coverage": coverage,
+            "instructions_variant": instructions_variant,
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.

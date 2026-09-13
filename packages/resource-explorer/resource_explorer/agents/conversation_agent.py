@@ -34,10 +34,16 @@ class ConversationAgent(BaseExplorerAgent):
         resource_slug: str | None = None,
         rag_system=None,
         compiled_evidence: bool = True,
+        instructions_variant: str = "default",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.resource_slug = resource_slug
+        #: Which wording of the compiler's instructions this agent asks for
+        #: (context_compile.INSTRUCTION_VARIANTS). Experiments only, like
+        #: `compiled_evidence`: the within-run A/B answers the same question
+        #: under two variants back-to-back. Production leaves it "default".
+        self.instructions_variant = instructions_variant
         #: False turns _compiled_evidence() off for this instance and nothing
         #: else — same tools, same prompt shape, same fallback. It exists for
         #: the compiled-versus-RAG experiment (scripts/experiment_compiled_vs_rag.py),
@@ -242,6 +248,7 @@ class ConversationAgent(BaseExplorerAgent):
                 # tools for anything the compile could not reach.
                 budget=6000,
                 session_id=getattr(self, "session_id", None),
+                instructions_variant=self.instructions_variant,
             )
         except Exception:
             logger.debug("compiled evidence unavailable for %s", slug, exc_info=True)

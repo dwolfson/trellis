@@ -50,6 +50,12 @@ const post = (path, body) =>
     headers: JSON_HEADERS,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+const patch = (path, body) =>
+  request(path, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 
 /* ────────────────────────────────────────────────────────────────────────
  * A small TTL cache.
@@ -113,6 +119,10 @@ export const listFilesystems = () => get('/api/filesystems/');
  *  has changed size more than once. */
 export const listPerspectives = () =>
   cached('perspectives', () => get('/api/analyses/perspectives'));
+
+/** The whole vocabulary -- an audience, not a filter. */
+export const listAllPerspectives = () =>
+  cached('perspectives-all', () => get('/api/analyses/perspectives?scope=all'));
 
 export const listAnalyses = (resourceType, { intent, perspective } = {}) => {
   const qs = new URLSearchParams();
@@ -187,6 +197,21 @@ export const setDisposition = (githubUrl, disposition, reason = '') =>
  * read-modify-write rather than posting a single field: posting one answer
  * alone would silently blank environment, sensitivity and the rest.
  */
+/** Save ONE enrichment field. The server stamps author and date from the
+ *  signed-in identity and does the read-modify-write, so two people setting
+ *  two fields do not clobber each other. 401 when anonymous: a judgement
+ *  needs an author. */
+export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}) =>
+  patch(`/api/context/repo/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+
+/* ── The journal ──────────────────────────────────────────────────────────
+ * Append-only prose on a resource, with a server-stamped author. A
+ * suggestion is routed by perspective or person and arrives as a work-list
+ * entry for them — never a notification. */
+export const getJournal = (slug) => get(`/api/journal/repo/${encodeURIComponent(slug)}`);
+export const writeJournal = (slug, body, suggestTo = []) =>
+  post(`/api/journal/repo/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
 
@@ -394,6 +419,31 @@ export const getAnalysisTrend = (slug, analysisId, metric = '') =>
     encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
 
 /** Recent activity for one resource — the runs, with their per-step detail. */
+/* ── Members: the things a count counted ─────────────────────────────────
+ *
+ * The measurement popup opens a number's history; this opens its members.
+ * `scope` is "public" or "all" — purpose decides the default (Maintain wants
+ * all) — and the response says whether the scope was honoured, since only
+ * symbols carry a public/internal marker today.
+ */
+export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}) => {
+  const qs = new URLSearchParams({ scope, limit: String(limit) });
+  if (metric) qs.set('metric', metric);
+  return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
+};
+
+/** Promote a member-list selection. Three acts, one provenance line
+ *  composed on the server: work_list (I will deal with this), rfa (someone
+ *  must), journal (worth knowing). `members` is a snapshot of names, never
+ *  a query. 401 when anonymous. */
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote`,
+    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
+
+export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
+    new URLSearchParams({ key, scope, limit: String(limit) })}`);
+
 export const getResourceRuns = (slug, limit = 40) =>
   get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
 
@@ -537,3 +587,17 @@ export async function pollActivity(entryId, {
 /* ── Investigations ──────────────────────────────────────────────────── */
 
 export const listInvestigations = () => get('/api/investigations/');
+
+/* ── Curate ─────────────────────────────────────────────────────────────── */
+
+/** The review-and-commit plan: three columns, the manifest, the record. A
+ *  local read on the server, so it renders when Egeria is down. */
+export const getCuratePlan = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/curate/plan`);
+
+/** Catalogue →. Returns {curation, activity_id, run_id}; 401 anonymous,
+ *  409 outside the population. */
+export const curateCommit = (slug, selection) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/curate/commit`, selection);
+
+export const getCuration = (slug, id) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(id)}`);

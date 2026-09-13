@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -467,6 +468,8 @@ class QuestionChecklistEntry(BaseModel):
     # mean. secret_scan never claims "no secrets", only no matches against
     # this ruleset in this snapshot.
     rationale: str = ""
+    # The catalog's own changelog for this row — past tense, maintainer-facing.
+    catalog_history: str = ""
     # None = not applicable (direct/registry/human/chart/gap kinds — no RE
     # analysis backs these, so there's nothing to check); True/False only
     # for analysis/partial/mixed kinds, computed best-effort per resource.
@@ -534,6 +537,7 @@ async def get_scouting_questions(
             note=answering["note"],
             answering_mechanism=e.get("answering_mechanism", ""),
             rationale=e.get("rationale", ""),
+            catalog_history=e.get("catalog_history", ""),
             has_data=has_data,
             purposes=e.get("purposes", []),
             derivation=e.get("derivation", {}),
@@ -1406,3 +1410,197 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
     if not kind:
         return {}
     return registry.query_metrics(slug, kind, scope_locator=locator)
+
+
+@router.get("/{slug}/members/{analysis_id}")
+async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str = "public",
+                      limit: int = 200) -> dict:
+    """The things a count counted — see resource_explorer/members.py.
+
+    `scope` is `public` or `all`; the response says whether it was honoured,
+    because today only symbols carry a public/internal marker. Read from
+    the registry, not the display-shaped results, since those drop the
+    detail this needs.
+    """
+    from resource_explorer.members import members_for
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return await asyncio.to_thread(
+        lambda: members_for(registry, slug, analysis_id, metric, scope=scope, limit=min(max(limit, 1), 1000)).to_dict())
+
+
+@router.get("/{slug}/members/{analysis_id}/children")
+async def get_member_children(slug: str, analysis_id: str, key: str, scope: str = "public",
+                              limit: int = 200) -> dict:
+    """One level down a member tree. `key` is opaque — whatever the parent
+    row's `children_key` said."""
+    from resource_explorer.members import children_for
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    rows = await asyncio.to_thread(lambda: children_for(registry, slug, analysis_id, key, scope=scope, limit=min(max(limit, 1), 1000)))
+    return {"key": key, "members": rows}
+
+
+class PromoteSelection(BaseModel):
+    """A selection from a member list, with its provenance. `members` are the
+    names as they were when selected — a snapshot, never a query."""
+    action: str                      # work_list | rfa | journal
+    metric: str = ""
+    members: list[str] = Field(default_factory=list)
+    total: int = 0
+    facet: str = ""
+    run_at: str = ""
+    name: str = ""                   # the work item's name; proposed by the client, editable
+    suggest_to: list[str] = Field(default_factory=list)   # journal only
+
+
+@router.post("/{slug}/members/{analysis_id}/promote")
+def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request: Request) -> dict:
+    """Promote a member-list selection: to a work list (I will deal with
+    this), an RFA (someone must), or the journal (worth knowing). One
+    provenance line, composed here, travels with all three. See the
+    promotion note in resource_explorer/members.py.
+
+    Signed-in only: a work item, a request for action and a journal entry
+    all need someone to have made them.
+    """
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.journal import Journal
+    from resource_explorer.members import proposed_name, provenance_line
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.work_lists import WorkLists
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to promote a selection — it needs someone to have made it.")
+    if body.action not in ("work_list", "rfa", "journal"):
+        raise HTTPException(status_code=422, detail="action must be work_list, rfa or journal")
+    if not body.members:
+        raise HTTPException(status_code=422, detail="nothing is selected")
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # The date is the server's: what the registry says this analysis last ran,
+    # not what the browser sent (which was never populated off one path).
+    from resource_explorer.members import last_run_at
+    run_at = last_run_at(registry, slug, analysis_id) or body.run_at
+    if body.suggest_to:
+        # An audience is a perspective or a person; a free string minted a
+        # work list named suggested-to-<anything> for any signed-in caller.
+        from resource_explorer.surveyors.analysis_catalog_reader import EGERIA_PERSPECTIVES
+        bad = [t for t in body.suggest_to if t not in EGERIA_PERSPECTIVES and not re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", t)]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"suggest_to must name a perspective or a user id: {bad}")
+    line = provenance_line(analysis_id=analysis_id, run_at=run_at, total=body.total,
+                           members=body.members, facet=body.facet, metric=body.metric)
+    name = body.name.strip() or proposed_name(project.display_name or slug, total=body.total,
+                                              members=body.members, facet=body.facet, metric=body.metric)
+
+    if body.action == "work_list":
+        wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
+                                        derived_from=f"members:{analysis_id}", rationale=line,
+                                        description=f"Promoted from the {analysis_id} member list.")
+        return {"action": "work_list", "name": name, "provenance": line, "work_list": wl.get("slug") if wl else None}
+
+    if body.action == "rfa":
+        rfa_id = log_rfa(registry, "repo", slug, project.display_name or slug, "open", name, detail=line,
+                         analysis_name=analysis_id,
+                         items=[{"kind": "member", "analysis_id": analysis_id, "name": m} for m in body.members[:50]])
+        return {"action": "rfa", "name": name, "provenance": line, "rfa": rfa_id}
+
+    entry = Journal(registry).write("repo", slug, author=author, body=f"{name} · {line}", suggest_to=body.suggest_to)
+    return {"action": "journal", "name": name, "provenance": line, "journal": entry.get("id"),
+            "work_lists": entry.get("work_lists", [])}
+
+
+# ── Curate: review-and-commit ───────────────────────────────────────────
+#
+# One screen, three columns, one commit. The plan is a local read (facts,
+# findings, enrichment, verdicts, disposition) so it renders when Egeria is
+# down; the commit is a queued run whose steps write their outcomes to the
+# curation record as they land, because a handoff is asynchronous and can
+# fail elsewhere. See curate_plan.py for the design rules held.
+
+class CurateSelection(BaseModel):
+    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareLibrary, Endpoint, ...
+    sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
+    data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
+    note: str = ""
+
+
+@router.get("/{slug}/curate/plan")
+def curate_plan(slug: str) -> dict:
+    from resource_explorer.curate_plan import build_plan
+    from resource_explorer.registry import ProjectRegistry
+    try:
+        return build_plan(ProjectRegistry(), slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+
+@router.post("/{slug}/curate/commit")
+def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
+    """Catalogue →. Records the act (who, when, what was selected, what the
+    manifest said), logs an activity entry the pane polls, and enqueues the
+    run. Signed-in only: the record needs an author, and Ownership on the
+    asset is curation by default."""
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import CURATE_POPULATION, Curations, build_plan
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.curate_commit import STEPS
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to catalogue — the record needs an author, and the asset an owner.")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    plan = build_plan(registry, slug)
+    if not plan["in_population"]:
+        raise HTTPException(status_code=409, detail=(
+            f"Only worthy things get curated: Curate's population is disposition {' or '.join(CURATE_POPULATION)}, "
+            f"and this resource is '{plan['disposition']}'. Set its disposition first."))
+    known = {r["kind"] for r in plan["what_it_is"] if r["candidate"]}
+    unknown = [k for k in body.confirm if k not in known]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Not candidates on this resource: {unknown}")
+    manifest = {**plan["writes"], "entities": list(body.confirm),
+                "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
+                              "sub_resources": len(body.sub_resources)}}
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="curate", status="running",
+        summary=f"Cataloguing {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
+    )
+    rec = Curations(registry).create(
+        "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,
+        steps=list(STEPS), activity_id=activity_id)
+    run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
+                                  result_ref=activity_id, requested_by=_requested_by())
+    log.info("enqueued curate_commit %s for %s (activity %s)", run_id, slug, activity_id)
+    return {"curation": rec, "activity_id": activity_id, "run_id": run_id}
+
+
+@router.get("/{slug}/curate/commits/{curation_id}")
+def curate_commit_status(slug: str, curation_id: str) -> dict:
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.registry import ProjectRegistry
+    rec = Curations(ProjectRegistry()).get(curation_id)
+    if not rec or rec["entity_slug"] != slug:
+        raise HTTPException(status_code=404, detail="No such curation")
+    return rec

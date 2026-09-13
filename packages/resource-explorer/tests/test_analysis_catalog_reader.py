@@ -165,7 +165,14 @@ class TestFilterByIntent:
                        # 2026-08-28, when it moved to Assessment: naming the
                        # weakest dimension is a judgement against criteria, and
                        # that signature outranks its zero-fetch cost.
-                       "interface_surface"} \
+                       "interface_surface",
+                       # dependency_support (2026-09-12): the same shape as
+                       # architecture_summary — its input is repo_manifest_parse's
+                       # project_dependencies rows plus a curated mapping, and it
+                       # fetches nothing from the repository. The one Egeria call it
+                       # makes is catalog consultation, not acquisition, and it
+                       # declares requires_resources={} so the loop below holds.
+                       "dependency_support"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

@@ -38,7 +38,7 @@ import {
   publishWorkList,
   setDisposition,
 } from '/static/re-api.js';
-import { ago, daysSince } from '/static/next/format.js';
+import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 
 /* ── Cell state ─────────────────────────────────────────────────────────
  *
@@ -172,8 +172,14 @@ export async function renderWorkListPane(ctx) {
   const wl = grid.workList;
   if (!wl) return;
 
+  // The sub-tab rail keeps its order here too (design rule: identical
+  // across every stage; grey out what a view lacks, never remove it). A
+  // work list is a view over MANY resources, so the per-resource tabs are
+  // present and marked, and the title says how to reach them.
   el.innerHTML = `
     <div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
+      ${(ctx.subTabs || []).map((t) => `<span class="text-ink-muted" title="${esc(t.label)} is per resource — pick one from the sidebar"
+        style="border-bottom:1px dashed currentColor;padding-bottom:1px">${esc(t.label)}</span>`).join('')}
       <span class="border-b border-accent pb-[2px] text-ink">Work list</span>
       <button data-act="exit" class="cursor-pointer bg-transparent text-ink-muted hover:text-ink">← back to questions</button>
     </div>
@@ -614,17 +620,10 @@ async function openResourceDetail(member) {
     <ol class="m-0 list-none p-0">
       ${ordered.map((r, i) => `<li class="flex gap-s2 border-b border-rule py-[5px]">
         <span class="tnum w-[18px] shrink-0 text-right text-ink-muted">${i + 1}</span>
-        <span class="min-w-0">
-          <span class="text-ink">${esc(r.disposition || '—')}</span>
-          ${r.reason ? `<span class="text-ink-muted"> — ${esc(r.reason)}</span>` : ''}
-          <span class="block text-provenance text-ink-muted">${
-            r.decided_at ? `${esc(ago(r.decided_at))} · ${esc(String(r.decided_at).slice(0, 10))}` : 'undated'}${
-            r.decided_by ? ` · ${esc(r.decided_by)}` : ''}</span>
-        </span>
+        <span class="min-w-0 text-provenance text-ink-muted">${verdictLineHtml(r, esc)}</span>
       </li>`).join('')}
     </ol>
-    ${ordered.length > 1 ? `<p class="mt-s2">Changed
-      <span class="tnum">${ordered.length - 1}</span> time(s).</p>` : ''}`;
+    ${ordered.length > 1 ? `<p class="mt-s2">${changedTimesHtml(ordered.length - 1)}.</p>` : ''}`;
 }
 
 /** Name the cause of an unreadable cell, from the server's own message.

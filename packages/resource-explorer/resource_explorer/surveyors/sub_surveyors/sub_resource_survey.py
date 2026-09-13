@@ -24,6 +24,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.ingestion.vendored import GENERATED_DIRS, VENDORED_DIRS
 from resource_explorer.step_outcome import from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
@@ -146,7 +147,11 @@ class SubResourceSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
-            inventory = self.registry.get_file_inventory_with_sizes(self.project.slug)
+            # The WHOLE inventory, vendored included: a vendored folder is a
+            # real sub-resource of this repository, and the honest listing is
+            # "node_modules — not worthy — vendored", not its absence. Omitting
+            # it would make "34 sub-resources" silently mean "34 of 41".
+            inventory = self.registry.get_file_inventory_with_sizes(self.project.slug, include_vendored=True)
             if not inventory:
                 # confidence=50 used to be the only signal that this was a
                 # non-answer, and 50 is not a vocabulary — it reads as a
@@ -260,7 +265,19 @@ class SubResourceSurveyor(BaseSurveyor):
 
         folder_entries: dict[str, dict] = {}
         for folder, count in sorted(folder_counts.items()):
-            if count < _FOLDER_MIN_FILES:
+            # By the folder's own NAME. The first version marked a top folder
+            # vendored when ANY file under it was -- one src/x/node_modules/
+            # y.js made all of src/ "not worthy · vendored" (review,
+            # 2026-09-12). A folder that CONTAINS vendored code is still the
+            # repository's own folder.
+            if folder in VENDORED_DIRS:
+                # Somebody else's library checked in. Listed, and said why —
+                # a promotion candidate this is not, but a fact about the
+                # repository it is.
+                worthy, reason = False, "vendored"
+            elif folder in GENERATED_DIRS:
+                worthy, reason = False, "generated"
+            elif count < _FOLDER_MIN_FILES:
                 worthy, reason = False, "too_small"
             elif count > _FOLDER_MAX_FILES:
                 worthy, reason = False, "too_broad"

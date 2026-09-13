@@ -33,6 +33,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ def _local_files(local_root: Path, extensions: list[str]) -> list[tuple[str, str
     results = []
     for p in local_root.rglob("*"):
         if not p.is_file() or p.suffix.lower() not in extensions:
+            continue
+        # The duplicate of IngestionPipeline._local_files that PR #36 missed:
+        # this walk put 20,654 vendored symbols back one survey after the
+        # profile refresh had removed them. Same rule, same reason.
+        if is_vendored_abs(p, local_root):
             continue
         try:
             content = p.read_text(encoding="utf-8", errors="ignore")

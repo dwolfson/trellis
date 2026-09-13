@@ -102,7 +102,7 @@ KNOWN_PURPOSES = [
 # OPTIONAL_LEAD_COLUMNS, which does the same by-elimination trick.
 NON_PERSPECTIVE_COLUMNS = (
     "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
-    "Answering Analysis", "Answering Mechanism", "Purposes",
+    "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History",
 )
 
 _CHECK_REGISTRY_PATH = (
@@ -261,6 +261,7 @@ def generate(rows: list[dict]) -> str:
             "answering": _parse_answering(row.get("Answering Analysis", ""), known_checks),
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
             "rationale": (row.get("Rationale/Source") or "").strip(),
+            "catalog_history": (row.get("Catalog History") or "").strip(),
         })
 
     header = (
@@ -320,7 +321,13 @@ def generate(rows: list[dict]) -> str:
         "#                   this ruleset in this snapshot; cve_scan sees declared\n"
         "#                   dependencies only. These are the caveats that turn a\n"
         "#                   finding into a claim, so they are carried to the UI\n"
-        "#                   rather than left in the CSV. Added 2026-09-11.\n\n"
+        "#                   rather than left in the CSV. Added 2026-09-11.\n"
+        "#   catalog_history - the CSV's \"Catalog History\" column, verbatim — what\n"
+        "#                   used to be wrong, which analysis landed when, what the\n"
+        "#                   generator could not parse. Past tense, for whoever\n"
+        "#                   maintains the catalog; split out of Rationale/Source on\n"
+        "#                   2026-09-11 so the limit and the changelog stop sharing\n"
+        "#                   one sentence and one colour on screen.\n\n"
     )
     body = yaml.safe_dump({"repo_questions": entries}, sort_keys=False, allow_unicode=True, width=100)
     return header + body

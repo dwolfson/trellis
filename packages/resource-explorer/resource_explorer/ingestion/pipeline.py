@@ -11,8 +11,10 @@ from rich.console import Console
 from rich.progress import Progress
 
 from resource_explorer.configdata.collection_config import CollectionType
+from resource_explorer.ingestion.vendored import is_vendored, is_vendored_abs
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 log = logging.getLogger(__name__)
 
@@ -449,7 +451,7 @@ class IngestionPipeline:
         file_count = 0
         line_count = 0
         for p in local_root.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or is_vendored_abs(p, local_root):
                 continue
             file_count += 1
             if p.suffix.lower() in self._TEXT_SUFFIXES:
@@ -538,7 +540,7 @@ class IngestionPipeline:
         limit_bytes = _MAX_PROFILE_SIZE_MB * 1_048_576
 
         for p in local_root.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or is_vendored_abs(p, local_root):
                 continue
             ext = p.suffix.lstrip(".").lower()
             if ext not in _DATA_EXTENSIONS:
@@ -592,6 +594,10 @@ class IngestionPipeline:
                 continue
             if p.suffix.lower() not in extensions:
                 continue
+            # Somebody else's library checked in is not this repository's
+            # code: not its symbols, not its chunks, not a citation.
+            if is_vendored_abs(p, local_root):
+                continue
             try:
                 content = p.read_text(encoding="utf-8", errors="ignore")
                 results.append((str(p.relative_to(local_root)), content))
@@ -619,7 +625,10 @@ class IngestionPipeline:
                         pass
             elif abs_path.is_dir():
                 for f in abs_path.rglob("*"):
-                    if not f.is_file() or f.suffix.lower() not in extensions:
+                    # An extra path lives outside local_root; vendored-ness is
+                    # relative to the extra directory itself. (Was `local_root`,
+                    # unbound here -- a NameError on any extra docs directory.)
+                    if not f.is_file() or f.suffix.lower() not in extensions or is_vendored_abs(f, abs_path):
                         continue
                     try:
                         content = f.read_text(encoding="utf-8", errors="ignore")
@@ -838,12 +847,16 @@ class IngestionPipeline:
                 pass
 
         for path in local_root.rglob("*.pdf"):
+            if is_vendored_abs(path, local_root):
+                continue
             _handle(str(path.relative_to(local_root)), str(path))
         for display, abs_path in (extra_paths or []):
             if abs_path.is_file() and abs_path.suffix.lower() == ".pdf":
                 _handle(f"{display}/{abs_path.name}", str(abs_path))
             elif abs_path.is_dir():
                 for pdf in abs_path.rglob("*.pdf"):
+                    if is_vendored_abs(pdf, abs_path):   # relative to the extra dir, not local_root
+                        continue
                     _handle(f"{display}/{pdf.relative_to(abs_path)}", str(pdf))
 
         from resource_explorer.ingestion.artifact_tree_sink import (

@@ -72,6 +72,11 @@ class QuestionCatalogEntry:
     # Rationale/Source column. Carried to the UI because a caveat that lives
     # only in the catalog is a caveat nobody reading the answer ever sees.
     rationale: str = ""
+    # What used to be wrong and when it changed — the catalog's changelog for
+    # this row, past tense, for its maintainer. Kept apart from `rationale`
+    # so a reader deciding how far to trust an answer is not handed the
+    # build's history in the same breath.
+    catalog_history: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +87,7 @@ class QuestionCatalogEntry:
             "answering": self.answering.to_dict(),
             "answering_mechanism": self.answering_mechanism,
             "rationale": self.rationale,
+            "catalog_history": self.catalog_history,
         }
 
 
@@ -100,6 +106,7 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
         ),
         answering_mechanism=raw.get("answering_mechanism", ""),
         rationale=raw.get("rationale", ""),
+        catalog_history=raw.get("catalog_history", ""),
     )
 
 

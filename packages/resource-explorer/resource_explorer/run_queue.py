@@ -208,7 +208,20 @@ def _handle_discovery_expand(target: dict, result_ref: str) -> RunOutcome:
     return RunOutcome(state="succeeded")
 
 
+def _handle_curate_commit(target: dict, result_ref: str) -> RunOutcome:
+    """Catalogue →. Every step writes its outcome to the curation record;
+    the run fails only if a step did (the record says which)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.curate_commit import execute_curation
+
+    rec = execute_curation(ProjectRegistry(), target["curation_id"])
+    failed = [s["name"] for s in rec.get("steps", []) if s.get("state") == "failed"]
+    return RunOutcome(state="failed" if failed else "succeeded",
+                      error=("failed: " + ", ".join(failed)) if failed else "")
+
+
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
+    "curate_commit": _handle_curate_commit,
     "analysis_run": _handle_analysis_run,
     "stage_batch": _handle_stage_batch,
     "scouting_scan": _handle_scouting_scan,

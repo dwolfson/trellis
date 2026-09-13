@@ -14,11 +14,12 @@ Results are appended to this file's "Runs" section as they land; none yet.
 | Unit | one (repository, catalog question, condition) |
 | Questions | the full repo question catalog (52 entries on 2026-09-08), shuffled with a fixed seed so order does not follow catalog position; `--limit N` takes the first N of that order |
 | Repositories | `egeria_python_git`, `kafka`, `docling` by default: the three with the deepest stored analysis results across different languages and communities |
-| Conditions | `compiled`: `ConversationAgent(compiled_evidence=True)`, production behaviour. `rag`: the same agent with `compiled_evidence=False`, so it must search collections itself. **Nothing else differs**: same tools, prompt shape, model, tier, fallback |
+| Conditions | Named in `CONDITION_SPECS` as (compiled evidence on/off, instructions variant) and chosen per run with `--conditions`; each question is answered under every condition **back-to-back in one process**. `compiled`: `ConversationAgent(compiled_evidence=True)`, production wording. `compiled+yesno`: production plus run 8's yes/no sentence (`instructions_variant="yesno_line"`; in run 9 the arms were the other way round, when the sentence was still production and the plain arm was called `compiled-plain`). `rag`: the same agent with `compiled_evidence=False`, so it must search collections itself. **Nothing else differs**: same tools, prompt shape, model, tier, fallback |
+| Stored state | The run **disables the three repos' Automate schedules for its window and restores them afterwards with their original `next_run`** (`registry.pause_schedules` / `resume_schedules`, `--no-pause-schedules` to opt out). Added after run 8, when the nightly `RepoRefreshSurvey` re-surveyed two repos while the run was answering |
 | Answering model | whatever `LLM__OLLAMA__MODEL` and `EXPLORER_MODEL_TIER` resolve to; record them with each run (default `llama3.1:8b`, tier `dev`) |
 | Perspectives | none set, the common case |
 | Judge | `qwen2.5:32b` at temperature 0 with JSON output, a different and larger model than the answerer. Override with `EXPERIMENT_JUDGE_MODEL` |
-| Ground truth for the judge | a **reference compile** for every row, in both conditions: which analyses had usable stored results and which are gaps, with their fact-layer states. The judge never sees the packed text, only the list |
+| Ground truth for the judge | a **reference compile** per (question, instructions variant): which analyses had usable stored results and which are gaps, with their fact-layer states; since rubric v3 the packed text itself, stored on the row; since v4 also the analyses the catalog maps to the question |
 
 ## Rubric (per row, judged)
 
@@ -74,11 +75,181 @@ MLflow is reachable, experiment `compiled_vs_rag` with one run per condition.
 
 | v3-2026-09-09 | the judge receives the packed evidence text; `supported_claims` and `misread_claims` counted separately from `unsupported_claims`, which is now checked claim by claim against the text; a decline scores 0 when a packed section answers the question; `evidence_text_exact` records whether a re-judged row's text was reconstructed with a matching compile id | run-4 audit: 89% of the claims v2 counted as unsupported were in the packed text; v2's flags were uncorrelated with the eleven real defects; run 3 showed a decline that names an analysis scoring 2 even when that analysis was packed |
 
+| v4-2026-09-12 | the judge is told which analyses the catalog maps to the question; a decline scores 0 only when a *mapped* analysis is in the evidence and answers it (an unmapped section that touches the topic no longer makes a refusal wrong); an absence or clean result asserted over evidence saying nothing or only part could be checked ("not checked: 0 of 61", "N could not be queried") is a misread even if "none" appears in the evidence | v3's decline rule over-fired on 7 of 9 flagged declines (catalog-state, cost and organisational-use questions no analysis covers); v3 scored docling's "No, there are no outstanding CVEs" as supported against "none in 0 of 61" (run 5) |
+
 Rows carry `judge.rubric_version`; a re-judge (`--rejudge`) rescores existing answers under the
 current rubric into `results.<version>.jsonl`, keeping the previous verdict as `judge_previous`.
 Runs judged under different rubrics are never averaged together.
 
 ## Runs
+
+### run9-20260912 — the within-run A/B: the yes/no sentence, measured on its own, comes out of production
+
+First run under the redesigned protocol: three conditions answered back-to-back per question in
+one process (`compiled` = production wording, which carried the yes/no sentence since PR #38;
+`compiled-plain` = the same without it; `rag`), rubric v4, text and compile id on every row,
+and the three repos' Automate schedules paused for the window (egeria's `RepoRefreshSurvey`,
+docling's `RepoAnalysisSurvey` and `RepoRefreshSurvey`; kafka has none) and restored afterwards
+with their original `next_run`. Window: 2026-09-12 12:32 → 20:25 local. 468 rows, 0 errors,
+replayability 156 of 156 in both compiled arms. `data/experiments/compiled_vs_rag_run9/`.
+
+| metric (v4) | compiled (with sentence) | compiled-plain (without) | rag |
+|---|---:|---:|---:|
+| answers_question (0–2) | 0.98 | **1.04** | 0.49 |
+| supported_claims (mean) | 1.54 | **2.12** | 0.22 |
+| unsupported_claims (mean) | 0.41 | 0.43 | 0.77 |
+| misread_claims (mean) | 0.06 | 0.04 | 0.15 |
+| cites_evidence | 63% | 68% | 5% |
+| acknowledges_limits | 29% | 48% | 56% |
+| declines | 22% | 32% | 53% |
+| median answer length (chars) | 114 | 181 | 93 |
+| bare one-word answers | 15 | 10 | — |
+
+**Paired, same question, same stored state, sentence minus no-sentence:** answers_question −0.06
+(25 up, 38 down, 93 tied); supported_claims **−0.58** (32 up, 53 down, 71 tied); unsupported
+−0.02; misread +0.03; cites −4 points; declines −10 points. Split by question shape: on the 72
+yes/no questions supported 0.65 vs 1.00 and unsupported 0.44 vs 0.28; on the 84 others supported
+2.31 vs 3.08. The sentence made the 8B answerer terser on every kind of question, not only the
+yes/no ones it addressed.
+
+**Two mechanisms, separated.** The two arms compiled the same evidence with different
+instructions — and only 21 of 156 pairs packed identically. The instructions section is
+*required*, so the sentence's 202 characters came out of the evidence: in 135 compiles one
+section dropped a rung (1,275 evidence sections at FULL with the sentence, 1,396 without).
+On the 21 identically packed pairs the sentence still cost supported −0.14, answers_question
+−0.10 and 32 characters of median answer length; on the 135 others, supported −0.64. So both
+mechanisms are real: **an instruction is paid for in evidence, and this one also primed brevity.**
+The general rule this establishes for the compiler: any instruction has to beat the rung it
+displaces.
+
+**What it was for.** On the three CVE rows the sentence did its job — egeria "yes, 1 advisory for
+click ==8.3.1: PYSEC-2026-2132" (2) against a bare "Yes" (0); docling states the coverage, with
+the contradictory "Yes" prefix (1, one misread) against "Yes, there are outstanding CVEs" (0);
+kafka correct in both arms. Two rows gained; the rest of the catalog paid.
+
+**Decision.** The sentence is removed from production in this same change (PR #38 reverted in
+effect; run 8's entry above said "branch not merged" and was overtaken by the merge). It stays
+as `INSTRUCTION_VARIANTS["yesno_line"]` and the harness condition `compiled+yesno`, so it can be
+retested one day against a larger answering model, where terseness may not be the response. The
+bare yes/no on CVE questions is therefore an open answering-side problem again, now with the
+measurement that a prompt sentence is the wrong tool for it on this model.
+
+**Rubric v4 and the control.** The `rag` arm scored 0.49 on answers_question against 0.24–0.31
+under v3 in runs 4–8: v4's decline rule no longer marks a grounded decline as 0 when only an
+unmapped section touches the topic, and RAG declines a lot (53%). Its misread rate (0.15) is
+now visible where v3 could not count absence-over-unchecked. The compiled-versus-RAG gap is
+unchanged in shape: four to ten times the supported claims, half the unsupported, cites 63–68%
+against 5%.
+
+### run8-20260912 — "a yes/no answer must carry its evidence line"; confounded, and negative on the aggregate
+
+One intended variable: the instructions (FULL and SUMMARY rungs) now say a yes/no answer must be
+followed by the analysis, the value and any coverage limit or caveat beside it, and that a bare
+yes or no is not an answer (branch `re/compiler-yes-no-evidence-line`, 298ff67, run from a
+worktree). Same judge (v3), seed and repos. `data/experiments/compiled_vs_rag_run8/results.jsonl`.
+312 rows, 0 errors, replayability 156 of 156.
+
+**Confound, stated first.** Only 2 of 156 compiles have evidence text identical to run 7's apart
+from the new sentence; 148 differ in the evidence sections themselves, in all three repos (46–51
+of 52 each). Two causes, both checked rather than assumed (the second by the /next session, from
+the activity log, after a findings-timestamp check of mine had missed it):
+
+- The **Automate scheduler re-surveyed two of the three repos inside run 8's own window**:
+  `RepoRefreshSurvey` (five steps, rewrites findings and metrics) ran on docling at 23:12 and on
+  egeria_python_git at 23:45 on 2026-09-11, while run 8 (started about 19:00, finished the next
+  morning) was answering. That is the `interface_surface` findings present in run 7's text and
+  absent in run 8's, and documentation_coverage's 1080 → 1188 `.md/.txt` files — a fresh survey
+  of a repository that had grown, not a data defect. So rows answered before and after those
+  times describe two states even *within* run 8.
+- The catalog's caveat texts and wording were rewritten on `main` (63f498e) between the runs;
+  through relevance ranking that changes which sections and rungs get packed. kafka, which had no
+  scheduled run, changed only this way.
+
+Run 8 therefore carries three variables against run 7 — the sentence, a mid-run re-survey, and a
+catalog rewrite. The paired numbers below are reported because they were measured, not because
+they attribute anything. Two protocol consequences: the nightly schedules on the experiment repos
+must be paused for a run window (or the run must pin a survey run, which the compiler cannot do
+today — evidence is keyed by analysis id and surveyed-at, and there is no run id to pin; see
+`docs/annotation-identity-check.md`); and the two arms of any comparison have to be answered
+back-to-back per question, in one process, so nothing can move between them.
+
+| metric (v3) | run 8 compiled | run 8 rag | run 7 compiled | run 7 rag |
+|---|---:|---:|---:|---:|
+| answers_question (0–2) | 1.05 | 0.31 | 1.12 | 0.30 |
+| supported_claims (mean) | **1.49** | 0.31 | 1.98 | 0.33 |
+| unsupported_claims (mean) | 0.34 | 0.83 | 0.28 | 0.79 |
+| misread_claims (mean) | 0.02 | 0.06 | 0.03 | 0.04 |
+| cites_evidence | 65% | 4% | 67% | 5% |
+| declines | 24% | 59% | 31% | 60% |
+
+Paired (compiled, run 8 minus run 7): answers_question −0.07 (24 up, 37 down); supported_claims
+**−0.49** (31 up, 48 down); unsupported +0.06; cites −0.01; declines −0.07. Median compiled answer
+length fell from 146 to 112 characters; bare one-word answers rose from 11 to 14.
+
+**On the three rows the sentence was for, it worked.** egeria: "Yes, 1 advisory for click ==8.3.1:
+PYSEC-2026-2132" (run 7: "Yes", scored 0; now 2). kafka: "no, evidence line: advisories: 0.0 —
+caveat: … DECLARED dependencies only …" (2). docling: "Yes, there are no CVE results because none
+of the declared dependencies could be queried" — the sentence is right and the "Yes" contradicts
+it (1, one unsupported claim, down from a bare wrong "Yes"). Over the 72 yes/no questions the
+change is small: answers_question 0.89 → 0.86, supported 0.76 → 0.64, cites 46% → 49%.
+
+**Where the aggregate went is not the yes/no questions.** Supported claims fell −0.89 on
+non-yes/no `analysis` questions and −1.60 on non-yes/no `direct` ones: the Scorecard question's
+answer went from fifteen statuses recited (16 supported claims) to "pass (8) and fail (3)"; "is
+this worth investigating" from 620 characters to "It is worth investigating further." Two of the
+three repos' answers got shorter (egeria 160 → 101 characters median, docling 160 → 120; kafka
+116 → 128). A catalog rewrite and an inventory change do not obviously make an 8B model terser
+on questions the sentence does not apply to; a sentence that says "give the yes or no and then
+the evidence line" plausibly does, by priming answer-then-one-line everywhere. That reading is
+consistent with the data and not established by it, because of the confound above.
+
+**Decision (overtaken: PR #38 merged the branch on 2026-09-12 before this entry landed; run 9 below measured the sentence and removed it).** Run 8 cannot attribute, and the one clean signal it has —
+the CVE rows now carry their evidence — is three rows. The next design is the one the protocol
+should have used from run 3 on: a **within-run A/B**, two compiled conditions (`compiled` and
+`compiled+yesno`) answered back-to-back for each question in one process, with the instruction
+variant as a `compile_context` parameter so both compile ids and both texts are on the row, and
+the Automate schedules for the three repos paused for the window. Rubric v4 (decline rule
+tightened, absence over 0-checked evidence counted as misread) can land in the same run since it
+re-scores both arms alike.
+
+### run7-20260911 — the catalog caveat beside the evidence (branch re/compiler-catalog-caveats, 2c9ca21)
+
+Same judge (v3), seed and repos as run 6; the compiler gained one thing: the matched question's
+catalog caveat (the Rationale/Source column) placed inside the section it qualifies, under the
+headline, or in the preamble when no packed section carries it. Run from a worktree of the branch
+before its PR merged; the results apply to the merged code unchanged.
+`data/experiments/compiled_vs_rag_run7/results.jsonl`. 312 rows, 0 errors, replayability 156 of
+156. The caveat sat inside a section in 92 compiles and in the preamble in 61.
+
+| metric (v3) | run 7 compiled | run 7 rag | run 6 compiled | run 6 rag |
+|---|---:|---:|---:|---:|
+| answers_question (0–2) | **1.12** | 0.30 | 0.99 | 0.31 |
+| supported_claims (mean) | **1.98** | 0.33 | 1.81 | 0.33 |
+| unsupported_claims (mean) | 0.28 | 0.79 | 0.35 | 0.81 |
+| misread_claims (mean) | 0.03 | 0.04 | 0.03 | 0.03 |
+| cites_evidence | 67% | 5% | 61% | 6% |
+| declines | 31% | 60% | 31% | 63% |
+
+Paired on all 156 questions (compiled, run 7 minus run 6): answers_question **+0.13** (32 up, 15
+down, 109 tied); supported_claims **+0.17** (37/25/94); unsupported −0.06 (15 up, 21 down, 120
+tied); cites +6 points; misread flat. This is the largest run-over-run movement in the series and
+the first where every metric moves the right way with more rows up than down on the answer
+score; it is still inside the protocol's ten-point noise band on answers_question and should be
+reproduced before it is quoted as an effect. The RAG control is flat, as it should be.
+
+**Where the caveat shows.** The secrets question, whose caveat says the scan "never claims 'no
+secrets' — only 'no matches against this ruleset, in this snapshot'", now answers with the
+limit in it: kafka "46 secret matches … using a vendored gitleaks ruleset over the HEAD snapshot
+of tracked files"; egeria "7 secret matches against the gitleaks ruleset". Those are the caveat's
+own words reaching the answer.
+
+**Where it does not.** "Are there outstanding CVEs?" on docling — headline "not checked: 0 of 61",
+caveat "DECLARED dependencies only, so a zero is 'none found in what we can see'" directly under
+it — still gets "Yes, there are outstanding CVEs." (run 6: "Yes"). kafka answers correctly with its
+coverage, egeria's real advisory gets a bare "Yes". Three compilers' worth of honest evidence has
+not moved an 8B model off a one-word answer to a yes/no question, which settles that the residual
+is the answering side. The two options stand: an instruction that a yes/no answer must carry the
+evidence line it rests on, or a larger answering model. Either is a one-variable run.
 
 ### run6-20260911 — coverage-first cve_scan headline (3f53e52); otherwise run 5 repeated
 

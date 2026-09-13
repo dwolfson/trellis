@@ -51,6 +51,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.step_outcome import RECOVERED, UNVERIFIED, StepOutcome, no_signal
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
+from resource_explorer.ingestion.vendored import is_vendored_abs
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,9 @@ def _manifests_present(local_root: Path) -> list[str]:
     or was never selected."""
     found: set[str] = set()
     for p in local_root.rglob("*"):
-        if p.is_file() and p.name in _MANIFESTS:
+        # A vendored dependency's own package.json is not this repository's
+        # manifest; dependency_parser already skips these ad hoc.
+        if p.is_file() and p.name in _MANIFESTS and not is_vendored_abs(p, local_root):
             found.add(p.name)
     return sorted(found)
 
@@ -115,12 +118,66 @@ class ManifestParseSurveyor(BaseSurveyor):
         # them: a bug in the CI-workflow parser must not cost the dependency
         # write, and vice versa. This is the isolation contract
         # file_inventory.py and symbol_extraction.py don't need (they write one
-        # table each) but this step does, since it bundles four.
+        # table each) but this step does, since it bundles five.
         results.append(self._parse_dependencies(local_root))
         results.append(self._parse_ci_quality(local_root))
         results.append(self._parse_repo_conventions(local_root))
         results.append(self._parse_supply_chain(local_root))
+        results.append(self._parse_distribution(local_root))
         return results
+
+    def _parse_distribution(self, local_root: Path) -> Annotation:
+        """What the repository declares itself to be: distribution name,
+        entry points, packages, publish workflow. Curate's first claim as a
+        fact rather than an inference (Repo Handoff checks 2 and 3)."""
+        slug = self.project.slug
+        try:
+            from resource_explorer.ingestion.distribution_parser import DistributionParser
+
+            findings = DistributionParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(slug, "distribution", findings,
+                                             surveyed_at=self._surveyed_at)
+                outcome = StepOutcome(RECOVERED, known_positive=True,
+                                      detail={"declared": len(findings)})
+                summary = (f"{len(findings)} declared distribution(s): "
+                           + ", ".join(f["detail"]["name"] for f in findings[:4]))
+            else:
+                # A repo with no [project] table / package.json name declares
+                # nothing. A real zero when a manifest exists; unverified
+                # when none does, because there was nothing to read.
+                manifests = _manifests_present(local_root)
+                if manifests:
+                    outcome = no_signal("manifests present but none declares a distribution name",
+                                        known_positive=True)
+                else:
+                    outcome = StepOutcome(UNVERIFIED, cause="no_manifest_found")
+                summary = "No declared distribution"
+            self._record_snapshot("manifest_parse_distribution", len(findings), outcome)
+            return ResourceMeasureAnnotation(
+                check_name="distribution_manifest",
+                summary=summary, analysis_step=STEP,
+                confidence=100 if outcome.is_conclusive else 50,
+                explanation=(
+                    "Refreshed project_analysis_findings (kind=\"distribution\") from "
+                    "a fresh zipball extraction — the distribution name, entry points, "
+                    "packages and publish workflow the manifests declare, which Curate "
+                    "reads for its first claim."
+                ),
+                resource_properties={"finding_count": len(findings)},
+                json_properties=outcome.as_row(),
+            )
+        except Exception as exc:
+            log.warning("ManifestParseSurveyor distribution parse failed for %s: %s", slug, exc)
+            outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
+            self._record_snapshot("manifest_parse_distribution", 0, outcome)
+            return ResourceMeasureAnnotation(
+                check_name="distribution_manifest",
+                summary="Distribution parse failed", analysis_step=STEP, confidence=0,
+                explanation=f"Could not parse declared distributions: {exc}",
+                resource_properties={"finding_count": 0, "error": str(exc)},
+                json_properties=outcome.as_row(),
+            )
 
     def _record_snapshot(self, kind: str, count: int, outcome: StepOutcome) -> None:
         """Generic project_analysis_metrics snapshot for this sub-parse's

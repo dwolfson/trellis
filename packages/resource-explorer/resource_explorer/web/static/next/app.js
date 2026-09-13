@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -45,6 +45,12 @@ import {
   runSurveyDefinition,
   getMe,
   getBulkFacts,
+  getMemberChildren,
+  getMembers,
+  getCuratePlan,
+  curateCommit,
+  getCuration,
+  promoteMembers,
   getQuestions,
   getScoutingOverview,
   listActivity,
@@ -53,6 +59,7 @@ import {
   listInvestigationMembers,
   listInvestigations,
   listPerspectives,
+  listAllPerspectives,
   listProjects,
   listRfas,
   pollActivity,
@@ -63,7 +70,10 @@ import {
   setDisposition,
   setWorkingSetHidden,
   getContext,
+  getJournal,
   questionKey,
+  writeJournal,
+  saveEnrichmentField,
   saveQuestionAnswer,
 } from '/static/re-api.js';
 
@@ -144,7 +154,7 @@ const SUB_TABS = [
   { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them', built: true },
   { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts', built: true },
   { id: 'questions', label: 'Questions', does: 'The question checklist' },
-  { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, and its history' },
+  { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, its history, and the journal', built: true },
 ];
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -252,6 +262,7 @@ const GLYPH = {
   answered: '✓',
   automatic: '✓',
   unrun: '○',
+  partial: '◐',
   human: '⚠',
   'no-surveyor': '○',
   unclassified: '·',
@@ -272,6 +283,7 @@ const GLYPH = {
  */
 const STATE_TONE = {
   answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  partial:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   human:         { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
@@ -355,7 +367,7 @@ function readEnvelope(entry, env) {
   for (const f of facts) {
     if (f.can_run && f.can_run.length) lines.canRun.push(...f.can_run);
     if (f.analysis_id) lines.sources.push(f.analysis_id);
-    if (f.last_run_at && f.last_run_at > lines.lastRun) lines.lastRun = f.last_run_at;
+    if (f.last_run_at && (!lines.lastRun || whenMs(f.last_run_at) > whenMs(lines.lastRun))) lines.lastRun = f.last_run_at;
   }
   lines.sources = [...new Set(lines.sources)];
   lines.canRun = [...new Set(lines.canRun)];
@@ -402,7 +414,12 @@ function readEnvelope(entry, env) {
   }
   // NOTE: `lines.answer` is HTML, already escaped by each branch above.
   // Do not run it through esc() or answerHtml() again downstream.
-  lines.answer = sentences.join(' ');
+  // Joined on ' · ', not ' '. Six analyses' sentences run together read as
+  // one broken sentence — "all 3 checks pass one contributor writes most of
+  // the code" — and a reader cannot tell where one claim ends. The separator
+  // makes the boundaries visible without deciding how the claims combine,
+  // which is the judgement still owed (Dashboard Round Three).
+  lines.answer = sentences.join(' · ');
 
   // The caveat — the most important content on the screen. These sentences
   // already exist in the survey output; they used to sit three panes away in
@@ -2483,8 +2500,13 @@ function resourceHeaderHtml(slug) {
 }
 
 /** The dated verdict trail for one repo. */
-async function renderDispositionHistory(githubUrl) {
-  const el = $('disposition-history');
+// `target` names the element to fill. Two places show the trail -- the
+// header popover and the Disposition pane -- and they carried the same id
+// until 2026-09-12; getElementById found the popover's (earlier in the
+// DOM) once it had been opened, so the pane's trail never refreshed again
+// and the no-URL message landed in the popover instead of the pane.
+async function renderDispositionHistory(githubUrl, target = 'disposition-history') {
+  const el = $(target);
   if (!el) return;
   let rows;
   try {
@@ -2499,19 +2521,43 @@ async function renderDispositionHistory(githubUrl) {
     el.textContent = 'No disposition has been recorded for this repo.';
     return;
   }
-  el.innerHTML = `<div class="mb-[3px] uppercase tracking-caps text-caps">History</div>`
-    + rows.map((r) => {
-      // The field is `decided_at` — verified against the endpoint, not
-      // guessed. `decided_by` is often empty; it is shown only when set,
-      // rather than rendering an empty attribution.
-      const when = r.decided_at || '';
-      const rel = ago(when);
-      return `<div><span class="text-ink">${esc(r.disposition || '—')}</span>
-        ${rel ? ` · <span class="tnum">${esc(rel)}</span>` : ''}
-        ${when ? ` <span class="tnum">(${esc(String(when).slice(0, 10))})</span>` : ''}
-        ${r.decided_by ? ` · ${esc(r.decided_by)}` : ''}
-        ${r.reason ? ` · ${esc(r.reason)}` : ''}</div>`;
-    }).join('');
+  // Oldest first, the same as the matrix's trail: the point is the
+  // sequence. One formatter for both views -- they had drifted into two
+  // layouts of one fact.
+  const ordered = [...rows].sort((a, b) => whenMs(a.decided_at) - whenMs(b.decided_at));
+  el.innerHTML = `<div class="mb-[3px] uppercase tracking-caps text-caps">History${
+      ordered.length > 1 ? ` · ${changedTimesHtml(ordered.length - 1)}` : ''}</div>`
+    + ordered.map((r) => `<div>${verdictLineHtml(r, esc)}</div>`).join('');
+}
+
+/** The verdict picker, as one thing: the popover and the Disposition pane
+ *  both show it, and a trail with no way to add to it was the drawing's
+ *  complaint about the pane. `onSet` runs after a successful write. */
+function dispositionPickerHtml(p) {
+  return `<div class="flex flex-wrap items-baseline gap-s2 text-caveat">
+    <span class="text-ink-muted">Set disposition</span>
+    ${VALID_DISPOSITIONS.map((d) => `<button data-disp="${esc(d)}"
+      class="cursor-pointer rounded-pill bg-transparent px-2 py-[1px] ${
+        d === (p.disposition || 'undecided')
+          ? 'border border-accent text-accent-ink'
+          : 'border border-rule-strong text-ink hover:border-accent'}"
+      >${esc(d)}</button>`).join('')}
+  </div>`;
+}
+
+function wireDispositionPicker(host, p, { note, onSet }) {
+  host.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
+    const value = b.dataset.disp;
+    note('Saving…');
+    try {
+      await setDisposition(p.github_url, value);
+      p.disposition = value;
+      renderSidebar();
+      await onSet(value);
+    } catch (err) {
+      note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
+    }
+  }));
 }
 
 /** The header's three write paths. `hide` is reversible, `disposition` is a
@@ -2532,37 +2578,20 @@ function bindResourceHeader() {
       return;
     }
     slot.innerHTML = `
-      <div class="flex flex-wrap items-baseline gap-s2 text-caveat">
-        <span class="text-ink-muted">Set disposition</span>
-        ${VALID_DISPOSITIONS.map((d) => `<button data-disp="${esc(d)}"
-          class="cursor-pointer rounded-pill bg-transparent px-2 py-[1px] ${
-            d === (p.disposition || 'undecided')
-              ? 'border border-accent text-accent-ink'
-              : 'border border-rule-strong text-ink hover:border-accent'}"
-          >${esc(d)}</button>`).join('')}
-      </div>
-      <div id="disposition-history" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
+      ${dispositionPickerHtml(p)}
+      <div id="disposition-history-popover" class="mt-s2 text-provenance text-ink-muted">Loading history…</div>`;
     // The HISTORY, alongside the picker. It exists in the current UI and
     // nowhere in /next, and it is the only place the SEQUENCE of verdicts is
     // visible — which is the rationale trail, not decoration. A single
     // current value cannot say that something was abandoned and then picked
     // back up.
-    renderDispositionHistory(p.github_url);
-    slot.querySelectorAll('[data-disp]').forEach((b) => b.addEventListener('click', async () => {
-      const value = b.dataset.disp;
-      note('Saving…');
-      try {
-        await setDisposition(p.github_url, value);
-        p.disposition = value;
-        renderSidebar();
-        el.innerHTML = '';        // rebuilt below by loadPane
-        await loadPane();
-        $('resource-action').innerHTML =
-          `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
-      } catch (err) {
-        note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
-      }
-    }));
+    renderDispositionHistory(p.github_url, 'disposition-history-popover');
+    wireDispositionPicker(slot, p, { note, onSet: async (value) => {
+      el.innerHTML = '';        // rebuilt below by loadPane
+      await loadPane();
+      $('resource-action').innerHTML =
+        `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
+    } });
   });
 
   el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
@@ -2635,13 +2664,13 @@ function subTabsHtml() {
         class="cursor-pointer bg-transparent text-ink-muted"
         style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
     }).join('')}
-    <span class="ml-auto text-caps uppercase tracking-caps text-ink-muted">${
-      SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length
-        ? `${SUB_TABS.filter((t) => !t.built && t.id !== 'questions').length} of these are not built in /next`
-        : 'all panes built'}</span>
   </div>`;
 }
 
+/* The header no longer says "N of these are not built in /next". That
+ * sentence was review-speak — correct in a handoff, unreadable in the
+ * product to anyone who was not in the conversation — and the dashed
+ * underline on a deferred tab already carries the fact (design rule 6). */
 /** Sub-tab clicks: the real one switches, a deferred one says it is deferred. */
 function bindSubTabs() {
   const el = $('content');
@@ -2668,6 +2697,150 @@ function bindSubTabs() {
  * ════════════════════════════════════════════════════════════════════════ */
 
 /** A resource must be selected and be a repo for either pane to mean anything. */
+/* ── Disposition and the journal ─────────────────────────────────────────
+ *
+ * The verdict and its dated trail were already in the resource header. What
+ * was missing is the journal: WHY a resource matters, written to be read by
+ * someone else. Everything else on these screens is written to be correct;
+ * this is the first thing written to be read. So the affordance shows it —
+ * room to write, no dropdown, a name on it.
+ *
+ * Append-only. An entry is a statement someone made on a date; later events
+ * do not invalidate it, they get a later entry. Outside the durable /
+ * perishable split entirely: no review flags, nothing to reconcile.
+ *
+ * Suggestion is a routing question and perspectives answer it — a note on a
+ * data-heavy repo is for Data Experts and Consumers, the same tags on every
+ * question row. It arrives as a WORK-LIST ENTRY for them, not a
+ * notification: work lists already exist, carry counts, and survive being
+ * ignored for a fortnight; a notification is a thing you dismiss. The UI
+ * says where it landed rather than "sent".
+ *
+ * Nothing prompts for an entry at cataloguing time, and nothing blocks on
+ * one. Advocacy written to satisfy a required field is "useful library" on
+ * two hundred assets. The empty state is visible instead.
+ */
+async function loadDispositionPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
+    <div id="disposition-picker" class="mb-s2"></div>
+    <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
+      <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
+    </div>
+    <div id="journal-write"></div>
+    <div id="journal-entries" class="mt-s3 text-caveat text-ink-muted">Reading the journal…</div>`;
+  bindSubTabs();
+  bindResourceHeader();
+  const project = state.projects.find((x) => x.slug === slug);
+  if (project?.github_url) {
+    // The picker WITH its trail, as drawn -- the header popover is a click
+    // away and above the heading; this is where a verdict is considered.
+    const mountPicker = () => {
+      const pick = $('disposition-picker');
+      if (!pick) return;
+      pick.innerHTML = dispositionPickerHtml(project);
+      wireDispositionPicker(pick, project, {
+        note: (html) => { const h = $('disposition-history'); if (h) h.innerHTML = html; },
+        onSet: async () => { mountPicker(); await renderDispositionHistory(project.github_url); },
+      });
+    };
+    mountPicker();
+    renderDispositionHistory(project.github_url);
+  } else {
+    $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+  }
+  renderJournalWrite(slug);
+  await renderJournalEntries(slug);
+}
+
+function renderJournalWrite(slug) {
+  const host = $('journal-write');
+  if (!host) return;
+  const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  // An AUDIENCE is the whole Egeria vocabulary, not the filter row's
+  // subset: someone is a Data Owner whether or not any analysis is tagged
+  // with it today. (The two are the same twelve at the moment; the point
+  // is which list this one follows when they diverge.)
+  const perspectives = (state.allPerspectives || state.perspectives || []).map((p) => p.name || p.id || p).filter(Boolean);
+  host.innerHTML = `
+    <textarea id="journal-body" rows="4" placeholder="Worth using for anyone who… Note the… before depending on it."
+      class="w-full rounded-sm border border-rule-strong bg-transparent p-s2 text-answer text-ink placeholder:text-ink-muted"></textarea>
+    <div class="mt-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caveat">
+      <span class="text-ink-muted">suggest to</span>
+      ${perspectives.map((p) => `<label class="flex cursor-pointer items-baseline gap-[4px]">
+        <input type="checkbox" data-suggest="${esc(p)}"> ${esc(p)}</label>`).join('')}
+      <label class="flex items-baseline gap-[4px] text-ink-muted">+ <input id="journal-person" type="text" placeholder="a person…"
+        class="w-[12ch] rounded-sm border border-rule-strong bg-transparent px-[4px] text-caveat text-ink placeholder:text-ink-muted"></label>
+    </div>
+    <div class="mt-s2 flex items-baseline gap-s3">
+      <button id="journal-save" type="button"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Write</button>
+      <span class="text-provenance text-ink-muted">${who ? `as ${esc(who)}` : 'sign in to write — an entry needs an author'}
+        · a suggestion is a work-list entry for them, not a notification</span>
+    </div>`;
+  $('journal-save').addEventListener('click', async () => {
+    const body = $('journal-body').value.trim();
+    if (!body) { $('journal-body').focus(); return; }
+    const targets = [...host.querySelectorAll('[data-suggest]:checked')].map((c) => c.dataset.suggest);
+    const person = ($('journal-person').value || '').trim();
+    if (person) targets.push(person);
+    const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
+    try {
+      const out = await writeJournal(slug, body, targets);
+      $('journal-body').value = ''; $('journal-person').value = '';
+      host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
+      b.disabled = false; b.textContent = 'Write';
+      // Where it landed, by the list's NAME -- "Suggested to Data Expert"
+      // is what was created; the slug is how the server finds it. And it
+      // stays until the next write replaces it: this is the only record
+      // the writer gets, and six seconds is not long enough to read one.
+      const where = (out.work_lists || []).map((w) => w.name || w.work_list).join(', ');
+      host.querySelector('[data-journal-note]')?.remove();
+      const note = document.createElement('div');
+      note.className = 'mt-s1 text-provenance text-ink';
+      note.setAttribute('data-journal-note', '1');
+      note.textContent = where ? `written · suggested — now in “${where}”` : 'written';
+      host.appendChild(note);
+      await renderJournalEntries(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to write' : `not written: ${err.message}`;
+    }
+  });
+}
+
+async function renderJournalEntries(slug) {
+  const host = $('journal-entries');
+  if (!host) return;
+  let data;
+  try { data = await getJournal(slug); }
+  catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  const entries = data.entries || [];
+  if (!entries.length) {
+    // Visible, and a fair thing for a corpus view to count: catalogued,
+    // never written about.
+    host.innerHTML = `<span class="text-ink-muted">Nobody has written about this resource yet.</span>`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">Earlier entries · <span class="tnum">${entries.length}</span>${
+      data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
+    ${entries.map((e) => `<div class="border-t border-rule py-s2">
+      <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
+      <div class="text-provenance text-ink-muted">${esc(e.author)} · <span class="tnum">${esc(ago(e.written_at))}</span>${
+        e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
+    </div>`).join('')}`;
+}
+
 function paneNeedsRepo() {
   if (state.resourceType !== 'repo') {
     return paneMessage('Repos only, in /next',
@@ -3012,16 +3185,32 @@ async function historyHtml(slug, analysisId, metric = '') {
       be a trend; there isn't one yet.</p>`;
   }
   series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
+  // A history is interesting exactly where it steps. Thirty rows of which
+  // twenty-eight are identical HIDE the two that matter — the dependency
+  // count went 57 to 68 over five weeks and a reader had to read thirty
+  // figures to notice. So the transitions lead: each value the series ever
+  // took, dated where it first appeared, and the count of runs and changes.
+  // The full table stays one click on, for the reader who wants every run.
+  const val = (r) => r.metric_value ?? r.value;
+  const steps = [];
+  for (const r of series) {
+    if (!steps.length || steps[steps.length - 1].v !== val(r)) steps.push({ v: val(r), at: r.surveyed_at, m: r.metric });
+  }
+  const changes = steps.length - 1;
+  const transitions = steps.map((st) => `<span class="tnum">${esc(fmtScalar(st.v, st.m || metric))}</span>
+      <span class="text-ink-muted">${esc(String(st.at).slice(5, 10))}</span>`).join(' → ');
   return `
-    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">History · oldest first ·
-      <span class="tnum">${series.length}</span> recorded</div>
+    <div class="mb-s1 text-caveat text-ink">${transitions}
+      <span class="text-ink-muted">· <span class="tnum">${series.length}</span> runs, <span class="tnum">${changes}</span> change${changes === 1 ? '' : 's'}</span></div>
+    <details><summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">Every run · oldest first ·
+      <span class="tnum">${series.length}</span> recorded</summary>
     <table class="w-full border-collapse text-caveat">
       ${series.map((r, i) => `<tr class="border-b border-rule">
         <td class="tnum py-[4px] pr-s3 text-ink-muted">${esc(String(r.surveyed_at).slice(0, 10))}</td>
         <td class="tnum py-[4px] text-ink ${i === series.length - 1 ? 'font-semibold' : ''}">${
           esc(fmtScalar(r.metric_value ?? r.value, r.metric || metric))}</td>
       </tr>`).join('')}
-    </table>`;
+    </table></details>`;
 }
 
 /** The inline delta beside a value: what it was, and when.
@@ -3390,26 +3579,22 @@ const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
  */
 const DASH_VIEW_KEY = 're-next.dashView';
 
-function factGlyph(state) {
-  switch (state) {
-    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
-    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
-    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
-    default: return { glyph: '·', tone: 'text-ink-muted' };
-  }
-}
 
-function subResourceSummaryHtml(fact) {
-  const rows = (fact.value && fact.value.findings) || [];
-  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
-  return `<div class="mt-s1 text-caveat text-ink">
-      <span class="tnum">${rows.length}</span> sub-resources assessed ·
-      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
-      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
-        they belong with the verdict loop.</span>
-      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
-    </div>`;
-}
+
+/* Round two of the dashboard (DASHBOARD-ROUND-TWO.md): presentation, not
+ * structure. The grouping by question stands; what was missing was the tier
+ * it was meant to unlock — a reader still assembled every answer themselves
+ * from raw rows, 2,300 pixels deep. Five rules, each a function below:
+ *
+ *   1. every section opens with its answer — the answer LAYER's sentence,
+ *      the same one the Evidence rail shows, not one composed here;
+ *   2. findings that agree collapse to one row with a count;
+ *   3. provenance is section-level; the analysis name leaves every row;
+ *   4. a disagreement is the section's headline, shown once and pointed to
+ *      from any other question that reaches the same conflict;
+ *   5. booleans and unsets leave the counts table — they are part of the
+ *      answer, or they are "not recorded", never a number.
+ */
 
 function findingRowHtml(f, analysisId, when) {
   const c = findingGlyph(f.label);
@@ -3423,57 +3608,444 @@ function findingRowHtml(f, analysisId, when) {
         f.check_name
           ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
           : esc(humanLabel(f.label) || analysisId)}.</strong>
-      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
-      <span class="block text-provenance text-ink-muted" data-delta="${esc(analysisId)}|${esc(f.check_name || '')}">·</span></span>
-    <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(analysisId)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}</span>
+    <span class="shrink-0 text-provenance text-ink-muted">›</span>
   </button>`;
 }
 
-function sortUnresolvedFirst(findings) {
-  return [...findings].sort((x, y) => {
-    const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
-    const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
-    return ux - uy;
-  });
+function isUnresolved(f) {
+  return UNRESOLVED_LABELS.has(String(f.label || '').toLowerCase());
+}
+
+/** Rule 2. Unresolved findings stay individual and first — each is a
+ *  decision. The rest group by verdict: two or more that agree become one
+ *  row naming the count and the checks, with the full rows behind a
+ *  disclosure. "Five passes" is one fact, not five. */
+function findingsHtml(findings, analysisId, when) {
+  const open = findings.filter(isUnresolved);
+  const rest = findings.filter((f) => !isUnresolved(f));
+  const groups = new Map();
+  for (const f of rest) {
+    const k = String(f.label || '').toLowerCase();
+    groups.set(k, [...(groups.get(k) || []), f]);
+  }
+  const out = [...open.map((f) => findingRowHtml(f, analysisId, when))];
+  for (const [label, rows] of groups) {
+    if (rows.length === 1) { out.push(findingRowHtml(rows[0], analysisId, when)); continue; }
+    const c = findingGlyph(label);
+    const names = rows.map((f) => (f.check_name || '').replace(/_/g, ' ')).filter(Boolean);
+    out.push(`<details class="border-b border-rule py-s2">
+      <summary class="flex cursor-pointer items-baseline gap-s2 list-none">
+        <span class="w-[16px] shrink-0 ${c.tone}">${c.glyph}</span>
+        <span class="min-w-0 flex-1 text-ink"><strong class="font-semibold tnum">${rows.length} checks — ${esc(humanLabel(label))}.</strong>
+          <span class="text-ink-muted">${esc(names.join(', '))}</span></span>
+        <span class="shrink-0 text-provenance text-ink-muted">show ${rows.length}</span>
+      </summary>
+      <div class="pl-[22px]">${rows.map((f) => findingRowHtml(f, analysisId, when)).join('')}</div>
+    </details>`);
+  }
+  return out.join('');
+}
+
+function subResourceSummaryHtml(fact) {
+  const rows = (fact.value && fact.value.findings) || [];
+  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
+  return `<div class="mt-s1 text-caveat text-ink">
+      <span class="tnum">${rows.length}</span> sub-resources assessed ·
+      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
+      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
+        they belong with the verdict loop.</span>
+      <button type="button" data-members="sub_resource_survey" data-title="sub-resources" class="cursor-pointer bg-transparent text-accent-ink underline">which ›</button>
+      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
+    </div>`;
+}
+
+function factGlyph(state) {
+  switch (state) {
+    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
+    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
+    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
+    default: return { glyph: '·', tone: 'text-ink-muted' };
+  }
+}
+
+/** Rule 5. Split an analysis's scalar results three ways: numbers for the
+ *  counts table; booleans, which ARE part of the answer; and unsets — null
+ *  or empty — which are "not recorded" and must never render as a number.
+ *  A zero is left as a zero: whether it means "none" or "not set" is the
+ *  producer's to say, and guessing here would be the lie the round names. */
+function splitScalars(value) {
+  const numbers = []; const flags = []; const unset = [];
+  for (const [k, v] of Object.entries(value || {})) {
+    if (k === 'findings' || k === 'overall') continue;
+    if (typeof v === 'number') numbers.push({ key: k, value: v });
+    else if (typeof v === 'boolean') flags.push({ key: k, value: v });
+    else if (v == null || v === '') unset.push(k);
+  }
+  return { numbers, flags, unset };
 }
 
 /** One analysis, under one question. `checks` is the set of check names this
- *  question declares for it, or null for the whole analysis. */
+ *  question declares for it, or null for the whole analysis. Provenance is
+ *  NOT on the rows (rule 3): the analysis is named once, here, in the head
+ *  line, and in the popup beside the run. */
 function analysisUnderQuestionHtml(fact, id, checks) {
   if (!fact) {
     return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · not read</div>`;
   }
   const g = factGlyph(fact.state);
   const when = fact.last_run_at || '';
-  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
-      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
-      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
-      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
-      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}</span>
-      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
-    </button>`;
-  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
   const value = (fact.value && typeof fact.value === 'object') ? fact.value : {};
   let findings = Array.isArray(value.findings) ? value.findings : [];
   if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
   findings = sortUnresolvedFirst(findings);
-  const counts = checks ? [] : Object.entries(value)
-    .filter(([k, v]) => k !== 'findings' && k !== 'overall' && (typeof v === 'number' || typeof v === 'boolean'))
-    .map(([k, v]) => ({ key: k, value: v }));
-  // Under a check-scoped question the whole-analysis sentence is not the
-  // answer — "1 of 5 conventions need attention" said three times under three
-  // questions that each asked about ONE convention. The scoped finding IS the
-  // answer, and it carries the analysis id and time itself. The sentence
-  // stays where the whole analysis is shown.
+  const { numbers: allNumbers, flags, unset } = checks ? { numbers: [], flags: [], unset: [] } : splitScalars(value);
+  // An analysis whose state is "nothing found" has said so in its sentence.
+  // Four zeros under "Nothing ingested from site" restate it as a table, and
+  // a zero that means "nothing happened" reads as a measurement of nothing.
+  // The zeros are dropped only in that state; a zero from a measured run is
+  // a value and stays.
+  const numbers = fact.state === 'nothing_found' ? allNumbers.filter((c) => c.value !== 0) : allNumbers;
+  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
+      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
+      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}${
+        flags.length ? ` <span class="text-caveat text-ink-muted">· ${flags.map((f) => `${esc(f.key.replace(/_/g, ' '))}: ${f.value ? 'yes' : 'no'}`).join(' · ')}</span>` : ''}</span>
+      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
+    </button>
+    <div class="pl-[22px] text-provenance">
+      <button type="button" data-members="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">members ›</button>
+    </div>`;
+  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
   const scopedAndFound = checks && findings.length;
   return (scopedAndFound ? '' : head)
-    + (findings.length ? findings.map((f) => findingRowHtml(f, id, when)).join('') : '')
-    + (counts.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${counts.map((c) => `
-        <tr class="wl-countrow cursor-pointer border-b border-rule" data-measure="${esc(id)}" data-metric="${esc(c.key)}"
+    + (findings.length ? findingsHtml(findings, id, when) : '')
+    + (unset.length ? `<div class="mt-s1 text-caveat text-ink-muted">not recorded: ${esc(unset.map((k) => k.replace(/_/g, ' ')).join(', '))}</div>` : '')
+    + (numbers.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${numbers.map((c) => `
+        <tr class="wl-countrow cursor-pointer border-b border-rule" data-members="${esc(id)}" data-metric="${esc(c.key)}"
           data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
           <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
+          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}
+            <span class="text-provenance text-ink-muted">members ›</span></td>
         </tr>`).join('')}</table>` : '');
+}
+
+function sortUnresolvedFirst(findings) {
+  return [...findings].sort((x, y) => (isUnresolved(x) ? 0 : 1) - (isUnresolved(y) ? 0 : 1));
+}
+
+/** Rule 4. Every scalar name reported by more than one analysis with
+ *  different values, across ALL the facts on the pane — so a conflict is
+ *  found wherever it lives and shown wherever it is reached. */
+function findDisputes(facts) {
+  const seen = new Map();
+  for (const [id, f] of facts) {
+    const value = (f && f.value && typeof f.value === 'object') ? f.value : {};
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v !== 'number') continue;
+      seen.set(k, [...(seen.get(k) || []), { analysis: id, value: v }]);
+    }
+  }
+  const disputes = new Map();
+  for (const [k, rec] of seen) {
+    if (rec.length > 1 && new Set(rec.map((x) => x.value)).size > 1) disputes.set(k, rec);
+  }
+  return disputes;
+}
+
+function disputeHtml(key, rec, when) {
+  return `<div class="mt-s2 border-l-2 border-state-warn pl-s2">
+      <div class="text-caps uppercase tracking-caps text-state-warn">Disagreement · ${esc(key.replace(/_/g, ' '))}</div>
+      <div class="mt-[2px] flex flex-wrap items-baseline gap-s3 text-answer text-ink">
+        ${rec.map((x) => `<button type="button" class="cursor-pointer border-0 bg-transparent p-0 text-left"
+            data-members="${esc(x.analysis)}" data-metric="${esc(key)}" data-title="${esc(key.replace(/_/g, ' '))}" data-when="${esc(when || '')}">
+            <strong class="tnum font-semibold">${esc(fmtScalar(x.value, key))}</strong>
+            <span class="font-mono text-provenance text-ink-muted">${esc(x.analysis)} ›</span></button>`).join('')}
+      </div>
+      <div class="text-caveat text-ink-muted">${rec.length} analyses report this name with different values; they may not be measuring the same thing. Open either to see what each counted — the members list in the rail.</div>
+    </div>`;
+}
+
+/** The section's state, for the anchor rail: the worst thing in it. */
+function sectionState(q, answerEnv, facts, ids) {
+  const known = (answerEnv && answerEnv.facts || []).filter((f) => f.is_known);
+  if (ids.some((id) => facts.get(id)?.state === 'error')) return 'error';
+  if (!known.length) return 'unrun';
+  // A question the catalog itself calls `mixed` or `partial` is not answered
+  // by its analyses reporting; they are pieces of an answer. A tick here
+  // said "answered" over prose that said "nothing detects one", and the
+  // glyph is the one people read. Half-filled, in the accent — attention,
+  // not completion.
+  if (q && (q.kind === 'mixed' || q.kind === 'partial')) return 'partial';
+  return 'answered';
+}
+
+/* ── The third door: the things a count counted ──────────────────────────
+ *
+ * There are three "show me more" requests on this pane and only one had a
+ * path. About the MEASUREMENT — where did 68 come from, has it changed,
+ * re-run it — is the popup. A question nobody asked — is this safe for
+ * customer data? — is chat. The one in the middle, and the most common:
+ * WHICH 68? Which 18 advisories, which 90 files, which three sub-resources
+ * were not worthy? Nothing opened that. The popup looked like the door and
+ * opened the number's history instead, so a reader learned that 18 had been
+ * 18 for a fortnight.
+ *
+ * Members render in the right rail, which on Analysis held an empty ask box
+ * and eighteen hundred pixels of nothing. Click a count, the rail lists the
+ * members; the centre column keeps its place. No modal, no navigation.
+ *
+ * Members nest — file → symbol today; endpoint → operation → schema when
+ * those are measured — and PURPOSE decides how much of the tree you see:
+ * intent to use wants the public surface, intent to maintain wants that
+ * plus the internal structure. One tree, two default expansions, because
+ * maintain is a superset. Only symbols carry a public/internal marker, and
+ * that marker is inferred from naming — the rail says so.
+ *
+ * This is also where two disagreeing counts get settled: "open either to
+ * see what each counted" was already the instruction on the disagreement
+ * block, and until now it could not be followed.
+ */
+function memberScope() {
+  return currentPurposes().includes('Maintain') ? 'all' : 'public';
+}
+
+/* ── Promotion: the selection becomes a thing someone acts on ────────────
+ *
+ * A member list is the first place in the product where a person looks at
+ * THINGS rather than NUMBERS, and things are what you act on. "18" is not a
+ * work item; "three of these have no fix" is.
+ *
+ * The filters ARE the selection. "Everything matching the thing I noticed"
+ * should not need a click per row: a facet — a severity, a package — selects
+ * its members in one. Hand-picking stays. Facets come from the fields the
+ * annotation already stores; nothing is invented, which is also why "no
+ * fix" is not one here — cve_scan does not record fix availability, and a
+ * facet the data cannot back would select nothing and look broken.
+ *
+ * Three acts, and they are different: add to work list (I will deal with
+ * this), raise RFA (someone must), note in journal (worth knowing — no
+ * obligation, so the likeliest used). One provenance line, composed on the
+ * server, travels with all three. The selection is a SNAPSHOT of names,
+ * never a query: a work item that changes what it refers to when the scan
+ * re-runs is unusable.
+ *
+ * No "ignore" / "accept risk" here. That is a disposition on the finding — a
+ * judgement with an author and a date — and belongs to the perishable-field
+ * machinery, not a toolbar.
+ */
+function facetsHtml(groups, data) {
+  const leaf = groups.flatMap((g) => g.members.filter((m) => !m.children_key).map((m) => ({ ...m, group: g.name })));
+  const hasTree = groups.some((g) => g.members.some((m) => m.children_key));
+  // A tree-shaped list has no leaves at this level; say so rather than
+  // rendering no facet row and no checkboxes with nothing marking why.
+  if (!leaf.length) {
+    return hasTree
+      ? `<div class="mb-s2 text-caps text-chrome-muted">this list is a tree · promotion selects leaves — open a branch to pick from it</div>`
+      : '';
+  }
+  const byDetail = new Map();
+  for (const m of leaf) if (m.detail) byDetail.set(m.detail, (byDetail.get(m.detail) || 0) + 1);
+  const detailFacets = [...byDetail.entries()].filter(([, n]) => n < leaf.length).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const groupFacets = groups.filter((g) => g.members.some((m) => !m.children_key) && groups.length > 1).slice(0, 8);
+  // The detail facets are counted over the members LISTED, which the 200-row
+  // cap and truncated groups bound; the group facets use the group's own
+  // count, which the server knows in full. Where the two differ, say which.
+  const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  const capped = (data?.total || 0) > shown || groups.some((g) => g.truncated);
+  if (!detailFacets.length && !groupFacets.length) {
+    return `<div class="mb-s2 text-caps text-chrome-muted">no facets · ${byDetail.size === 1 ? 'one value across the list' : 'nothing to select by'}${
+      hasTree ? ' · this list is a tree; promotion selects leaves' : ''}</div>`;
+  }
+  return `<div class="mb-s2 flex flex-wrap items-baseline gap-x-s2 gap-y-[2px] text-caps">
+    <span class="text-chrome-muted">select</span>
+    ${detailFacets.map(([d, n]) => `<button data-facet-detail="${esc(d)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">${esc(d)} <span class="tnum text-chrome-muted">${n}</span></button>`).join('')}
+    ${groupFacets.map((g) => `<button data-facet-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">${esc(g.name)} <span class="tnum text-chrome-muted">${g.count}</span></button>`).join('')}
+    <button data-facet-all class="cursor-pointer bg-transparent p-0 font-mono text-chrome-ink underline">all <span class="tnum text-chrome-muted">${leaf.length}</span></button>
+    <button data-facet-none class="cursor-pointer bg-transparent p-0 text-chrome-ink underline">none</button>
+    ${capped ? `<span class="text-chrome-muted">· counts are of the <span class="tnum">${shown}</span> shown</span>` : ''}
+    ${hasTree ? `<span class="text-chrome-muted">· a tree: leaves only</span>` : ''}
+  </div>`;
+}
+
+function wireSelection(out, { slug, analysisId, metric, data }) {
+  const picks = () => [...out.querySelectorAll('[data-pick]:checked')];
+  const footer = out.querySelector('#member-selection');
+  const project = state.projects.find((x) => x.slug === slug);
+  const total = data.total || 0;
+  // The server's date, on the payload. The line is composed on the server so
+  // it cannot be forged; taking its date from the browser undid that.
+  const runAt = data.run_at || '';
+  // The facets ARE the selection and hand-picking refines it. So the facet is
+  // remembered with the set it selected, and a refinement is described --
+  // "high, plus 1 added by hand" -- rather than forgotten.
+  let facetBase = '';
+  let facetSet = null;      // Set of names the facet selected, or null for none
+  // A typed name wins until it is cleared. Touched is tracked, not inferred
+  // from the string -- the proposal starts with the display name too.
+  let touched = false;
+  let typed = '';
+
+  const setFacet = (pred, label) => {
+    out.querySelectorAll('[data-pick]').forEach((c) => { c.checked = pred(c); });
+    facetBase = label;
+    facetSet = label ? new Set(picks().map((c) => c.dataset.pick)) : null;
+    render();
+  };
+  out.querySelector('[data-facet-all]')?.addEventListener('click', () => setFacet(() => true, ''));
+  out.querySelector('[data-facet-none]')?.addEventListener('click', () => setFacet(() => false, ''));
+  out.querySelectorAll('[data-facet-detail]').forEach((b) => b.addEventListener('click', () =>
+    setFacet((c) => c.dataset.detail === b.dataset.facetDetail, b.dataset.facetDetail)));
+  out.querySelectorAll('[data-facet-group]').forEach((b) => b.addEventListener('click', () =>
+    setFacet((c) => c.dataset.group === b.dataset.facetGroup, b.dataset.facetGroup)));
+  out.querySelectorAll('[data-pick]').forEach((c) => c.addEventListener('change', () => render()));
+
+  function facetLabel() {
+    if (!facetBase || !facetSet) return '';
+    const now = new Set(picks().map((c) => c.dataset.pick));
+    const added = [...now].filter((n) => !facetSet.has(n)).length;
+    const removed = [...facetSet].filter((n) => !now.has(n)).length;
+    return facetBase
+      + (added ? `, plus ${added} added by hand` : '')
+      + (removed ? `, less ${removed} removed by hand` : '');
+  }
+  // Mirrors members.singular(): only the last word, ies -> y, es after a
+  // sibilant, else drop the s. The server proposes the same name on save.
+  const singular = (noun) => {
+    const i = noun.lastIndexOf(' ');
+    const head = i >= 0 ? noun.slice(0, i + 1) : '';
+    let last = i >= 0 ? noun.slice(i + 1) : noun;
+    if (/ies$/.test(last) && last.length > 3) last = last.slice(0, -3) + 'y';
+    else if (/(ses|xes|ches|shes)$/.test(last)) last = last.slice(0, -2);
+    else if (/s$/.test(last) && !/ss$/.test(last)) last = last.slice(0, -1);
+    return head + last;
+  };
+  function proposed(n) {
+    const what = (metric || data.metric || 'members').replace(/_/g, ' ');
+    const f = facetLabel();
+    return `${project?.display_name || slug} — ${n} ${n === 1 ? singular(what) : what}${f ? `, ${f}` : ''}`;
+  }
+  function render() {
+    const sel = picks();
+    if (!sel.length) { footer.hidden = true; footer.innerHTML = ''; return; }
+    footer.hidden = false;
+    const facet = facetLabel();
+    footer.innerHTML = `
+      <div class="mb-[3px] text-caps text-chrome-ink"><span class="tnum">${sel.length}</span> selected${facet ? ` · ${esc(facet)}` : ''}
+        <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · <span class="tnum">${esc(ago(runAt))}</span>` : ' · run date not recorded'} · a snapshot, not a query</span></div>
+      <input id="promote-name" type="text" value="${esc(touched && typed ? typed : proposed(sel.length))}"
+        class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink">
+      <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
+        <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
+        <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
+        <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
+        <span id="promote-status" class="text-chrome-muted"></span>
+      </div>`;
+    const nameEl = footer.querySelector('#promote-name');
+    nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
+    footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
+      const status = footer.querySelector('#promote-status');
+      const members = picks().map((c) => c.dataset.pick);
+      b.disabled = true; status.textContent = '…';
+      try {
+        const out2 = await promoteMembers(slug, analysisId, {
+          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
+          name: nameEl.value.trim(),
+        });
+        // Say where it went, not "sent".
+        const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
+        status.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+      }
+    }));
+  }
+}
+
+async function openMembers({ slug, analysisId, metric = '', title = '' }) {
+  const out = $('rail-evidence');
+  if (!out) return;
+  const scope = state.memberScope || memberScope();
+  out.innerHTML = `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`;
+  let data;
+  try {
+    data = await getMembers(slug, analysisId, { metric, scope });
+  } catch (err) {
+    out.innerHTML = `<div class="text-caps text-state-warn-on-dark">The members could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  const groups = data.groups || [];
+  const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
+      <span class="text-caps text-chrome-muted"><span class="tnum">${data.total}</span> · ${esc(data.title)}${
+        data.inventory ? ` · ${tnum(esc(data.inventory))}` : ''}</span>
+      <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
+    </div>
+    <div class="mb-s2 text-caps text-chrome-muted">
+      <span class="font-mono">${esc(data.analysis_id)}</span>
+      · <button data-act="member-history" class="cursor-pointer bg-transparent text-accent-on-dark underline">measurement ›</button>
+      · scope
+      <button data-scope="public" aria-pressed="${scope === 'public'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">use</button>
+      <button data-scope="all" aria-pressed="${scope === 'all'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">maintain</button>
+      ${data.scope_honoured ? '' : `<span class="text-chrome-muted">· scope not applicable to this set</span>`}
+    </div>
+    ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
+    ${facetsHtml(groups, data)}
+    ${groups.length ? '' : `<div class="text-caps text-chrome-muted">Nothing listed — <span class="font-mono">${esc(data.source)}</span> holds no rows for this analysis on this resource.</div>`}
+    <div class="flex flex-col gap-s1">
+      ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
+        <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
+        <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
+          ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
+            ${m.children_key ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0">`}
+            ${m.children_key
+              ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
+                 <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
+              : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+            ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
+          </li>`).join('')}
+          ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
+        </ul>
+      </details>`).join('')}
+    </div>
+    ${shown < data.total && !groups.some((g) => g.truncated)
+      ? `<div class="mt-s1 text-caps text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${data.total}</span> listed; the rest are nested under what is shown</div>` : ''}
+    <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>
+    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2" hidden></div>`;
+
+  out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
+  wireSelection(out, { slug, analysisId, metric, data });
+  out.querySelector('[data-act="member-history"]')?.addEventListener('click', () => openMeasurementDetail({
+    slug, analysisId, title: title || analysisId, metric,
+  }));
+  out.querySelectorAll('[data-scope]').forEach((b) => b.addEventListener('click', () => {
+    state.memberScope = b.dataset.scope;
+    openMembers({ slug, analysisId, metric, title });
+  }));
+  // One level down, on demand: a file opens its symbols in place.
+  out.querySelectorAll('[data-children]').forEach((b) => b.addEventListener('click', async () => {
+    const li = b.closest('li');
+    if (li.querySelector('ul')) { li.querySelector('ul').remove(); return; }
+    b.textContent = `${b.textContent} …`;
+    let rows;
+    try { rows = (await getMemberChildren(slug, analysisId, b.dataset.children, { scope })).members || []; }
+    catch (err) { rows = [{ name: `could not read: ${err.message}`, detail: '' }]; }
+    b.textContent = b.textContent.replace(/ …$/, '');
+    const ul = document.createElement('ul');
+    ul.className = 'm-0 mt-[2px] w-full list-none p-0 pl-s3';
+    ul.innerHTML = rows.map((m) => `<li class="flex items-baseline gap-s2 py-[1px] text-caps">
+        <span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>
+        ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}</li>`).join('')
+      || `<li class="text-caps text-chrome-muted">nothing at this level</li>`;
+    li.appendChild(ul);
+  }));
+  // The rail may be closed on a narrow shell; a members request opens it.
+  if (typeof setRailOpen === 'function') setRailOpen(true);
 }
 
 async function renderDashboardByQuestion(slug, stage, host, live) {
@@ -3495,8 +4067,6 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
   const unmeasured = questions.length - measured.length;
   const asked = new Set(measured.flatMap((q) => q.analysis_ids || []));
 
-  // Everything the stage measures, so what nobody asks for can be listed
-  // rather than lost. A catalog read, not a results read — it is the cheap one.
   let stageIds = [];
   try {
     const cat = await listAnalyses('repo', { intent: stage });
@@ -3505,59 +4075,146 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
   const unasked = stageIds.filter((id) => !asked.has(id));
 
   host.innerHTML = `<span class="text-caveat text-ink-muted">Reading ${asked.size + unasked.length} measurements…</span>`;
-  let facts = new Map();
+  const facts = new Map();
+  let answers;
   try {
-    const res = await getBulkFacts([slug], [...asked, ...unasked]);
+    // The facts, and — rule 1 — each question's ANSWER from the same layer
+    // the Evidence rail reads. Fetched together; the answers are per
+    // question and independent, so a slow one does not hold the rest.
+    const [res, envs, ctx] = await Promise.all([
+      getBulkFacts([slug], [...asked, ...unasked]),
+      Promise.allSettled(measured.map((q) => getAnswer(slug, q.question))),
+      getContext('repo', slug).catch(() => ({})),
+    ]);
+    state.contextAnswers = ctx?.question_answers || {};
     for (const f of (res.subjects || {})[slug] || []) facts.set(f.analysis_id, f);
+    answers = envs.map((e) => (e.status === 'fulfilled' ? e.value : null));
   } catch (err) {
     if (live()) host.innerHTML = `<span class="text-state-warn">The measurements could not be read: ${esc(err.message)}</span>`;
     return;
   }
   if (!live()) return;
 
-  const shownWhole = new Map();   // analysis id -> question index that rendered it in full
+  const disputes = findDisputes(facts);
+  const disputeShownIn = new Map();     // key -> question index that rendered it
+  const shownWhole = new Map();
   const sections = measured.map((q, qi) => {
     const ids = q.analysis_ids || [];
+    const env = answers[qi];
     const declared = (q.checks || []).map((c) => String(c).split(':'));
     const checksFor = (id) => {
       const mine = declared.filter(([a]) => a === id).map(([, c]) => c).filter(Boolean);
       return mine.length ? new Set(mine) : null;
     };
+
+    // Rule 1: the answer sentence, relayed from the answer layer — the same
+    // one the Evidence rail shows. `lines.answer` is already HTML, escaped
+    // by readEnvelope branch by branch, so it is NOT escaped again here.
+    // Where the layer has nothing, say what was looked in — "0 of 3
+    // reported" is a state. A human-answered question is a different case:
+    // its answer is what a person said, and the analyses under it are
+    // informants, not the answer.
+    const lines = env ? readEnvelope(q, env) : null;
+    const reported = ids.filter((id) => facts.get(id)?.state === 'measured').length;
+    const human = q.kind === 'human' ? (state.contextAnswers || {})[questionKey(q.question)] : null;
+    const answerLine = human && human.answer
+      ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${tnum(esc(human.answer))}
+           <span class="text-provenance text-ink-muted">· answered <span class="tnum">${esc(ago(human.answered_at))}</span></span></p>`
+      : q.kind === 'human'
+        ? `<p class="mt-[2px] text-answer text-ink-muted">needs a person to answer — the analyses below inform it, they do not decide it</p>`
+      : lines && lines.answer
+        ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${lines.answer}</p>`
+        : `<p class="mt-[2px] text-answer text-ink-muted">not answered — <span class="tnum">${reported}</span> of <span class="tnum">${ids.length}</span> analyses reported</p>`;
+
+    // Rule 4: the section's disagreements, once, above the detail.
+    const mine = [...disputes].filter(([, rec]) => rec.some((x) => ids.includes(x.analysis)));
+    const disputeBlocks = mine.map(([key, rec]) => {
+      const prior = disputeShownIn.get(key);
+      if (prior !== undefined) {
+        return `<div class="mt-s2 text-caveat text-state-warn">Same disagreement on <em>${esc(key.replace(/_/g, ' '))}</em> as under
+          <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a>.</div>`;
+      }
+      disputeShownIn.set(key, qi);
+      return disputeHtml(key, rec, facts.get(rec[0].analysis)?.last_run_at);
+    }).join('');
+
     const body = ids.map((id) => {
       const checks = checksFor(id);
       if (!checks) {
         const prior = shownWhole.get(id);
         if (prior !== undefined && prior !== qi) {
           return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · shown in full under
-            <em>${esc(measured[prior].question)}</em></div>`;
+            <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a></div>`;
         }
         shownWhole.set(id, qi);
       }
       return analysisUnderQuestionHtml(facts.get(id), id, checks);
     }).join('');
-    return `<section class="mb-s5">
-      <div class="text-answer text-ink">${esc(q.question)}</div>
-      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
-      ${body}
-    </section>`;
-  }).join('');
 
-  const trailing = unasked.length ? `<section class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
+    // Rule 3: provenance at section level.
+    const nMeasures = ids.reduce((n, id) => {
+      const v = facts.get(id)?.value; if (!v || typeof v !== 'object') return n;
+      return n + (Array.isArray(v.findings) ? v.findings.length : 0)
+        + Object.entries(v).filter(([k, x]) => k !== 'findings' && (typeof x === 'number' || typeof x === 'boolean')).length;
+    }, 0);
+    const st = sectionState(q, env, facts, ids);
+    // Separation (Repo Handoff, item 2): a hairline above every question with
+    // air above it, the glyph out in the margin, and weight in the order the
+    // reader needs — the answer heaviest, the question next, the meta last.
+    return `<section id="dq-${qi}" class="mt-s4 border-t border-rule pt-s3 scroll-mt-[8px]">
+      <div class="flex items-baseline gap-s2 -ml-[22px] pl-0">
+        <span class="w-[22px] shrink-0 text-right ${tone(st, 'paper')}">${GLYPH[st] || '·'}</span>
+        <div class="min-w-0 flex-1">
+          <div class="text-answer text-ink">${esc(q.question)}</div>
+          ${answerLine.replace('text-answer text-ink"', 'text-answer font-semibold text-ink"')}
+          <div class="text-provenance text-ink-muted"><span class="tnum">${ids.length}</span> analys${ids.length === 1 ? 'is' : 'es'} ·
+            <span class="tnum">${nMeasures}</span> measurements${lines && lines.lastRun ? ` · latest ${esc(ago(lines.lastRun))}` : ''}</div>
+        </div>
+      </div>
+      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] pl-[22px] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
+      ${q.catalog_history ? `<details class="pl-[22px]"><summary class="cursor-pointer text-provenance text-ink-muted">catalog history</summary>
+        <p class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(q.catalog_history)}</p></details>` : ''}
+      ${disputeBlocks}
+      <details class="mt-s1"><summary class="cursor-pointer text-caveat text-ink-muted">detail</summary>${body}</details>
+    </section>`;
+  });
+
+  const trailing = unasked.length ? `<section id="dq-unasked" class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
       <div class="text-caps uppercase tracking-caps text-ink-muted">Measured, but no question asks ·
         <span class="tnum">${unasked.length}</span></div>
       <p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">These analyses run at this stage and
         nothing in the question catalog names them. Either a question is missing, or the analysis is
         evidence for a judgement rather than an answer to a question. Listed so the gap is a fact
         rather than a surprise.</p>
-      ${unasked.map((id) => analysisUnderQuestionHtml(facts.get(id), id, null)).join('')}
+      ${unasked.map((id) => {
+        const f = facts.get(id); const g = f ? factGlyph(f.state) : { glyph: '·', tone: 'text-ink-muted' };
+        return `<details class="mt-s2"><summary class="flex cursor-pointer items-baseline gap-s2 list-none">
+            <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+            <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(f?.headline || f?.state || 'not read'))}</span>
+            <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${f?.last_run_at ? ` · ${esc(ago(f.last_run_at))}` : ''} ›</span>
+          </summary><div class="pl-[22px]">${analysisUnderQuestionHtml(f, id, null)}</div></details>`;
+      }).join('')}
     </section>` : '';
 
-  host.innerHTML = `<div class="mb-s3 text-caveat text-ink-muted">
-      <span class="tnum">${measured.length}</span> question${measured.length === 1 ? '' : 's'} with measurements${
-      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered without one` : ''}${
-      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}
+  // The anchor rail: five questions, five glyphs, jump to any. The same
+  // vocabulary as the matrix, and the reason a 2,300-pixel page can be
+  // seen whole.
+  const rail = measured.length > 1 ? `<nav class="mb-s3 flex flex-wrap gap-x-s3 gap-y-[2px] text-caveat">
+      ${measured.map((q, qi) => {
+        const st = sectionState(q, answers[qi], facts, q.analysis_ids || []);
+        return `<a href="#dq-${qi}" class="text-ink no-underline"><span class="${tone(st, 'paper')}">${GLYPH[st] || '·'}</span> ${esc(q.question)}</a>`;
+      }).join('')}${unasked.length ? `<a href="#dq-unasked" class="text-ink-muted no-underline">· unasked (${unasked.length})</a>` : ''}
+    </nav>` : '';
+
+  host.innerHTML = `<div class="mb-s2 text-caveat text-ink-muted">
+      <span class="tnum">${questions.length}</span> question${questions.length === 1 ? '' : 's'} at this stage ·
+      <span class="tnum">${measured.length}</span> measured${
+      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered another way — a direct fact, a person, or not yet` : ''}${
+      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}${
+      disputes.size ? ` · <span class="text-state-warn tnum">${disputes.size}</span> disagreement${disputes.size === 1 ? '' : 's'}` : ''}
       ${purposeLegendHtmlFor(questions)}</div>
-    ${sections || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
+    ${rail}
+    ${sections.join('') || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
     ${trailing}`;
 
   host.querySelectorAll('[data-measure]').forEach((n) => {
@@ -3566,14 +4223,17 @@ async function renderDashboardByQuestion(slug, stage, host, live) {
       metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
     }));
   });
-  // Work lists live under the Investigation frame — the matrix — not under a
-  // sub-tab of this resource. Promotion is a decision about a set.
-  host.querySelector('[data-goto-worklist]')?.addEventListener('click', () => {
+  host.querySelectorAll('[data-members]').forEach((n) => {
+    n.addEventListener('click', () => openMembers({
+      slug, analysisId: n.dataset.members, metric: n.dataset.metric || '', title: n.dataset.title || n.dataset.members,
+    }));
+  });
+  host.querySelectorAll('[data-goto-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.stage = 'investigation';
     writeUrl();
     renderIntentNav();
     loadPane();
-  });
+  }));
   for (const n of host.querySelectorAll('[data-delta]')) {
     const [analysisId] = n.dataset.delta.split('|');
     deltaFor(slug, analysisId).then((text) => {
@@ -3997,6 +4657,7 @@ async function loadPane() {
     try {
       await openWorkList({
         el,
+        subTabs: SUB_TABS.map((t) => ({ id: t.id, label: t.label })),
         stage: state.stage,
         perspectives: state.activePerspectives,
         projects: state.projects,
@@ -4031,6 +4692,7 @@ async function loadPane() {
 
   if (state.subTab === 'survey') { await loadSurveyPane(); return; }
   if (state.subTab === 'dashboard') { await loadDashboardPane(); return; }
+  if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
   if (state.subTab !== 'questions') {
     const tab = SUB_TABS.find((t) => t.id === state.subTab)
@@ -4127,6 +4789,7 @@ async function loadPane() {
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>
+    <div id="enrichment-form"></div>
     <div id="question-rows"></div>`;
   bindSubTabs();
   bindResourceHeader();
@@ -4155,8 +4818,10 @@ async function loadPane() {
   try {
     const ctx = await getContext('repo', slug);
     state.contextAnswers = ctx?.question_answers || {};
+    state.enrichment = ctx?.enrichment || {};
   } catch {
     state.contextAnswers = {};
+    state.enrichment = {};
   }
 
   // The residue count needs the unfiltered total. One extra call, only when
@@ -4178,16 +4843,20 @@ async function loadPane() {
   renderPerspectiveRow();
 
   const rows = $('question-rows');
+  // Curate's screen is a review-and-commit, not a question list; it renders
+  // whether or not the catalog has rows for the stage (today it has none).
+  if (state.stage === 'curate') renderCurate(slug);
   if (!state.questions.length) {
-    rows.innerHTML = `<div class="py-s3 text-answer text-ink">
+    rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
-    $('answered-count').textContent = `0 questions · ${stageLabel()}`;
+    $('answered-count').textContent = state.stage === 'curate' ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;
   }
 
   rows.innerHTML = state.questions.map((q, i) => rowShell(q, i)).join('');
   wireHumanAnswers(rows, slug);
+  if (state.stage === 'enrichment') renderEnrichment(slug);
   updateAnsweredCount();
   renderLegend();
 
@@ -4244,6 +4913,443 @@ function wireHumanAnswers(host, slug) {
       setTimeout(() => { btn.textContent = label; }, 4000);
     }
   });
+}
+
+/* ── Enrichment: testimony, not paperwork ──────────────────────────────────
+ *
+ * Two halves, not one list of eight fields with one Save. The line between
+ * them is not arbitrary: a field is a JUDGEMENT if a person's opinion is the
+ * value — sensitivity, criticality, intended use, actual use, owner — and an
+ * OBSERVATION if a person is supplying a fact about the world — licence,
+ * environment, retention. Opinions need an author, a date and a review
+ * state. Observations need a source.
+ *
+ * Judgements come first and get the room: they are the part only a person
+ * can supply. Every field saves alone — someone who knows the owner and not
+ * the sensitivity can say so and leave. The author and date sit on every
+ * judgement without hovering, because testimony without an author is not
+ * testimony, and because that is what makes review meaningful later.
+ *
+ * Perishability, which needs no per-field configuration: a judgement carries
+ * the measurements that were on screen when it was made. When one of those
+ * moves, the judgement is not invalidated — it gets a flag that says what
+ * moved. "⚠ review — evidence moved: cve_scan" is a specific, answerable
+ * prompt, not a staleness timer.
+ *
+ * Evidence sits in the rail as MATERIAL, never as proposals. No "apply
+ * suggestion". The one exception is a fact a survey already established —
+ * the licence — which is offered to confirm, with its source, into the
+ * observations half.
+ *
+ * Nothing here is written to the catalogue until Curate. That sentence is
+ * the one misconception worth pre-empting, and it is on the pane.
+ */
+const JUDGEMENTS = [
+  { key: 'sensitivity',  label: 'Sensitivity',  options: ['public', 'internal', 'confidential', 'restricted'] },
+  { key: 'criticality',  label: 'Criticality',  options: ['low', 'important', 'critical'] },
+  { key: 'intended_use', label: 'Intended use', placeholder: 'what is this for, here?' },
+  { key: 'actual_use',   label: 'Actual use',   placeholder: 'how is it used today?' },
+  { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
+];
+const OBSERVATIONS = [
+  { key: 'licence',      label: 'Licence',      fromAnalysis: 'license_classification' },
+  { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
+  { key: 'retention',    label: 'Retention',    placeholder: 'how long, and by whose rule?' },
+];
+// The analyses whose current state is the evidence for a judgement.
+const ENRICHMENT_EVIDENCE = ['interface_surface', 'security_scan', 'chaoss_metrics', 'cve_scan',
+  'repository_health', 'license_classification', 'secret_scan', 'documentation_coverage'];
+
+function evidenceSnapshot() {
+  const snap = {};
+  for (const [id, f] of Object.entries(state.enrichmentFacts || {})) if (f.last_run_at) snap[id] = f.last_run_at;
+  return snap;
+}
+
+/** Which of a judgement's evidence has moved since it was made. */
+function movedSince(field) {
+  const moved = [];
+  for (const [id, at] of Object.entries(field.evidence || {})) {
+    const now = state.enrichmentFacts?.[id]?.last_run_at;
+    // Instants, not strings: `Z`, `+00:00` and naive stamps all occur, and
+    // a string compare between spellings fires or fails on the suffix.
+    if (now && whenMs(now) > whenMs(at)) moved.push(id);
+  }
+  return moved;
+}
+
+function fieldControlHtml(def, field, kind = 'judgement') {
+  const v = field?.value || '';
+  // Judgements are the larger set on purpose; the recorded facts sit a
+  // step down, at provenance size, so the split is visible, not narrated.
+  const size = kind === 'judgement' ? 'text-answer' : 'text-provenance';
+  if (def.options) {
+    return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
+      <option value="">—</option>
+      ${def.options.map((o) => `<option value="${o}" ${o === v ? 'selected' : ''}>${o}</option>`).join('')}
+    </select>`;
+  }
+  return `<input data-field="${def.key}" type="text" value="${esc(v)}" placeholder="${esc(def.placeholder || '')}"
+    class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
+}
+
+function fieldRowHtml(def, kind) {
+  const field = (state.enrichment || {})[def.key];
+  const moved = field && kind === 'judgement' ? movedSince(field) : [];
+  // Judgements carry an author; observations carry a source. The server
+  // stamps `author` on every field, so a source-only branch was dead code
+  // and a confirmed licence read as "alice · 2d ago" with its source stored
+  // and invisible. Both halves render now, in that order.
+  const when = field?.set_at ? `<span class="tnum">${esc(ago(field.set_at))}</span>` : '';
+  const who = field?.author
+    ? [kind === 'observation' && field.source ? `from ${esc(field.source)}` : '',
+       `${esc(field.author)}${field.interim ? ' · interim' : ''}`, when].filter(Boolean).join(' · ')
+    : '';
+  const proposed = def.fromAnalysis && !field?.value ? proposedFrom(def.fromAnalysis) : null;
+  // "What we judge" is the larger of the two sets -- the split's whole
+  // argument -- so its labels are body size in ink, not caption size muted.
+  const labelCls = kind === 'judgement' ? 'text-question font-heading text-ink' : 'text-provenance text-ink-muted';
+  return `<div class="grid grid-cols-[130px_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
+    <div class="${labelCls}">${esc(def.label)}</div>
+    <div class="min-w-0">
+      <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field, kind)}
+        <button type="button" data-save="${def.key}" data-kind="${kind}"
+          class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button></div>
+      <div class="text-provenance text-ink-muted">
+        ${moved.length ? `<span class="text-state-warn">⚠ review — evidence moved: ${esc(moved.join(', '))}</span> · ` : ''}
+        ${who}
+        ${proposed ? `<span>from survey: <span class="text-ink">${esc(proposed.value)}</span> ·
+          <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(proposed.value)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">confirm</button></span>` : ''}
+      </div>
+      ${def.key === 'owner' ? ownerNoteHtml(field) : ''}
+    </div>
+  </div>`;
+}
+
+/** Owner candidates from contributor data are DEFERRED, and a deferred
+ *  affordance is marked, never omitted (the sub-tab rule, app.js above).
+ *  Until one is named, the investigator stands as interim owner -- offered
+ *  as a one-click act by the signed-in person, not inferred from a blank. */
+function ownerNoteHtml(field) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const offer = !field?.value && me
+    ? ` · <button type="button" data-owner-interim="${esc(me)}"
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">stand as interim owner</button>`
+    : '';
+  return `<div class="text-provenance text-ink-muted"><span class="border-b border-dashed border-current">owner candidates
+    from contributor data · not built in /next</span>${offer}</div>`;
+}
+
+/** A fact a survey already established, offered to confirm — not applied.
+ *  Gated on a CLASSIFIED licence: "No license detected on this repository."
+ *  is a measured finding too, and offering it to confirm would write that
+ *  sentence into the licence field. The tier finding's label says which. */
+function proposedFrom(analysisId) {
+  const f = state.enrichmentFacts?.[analysisId];
+  if (!f || f.state !== 'measured') return null;
+  const tier = (f.value?.findings || []).find((x) => x.check_name === 'license_risk_tier');
+  // `none` is both "no licence" and "nothing examined"; `unknown` is a
+  // licence that IS present and unclassified -- its name is still a fact.
+  if (!tier || !tier.label || String(tier.label) === 'none') return null;
+  // The licence itself, not its risk tier: the finding's label is
+  // "permissive" and its summary is "Apache License 2.0 — Permissive". The
+  // part before the dash is the fact a person would confirm.
+  const raw = tier.summary || f.headline || '';
+  if (!raw.includes(' — ')) return null;
+  const value = String(raw).split(' — ')[0].trim();
+  return value ? { value } : null;
+}
+
+async function renderEnrichment(slug) {
+  const host = $('enrichment-form');
+  if (!host) return;
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Reading the evidence…</div>`;
+  try {
+    const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
+    state.enrichmentFacts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
+  } catch { state.enrichmentFacts = {}; }
+  if (slug !== state.selectedSlug) return;
+
+  const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  host.innerHTML = `
+    <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalogue until you catalogue it (Curate).
+      What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading text-question text-ink">What we judge</span>
+      <span class="text-provenance text-ink-muted"><span class="tnum">${setJ}</span> of <span class="tnum">${JUDGEMENTS.length}</span> set · perishable</span>
+    </div>
+    ${JUDGEMENTS.map((d) => fieldRowHtml(d, 'judgement')).join('')}
+    <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
+      <span class="text-caps uppercase tracking-caps text-ink">What we record</span>
+      <span class="text-provenance text-ink-muted">durable</span>
+    </div>
+    ${OBSERVATIONS.map((d) => fieldRowHtml(d, 'observation')).join('')}
+    <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
+    <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
+
+  host.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
+    const key = b.dataset.save; const kind = b.dataset.kind;
+    const ctl = host.querySelector(`[data-field="${key}"]`);
+    const value = (ctl?.value || '').trim();
+    b.disabled = true; b.textContent = 'saving…';
+    try {
+      const out = await saveEnrichmentField(slug, key, {
+        value, kind, evidence: kind === 'judgement' ? evidenceSnapshot() : {},
+        // Interim means "the investigator stands in", which is a person
+        // naming themself -- not a blank. A blank owner is no owner.
+        interim: key === 'owner' && !!value && value === me,
+        source: kind === 'observation' ? 'user' : '',
+      });
+      state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
+      renderEnrichment(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to record' : `not saved: ${err.message}`;
+    }
+  }));
+  host.querySelectorAll('[data-owner-interim]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'recording…';
+    try {
+      const out = await saveEnrichmentField(slug, 'owner', {
+        value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
+      });
+      state.enrichment = { ...(state.enrichment || {}), owner: out.field };
+      renderEnrichment(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
+    }
+  }));
+  host.querySelectorAll('[data-confirm]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'confirming…';
+    try {
+      const out = await saveEnrichmentField(slug, b.dataset.confirm, {
+        value: b.dataset.value, kind: 'observation', source: b.dataset.source,
+      });
+      state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
+      renderEnrichment(slug);
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to record' : `not confirmed: ${err.message}`;
+    }
+  }));
+  renderEnrichmentEvidence(slug);
+}
+
+/** The rail: evidence as material. Each analysis's own sentence, its age, and
+ *  "new since you judged" where its run postdates the latest judgement that
+ *  saw it — the perishability mechanism doing its job at the moment it is
+ *  useful. */
+function renderEnrichmentEvidence(slug) {
+  const out = $('rail-evidence');
+  if (!out) return;
+  // Rail state is a persisted preference; "new since you judged" written
+  // into a closed drawer is the perishability signal nobody sees.
+  if (!railIsOpen()) setRailOpen(true);
+  const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
+  const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
+      <span class="text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span> · material, not proposals</span>
+    </div>
+    ${items.length ? items.map((f) => {
+      const g = factGlyph(f.state);
+      const seen = judged.some((j) => j.evidence?.[f.analysis_id]);
+      const fresh = judged.some((j) => j.evidence?.[f.analysis_id] && whenMs(f.last_run_at) > whenMs(j.evidence[f.analysis_id]));
+      return `<div class="border-b border-chrome-line-soft py-[4px]">
+        <div class="flex items-baseline gap-s2 text-subtab text-chrome-ink">
+          <span class="${g.tone === 'text-state-ok' ? 'text-state-ok-on-dark' : g.tone === 'text-state-warn' ? 'text-state-warn-on-dark' : 'text-chrome-muted'}">${g.glyph}</span>
+          <span class="min-w-0 flex-1">${tnum(esc(f.headline || f.state))}</span></div>
+        <div class="pl-[20px] text-caps text-chrome-muted"><span class="font-mono">${esc(f.analysis_id)}</span>${
+          f.last_run_at ? ` · <span class="tnum">${esc(ago(f.last_run_at))}</span>` : ''}${
+          fresh ? ` · <span class="text-accent-on-dark">new since you judged</span>` : seen ? '' : ''}</div>
+      </div>`;
+    }).join('') : `<div class="text-caps text-chrome-muted">No measurements to show yet.</div>`}
+    <div class="mt-s2 text-caps text-chrome-muted">Material to read, not answers to accept. No "apply suggestion".</div>`;
+}
+
+
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Curate — review and commit
+ *
+ * One decision, one screen, one commit — and the commit has consequences in
+ * two directions, so the screen's whole job is to show both before the
+ * press. Three columns answer one question, "what should the catalogue know
+ * about this?": what it IS, what it HOLDS, what it is MADE OF. Then how it
+ * relates, then the manifest of what gets written. Almost everything on it
+ * was decided earlier; this is where it is seen assembled.
+ *
+ * Rules held (Enrichment and Curate Wireframes; Repo Handoff item 6):
+ * - Candidates with evidence, never auto-applied: every row names its
+ *   analysis, its state, and opens its members. "Infrastructure Asset? 15
+ *   Dockerfiles", with the question mark.
+ * - Testimony is copied, measurements are linked, unresolved things travel.
+ * - Only worthy things get curated: the population is `tracking` or `using`,
+ *   and the pane says so rather than hiding the resource or the button.
+ * - The commit is asynchronous and can fail elsewhere: the record shows each
+ *   step as it lands, and a failed step is a failed step, not a lost act.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+// `pick` marks the one column whose rows are confirmed one by one; the
+// others are counts whose members are reviewed, and the contained set is
+// taken whole (the checkbox under the manifest) -- the wireframe's shape.
+const CURATE_COLUMNS = [
+  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalogue', pick: true },
+  { key: 'what_it_holds', title: "what's in it",    sub: 'each becomes its own asset, related to this one' },
+  { key: 'made_of',       title: "what it's made of", sub: 'components, with ports and wires derived — review stays on Architecture verdicts' },
+  { key: 'relates',       title: 'how it relates',  sub: '' },
+];
+
+function curateRowHtml(r, selected, pick) {
+  const g = factGlyph(r.state);
+  const mark = pick && r.candidate
+    ? `<input type="checkbox" data-curate-pick="${esc(r.kind)}" ${selected ? 'checked' : ''}
+         class="mt-[3px] shrink-0 cursor-pointer">`
+    : `<span class="w-[13px] shrink-0 text-center ${r.candidate ? 'text-ink' : 'text-ink-muted'}">${r.candidate ? '✓' : '·'}</span>`;
+  const members = r.members?.analysis_id
+    ? ` · <button type="button" data-curate-members="${esc(r.members.analysis_id)}" data-metric="${esc(r.members.metric || '')}"
+          class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${r.count != null ? `review ${tnum(String(r.count))}` : 'members'} ›</button>`
+    : '';
+  return `<div class="flex items-start gap-s2 border-b border-rule py-s2">
+    ${mark}
+    <div class="min-w-0 flex-1">
+      <div class="text-answer text-ink">${tnum(esc(r.label))}</div>
+      <div class="text-provenance text-ink-muted">
+        <span class="${g.tone}">${g.glyph}</span> <span class="font-mono">${esc(r.source)}</span>
+        ${r.evidence ? ` · ${esc(r.evidence)}` : ''}${members}</div>
+    </div>
+  </div>`;
+}
+
+function curateWritesHtml(plan, picks, subCount) {
+  const w = plan.writes || {};
+  const cls = w.classifications || [];
+  const lines = [];
+  lines.push(`<span class="tnum">${picks.length}</span> entit${picks.length === 1 ? 'y' : 'ies'}${picks.length ? ` · ${picks.map(esc).join(', ')}` : ''}`);
+  lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} (sub-resources)`);
+  lines.push(cls.length
+    ? `<span class="tnum">${cls.length}</span> authored classification${cls.length === 1 ? '' : 's'} · ${cls.map((c) =>
+        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
+    : `no authored classifications — nothing set on the Enrichment pane yet`);
+  lines.push(w.owner?.value
+    ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
+    : `Owner · the person who catalogues, as interim`);
+  lines.push(w.licence ? `Licence · ${esc(w.licence)}` : `Licence · not confirmed on the Enrichment pane`);
+  lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
+    w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>` : ''}${
+    w.catalogued ? ` · <span class="font-mono">${esc(String(w.asset_guid).slice(0, 8))}…</span> is the asset` : ' · no asset yet'}`);
+  return lines.map((l) => `<div class="text-caveat text-ink">${l}</div>`).join('');
+}
+
+function curateRecordHtml(rec) {
+  if (!rec) return '';
+  const tone = { done: 'text-state-ok', failed: 'text-state-warn', running: 'text-accent-ink', skipped: 'text-ink-muted', pending: 'text-ink-muted' };
+  const glyph = { done: '✓', failed: '✗', running: '◐', skipped: '○', pending: '○' };
+  return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
+    <div class="text-provenance text-ink-muted">catalogued by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
+      · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
+    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">◐ ${
+      esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
+    ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
+      <span class="${tone[st.state] || ''}">${glyph[st.state] || '·'}</span>
+      <span class="font-mono text-ink">${esc(st.name)}</span>
+      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></div>`).join('')}
+  </div>`;
+}
+
+async function renderCurate(slug) {
+  const host = $('enrichment-form');
+  if (!host) return;
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
+  let plan;
+  try {
+    plan = await getCuratePlan(slug);
+  } catch (err) {
+    host.innerHTML = `<div class="text-answer text-accent-ink">The plan could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;
+  state.curate = state.curate || {};
+  const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
+  const subs = plan.what_it_holds.find((r) => r.kind === 'SubResource');
+  const subLocators = subs?.detail?.worthy || [];
+  const latest = (plan.commits || [])[0];
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+
+  const draw = () => {
+    host.innerHTML = `
+      <div class="mb-s2 text-caveat text-ink-muted">
+        <span class="text-ink">${esc(plan.technology_type)}</span> · disposition <span class="text-ink">${esc(plan.disposition)}</span>${
+          plan.last_surveyed_at ? ` · surveyed <span class="tnum">${esc(ago(plan.last_surveyed_at))}</span>` : ' · never surveyed'}
+      </div>
+      ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
+        disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
+        sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
+      ${CURATE_COLUMNS.map((c) => `
+        <div class="mb-s1 mt-s3 flex items-baseline gap-s2">
+          <span class="font-heading text-question text-ink">${esc(c.title)}</span>
+          ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
+          ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
+        </div>
+        ${(plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
+      <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
+        <span class="font-heading text-question text-ink">what gets written</span>
+        <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
+      </div>
+      ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
+      <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
+        <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
+      <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
+      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloguing, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
+      <div class="mt-s3 flex items-baseline gap-s3">
+        <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
+          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalogue →</button>
+        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
+      </div>
+      ${curateRecordHtml(latest)}`;
+
+    host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
+      if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
+      state.curate.picks = [...picks]; draw();
+    }));
+    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); });
+    host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
+      openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
+    }));
+    host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget; b.disabled = true;
+      // The first step re-surveys before it publishes -- minutes on a large
+      // repository, and "nothing obvious happening" was the owner's report
+      // from the first live press. Say what is happening, from the record.
+      b.textContent = 'Cataloguing… surveying first, then publishing';
+      try {
+        const out = await curateCommit(slug, {
+          confirm: [...picks], sub_resources: state.curate.subs === false ? [] : subLocators, data_files: false,
+        });
+        plan.commits = [out.curation, ...(plan.commits || [])];
+        draw();
+        await pollActivity(out.activity_id, { onTick: async () => {
+          try {
+            const rec = await getCuration(slug, out.curation.id);
+            plan.commits[0] = rec;
+            const slot = host.querySelector('[data-curate-record]');
+            if (slot) slot.outerHTML = curateRecordHtml(rec);
+          } catch { /* the next tick will */ }
+        } });
+        plan.commits[0] = await getCuration(slug, out.curation.id);
+        draw();
+      } catch (err) {
+        b.disabled = false; b.textContent = 'Catalogue →';
+        const why = err.status === 401 ? 'sign in to catalogue' : err.status === 409 ? err.message : `not catalogued: ${err.message}`;
+        host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
+      }
+    });
+  };
+  draw();
 }
 
 function rowKey(i) { return `qrow-${i}`; }
@@ -4839,7 +5945,7 @@ async function start() {
   state.investigation = currentInvestigation();
 
   const [me, projects, perspectives, activity, rfas, groups, investigations,
-         workLists, analyses] =
+         workLists, analyses, allPerspectives] =
     await Promise.allSettled([
       getMe(),
       // The FULL list — every disposition, hidden included — because the
@@ -4848,10 +5954,12 @@ async function start() {
       listProjects({ includeIgnored: true, includeHidden: true }),
       listPerspectives(), listActivity(ACTIVITY_LIMIT), listRfas(),
       listGroups(), listInvestigations(), listWorkLists(), listAnalyses('repo'),
+      listAllPerspectives(),
     ]);
 
   if (me.status === 'fulfilled') state.me = me.value;
   if (perspectives.status === 'fulfilled') state.perspectives = perspectives.value || [];
+  if (allPerspectives.status === 'fulfilled') state.allPerspectives = allPerspectives.value || [];
   // Both endpoints PAGE. A returned length equal to the limit is a page
   // that filled, not a total — rendering it as one would print an exact
   // figure that is exactly wrong, and nothing about the number would look

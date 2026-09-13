@@ -71,7 +71,7 @@ class TestAllThreeTablesWrittenFromOneRoot:
         _write_manifest_repo(tmp_path)
         anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
+        assert len(anns) == 5   # dependencies, ci_quality, conventions, supply_chain, distribution
         assert all(a.analysis_step == STEP for a in anns)
 
         deps = registry.query_dependencies(project.slug)
@@ -115,7 +115,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
+        assert len(anns) == 5   # dependencies, ci_quality, conventions, supply_chain, distribution
         dep_ann = _by_summary_fragment(anns, "dependency parse failed")
         assert dep_ann.confidence == 0
         assert "boom" in dep_ann.explanation
@@ -135,7 +135,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
+        assert len(anns) == 5   # dependencies, ci_quality, conventions, supply_chain, distribution
         ci_ann = _by_summary_fragment(anns, "ci workflow parse failed")
         assert ci_ann.confidence == 0
 
@@ -154,7 +154,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 4
+        assert len(anns) == 5   # + distribution (2026-09-12)
         sc_ann = _by_summary_fragment(anns, "supply-chain parse failed")
         assert sc_ann.confidence == 0 and "boom" in sc_ann.explanation
         assert registry.query_dependencies(project.slug)
@@ -189,7 +189,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
+        assert len(anns) == 5   # dependencies, ci_quality, conventions, supply_chain, distribution
         conv_ann = _by_summary_fragment(anns, "repo conventions parse failed")
         assert conv_ann.confidence == 0
 

@@ -1057,25 +1057,40 @@ class ProjectRegistry:
                     egeria_report_guid TEXT NOT NULL DEFAULT ''
                 )
             """)
-            # Migration 2026-09-11: two AnnotationType values were shortened
-            # forms of the Egeria type name ("SchemaAnalysis",
-            # "RequestForAction") while the catalog declared the full names.
-            # Rows written under the short names are renamed so the
-            # declared-vs-received join reads them. Idempotent: a second run
-            # matches nothing.
-            for short, full in (
-                ("SchemaAnalysis", "SchemaAnalysisAnnotation"),
-                ("RequestForAction", "RequestForActionAnnotation"),
-            ):
-                conn.execute(
-                    "UPDATE project_published_annotation_types SET annotation_type = ? "
-                    "WHERE annotation_type = ?",
-                    (full, short),
-                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
                 "ON project_published_annotation_types(project_slug, annotation_type)"
             )
+            # Migration 2026-09-11: two AnnotationType values were shortened
+            # forms of the Egeria type name ("SchemaAnalysis",
+            # "RequestForAction") while the catalog declared the full names.
+            # Rows written under the short names are renamed so the
+            # declared-vs-received join reads them.
+            #
+            # Guarded by a read, and placed AFTER the index. The first version
+            # ran the UPDATE unconditionally, before CREATE INDEX IF NOT
+            # EXISTS, and deadlocked every process that opened the registry
+            # concurrently: an UPDATE takes RowExclusiveLock even when it
+            # matches no rows, CREATE INDEX wants ShareLock, and two openers
+            # each held the first while waiting for the second. The answer
+            # layer opens one registry per question, sixteen at a time, so
+            # the Dashboard by question hit it on every load. Now a process
+            # that finds nothing to rename takes no write lock at all, which
+            # is every process after the first.
+            for short, full in (
+                ("SchemaAnalysis", "SchemaAnalysisAnnotation"),
+                ("RequestForAction", "RequestForActionAnnotation"),
+            ):
+                stale = conn.execute(
+                    "SELECT 1 FROM project_published_annotation_types WHERE annotation_type = ? LIMIT 1",
+                    (short,),
+                ).fetchone()
+                if stale:
+                    conn.execute(
+                        "UPDATE project_published_annotation_types SET annotation_type = ? "
+                        "WHERE annotation_type = ?",
+                        (full, short),
+                    )
             # Which ANALYSES a publish covered, recorded directly.
             #
             # project_published_annotation_types above answers the same
@@ -1151,6 +1166,13 @@ class ProjectRegistry:
             # DBs created before the repo scope-narrowing funnel plan
             # (docs/repo-scope-narrowing-funnel.md), D5/D6 — '' = whole-
             # resource, matching every pre-existing row unchanged.
+            # Migration (2026-09-11): the inventory records whether a file is
+            # the repository's own or somebody else's library checked in.
+            # DEFAULT 0 = own, matching every pre-existing row until its
+            # project is re-indexed; readers exclude vendored rows by default.
+            inv_cols = self._get_table_columns(conn, "project_file_inventory")
+            if "vendored" not in inv_cols:
+                conn.execute("ALTER TABLE project_file_inventory ADD COLUMN vendored INTEGER DEFAULT 0")
             existing_findings_cols = self._get_table_columns(conn, "project_analysis_findings")
             if "scope_locator" not in existing_findings_cols:
                 conn.execute(
@@ -2374,6 +2396,7 @@ class ProjectRegistry:
         "scouting_scan",
         "stage_batch",
         "discovery_expand",
+        "curate_commit",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -3293,6 +3316,44 @@ class ProjectRegistry:
             )
         return cur.rowcount > 0
 
+    def pause_schedules(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """Disable every enabled schedule on one resource and return what was
+        disabled (analysis_id, next_run) so `resume_schedules` can put it back
+        exactly. For an experiment window: on 2026-09-11 the nightly
+        RepoRefreshSurvey re-surveyed two of three experiment repos while a run
+        was answering, so its rows described two states. Pausing and restoring
+        keeps the schedule's own cadence — `save_schedule(enabled=True)` would
+        recompute next_run from now and silently shift it by a period."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT analysis_id, next_run FROM resource_schedules "
+                "WHERE entity_type=? AND entity_slug=? AND enabled=1",
+                (entity_type, entity_slug),
+            ).fetchall()
+            saved = [dict(r) for r in rows]
+            for r in saved:
+                conn.execute(
+                    "UPDATE resource_schedules SET enabled=0 "
+                    "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                    (entity_type, entity_slug, r["analysis_id"]),
+                )
+        return saved
+
+    def resume_schedules(self, entity_type: str, entity_slug: str, saved: list[dict]) -> int:
+        """Re-enable the schedules `pause_schedules` returned, with their
+        original next_run. A next_run already in the past simply becomes due,
+        which is the scheduler's normal case after downtime."""
+        n = 0
+        with self._conn() as conn:
+            for r in saved:
+                cur = conn.execute(
+                    "UPDATE resource_schedules SET enabled=1, next_run=? "
+                    "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                    (r.get("next_run") or "", entity_type, entity_slug, r["analysis_id"]),
+                )
+                n += cur.rowcount
+        return n
+
     def get_due_schedules(self) -> list[dict]:
         """Return all enabled schedules that are past their next_run time."""
         from datetime import timezone
@@ -3923,6 +3984,8 @@ class ProjectRegistry:
         mode data (e.g. a purely local filesystem walk) simply omits it and
         every row gets file_mode='' (Assessment sub-resource cataloging
         plan, D9 Tier 1)."""
+        from resource_explorer.ingestion.vendored import provenance
+
         slug = self._normalize_slug(slug)
         indexed_at = datetime.utcnow().isoformat()
         modes_by_path = modes_by_path or {}
@@ -3932,20 +3995,50 @@ class ProjectRegistry:
             )
             conn.executemany(
                 "INSERT INTO project_file_inventory "
-                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode, vendored) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (slug, path, size, indexed_at, modes_by_path.get(path, ""))
+                    (slug, path, size, indexed_at, modes_by_path.get(path, ""), provenance(path))
                     for path, size in paths_with_sizes
                 ],
             )
+
+    def file_inventory_summary(self, slug: str) -> dict:
+        """{total, own, vendored, generated, short} — the honest number beside
+        the misleading one, and WHICH kind of not-own: vendored is a
+        provenance claim, generated is the repository's own build output.
+        Both are 0 for a project indexed before 2026-09-11 until it is
+        re-indexed; one indexed between then and 2026-09-12 reports both
+        kinds as vendored. `indexed_at` says when."""
+        from resource_explorer.ingestion.vendored import GENERATED, VENDORED
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                f"SUM(CASE WHEN COALESCE(vendored, 0) = {VENDORED} THEN 1 ELSE 0 END) AS vendored, "
+                f"SUM(CASE WHEN COALESCE(vendored, 0) = {GENERATED} THEN 1 ELSE 0 END) AS generated, "
+                "MAX(indexed_at) AS indexed_at "
+                "FROM project_file_inventory WHERE project_slug = ?", (slug,)
+            ).fetchone()
+        row = dict(row) if not isinstance(row, dict) else row
+        total = int(row.get("total") or 0)
+        vendored = int(row.get("vendored") or 0)
+        generated = int(row.get("generated") or 0)
+        own = total - vendored - generated
+        parts = [f"{total:,} files"]
+        if vendored:
+            parts.append(f"{vendored:,} vendored")
+        if generated:
+            parts.append(f"{generated:,} generated")
+        return {"total": total, "own": own, "vendored": vendored, "generated": generated,
+                "short": " · ".join(parts), "indexed_at": row.get("indexed_at") or ""}
 
     def get_file_inventory(self, slug: str) -> list[str]:
         """Return all file paths from the stored inventory for a project."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path FROM project_file_inventory WHERE project_slug = ?",
+                "SELECT file_path FROM project_file_inventory WHERE project_slug = ? AND COALESCE(vendored, 0) = 0",
                 (slug,),
             ).fetchall()
         return [r["file_path"] for r in rows]
@@ -3965,7 +4058,7 @@ class ProjectRegistry:
             placeholders = ",".join("?" * len(candidate_paths))
             rows = conn.execute(
                 f"SELECT file_path FROM project_file_inventory "  # noqa: S608
-                f"WHERE project_slug = ? AND file_path IN ({placeholders})",
+                f"WHERE project_slug = ? AND COALESCE(vendored, 0) = 0 AND file_path IN ({placeholders})",
                 (slug, *candidate_paths),
             ).fetchall()
         found = {r["file_path"] for r in rows}
@@ -4442,7 +4535,7 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
+    def get_file_inventory_with_sizes(self, slug: str, *, include_vendored: bool = False) -> list[dict]:
         """Return file paths, sizes, and git mode bits from the inventory for a project.
 
         Each dict has keys: ``file_path`` (str), ``file_size_bytes`` (int),
@@ -4452,8 +4545,9 @@ class ProjectRegistry:
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path, file_size_bytes, file_mode FROM project_file_inventory "
-                "WHERE project_slug = ?",
+                "SELECT file_path, file_size_bytes, file_mode, COALESCE(vendored, 0) AS vendored "
+                "FROM project_file_inventory WHERE project_slug = ?"
+                + ("" if include_vendored else " AND COALESCE(vendored, 0) = 0"),
                 (slug,),
             ).fetchall()
         return [
@@ -4461,6 +4555,7 @@ class ProjectRegistry:
                 "file_path": r["file_path"],
                 "file_size_bytes": r["file_size_bytes"] or 0,
                 "file_mode": r["file_mode"] or "",
+                "vendored": bool(r["vendored"]),
             }
             for r in rows
         ]

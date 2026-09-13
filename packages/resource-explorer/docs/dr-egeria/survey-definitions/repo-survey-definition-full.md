@@ -532,6 +532,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Dependency Support
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_dependency_support
+
+### Description
+Which curated technologies the dependency list indicates (psycopg2 -> PostgreSQL, kafka-python -> Apache Kafka), and whether Egeria already holds a technology type for each. A starting point for people, not an answer: a match says the repo indicates X, not that X is supported, and an unmatched dependency has simply not been classified yet.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_dependency_support |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Conventions
 
 ### Qualified Name
@@ -1114,6 +1133,18 @@ ___
 GovActionProcessStep::RepoFullSurvey::repo_maturity
 
 ### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_dependency_support
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_dependency_support
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_conventions
 
 ### Guard
@@ -1484,6 +1515,15 @@ Full Survey (all steps)
 
 ### Scope Reference
 How mature is it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Do we already support these dependencies?
 
 ___
 
