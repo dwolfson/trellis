@@ -367,6 +367,118 @@ class Freshness:
         return f"'{analysis_id}' last produced data {ago}{source}."
 
 
+@dataclass(frozen=True)
+class RunCost:
+    """What a re-run of an analysis would cost, and how we know.
+
+    The designer's ruling on the freshness gate (FUNNEL-COST rulings,
+    2026-09-13): "a gate that only says 'too fresh' reads as an obstacle; one
+    that names the price reads as the system being careful with your money."
+    So the skip carries the price — and, because a declared figure sitting
+    where a measured one is expected is the failure the whole measurement
+    spec exists to prevent, it carries the BASIS too. Three, not two:
+
+    * ``measured`` — median wall time of this analysis's succeeded ``runs``
+      rows (finished − started; never enqueued, which measures queue depth);
+    * ``declared`` — no succeeded run to measure, so the catalog's
+      ``run_time`` word (fast / minutes / async) stands in, labelled as such;
+    * ``unknown`` — neither: not in the catalog and never run.
+
+    Medians, never means: one sixteen-minute Egeria survey would otherwise
+    carry the figure for every run of that analysis.
+    """
+
+    seconds: float | None
+    basis: str
+    runs: int
+    declared: str
+    #: Whose runs supplied the figure. For a derived analysis that is its
+    #: SOURCE — `architecture_diagram` costs what `architecture_recovery`
+    #: costs, because that is what a re-run actually executes.
+    via: str
+
+    def sentence(self) -> str:
+        if self.basis == "measured" and self.seconds is not None:
+            n = f"median of {self.runs} run{'s' if self.runs != 1 else ''}"
+            return f"A re-run costs about {_humanise_duration(self.seconds)} ({n})."
+        if self.basis == "declared" and self.declared:
+            return (f"A re-run is declared '{self.declared}' in the catalog — "
+                    f"not yet measured.")
+        return "What a re-run would cost is not known — never measured, not declared."
+
+
+def _humanise_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{max(1, round(seconds))}s"
+    m, s = divmod(round(seconds), 60)
+    return f"{m}m {s:02d}s"
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return (ordered[mid] if len(ordered) % 2
+            else (ordered[mid - 1] + ordered[mid]) / 2)
+
+
+def estimate_run_cost(registry, analysis_id: str, *, resource_type: str = "repo",
+                      sample: int = 500) -> RunCost:
+    """How long a re-run of `analysis_id` takes, from the queue's own record.
+
+    Reads succeeded ``runs`` rows for the analysis and — for a derived
+    analysis — for its sources, since those are the steps a re-run executes.
+    Falls back to the catalog's declared ``run_time`` and says so; never
+    presents a declared word as a measurement.
+    """
+    from datetime import datetime
+
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        repo_analysis_derived_sources,
+    )
+
+    candidates = [analysis_id, *repo_analysis_derived_sources(analysis_id)]
+    durations: dict[str, list[float]] = {aid: [] for aid in candidates}
+    # No broad except here: if the queue or the catalog cannot be read, the
+    # skip fails loudly rather than reporting a price of "unknown" that looks
+    # like a measurement of absence. Same registry the route already depends on.
+    rows = registry.list_runs(kind="analysis_run", state="succeeded", limit=sample)
+    for row in rows:
+        try:
+            target = json.loads(row.get("target") or "{}")
+        except ValueError:
+            continue
+        aid = target.get("analysis_id")
+        if aid not in durations:
+            continue
+        t0, t1 = row.get("started_at") or "", row.get("finished_at") or ""
+        if not t0 or not t1:
+            continue
+        try:
+            secs = (datetime.fromisoformat(t1) - datetime.fromisoformat(t0)).total_seconds()
+        except ValueError:
+            continue
+        if secs >= 0:
+            durations[aid].append(secs)
+
+    # The analysis's own runs first; a derived analysis with no runs of its
+    # own costs what its source costs.
+    for aid in candidates:
+        if durations[aid]:
+            return RunCost(_median(durations[aid]), "measured", len(durations[aid]),
+                           _declared_run_time(analysis_id, resource_type, get_analyses), aid)
+
+    declared = _declared_run_time(analysis_id, resource_type, get_analyses)
+    return RunCost(None, "declared" if declared else "unknown", 0, declared, analysis_id)
+
+
+def _declared_run_time(analysis_id: str, resource_type: str, get_analyses) -> str:
+    for entry in get_analyses(resource_type, include_egeria_live=False):
+        if entry.get("id") == analysis_id:
+            return str(entry.get("run_time") or "")
+    return ""
+
+
 def assess_freshness(registry, entity_type: str, slug: str, analysis_id: str,
                      max_age_seconds: int | None = None) -> Freshness:
     """Is `analysis_id`'s data newer than the freshness threshold?
