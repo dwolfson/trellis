@@ -206,9 +206,22 @@ class TestTheCorrection:
         assert r.status_code == 200, r.text
         new = r.json()["record"]
         assert new["corrects"] == old["id"] and new["report"]["corrects"] == old["id"]
+        # the corrected record was the whole list: populations match, no clause
+        assert new["report"]["header"] == "4 of 4 advisories — nothing capped."
         listed = {x["id"]: x for x in client.get("/api/projects/p/records").json()["records"]}
         assert listed[old["id"]]["corrected_by"]["id"] == new["id"]
         assert listed[old["id"]]["corrected_by"]["name"] == "High advisories — corrected"
         assert listed[old["id"]]["report"] == old["report"]      # frozen
         bad = client.post("/api/projects/p/members/cve_scan/report", json={"metric": "advisories", "corrects": "nope"})
         assert bad.status_code == 400
+
+
+    def test_correcting_a_selection_names_what_the_correction_is_not_carrying(self, client, registry):
+        TestTheRoute()._seed(registry)
+        sel = client.post("/api/projects/p/members/cve_scan/report",
+                          json={"metric": "advisories", "members": ["GHSA-1", "GHSA-9"], "facet": "high, fix available",
+                                "name": "High advisories with a fix"}).json()["record"]
+        new = client.post("/api/projects/p/members/cve_scan/report",
+                          json={"metric": "advisories", "corrects": sel["id"]}).json()["record"]
+        assert new["report"]["header"] == ('4 of 4 advisories — nothing capped. Corrects "High advisories with a fix", '
+                                           'whose selection was high, fix available; this record is the whole list.')

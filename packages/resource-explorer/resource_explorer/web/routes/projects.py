@@ -1739,7 +1739,11 @@ def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request)
                                               facet=body.facet, metric=report["metric"],
                                               written_on=datetime.now(timezone.utc).isoformat())
     if body.corrects:
+        from resource_explorer.reports import correction_clause
         report["corrects"] = body.corrects
+        # The header names what the correction is not carrying, when the
+        # corrected record was a selection. Nothing when the populations match.
+        report["header"] += correction_clause(Curations(registry).get(body.corrects))
     try:
         rec = Curations(registry).create_report("repo", slug, author=author, name=name, report=report, corrects=body.corrects)
     except ValueError as exc:
