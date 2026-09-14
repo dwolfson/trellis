@@ -47,9 +47,10 @@ class TestTheOfferIsAnOfferNotAGate:
         for label in (">Run these in background<", ">Choose which<", ">Not now<"):
             assert label in body
         assert "postDepthOfferOutcome(p.github_url, { outcome, analysisIds: ids, runIds })" in body
+        assert "sign in to answer the offer" in body and "recorded locally only" not in body
         assert "finish('declined', [])" in body
         assert "This verdict does not schedule anything." in body
-        assert "declared ${esc(String(c.declared" in body, "an unpriced analysis renders as the declared word"
+        assert "declared ${esc(declaredWord(c)" in body, "an unpriced analysis renders as the declared word"
 
     def test_once_per_verdict_and_in_the_pane_after_a_verdict(self):
         app = _app()

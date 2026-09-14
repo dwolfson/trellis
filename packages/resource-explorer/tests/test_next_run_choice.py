@@ -60,7 +60,11 @@ class TestTheFourPriceVariants:
     def test_declared_is_the_word_and_says_declared(self, tmp_path):
         cost = {"basis": "declared", "declared": "fast", "runs": 0}
         html = self._run(f"priceLineHtml({json.dumps(cost)}, 'x')", tmp_path)
-        assert "declared" in html and "fast" in html and "not measured" in html
+        assert "declared</span> fast" in html and "not measured" in html
+        # the live serialiser carries only the sentence; the word is read from its quotes
+        cost = {"basis": "declared", "runs": 0, "sentence": "A re-run is declared 'fast' in the catalog — not yet measured."}
+        html = self._run(f"priceLineHtml({json.dumps(cost)}, 'x')", tmp_path)
+        assert "declared</span> fast" in html and "A re-run is declared" not in html
 
     def test_not_known_says_so_and_names_the_fix(self, tmp_path):
         for cost in ("null", json.dumps({"basis": "unknown"}), json.dumps({"basis": "measured", "runs": 0})):

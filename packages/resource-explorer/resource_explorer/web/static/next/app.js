@@ -2735,7 +2735,7 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
   const total = offer.total || {};
   const priceCell = (c) => {
     if (!c || c.basis === 'unknown') return `<span class="text-ink-muted">not priced</span>`;
-    if (c.basis === 'declared') return `<span class="text-ink-muted">declared ${esc(String(c.declared || c.sentence || ''))}</span>`;
+    if (c.basis === 'declared') return `<span class="text-ink-muted">declared ${esc(declaredWord(c) || c.sentence || '')}</span>`;
     if (c.split_runs) return `<span class="tnum">${esc(fmtSeconds(c.steps_seconds))}</span> to run · <span class="tnum">${esc(fmtSeconds(c.publish_seconds))}</span> to publish`;
     return `about <span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">· not yet split</span>`;
   };
@@ -2771,7 +2771,9 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
     try {
       await postDepthOfferOutcome(p.github_url, { outcome, analysisIds: ids, runIds });
     } catch (err) {
-      status.innerHTML = `<span class="text-accent-ink">recorded locally only: ${esc(err.message)}</span>`;
+      // Nothing was recorded. Say so; the offer stays so it can be answered.
+      status.innerHTML = `<span class="text-accent-ink">${
+        err.status === 401 ? 'not recorded — sign in to answer the offer' : `not recorded: ${esc(err.message)}`}</span>`;
       return;
     }
     box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
@@ -5984,12 +5986,21 @@ function fmtSeconds(sec) {
 
 /** The price line for one of the four variants. `cost` is a RunCost or
  *  null (the read failed / nothing recorded). */
+/** The declared word -- "fast" -- from RunCost.declared, or from the
+ *  sentence's quotes when the serialiser carries only the sentence. */
+function declaredWord(cost) {
+  if (cost?.declared) return String(cost.declared);
+  const m = /'([^']+)'/.exec(String(cost?.sentence || ''));
+  return m ? m[1] : '';
+}
+
 function priceLineHtml(cost, analysisId) {
   if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) {
     return `<span class="text-ink-muted">Price not known — no run of <span class="font-mono">${esc(analysisId)}</span> has been recorded yet. The first run is what fixes it.</span>`;
   }
   if (cost.basis === 'declared') {
-    return `<span class="text-ink"><span class="text-ink-muted">declared</span> ${esc(String(cost.declared || cost.sentence || ''))}</span>
+    const w = declaredWord(cost);
+    return `<span class="text-ink"><span class="text-ink-muted">declared</span> ${esc(w || cost.sentence || '')}</span>
       <span class="text-ink-muted">· not measured</span>`;
   }
   // measured
