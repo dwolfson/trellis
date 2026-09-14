@@ -41,12 +41,14 @@ import {
   getDeclaredVsReceived,
   getResourceRuns,
   getSurveyCandidates,
+  listSurveyDefinitions,
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
   getBulkFacts,
   getMemberChildren,
   getMembers,
+  getMeasurements,
   getCuratePlan,
   getRunCost,
   getDepthOffer,
@@ -156,14 +158,20 @@ const STAGES = [
  * resource. Naming the deferred stub "Search" made /next mis-describe the
  * thing it was deferring.
  */
+/* Stage-page round (SPEC-THE-STAGE-PAGE.md): the strip after the fold.
+ * `dashboard` is gone as its own tab -- its "by analysis" half becomes
+ * `by_analysis` below, and its "by question" half is the disclosure now on
+ * the Questions row itself (point 10, `provenanceLine`'s "the numbers behind
+ * this N" link). See that function's comment for what has and has not moved
+ * yet: findings and disagreements stay on `by_analysis` for this slice. */
 const SUB_TABS = [
   // NAMED FOR WHAT IT IS. Calling it "Search" inherits the current UI's label
   // and teaches the wrong noun on first contact: it is not a search of the
   // selected resource, it is how candidate repos are found and imported.
   { id: 'search', label: 'Find repos', does: 'Repo discovery — find and import candidate repos' },
-  { id: 'survey', label: 'Survey', does: 'Survey definitions, their steps, and running them', built: true },
-  { id: 'dashboard', label: 'Dashboard', does: 'Survey results — health, maturity, community, charts', built: true },
-  { id: 'questions', label: 'Questions', does: 'The question checklist' },
+  { id: 'questions', label: 'Questions', does: 'The question checklist', built: true },
+  { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
+  { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
   { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, its history, and the journal', built: true },
 ];
 
@@ -3378,7 +3386,13 @@ function surveyRowHtml(c) {
       <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
         produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
     </div>
-    <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step(s)</div>
+    <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step${steps === 1 ? '' : 's'}${
+      // Point 2 (SPEC-THE-STAGE-PAGE.md): the axis tiering itself turns on --
+      // "4 steps · 2 fetch" beside "7 steps · none fetch" reads as peers with
+      // one that fetches twice and one that doesn't. `fetch_steps` is not on
+      // every definition row yet (re/stage-page-backend); say nothing rather
+      // than a false zero until it is.
+      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
     <button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
@@ -3406,6 +3420,20 @@ async function loadSurveyPane() {
   }
   const all = data.candidates || [];
   const stage = data.phase || state.stage;
+
+  // Point 2: step_count/fetch_steps live on the catalog-wide definitions
+  // list, not the candidates row -- joined here by qualified_name. Cached
+  // (listSurveyDefinitions), and its own failure must not blank the pane
+  // that already has real candidates to show; the fetch clause just stays
+  // off the row, same as when the field is absent for any other reason.
+  try {
+    const defs = await listSurveyDefinitions();
+    const byName = new Map(defs.map((d) => [d.qualified_name, d]));
+    for (const c of all) {
+      const d = byName.get(c.qualified_name);
+      if (d) { c.step_count = d.step_count; c.fetch_steps = d.fetch_steps; c.unregistered_steps = d.unregistered_steps; }
+    }
+  } catch { /* the row still has everything the candidates call gave it */ }
 
   // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
   // paragraph. The four-line cold-server warning becomes a chip that says
@@ -4002,124 +4030,17 @@ function findingGlyph(label) {
 /** `not_established` -> `not established`; `SOLE` -> `sole`. */
 const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
 
-/* ── The dashboard, by question ────────────────────────────────────────────
- *
- * The diagnosis, in one line: the dashboard was organised by the PRODUCER
- * while every other pane is organised by the CONSUMER. A question has one
- * answer even when six analyses contribute; on the authored boards that
- * answer was six paragraphs apart in six sections — and one analysis that
- * answers six questions (`repo_conventions`) appeared on two boards in full,
- * both times, under neither question.
- *
- * This view is generated, not authored. It reads the stage's questions, the
- * analyses they name, and the facts for those analyses — the same projection
- * the matrix reads, keyed by analysis id and independent of which board an
- * analysis was filed under. Adding an analysis to the catalog and naming it
- * on a question puts it here with no UI change, which was the bar.
- *
- * Three ranks per question, as before: the analysis's OWN sentence first
- * (`headline` — the annotation writes its summary, we render it rather than
- * re-composing from fields, which is where 82 / 82.2 came from), then
- * findings unresolved-first, then counts as a table.
- *
- * When one analysis serves several questions, the catalog's `checks` decide
- * what each question shows: a question declaring `repo_conventions:doc_breadth`
- * shows that finding and not the other four. A question that declares no
- * check takes the whole analysis — once. Later questions naming the same
- * analysis get a pointer to where it is shown, because the same five
- * findings rendered six times is the thing this view exists to stop.
- *
- * Two things deliberately NOT on this pane:
- *  - the ~40 `sub_resource_survey` worthy / not-worthy rows are promotion
- *    candidates and belong with the verdict loop; here they are one line
- *    with a count and a pointer to the work list;
- *  - nothing is hidden. An analysis the stage measures that no question
- *    asks for is listed at the end under its own heading, because that list
- *    is the standing check the catalog needs and it found nine on first run.
- */
-const DASH_VIEW_KEY = 're-next.dashView';
+/* The dashboard's by-question view is retired (stage-page round,
+ * SPEC-THE-STAGE-PAGE.md, point 10): its one surviving job -- reaching
+ * the numbers behind a question's answer -- is now the Questions row's
+ * own "the numbers behind this N" disclosure (see provenanceLine below).
+ * Findings-per-question and cross-analysis disagreements have not moved
+ * yet; `by_analysis` (loadByAnalysisPane) still carries those. */
 
-
-
-/* Round two of the dashboard (DASHBOARD-ROUND-TWO.md): presentation, not
- * structure. The grouping by question stands; what was missing was the tier
- * it was meant to unlock — a reader still assembled every answer themselves
- * from raw rows, 2,300 pixels deep. Five rules, each a function below:
- *
- *   1. every section opens with its answer — the answer LAYER's sentence,
- *      the same one the Evidence rail shows, not one composed here;
- *   2. findings that agree collapse to one row with a count;
- *   3. provenance is section-level; the analysis name leaves every row;
- *   4. a disagreement is the section's headline, shown once and pointed to
- *      from any other question that reaches the same conflict;
- *   5. booleans and unsets leave the counts table — they are part of the
- *      answer, or they are "not recorded", never a number.
- */
-
-function findingRowHtml(f, analysisId, when) {
-  const c = findingGlyph(f.label);
-  return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
-    data-measure="${esc(analysisId)}" data-check="${esc(f.check_name || '')}"
-    data-title="${esc((f.check_name || analysisId).replace(/_/g, ' '))}"
-    data-summary="${esc(f.summary || '')}" data-when="${esc(when || '')}">
-    <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
-    <span class="min-w-0 flex-1 text-ink">
-      <strong class="font-semibold">${
-        f.check_name
-          ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
-          : esc(humanLabel(f.label) || analysisId)}.</strong>
-      ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}</span>
-    <span class="shrink-0 text-provenance text-ink-muted">›</span>
-  </button>`;
-}
-
-function isUnresolved(f) {
-  return UNRESOLVED_LABELS.has(String(f.label || '').toLowerCase());
-}
-
-/** Rule 2. Unresolved findings stay individual and first — each is a
- *  decision. The rest group by verdict: two or more that agree become one
- *  row naming the count and the checks, with the full rows behind a
- *  disclosure. "Five passes" is one fact, not five. */
-function findingsHtml(findings, analysisId, when) {
-  const open = findings.filter(isUnresolved);
-  const rest = findings.filter((f) => !isUnresolved(f));
-  const groups = new Map();
-  for (const f of rest) {
-    const k = String(f.label || '').toLowerCase();
-    groups.set(k, [...(groups.get(k) || []), f]);
-  }
-  const out = [...open.map((f) => findingRowHtml(f, analysisId, when))];
-  for (const [label, rows] of groups) {
-    if (rows.length === 1) { out.push(findingRowHtml(rows[0], analysisId, when)); continue; }
-    const c = findingGlyph(label);
-    const names = rows.map((f) => (f.check_name || '').replace(/_/g, ' ')).filter(Boolean);
-    out.push(`<details class="border-b border-rule py-s2">
-      <summary class="flex cursor-pointer items-baseline gap-s2 list-none">
-        <span class="w-[16px] shrink-0 ${c.tone}">${c.glyph}</span>
-        <span class="min-w-0 flex-1 text-ink"><strong class="font-semibold tnum">${rows.length} checks — ${esc(humanLabel(label))}.</strong>
-          <span class="text-ink-muted">${esc(names.join(', '))}</span></span>
-        <span class="shrink-0 text-provenance text-ink-muted">show ${rows.length}</span>
-      </summary>
-      <div class="pl-[22px]">${rows.map((f) => findingRowHtml(f, analysisId, when)).join('')}</div>
-    </details>`);
-  }
-  return out.join('');
-}
-
-function subResourceSummaryHtml(fact) {
-  const rows = (fact.value && fact.value.findings) || [];
-  const worthy = rows.filter((r) => String(r.label || '').toLowerCase() === 'worthy').length;
-  return `<div class="mt-s1 text-caveat text-ink">
-      <span class="tnum">${rows.length}</span> sub-resources assessed ·
-      <span class="tnum">${worthy}</span> worthy · <span class="tnum">${rows.length - worthy}</span> not.
-      <span class="text-ink-muted">These are promotion candidates, not findings about this repository —
-        they belong with the verdict loop.</span>
-      <button type="button" data-members="sub_resource_survey" data-title="sub-resources" class="cursor-pointer bg-transparent text-accent-ink underline">which ›</button>
-      <button type="button" data-goto-worklist class="cursor-pointer bg-transparent text-accent-ink underline">Open work lists →</button>
-    </div>`;
-}
-
+/** A measured/error/unrun/unknown analysis state as one glyph, for the
+ *  members rail and the run-history list -- the same vocabulary the matrix
+ *  and the questions row use, spelled out here since state-as-glyph is a
+ *  cross-cutting need, not a "by analysis" or "by question" one. */
 function factGlyph(state) {
   switch (state) {
     case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
@@ -4127,127 +4048,6 @@ function factGlyph(state) {
     case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
     default: return { glyph: '·', tone: 'text-ink-muted' };
   }
-}
-
-/** Rule 5. Split an analysis's scalar results three ways: numbers for the
- *  counts table; booleans, which ARE part of the answer; and unsets — null
- *  or empty — which are "not recorded" and must never render as a number.
- *  A zero is left as a zero: whether it means "none" or "not set" is the
- *  producer's to say, and guessing here would be the lie the round names. */
-function splitScalars(value) {
-  const numbers = []; const flags = []; const unset = [];
-  for (const [k, v] of Object.entries(value || {})) {
-    if (k === 'findings' || k === 'overall') continue;
-    if (typeof v === 'number') numbers.push({ key: k, value: v });
-    else if (typeof v === 'boolean') flags.push({ key: k, value: v });
-    else if (v == null || v === '') unset.push(k);
-  }
-  return { numbers, flags, unset };
-}
-
-/** One analysis, under one question. `checks` is the set of check names this
- *  question declares for it, or null for the whole analysis. Provenance is
- *  NOT on the rows (rule 3): the analysis is named once, here, in the head
- *  line, and in the popup beside the run. */
-function analysisUnderQuestionHtml(fact, id, checks) {
-  if (!fact) {
-    return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · not read</div>`;
-  }
-  const g = factGlyph(fact.state);
-  const when = fact.last_run_at || '';
-  const value = (fact.value && typeof fact.value === 'object') ? fact.value : {};
-  let findings = Array.isArray(value.findings) ? value.findings : [];
-  if (checks) findings = findings.filter((f) => checks.has(String(f.check_name || '')));
-  findings = sortUnresolvedFirst(findings);
-  const { numbers: allNumbers, flags, unset } = checks ? { numbers: [], flags: [], unset: [] } : splitScalars(value);
-  // An analysis whose state is "nothing found" has said so in its sentence.
-  // Four zeros under "Nothing ingested from site" restate it as a table, and
-  // a zero that means "nothing happened" reads as a measurement of nothing.
-  // The zeros are dropped only in that state; a zero from a measured run is
-  // a value and stays.
-  const numbers = fact.state === 'nothing_found' ? allNumbers.filter((c) => c.value !== 0) : allNumbers;
-  const head = `<button type="button" class="mt-s2 flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 text-left"
-      data-measure="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
-      data-summary="${esc(fact.headline || '')}" data-when="${esc(when)}">
-      <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
-      <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(fact.headline || fact.note || fact.state || ''))}${
-        flags.length ? ` <span class="text-caveat text-ink-muted">· ${flags.map((f) => `${esc(f.key.replace(/_/g, ' '))}: ${f.value ? 'yes' : 'no'}`).join(' · ')}</span>` : ''}</span>
-      <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
-    </button>
-    <div class="pl-[22px] text-provenance">
-      <!-- Left un-gated for a metrics-only analysis (repository_health, and
-           the like) deliberately: `fact` here has no applicability flag —
-           knowing that costs the analysis-kind registry lookup that
-           /members/<id> already does server-side — and duplicating that
-           registry into the detail-row manifest for one control is a
-           bigger surface than letting the click render the rail's own
-           sentence, which it now does (see members_for's not_applicable
-           branch). -->
-      <button type="button" data-members="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
-        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">members ›</button>
-    </div>`;
-  if (id === 'sub_resource_survey') return head + subResourceSummaryHtml(fact);
-  const scopedAndFound = checks && findings.length;
-  return (scopedAndFound ? '' : head)
-    + (findings.length ? findingsHtml(findings, id, when) : '')
-    + (unset.length ? `<div class="mt-s1 text-caveat text-ink-muted">not recorded: ${esc(unset.map((k) => k.replace(/_/g, ' ')).join(', '))}</div>` : '')
-    + (numbers.length ? `<table class="mt-s1 w-full border-collapse text-caveat">${numbers.map((c) => `
-        <tr class="wl-countrow cursor-pointer border-b border-rule" data-members="${esc(id)}" data-metric="${esc(c.key)}"
-          data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(when)}">
-          <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-          <td class="tnum py-[5px] text-right text-ink">${esc(fmtScalar(c.value, c.key))}
-            <span class="text-provenance text-ink-muted">members ›</span></td>
-        </tr>`).join('')}</table>` : '');
-}
-
-function sortUnresolvedFirst(findings) {
-  return [...findings].sort((x, y) => (isUnresolved(x) ? 0 : 1) - (isUnresolved(y) ? 0 : 1));
-}
-
-/** Rule 4. Every scalar name reported by more than one analysis with
- *  different values, across ALL the facts on the pane — so a conflict is
- *  found wherever it lives and shown wherever it is reached. */
-function findDisputes(facts) {
-  const seen = new Map();
-  for (const [id, f] of facts) {
-    const value = (f && f.value && typeof f.value === 'object') ? f.value : {};
-    for (const [k, v] of Object.entries(value)) {
-      if (typeof v !== 'number') continue;
-      seen.set(k, [...(seen.get(k) || []), { analysis: id, value: v }]);
-    }
-  }
-  const disputes = new Map();
-  for (const [k, rec] of seen) {
-    if (rec.length > 1 && new Set(rec.map((x) => x.value)).size > 1) disputes.set(k, rec);
-  }
-  return disputes;
-}
-
-function disputeHtml(key, rec, when) {
-  return `<div class="mt-s2 border-l-2 border-state-warn pl-s2">
-      <div class="text-caps uppercase tracking-caps text-state-warn">Disagreement · ${esc(key.replace(/_/g, ' '))}</div>
-      <div class="mt-[2px] flex flex-wrap items-baseline gap-s3 text-answer text-ink">
-        ${rec.map((x) => `<button type="button" class="cursor-pointer border-0 bg-transparent p-0 text-left"
-            data-members="${esc(x.analysis)}" data-metric="${esc(key)}" data-title="${esc(key.replace(/_/g, ' '))}" data-when="${esc(when || '')}">
-            <strong class="tnum font-semibold">${esc(fmtScalar(x.value, key))}</strong>
-            <span class="font-mono text-provenance text-ink-muted">${esc(x.analysis)} ›</span></button>`).join('')}
-      </div>
-      <div class="text-caveat text-ink-muted">${rec.length} analyses report this name with different values; they may not be measuring the same thing. Open either to see what each counted — the members list in the rail.</div>
-    </div>`;
-}
-
-/** The section's state, for the anchor rail: the worst thing in it. */
-function sectionState(q, answerEnv, facts, ids) {
-  const known = (answerEnv && answerEnv.facts || []).filter((f) => f.is_known);
-  if (ids.some((id) => facts.get(id)?.state === 'error')) return 'error';
-  if (!known.length) return 'unrun';
-  // A question the catalog itself calls `mixed` or `partial` is not answered
-  // by its analyses reporting; they are pieces of an answer. A tick here
-  // said "answered" over prose that said "nothing detects one", and the
-  // glyph is the one people read. Half-filled, in the accent — attention,
-  // not completion.
-  if (q && (q.kind === 'mixed' || q.kind === 'partial')) return 'partial';
-  return 'answered';
 }
 
 /* ── The third door: the things a count counted ──────────────────────────
@@ -4571,250 +4371,24 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
   if (typeof setRailOpen === 'function') setRailOpen(true);
 }
 
-async function renderDashboardByQuestion(slug, stage, host, live) {
-  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading the questions…</span>`;
-  let questions;
-  try {
-    const res = await getQuestions(slug, {
-      phase: stage, perspectives: [...state.activePerspectives], purposes: currentPurposes(),
-    });
-    questions = res.questions || [];
-  } catch (err) {
-    if (live()) host.innerHTML = `<span class="text-state-warn">The questions could not be read: ${esc(err.message)}</span>`;
-    return;
-  }
-  if (!live()) return;
-  rememberRationales(questions);
-
-  const measured = questions.filter((q) => (q.analysis_ids || []).length);
-  const unmeasured = questions.length - measured.length;
-  const asked = new Set(measured.flatMap((q) => q.analysis_ids || []));
-
-  let stageIds = [];
-  try {
-    const cat = await listAnalyses('repo', { intent: stage });
-    stageIds = (cat.analyses || cat || []).map((a) => a.id || a.analysis_id).filter(Boolean);
-  } catch (_) { /* the trailing section is then just what the questions named */ }
-  const unasked = stageIds.filter((id) => !asked.has(id));
-
-  host.innerHTML = `<span class="text-caveat text-ink-muted">Reading ${asked.size + unasked.length} measurements…</span>`;
-  const facts = new Map();
-  let answers;
-  try {
-    // The facts, and — rule 1 — each question's ANSWER from the same layer
-    // the Evidence rail reads. Fetched together; the answers are per
-    // question and independent, so a slow one does not hold the rest.
-    const [res, envs, ctx] = await Promise.all([
-      getBulkFacts([slug], [...asked, ...unasked]),
-      Promise.allSettled(measured.map((q) => getAnswer(slug, q.question))),
-      getContext('repo', slug).catch(() => ({})),
-    ]);
-    state.contextAnswers = ctx?.question_answers || {};
-    for (const f of (res.subjects || {})[slug] || []) facts.set(f.analysis_id, f);
-    answers = envs.map((e) => (e.status === 'fulfilled' ? e.value : null));
-  } catch (err) {
-    if (live()) host.innerHTML = `<span class="text-state-warn">The measurements could not be read: ${esc(err.message)}</span>`;
-    return;
-  }
-  if (!live()) return;
-
-  const disputes = findDisputes(facts);
-  const disputeShownIn = new Map();     // key -> question index that rendered it
-  const shownWhole = new Map();
-  const sections = measured.map((q, qi) => {
-    const ids = q.analysis_ids || [];
-    const env = answers[qi];
-    const declared = (q.checks || []).map((c) => String(c).split(':'));
-    const checksFor = (id) => {
-      const mine = declared.filter(([a]) => a === id).map(([, c]) => c).filter(Boolean);
-      return mine.length ? new Set(mine) : null;
-    };
-
-    // Rule 1: the answer sentence, relayed from the answer layer — the same
-    // one the Evidence rail shows. `lines.answer` is already HTML, escaped
-    // by readEnvelope branch by branch, so it is NOT escaped again here.
-    // Where the layer has nothing, say what was looked in — "0 of 3
-    // reported" is a state. A human-answered question is a different case:
-    // its answer is what a person said, and the analyses under it are
-    // informants, not the answer.
-    const lines = env ? readEnvelope(q, env) : null;
-    const reported = ids.filter((id) => facts.get(id)?.state === 'measured').length;
-    const human = q.kind === 'human' ? (state.contextAnswers || {})[questionKey(q.question)] : null;
-    const answerLine = human && human.answer
-      ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${tnum(esc(human.answer))}
-           <span class="text-provenance text-ink-muted">· answered <span class="tnum">${esc(ago(human.answered_at))}</span></span></p>`
-      : q.kind === 'human'
-        ? `<p class="mt-[2px] text-answer text-ink-muted">needs a person to answer — the analyses below inform it, they do not decide it</p>`
-      : lines && lines.answer
-        ? `<p class="mt-[2px] max-w-[70ch] text-answer text-ink">${lines.answer}</p>`
-        : `<p class="mt-[2px] text-answer text-ink-muted">not answered — <span class="tnum">${reported}</span> of <span class="tnum">${ids.length}</span> analyses reported</p>`;
-
-    // Rule 4: the section's disagreements, once, above the detail.
-    const mine = [...disputes].filter(([, rec]) => rec.some((x) => ids.includes(x.analysis)));
-    const disputeBlocks = mine.map(([key, rec]) => {
-      const prior = disputeShownIn.get(key);
-      if (prior !== undefined) {
-        return `<div class="mt-s2 text-caveat text-state-warn">Same disagreement on <em>${esc(key.replace(/_/g, ' '))}</em> as under
-          <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a>.</div>`;
-      }
-      disputeShownIn.set(key, qi);
-      return disputeHtml(key, rec, facts.get(rec[0].analysis)?.last_run_at);
-    }).join('');
-
-    const body = ids.map((id) => {
-      const checks = checksFor(id);
-      if (!checks) {
-        const prior = shownWhole.get(id);
-        if (prior !== undefined && prior !== qi) {
-          return `<div class="mt-s2 text-caveat text-ink-muted"><span class="font-mono">${esc(id)}</span> · shown in full under
-            <a href="#dq-${prior}" class="text-accent-ink underline">${esc(measured[prior].question)}</a></div>`;
-        }
-        shownWhole.set(id, qi);
-      }
-      return analysisUnderQuestionHtml(facts.get(id), id, checks);
-    }).join('');
-
-    // Rule 3: provenance at section level.
-    const nMeasures = ids.reduce((n, id) => {
-      const v = facts.get(id)?.value; if (!v || typeof v !== 'object') return n;
-      return n + (Array.isArray(v.findings) ? v.findings.length : 0)
-        + Object.entries(v).filter(([k, x]) => k !== 'findings' && (typeof x === 'number' || typeof x === 'boolean')).length;
-    }, 0);
-    const st = sectionState(q, env, facts, ids);
-    // Separation (Repo Handoff, item 2): a hairline above every question with
-    // air above it, the glyph out in the margin, and weight in the order the
-    // reader needs — the answer heaviest, the question next, the meta last.
-    return `<section id="dq-${qi}" class="mt-s4 border-t border-rule pt-s3 scroll-mt-[8px]">
-      <div class="flex items-baseline gap-s2 -ml-[22px] pl-0">
-        <span class="w-[22px] shrink-0 text-right ${tone(st, 'paper')}">${GLYPH[st] || '·'}</span>
-        <div class="min-w-0 flex-1">
-          <div class="text-answer text-ink">${esc(q.question)}</div>
-          ${answerLine.replace('text-answer text-ink"', 'text-answer font-semibold text-ink"')}
-          <div class="text-provenance text-ink-muted"><span class="tnum">${ids.length}</span> analys${ids.length === 1 ? 'is' : 'es'} ·
-            <span class="tnum">${nMeasures}</span> measurements${lines && lines.lastRun ? ` · latest ${esc(ago(lines.lastRun))}` : ''}</div>
-        </div>
-      </div>
-      ${q.rationale ? `<p class="mt-[2px] max-w-[70ch] pl-[22px] text-caveat text-accent-ink">${esc(q.rationale)}</p>` : ''}
-      ${q.catalog_history ? `<details class="pl-[22px]"><summary class="cursor-pointer text-provenance text-ink-muted">catalog history</summary>
-        <p class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(q.catalog_history)}</p></details>` : ''}
-      ${disputeBlocks}
-      <details class="mt-s1"><summary class="cursor-pointer text-caveat text-ink-muted">detail</summary>${body}</details>
-    </section>`;
-  });
-
-  const trailing = unasked.length ? `<section id="dq-unasked" class="mb-s5 border-t border-dashed border-rule-strong pt-s3">
-      <div class="text-caps uppercase tracking-caps text-ink-muted">Measured, but no question asks ·
-        <span class="tnum">${unasked.length}</span></div>
-      <p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">These analyses run at this stage and
-        nothing in the question catalog names them. Either a question is missing, or the analysis is
-        evidence for a judgement rather than an answer to a question. Listed so the gap is a fact
-        rather than a surprise.</p>
-      ${unasked.map((id) => {
-        const f = facts.get(id); const g = f ? factGlyph(f.state) : { glyph: '·', tone: 'text-ink-muted' };
-        return `<details class="mt-s2"><summary class="flex cursor-pointer items-baseline gap-s2 list-none">
-            <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
-            <span class="min-w-0 flex-1 text-answer text-ink">${tnum(esc(f?.headline || f?.state || 'not read'))}</span>
-            <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${f?.last_run_at ? ` · ${esc(ago(f.last_run_at))}` : ''} ›</span>
-          </summary><div class="pl-[22px]">${analysisUnderQuestionHtml(f, id, null)}</div></details>`;
-      }).join('')}
-    </section>` : '';
-
-  // The anchor rail: five questions, five glyphs, jump to any. The same
-  // vocabulary as the matrix, and the reason a 2,300-pixel page can be
-  // seen whole.
-  const rail = measured.length > 1 ? `<nav class="mb-s3 flex flex-wrap gap-x-s3 gap-y-[2px] text-caveat">
-      ${measured.map((q, qi) => {
-        const st = sectionState(q, answers[qi], facts, q.analysis_ids || []);
-        return `<a href="#dq-${qi}" class="text-ink no-underline"><span class="${tone(st, 'paper')}">${GLYPH[st] || '·'}</span> ${esc(q.question)}</a>`;
-      }).join('')}${unasked.length ? `<a href="#dq-unasked" class="text-ink-muted no-underline">· unasked (${unasked.length})</a>` : ''}
-    </nav>` : '';
-
-  host.innerHTML = `<div class="mb-s2 text-caveat text-ink-muted">
-      <span class="tnum">${questions.length}</span> question${questions.length === 1 ? '' : 's'} at this stage ·
-      <span class="tnum">${measured.length}</span> measured${
-      unmeasured ? ` · <span class="tnum">${unmeasured}</span> answered another way — a direct fact, a person, or not yet` : ''}${
-      unasked.length ? ` · <span class="tnum">${unasked.length}</span> measured and unasked` : ''}${
-      disputes.size ? ` · <span class="text-state-warn tnum">${disputes.size}</span> disagreement${disputes.size === 1 ? '' : 's'}` : ''}
-      ${purposeLegendHtmlFor(questions)}</div>
-    ${rail}
-    ${sections.join('') || `<p class="text-caveat text-ink-muted">No question at this stage names an analysis.</p>`}
-    ${trailing}`;
-
-  host.querySelectorAll('[data-measure]').forEach((n) => {
-    n.addEventListener('click', () => openMeasurementDetail({
-      slug, analysisId: n.dataset.measure, title: n.dataset.title || n.dataset.measure,
-      metric: n.dataset.metric || '', summary: n.dataset.summary || '', when: n.dataset.when || '',
-    }));
-  });
-  host.querySelectorAll('[data-members]').forEach((n) => {
-    n.addEventListener('click', () => openMembers({
-      slug, analysisId: n.dataset.members, metric: n.dataset.metric || '', title: n.dataset.title || n.dataset.members,
-    }));
-  });
-  host.querySelectorAll('[data-goto-worklist]').forEach((b) => b.addEventListener('click', () => {
-    state.stage = 'investigation';
-    writeUrl();
-    renderIntentNav();
-    loadPane();
-  }));
-  for (const n of host.querySelectorAll('[data-delta]')) {
-    const [analysisId] = n.dataset.delta.split('|');
-    deltaFor(slug, analysisId).then((text) => {
-      if (!live()) return;
-      n.textContent = text || '';
-      n.className = text === 'first measurement' ? 'block text-provenance text-ink-muted' : 'block text-provenance text-ink';
-    });
-  }
-}
-
-/** The purpose legend for a question list that is not `state.questions`. */
-function purposeLegendHtmlFor(questions) {
-  const purposes = currentPurposes();
-  if (!purposes.length || !questions.length) return '';
-  const lead = questions.filter((q) => q.derivation?.purpose_ranked).length;
-  if (!lead) return `· <span class="text-ink-muted">none serve ${esc(purposes.join(', '))}</span>`;
-  return `· <span class="text-ink-muted">ordered by purpose · ${esc(purposes.join(', '))} · <span class="tnum">${lead}</span> lead</span>`;
-}
-
-function dashView() {
-  try { return localStorage.getItem(DASH_VIEW_KEY) === 'analysis' ? 'analysis' : 'question'; } catch { return 'question'; }
-}
-
-async function loadDashboardPane() {
+async function loadByAnalysisPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   const stage = state.stage;
 
-  // Two independent reads, each filling its own region as it lands. They were
-  // a Promise.all, which showed one line for as long as the slowest took —
-  // and on Analysis the dashboards read costs 109s.
+  // Its own token: an earlier click's slow read must not overwrite a
+  // later one's -- the dashboards read has cost 109s on Analysis.
   const token = ++dashToken;
-  const view = dashView();
   el.innerHTML = subTabsHtml() + `
     <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
-      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey results · ${esc(stage)}</span>
-      <span class="ml-auto flex gap-[6px] text-caveat">
-        <button type="button" data-dashview="question" aria-pressed="${view === 'question'}"
-          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by question</button>
-        <button type="button" data-dashview="analysis" aria-pressed="${view === 'analysis'}"
-          class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">by analysis</button>
-      </span>
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey results, by analysis · ${esc(stage)}</span>
     </div>
     <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>`;
   bindSubTabs();
-  el.querySelectorAll('[data-dashview]').forEach((b) => b.addEventListener('click', () => {
-    try { localStorage.setItem(DASH_VIEW_KEY, b.dataset.dashview); } catch { /* per-viewer convenience only */ }
-    loadDashboardPane();
-  }));
 
-  const live = () => token === dashToken && state.subTab === 'dashboard';
-
-  if (view === 'question') {
-    await renderDashboardByQuestion(slug, stage, $('dash-boards'), live);
-    return;
-  }
+  const live = () => token === dashToken && state.subTab === 'by_analysis';
 
   let data;
   try {
@@ -5214,7 +4788,11 @@ async function loadPane() {
   }
 
   if (state.subTab === 'survey') { await loadSurveyPane(); return; }
-  if (state.subTab === 'dashboard') { await loadDashboardPane(); return; }
+  // 'dashboard' is a retired tab id -- a bookmarked/shared URL from before
+  // the stage-page round lands on its nearest surviving surface rather than
+  // the deferred-pane message a stranger id would get.
+  if (state.subTab === 'dashboard') { state.subTab = 'by_analysis'; writeUrl(); }
+  if (state.subTab === 'by_analysis') { await loadByAnalysisPane(); return; }
   if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
   if (state.subTab !== 'questions') {
@@ -6348,9 +5926,22 @@ function provenanceLine(entry, i, lines, st) {
       st === 'unrun' ? 'run' : 're-run'}</button>`);
   }
 
+  // Point 10 (SPEC-THE-STAGE-PAGE.md): "965 file names are not the fact
+  // behind 965 source files -- the number is." The primary analysis's own
+  // measurements, opened in place under the answer, not the rail and not a
+  // second pane. One link per row, against the first analysis (the same one
+  // "sources" names first) -- a question naming several analyses gets the
+  // rest via that analysis's own row on `by_analysis`, not duplicated here.
+  const primaryId = (entry.analysis_ids || [])[0];
+  if (primaryId && (st === 'answered' || st === 'automatic')) {
+    actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
+      class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
+  }
+
   if (!bits.length && !actions.length) return '';
   return `<div class="ml-[22px] mt-[7px] text-provenance text-ink-muted">${
-    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>`;
+    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>
+    <div id="qm-${i}" hidden></div>`;
 }
 
 function updateAnsweredCount() {
@@ -6411,6 +6002,64 @@ function bindRowActions(el, entry, i) {
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
   el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
     copyAsEvidence(rowAsMarkdown(entry, i), e.currentTarget));
+  const numbersBtn = el.querySelector(`[data-numbers="${i}"]`);
+  numbersBtn?.addEventListener('click', () =>
+    toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn));
+}
+
+/**
+ * Point 10's disclosure: a table of measurements, indented under the answer,
+ * the pane keeping its place -- not the rail, and not a second pane. Rows in
+ * the table still open the rail (`opens` is a members reader), because a
+ * column of file names is the one thing 290px suits; the count itself does
+ * not belong there.
+ *
+ * Toggle, not always-open: opened once, closed on a second click, and the
+ * fetch happens only then -- the row does not pay for this until asked.
+ */
+async function toggleMeasurementsInPlace(i, analysisId, btn) {
+  const slot = $(`qm-${i}`);
+  if (!slot) return;
+  if (!slot.hidden) { slot.hidden = true; slot.innerHTML = ''; return; }
+  const slug = state.selectedSlug;
+  slot.hidden = false;
+  slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
+  let data;
+  try {
+    data = await getMeasurements(slug, analysisId);
+  } catch (err) {
+    slot.innerHTML = `<div class="ml-[22px] mt-s2 text-state-warn">The measurements could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;   // a faster click, or a different resource, won
+  const rows = data.measurements || [];
+  if (data.not_applicable) {
+    // Not_applicable is not zero -- "0" claims a count was taken and found
+    // empty, which is a different fact than "this analysis keeps no
+    // measurements table". The link keeps its un-counted label.
+    slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">${
+      esc(data.reason || `${analysisId} keeps no measurements table.`)}</div>`;
+    return;
+  }
+  if (btn) btn.textContent = `the numbers behind this ${rows.length} ›`;
+  slot.innerHTML = `
+    <table class="ml-[22px] mt-s2 w-full max-w-[60ch] border-collapse text-caveat">
+      ${rows.map((m) => `<tr class="border-b border-rule">
+        <td class="py-[4px] pr-s3 text-ink">${esc(String(m.name || '').replace(/_/g, ' '))}</td>
+        <td class="tnum py-[4px] pr-s3 text-right text-ink">${m.value == null ? '<span class="text-ink-muted">not recorded</span>' : esc(fmtScalar(m.value, m.name))}</td>
+        <td class="py-[4px] text-right text-provenance">${
+          m.opens
+            ? `<button data-numbers-open="${esc(m.opens.analysis_id || analysisId)}" data-numbers-metric="${esc(m.opens.metric || m.name)}"
+                 data-numbers-title="${esc(String(m.name || '').replace(/_/g, ' '))}"
+                 class="cursor-pointer bg-transparent text-accent-ink underline">the ${tnum(esc(String(m.value)))} ${esc(String(m.name || '').replace(/_/g, ' '))} ›</button>`
+            : m.note ? `<span class="text-ink-muted">${esc(m.note)}</span>` : ''
+        }</td>
+      </tr>`).join('')}
+    </table>
+    ${data.footer ? `<div class="ml-[22px] mt-s1 text-provenance text-ink-muted">${esc(data.footer)}</div>` : ''}`;
+  slot.querySelectorAll('[data-numbers-open]').forEach((b) => b.addEventListener('click', () => openMembers({
+    slug, analysisId: b.dataset.numbersOpen, metric: b.dataset.numbersMetric, title: b.dataset.numbersTitle,
+  })));
 }
 
 /**
