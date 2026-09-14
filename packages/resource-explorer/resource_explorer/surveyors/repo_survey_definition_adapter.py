@@ -4624,7 +4624,10 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "documentation_conventions", "Documentation & Conventions",
         "README/CHANGELOG/CONTRIBUTING coverage and doc-quality, plus repo-convention "
         "signals (build automation, deployment evidence, catalog self-description).",
-        ["documentation_coverage", "repo_conventions"],
+        # deployment_evidence added 2026-09-14 — this dashboard's own
+        # description already named it as one of the repo-convention signals
+        # it covers, before the analysis existed to fill that slot.
+        ["documentation_coverage", "repo_conventions", "deployment_evidence"],
     ),
     # Opened 2026-08-31 (docs/Backlog.md "Survey Results dashboards cover 14 of
     # 29 analyses"): all three architecture analyses were homeless in this
@@ -4659,7 +4662,11 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         # dependency_support added 2026-09-12: it reads the same
         # project_dependencies rows dependency_analysis reports on, so the two
         # are one question asked twice — what is here, and what does it mean.
-        ["dependency_analysis", "dependency_support"],
+        # egeria_interfaces added 2026-09-14, beside it: same shape of question
+        # (what does a declared dependency — here, pyegeria — indicate this
+        # repo consumes), just answered from code symbols/doc paths instead of
+        # a curated name mapping.
+        ["dependency_analysis", "dependency_support", "egeria_interfaces"],
     ),
     # interface_surface added 2026-08-31, same Backlog entry — "what can be
     # talked to, and whether the contract is written down" is the same
