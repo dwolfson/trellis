@@ -54,7 +54,15 @@ class EgeriaInterfacesSurveyor(BaseSurveyor):
                 )
                 results.append(ClassificationAnnotation(
                     summary=assessment.headline(),
-                    analysis_step=STEP, check_name="coverage",
+                    # Not "coverage": that name belongs to the normal path's
+                    # annotation below, and two annotations sharing a
+                    # check_name with no item key publish the same
+                    # qualifiedName if both ever run in one survey
+                    # (test_annotation_check_names). This branch says
+                    # "nothing to assess" (pyegeria not even declared), which
+                    # is a different statement from "here is how much was
+                    # covered".
+                    analysis_step=STEP, check_name="nothing_to_assess",
                     candidate_classifications=[], confidence=100,
                     json_properties={"state": ei.NOTHING_FOUND, **StepOutcome(
                         "no_signal", cause="pyegeria_not_declared", known_positive=True,

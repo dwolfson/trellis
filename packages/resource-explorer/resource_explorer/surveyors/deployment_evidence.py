@@ -271,11 +271,19 @@ class RepoDeploymentEvidence:
     def as_findings(self) -> list[dict]:
         rows = [d.as_finding() for d in self.distributions]
         c = self.counts
+        # Every distribution counted here came through classify_distribution,
+        # which only ever returns APPLICATION or LIBRARY — c[UNKNOWN] is
+        # structurally always 0 in this branch (the real "nothing was ever
+        # manifest-parsed" state is the SEPARATE no_manifest_read row below,
+        # at confidence 0). Naming an always-zero bucket in a confidence=100
+        # summary reads as a measured "0 unknown" a person can't tell apart
+        # from a real placeholder — so this branch names only the verdicts
+        # that can actually occur here.
         rows.append({
             "check_name": "coverage",
             "label": "no_manifest_read" if self.no_manifest_read else "checked",
-            "summary": (f"{c[APPLICATION]} application(s), {c[LIBRARY]} librar{'y' if c[LIBRARY]==1 else 'ies'}, "
-                        f"{c[UNKNOWN]} unknown" if not self.no_manifest_read else
+            "summary": (f"{c[APPLICATION]} application(s), {c[LIBRARY]} librar{'y' if c[LIBRARY]==1 else 'ies'}"
+                        if not self.no_manifest_read else
                         "No declared distributions to judge — repo_manifest_parse has not run"),
             "confidence": 100 if not self.no_manifest_read else 0,
             "detail": {**c, "distribution_count": len(self.distributions)},

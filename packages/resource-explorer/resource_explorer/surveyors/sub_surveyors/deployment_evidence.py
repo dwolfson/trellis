@@ -122,9 +122,16 @@ class DeploymentEvidenceSurveyor(BaseSurveyor):
                 ))
 
             c = assessment.counts
+            # classify_distribution only ever returns APPLICATION or LIBRARY —
+            # c[de.UNKNOWN] is structurally always 0 here (the real "nothing
+            # was ever manifest-parsed" state is the separate nothing_to_assess
+            # row above, at confidence 0). Naming an always-zero bucket in a
+            # confidence=100 summary would read as a measured "0 unknown" a
+            # reader can't tell apart from a real placeholder, so this summary
+            # names only the verdicts that can actually occur here.
             results.append(ClassificationAnnotation(
                 summary=(f"{c[de.APPLICATION]} application(s), {c[de.LIBRARY]} librar"
-                         f"{'y' if c[de.LIBRARY] == 1 else 'ies'}; {c[de.UNKNOWN]} unknown"),
+                         f"{'y' if c[de.LIBRARY] == 1 else 'ies'}"),
                 analysis_step=STEP, check_name="coverage",
                 candidate_classifications=[], confidence=100,
                 json_properties={**c, "distribution_count": len(assessment.distributions),

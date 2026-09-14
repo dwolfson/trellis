@@ -210,7 +210,11 @@ class TestTheSurveyor:
 
     def test_no_pyegeria_dependency_is_nothing_found_not_never_run(self, reg, slug):
         anns = self._run(reg, slug)
-        assert len(anns) == 1 and anns[0].check_name == "coverage"
+        # Not "coverage": that check_name belongs to the normal path's own
+        # coverage annotation, and two annotations sharing a check_name with
+        # no item_key collide on publish (test_annotation_check_names). This
+        # branch says "nothing to assess" — pyegeria isn't even declared.
+        assert len(anns) == 1 and anns[0].check_name == "nothing_to_assess"
         assert anns[0].json_properties.get("state") == ei.NOTHING_FOUND
         rows = reg.query_findings(slug, "egeria_interfaces")
         assert rows and rows[0]["label"] == ei.NOTHING_FOUND
