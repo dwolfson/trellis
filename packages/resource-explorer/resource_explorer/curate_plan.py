@@ -181,8 +181,14 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     accepted = sum(1 for v in comp_v.values() if v.get("verdict") == "accepted")
     made_of = [
         _row("Component", f"{accepted} of {len(comps):,} components accepted · {len(comp_v)} reviewed",
-             evidence="ports and wires are derived from the accepted components' interfaces and relationships; "
-                      "review is per component and lives on Architecture verdicts (current UI) until it moves here",
+             # True today, and no more (designer, 2026-09-14): interfaces.propose()
+             # reads deployment artifacts at survey time and consults no verdict;
+             # acceptance changes which ports get DRAWN. "Derived from the
+             # accepted components" claimed the stronger thing, in the sentence a
+             # curator reads to decide whether to trust the column.
+             evidence="ports and wires are read from the repository's deployment artifacts; the diagram shows those "
+                      "belonging to accepted components; review is per component and lives on Architecture verdicts "
+                      "(current UI) until it moves here",
              source="architecture_recovery", state=arch.get("state", ""), count=accepted,
              members={"analysis_id": "architecture_recovery"}, candidate=accepted > 0,
              detail={"reviewed": len(comp_v), "blueprints_reviewed": len(bp_v),
@@ -260,6 +266,41 @@ def _ensure_schema(conn) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_resource_curation_entity "
                  "ON resource_curation(entity_type, entity_slug, requested_at)")
+    # One table, two kinds (REPORT-RECORD-AND-TWO-CALLS C1, 2026-09-13). A
+    # report is a catalogue record with no steps: a named, dated, authored
+    # record of what was true about a selection at a moment, with its
+    # provenance attached. `kind` and `name` were added after the table
+    # shipped; every pre-existing row is a catalogue.
+    cols = _columns(conn, "resource_curation")
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN kind TEXT NOT NULL DEFAULT 'catalogue'")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "report" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN report TEXT NOT NULL DEFAULT '{}'")
+    # The three acts on a report (REPORT-ACTS, 2026-09-14): a record's USES
+    # are a separate append-only list attached to it, not an edit of it --
+    # the content stays frozen while what it caused accumulates beside it.
+    # A correction is a new record that names what it corrects; the old one
+    # learns who corrected it, in the same place its uses appear.
+    if "uses" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'")
+    if "corrects" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN corrects TEXT NOT NULL DEFAULT ''")
+    if "corrected_by" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN corrected_by TEXT NOT NULL DEFAULT '{}'")
+
+
+def _columns(conn, table: str) -> set[str]:
+    try:
+        if getattr(conn, "is_postgres", False):
+            rows = conn.execute("SELECT column_name FROM information_schema.columns "
+                                "WHERE table_name = ? AND table_schema = current_schema()", (table,)).fetchall()
+            return {r["column_name"] for r in rows}
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {r["name"] for r in rows}
+    except Exception:
+        return set()
 
 
 @dataclass
@@ -295,6 +336,50 @@ class Curations:
                 "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, state, steps, activity_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (cid, entity_type, slug, author, now, json.dumps(selection), json.dumps(manifest), json.dumps(rows), activity_id))
+        return self.get(cid)
+
+    def create_report(self, entity_type: str, slug: str, *, author: str, name: str, report: dict,
+                      corrects: str = "") -> dict:
+        """A report record: the act of writing a list down. No steps; done
+        the moment it is written. `report` holds the question as asked, the
+        analysis id and its run_at, the facet, total and shown, and the rows
+        themselves -- a snapshot of names with their detail, never a stored
+        filter. Append-only: a correction is a new record naming what it
+        corrects (`corrects`), never an edit."""
+        if not author:
+            raise ValueError("a report needs an author")
+        if not name.strip():
+            raise ValueError("a report needs a name")
+        cid = uuid.uuid4().hex
+        now = _now()
+        old = self.get(corrects) if corrects else None
+        if corrects and (not old or old["entity_slug"] != slug or old.get("kind") != "report"):
+            raise ValueError("a correction must name a report record on the same resource")
+        with self._conn() as conn:
+            _ensure_schema(conn)
+            conn.execute(
+                "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, "
+                "state, steps, activity_id, kind, name, report, finished_at, corrects) "
+                "VALUES (?, ?, ?, ?, ?, '{}', '{}', 'done', '[]', '', 'report', ?, ?, ?, ?)",
+                (cid, entity_type, slug, author, now, name.strip(), json.dumps(report), now, corrects))
+            if old:
+                # The superseded record learns who corrected it. Its content
+                # is not touched; this sits where its uses appear.
+                conn.execute("UPDATE resource_curation SET corrected_by = ? WHERE id = ?",
+                             (json.dumps({"id": cid, "name": name.strip(), "at": now, "by": author}), corrects))
+        return self.get(cid)
+
+    def add_use(self, cid: str, *, act: str, target: str, target_name: str, by: str) -> dict:
+        """Append one use -- 'added to work list "…"', 'raised RFA …', 'cited
+        in the journal' -- to the record's uses. Append-only; the record's
+        content is never touched."""
+        rec = self.get(cid)
+        if not rec:
+            raise KeyError(cid)
+        uses = list(rec.get("uses") or [])
+        uses.append({"act": act, "target": target, "target_name": target_name, "at": _now(), "by": by})
+        with self._conn() as conn:
+            conn.execute("UPDATE resource_curation SET uses = ? WHERE id = ?", (json.dumps(uses), cid))
         return self.get(cid)
 
     def get(self, cid: str) -> dict | None:
@@ -335,9 +420,13 @@ class Curations:
     @staticmethod
     def _decode(row) -> dict:
         d = dict(row) if not isinstance(row, dict) else dict(row)
-        for k in ("selection", "manifest", "steps"):
+        for k in ("selection", "manifest", "steps", "report", "uses", "corrected_by"):
+            empty = "[]" if k in ("steps", "uses") else "{}"
             try:
-                d[k] = json.loads(d.get(k) or ("[]" if k == "steps" else "{}"))
+                d[k] = json.loads(d.get(k) or empty)
             except ValueError:
-                d[k] = [] if k == "steps" else {}
+                d[k] = [] if k in ("steps", "uses") else {}
+        d.setdefault("kind", "catalogue")
+        d.setdefault("name", "")
+        d.setdefault("corrects", "")
         return d

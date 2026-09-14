@@ -48,6 +48,16 @@ import {
   getMemberChildren,
   getMembers,
   getCuratePlan,
+  getRunCost,
+  getDepthOffer,
+  saveReport,
+  listRecords,
+  recordExportHref,
+  actOnRecord,
+  getComponentTree,
+  getComponentLeaves,
+  postBranchVerdicts,
+  postDepthOfferOutcome,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -2688,6 +2698,108 @@ function dispositionPickerHtml(p) {
  *  (FUNNEL-COST-RULINGS §4, 2026-09-13). */
 const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);
 
+/* ── The depth offer ─────────────────────────────────────────────────────
+ *
+ * FUNNEL-COST-RULINGS §3 and REPORT-RECORD-AND-TWO-CALLS §B (designer,
+ * 2026-09-13). Keep investigating should schedule the deeper surveys --
+ * with one condition: it OFFERS, it does not silently queue. At the moment
+ * a verdict of investigating or tracking is recorded, the pane shows what
+ * that verdict does not do, names the analyses at the analysis and
+ * assessment tiers that have never run on this resource, prices them with
+ * the split, and offers three buttons. Once per verdict, in the pane,
+ * never a modal; the verdict is already recorded when this appears and
+ * nothing waits on an answer. The decline is RECORDED on the verdict: a
+ * corpus of declines says depth is not worth its price here, which is a
+ * finding about the analyses, and it cannot be read off anything if the
+ * decline leaves no trace. Never on abandoned or ignored -- offering to
+ * spend at the moment someone decided to stop spending is the one place
+ * this reads as an argument. recommended and using only when the repo has
+ * never been measured: adopting something nobody looked at is the case
+ * worth a sentence. */
+function depthOfferApplies(disposition, measuredBefore) {
+  if (disposition === 'investigating' || disposition === 'tracking') return true;
+  if (disposition === 'recommended' || disposition === 'using') return !measuredBefore;
+  return false;
+}
+
+async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
+  if (!host || !p?.github_url) return;
+  const disposition = p.disposition || 'undecided';
+  if (disposition === 'abandoned' || disposition === 'ignored' || disposition === 'undecided') { host.innerHTML = ''; return; }
+  let offer;
+  try { offer = await getDepthOffer(p.slug); } catch { host.innerHTML = ''; return; }
+  if (!depthOfferApplies(disposition, !!offer.measured_before)) { host.innerHTML = ''; return; }
+  // Once per verdict: the latest verdict row carries the answer, if any.
+  if (!afterVerdict) {
+    try {
+      const rows = await getDispositionHistory(p.github_url);
+      const latest = [...(rows || [])].sort((a, b) => whenMs(b.decided_at) - whenMs(a.decided_at))[0];
+      if (!latest || latest.depth_offer) { host.innerHTML = ''; return; }
+    } catch { host.innerHTML = ''; return; }
+  }
+  const rows = offer.analyses || [];
+  if (!rows.length) { host.innerHTML = ''; return; }
+  const total = offer.total || {};
+  const priceCell = (c) => {
+    if (!c || c.basis === 'unknown') return `<span class="text-ink-muted">not priced</span>`;
+    if (c.basis === 'declared') return `<span class="text-ink-muted">declared ${esc(declaredWord(c) || c.sentence || '')}</span>`;
+    if (c.split_runs) return `<span class="tnum">${esc(fmtSeconds(c.steps_seconds))}</span> to run · <span class="tnum">${esc(fmtSeconds(c.publish_seconds))}</span> to publish`;
+    return `about <span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">· not yet split</span>`;
+  };
+  host.innerHTML = `
+    <div data-depth-offer class="mt-s3 border-t border-rule pt-s2">
+      <div class="text-caveat text-ink">This verdict does not schedule anything. <span class="tnum">${rows.length}</span>
+        ${rows.length === 1 ? 'analysis' : 'analyses'} at the analysis and assessment tiers ${rows.length === 1 ? 'has' : 'have'} never run on
+        <span class="font-mono">${esc(p.slug)}</span>:</div>
+      <table class="mt-s1 w-full border-collapse text-provenance">
+        ${rows.map((a) => `<tr class="border-b border-rule">
+          <td class="py-[2px] pr-s2"><input type="checkbox" data-depth-pick="${esc(a.analysis_id)}" hidden></td>
+          <td class="py-[2px] pr-s3 font-mono text-ink">${esc(a.analysis_id)}</td>
+          <td class="py-[2px] pr-s3 text-ink-muted">${esc(a.tier || '')}</td>
+          <td class="py-[2px] text-ink">${priceCell(a.cost)}</td>
+        </tr>`).join('')}
+      </table>
+      <div class="mt-s1 text-provenance text-ink-muted">${tnum(esc(total.sentence || ''))}</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
+        <button data-depth="accepted" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Run these in background</button>
+        <button data-depth="choose" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Choose which</button>
+        <button data-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
+        <span data-depth-status class="text-provenance text-ink-muted"></span>
+      </div>
+    </div>`;
+  const box = host.querySelector('[data-depth-offer]');
+  const status = box.querySelector('[data-depth-status]');
+  const finish = async (outcome, ids) => {
+    const runIds = [];
+    for (const id of ids) {
+      try { const started = await runAnalysis(p.slug, id); if (started?.run_id) runIds.push(started.run_id); }
+      catch (err) { status.innerHTML = `<span class="text-accent-ink">${esc(id)}: ${esc(err.message)}</span>`; }
+    }
+    try {
+      await postDepthOfferOutcome(p.github_url, { outcome, analysisIds: ids, runIds });
+    } catch (err) {
+      // Nothing was recorded. Say so; the offer stays so it can be answered.
+      status.innerHTML = `<span class="text-accent-ink">${
+        err.status === 401 ? 'not recorded — sign in to answer the offer' : `not recorded: ${esc(err.message)}`}</span>`;
+      return;
+    }
+    box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
+      outcome === 'declined' ? 'declined' : `<span class="tnum">${ids.length}</span> queued in the background`} · on the verdict's record</div>`;
+    renderDispositionHistory(p.github_url);
+  };
+  box.querySelector('[data-depth="accepted"]').addEventListener('click', () => finish('accepted', rows.map((a) => a.analysis_id)));
+  box.querySelector('[data-depth="declined"]').addEventListener('click', () => finish('declined', []));
+  box.querySelector('[data-depth="choose"]').addEventListener('click', (ev) => {
+    box.querySelectorAll('[data-depth-pick]').forEach((c) => { c.hidden = false; c.checked = true; });
+    ev.currentTarget.textContent = 'Run chosen in background';
+    ev.currentTarget.onclick = () => {
+      const ids = [...box.querySelectorAll('[data-depth-pick]:checked')].map((c) => c.dataset.depthPick);
+      if (!ids.length) { status.textContent = 'nothing chosen — Not now records the decline'; return; }
+      finish('chose', ids);
+    };
+  });
+}
+
 function wireDispositionPicker(host, p, { note, onSet }) {
   const commit = async (value, reason = '') => {
     note('Saving…');
@@ -2696,6 +2808,9 @@ function wireDispositionPicker(host, p, { note, onSet }) {
       p.disposition = value;
       renderSidebar();
       await onSet(value);
+      // The offer, at the moment the verdict is recorded, in the pane.
+      const slot = $('depth-offer') || $('resource-action');
+      if (slot) renderDepthOffer(p, slot, { afterVerdict: true });
     } catch (err) {
       note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
     }
@@ -2903,6 +3018,12 @@ async function loadDispositionPane() {
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
     <div id="disposition-picker" class="mb-s2"></div>
     <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
+    <div id="depth-offer" class="mb-s4"></div>
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="text-caps uppercase tracking-caps text-ink">Records</span>
+      <span class="text-provenance text-ink-muted">what was catalogued, and what was written down · a snapshot, not a query</span>
+    </div>
+    <div id="records" class="mb-s4 text-caveat text-ink-muted">Reading the records…</div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
       <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
@@ -2926,11 +3047,170 @@ async function loadDispositionPane() {
     };
     mountPicker();
     renderDispositionHistory(project.github_url);
+    renderDepthOffer(project, $('depth-offer'));
   } else {
     $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
   }
   renderJournalWrite(slug);
   await renderJournalEntries(slug);
+  await renderRecords(slug);
+}
+
+/** Records under the resource, beside the journal and the verdict trail --
+ *  not inside the journal, which is prose testimony and which a
+ *  thirty-two-row table fights. A catalogue record shows its steps inline
+ *  as Curate draws them; a report shows its header sentence. Same row
+ *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
+async function renderRecords(slug) {
+  const host = $('records');
+  if (!host) return;
+  let recs;
+  try { recs = (await listRecords(slug)).records || []; }
+  catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
+  host.innerHTML = recs.map((r) => {
+    const when = `<span class="tnum">${esc(ago(r.requested_at))}</span> <span class="tnum">(${esc(String(r.requested_at).slice(0, 10))})</span>`;
+    if (r.kind === 'report') {
+      const rep = r.report || {};
+      return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
+        <div class="text-answer text-ink">${esc(r.name)}</div>
+        <div class="text-caveat text-ink"><strong>${tnum(esc(rep.header || ''))}</strong></div>
+        <div class="text-provenance text-ink-muted">${tnum(esc(rep.provenance || ''))} · a snapshot, not a query</div>
+        <div class="text-provenance text-ink-muted">report · ${esc(r.author)} · ${when}${rep.question ? ` · asked as <em>${esc(rep.question)}</em>` : ''}
+          · <a class="text-accent-ink underline" href="${recordExportHref(slug, r.id, 'md')}">markdown</a>
+          · <a class="text-accent-ink underline" href="${recordExportHref(slug, r.id, 'csv')}">csv</a>
+          · <button data-record-open="${esc(r.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">rows${icon('chevron-right', { size: 12 })}</button></div>
+        ${r.out_of_date ? `<div class="text-provenance text-state-warn">⚠ ${esc(r.out_of_date)}</div>` : ''}
+        ${r.corrects ? `<div class="text-provenance text-ink-muted">corrects an earlier record</div>` : ''}
+        <div data-record-rows hidden class="mt-s1 text-provenance">${(rep.groups || []).map((g) => `
+          <div class="text-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</div>
+          <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="flex items-baseline gap-s2 font-mono text-ink">
+            <input type="checkbox" data-record-row="${esc(row.name)}" class="shrink-0">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
+            g.truncated ? `<li class="text-ink-muted">and more — the first ${g.rows.length} are shown</li>` : ''}</ul>`).join('')}</div>
+        ${recordActsHtml(r, rowCount(rep))}
+        ${recordUsesHtml(r)}
+      </div>`;
+    }
+    // curateRecordHtml carries the author, date and state line itself.
+    return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
+      <div class="text-answer text-ink">catalogued${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
+      ${curateRecordHtml(r)}
+    </div>`;
+  }).join('');
+  host.querySelectorAll('[data-record-open]').forEach((b) => b.addEventListener('click', () => {
+    const rows = host.querySelector(`[data-record="${b.dataset.recordOpen}"] [data-record-rows]`);
+    if (rows) rows.hidden = !rows.hidden;
+  }));
+  wireRecordActs(host, slug, recs);
+}
+
+function rowCount(rep) {
+  return (rep.groups || []).reduce((n, g) => n + (g.rows || []).length, 0);
+}
+
+/* ── The three acts on a report ──────────────────────────────────────────
+ *
+ * REPORT-ACTS (designer, 2026-09-14). The three acts on a report are not
+ * the three acts on a list: a list's selection is live, so an act on it is
+ * an act on what is true; a report's rows are frozen, so an act on it is
+ * an act on what WAS true. The footer defaults to the whole report -- the
+ * rows were already chosen once, that is what saving them was -- with row
+ * picking the secondary path. Each act points at the record; the server
+ * acts on the snapshot and never re-derives; the journal opens seeded with
+ * a citation, not a sentence; a stale record keeps all three live and what
+ * they create carries the staleness; the record learns it was used. */
+function recordActsHtml(r, n) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  return `<div data-record-acts class="mt-s2 text-caveat">
+    <div class="text-ink"><span data-record-scope>The whole report · <span class="tnum">${n}</span> row${n === 1 ? '' : 's'}</span>
+      <span class="text-ink-muted">· as recorded ${esc(String(r.requested_at).slice(0, 10))}${r.out_of_date ? ' · its evidence has since moved — what these create will say so' : ''}</span></div>
+    <div class="mt-[3px] flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
+      <button data-record-act="work_list" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">add to work list</button>
+      <button data-record-act="rfa" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">raise RFA</button>
+      <button data-record-act="journal" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">note in journal</button>
+      ${r.out_of_date && !r.corrected_by?.id ? `<button data-record-correct ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">write a correction</button>` : ''}
+      <span class="text-ink-muted">${me ? '· or pick rows above to act on some of them' : '· Sign in to act on a report — a work item needs someone who raised it.'}</span>
+      <span data-record-status class="text-ink-muted"></span>
+    </div>
+  </div>`;
+}
+
+/** 'Used · added to work list "…" · 09-14 08:12 · dwolfson' — a separate
+ *  append-only list attached to the record; and 'Corrected by "…" · 09-14'
+ *  in the same place. */
+function recordUsesHtml(r) {
+  const uses = (r.uses || []).map((u) => {
+    const what = u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
+      : u.act === 'rfa' ? `raised RFA “${esc(u.target_name)}”`
+      : u.act === 'journal' ? 'cited in the journal' : esc(u.act);
+    return `<div class="text-provenance text-ink-muted">Used · ${what} · <span class="tnum">${esc(String(u.at).slice(5, 16).replace('T', ' '))}</span> · ${esc(u.by)}</div>`;
+  });
+  if (r.corrected_by?.id) {
+    uses.push(`<div class="text-provenance text-ink-muted">Corrected by “${esc(r.corrected_by.name)}” · <span class="tnum">${esc(String(r.corrected_by.at).slice(5, 10))}</span> · ${esc(r.corrected_by.by || '')}</div>`);
+  }
+  return uses.length ? `<div class="mt-s1">${uses.join('')}</div>` : '';
+}
+
+function wireRecordActs(host, slug, recs) {
+  host.querySelectorAll('[data-record]').forEach((box) => {
+    const id = box.dataset.record;
+    const rec = recs.find((x) => x.id === id);
+    if (!rec || rec.kind !== 'report') return;
+    const status = box.querySelector('[data-record-status]');
+    const scope = box.querySelector('[data-record-scope]');
+    const picked = () => [...box.querySelectorAll('[data-record-row]:checked')].map((c) => c.dataset.recordRow);
+    const total = rowCount(rec.report || {});
+    box.querySelectorAll('[data-record-row]').forEach((c) => c.addEventListener('change', () => {
+      const n = picked().length;
+      if (scope) scope.innerHTML = n
+        ? `<span class="tnum">${n}</span> of <span class="tnum">${total}</span> rows picked`
+        : `The whole report · <span class="tnum">${total}</span> row${total === 1 ? '' : 's'}`;
+    }));
+    box.querySelectorAll('[data-record-act]').forEach((b) => b.addEventListener('click', async () => {
+      const action = b.dataset.recordAct;
+      const rows = picked().length ? picked() : null;
+      if (action === 'journal') {
+        // Seeded with a citation, not a sentence; the person writes the
+        // thought. The use is recorded when the entry lands.
+        const ta = $('journal-body');
+        if (!ta) { status.textContent = 'the journal is on this pane — scroll down'; return; }
+        ta.value = `Per “${rec.name}” (${String(rec.requested_at).slice(0, 10)}): `;
+        ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+        ta.dataset.citesRecord = id;
+        status.textContent = '→ the journal, below — write the thought after the citation';
+        return;
+      }
+      b.disabled = true; status.textContent = '…';
+      try {
+        const out = await actOnRecord(slug, id, { action, rows });
+        const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
+        status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
+        await renderRecords(slug);
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+      }
+    }));
+    box.querySelector('[data-record-correct]')?.addEventListener('click', async (ev) => {
+      // A correction is save-as-report with the superseded record's id
+      // attached: the whole current list, snapshotted now, naming what it
+      // corrects. The old record learns who corrected it.
+      const b = ev.currentTarget; b.disabled = true; status.textContent = 'writing the correction…';
+      try {
+        const rep = rec.report || {};
+        const out = await saveReport(slug, rep.analysis_id, {
+          question: rep.question || '', metric: rep.metric || '', members: null, facet: rep.facet || '',
+          name: `${rec.name} — corrected ${new Date().toISOString().slice(0, 10)}`, scope: 'all', corrects: id,
+        });
+        status.innerHTML = `<span class="text-state-ok">→ correcting record “${esc(out.record.name)}” · ${esc(out.record.report?.header || '')}</span>`;
+        await renderRecords(slug);
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to write a correction' : `: ${esc(err.message)}`}</span>`;
+      }
+    });
+  });
 }
 
 function renderJournalWrite(slug) {
@@ -2967,6 +3247,14 @@ function renderJournalWrite(slug) {
     const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
     try {
       const out = await writeJournal(slug, body, targets);
+      const cites = $('journal-body').dataset.citesRecord;
+      if (cites) {
+        // The record learns it was cited. Best effort: the entry is real
+        // either way, and a failure here is not a failed write.
+        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }); } catch { /* the entry stands */ }
+        delete $('journal-body').dataset.citesRecord;
+        renderRecords(slug);
+      }
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
       b.disabled = false; b.textContent = 'Write';
@@ -4099,10 +4387,41 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
     const f = facetLabel();
     return `${project?.display_name || slug} — ${n} ${n === 1 ? singular(what) : what}${f ? `, ${f}` : ''}`;
   }
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const what = (metric || data.metric || 'members').replace(/_/g, ' ');
+  async function save(members, facet, name, status) {
+    status.textContent = '…';
+    try {
+      const out = await saveReport(slug, analysisId, {
+        question: `${what} of ${slug}`, metric: metric || data.metric || '', members, facet, name, scope: state.memberScope || memberScope(),
+      });
+      const r = out.record;
+      status.innerHTML = `<span class="text-state-ok-on-dark">→ record “${esc(r.name)}” · ${esc(r.report?.header || '')}</span>`;
+    } catch (err) {
+      status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'Sign in to save a report — a record needs an author.' : err.message)}</span>`;
+    }
+  }
   function render() {
     const sel = picks();
-    if (!sel.length) { footer.hidden = true; footer.innerHTML = ''; return; }
     footer.hidden = false;
+    if (!sel.length) {
+      // Nothing picked: the one act that makes sense on a list nobody has
+      // triaged is to write it down, so it is the one act offered before
+      // anything is picked (REPORT-RECORD-AND-TWO-CALLS C2).
+      footer.innerHTML = `
+        <div class="mb-[3px] text-caps text-chrome-ink">The whole list · <span class="tnum">${total}</span> ${esc(what)}
+          <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · <span class="tnum">${esc(ago(runAt))}</span>` : ' · run date not recorded'} · a snapshot, not a query</span></div>
+        <input id="report-name" type="text" placeholder="${esc(project?.display_name || slug)} — ${total} ${esc(what)}, today"
+          class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink placeholder:text-chrome-muted">
+        <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
+          <button data-report-whole class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline" ${me ? '' : 'disabled'}>save as report</button>
+          <span class="text-chrome-muted">${me ? 'work list, RFA and journal need a selection' : 'sign in to save a report — a record needs an author'}</span>
+          <span id="promote-status" class="text-chrome-muted"></span>
+        </div>`;
+      footer.querySelector('[data-report-whole]')?.addEventListener('click', () =>
+        save(null, '', footer.querySelector('#report-name').value.trim(), footer.querySelector('#promote-status')));
+      return;
+    }
     const facet = facetLabel();
     footer.innerHTML = `
       <div class="mb-[3px] text-caps text-chrome-ink"><span class="tnum">${sel.length}</span> selected${facet ? ` · ${esc(facet)}` : ''}
@@ -4113,9 +4432,12 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
         <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
         <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
         <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
+        <button data-report-sel class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">save as report</button>
         <span id="promote-status" class="text-chrome-muted"></span>
       </div>`;
     const nameEl = footer.querySelector('#promote-name');
+    footer.querySelector('[data-report-sel]').addEventListener('click', () =>
+      save(picks().map((c) => c.dataset.pick), facetLabel(), nameEl.value.trim(), footer.querySelector('#promote-status')));
     nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
     footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
       const status = footer.querySelector('#promote-status');
@@ -4135,6 +4457,7 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       }
     }));
   }
+  render();   // the whole-list state, before any pick
 }
 
 async function openMembers({ slug, analysisId, metric = '', title = '' }) {
@@ -4192,7 +4515,7 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
     ${shown < data.total && !groups.some((g) => g.truncated)
       ? `<div class="mt-s1 text-caps text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${data.total}</span> listed; the rest are nested under what is shown</div>` : ''}
     <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>
-    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2" hidden></div>`;
+    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2"></div>`;
 
   out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
   wireSelection(out, { slug, analysisId, metric, data });
@@ -5468,14 +5791,16 @@ async function renderCurate(slug) {
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
         sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
       ${CURATE_COLUMNS.map((c) => `
-        <div class="mb-s1 mt-s3 flex items-baseline gap-s2">
-          <span class="font-heading text-question text-ink">${esc(c.title)}</span>
+        <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
+          <span class="font-heading text-name font-normal text-ink">${esc(c.title)}</span>
           ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
           ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
         </div>
-        ${(plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
-      <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
-        <span class="font-heading text-question text-ink">what gets written</span>
+        ${c.key === 'made_of'
+          ? `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`
+          : (plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
+      <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
+        <span class="font-heading text-name font-normal text-ink">what gets written</span>
         <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
       </div>
       ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
@@ -5492,9 +5817,9 @@ async function renderCurate(slug) {
 
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
-      state.curate.picks = [...picks]; draw();
+      state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
     }));
-    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); });
+    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); renderComponentTree(slug); });
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
     }));
@@ -5528,6 +5853,225 @@ async function renderCurate(slug) {
     });
   };
   draw();
+  renderComponentTree(slug);
+}
+
+
+
+/* ── Component review at the branch ──────────────────────────────────────
+ *
+ * The designer's ports round (2026-09-14). Rows are branches of the path
+ * the components are keyed by -- kafka's 642 become 71 -- and the decision
+ * is made at the branch: a branch verdict inherits, a component's own
+ * wins, and an inherited one says so (accepted · with pyegeria/) rather
+ * than posing as a decision someone made about that file. Confidence
+ * routes; it never hides: the ⚠ count rides on the branch. Grouping nodes
+ * stay marked with the classic UI's words. Ports are two words on the row
+ * where they exist, nothing where they do not, and one sentence at the
+ * foot when a repository declares none, saying what it looked in. Bulk
+ * accept goes through the shared preview dialog (rule 4): nothing runs
+ * until confirmed. No undo, and the word is not offered -- a verdict is a
+ * new row and the trail keeps both; the word is change. */
+function verdictBadge(v) {
+  if (!v) return `<span class="text-ink-muted">undecided</span>`;
+  const word = esc(v.verdict);
+  return v.inherited_from
+    ? `<span class="text-ink">${word}</span> <span class="text-ink-muted">· with <span class="font-mono">${esc(v.inherited_from)}/</span></span>`
+    : `<span class="text-ink">${word}</span>${v.decided_by ? ` <span class="text-ink-muted">· ${esc(v.decided_by)}</span>` : ''}`;
+}
+
+/** The column has two shapes (designer, round two): one or two ports are
+ *  spelled out -- `8000 in, routes`; three or more become `15 ports ›`,
+ *  opening the list in the rail, the way every other count in this app
+ *  opens what it counted. `key` names the row so the click can find it. */
+function portsWords(n, own, key) {
+  if (own && own.length) {
+    if (own.length <= 2) return `<span class="text-ink-muted">· ${own.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>`;
+    return `<span class="text-ink-muted">· <button data-ports-open="${esc(key)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"><span class="tnum">${own.length}</span> ports${icon('chevron-right', { size: 12 })}</button></span>`;
+  }
+  return n ? `<span class="text-ink-muted">· <span class="tnum">${n}</span> port${n === 1 ? '' : 's'} declared below</span>` : '';
+}
+
+/** The rail: a component's declared ports, read from the artifacts. No
+ *  verdict to give -- a port is a line in a Dockerfile. */
+function openPortsInRail(slug, key, ports) {
+  ensureRailShowing();
+  railClaim();
+  railFrame('Ports', slug, `
+    <div class="mb-s1 text-caps text-chrome-muted"><span class="font-mono">${esc(key)}</span> · read from the deployment artifacts · no verdict to give</div>
+    ${ports.map((p) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
+      <span class="font-mono text-chrome-ink">${esc(p.name)}</span>
+      ${p.direction ? `<span class="text-chrome-muted">${esc(p.direction)}</span>` : ''}
+      ${p.protocol ? `<span class="text-chrome-muted">${esc(p.protocol)}</span>` : ''}
+    </div>`).join('')}`, { sub: `${ports.length} declared` });
+}
+
+function branchRowHtml(b) {
+  // The branch's own type leads; the mix beneath it is the CHILDREN's, so
+  // a branch whose only typed component is itself does not say it twice.
+  const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
+  const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
+  return `<div class="border-b border-rule py-[5px]" data-branch="${esc(b.path)}">
+    <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
+      <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-caveat text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
+      <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
+      ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
+      ${types ? `<span class="text-provenance text-ink-muted">· ${types}</span>` : ''}
+      ${b.low_confidence ? `<span class="text-provenance text-state-warn">· ⚠ <span class="tnum">${b.low_confidence}</span> at or below 50%</span>` : ''}
+      ${portsWords(b.ports, b.own_ports, b.path)}
+    </div>
+    <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
+      <span>${verdictBadge(b.verdict)}</span>
+      <span class="text-ink-muted"><span class="tnum">${b.accepted}</span> accepted · <span class="tnum">${b.rejected}</span> rejected · <span class="tnum">${b.undecided}</span> undecided</span>
+      <button data-branch-verdict="accepted" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept all ${b.components}</button>
+      <button data-branch-verdict="rejected" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject all</button>
+    </div>
+    <div data-branch-leaves hidden class="mt-s1 pl-s3"></div>
+  </div>`;
+}
+
+function leafRowHtml(l) {
+  return `<div class="flex flex-wrap items-baseline gap-x-s2 border-b border-rule py-[3px] text-provenance">
+    <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
+    ${l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
+    ${l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : ''}
+    ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
+    <span>· ${verdictBadge(l.verdict)}</span>
+    <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
+    <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+  </div>`;
+}
+
+async function renderComponentTree(slug, prefix = '') {
+  const host = $('component-tree');
+  if (!host) return;
+  let tree;
+  try { tree = await getComponentTree(slug, prefix); }
+  catch (err) { host.innerHTML = `<span class="text-accent-ink">The components could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  if (!tree.branches.length) {
+    host.innerHTML = `<div class="text-caveat text-ink-muted">No components recovered on this resource yet.</div>
+      ${tree.topology ? `<div class="mt-s1 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}`;
+    return;
+  }
+  const sort = state.componentSort || 'size';
+  const rows = [...tree.branches];
+  // A sort, never a filter: the ⚠ count already rides on the branch, so
+  // ordering by confidence puts the weakest clusters first without hiding
+  // one. By size is the repository's own shape.
+  if (sort === 'confidence') rows.sort((a, b) => (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
+  host.innerHTML = `
+    <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> components accepted ·
+      <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
+      ports and wires read from the deployment artifacts; the diagram shows those belonging to accepted components
+      ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
+      · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
+      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
+    ${(state.componentShowAll ? rows : rows.slice(0, 8)).map(branchRowHtml).join('')}
+    ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}
+    ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
+    ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
+    <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>
+    <div id="component-diagram" class="mt-s3"></div>`;
+  host.querySelectorAll('[data-tree-sort]').forEach((b) => b.addEventListener('click', () => { state.componentSort = b.dataset.treeSort; renderComponentTree(slug, prefix); }));
+  host.querySelector('[data-tree-more]')?.addEventListener('click', () => { state.componentShowAll = true; renderComponentTree(slug, prefix); });
+  host.querySelectorAll('[data-ports-open]').forEach((b) => b.addEventListener('click', () => {
+    const br = tree.branches.find((x) => x.path === b.dataset.portsOpen);
+    if (br) openPortsInRail(slug, br.path, br.own_ports || []);
+  }));
+  renderComponentDiagram(slug, $('component-diagram'));
+
+  host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
+    const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`;
+    try {
+      const out = await getComponentLeaves(slug, b.dataset.branchOpen);
+      box.innerHTML = out.leaves.map(leafRowHtml).join('') || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
+        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
+      box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
+        const leaf = out.leaves.find((x) => x.path === pb.dataset.portsOpen);
+        if (leaf) openPortsInRail(slug, leaf.path, leaf.ports || []);
+      }));
+    } catch (err) {
+      box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`;
+    }
+  }));
+  host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
+    const br = tree.branches.find((x) => x.path === b.dataset.scope);
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 });
+  }));
+}
+
+/** The diagram beside the tree. It is already verdict-aware -- rendered
+ *  fresh on every read, rejected dropped, accepted solid, undecided dashed
+ *  -- so accepting a branch and re-reading redraws it; nothing to build for
+ *  that. What it is not is the acting surface: it comes back from Kroki as
+ *  a finished SVG. It says its two ceilings in its own caption. The tree
+ *  is the surface that scales; the diagram is the one that explains. */
+async function renderComponentDiagram(slug, host) {
+  if (!host) return;
+  let fact;
+  try {
+    const res = await getBulkFacts([slug], ['architecture_diagram']);
+    fact = (((res.subjects || {})[slug]) || []).find((f) => f.analysis_id === 'architecture_diagram');
+  } catch { fact = null; }
+  if (slug !== state.selectedSlug) return;
+  const src = fact?.value?.mermaid;
+  if (!src) { host.innerHTML = `<div class="text-provenance text-ink-muted">No diagram to read — architecture_diagram has not rendered one for this resource.</div>`; return; }
+  host.innerHTML = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">The diagram reads; the tree acts</div>
+    <div class="text-provenance text-ink-muted">${tnum(esc(fact.value.caption || fact.headline || ''))}</div>
+    <div data-diagram-svg class="mt-s1 w-full overflow-auto rounded-sm border border-rule-strong" style="max-height:min(60vh,560px)">rendering…</div>`;
+  try {
+    const t = tokens();
+    const prepped = mermaidForKroki(src);
+    const res = await fetch('/api/diagrams/mermaid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: prepped.source }) });
+    if (!res.ok) throw new Error(`${res.status} from the renderer`);
+    const raw = await res.text();
+    if (!raw.includes('<svg')) throw new Error('the renderer returned no SVG');
+    const slot = host.querySelector('[data-diagram-svg]');
+    slot.innerHTML = raw;
+    const svgEl = slot.querySelector('svg');
+    if (svgEl) { themeSvgElement(svgEl, t); svgEl.removeAttribute('height'); svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+  } catch (err) {
+    const slot = host.querySelector('[data-diagram-svg]');
+    if (slot) slot.innerHTML = `<div class="p-s2 text-provenance text-accent-ink">The diagram could not be rendered: ${esc(err.message)}. The source is on the Analysis pane.</div>`;
+  }
+}
+
+/** The shared preview dialog, because rule 4 makes it mandatory: the act
+ *  names what it would do before it does it. Rejecting creates nothing in
+ *  Egeria, so it records at once. */
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
+  const status = $('component-tree-status');
+  const go = async () => {
+    if (status) status.textContent = 'recording…';
+    try {
+      const out = await postBranchVerdicts(slug, scopes, verdict);
+      if (status) status.innerHTML = verdict === 'accepted'
+        ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · <span class="tnum">${out.queued ?? 0}</span> component${out.queued === 1 ? '' : 's'} queued for Egeria — the pane does not wait</span>`
+        : `<span class="text-state-ok">→ rejected · nothing created</span>`;
+      renderComponentTree(slug);
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
+    }
+  };
+  if (verdict !== 'accepted' || count <= 1) { go(); return; }
+  const el = openDialog('Accept at the branch', `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = `
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
+      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as Egeria SolutionComponents${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
+    <p class="text-caveat text-ink-muted">Publish time for component creation is not yet measured — the first branch is what fixes it. Queued, so the pane returns at once. Nothing runs until you confirm.</p>
+    <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
+    <div class="mt-s3 flex gap-s3">
+      <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept ${count}</button>
+      <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+    </div>`;
+  body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
 }
 
 function rowKey(i) { return `qrow-${i}`; }
@@ -5838,7 +6382,7 @@ function bindRowActions(el, entry, i) {
     replaceRow(entry, i, 'loading');
     loadAnswer(entry, i, state.selectedSlug);
   });
-  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', () => rerun(entry, i));
+  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget));
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
   el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
@@ -5852,13 +6396,102 @@ function bindRowActions(el, entry, i) {
  * marker that cannot tell a stalled run from a slow one is worse than none:
  * it converts "we don't know" into "wait a bit longer" forever.
  */
-async function rerun(entry, i) {
+/* ── The run choice ──────────────────────────────────────────────────────
+ *
+ * The one-click re-run stops being one click (REPORT-RECORD-AND-TWO-CALLS
+ * §A, 2026-09-13). Not because the choice matters every time, but because
+ * an action must name what it would do before it does it, and this is the
+ * action whose price moved by a factor of six while it was being
+ * discussed. The link opens a small popover anchored to itself; nothing
+ * queues from the link. Background first, because on the evidence it is
+ * right nearly every time; the waiting option keeps its own name.
+ *
+ * Four price variants, and BOTH buttons in all four, including not known:
+ * a missing price is a reason to say so, not to withhold the action -- the
+ * first run is what fixes it. */
+function fmtSeconds(sec) {
+  if (sec == null || Number.isNaN(Number(sec))) return '';
+  const s = Number(sec);
+  if (s < 1) return `${s.toFixed(1)}s`;
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60); const r = Math.round(s - m * 60);
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+/** The price line for one of the four variants. `cost` is a RunCost or
+ *  null (the read failed / nothing recorded). */
+/** The declared word -- "fast" -- from RunCost.declared, or from the
+ *  sentence's quotes when the serialiser carries only the sentence. */
+function declaredWord(cost) {
+  if (cost?.declared) return String(cost.declared);
+  const m = /'([^']+)'/.exec(String(cost?.sentence || ''));
+  return m ? m[1] : '';
+}
+
+function priceLineHtml(cost, analysisId) {
+  if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) {
+    return `<span class="text-ink-muted">Price not known — no run of <span class="font-mono">${esc(analysisId)}</span> has been recorded yet. The first run is what fixes it.</span>`;
+  }
+  if (cost.basis === 'declared') {
+    const w = declaredWord(cost);
+    return `<span class="text-ink"><span class="text-ink-muted">declared</span> ${esc(w || cost.sentence || '')}</span>
+      <span class="text-ink-muted">· not measured</span>`;
+  }
+  // measured
+  if (cost.split_runs) {
+    // the server's sentence carries the dominant-half rule
+    return `<span class="text-ink">${tnum(esc(cost.sentence || `about ${fmtSeconds(cost.seconds)} in all`))}</span>`;
+  }
+  return `<span class="text-ink">about <span class="tnum">${esc(fmtSeconds(cost.seconds))}</span> in all</span>
+    <span class="text-ink-muted">· median of <span class="tnum">${cost.runs}</span> run${cost.runs === 1 ? '' : 's'} · not yet split into run and publish</span>`;
+}
+
+async function openRunChoice(entry, i, anchor) {
+  const analysisId = (entry.analysis_ids || [])[0];
+  if (!analysisId) return;
+  document.querySelector('[data-run-choice]')?.remove();
+  anchor.insertAdjacentHTML('afterend', `
+    <div data-run-choice class="mt-[4px] inline-block max-w-[60ch] rounded-sm border border-rule-strong bg-paper p-s2 text-caveat shadow-lg">
+      <div data-run-price class="text-ink-muted">Reading the price…</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
+        <button data-run-mode="background" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Background</button>
+        <button data-run-mode="wait" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Run and wait</button>
+        <button data-run-cancel class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+      </div>
+    </div>`);
+  const box = anchor.parentElement.querySelector('[data-run-choice]');
+  box.querySelector('[data-run-cancel]').addEventListener('click', () => box.remove());
+  box.querySelectorAll('[data-run-mode]').forEach((b) => b.addEventListener('click', () => {
+    box.remove();
+    rerun(entry, i, { background: b.dataset.runMode === 'background' });
+  }));
+  let cost = null;
+  try { cost = await getRunCost(analysisId); } catch { cost = null; }
+  const line = box.querySelector('[data-run-price]');
+  if (line) line.innerHTML = priceLineHtml(cost, analysisId);
+}
+
+async function rerun(entry, i, { background = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
 
   state.runsInFlight.set(entry.question, { analysisId, label: `Queued · ${analysisId}` });
   replaceRow(entry, i, state.answers.get(entry.question));
+
+  if (background) {
+    // Enqueue and stop watching. The row says it is queued in the worker
+    // and how to see the result; nothing here pretends to know when.
+    try {
+      await runAnalysis(slug, analysisId);
+      state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
+    } catch (err) {
+      state.runsInFlight.delete(entry.question);
+      state.answers.set(entry.question, { __error: `The run could not be started: ${err.message}` });
+    }
+    replaceRow(entry, i, state.answers.get(entry.question));
+    return;
+  }
 
   try {
     const started = await runAnalysis(slug, analysisId);

@@ -601,3 +601,54 @@ export const curateCommit = (slug, selection) =>
 
 export const getCuration = (slug, id) =>
   get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(id)}`);
+
+/* ── Price ──────────────────────────────────────────────────────────────── */
+
+/** What a run of this analysis costs -- RunCost: {seconds, steps_seconds,
+ *  publish_seconds, basis: measured|declared|unknown, runs, split_runs, via,
+ *  sentence}. Read for the run popover and the depth offer; the caller
+ *  renders "not known" on any failure rather than withholding the action. */
+export const getRunCost = (analysisId) =>
+  get(`/api/analyses/${encodeURIComponent(analysisId)}/cost`);
+
+/* ── Depth offer ────────────────────────────────────────────────────────── */
+
+/** The analyses at the analysis and assessment tiers that have never run
+ *  on this resource, each priced with the split, and a measured-only total
+ *  that names what it excludes. {slug, measured_before, analyses[], total}. */
+export const getDepthOffer = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/depth-offer`);
+
+/** Record what happened to the offer on the verdict it belongs to:
+ *  outcome declined | accepted | chose, with the ids and run ids. */
+export const postDepthOfferOutcome = (githubUrl, { outcome, analysisIds = [], runIds = [] }) =>
+  post('/api/discovery/disposition/depth-offer', { github_url: githubUrl, outcome, analysis_ids: analysisIds, run_ids: runIds });
+/* ── Records ────────────────────────────────────────────────────────────── */
+
+/** Save a report: the act of writing a list down. `members` null = the
+ *  whole list. The server re-reads the list and snapshots it. */
+export const saveReport = (slug, analysisId, { question = '', metric = '', members = null, facet = '', name = '', scope = 'all', corrects = '' } = {}) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/report`,
+       { question, metric, members, facet, name, scope, corrects });
+
+/** Both kinds, newest first, reports carrying out_of_date. */
+export const listRecords = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/records`);
+export const recordExportHref = (slug, id, fmt) =>
+  `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
+
+/** The three acts on a report: work_list | rfa | journal. `rows` null = the
+ *  whole report. The server acts on the stored snapshot. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
+       { action, rows, name, suggest_to: suggestTo, journal_id: journalId });
+
+/* ── Component review ───────────────────────────────────────────────────── */
+
+/** The branches under `prefix` ('' = root): counts, type mix, low-confidence
+ *  count, declared ports, the resolved verdict. */
+export const getComponentTree = (slug, prefix = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/tree?prefix=${encodeURIComponent(prefix)}`);
+export const getComponentLeaves = (slug, branch) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=${encodeURIComponent(branch)}`);
+/** One verdict row per scope; accepted ones queue their materialisation. */
+export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });

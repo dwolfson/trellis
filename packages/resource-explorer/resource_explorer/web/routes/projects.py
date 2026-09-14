@@ -1691,3 +1691,250 @@ def curate_commit_status(slug: str, curation_id: str) -> dict:
     if not rec or rec["entity_slug"] != slug:
         raise HTTPException(status_code=404, detail="No such curation")
     return rec
+
+
+# ── Records: the report record beside the catalogue record ───────────────
+#
+# REPORT-RECORD-AND-TWO-CALLS C1-C4. One table, two kinds; a report is the
+# act of writing a list down. The server re-reads the members payload at
+# save time, so what is stored is a snapshot of names as they were -- never
+# the client's copy and never a query.
+
+class SaveReport(BaseModel):
+    question: str = ""                 # asked-as
+    metric: str = ""
+    members: list[str] | None = None   # None = the whole list
+    facet: str = ""
+    name: str = ""                     # typed name wins; else proposed server-side
+    scope: str = "all"
+    corrects: str = ""                 # a correction: the superseded record's id
+
+
+@router.post("/{slug}/members/{analysis_id}/report")
+def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request) -> dict:
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at, members_for
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import build_report, default_name
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to save a report — a record needs an author.")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    payload = members_for(registry, slug, analysis_id, metric=body.metric, scope=body.scope, limit=1000).to_dict()
+    run_at = last_run_at(registry, slug, analysis_id)
+    report = build_report(question=body.question, slug=slug, display_name=project.display_name or slug,
+                          analysis_id=analysis_id, metric=body.metric or payload.get("metric", ""), run_at=run_at,
+                          facet=body.facet, members_payload=payload, selected=body.members)
+    if not report["shown"]:
+        raise HTTPException(status_code=400, detail="Nothing to record — the selection matched no members.")
+    from datetime import datetime, timezone
+    names = [r["name"] for g in report["groups"] for r in g["rows"]]
+    name = body.name.strip() or default_name(project.display_name or slug, total=report["total"], names=names,
+                                              facet=body.facet, metric=report["metric"],
+                                              written_on=datetime.now(timezone.utc).isoformat())
+    if body.corrects:
+        from resource_explorer.reports import correction_clause
+        report["corrects"] = body.corrects
+        # The header names what the correction is not carrying, when the
+        # corrected record was a selection. Nothing when the populations match.
+        report["header"] += correction_clause(Curations(registry).get(body.corrects))
+    try:
+        rec = Curations(registry).create_report("repo", slug, author=author, name=name, report=report, corrects=body.corrects)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"record": rec}
+
+
+class RecordAct(BaseModel):
+    action: str                        # work_list | rfa | journal
+    rows: list[str] | None = None      # None = the whole report; a subset of the frozen snapshot otherwise
+    name: str = ""                     # the work list's / RFA's name; defaults to the record's
+    suggest_to: list[str] = Field(default_factory=list)
+    journal_id: str = ""               # journal: the entry the client wrote, so its use is recorded
+
+
+@router.post("/{slug}/records/{record_id}/act")
+def act_on_record(slug: str, record_id: str, body: RecordAct, request: Request) -> dict:
+    """The three acts on a report (REPORT-ACTS, 2026-09-14). A report's rows
+    are frozen, so an act on it is an act on what WAS true: the server acts
+    on the stored snapshot, never re-derives the list, and what it creates
+    points at the record -- the provenance line plus 'as recorded in "…"',
+    with the staleness carried in when the evidence has moved. The record
+    learns it was used; its content is never touched."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import act_line, out_of_date
+    from resource_explorer.work_lists import WorkLists
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to act on a report — a work item needs someone who raised it.")
+    if body.action not in ("work_list", "rfa", "journal"):
+        raise HTTPException(status_code=400, detail="action must be work_list, rfa or journal")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    cur = Curations(registry)
+    rec = cur.get(record_id)
+    if not project or not rec or rec["entity_slug"] != slug or rec.get("kind") != "report":
+        raise HTTPException(status_code=404, detail="No such report record")
+    rep = rec.get("report") or {}
+    stale = out_of_date(rep, last_run_at(registry, slug, rep.get("analysis_id", "")))
+    line = act_line(rec, rows=body.rows, out_of_date_sentence=stale)
+    name = body.name.strip() or rec["name"]
+    if body.action == "work_list":
+        wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
+                                        derived_from=f"record:{record_id}", rationale=line,
+                                        description=f'Raised from the report "{rec["name"]}".')
+        listed = WorkLists(registry).get(wl.get("slug")) if wl else None
+        target_name = (listed or {}).get("display_name") or name
+        out = cur.add_use(record_id, act="work_list", target=wl.get("slug") if wl else "", target_name=target_name, by=author)
+        return {"action": "work_list", "name": target_name, "work_list": wl.get("slug") if wl else None,
+                "provenance": line, "record": out}
+    if body.action == "rfa":
+        # The RFA points at the record, so whoever receives it opens exactly
+        # what the raiser was looking at. It never re-queries.
+        rfa_id = log_rfa(registry, "repo", slug, project.display_name or slug, "open", name, detail=line,
+                         analysis_name=rep.get("analysis_id", ""),
+                         items=[{"kind": "record", "record_id": record_id, "name": rec["name"]}])
+        out = cur.add_use(record_id, act="rfa", target=str(rfa_id), target_name=name, by=author)
+        return {"action": "rfa", "name": name, "rfa": rfa_id, "provenance": line, "record": out}
+    # journal: the entry was written by the client from a citation seed; only
+    # the use is recorded here. Nothing canned is written on the person's behalf.
+    out = cur.add_use(record_id, act="journal", target=body.journal_id, target_name="the journal", by=author)
+    return {"action": "journal", "provenance": line, "record": out}
+
+
+@router.get("/{slug}/records")
+def list_records(slug: str) -> dict:
+    """Both kinds, newest first, each report carrying its out-of-date
+    sentence when its analysis has re-run since."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import out_of_date
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    out = []
+    for rec in Curations(registry).for_resource("repo", slug):
+        if rec.get("kind") == "report":
+            rec["out_of_date"] = out_of_date(rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")))
+        out.append(rec)
+    return {"records": out}
+
+
+@router.get("/{slug}/records/{record_id}")
+def get_record(slug: str, record_id: str, fmt: str = "") -> object:
+    """The record, or an export of it: `?fmt=md` / `?fmt=csv` carry the same
+    header sentence and provenance line. The record is the thing."""
+    from fastapi.responses import PlainTextResponse
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import out_of_date, to_csv, to_markdown
+
+    registry = ProjectRegistry()
+    rec = Curations(registry).get(record_id)
+    if not rec or rec["entity_slug"] != slug:
+        raise HTTPException(status_code=404, detail="No such record")
+    if rec.get("kind") == "report":
+        rec["out_of_date"] = out_of_date(rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")))
+    if fmt == "md":
+        return PlainTextResponse(to_markdown(rec), media_type="text/markdown",
+                                 headers={"Content-Disposition": f'attachment; filename="{record_id[:8]}.md"'})
+    if fmt == "csv":
+        return PlainTextResponse(to_csv(rec), media_type="text/csv",
+                                 headers={"Content-Disposition": f'attachment; filename="{record_id[:8]}.csv"'})
+    return rec
+
+
+# ── Component review at the branch ──────────────────────────────────────
+#
+# The designer's ports round (2026-09-14). Rows are branches of the path the
+# components are keyed by; a branch verdict is one row at the branch's
+# scope and the reader resolves the longest prefix; ports are a column on
+# the component, read from the deployment artifacts, with no verdict of
+# their own. See component_tree.py.
+
+@router.get("/{slug}/components/tree")
+def components_tree(slug: str, prefix: str = "") -> dict:
+    from resource_explorer.component_tree import component_tree
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return component_tree(registry, slug, prefix)
+
+
+@router.get("/{slug}/components/leaves")
+def components_leaves(slug: str, branch: str) -> dict:
+    from resource_explorer.component_tree import leaves
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return {"branch": branch, "leaves": leaves(registry, slug, branch)}
+
+
+class BranchVerdicts(BaseModel):
+    scope_locators: list[str]          # branch paths and/or component paths
+    verdict: str                       # accepted | rejected
+    note: str = ""
+
+
+@router.post("/{slug}/components/verdicts")
+def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
+    """Accept or reject at the branch. One verdict row per scope given -- a
+    branch path is a scope like any other, and every component under it
+    inherits until its own row wins. Materialization of accepted components
+    into Egeria is queued (kind materialize_components) so the pane returns
+    at once; nothing runs until the caller confirmed the preview. No undo,
+    and the word is not offered: a change is a new row and the trail keeps
+    both."""
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import _authorize_curation
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to record a verdict — it needs someone who made it.")
+    if body.verdict not in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="verdict must be accepted or rejected")
+    scopes = [s.strip().rstrip("/") for s in body.scope_locators if s and s.strip().rstrip("/")]
+    if not scopes:
+        raise HTTPException(status_code=400, detail="no scope given")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    rows = []
+    for scope in scopes:
+        _authorize_curation(registry, "repo", slug, scope)
+        rows.append(registry.record_component_verdict("repo", slug, scope, body.verdict, "", body.note, decided_by=author))
+    out = {"verdicts": rows, "run_id": None, "activity_id": None}
+    if body.verdict == "accepted":
+        from resource_explorer.component_tree import leaves
+        accepted_paths = sorted({l["path"] for scope in scopes for l in leaves(registry, slug, scope)
+                                 if (l.get("verdict") or {}).get("verdict") == "accepted"})
+        activity_id = log_survey(
+            registry, entity_type="repo", entity_slug=slug,
+            entity_name=project.display_name, entity_location=project.github_url,
+            intent="curate", status="running",
+            summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name}…")
+        run_id = registry.enqueue_run("materialize_components", {"slug": slug, "paths": accepted_paths},
+                                      result_ref=activity_id, requested_by=_requested_by())
+        out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
+    return out
