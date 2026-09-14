@@ -2438,6 +2438,7 @@ class ProjectRegistry:
         "stage_batch",
         "discovery_expand",
         "curate_commit",
+        "materialize_components",
     )
 
     #: States that occupy a user's one fairness slot.

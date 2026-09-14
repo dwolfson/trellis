@@ -1857,3 +1857,84 @@ def get_record(slug: str, record_id: str, fmt: str = "") -> object:
         return PlainTextResponse(to_csv(rec), media_type="text/csv",
                                  headers={"Content-Disposition": f'attachment; filename="{record_id[:8]}.csv"'})
     return rec
+
+
+# ── Component review at the branch ──────────────────────────────────────
+#
+# The designer's ports round (2026-09-14). Rows are branches of the path the
+# components are keyed by; a branch verdict is one row at the branch's
+# scope and the reader resolves the longest prefix; ports are a column on
+# the component, read from the deployment artifacts, with no verdict of
+# their own. See component_tree.py.
+
+@router.get("/{slug}/components/tree")
+def components_tree(slug: str, prefix: str = "") -> dict:
+    from resource_explorer.component_tree import component_tree
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return component_tree(registry, slug, prefix)
+
+
+@router.get("/{slug}/components/leaves")
+def components_leaves(slug: str, branch: str) -> dict:
+    from resource_explorer.component_tree import leaves
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return {"branch": branch, "leaves": leaves(registry, slug, branch)}
+
+
+class BranchVerdicts(BaseModel):
+    scope_locators: list[str]          # branch paths and/or component paths
+    verdict: str                       # accepted | rejected
+    note: str = ""
+
+
+@router.post("/{slug}/components/verdicts")
+def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
+    """Accept or reject at the branch. One verdict row per scope given -- a
+    branch path is a scope like any other, and every component under it
+    inherits until its own row wins. Materialization of accepted components
+    into Egeria is queued (kind materialize_components) so the pane returns
+    at once; nothing runs until the caller confirmed the preview. No undo,
+    and the word is not offered: a change is a new row and the trail keeps
+    both."""
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import _authorize_curation
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to record a verdict — it needs someone who made it.")
+    if body.verdict not in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="verdict must be accepted or rejected")
+    scopes = [s.strip().rstrip("/") for s in body.scope_locators if s and s.strip().rstrip("/")]
+    if not scopes:
+        raise HTTPException(status_code=400, detail="no scope given")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    rows = []
+    for scope in scopes:
+        _authorize_curation(registry, "repo", slug, scope)
+        rows.append(registry.record_component_verdict("repo", slug, scope, body.verdict, "", body.note, decided_by=author))
+    out = {"verdicts": rows, "run_id": None, "activity_id": None}
+    if body.verdict == "accepted":
+        from resource_explorer.component_tree import leaves
+        accepted_paths = sorted({l["path"] for scope in scopes for l in leaves(registry, slug, scope)
+                                 if (l.get("verdict") or {}).get("verdict") == "accepted"})
+        activity_id = log_survey(
+            registry, entity_type="repo", entity_slug=slug,
+            entity_name=project.display_name, entity_location=project.github_url,
+            intent="curate", status="running",
+            summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name}…")
+        run_id = registry.enqueue_run("materialize_components", {"slug": slug, "paths": accepted_paths},
+                                      result_ref=activity_id, requested_by=_requested_by())
+        out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
+    return out
