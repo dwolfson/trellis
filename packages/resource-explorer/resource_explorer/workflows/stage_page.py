@@ -70,15 +70,13 @@ _MANIFEST_PARSE_METRIC_NAMES = {
     "manifest_parse_conventions": "conventions_count",
 }
 
-#: The quote `language_file_classification`'s measurements carry as their
-#: note — `resource_explorer/ingestion/vendored.py`'s own words for why the
-#: census this analysis reads (`code_volume`) skips vendored/generated paths,
-#: quoted rather than paraphrased per the designer's round.
-_VENDORED_EXCLUSION_NOTE = (
-    "The derived analytics — symbols, chunks, profiles, the census — skip "
-    "vendored paths, because a measurement of this repository's code should "
-    "not measure TypeScript's. (ingestion/vendored.py)"
-)
+#: The caveat `language_file_classification`'s measurements carry as their
+#: note: the census this analysis reads (`code_volume`) skips vendored and
+#: generated paths — `resource_explorer/ingestion/vendored.py` is where that
+#: rule lives ("a measurement of this repository's code should not measure
+#: TypeScript's"). The footer is one clause, not the docstring: a person
+#: reading a number needs to know the exclusion, not the argument for it.
+_VENDORED_EXCLUSION_NOTE = "vendored and generated paths excluded"
 
 
 def _opens_for(analysis_id: str, metric_name: str) -> dict | None:
