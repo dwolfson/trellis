@@ -6036,7 +6036,10 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   if (data.not_applicable) {
     // Not_applicable is not zero -- "0" claims a count was taken and found
     // empty, which is a different fact than "this analysis keeps no
-    // measurements table". The link keeps its un-counted label.
+    // measurements table". The link keeps its un-counted label, and the
+    // reason is the server's own (verified live against
+    // re/stage-page-backend: "dependency_analysis records findings, not
+    // measurements -- see the findings list.") -- not a fabricated one.
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">${
       esc(data.reason || `${analysisId} keeps no measurements table.`)}</div>`;
     return;

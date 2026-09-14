@@ -1499,6 +1499,41 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
     return registry.query_metrics(slug, kind, scope_locator=locator)
 
 
+@router.get("/{slug}/analyses/{analysis_id}/measurements")
+async def get_analysis_measurements(slug: str, analysis_id: str) -> dict:
+    """The numbers behind one analysis's answer — see
+    resource_explorer/workflows/stage_page.py::build_measurements and the
+    designer's round (STAGE-PAGE-ROUND.md point 10, "the fact opens under
+    the answer"). Thin wrapper; the route only translates the pure
+    function's LookupError into a 404."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.stage_page import build_measurements
+
+    registry = ProjectRegistry()
+    try:
+        return await asyncio.to_thread(build_measurements, registry, slug, analysis_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/{slug}/analyses-index")
+async def get_analyses_index(slug: str) -> dict:
+    """Every catalog analysis for this resource, with the questions that
+    name it, last run, price, and what it serves — see
+    resource_explorer/workflows/stage_page.py::build_analyses_index and the
+    designer's round (STAGE-PAGE-ROUND.md points 1-3, "AnalysesIndex").
+    Thin wrapper; the route only translates the pure function's LookupError
+    into a 404."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.stage_page import build_analyses_index
+
+    registry = ProjectRegistry()
+    try:
+        return await asyncio.to_thread(build_analyses_index, registry, slug)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.get("/{slug}/members/{analysis_id}")
 async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str = "public",
                       limit: int = 200) -> dict:
