@@ -601,3 +601,12 @@ export const curateCommit = (slug, selection) =>
 
 export const getCuration = (slug, id) =>
   get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(id)}`);
+
+/* ── Price ──────────────────────────────────────────────────────────────── */
+
+/** What a run of this analysis costs -- RunCost: {seconds, steps_seconds,
+ *  publish_seconds, basis: measured|declared|unknown, runs, split_runs, via,
+ *  sentence}. Read for the run popover and the depth offer; the caller
+ *  renders "not known" on any failure rather than withholding the action. */
+export const getRunCost = (analysisId) =>
+  get(`/api/analyses/${encodeURIComponent(analysisId)}/cost`);

@@ -48,6 +48,7 @@ import {
   getMemberChildren,
   getMembers,
   getCuratePlan,
+  getRunCost,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -5838,7 +5839,7 @@ function bindRowActions(el, entry, i) {
     replaceRow(entry, i, 'loading');
     loadAnswer(entry, i, state.selectedSlug);
   });
-  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', () => rerun(entry, i));
+  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget));
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
   el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
@@ -5852,13 +5853,93 @@ function bindRowActions(el, entry, i) {
  * marker that cannot tell a stalled run from a slow one is worse than none:
  * it converts "we don't know" into "wait a bit longer" forever.
  */
-async function rerun(entry, i) {
+/* ── The run choice ──────────────────────────────────────────────────────
+ *
+ * The one-click re-run stops being one click (REPORT-RECORD-AND-TWO-CALLS
+ * §A, 2026-09-13). Not because the choice matters every time, but because
+ * an action must name what it would do before it does it, and this is the
+ * action whose price moved by a factor of six while it was being
+ * discussed. The link opens a small popover anchored to itself; nothing
+ * queues from the link. Background first, because on the evidence it is
+ * right nearly every time; the waiting option keeps its own name.
+ *
+ * Four price variants, and BOTH buttons in all four, including not known:
+ * a missing price is a reason to say so, not to withhold the action -- the
+ * first run is what fixes it. */
+function fmtSeconds(sec) {
+  if (sec == null || Number.isNaN(Number(sec))) return '';
+  const s = Number(sec);
+  if (s < 1) return `${s.toFixed(1)}s`;
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60); const r = Math.round(s - m * 60);
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+/** The price line for one of the four variants. `cost` is a RunCost or
+ *  null (the read failed / nothing recorded). */
+function priceLineHtml(cost, analysisId) {
+  if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) {
+    return `<span class="text-ink-muted">Price not known — no run of <span class="font-mono">${esc(analysisId)}</span> has been recorded yet. The first run is what fixes it.</span>`;
+  }
+  if (cost.basis === 'declared') {
+    return `<span class="text-ink"><span class="text-ink-muted">declared</span> ${esc(String(cost.declared || cost.sentence || ''))}</span>
+      <span class="text-ink-muted">· not measured</span>`;
+  }
+  // measured
+  if (cost.split_runs) {
+    // the server's sentence carries the dominant-half rule
+    return `<span class="text-ink">${tnum(esc(cost.sentence || `about ${fmtSeconds(cost.seconds)} in all`))}</span>`;
+  }
+  return `<span class="text-ink">about <span class="tnum">${esc(fmtSeconds(cost.seconds))}</span> in all</span>
+    <span class="text-ink-muted">· median of <span class="tnum">${cost.runs}</span> run${cost.runs === 1 ? '' : 's'} · not yet split into run and publish</span>`;
+}
+
+async function openRunChoice(entry, i, anchor) {
+  const analysisId = (entry.analysis_ids || [])[0];
+  if (!analysisId) return;
+  document.querySelector('[data-run-choice]')?.remove();
+  anchor.insertAdjacentHTML('afterend', `
+    <div data-run-choice class="mt-[4px] inline-block max-w-[60ch] rounded-sm border border-rule-strong bg-paper p-s2 text-caveat shadow-lg">
+      <div data-run-price class="text-ink-muted">Reading the price…</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
+        <button data-run-mode="background" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Background</button>
+        <button data-run-mode="wait" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Run and wait</button>
+        <button data-run-cancel class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+      </div>
+    </div>`);
+  const box = anchor.parentElement.querySelector('[data-run-choice]');
+  box.querySelector('[data-run-cancel]').addEventListener('click', () => box.remove());
+  box.querySelectorAll('[data-run-mode]').forEach((b) => b.addEventListener('click', () => {
+    box.remove();
+    rerun(entry, i, { background: b.dataset.runMode === 'background' });
+  }));
+  let cost = null;
+  try { cost = await getRunCost(analysisId); } catch { cost = null; }
+  const line = box.querySelector('[data-run-price]');
+  if (line) line.innerHTML = priceLineHtml(cost, analysisId);
+}
+
+async function rerun(entry, i, { background = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
 
   state.runsInFlight.set(entry.question, { analysisId, label: `Queued · ${analysisId}` });
   replaceRow(entry, i, state.answers.get(entry.question));
+
+  if (background) {
+    // Enqueue and stop watching. The row says it is queued in the worker
+    // and how to see the result; nothing here pretends to know when.
+    try {
+      await runAnalysis(slug, analysisId);
+      state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
+    } catch (err) {
+      state.runsInFlight.delete(entry.question);
+      state.answers.set(entry.question, { __error: `The run could not be started: ${err.message}` });
+    }
+    replaceRow(entry, i, state.answers.get(entry.question));
+    return;
+  }
 
   try {
     const started = await runAnalysis(slug, analysisId);
