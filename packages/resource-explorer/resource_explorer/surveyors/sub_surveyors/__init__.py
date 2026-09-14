@@ -27,6 +27,8 @@ from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoCl
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
 from resource_explorer.surveyors.sub_surveyors.dependency_support import DependencySupportSurveyor
+from resource_explorer.surveyors.sub_surveyors.deployment_evidence import DeploymentEvidenceSurveyor
+from resource_explorer.surveyors.sub_surveyors.egeria_interfaces import EgeriaInterfacesSurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
 from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     SubResourceSurveyor,
@@ -69,6 +71,8 @@ __all__ = [
     "SecurityFeaturesSurveyor",
     "MaturitySurveyor",
     "DependencySupportSurveyor",
+    "DeploymentEvidenceSurveyor",
+    "EgeriaInterfacesSurveyor",
     "RepoConventionsSurveyor",
     "SubResourceSurveyor",
     "FileInventorySurveyor",

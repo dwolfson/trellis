@@ -10,6 +10,41 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Cataloguing in layers — layer 1 evidence and consumed-Egeria-interfaces built
+
+**Decision (project owner, 2026-09-14):** catalogue in layers — coarse top-level
+components first (for egeria-trellis: RE, EA, Trellis core), a finer layer only
+when someone asks to understand one of those more, and expose the interfaces a
+repository provides and consumes rather than proposing every Python distribution
+as a `SoftwareLibrary` resource manager (a type error: that classification names
+a thing that *manages* libraries, e.g. PyPI, not a library itself).
+
+Two Discovery-tier, zero-fetch analyses now exist as the evidence layer 1 and the
+interfaces-consumed catalogue rest on:
+
+- **`deployment_evidence`** (`repo_deployment_evidence`) — per declared
+  distribution, whether deployment evidence exists (console entry point,
+  `__main__.py`, unambiguous Dockerfile/compose/Helm, web-framework dependency)
+  and the verdict it supports: `application` / `library` / `unknown`. See
+  `resource_explorer/surveyors/deployment_evidence.py`.
+- **`egeria_interfaces`** (`repo_egeria_interfaces`) — which Egeria view services
+  a repository consumes, derived from pyegeria client-class name matches against
+  code-symbol signature/return-type/base-class text (a lower bound — no import
+  table exists anywhere in this codebase), mapped via the curated
+  `configdata/egeria_view_services.yaml`, plus Dr.Egeria doc-path and
+  best-effort command-family evidence. See
+  `resource_explorer/surveyors/egeria_interfaces.py`.
+
+Both wired into `STEP_REGISTRY`/`ANALYSIS_KINDS` and the Repo Discovery Survey
+(`docs/dr-egeria/repo_survey_types.csv`, regenerated
+`repo-survey-definition-discovery.md`). **Not done**: the model corrections
+this decision also named (`SoftwareLibrary`-per-package and
+repository-as-`SourceControlLibrary` misreadings) and the platform
+re-authoring of the regenerated Survey Definition docs — both separate,
+coordinated steps.
+
+---
+
 ## Provenance: stamp the producing run on results rows
 
 **Argued as provenance, not as UI polish** — it is the same class of fact as

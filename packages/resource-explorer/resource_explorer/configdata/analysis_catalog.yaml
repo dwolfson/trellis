@@ -467,6 +467,40 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: deployment_evidence
+    name: "Deployment Evidence"
+    description: "Per declared distribution (repo_manifest_parse's output): which deployment evidence exists — a console entry point, a __main__.py, an unambiguous Dockerfile/compose/Helm chart, a web-framework dependency — and the verdict it supports: application (evidence found), library (importable, none found), or unknown (no manifest read yet). Layer 1 of 'Cataloguing in layers' (project owner, 2026-09-14): the evidence a Curate proposal's SoftwareCapability/Application verdict rests on, replacing a SoftwareLibrary-per-package guess."
+    resource_types: ["repo"]
+    intent: discovery  # reasons over already-parsed distribution/repo_conventions/dependency/file-inventory rows — zero repo fetch
+    perspectives: ["Architecture", "Admin", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: egeria_interfaces
+    name: "Egeria Interfaces Consumed"
+    description: "Which Egeria view services this repository consumes — one per pyegeria client class its code symbols reference (signature/return-type/base-class text match against configdata/egeria_view_services.yaml; imports are not captured anywhere in this codebase, so this is a LOWER BOUND, not a count), plus Dr.Egeria doc-path evidence and a best-effort command-family guess from filenames (real family names live in markdown headings, which are not stored — marked could_not_check). A repo with no pyegeria dependency reads nothing_found, not never-run."
+    resource_types: ["repo"]
+    intent: discovery  # reasons over already-collected dependency/code-symbol/relationship/file-inventory rows — zero repo fetch; the mapping is a curated local table, no Egeria call
+    perspectives: ["Architecture", "Admin", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_conventions
     name: "Repo Conventions"
     description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
