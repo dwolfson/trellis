@@ -41,3 +41,33 @@ class TestReviewHappensAtTheBranch:
         app = _app()
         body = app[app.index("function leafRowHtml("):app.index("async function renderComponentTree(")]
         assert "'change' : 'accept'" in body and "undo" not in body.lower()
+
+
+class TestRoundTwoSmallItems:
+    """Round two, items 2-4 (designer, 2026-09-14). Verified on
+    egeria-workspaces: '3 ports ›' opens the rail; '71 ports across 49
+    components · 44 wires · 3 not attributable …' at the foot; sort by
+    confidence puts templates/ ⚠ 25 first."""
+
+    def test_the_column_has_two_shapes(self):
+        app = _app()
+        body = app[app.index("function portsWords("):app.index("function openPortsInRail(")]
+        assert "own.length <= 2" in body and "data-ports-open" in body and "ports${icon('chevron-right'" in body
+
+    def test_the_ports_list_opens_in_the_rail_with_no_verdict_to_give(self):
+        app = _app()
+        body = app[app.index("function openPortsInRail("):app.index("function branchRowHtml(")]
+        assert "railFrame('Ports'" in body and "no verdict to give" in body
+
+    def test_sort_is_a_sort_never_a_filter(self):
+        app = _app()
+        body = app[app.index("async function renderComponentTree("):app.index("async function renderComponentDiagram(")]
+        assert "data-tree-sort=\"confidence\"" in body and "rows.sort(" in body
+        assert ".filter(" not in body.split("const rows = [...tree.branches];")[1].split("host.innerHTML")[0]
+
+    def test_the_foot_carries_both_ends_and_the_diagram_reads(self):
+        app = _app()
+        assert "tree.topology_totals" in app
+        body = app[app.index("async function renderComponentDiagram("):app.index("/** The shared preview dialog")]
+        assert "The diagram reads; the tree acts" in body and "fact.value.caption" in body
+        assert "No diagram to read" in body and "could not be rendered" in body

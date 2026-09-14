@@ -5880,9 +5880,30 @@ function verdictBadge(v) {
     : `<span class="text-ink">${word}</span>${v.decided_by ? ` <span class="text-ink-muted">· ${esc(v.decided_by)}</span>` : ''}`;
 }
 
-function portsWords(n, own) {
-  if (own && own.length) return `<span class="text-ink-muted">· ${own.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>`;
+/** The column has two shapes (designer, round two): one or two ports are
+ *  spelled out -- `8000 in, routes`; three or more become `15 ports ›`,
+ *  opening the list in the rail, the way every other count in this app
+ *  opens what it counted. `key` names the row so the click can find it. */
+function portsWords(n, own, key) {
+  if (own && own.length) {
+    if (own.length <= 2) return `<span class="text-ink-muted">· ${own.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>`;
+    return `<span class="text-ink-muted">· <button data-ports-open="${esc(key)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"><span class="tnum">${own.length}</span> ports${icon('chevron-right', { size: 12 })}</button></span>`;
+  }
   return n ? `<span class="text-ink-muted">· <span class="tnum">${n}</span> port${n === 1 ? '' : 's'} declared below</span>` : '';
+}
+
+/** The rail: a component's declared ports, read from the artifacts. No
+ *  verdict to give -- a port is a line in a Dockerfile. */
+function openPortsInRail(slug, key, ports) {
+  ensureRailShowing();
+  railClaim();
+  railFrame('Ports', slug, `
+    <div class="mb-s1 text-caps text-chrome-muted"><span class="font-mono">${esc(key)}</span> · read from the deployment artifacts · no verdict to give</div>
+    ${ports.map((p) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
+      <span class="font-mono text-chrome-ink">${esc(p.name)}</span>
+      ${p.direction ? `<span class="text-chrome-muted">${esc(p.direction)}</span>` : ''}
+      ${p.protocol ? `<span class="text-chrome-muted">${esc(p.protocol)}</span>` : ''}
+    </div>`).join('')}`, { sub: `${ports.length} declared` });
 }
 
 function branchRowHtml(b) {
@@ -5897,7 +5918,7 @@ function branchRowHtml(b) {
       ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
       ${types ? `<span class="text-provenance text-ink-muted">· ${types}</span>` : ''}
       ${b.low_confidence ? `<span class="text-provenance text-state-warn">· ⚠ <span class="tnum">${b.low_confidence}</span> at or below 50%</span>` : ''}
-      ${portsWords(b.ports, b.own_ports)}
+      ${portsWords(b.ports, b.own_ports, b.path)}
     </div>
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
       <span>${verdictBadge(b.verdict)}</span>
@@ -5914,7 +5935,7 @@ function leafRowHtml(l) {
     <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
     ${l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
     ${l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : ''}
-    ${l.ports?.length ? `<span class="text-ink-muted">· ${l.ports.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>` : ''}
+    ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
     <span>· ${verdictBadge(l.verdict)}</span>
     <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
     <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
@@ -5934,14 +5955,30 @@ async function renderComponentTree(slug, prefix = '') {
       ${tree.topology ? `<div class="mt-s1 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}`;
     return;
   }
+  const sort = state.componentSort || 'size';
+  const rows = [...tree.branches];
+  // A sort, never a filter: the ⚠ count already rides on the branch, so
+  // ordering by confidence puts the weakest clusters first without hiding
+  // one. By size is the repository's own shape.
+  if (sort === 'confidence') rows.sort((a, b) => (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
   host.innerHTML = `
     <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> components accepted ·
       <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
-      ports and wires read from the deployment artifacts (<span class="tnum">${tree.ports}</span> ports, <span class="tnum">${tree.wires}</span> wires); the diagram shows those belonging to accepted components
-      ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}</div>
-    ${tree.branches.map(branchRowHtml).join('')}
+      ports and wires read from the deployment artifacts; the diagram shows those belonging to accepted components
+      ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
+      · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
+      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
+    ${rows.map(branchRowHtml).join('')}
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
-    <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>`;
+    ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
+    <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>
+    <div id="component-diagram" class="mt-s3"></div>`;
+  host.querySelectorAll('[data-tree-sort]').forEach((b) => b.addEventListener('click', () => { state.componentSort = b.dataset.treeSort; renderComponentTree(slug, prefix); }));
+  host.querySelectorAll('[data-ports-open]').forEach((b) => b.addEventListener('click', () => {
+    const br = tree.branches.find((x) => x.path === b.dataset.portsOpen);
+    if (br) openPortsInRail(slug, br.path, br.own_ports || []);
+  }));
+  renderComponentDiagram(slug, $('component-diagram'));
 
   host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
     const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
@@ -5953,6 +5990,10 @@ async function renderComponentTree(slug, prefix = '') {
       box.innerHTML = out.leaves.map(leafRowHtml).join('') || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
+      box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
+        const leaf = out.leaves.find((x) => x.path === pb.dataset.portsOpen);
+        if (leaf) openPortsInRail(slug, leaf.path, leaf.ports || []);
+      }));
     } catch (err) {
       box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`;
     }
@@ -5961,6 +6002,42 @@ async function renderComponentTree(slug, prefix = '') {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
     recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 });
   }));
+}
+
+/** The diagram beside the tree. It is already verdict-aware -- rendered
+ *  fresh on every read, rejected dropped, accepted solid, undecided dashed
+ *  -- so accepting a branch and re-reading redraws it; nothing to build for
+ *  that. What it is not is the acting surface: it comes back from Kroki as
+ *  a finished SVG. It says its two ceilings in its own caption. The tree
+ *  is the surface that scales; the diagram is the one that explains. */
+async function renderComponentDiagram(slug, host) {
+  if (!host) return;
+  let fact;
+  try {
+    const res = await getBulkFacts([slug], ['architecture_diagram']);
+    fact = (((res.subjects || {})[slug]) || []).find((f) => f.analysis_id === 'architecture_diagram');
+  } catch { fact = null; }
+  if (slug !== state.selectedSlug) return;
+  const src = fact?.value?.mermaid;
+  if (!src) { host.innerHTML = `<div class="text-provenance text-ink-muted">No diagram to read — architecture_diagram has not rendered one for this resource.</div>`; return; }
+  host.innerHTML = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">The diagram reads; the tree acts</div>
+    <div class="text-provenance text-ink-muted">${tnum(esc(fact.value.caption || fact.headline || ''))}</div>
+    <div data-diagram-svg class="mt-s1 w-full overflow-auto rounded-sm border border-rule-strong" style="max-height:min(60vh,560px)">rendering…</div>`;
+  try {
+    const t = tokens();
+    const prepped = mermaidForKroki(src);
+    const res = await fetch('/api/diagrams/mermaid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: prepped.source }) });
+    if (!res.ok) throw new Error(`${res.status} from the renderer`);
+    const raw = await res.text();
+    if (!raw.includes('<svg')) throw new Error('the renderer returned no SVG');
+    const slot = host.querySelector('[data-diagram-svg]');
+    slot.innerHTML = raw;
+    const svgEl = slot.querySelector('svg');
+    if (svgEl) { themeSvgElement(svgEl, t); svgEl.removeAttribute('height'); svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+  } catch (err) {
+    const slot = host.querySelector('[data-diagram-svg]');
+    if (slot) slot.innerHTML = `<div class="p-s2 text-provenance text-accent-ink">The diagram could not be rendered: ${esc(err.message)}. The source is on the Analysis pane.</div>`;
+  }
 }
 
 /** The shared preview dialog, because rule 4 makes it mandatory: the act
