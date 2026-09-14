@@ -317,3 +317,114 @@ def test_the_api_sends_the_field_the_card_reads():
         "index.html reads la.last_run_derived_from but the analyses payload in "
         "projects.py does not send it"
     )
+
+
+# ── the queued-for-publish toast and its saved-time sentence ─────────────────
+#
+# Owner's complaint (2026-09-13): "I saw the queued after a few seconds and
+# the toast went away before I could read it" — a message that says what
+# will happen LATER must not vanish on a timer. And separately: the run
+# dialog never said what running in the background actually saved. These
+# tests pin both fixes structurally (regex on the JS source, same approach
+# as the rest of this file — no build step, no JS test runner) with
+# assertions specific enough that deleting either fix fails them; each was
+# sabotaged and confirmed to fail before being trusted.
+
+
+def test_the_saved_time_sentence_covers_all_four_bases():
+    """`_savedTimeSentence` (designer's split ruling, 2026-09-13) must render
+    a sentence for every one of RunCost's states: measured+split, measured
+    whole-run only, declared, and unknown/unavailable. A regression that
+    dropped one of these would still "work" for the other three, so this
+    checks all four fixed fragments rather than just that the function
+    exists."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    assert "_savedTimeSentence" in fns, "_savedTimeSentence is gone from index.html"
+    body = fns["_savedTimeSentence"]
+
+    assert "of waiting saved" in body, (
+        "missing the measured-split variant (\"about {publish} of waiting "
+        "saved (median of N runs); the run itself took {steps}\")"
+    )
+    assert "unsplit" in body, (
+        "missing the whole-run-measured, no-split variant (\"the wait would "
+        "have been about {seconds} (median of N runs), unsplit\")"
+    )
+    assert "declared '" in body and "not yet measured" in body, (
+        "missing the declared-word variant — a declared catalog word must "
+        "never be rendered as if it were a measured figure"
+    )
+    assert "is not known yet" in body, (
+        "missing the unavailable/unknown variant"
+    )
+    # A declared word must never be formatted as a number — the whole point
+    # of carrying `basis` alongside the figure.
+    assert "_humaniseSeconds(started.rerun_cost_declared" not in body
+    assert "_humaniseSplitSeconds(started.rerun_cost_declared" not in body
+
+
+def test_the_queued_toast_is_sticky_and_links_to_activity():
+    """The queued branch's toast must pass a 0ms duration (no auto-dismiss
+    timer — every toast already carries a manual '×' dismiss, see
+    showToast()) and must offer a way to the activity entry it refers to.
+    Restoring the old fixed-6000ms call, or dropping the link, must fail
+    this test — both were sabotaged against it directly."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    body = fns["runAnalysisCatalogCard"]
+
+    m = re.search(r"if\s*\(queued\)\s*\{(.*?)\n\s*\}\s*else\s*\{", body, re.S)
+    assert m, (
+        "runAnalysisCatalogCard's queued/else branch was not found in the "
+        "expected shape — update this test's structure assumption"
+    )
+    queued_branch = m.group(1)
+
+    toast_call = re.search(r"showToast\(\s*'info',([\s\S]*?)\);", queued_branch)
+    assert toast_call, "the queued branch no longer shows an 'info' toast"
+    # The call's final argument (duration) must be a bare 0 — not 6000, not
+    # omitted (which would default to 6000).
+    assert re.search(r",\s*0\s*\)\s*;?\s*$", "showToast('info'," + toast_call.group(1) + ");"), (
+        "the queued-for-publish toast no longer passes a 0ms (sticky) "
+        "duration — it will vanish on the default timer before it can be read"
+    )
+    assert "_savedTimeSentence(" in queued_branch, (
+        "the queued toast no longer renders the saved-time sentence"
+    )
+    assert "_openActivityEntry(" in queued_branch, (
+        "the queued toast lost its link to the Activity tab entry"
+    )
+
+
+def test_the_run_dialog_result_also_shows_the_saved_time_sentence():
+    """The saved-time line belongs in the run dialog's own result panel too,
+    not only the toast — the toast can be dismissed or missed."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    body = fns["runAnalysisCatalogCard"]
+    m = re.search(r"if\s*\(queued\)\s*\{(.*?)\n\s*\}\s*else\s*\{", body, re.S)
+    assert m
+    queued_branch = m.group(1)
+    assert "resultEl.innerHTML" in queued_branch and "_savedTimeSentence(" in queued_branch
+
+
+def test_freshness_skip_offers_running_anyway_in_background():
+    """The 'Run anyway' decision prompt must also offer the background
+    variant when the caller can provide one — otherwise a reader declining
+    the freshness skip is pushed back onto the slower default path even when
+    a background run was available a moment ago."""
+    html = INDEX.read_text()
+    fns = _top_level_functions(html)
+    body = fns["_handleFreshnessSkip"]
+    assert "onForceBackground" in body, (
+        "_handleFreshnessSkip no longer accepts a background alternative"
+    )
+    assert "Run anyway in background" in body, (
+        "_handleFreshnessSkip no longer offers a 'Run anyway in background' button"
+    )
+    # And the freshness gate's own 12s timer must be untouched — it is a
+    # decision prompt, not a promise about something landing later.
+    assert re.search(r"12000\s*\)\s*;", body), (
+        "_handleFreshnessSkip's toast duration changed away from 12s"
+    )

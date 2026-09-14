@@ -42,6 +42,12 @@ class SurveyDefinitionRunRequest(BaseModel):
     db_pwd: str = ""
     egeria_url: str = ""
     egeria_server: str = ""
+    #: The per-run choice (project owner, 2026-09-13) of whether to wait for
+    #: the Egeria publish or enqueue it and move on — see
+    #: workflows/analysis.py's run_analysis for the parallel choice on the
+    #: Analyses-card path. None/omitted keeps RunsConfig.publish_inline's
+    #: default, unchanged behaviour for every caller that does not ask.
+    publish: str | None = None
 
 
 def _map_reader_executor_errors(exc: Exception) -> HTTPException:
@@ -577,6 +583,7 @@ def _params(body: "SurveyDefinitionRunRequest") -> SurveyDefinitionRunParams:
         refresh_definition=body.refresh_definition,
         db_user=body.db_user,
         db_pwd=body.db_pwd,
+        publish=body.publish,
     )
 
 

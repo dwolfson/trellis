@@ -31,6 +31,9 @@ class SurveyDefinitionRunParams:
     refresh_definition: bool = False
     db_user: str = ""
     db_pwd: str = ""
+    #: The per-run choice ("wait" | "background" | None) — see
+    #: SurveyDefinitionExecutor.run's `publish` parameter.
+    publish: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> SurveyDefinitionRunParams:
@@ -43,6 +46,7 @@ class SurveyDefinitionRunParams:
             "refresh_definition": self.refresh_definition,
             "db_user": self.db_user,
             "db_pwd": self.db_pwd,
+            "publish": self.publish,
         }
 
 
@@ -75,6 +79,7 @@ def run_definition(entity_type: str, slug: str, params: SurveyDefinitionRunParam
         refresh_definition=params.refresh_definition,
         db_user=params.db_user,
         db_pwd=params.db_pwd,
+        publish=params.publish,
     )
 
     report_guid = result.get("egeria_report_guid", "")

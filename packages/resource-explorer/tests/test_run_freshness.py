@@ -228,6 +228,66 @@ class TestTheGateIsWiredAndScopedCorrectly:
             "the scheduler now consults freshness — scheduled sweeps were "
             "deliberately left ungated")
 
+
+class TestTheEnqueueResponseCarriesThePrice:
+    """The run dialog's saved-time sentence (index.html) needs the price on
+    the SAME response that started the run — only the freshness-skip path
+    carried it before, so a plain first run (never skipped) had no estimate
+    to render against once it completed as `published: "queued"`."""
+
+    def test_the_started_response_carries_the_rerun_fields(self, reg, slug, monkeypatch):
+        import asyncio
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.web.routes import projects
+
+        monkeypatch.setattr(ProjectRegistry, "enqueue_run",
+                            lambda self, kind, target, **kw: "run-x")
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        # never-run — assess_freshness reports "never-run", so this reaches
+        # the enqueue path rather than the skip path.
+        out = asyncio.run(projects.run_single_analysis(slug, "security_scan"))
+        assert out["status"] == "started", f"unexpectedly declined: {out}"
+        for key in ("rerun_cost_seconds", "rerun_steps_seconds", "rerun_publish_seconds",
+                    "rerun_cost_basis", "rerun_cost_runs", "rerun_split_runs"):
+            assert key in out, (
+                f"the enqueue response is missing {key!r} — the run dialog's "
+                f"saved-time sentence has nothing to render")
+        assert out["rerun_cost_basis"] in ("measured", "declared", "unknown"), out
+
+    def test_a_raising_estimate_still_enqueues_and_says_so(self, reg, slug, monkeypatch):
+        """`estimate_run_cost` has no broad except by design — it should fail
+        loudly if the queue or catalog can't be read. But the run is already
+        enqueued by the time the estimate runs, so a broken estimate must not
+        take the run down with it, and must not be swallowed as a bare log
+        line either (tests/test_no_silent_success.py's ratchet)."""
+        import asyncio
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.web.routes import projects
+
+        monkeypatch.setattr(ProjectRegistry, "enqueue_run",
+                            lambda self, kind, target, **kw: "run-y")
+
+        def _boom(*a, **k):
+            raise RuntimeError("boom: catalog unreadable")
+
+        monkeypatch.setattr(projects, "_estimate_run_cost", _boom)
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        out = asyncio.run(projects.run_single_analysis(slug, "security_scan"))
+        assert out["status"] == "started", (
+            "a broken cost estimate must not prevent the run itself from "
+            f"being enqueued: {out}")
+        assert out["rerun_cost_basis"] == "unavailable"
+        assert out.get("rerun_cost_error") and "boom" in out["rerun_cost_error"], (
+            "the estimate failure must be recorded observably in the response, "
+            "not just logged — that's the silent-success ratchet"
+        )
+
+
+class TestTheFrontendRunCallersHandleASkip:
+    """Split out of TestTheGateIsWiredAndScopedCorrectly (unchanged content)
+    to make room for TestTheEnqueueResponseCarriesThePrice between the
+    route-level tests above and the frontend-derivation tests below."""
+
     def test_every_frontend_caller_of_the_run_route_handles_a_skip(self):
         """Derived, not listed. `activity_id` is null on a skip, so a caller
         that polls it regardless hangs forever. THREE functions reach this
@@ -274,6 +334,25 @@ def _succeeded_run(reg, analysis_id, seconds, slug="any"):
         c.execute("UPDATE runs SET state='succeeded', started_at=%s, finished_at=%s WHERE id=%s",
                   (t0.isoformat(), (t0 + timedelta(seconds=seconds)).isoformat(), run_id))
     return run_id
+
+
+def _split_activity(reg, analysis_id, steps_seconds, publish_seconds, slug="any"):
+    """One terminal `analysis_run` activity_log row carrying the per-phase
+    split in `detail`, the shape `execute_and_record_analysis` writes."""
+    import json as _json
+
+    from resource_explorer.activity_logger import log_analysis_run
+
+    entry_id = log_analysis_run(reg, "repo", slug, slug, "ok",
+                                f"ran {analysis_id}", analysis_id, published=None)
+    detail = _json.dumps({
+        "analysis_id": analysis_id, "published": None,
+        "steps_seconds": steps_seconds, "publish_seconds": publish_seconds,
+        "publish_mode": "not-attempted" if publish_seconds is None else "inline",
+    })
+    with reg._conn() as c:
+        c.execute("UPDATE activity_log SET detail = %s WHERE id = %s", (detail, entry_id))
+    return entry_id
 
 
 class TestTheSkipNamesThePrice:
@@ -355,3 +434,84 @@ class TestTheSkipNamesThePrice:
         assert out["rerun_cost_runs"] == 1 and out["rerun_cost_via"] == "ci_quality"
         assert "A re-run costs about 33s" in out["detail"], (
             "the price has to be in the sentence the toast shows, not only in a field")
+
+    def test_the_split_leads_the_sentence_when_it_exists(self, pg_registry):
+        """Designer's ruling, 2026-09-13: the wall clock is always split, never
+        one figure — and the sentence has to LEAD with it."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_split_probe", 90)
+        _succeeded_run(pg_registry, "zz_split_probe", 94)
+        _split_activity(pg_registry, "zz_split_probe", 0.06, 92.3)
+        _split_activity(pg_registry, "zz_split_probe", 0.08, 88.1)
+        cost = estimate_run_cost(pg_registry, "zz_split_probe")
+        assert cost.basis == "measured"
+        assert cost.steps_seconds == 0.07 and cost.publish_seconds == pytest.approx(90.2)
+        assert cost.split_runs == 2
+        sentence = cost.sentence()
+        assert sentence.startswith("A re-run takes about 0.1s to run and about"), sentence
+        assert "to publish" in sentence and "in all" in sentence
+        # The halves and the total must come from the same rows. Here the
+        # `runs`-table median is 92s and the split sums to 90.27s: a sentence
+        # that said "1m 32s in all" beside "1m 30s to publish" would carry two
+        # numbers that disagree — the list-answer defect, in a toast.
+        # 0.07 + 90.2: publish is >90% of the total, so the total names its
+        # dominant half rather than restating "1m 30s" beside "1m 30s".
+        assert "1m 30s in all, nearly all of it publishing" in sentence, sentence
+        assert "about 1m 30s in all" not in sentence, sentence
+        assert "1m 32s" not in sentence, sentence
+
+    def test_a_balanced_split_keeps_the_plain_total(self, pg_registry):
+        """When neither half dominates, "about X in all" is the honest total and
+        naming a dominant half would be false."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_balanced_probe", 100)
+        _split_activity(pg_registry, "zz_balanced_probe", 40.0, 60.0)
+        sentence = estimate_run_cost(pg_registry, "zz_balanced_probe").sentence()
+        assert "about 1m 40s in all (median of 1 run)." in sentence, sentence
+        assert "nearly all of it" not in sentence, sentence
+
+    def test_no_split_rows_leaves_the_sentence_byte_identical(self, pg_registry):
+        """Old runs (predating the split instrumentation) must fall back to
+        exactly today's sentence — not a mangled half-split one."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_nosplit_probe", 13)
+        cost = estimate_run_cost(pg_registry, "zz_nosplit_probe")
+        assert cost.steps_seconds is None and cost.publish_seconds is None
+        assert cost.sentence() == "A re-run costs about 13s (median of 1 run)."
+
+    def test_the_skip_payload_carries_the_split_fields(self, reg, slug, monkeypatch):
+        import asyncio
+        from resource_explorer.web.routes import projects
+
+        TestTheGateIsWiredAndScopedCorrectly._route_uses(monkeypatch, reg)
+        _log_run(reg, slug, "sla_content", minutes_ago=2)
+        _succeeded_run(reg, "sla_content", 92, slug=slug)
+        _split_activity(reg, "sla_content", 0.06, 92.3, slug=slug)
+        out = asyncio.run(projects.run_single_analysis(slug, "sla_content"))
+        assert out["status"] == "skipped"
+        assert out["rerun_steps_seconds"] == 0.06
+        assert out["rerun_publish_seconds"] == 92.3
+        assert out["rerun_split_runs"] == 1
+        assert "to run and about" in out["detail"] and "to publish" in out["detail"]
+
+    def test_a_not_attempted_publish_does_not_poison_the_publish_median(self, pg_registry):
+        """`publish_seconds=None` means "not attempted" (no assigned project, or
+        no annotations) — not a zero-second publish. It must not enter the
+        median as if it were a fast one, and it must not vanish from
+        `split_runs` either: the row is still a real, instrumented run."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 10)
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 12)
+        _succeeded_run(pg_registry, "zz_notattempted_probe", 14)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, 40.0)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, 60.0)
+        _split_activity(pg_registry, "zz_notattempted_probe", 0.1, None)  # not-attempted
+        cost = estimate_run_cost(pg_registry, "zz_notattempted_probe")
+        assert cost.split_runs == 3, "the not-attempted row is a real instrumented run"
+        assert cost.publish_seconds == 50.0, (
+            f"the None publish row poisoned the median: got {cost.publish_seconds}")
+        assert cost.steps_seconds == 0.1

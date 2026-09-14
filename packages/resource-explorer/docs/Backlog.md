@@ -5227,9 +5227,12 @@ Two things follow, and one decision:
   not against this finding. The Survey Definition documents re-authored the same night ran at ~5 s
   per Dr.Egeria command on the same platform, consistent with that. **Re-measured after the redeploy
   (2026-09-13, same repo, same analysis, same script):** during startup 5.2 s median / 6.8 p90 / 10.1
-  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s** — the tail is
-  gone, the floor is ~3.5 s per annotation create. The inline-vs-enqueue decision therefore stands:
-  53 writes is still 3¼ minutes on a 0.2 s analysis.
+  max (run 305 s); settled 30 min later **3.6 s median / 4.3 p90 / 4.6 max, run 197 s**; +10 h later,
+  the morning re-measurement, **1.5 s median / 2.3 p90 / 3.0 max per write, run 92.7 s, steps 0.06 s**
+  — the tail is gone, the floor keeps dropping, and steps stays flat at essentially zero regardless of
+  the platform's write latency (per-phase timings, #67 — see `docs/funnel-cost-measured.md` §1). The
+  inline-vs-enqueue decision therefore stands: even at 1.5 s/write, 53 writes is 80 s on a 0.06 s
+  analysis.
 - **Decision needed (project owner):** should an inline analysis wait for its publish? Enqueue-only
   makes the same run ~15 s, with `published` becoming a third state — *queued for publish*, visible in
   Egeria within the next drain (≤ 15 min). Built behind `RunsConfig.publish_inline` (env
@@ -5252,16 +5255,38 @@ patch) on branch `re/question-guid-client-per-thread`. The pyegeria issue text i
 `scratchpad/qguid-flake/REPORT.md` as ISSUE-96 for `localGit/egeria-python/PYEGERIA_ISSUES.md` —
 not filed; filing is the owner's call per the pyegeria-gaps rule.
 
-### Superseded Question term still scoped by two live Survey Definitions
+### Superseded Question term — unlinked and deleted 2026-09-13; the reconciler gap it exposed stays open
 
 "What is its internal architecture — what components exist and how do they relate?" was split into
-four questions in the CSV (2026-09-08). The four now exist and are scoped (2026-09-12). The old term
-is still on the platform and a live `get_scoped_elements` check (2026-09-13) found `RepoFullSurvey`
-and `RepoArchitectureDiscovery` still carry `ScopedBy` links to it — leftovers from before the split,
-invisible to the authored `.md` documents and to the step-link reconciler, which does not touch scope
-links. Not deleted for that reason. **Decision needed:** unlink both, then delete the term; and the
-reconciler (or a sibling) should learn to compare ScopedBy links against the authored documents, since
-this is the second time a scope link has drifted silently (2026-08-19 was the first).
+four questions in the CSV (2026-09-08); the four were created 2026-09-12. The old term stayed on the
+platform with stale `ScopedBy` links from two live definitions. **Decision (project owner,
+2026-09-13):** unlink, then delete. Done: `ClassificationExplorer.clear_scope_from_element(term,
+process)` once per definition (RepoFullSurvey 33 → 32 scopes, RepoArchitectureDiscovery 1 → 0 — every
+other scope link verified intact), then `GlossaryManager.delete_term(term, cascade=True)`, which took
+the term's own perspective/stage links with it (the three Perspectives and the Discovery stage term
+verified present afterwards). A read-immediately-after-delete lookup still "resolved" the term; a
+fresh lookup a minute later did not — index lag, not a failed delete.
+
+Two things the enumeration taught, kept here so the next deletion is faster:
+
+- A Question term's `relevantToScopes` carry its OWN links — `Link Perspective to Question` and the
+  funnel-stage term, generated per question by scouting-questions.md — and go with the term. Only
+  `scopedElements` (where the term is the scope of something else) need a hand unlink. The first
+  agent's stop-on-anything-unexpected brief read those four as foreign references and halted;
+  the distinction is direction, not count.
+- `RepoArchitectureDiscovery` had **only** the dead term as a scope, because the 2026-09-12
+  re-authoring ran the discovery and full documents and not this one. Repaired the same day from its
+  own document's scope blocks (`docs/dr-egeria/questions/arch-discovery-scope-links-2026-09-13.md`,
+  0 → 2). Verified through the app's own scoped lookup.
+
+**Still open — the reconciler does not see scope links.** `scripts/reconcile_survey_definition_links.py`
+compares step edges to STEP_REGISTRY order; nothing compares a definition's `ScopedBy` links to the
+Question terms its authored document names. This is the second silent scope drift (2026-08-19 was the
+first, when the questions batch was absent and every scope link silently created nothing). A sibling
+pass — for each authored survey-definition document, the set of `Scope Reference` names vs the live
+`get_scopes(process)` set, reporting missing and extra — would have caught both. Read-only report
+first; the extra-link removal is a deliberate second step, since `clear_scope_from_element` is the
+only write it would ever need.
 
 ### Question term descriptions on the platform now match the CSV (2026-09-13)
 

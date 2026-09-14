@@ -1175,6 +1175,42 @@ class SurveyDefinitionReader:
 
         return result
 
+    # ── reconciliation: ScopedBy links vs. an authored document ─────────────
+
+    def get_live_scopes(self, process_guid: str) -> list[dict]:
+        """The raw `ClassificationExplorer.get_scopes()` result for one
+        Survey Definition's process element — every element it is currently
+        `ScopedBy`, unfiltered. Always fetches live; scope links are
+        precisely what `scripts/reconcile_survey_definition_scopes.py` exists
+        to catch drifting, so a cached answer would defeat the point.
+
+        Must be called from the main thread — same
+        `_connect_classification_explorer` client
+        `find_candidate_process_guids_by_questions` uses, and pyegeria
+        ISSUE-96 (see `__init__`'s note on `_thread_local_explorer`) means a
+        `ClassificationExplorer` shared across threads/event loops fails
+        deterministically. Raises whatever the client raises — this method
+        does not catch and does not decide what a failure means; the caller
+        (the script) is what turns "could not read scopes" into a
+        per-definition report line rather than a silent empty result."""
+        self.connect()
+        client = self._connect_classification_explorer()
+        results = client.get_scopes(process_guid, page_size=1000)
+        if isinstance(results, str):
+            return []  # pyegeria's "No elements found" convention
+        return results or []
+
+    def remove_scope(self, term_guid: str, process_guid: str) -> None:
+        """Detach one ScopedBy link — `ClassificationExplorer.
+        clear_scope_from_element(scoped_by_guid=term_guid,
+        element_guid=process_guid)`, the same live call verified working on
+        2026-09-13 (docs/Backlog.md, "Superseded Question term"). Main-thread
+        only, same as `get_live_scopes`. Raises on failure; the caller counts
+        it, it does not swallow it."""
+        self.connect()
+        client = self._connect_classification_explorer()
+        client.clear_scope_from_element(term_guid, process_guid)
+
     def _parse_graph(self, graph: dict) -> SurveyDefinition:
         """Side-effect-free: turns a raw graph JSON dict into a SurveyDefinition.
 

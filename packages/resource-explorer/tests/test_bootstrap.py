@@ -323,6 +323,63 @@ class TestHealBatch:
         ok, detail = bs.heal_batch(batch)
         assert ok is False and "reconciler" in detail
 
+    def test_post_heal_checks_run_after_post_heal(self, tmp_path, monkeypatch):
+        """post_heal_checks (e.g. the scope-link reconciler's report mode)
+        run after post_heal, on top of it."""
+        _write_batch(
+            tmp_path, "b", canary={"qualified_name": "Q::b"},
+            extra={
+                "post_heal": {"script": "scripts/reconcile.py"},
+                "post_heal_checks": [{"script": "scripts/reconcile_scopes.py"}],
+            },
+        )
+        batch = bs.discover_batches(tmp_path)[0]
+        assert batch.post_heal_checks == [{"script": "scripts/reconcile_scopes.py"}]
+        monkeypatch.setattr(bs, "_run_dr_egeria", lambda doc: (True, "ok"))
+        monkeypatch.setattr(bs, "_run_post_heal", lambda b: (True, "post_heal ok"))
+        ran = []
+        monkeypatch.setattr(
+            bs, "_run_post_heal_checks",
+            lambda b: ran.append(b.batch_id) or ["scripts/reconcile_scopes.py: reconciled"],
+        )
+        ok, detail = bs.heal_batch(batch)
+        assert ok is True
+        assert ran == ["b"]
+        assert "reconciled" in detail
+
+    def test_post_heal_check_drift_does_not_fail_the_batch(self, tmp_path, monkeypatch):
+        """A check finding drift (non-zero exit) is a report, not a heal
+        failure — it never writes to Egeria on this path, so it must not be
+        conflated with post_heal actually erroring."""
+        _write_batch(
+            tmp_path, "b", canary={"qualified_name": "Q::b"},
+            extra={
+                "post_heal": {"script": "scripts/reconcile.py"},
+                "post_heal_checks": [{"script": "scripts/reconcile_scopes.py"}],
+            },
+        )
+        batch = bs.discover_batches(tmp_path)[0]
+        monkeypatch.setattr(bs, "_run_dr_egeria", lambda doc: (True, "ok"))
+        monkeypatch.setattr(bs, "_run_post_heal", lambda b: (True, "post_heal ok"))
+
+        def fake_check(_batch):
+            class _Proc:
+                returncode = 1
+                stdout = "missing: some question\n"
+                stderr = ""
+
+            return [f"scripts/reconcile_scopes.py: drift found (exit 1) — {_Proc.stdout.strip()}"]
+
+        monkeypatch.setattr(bs, "_run_post_heal_checks", fake_check)
+        ok, detail = bs.heal_batch(batch)
+        assert ok is True
+        assert "drift found" in detail
+
+    def test_batch_with_no_post_heal_checks_defaults_to_empty(self, tmp_path):
+        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
+        batch = bs.discover_batches(tmp_path)[0]
+        assert batch.post_heal_checks == []
+
 
 class TestRealManifests:
     """The shipped docs/dr-egeria manifests must stay parseable and coherent —
@@ -342,6 +399,15 @@ class TestRealManifests:
         sd = {b.batch_id: b for b in bs.discover_batches(bs.DOCS_DIR)}["survey-definitions"]
         assert sd.idempotent is False
         assert (sd.post_heal or {}).get("script")
+
+    def test_survey_definitions_declares_the_scope_reconciler_check(self):
+        """docs/Backlog.md, 'Superseded Question term': the step-edge
+        reconciler above can't see ScopedBy drift, so the scope reconciler's
+        report mode must be wired in alongside it, or a heal comes back with
+        the same 2026-08-19/2026-09-13 class of gap unreported."""
+        sd = {b.batch_id: b for b in bs.discover_batches(bs.DOCS_DIR)}["survey-definitions"]
+        scripts = [c.get("script") for c in sd.post_heal_checks]
+        assert "scripts/reconcile_survey_definition_scopes.py" in scripts
 
 
 class TestRunDrEgeriaExecutableResolution:

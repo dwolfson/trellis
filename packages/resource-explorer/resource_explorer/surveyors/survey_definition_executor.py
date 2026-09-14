@@ -41,7 +41,7 @@ class ResourceTypeAdapter:
     technology_type: str
     re_analysis_steps: dict  # re_analysis_step -> Callable(entity, registry, **kwargs) -> dict
     get_entity: Callable  # (registry, slug) -> entity | None
-    publish: Callable  # (entity, step_outputs: list[dict], surveyed_at: str, registry) -> str (report_guid)
+    publish: Callable  # (entity, step_outputs: list[dict], surveyed_at: str, registry, defer_drain: bool = False) -> str (report_guid)
     # re_analysis_step -> {"description": str, "annotation_types": list[str]} — lets
     # UI/API callers explain what a step actually does/produces before running it,
     # without needing a live Egeria round-trip (RE already knows this about its own
@@ -119,6 +119,7 @@ class SurveyDefinitionExecutor:
         technology_type: str | None = None,
         survey_definition_ref: str | None = None,
         refresh_definition: bool = False,
+        publish: str | None = None,
         **runner_kwargs: Any,
     ) -> dict:
         surveyed_at = datetime.utcnow().isoformat()
@@ -527,11 +528,38 @@ class SurveyDefinitionExecutor:
         # skipped for an unassigned resource. Manual publish is still available
         # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
-        published = False
+        published: bool | str = False
         if step_outputs and self.registry.has_assigned_egeria_project(entity_type, slug):
+            # Same per-run choice run_analysis() honours (project owner,
+            # 2026-09-13) — "wait"/"background" from the caller override
+            # RunsConfig.publish_inline for this run only; not asked (None,
+            # every pre-existing caller) falls back to the config default,
+            # same three states (True/False/"queued"), no unconditional True.
+            from resource_explorer.config import get_config
+
+            if publish == "background":
+                defer_drain = True
+            elif publish == "wait":
+                defer_drain = False
+            else:
+                defer_drain = not get_config().runs.publish_inline
+            # Defensive signature check, same pattern this module's own
+            # get_analysis_results route already uses for an optional
+            # reader parameter: an adapter.publish that predates this choice
+            # (a test double standing in a plain 4-arg function, or a
+            # not-yet-updated resource type) does not accept defer_drain —
+            # calling it with an unexpected kwarg would raise, for a run that
+            # never asked to change behaviour.
+            import inspect
+
+            publish_kwargs = {}
+            if "defer_drain" in inspect.signature(adapter.publish).parameters:
+                publish_kwargs["defer_drain"] = defer_drain
             try:
-                report_guid = adapter.publish(entity, step_outputs, surveyed_at, self.registry)
-                published = True
+                report_guid = adapter.publish(
+                    entity, step_outputs, surveyed_at, self.registry, **publish_kwargs,
+                )
+                published = "queued" if (defer_drain and publish_kwargs) else True
             except Exception as exc:
                 msg = f"Failed to publish results to Egeria: {exc}"
                 log.exception(msg)

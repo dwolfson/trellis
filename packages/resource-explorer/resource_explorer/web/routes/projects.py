@@ -601,8 +601,9 @@ def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool,
     ).to_dict()
 
 
-def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str) -> None:
-    _run_single_analysis_background_impl(slug, analysis_id, activity_id)
+def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str,
+                                    *, publish: str | None = None) -> None:
+    _run_single_analysis_background_impl(slug, analysis_id, activity_id, publish=publish)
 
 
 def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
@@ -612,7 +613,7 @@ def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
 
 @router.post("/{slug}/analyses/{analysis_id}/run")
 async def run_single_analysis(slug: str, analysis_id: str,
-                              force: bool = False) -> dict:
+                              force: bool = False, publish: str | None = None) -> dict:
     """Queue one named analysis's mapped survey step(s) — the per-card "Run"
     action in Analysis/Assessment.
 
@@ -625,11 +626,24 @@ async def run_single_analysis(slug: str, analysis_id: str,
     What changed is who executes it — a `worker` role process claiming the row,
     which is the whole point of the queue.
 
+    `publish` ("wait" | "background", query param — same convention as
+    `force`): the per-run choice of whether to wait for the Egeria publish or
+    enqueue it and move on (project owner, 2026-09-13 — measured: the survey
+    steps take ~0.2s, the synchronous publish ~3min at ~3.6s/write for 53
+    writes). Omitted keeps `RunsConfig.publish_inline`'s default — unchanged
+    behaviour for every caller that does not ask.
+
     Validation still happens synchronously, so an unknown analysis_id is a 400
     rather than a queued row that fails a minute later in a different process.
     """
     from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
+
+    if publish is not None and publish not in ("wait", "background"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"publish must be 'wait' or 'background', got {publish!r}",
+        )
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -686,6 +700,9 @@ async def run_single_analysis(slug: str, analysis_id: str,
                 "rerun_cost_basis": cost.basis,
                 "rerun_cost_runs": cost.runs,
                 "rerun_cost_via": cost.via,
+                "rerun_steps_seconds": cost.steps_seconds,
+                "rerun_publish_seconds": cost.publish_seconds,
+                "rerun_split_runs": cost.split_runs,
                 "activity_id": None,
                 "run_id": None,
             }
@@ -695,13 +712,54 @@ async def run_single_analysis(slug: str, analysis_id: str,
         f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
     )
     run_id = registry.enqueue_run(
-        "analysis_run", {"slug": slug, "analysis_id": analysis_id},
+        "analysis_run", {"slug": slug, "analysis_id": analysis_id, "publish": publish},
         result_ref=activity_id, requested_by=_requested_by(),
     )
-    log.info("enqueued analysis_run %s for %s/%s (activity %s)",
-             run_id, slug, analysis_id, activity_id)
+    log.info("enqueued analysis_run %s for %s/%s (activity %s, publish=%s)",
+             run_id, slug, analysis_id, activity_id, publish)
 
-    return {"status": "started", "activity_id": activity_id, "run_id": run_id}
+    # The run dialog needs to say what a background publish saved — that
+    # requires the price on the enqueue response too, not just the
+    # freshness-skip path above. `estimate_run_cost` has no broad except by
+    # design (it should fail loudly if the queue/catalog can't be read), but
+    # a broken estimate must never take the run down with it: the run is
+    # already enqueued by this point, so failure here is recorded
+    # observably in the response instead of a bare log line — the
+    # silent-success ratchet (tests/test_no_silent_success.py) forbids
+    # swallowing it quietly.
+    try:
+        cost = _estimate_run_cost(registry, analysis_id)
+        result: dict = {
+            "rerun_cost_seconds": cost.seconds,
+            "rerun_steps_seconds": cost.steps_seconds,
+            "rerun_publish_seconds": cost.publish_seconds,
+            "rerun_cost_basis": cost.basis,
+            "rerun_cost_runs": cost.runs,
+            "rerun_split_runs": cost.split_runs,
+            # The "declared '{word}'" sentence variant needs the actual
+            # catalog word, not just the basis that names its kind — the
+            # frontend renders the sentence itself here (unlike the skip
+            # path above, which bakes it into `detail` server-side via
+            # cost.sentence()).
+            "rerun_cost_declared": cost.declared,
+        }
+    except Exception as exc:
+        log.warning("estimate_run_cost failed for %s/%s: %s", slug, analysis_id, exc)
+        result = {
+            "rerun_cost_seconds": None,
+            "rerun_steps_seconds": None,
+            "rerun_publish_seconds": None,
+            "rerun_cost_basis": "unavailable",
+            "rerun_cost_runs": 0,
+            "rerun_split_runs": 0,
+            "rerun_cost_declared": None,
+            "rerun_cost_error": str(exc),
+        }
+
+    return {
+        "status": "started", "activity_id": activity_id, "run_id": run_id,
+        **result,
+    }
 
 
 @router.post("/{slug}/analyses/stage/{stage}/run")
@@ -846,6 +904,24 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
         "auto_publishes": registry.has_assigned_egeria_project("repo", slug),
     }
     return result
+
+
+@router.get("/{slug}/depth-offer")
+async def get_depth_offer(slug: str) -> dict:
+    """The /next pane's DepthOffer (designer, 2026-09-13): the assessment/
+    analysis-tier analyses that have never run on this repo, priced with the
+    measured/declared/unknown split, plus a total across only the measured
+    ones. See `workflows/depth_offer.build_depth_offer` for the shape and
+    the reasoning — this route is a thin 404-translating adapter, same
+    pattern as GET /{slug}/analyses/last-activity above."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.depth_offer import build_depth_offer
+
+    registry = ProjectRegistry()
+    try:
+        return build_depth_offer(registry, slug)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{slug}/analyses/{analysis_id}/results")

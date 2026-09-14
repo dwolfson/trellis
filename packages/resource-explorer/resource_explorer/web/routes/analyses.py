@@ -148,6 +148,29 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     return get_questions(resource_type)
 
 
+@router.get("/{analysis_id}/cost")
+def get_analysis_cost(analysis_id: str) -> dict:
+    """The per-analysis `cost` object a DepthOffer entry carries
+    (workflows/depth_offer.run_cost_as_dict), as its own route — the /next
+    popover's per-analysis price-out. Resolved across every resource type
+    the local catalog knows about (repo/database/filesystem), so an id is
+    404 only when it's in none of them — known but never-run comes back 200
+    with basis 'declared'/'unknown', which is not an error, just an
+    unpriced answer.
+
+    Two segments (`/{analysis_id}/cost`), so it can never collide with the
+    single-segment `/{resource_type}` catch-all below regardless of
+    declaration order — unlike /perspectives and /question-catalog above,
+    which DO need to come first."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.depth_offer import find_cost_for_analysis
+
+    cost = find_cost_for_analysis(ProjectRegistry(), analysis_id)
+    if cost is None:
+        raise HTTPException(status_code=404, detail=f"Analysis {analysis_id!r} not found")
+    return cost
+
+
 #: Most resources one bulk read will serve. Beyond this the request is
 #: REFUSED with the cap named, rather than quietly truncated — a matrix that
 #: silently drops rows past 200 is worse than one that says it cannot.

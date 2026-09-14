@@ -1454,6 +1454,22 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_activity_log_ts "
                 "ON activity_log(ts DESC)"
             )
+            # publish_run_id: the outbox run_id (the annotation qualified_name
+            # prefix — see egeria_publisher.py's _create_annotations) a
+            # background/deferred run's activity row was tagged with when it
+            # reported `published: "queued"`. Lets
+            # complete_publish_run_if_done() find, by exact match, the one
+            # activity row to flip to `published: True` once every outbox row
+            # of that run (and its `::links` companion) has landed — without
+            # this, that lookup would have to scan every row's `detail` JSON.
+            # Empty for every row that never went through the deferred path.
+            existing_activity = self._get_table_columns(conn, "activity_log")
+            if "publish_run_id" not in existing_activity:
+                conn.execute("ALTER TABLE activity_log ADD COLUMN publish_run_id TEXT DEFAULT ''")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_log_publish_run_id "
+                "ON activity_log(publish_run_id)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_activity_log_entity "
                 "ON activity_log(entity_slug, entity_type)"
@@ -1983,6 +1999,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
             )
+            # DepthOffer (designer, 2026-09-13): the outcome of the /next
+            # pane's "run these never-run analyses" offer, recorded on the
+            # LATEST repo_disposition_history row for the url — once per
+            # verdict (record_depth_offer() enforces "once" by refusing a
+            # second write once this is non-null). NULL until offered.
+            if "depth_offer" not in self._get_table_columns(conn, "repo_disposition_history"):
+                conn.execute(
+                    "ALTER TABLE repo_disposition_history ADD COLUMN depth_offer TEXT DEFAULT NULL"
+                )
             # Locally-tracked sub-resources — the "Catalog" stage of the
             # repo scope-narrowing funnel (docs/repo-scope-narrowing-funnel.md,
             # D2). Built generically across resource types from the start,
@@ -4932,6 +4957,147 @@ class ProjectRegistry:
                 (egeria_guid, datetime.utcnow().isoformat(), row_id),
             )
 
+    def mark_outbox_deferred(self, row_id: int, note: str) -> None:
+        """Hand one claimed row back to 'pending' without burning an attempt,
+        recording WHY: its referent(s) — another annotation this row's
+        `AnnotationExtension` link points at — have not been applied yet.
+
+        Distinct from `mark_outbox_failed`: this is not a failed attempt (no
+        `attempts` increment, no exponential backoff), because the row is not
+        broken — it is early, and will very likely succeed on the very next
+        drain once its referent lands (rows drain in id order, so a run's own
+        annotations normally apply before its own links are even attempted).
+        Distinct from `release_outbox_claim`: that one is for an outage with
+        no Egeria client reachable at all and hands back every claimed row
+        identically; this is a per-row, expected-to-resolve-itself wait, and
+        keeps the reason on the row so Admin -> Publish Queue shows it rather
+        than a bare 'pending' with no explanation.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
+                "WHERE id=?",
+                (note[:2000], row_id),
+            )
+
+    def complete_publish_run_if_done(self, publish_run_id: str) -> bool:
+        """When every `egeria_outbox` row belonging to `publish_run_id` — its
+        annotations AND its evidence-link companion run (`f"{publish_run_id}
+        ::links"`, see egeria_publisher.py's `_link_evidence_outbox`/
+        `_create_annotations`) — has reached a terminal state (done or dead;
+        neither is retried again), resolve the activity row that reported
+        this run as `published: "queued"`:
+
+        * **All done, none dead** — the honest success case. Flips to
+          `published: True`, appends "Published at <ts>." to the summary,
+          and — if the row carries a `pending_published_record` (see
+          egeria_publisher.py's `publish()`) — makes the badge-table writes
+          (`record_published_annotation_types`/`record_published_analyses`)
+          NOW, at the point they are actually true, rather than at enqueue
+          time (which flipped the ☁ Published badge before anything had
+          reached Egeria — the bug this deferral exists to fix).
+        * **Any dead, and nothing still pending** — NOT success. Flips to
+          `published: False` (not a fifth state: `False` is what already
+          means "something needs a human", and it is what renders the ☁
+          Publish retry button — the right action here) and appends "N
+          Egeria write(s) failed permanently — see the Publish Queue" to the
+          summary. No badge-table writes: the run's outbox rows genuinely
+          did not all land, so the badge tables would be recording annotation
+          types this publish did not actually get to Egeria.
+        * **Still pending** — untouched; `published` stays `"queued"`.
+
+        Returns False (a no-op) when: no rows exist for this run_id (nothing
+        was ever enqueued under it, or a typo); some row is still pending,
+        failed-and-backing-off, or running (not done yet); no activity row
+        carries this `publish_run_id`; or that activity row's `published` is
+        no longer `"queued"` (already flipped by an earlier pass, or was
+        never the deferred path to begin with) — otherwise True, for either
+        of the two flips above. Idempotent either way: a later call finds
+        `published` no longer `"queued"` and does nothing.
+        """
+        if not publish_run_id:
+            return False
+        links_run_id = f"{publish_run_id}::links"
+        with self._conn() as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox "
+                "WHERE run_id IN (?, ?) AND status IN ('pending', 'failed', 'running')",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
+            if remaining:
+                return False
+            dead = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox "
+                "WHERE run_id IN (?, ?) AND status = 'dead'",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE run_id IN (?, ?)",
+                (publish_run_id, links_run_id),
+            ).fetchone()["n"]
+            if not total:
+                return False
+            row = conn.execute(
+                "SELECT id, summary, detail FROM activity_log "
+                "WHERE publish_run_id = ? ORDER BY ts DESC LIMIT 1",
+                (publish_run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                return False
+            if detail.get("published") != "queued":
+                return False
+
+            pending_record = detail.pop("pending_published_record", None)
+            base_summary = row["summary"] or ""
+            if dead:
+                # Not success: some element(s) exhausted their retries and
+                # will never apply on their own. False is the existing
+                # "needs a human" state — rendering the ☁ Publish retry
+                # button is the correct behaviour here, not a new state.
+                detail["published"] = False
+                detail["published_failed_count"] = dead
+                summary = f"{base_summary} {dead} Egeria write(s) failed permanently — see the Publish Queue."
+            else:
+                now = datetime.utcnow().isoformat()
+                detail["published"] = True
+                detail["published_at"] = now
+                summary = f"{base_summary} Published at {now}."
+                if pending_record:
+                    # Best-effort, same contract as the inline call site in
+                    # egeria_publisher.py's publish() — a bookkeeping failure
+                    # must never undo a publish that genuinely landed. The
+                    # error is recorded onto the SAME detail this call is
+                    # about to write, not merely logged, so it stays visible
+                    # to whoever reads this activity entry rather than only
+                    # to whoever thinks to check the server log.
+                    try:
+                        self.record_published_annotation_types(
+                            pending_record["slug"],
+                            set(pending_record.get("annotation_types") or []),
+                            pending_record.get("report_guid", ""),
+                        )
+                        self.record_published_analyses(
+                            pending_record["slug"],
+                            pending_record.get("analyses") or [],
+                            pending_record.get("report_guid", ""),
+                        )
+                    except Exception as exc:
+                        bookkeeping_error = str(exc)
+                        detail["pending_published_record_error"] = bookkeeping_error
+                        log.warning(
+                            "complete_publish_run_if_done: badge bookkeeping failed for "
+                            "run_id %s: %s", publish_run_id, bookkeeping_error,
+                        )
+            conn.execute(
+                "UPDATE activity_log SET detail = ?, summary = ? WHERE id = ?",
+                (json.dumps(detail), summary, row["id"]),
+            )
+        return True
+
     def get_outbox_guids(self, row_ids: list[int]) -> dict[int, str]:
         """Map row id -> the GUID it resolved to, for rows that reached
         'done'. A row absent from the returned dict is 'not done' — pending,
@@ -5683,15 +5849,75 @@ class ProjectRegistry:
 
     def get_disposition_history(self, github_url: str) -> list[dict]:
         """Every disposition ever set for this repo, oldest first — backs
-        the Disposition sub-tab's timeline view."""
+        the Disposition sub-tab's timeline view. `depth_offer` comes back
+        parsed (a dict) or None — never the raw JSON string."""
         key = self._normalize_github_url(github_url)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT disposition, reason, decided_by, decided_at "
+                "SELECT disposition, reason, decided_by, decided_at, depth_offer "
                 "FROM repo_disposition_history WHERE github_url = ? ORDER BY decided_at ASC",
                 (key,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("depth_offer")
+            d["depth_offer"] = json.loads(raw) if raw else None
+            result.append(d)
+        return result
+
+    def record_depth_offer(
+        self, github_url: str, outcome: str, analysis_ids: list[str],
+        run_ids: list[str], decided_by: str,
+    ) -> dict:
+        """Record the outcome of a DepthOffer pane on the LATEST
+        repo_disposition_history row for this url (designer, 2026-09-13).
+
+        Once per verdict: refuses (raises `ValueError`) a second write once
+        the latest row already carries a `depth_offer` — the pane only
+        offers when it reads null, but that is a UI courtesy, not the
+        enforcement; this is. Raises `LookupError` when there is no
+        disposition history row at all for this url (nothing to attach the
+        offer to — a verdict has to exist first). Both are ValueError's
+        cousins by convention (see `set_disposition`'s callers), kept as two
+        distinct exception TYPES rather than two message strings so a route
+        can map them to 404 vs 409 without parsing text.
+
+        `decided_by` is the caller's job to resolve (the signed-in user via
+        `run_queue.requested_by()`) — this method just stores whatever it is
+        given, the same trust boundary `enqueue_run`'s own `requested_by`
+        param already has."""
+        from datetime import UTC, datetime
+
+        from resource_explorer.workflows.depth_offer import DEPTH_OFFER_OUTCOMES
+
+        if outcome not in DEPTH_OFFER_OUTCOMES:
+            raise ValueError(
+                f"outcome must be one of {sorted(DEPTH_OFFER_OUTCOMES)}, got {outcome!r}"
+            )
+        key = self._normalize_github_url(github_url)
+        payload = {
+            "offered_at": datetime.now(UTC).isoformat(),
+            "outcome": outcome,
+            "analysis_ids": list(analysis_ids or []),
+            "run_ids": list(run_ids or []),
+            "decided_by": decided_by,
+        }
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, depth_offer FROM repo_disposition_history "
+                "WHERE github_url = ? ORDER BY id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"no disposition history for {github_url!r}")
+            if row["depth_offer"]:
+                raise ValueError(f"depth offer already recorded for {github_url!r}")
+            conn.execute(
+                "UPDATE repo_disposition_history SET depth_offer = ? WHERE id = ?",
+                (json.dumps(payload), row["id"]),
+            )
+        return payload
 
     # ── sub-resources — the local "Catalog" stage of the repo scope-
     # narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D4) ────────────
@@ -7531,6 +7757,61 @@ class ProjectRegistry:
             }
         return result
 
+    def analysis_run_activity_seconds(
+        self, analysis_ids: list[str], *, status: str = "ok", limit: int = 2000,
+    ) -> dict[str, list[tuple[float | None, float | None]]]:
+        """{analysis_id: [(steps_seconds, publish_seconds), ...]} from
+        `analysis_run` activity_log rows whose `detail` carries the per-phase
+        split — added when `execute_and_record_analysis` started writing
+        `steps_seconds`/`publish_seconds` into each terminal row's `detail`
+        (the designer's ruling, 2026-09-13: wall clock belongs where someone
+        is deciding, and always split). A row from before that change carries
+        neither key and is skipped here, the same way a row whose `detail`
+        fails to parse is skipped elsewhere in this class — absence of the
+        instrumentation is not a zero-second measurement.
+
+        Scoped to `analysis_ids` because every caller (today, just
+        `estimate_run_cost`) already knows exactly which ids it needs — an
+        analysis and its derived sources — cheaper than scanning every
+        analysis in the log. `status` defaults to `'ok'`, the terminal status
+        `execute_and_record_analysis` writes on success (`runs`' vocabulary
+        calls the same thing 'succeeded').
+
+        `publish_seconds` can be `None` inside an otherwise-qualifying row
+        (`publish_mode: "not-attempted"` — no assigned Egeria project, or no
+        annotations) — callers must drop those `None`s before taking a
+        publish median rather than let a not-attempted run count as an
+        instant one.
+        """
+        if not analysis_ids:
+            return {}
+        wanted = set(analysis_ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM activity_log WHERE operation = 'analysis_run' "
+                "AND status = ? ORDER BY ts DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        out: dict[str, list[tuple[float | None, float | None]]] = {
+            aid: [] for aid in analysis_ids
+        }
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            aid = detail.get("analysis_id")
+            if aid not in wanted:
+                continue
+            steps = detail.get("steps_seconds")
+            publish = detail.get("publish_seconds")
+            if steps is None and publish is None:
+                continue  # pre-split row — carries neither, not a data point
+            out[aid].append((steps, publish))
+        return out
+
     @staticmethod
     def _step_key_to_analysis_id() -> dict[str, str]:
         """Inverse of REPO_ANALYSIS_STEP_MAP."""
@@ -7547,8 +7828,19 @@ class ProjectRegistry:
         summary: str = "",
         detail: str = "",
         annotations: list[dict] | None = None,
+        publish_run_id: str = "",
     ) -> None:
         """Finalise a 'running' activity entry.
+
+        `publish_run_id` (added for background/deferred publish — run-in-
+        background plan): the outbox run_id this entry's publish was enqueued
+        under, when `detail`'s `published` is `"queued"`. Lets
+        `complete_publish_run_if_done()` find this exact row later and flip it
+        to `published: True`, without scanning every row's `detail` JSON.
+        Empty (the default) leaves the column untouched, same CASE-guarded
+        convention `summary`/`detail`/`annotations_json` already use — a
+        caller with nothing to add must not erase what the entry already
+        carried.
 
         `annotations` added 2026-09-02. Without it, every Analyses-card run
         wrote its entry with an empty annotations list while its summary said
@@ -7577,10 +7869,11 @@ class ProjectRegistry:
                 "UPDATE activity_log SET status = ?, "
                 "summary = CASE WHEN ? != '' THEN ? ELSE summary END, "
                 "detail  = CASE WHEN ? != '' THEN ? ELSE detail  END, "
-                "annotations_json = CASE WHEN ? != '' THEN ? ELSE annotations_json END "
+                "annotations_json = CASE WHEN ? != '' THEN ? ELSE annotations_json END, "
+                "publish_run_id = CASE WHEN ? != '' THEN ? ELSE publish_run_id END "
                 "WHERE id = ?",
                 (status, summary, summary, detail, detail,
-                 anns_json, anns_json, entry_id),
+                 anns_json, anns_json, publish_run_id, publish_run_id, entry_id),
             )
 
     # reconcile_orphaned_running_activity() lived here briefly (2026-08-26) —
