@@ -65,8 +65,13 @@ class TestBuildDepthOffer:
         for a in offer["analyses"]:
             assert set(a["cost"]) == {
                 "seconds", "steps_seconds", "publish_seconds", "basis",
-                "runs", "split_runs", "via", "sentence",
+                "runs", "split_runs", "via", "declared", "sentence",
             }
+            # The declared word is a field, not something fished out of the
+            # sentence's quotes; a declared-basis entry must carry it.
+            if a["cost"]["basis"] == "declared":
+                assert a["cost"]["declared"] in {"fast", "minutes", "async"}, a["cost"]
+                assert f"'{a['cost']['declared']}'" in a["cost"]["sentence"]
 
     def test_an_analysis_that_ran_drops_out_and_measured_before_flips(self, reg, slug):
         before = build_depth_offer(reg, slug)

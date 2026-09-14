@@ -42,6 +42,12 @@ def run_cost_as_dict(cost: RunCost) -> dict:
         "runs": cost.runs,
         "split_runs": cost.split_runs,
         "via": cost.via,
+        # The catalog's run_time word ("fast"/"minutes"/"async", or "" when
+        # the catalog has none) as its own field: a renderer that says
+        # "declared fast" must not have to fish the word out of the
+        # sentence's quotes (the /next pane did exactly that until this
+        # existed).
+        "declared": cost.declared or None,
         "sentence": cost.sentence(),
     }
 
