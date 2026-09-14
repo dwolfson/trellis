@@ -1707,6 +1707,7 @@ class SaveReport(BaseModel):
     facet: str = ""
     name: str = ""                     # typed name wins; else proposed server-side
     scope: str = "all"
+    corrects: str = ""                 # a correction: the superseded record's id
 
 
 @router.post("/{slug}/members/{analysis_id}/report")
@@ -1737,8 +1738,76 @@ def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request)
     name = body.name.strip() or default_name(project.display_name or slug, total=report["total"], names=names,
                                               facet=body.facet, metric=report["metric"],
                                               written_on=datetime.now(timezone.utc).isoformat())
-    rec = Curations(registry).create_report("repo", slug, author=author, name=name, report=report)
+    if body.corrects:
+        report["corrects"] = body.corrects
+    try:
+        rec = Curations(registry).create_report("repo", slug, author=author, name=name, report=report, corrects=body.corrects)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"record": rec}
+
+
+class RecordAct(BaseModel):
+    action: str                        # work_list | rfa | journal
+    rows: list[str] | None = None      # None = the whole report; a subset of the frozen snapshot otherwise
+    name: str = ""                     # the work list's / RFA's name; defaults to the record's
+    suggest_to: list[str] = Field(default_factory=list)
+    journal_id: str = ""               # journal: the entry the client wrote, so its use is recorded
+
+
+@router.post("/{slug}/records/{record_id}/act")
+def act_on_record(slug: str, record_id: str, body: RecordAct, request: Request) -> dict:
+    """The three acts on a report (REPORT-ACTS, 2026-09-14). A report's rows
+    are frozen, so an act on it is an act on what WAS true: the server acts
+    on the stored snapshot, never re-derives the list, and what it creates
+    points at the record -- the provenance line plus 'as recorded in "…"',
+    with the staleness carried in when the evidence has moved. The record
+    learns it was used; its content is never touched."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import act_line, out_of_date
+    from resource_explorer.work_lists import WorkLists
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to act on a report — a work item needs someone who raised it.")
+    if body.action not in ("work_list", "rfa", "journal"):
+        raise HTTPException(status_code=400, detail="action must be work_list, rfa or journal")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    cur = Curations(registry)
+    rec = cur.get(record_id)
+    if not project or not rec or rec["entity_slug"] != slug or rec.get("kind") != "report":
+        raise HTTPException(status_code=404, detail="No such report record")
+    rep = rec.get("report") or {}
+    stale = out_of_date(rep, last_run_at(registry, slug, rep.get("analysis_id", "")))
+    line = act_line(rec, rows=body.rows, out_of_date_sentence=stale)
+    name = body.name.strip() or rec["name"]
+    if body.action == "work_list":
+        wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
+                                        derived_from=f"record:{record_id}", rationale=line,
+                                        description=f'Raised from the report "{rec["name"]}".')
+        listed = WorkLists(registry).get(wl.get("slug")) if wl else None
+        target_name = (listed or {}).get("display_name") or name
+        out = cur.add_use(record_id, act="work_list", target=wl.get("slug") if wl else "", target_name=target_name, by=author)
+        return {"action": "work_list", "name": target_name, "work_list": wl.get("slug") if wl else None,
+                "provenance": line, "record": out}
+    if body.action == "rfa":
+        # The RFA points at the record, so whoever receives it opens exactly
+        # what the raiser was looking at. It never re-queries.
+        rfa_id = log_rfa(registry, "repo", slug, project.display_name or slug, "open", name, detail=line,
+                         analysis_name=rep.get("analysis_id", ""),
+                         items=[{"kind": "record", "record_id": record_id, "name": rec["name"]}])
+        out = cur.add_use(record_id, act="rfa", target=str(rfa_id), target_name=name, by=author)
+        return {"action": "rfa", "name": name, "rfa": rfa_id, "provenance": line, "record": out}
+    # journal: the entry was written by the client from a citation seed; only
+    # the use is recorded here. Nothing canned is written on the person's behalf.
+    out = cur.add_use(record_id, act="journal", target=body.journal_id, target_name="the journal", by=author)
+    return {"action": "journal", "provenance": line, "record": out}
 
 
 @router.get("/{slug}/records")

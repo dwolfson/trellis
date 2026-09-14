@@ -626,11 +626,17 @@ export const postDepthOfferOutcome = (githubUrl, { outcome, analysisIds = [], ru
 
 /** Save a report: the act of writing a list down. `members` null = the
  *  whole list. The server re-reads the list and snapshots it. */
-export const saveReport = (slug, analysisId, { question = '', metric = '', members = null, facet = '', name = '', scope = 'all' } = {}) =>
+export const saveReport = (slug, analysisId, { question = '', metric = '', members = null, facet = '', name = '', scope = 'all', corrects = '' } = {}) =>
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/report`,
-       { question, metric, members, facet, name, scope });
+       { question, metric, members, facet, name, scope, corrects });
 
 /** Both kinds, newest first, reports carrying out_of_date. */
 export const listRecords = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/records`);
 export const recordExportHref = (slug, id, fmt) =>
   `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
+
+/** The three acts on a report: work_list | rfa | journal. `rows` null = the
+ *  whole report. The server acts on the stored snapshot. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
+       { action, rows, name, suggest_to: suggestTo, journal_id: journalId });
