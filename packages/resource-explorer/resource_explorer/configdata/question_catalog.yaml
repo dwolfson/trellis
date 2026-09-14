@@ -989,9 +989,10 @@ repo_questions:
     checks: []
     note: language_file_classification
   answering_mechanism: Code Analysis
-  rationale: language_file_classification is one of the oldest analyses here and no question referenced
-    it.
-  catalog_history: ''
+  rationale: Counts files by language and type from the file inventory, and lines of code, comments and
+    docstrings across the source files; no fetch beyond the inventory Scouting already holds.
+  catalog_history: language_file_classification is one of the oldest analyses here and no question referenced
+    it until this row was added.
 - question: What data files does it ship, and what shape are they?
   stage: Analysis
   perspectives:
