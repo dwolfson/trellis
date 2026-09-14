@@ -5348,7 +5348,13 @@ Two things the current model gets wrong, both the same misreading of 0056 Resour
   libraries, not a library. Layer 1 is `SoftwareCapability` classified `Application`, proposed from
   deployment evidence (console entry point, Dockerfile, compose service); importable-only packages
   are not capabilities — component assets at layer 2 if catalogued, *probably not catalogued* by
-  default. Fix: the evidence classifier below + the Curate rows (/next).
+  default. Fix: the evidence classifier below + the Curate rows (/next). **Fixed 2026-09-14**:
+  `curate_plan.py`'s "what it is" column now reads the `deployment_evidence` findings below —
+  `application` proposes `SoftwareCapability::<name>`, `library` proposes an unticked, layer-2
+  `SoftwareComponentCandidate::<name>` ("probably not catalogued" by default) — rather than
+  labelling every distribution `SoftwareLibrary`. Not yet committed to Egeria either way: the
+  `components` curate-commit step is still `skipped` (`workflows/curate_commit.py`), so this was a
+  UI-only proposal never actually published — nothing to retract.
 - **Repository-as-`SourceControlLibrary` is the same misreading one level up.** The publisher
   creates one `SourceControlLibrary` per repository (`egeria_publisher.py`, since August); the
   classification names the *service* (GitHub), and the repository is what the service manages.
@@ -5357,7 +5363,12 @@ Two things the current model gets wrong, both the same misreading of 0056 Resour
   (one `SourceControlLibrary` for GitHub; repositories as the assets it manages via
   `CapabilityAssetUse`; existing elements re-parented or re-typed) and a decision on whether old
   SurveyReports move. Not blocking the layers work — layer 1/2 elements attach beneath whatever the
-  repository element is.
+  repository element is. **Decision (project owner, 2026-09-14):** this is a dev environment —
+  rather than a migration/retraction of already-published elements, wipe and redeploy Egeria fresh
+  once the publish code is corrected. Drops the "existing elements re-parented or re-typed" and
+  "old SurveyReports move" questions entirely; the one thing that still must land *before* the
+  redeploy is the publisher fix itself (`egeria_publisher.py`), or the fresh database is
+  repopulated with the same wrong structure. Not yet fixed — still open.
 
 Two Discovery-tier, zero-fetch analyses to build (measuring session): `deployment_evidence` —
 which distributions carry a console entry point / Dockerfile / compose service, hence which are
@@ -5367,3 +5378,45 @@ relationships to elements the platform already catalogues, never new ones. Layer
 the accepted architecture-recovery verdicts — the component column and wire diagram (designer's
 open item) are the layer-2 act. Depth is a decision: the catalogue pane offers layer 2 the way the
 DepthOffer pane offers deeper surveys, recorded on the catalogue record.
+
+### Open /next items after the stage-page and layers rounds (2026-09-14)
+
+One place to find everything still open across the two most recent rounds, so nothing gets lost
+between sessions. Not new work — a consolidation of items already named in `REPLY-CATALOGUE-IN-
+LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
+
+**Stage-page round (`#93`/`#90` shipped the spine; these are the deferred follow-ups):**
+- Survey & analyses' *analyses* listing — rows, description popovers (stage, declared run time,
+  availability, perspectives, ruleset link), `serves` breakdown. Backend (`analyses-index`, `#90`)
+  is live; the frontend row/popover was never built, only the *definitions* half (fetch-step
+  counts) shipped.
+- Points 6/7/4's clauses: the "other stages" fallback must say when the stage filter failed to
+  resolve rather than silently showing every definition; perspectives need to be sent/stated
+  consistently across every pane (Survey sends, `By analysis` says "not filtered", nothing-held
+  must read as "no perspective held" rather than an indistinguishable `0 of 12`); the health radar
+  chart can come back once it obeys "a visual may only show a number the row beneath it also
+  shows, from the same value, rounded the same way".
+- Findings-per-question and cross-analysis disagreements still live only on `By analysis` —
+  deliberately not folded into the Questions row's "the numbers behind this" disclosure (`#93`);
+  judged a bigger, riskier merge deserving its own review pass.
+
+**Component-review round (`#85`/`#86` shipped ports-as-a-column, sort, the diagram; this is open):**
+- `detect`/`coupling` (round two, item 1) — two perspectives propose different component sets, and
+  a verdict keyed by scope lands on both, so an accepted component under one proposal reads as
+  accepted under a proposal its curator never saw. Waiting on a SPEC from the designer, not on
+  engineering capacity.
+
+**Catalogue-in-layers round (`REPLY-CATALOGUE-IN-LAYERS.md`, 2026-09-14):**
+- `SoftwareLibrary`/package type error — **fixed**, this session (see the entry above).
+- `SourceControlLibrary`-per-repo type error — **still open**. Must land before the next Egeria
+  redeploy (owner's decision: wipe and redeploy fresh rather than migrate/retract existing
+  elements — see the entry above), or the fresh database is repopulated with the same wrong
+  structure.
+- Bulk-accept dialog copy — must not name `DeployedSoftwareComponent` (or any component-family
+  type) before it is verified; say "software components" in plain words instead until pinned.
+- The layer-2 catalogue-depth offer — `DepthOffer`'s three rules verbatim (not a nag: once per
+  catalogue record, in the pane, never a modal; not a gate: layer 1 is already recorded when it
+  appears; not a scold: states a fact about the record, not an instruction), with a real measured
+  price (Egeria writes: 1.5s median, p90 2.3s, post-redeploy) rather than DepthOffer's own "not yet
+  measured" placeholder. Outcome (accepted/declined/chose) recorded on the catalogue record, same
+  as a depth-offer decline.

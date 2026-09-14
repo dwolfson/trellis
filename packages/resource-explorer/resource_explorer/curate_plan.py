@@ -93,28 +93,57 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     disposition = (disp or {}).get("disposition") or "undecided"
 
     # ── what it is ─────────────────────────────────────────────────────
+    #
+    # `SoftwareLibrary` per distribution was a type error (docs/Backlog.md,
+    # "Catalogue in layers", 2026-09-14): in Egeria that classification names
+    # a server managing distribution of software modules (PyPI, Nexus) — the
+    # thing that manages libraries, not a library. Layer 1 is
+    # `SoftwareCapability` classified `Application`, proposed only where
+    # `deployment_evidence` found deployment evidence for the distribution;
+    # an importable-only distribution is not a layer-1 capability at all —
+    # at most a layer-2 component, offered unticked (`_row(candidate=False)`)
+    # since a package with no deployment evidence is "probably not
+    # catalogued" by default, not a claim this row can back.
     what_it_is: list[dict] = []
-    dist = registry.query_findings(slug, "distribution")
-    if dist:
-        for d in dist:
+    dep_ev = registry.query_findings(slug, "deployment_evidence")
+    dist_rows = [d for d in dep_ev if d.get("check_name") == "distribution"]
+    if dist_rows:
+        for d in dist_rows:
             det = _detail(d)
-            lab = det.get("name") or d["check_name"]
-            where = {"python": "PyPI", "javascript": "npm", "java": "Maven"}.get(det.get("ecosystem", ""), det.get("ecosystem", ""))
-            what_it_is.append(_row(
-                "SoftwareLibrary", f"Software Library · {lab}" + (f", on {where}" if d.get("label") == "published" else f" ({det.get('ecosystem','')}, not published)"),
-                evidence=d.get("summary", ""), source="manifest_parse", state="measured",
-                members={"analysis_id": "dependency_analysis"}, detail=det))
+            name = det.get("name") or "?"
+            ecosystem = det.get("ecosystem", "")
+            evidence_kinds = ", ".join(sorted({e.get("kind", "").replace("_", " ")
+                                                for e in (det.get("evidence") or []) if e.get("kind")}))
+            # `kind` doubles as the row's pick identity (app.js's
+            # `data-curate-pick`) -- a monorepo declares several
+            # distributions, so it must carry the name, not just the type,
+            # or two applications collapse onto one checkbox.
+            if d.get("label") == "application":
+                what_it_is.append(_row(
+                    f"SoftwareCapability::{name}", f"Software Capability · {name}",
+                    evidence=evidence_kinds or d.get("summary", ""), source="deployment_evidence",
+                    state="measured", members={"analysis_id": "dependency_analysis"}, detail=det))
+            else:  # "library" -- importable, no deployment evidence
+                what_it_is.append(_row(
+                    f"SoftwareComponentCandidate::{name}",
+                    f"Component, not catalogued by default · {name} — importable {ecosystem} "
+                    "distribution, no deployment evidence",
+                    evidence=d.get("summary", ""), source="deployment_evidence",
+                    state="measured", candidate=False, detail=det))
     else:
+        # Its own kind, not bare "SoftwareCapability" -- that string is the
+        # intended-use row's identity a few lines down, and both would
+        # otherwise collapse onto one checkbox in app.js's pick set.
         mp = _fact(layer, slug, "manifest_parse")
         manifests = ((mp.get("value") or {}).get("dependencies") or {}).get("manifests") or []
         if manifests:
             what_it_is.append(_row(
-                "SoftwareLibrary", "Software Library · name not read",
-                evidence=f"manifests present ({', '.join(manifests)}); the distribution name is read by the "
-                         "manifest_parse step from 2026-09-12 — re-survey to have it",
+                "SoftwareCapabilityCandidate", "Software Capability · deployment evidence not yet measured",
+                evidence=f"manifests present ({', '.join(manifests)}); run deployment_evidence to "
+                         "classify as an application or a component",
                 source="manifest_parse", state=mp.get("state", ""), detail={"manifests": manifests}))
         else:
-            what_it_is.append(_row("SoftwareLibrary", "Software Library?",
+            what_it_is.append(_row("SoftwareCapabilityCandidate", "Software Capability?",
                                    evidence="no dependency manifest found", source="manifest_parse",
                                    state=mp.get("state", "")))
 
