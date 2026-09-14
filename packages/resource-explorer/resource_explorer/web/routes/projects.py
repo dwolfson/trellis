@@ -1655,7 +1655,7 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
 # fail elsewhere. See curate_plan.py for the design rules held.
 
 class CurateSelection(BaseModel):
-    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareLibrary, Endpoint, ...
+    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareCapability::<name>, Endpoint, ...
     sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
     data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
     note: str = ""
