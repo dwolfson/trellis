@@ -129,3 +129,86 @@ class TestTheRoute:
         assert client.post("/api/projects/p/members/cve_scan/report", json={"members": ["nope"]}).status_code == 400
         monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: None)
         assert client.post("/api/projects/p/members/cve_scan/report", json={}).status_code == 401
+
+
+class TestTheThreeActsOnAReport:
+    """REPORT-ACTS (designer, 2026-09-14): an act on a report is an act on
+    what WAS true. Server acts on the snapshot; what it creates points at
+    the record; staleness is carried, not blocked; the record learns it was
+    used; the content stays frozen."""
+
+    def _report(self, client, registry):
+        TestTheRoute()._seed(registry)
+        return client.post("/api/projects/p/members/cve_scan/report",
+                           json={"metric": "advisories", "name": "High advisories with a fix"}).json()["record"]
+
+    def test_add_to_work_list_points_at_the_record_and_names_the_list(self, client, registry):
+        from resource_explorer.work_lists import WorkLists
+        rec = self._report(client, registry)
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "work_list", "name": "Dependencies to fix before 6.2"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["name"] == "Dependencies to fix before 6.2" and out["work_list"]
+        wl = WorkLists(registry).get(out["work_list"])
+        rationale = next(m for m in wl["members"] if m["entity_slug"] == "p")["rationale"]
+        assert rationale.endswith(' · as recorded in "High advisories with a fix"')
+        assert rationale.startswith("4 advisories · from cve_scan, run 20")
+        assert wl["derived_from"] == f"record:{rec['id']}"
+        # the record learned it was used, and its content did not move
+        uses = out["record"]["uses"]
+        assert uses[0]["act"] == "work_list" and uses[0]["target_name"] == "Dependencies to fix before 6.2" and uses[0]["by"] == "peterprofile"
+        assert out["record"]["report"] == rec["report"]
+
+    def test_a_row_subset_acts_on_the_snapshot_not_a_requery(self, client, registry):
+        rec = self._report(client, registry)
+        # the snapshot is what it is even if the findings change underneath
+        registry.upsert_finding("p", "cve_scan", [{"check_name": "x", "label": "low", "summary": "", "detail": {"advisory_ids": ["GHSA-NEW"], "severity": "LOW"}}])
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "rfa", "rows": ["GHSA-1", "GHSA-9", "GHSA-NEW"]})
+        assert r.status_code == 200, r.text
+        assert r.json()["provenance"].startswith("2 of 4 advisories · from cve_scan")
+        assert "GHSA-NEW" not in r.json()["provenance"]
+
+    def test_the_rfa_points_at_the_record(self, client, registry):
+        rec = self._report(client, registry)
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "rfa"})
+        assert r.status_code == 200 and r.json()["rfa"]
+        assert r.json()["record"]["uses"][0]["act"] == "rfa"
+
+    def test_staleness_is_carried_into_what_the_act_creates(self, client, registry):
+        from resource_explorer.activity_logger import log_analysis_run
+        rec = self._report(client, registry)
+        import time; time.sleep(1.1)
+        log_analysis_run(registry, "repo", "p", "P repo", "success", "again", "cve_scan")
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "work_list"})
+        assert r.status_code == 200
+        assert 'as recorded in "High advisories with a fix", whose evidence has since moved — cve_scan re-ran on' in r.json()["provenance"]
+
+    def test_the_journal_act_records_only_the_use(self, client, registry):
+        from resource_explorer.journal import Journal
+        rec = self._report(client, registry)
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "journal", "journal_id": "e1"})
+        assert r.status_code == 200
+        assert r.json()["record"]["uses"][0] | {"at": ""} == {"act": "journal", "target": "e1", "target_name": "the journal", "by": "peterprofile", "at": ""}
+        assert Journal(registry).entries("repo", "p") == []     # nothing canned was written on anyone's behalf
+
+    def test_anonymous_is_gated_with_a_sentence(self, client, registry, monkeypatch):
+        rec = self._report(client, registry)
+        monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: None)
+        r = client.post(f"/api/projects/p/records/{rec['id']}/act", json={"action": "work_list"})
+        assert r.status_code == 401 and "someone who raised it" in r.json()["detail"]
+
+
+class TestTheCorrection:
+    def test_a_correction_is_a_new_record_naming_what_it_corrects_and_the_old_one_learns_it(self, client, registry):
+        old = TestTheThreeActsOnAReport()._report(client, registry)
+        r = client.post("/api/projects/p/members/cve_scan/report",
+                        json={"metric": "advisories", "name": "High advisories — corrected", "corrects": old["id"]})
+        assert r.status_code == 200, r.text
+        new = r.json()["record"]
+        assert new["corrects"] == old["id"] and new["report"]["corrects"] == old["id"]
+        listed = {x["id"]: x for x in client.get("/api/projects/p/records").json()["records"]}
+        assert listed[old["id"]]["corrected_by"]["id"] == new["id"]
+        assert listed[old["id"]]["corrected_by"]["name"] == "High advisories — corrected"
+        assert listed[old["id"]]["report"] == old["report"]      # frozen
+        bad = client.post("/api/projects/p/members/cve_scan/report", json={"metric": "advisories", "corrects": "nope"})
+        assert bad.status_code == 400

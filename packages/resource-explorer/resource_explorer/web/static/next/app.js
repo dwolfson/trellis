@@ -53,6 +53,7 @@ import {
   saveReport,
   listRecords,
   recordExportHref,
+  actOnRecord,
   postDepthOfferOutcome,
   curateCommit,
   getCuration,
@@ -3078,10 +3079,14 @@ async function renderRecords(slug) {
           · <a class="text-accent-ink underline" href="${recordExportHref(slug, r.id, 'csv')}">csv</a>
           · <button data-record-open="${esc(r.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">rows${icon('chevron-right', { size: 12 })}</button></div>
         ${r.out_of_date ? `<div class="text-provenance text-state-warn">⚠ ${esc(r.out_of_date)}</div>` : ''}
+        ${r.corrects ? `<div class="text-provenance text-ink-muted">corrects an earlier record</div>` : ''}
         <div data-record-rows hidden class="mt-s1 text-provenance">${(rep.groups || []).map((g) => `
           <div class="text-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</div>
-          <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="font-mono text-ink">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
+          <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="flex items-baseline gap-s2 font-mono text-ink">
+            <input type="checkbox" data-record-row="${esc(row.name)}" class="shrink-0">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
             g.truncated ? `<li class="text-ink-muted">and more — the first ${g.rows.length} are shown</li>` : ''}</ul>`).join('')}</div>
+        ${recordActsHtml(r, rowCount(rep))}
+        ${recordUsesHtml(r)}
       </div>`;
     }
     // curateRecordHtml carries the author, date and state line itself.
@@ -3094,6 +3099,115 @@ async function renderRecords(slug) {
     const rows = host.querySelector(`[data-record="${b.dataset.recordOpen}"] [data-record-rows]`);
     if (rows) rows.hidden = !rows.hidden;
   }));
+  wireRecordActs(host, slug, recs);
+}
+
+function rowCount(rep) {
+  return (rep.groups || []).reduce((n, g) => n + (g.rows || []).length, 0);
+}
+
+/* ── The three acts on a report ──────────────────────────────────────────
+ *
+ * REPORT-ACTS (designer, 2026-09-14). The three acts on a report are not
+ * the three acts on a list: a list's selection is live, so an act on it is
+ * an act on what is true; a report's rows are frozen, so an act on it is
+ * an act on what WAS true. The footer defaults to the whole report -- the
+ * rows were already chosen once, that is what saving them was -- with row
+ * picking the secondary path. Each act points at the record; the server
+ * acts on the snapshot and never re-derives; the journal opens seeded with
+ * a citation, not a sentence; a stale record keeps all three live and what
+ * they create carries the staleness; the record learns it was used. */
+function recordActsHtml(r, n) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  return `<div data-record-acts class="mt-s2 text-caveat">
+    <div class="text-ink"><span data-record-scope>The whole report · <span class="tnum">${n}</span> row${n === 1 ? '' : 's'}</span>
+      <span class="text-ink-muted">· as recorded ${esc(String(r.requested_at).slice(0, 10))}${r.out_of_date ? ' · its evidence has since moved — what these create will say so' : ''}</span></div>
+    <div class="mt-[3px] flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
+      <button data-record-act="work_list" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">add to work list</button>
+      <button data-record-act="rfa" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">raise RFA</button>
+      <button data-record-act="journal" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">note in journal</button>
+      ${r.out_of_date && !r.corrected_by?.id ? `<button data-record-correct ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">write a correction</button>` : ''}
+      <span class="text-ink-muted">${me ? '· or pick rows above to act on some of them' : '· Sign in to act on a report — a work item needs someone who raised it.'}</span>
+      <span data-record-status class="text-ink-muted"></span>
+    </div>
+  </div>`;
+}
+
+/** 'Used · added to work list "…" · 09-14 08:12 · dwolfson' — a separate
+ *  append-only list attached to the record; and 'Corrected by "…" · 09-14'
+ *  in the same place. */
+function recordUsesHtml(r) {
+  const uses = (r.uses || []).map((u) => {
+    const what = u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
+      : u.act === 'rfa' ? `raised RFA “${esc(u.target_name)}”`
+      : u.act === 'journal' ? 'cited in the journal' : esc(u.act);
+    return `<div class="text-provenance text-ink-muted">Used · ${what} · <span class="tnum">${esc(String(u.at).slice(5, 16).replace('T', ' '))}</span> · ${esc(u.by)}</div>`;
+  });
+  if (r.corrected_by?.id) {
+    uses.push(`<div class="text-provenance text-ink-muted">Corrected by “${esc(r.corrected_by.name)}” · <span class="tnum">${esc(String(r.corrected_by.at).slice(5, 10))}</span> · ${esc(r.corrected_by.by || '')}</div>`);
+  }
+  return uses.length ? `<div class="mt-s1">${uses.join('')}</div>` : '';
+}
+
+function wireRecordActs(host, slug, recs) {
+  host.querySelectorAll('[data-record]').forEach((box) => {
+    const id = box.dataset.record;
+    const rec = recs.find((x) => x.id === id);
+    if (!rec || rec.kind !== 'report') return;
+    const status = box.querySelector('[data-record-status]');
+    const scope = box.querySelector('[data-record-scope]');
+    const picked = () => [...box.querySelectorAll('[data-record-row]:checked')].map((c) => c.dataset.recordRow);
+    const total = rowCount(rec.report || {});
+    box.querySelectorAll('[data-record-row]').forEach((c) => c.addEventListener('change', () => {
+      const n = picked().length;
+      if (scope) scope.innerHTML = n
+        ? `<span class="tnum">${n}</span> of <span class="tnum">${total}</span> rows picked`
+        : `The whole report · <span class="tnum">${total}</span> row${total === 1 ? '' : 's'}`;
+    }));
+    box.querySelectorAll('[data-record-act]').forEach((b) => b.addEventListener('click', async () => {
+      const action = b.dataset.recordAct;
+      const rows = picked().length ? picked() : null;
+      if (action === 'journal') {
+        // Seeded with a citation, not a sentence; the person writes the
+        // thought. The use is recorded when the entry lands.
+        const ta = $('journal-body');
+        if (!ta) { status.textContent = 'the journal is on this pane — scroll down'; return; }
+        ta.value = `Per “${rec.name}” (${String(rec.requested_at).slice(0, 10)}): `;
+        ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+        ta.dataset.citesRecord = id;
+        status.textContent = '→ the journal, below — write the thought after the citation';
+        return;
+      }
+      b.disabled = true; status.textContent = '…';
+      try {
+        const out = await actOnRecord(slug, id, { action, rows });
+        const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
+        status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
+        await renderRecords(slug);
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+      }
+    }));
+    box.querySelector('[data-record-correct]')?.addEventListener('click', async (ev) => {
+      // A correction is save-as-report with the superseded record's id
+      // attached: the whole current list, snapshotted now, naming what it
+      // corrects. The old record learns who corrected it.
+      const b = ev.currentTarget; b.disabled = true; status.textContent = 'writing the correction…';
+      try {
+        const rep = rec.report || {};
+        const out = await saveReport(slug, rep.analysis_id, {
+          question: rep.question || '', metric: rep.metric || '', members: null, facet: rep.facet || '',
+          name: `${rec.name} — corrected ${new Date().toISOString().slice(0, 10)}`, scope: 'all', corrects: id,
+        });
+        status.innerHTML = `<span class="text-state-ok">→ correcting record “${esc(out.record.name)}” · ${esc(out.record.report?.header || '')}</span>`;
+        await renderRecords(slug);
+      } catch (err) {
+        b.disabled = false;
+        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to write a correction' : `: ${esc(err.message)}`}</span>`;
+      }
+    });
+  });
 }
 
 function renderJournalWrite(slug) {
@@ -3130,6 +3244,14 @@ function renderJournalWrite(slug) {
     const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
     try {
       const out = await writeJournal(slug, body, targets);
+      const cites = $('journal-body').dataset.citesRecord;
+      if (cites) {
+        // The record learns it was cited. Best effort: the entry is real
+        // either way, and a failure here is not a failed write.
+        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }); } catch { /* the entry stands */ }
+        delete $('journal-body').dataset.citesRecord;
+        renderRecords(slug);
+      }
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
       b.disabled = false; b.textContent = 'Write';

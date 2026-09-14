@@ -43,3 +43,41 @@ class TestWhereTheyLive:
         assert "recordExportHref(slug, r.id, 'md')" in body and "recordExportHref(slug, r.id, 'csv')" in body
         assert "curateRecordHtml(r)" in body, "a catalogue record shows its steps inline"
         assert "No record has been written for this resource yet" in body
+
+
+class TestTheThreeActsOnAReport:
+    """REPORT-ACTS (2026-09-14). Verified in a browser: the whole-report
+    footer, '2 of 19 rows picked' on ticking, acts gated for anonymous with
+    the sentence, the journal seeded with the citation alone."""
+
+    def test_the_default_is_the_whole_report_and_rows_are_secondary(self):
+        app = _app()
+        body = app[app.index("function recordActsHtml("):app.index("function recordUsesHtml(")]
+        assert "The whole report · " in body
+        assert "or pick rows above to act on some of them" in body
+        assert "Sign in to act on a report — a work item needs someone who raised it." in body
+
+    def test_the_journal_opens_seeded_with_a_citation_not_a_sentence(self):
+        app = _app()
+        body = app[app.index("function wireRecordActs("):app.index("function wireDispositionPicker(") if "function wireDispositionPicker(" in app[app.index("function wireRecordActs("):] else None]
+        assert "ta.value = `Per “${rec.name}” (${String(rec.requested_at).slice(0, 10)}): `;" in body
+        assert "ta.dataset.citesRecord = id;" in body
+        # the use is recorded when the entry lands, never written for the person
+        assert "actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' })" in app
+
+    def test_a_failed_act_says_not_recorded_and_the_buttons_stay_live(self):
+        app = _app()
+        body = app[app.index("function wireRecordActs("):]
+        assert "not recorded" in body and "b.disabled = false;" in body
+
+    def test_uses_and_corrections_sit_on_the_record(self):
+        app = _app()
+        body = app[app.index("function recordUsesHtml("):app.index("function wireRecordActs(")]
+        assert "Used · " in body and "Corrected by “" in body
+
+    def test_a_correction_is_save_as_report_naming_what_it_corrects(self):
+        app = _app()
+        body = app[app.index("function wireRecordActs("):]
+        assert "corrects: id" in body and "data-record-correct" in body
+        acts = app[app.index("function recordActsHtml("):app.index("function recordUsesHtml(")]
+        assert "r.out_of_date && !r.corrected_by?.id" in acts, "offered on a stale, uncorrected record"

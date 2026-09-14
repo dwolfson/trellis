@@ -128,3 +128,31 @@ def to_csv(rec: dict) -> str:
         for row in g["rows"]:
             w.writerow([g["name"], row["name"], row.get("detail", ""), "yes" if g.get("truncated") else ""])
     return buf.getvalue()
+
+
+def act_line(rec: dict, *, rows: list[str] | None = None, out_of_date_sentence: str = "") -> str:
+    """What each act creates points at the record: the provenance line
+    promotion composes, plus 'as recorded in "<name>"', and -- when the
+    record's evidence has since moved -- the staleness carried into the
+    work item rather than a disabled button (REPORT-ACTS §2, §3). `rows`
+    narrows to a picked subset of the frozen snapshot; never a re-query."""
+    r = rec.get("report") or {}
+    names = [row["name"] for g in r.get("groups") or [] for row in g.get("rows") or []]
+    if rows is not None:
+        keep = set(rows)
+        names = [n for n in names if n in keep]
+    line = provenance_line(analysis_id=r.get("analysis_id", ""), run_at=r.get("run_at", ""),
+                           total=int(r.get("total") or len(names)), members=names,
+                           facet=r.get("facet", ""), metric=r.get("metric", ""))
+    line += f' · as recorded in "{rec.get("name", "")}"'
+    if out_of_date_sentence:
+        # "out of date — cve_scan re-ran on 09-12. No correcting record …"
+        moved = out_of_date_sentence.split(".")[0].replace("out of date — ", "")
+        line += f", whose evidence has since moved — {moved}"
+    return line
+
+
+def citation(rec: dict) -> str:
+    """The journal seed: a citation, not a sentence. The person writes the
+    thought; the machine supplies only this."""
+    return f'Per "{rec.get("name", "")}" ({str(rec.get("requested_at", ""))[:10]}): '
