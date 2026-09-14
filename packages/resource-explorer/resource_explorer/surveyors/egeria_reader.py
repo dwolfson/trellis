@@ -93,15 +93,17 @@ class EgeriaReader:
     # ── asset lookup ──────────────────────────────────────────────────────────
 
     def find_asset_guid(self, github_url: str) -> str | None:
-        """Return the Egeria GUID of the SourceControlLibrary for the given GitHub URL.
+        """Return the Egeria GUID of the repository Asset for the given GitHub URL.
 
-        Searches by the qualifiedName prefix `SourceControlLibrary::{github_url}`.
-        Returns None if not found.
+        Searches by the qualifiedName prefix `GitHubRepository::{github_url}`
+        (the repository is a plain Asset since the 2026-09-14
+        SourceControlLibrary correction -- see egeria_publisher.py's module
+        docstring). Returns None if not found.
         """
         self.connect()
-        qualified_name = f"SourceControlLibrary::{github_url}"
+        qualified_name = f"GitHubRepository::{github_url}"
         try:
-            results = self._asset_maker.find_software_capabilities(
+            results = self._asset_maker.find_assets(
                 search_string=qualified_name,
                 starts_with=True,
                 ignore_case=False,

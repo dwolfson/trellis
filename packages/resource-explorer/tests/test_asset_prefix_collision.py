@@ -9,6 +9,14 @@ Measured live 2026-08-25: `docling` and `docling_eval` shared one asset GUID, so
 one repo's survey reports were attaching to the other's catalog entry. Nothing
 raised, nothing logged an error; the catalog was simply wrong about which
 project it was describing.
+
+The repository is a plain `Asset` (`find_assets`/`create_asset`), not a
+`SourceControlLibrary`, since the 2026-09-14 correction in
+`egeria_publisher.py`'s module docstring — this test's fake carries both that
+and the GitHub `SourceControlLibrary` singleton's own
+`find_software_capabilities`/`create_software_capability`/
+`add_capability_asset_use` calls, since `_find_or_create_asset`'s create path
+now touches all of them.
 """
 from __future__ import annotations
 
@@ -31,13 +39,27 @@ class _Maker:
     def __init__(self, elements):
         self.elements = elements
         self.created = False
+        self.linked = None
 
-    def find_software_capabilities(self, **kw):
+    # Repository lookup/creation -- the Asset side of the 2026-09-14 fix.
+    def find_assets(self, **kw):
         return self.elements
 
-    def create_software_capability(self, *a, **kw):
+    def create_asset(self, *a, **kw):
         self.created = True
         return "newly-created-guid"
+
+    # The GitHub SourceControlLibrary singleton -- genuinely a
+    # SoftwareCapability, untouched by the fix. No existing singleton in
+    # any of this file's scenarios, so it always creates one.
+    def find_software_capabilities(self, **kw):
+        return []
+
+    def create_software_capability(self, *a, **kw):
+        return "github-scl-guid"
+
+    def add_capability_asset_use(self, capability_guid, asset_guid, **kw):
+        self.linked = (capability_guid, asset_guid)
 
 
 def _publisher(maker):
@@ -54,21 +76,24 @@ def _publisher(maker):
 def test_a_sibling_prefix_match_is_not_adopted():
     """docling must not take docling-eval's asset just because it sorted first."""
     maker = _Maker([
-        _element("SourceControlLibrary::https://github.com/docling-project/docling-eval", "eval-guid"),
-        _element("SourceControlLibrary::https://github.com/docling-project/docling-core", "core-guid"),
+        _element("GitHubRepository::https://github.com/docling-project/docling-eval", "eval-guid"),
+        _element("GitHubRepository::https://github.com/docling-project/docling-core", "core-guid"),
     ])
     pub = _publisher(maker)
     guid = pub._find_or_create_asset(_Result())
     assert guid != "eval-guid", "adopted a sibling repo's asset — the live docling bug"
     assert maker.created, "should have created its own asset instead"
+    assert maker.linked == ("github-scl-guid", "newly-created-guid"), \
+        "the new asset must be linked to the GitHub SourceControlLibrary"
 
 
 def test_the_exact_match_is_still_adopted():
     """The reuse path must keep working — this is not 'always create'."""
     maker = _Maker([
-        _element("SourceControlLibrary::https://github.com/docling-project/docling-eval", "eval-guid"),
-        _element("SourceControlLibrary::https://github.com/docling-project/docling", "mine"),
+        _element("GitHubRepository::https://github.com/docling-project/docling-eval", "eval-guid"),
+        _element("GitHubRepository::https://github.com/docling-project/docling", "mine"),
     ])
     pub = _publisher(maker)
     assert pub._find_or_create_asset(_Result()) == "mine"
     assert not maker.created, "created a duplicate instead of reusing the exact match"
+    assert maker.linked is None, "an already-existing asset must not be re-linked"

@@ -159,9 +159,9 @@ repo_questions:
     note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
       Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
   answering_mechanism: Egeria Queries
-  rationale: '"Known inventory" check — is there already a SourceControlLibrary asset for this repo, independent
-    of whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop
-    for data" search work.'
+  rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
+    whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
+    data" search work.'
   catalog_history: ''
 - question: Are there outstanding CVEs?
   stage: Analysis

@@ -531,7 +531,7 @@ def test_annotations_are_anchored_to_their_report():
 def test_the_shared_repo_asset_is_never_zoned_private():
     """§3.6, and the inverse failure to the annotation leak.
 
-    The asset is `SourceControlLibrary::<github_url>` — ONE per repo, shared by
+    The asset is `GitHubRepository::<github_url>` — ONE per repo, shared by
     every investigation referencing it. Zoning it private would hide a public
     repository from everyone else because one person added it to a personal
     investigation. A privacy feature that removes other people's access is a

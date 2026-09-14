@@ -1031,8 +1031,19 @@ async def catalog_elements(slug: str, request: CatalogRequest) -> CatalogResult:
     """Create Egeria DataSet assets for selected file type categories.
 
     Each selected category becomes a DataSet asset linked to the project's
-    SourceControlLibrary via a CapabilityAssetUse relationship.  The project
-    must have been published to Egeria first (egeria_asset_guid must be cached).
+    own Asset via a CapabilityAssetUse relationship.  The project must have
+    been published to Egeria first (egeria_asset_guid must be cached).
+
+    **Known gap, not fixed here (2026-09-14 SourceControlLibrary
+    correction, egeria_publisher.py's module docstring):** CapabilityAssetUse
+    requires its `software_capability_guid` end to be a genuine
+    SoftwareCapability, which the project's own asset (`egeria_asset_guid`)
+    no longer is — it is a plain Asset. The DataSet element below still
+    creates fine; only the link call is expected to fail, per-item, until
+    the right relationship (or a real SoftwareCapability to hang it from) is
+    picked against a live Egeria server rather than guessed at here. The
+    per-item try/except below already surfaces that failure as a real error
+    on the affected `CatalogItemResult` rather than swallowing it.
 
     Runs in a thread to avoid event loop conflict with pyegeria sync wrappers.
     """

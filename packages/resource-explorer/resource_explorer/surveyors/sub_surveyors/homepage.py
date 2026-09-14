@@ -46,7 +46,7 @@ of being frozen at registration.
 A found URL is persisted via registry.update_project_homepage() (see that
 method for why it writes projects.homepage_url rather than project_stats) and
 published to Egeria by EgeriaPublisher as an ExternalReference linked to the
-repo's SourceControlLibrary.
+repo's own Asset.
 """
 from __future__ import annotations
 

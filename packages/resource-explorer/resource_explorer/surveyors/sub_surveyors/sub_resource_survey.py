@@ -63,8 +63,10 @@ _CODEOWNERS_PATHS = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
 def ancestor_folder_paths(file_path: str) -> list[str]:
     """Immediate parent first, then each ancestor folder up to (but not
     including) the repo root — a depth-1 folder attaches directly to the
-    repo's SourceControlLibrary asset via CapabilityAssetUse, so it never
-    needs a synthetic root *folder* above it. The synthetic root ("") is
+    repo's own Asset (see egeria_publisher.py's `publish_sub_resources` for
+    the exact relationship, currently a flagged gap post-2026-09-14's
+    SourceControlLibrary correction), so it never needs a synthetic root
+    *folder* above it. The synthetic root ("") is
     only needed when the file itself has no real containing folder at all
     — i.e. it sits at the repo root. Public/module-level (not just an
     internal survey-heuristic detail) because the sub-resources catalog
@@ -294,7 +296,7 @@ class SubResourceSurveyor(BaseSurveyor):
         # Every worthy file needs a real FileFolder chain up to the repo
         # root — NestedFile strictly requires a FileFolder parent (D4/D5,
         # confirmed live: a file can never attach directly to the repo's
-        # SourceControlLibrary asset). This isn't limited to root-level
+        # own Asset). This isn't limited to root-level
         # files: a worthy nested file (e.g. "docs/SECURITY.md") whose
         # immediate parent folder wasn't itself worthy (e.g. "docs" has
         # only that one file -> too_small) still needs "docs" to exist as

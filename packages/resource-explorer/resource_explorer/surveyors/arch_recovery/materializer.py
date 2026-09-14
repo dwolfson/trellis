@@ -172,7 +172,7 @@ class ComponentMaterializer:
     def qualified_name_for(entity_type: str, entity_slug: str, scope_locator: str) -> str:
         """`SolutionComponent::{entity_type}::{entity_slug}::{scope_locator}` —
         same naming shape as every other qualifiedName in this codebase
-        (`SourceControlLibrary::{url}`, `SurveyReport::GitHubRepo::{slug}
+        (`GitHubRepository::{url}`, `SurveyReport::GitHubRepo::{slug}
         ::{ts}`): kind, then the path that makes it unique. scope_locator is
         the join key architecture_recovery findings already use (a
         component's path prefix), so this needs no separate identity."""

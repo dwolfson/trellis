@@ -1,14 +1,44 @@
 """
 Publishes a SurveyResult to Egeria via pyegeria.
 
-Element type: SourceControlLibrary — a SoftwareCapability, NOT an Asset.
-Supertypes, confirmed from the server 2026-08-21: ResourceManager,
-SoftwareCapability, Referenceable, OpenMetadataRoot. It therefore does not
-appear in Egeria's Asset Catalog views, and `AssetMaker.get_asset_by_guid`
-correctly cannot retrieve it — a fact that has already produced one bug (see
-resource_explorer/egeria_linkage.py). The method below is still called
-_find_or_create_asset and the registry column is still egeria_asset_guid;
-both names are inherited and both are misleading.
+**Element type, corrected 2026-09-14** (docs/Backlog.md, "Catalogue in
+layers" — the repository-as-SourceControlLibrary misreading of 0056 Resource
+Managers): a repository is not a resource MANAGER, it is what one manages.
+Since August, `_find_or_create_asset` created one `SourceControlLibrary` per
+repository — a SoftwareCapability, not an Asset, and a type naming the
+*service* (GitHub) rather than the thing the service holds. It is now:
+
+- **One `SourceControlLibrary` for GitHub itself** — a singleton, found or
+  created once per Egeria instance (`_find_or_create_github_scl`), cached
+  under `app_settings` (there is exactly one, so a per-project column would
+  be the wrong shape).
+- **Each repository is its own `Asset`** (generic — CapabilityAssetUse's own
+  type definition declares its asset end as `Asset`, not a specific
+  subtype; nothing in the open metadata types names a narrower "repository"
+  concept), qualifiedName `GitHubRepository::<github_url>`, linked to the
+  GitHub SourceControlLibrary via `CapabilityAssetUse` (`useType: OWNS`) at
+  creation. SurveyReports still attach to THIS element exactly as before —
+  `_create_survey_report`'s `parentGUID` is type-agnostic, so nothing
+  downstream of `_find_or_create_asset` needed to change.
+
+The repository being a genuine Asset now, rather than a SoftwareCapability,
+also resolves the bug named in `egeria_linkage.py`'s comment history:
+`AssetMaker.get_asset_by_guid` will actually work on it. That file still
+uses the type-agnostic `get_metadata_element_by_guid` rather than switching
+to `get_asset_by_guid` — safer regardless of an element's declared type, and
+not worth touching in the same change as the type correction itself.
+
+No migration for already-published elements: this is a dev environment, and
+the project owner's 2026-09-14 decision is to wipe and redeploy Egeria fresh
+rather than re-parent or re-type what is already there (docs/Backlog.md).
+This fix has to land *before* that redeploy, or the fresh database is
+repopulated with the same wrong structure — which is what makes it worth
+fixing now rather than folding into "schedule, do not hot-fix".
+
+The method below is still called _find_or_create_asset and the registry
+column is still egeria_asset_guid; both names are now accurate rather than
+inherited-and-misleading, which is a nice side effect of the fix rather than
+its point.
 """
 from __future__ import annotations
 
@@ -60,7 +90,8 @@ def _analyses_for_steps(step_keys) -> set:
 class EgeriaPublisher:
     """
     Converts a SurveyResult into Egeria API calls:
-      1. Find or create the SourceControlLibrary asset
+      1. Find or create the repository's Asset (and the GitHub
+         SourceControlLibrary it belongs to, via CapabilityAssetUse)
       2. Create a SurveyReport linked via ReportSubject
       3. Create one Annotation per SurveyResult.annotation
 
@@ -216,7 +247,7 @@ class EgeriaPublisher:
             # resource is private, and conflating them is a real bug this
             # nearly shipped with.
             #
-            # The asset is `SourceControlLibrary::<github_url>` — ONE per repo,
+            # The asset is `GitHubRepository::<github_url>` — ONE per repo,
             # shared by every investigation that references it. Zoning it
             # private would hide a public repository from everyone else in the
             # catalog because one person put it in a personal investigation:
@@ -377,9 +408,9 @@ class EgeriaPublisher:
                     ),
                     items=[
                         {
-                            "kind": "SourceControlLibrary",
+                            "kind": "GitHubRepository",
                             "display_name": result.project_display_name,
-                            "qualified_name": f"SourceControlLibrary::{result.github_url}",
+                            "qualified_name": f"GitHubRepository::{result.github_url}",
                             "guid": asset_guid,
                             "location": result.github_url,
                         },
@@ -527,13 +558,86 @@ class EgeriaPublisher:
 
     # ── asset registration ────────────────────────────────────────────────────
 
+    #: The singleton's qualifiedName. Freely changeable at will — nothing
+    #: keys on the string itself, only on the GUID `app_settings` caches
+    #: under `_GITHUB_SCL_SETTING_KEY`.
+    _GITHUB_SCL_QUALIFIED_NAME = "SourceControlLibrary::github.com"
+    _GITHUB_SCL_SETTING_KEY = "egeria.github_source_control_library_guid"
+
+    def _find_or_create_github_scl(self) -> str:
+        """Return the GUID of the one `SourceControlLibrary` representing
+        GitHub itself — genuinely a SoftwareCapability, unlike a repository.
+
+        Same verify-then-search-then-create shape as `_find_or_create_asset`,
+        but keyed on a fixed qualifiedName and cached as a single global
+        setting (`app_settings`) rather than a per-project column: there is
+        exactly one of these across the whole catalog.
+        """
+        qualified_name = self._GITHUB_SCL_QUALIFIED_NAME
+
+        if self._registry:
+            cached = self._registry.get_setting(self._GITHUB_SCL_SETTING_KEY)
+            if cached:
+                try:
+                    check = self._asset_maker.find_software_capabilities(
+                        search_string=qualified_name, starts_with=True,
+                        ignore_case=False, output_format="JSON",
+                    )
+                    if isinstance(check, list) and any(
+                        e.get("elementHeader", {}).get("guid") == cached for e in check
+                    ):
+                        return cached
+                    log.warning("Cached GitHub SourceControlLibrary GUID %s no longer in "
+                                "Egeria — will re-register", cached)
+                except Exception as exc:
+                    log.debug("GitHub SCL cache verification failed (will proceed): %s", exc)
+                    return cached  # network error — trust the cache rather than re-create
+
+        try:
+            existing = self._asset_maker.find_software_capabilities(
+                search_string=qualified_name, starts_with=True,
+                ignore_case=False, output_format="JSON",
+            )
+            match = next(
+                (e for e in (existing or [])
+                 if (e.get("properties") or {}).get("qualifiedName") == qualified_name),
+                None,
+            ) if isinstance(existing, list) else None
+            guid = (match or {}).get("elementHeader", {}).get("guid") if match else None
+            if guid:
+                if self._registry:
+                    self._registry.set_setting(self._GITHUB_SCL_SETTING_KEY, guid)
+                return guid
+        except Exception as exc:
+            log.debug("GitHub SCL search failed (will create): %s", exc)
+
+        props = {
+            "class": "SoftwareCapabilityProperties",
+            "typeName": "SourceControlLibrary",
+            "qualifiedName": qualified_name,
+            "displayName": "GitHub",
+            "description": "GitHub — the source control service every repository asset "
+                            "this catalog holds is an asset of.",
+            "url": "https://github.com",
+        }
+        if self.zone_names:
+            props["zoneMembership"] = self.zone_names
+        guid = self._asset_maker.create_software_capability(
+            body={"class": "NewElementRequestBody", "properties": props})
+        log.info("Created the GitHub SourceControlLibrary, GUID %s", guid)
+        if self._registry:
+            self._registry.set_setting(self._GITHUB_SCL_SETTING_KEY, guid)
+        return guid
+
     def _find_or_create_asset(self, result: SurveyResult) -> str:
-        """Return the GUID of a SourceControlLibrary asset for the GitHub repo.
+        """Return the GUID of the Asset representing this GitHub repository.
 
         Checks the registry cache first to avoid an unnecessary search call on
-        repeated --publish runs. Creates the asset when not already registered.
+        repeated --publish runs. Creates the asset — and links it to the
+        GitHub SourceControlLibrary via CapabilityAssetUse — when not already
+        registered.
         """
-        qualified_name = f"SourceControlLibrary::{result.github_url}"
+        qualified_name = f"GitHubRepository::{result.github_url}"
 
         # Check local cache first, but verify the GUID still exists in Egeria.
         # If the Egeria database was reset, the cached GUID is stale — clear it
@@ -542,7 +646,7 @@ class EgeriaPublisher:
             cached = self._registry.get_egeria_asset_guid(result.resource_slug)
             if cached:
                 try:
-                    check = self._asset_maker.find_software_capabilities(
+                    check = self._asset_maker.find_assets(
                         search_string=qualified_name,
                         starts_with=True,
                         ignore_case=False,
@@ -565,7 +669,7 @@ class EgeriaPublisher:
 
         # Search Egeria for an existing asset with this qualifiedName
         try:
-            existing = self._asset_maker.find_software_capabilities(
+            existing = self._asset_maker.find_assets(
                 search_string=qualified_name,
                 starts_with=True,
                 ignore_case=False,
@@ -616,18 +720,15 @@ class EgeriaPublisher:
                 topics_csv = stats.get("topics") or ""
 
         props: dict = {
-            "class": "SoftwareCapabilityProperties",
-            "typeName": "SourceControlLibrary",
+            "class": "AssetProperties",
+            "typeName": "Asset",
             "qualifiedName": qualified_name,
             "displayName": result.project_display_name,
             "description": f"GitHub repository: {result.github_url}",
-            "deployedImplementationType": "GitHub Repository",
-            "libraryType": "GitHub Repository",
             # The repo's own location, in the attribute Egeria defines for it.
-            # `url` is inherited from Referenceable (confirmed against the live
-            # type system, not assumed — SourceControlLibrary -> ResourceManager
-            # -> SoftwareCapability -> Referenceable, which declares it).
-            # Previously the git URL existed only inside additionalProperties and
+            # `url` is inherited from Referenceable (Asset -> Referenceable,
+            # same base SourceControlLibrary's chain went through). Previously
+            # the git URL existed only inside additionalProperties and
             # interpolated into the description text, so nothing generic could
             # find it: anything walking the catalog for "where does this live"
             # looks at `url`, not at a private extension key.
@@ -641,13 +742,34 @@ class EgeriaPublisher:
                 "primary_language": primary_language,
                 "license": license_name,
                 "topics": topics_csv,
+                # Descriptive, not a type constraint — `deployedImplementationType`
+                # and `libraryType` belong to SoftwareCapability/ResourceManager,
+                # not to a generic Asset, so they moved here rather than staying
+                # top-level properties a strict server-side schema might reject.
+                "deployed_implementation_type": "GitHub Repository",
             },
         }
         if self.zone_names:
             props["zoneMembership"] = self.zone_names
         body = {"class": "NewElementRequestBody", "properties": props}
-        guid = self._asset_maker.create_software_capability(body=body)
-        log.info("Created SourceControlLibrary GUID %s for %s", guid, result.resource_slug)
+        guid = self._asset_maker.create_asset(body=body)
+        log.info("Created GitHub repository asset GUID %s for %s", guid, result.resource_slug)
+        # Own it: GitHub is the service the repository asset belongs to,
+        # exactly once, at creation — a cache hit or a found-existing match
+        # above means this link already exists from a prior run.
+        try:
+            scl_guid = self._find_or_create_github_scl()
+            self._asset_maker.add_capability_asset_use(
+                scl_guid, guid,
+                body={"class": "NewRelationshipRequestBody",
+                      "properties": {"class": "CapabilityAssetUseProperties", "useType": "OWNS"}},
+            )
+        except Exception as exc:
+            # Best-effort: the repository asset is real and usable either way
+            # (the report attaches to IT, not to the SCL) -- a missing
+            # CapabilityAssetUse edge is a fact worth logging, not a reason to
+            # fail the publish over.
+            log.warning("Could not link %s to the GitHub SourceControlLibrary: %s", guid, exc)
         self._cache_asset_guid(result.resource_slug, guid)
         return guid
 
@@ -788,7 +910,7 @@ class EgeriaPublisher:
 
     def _publish_homepage_reference(self, result: SurveyResult, asset_guid: str) -> str:
         """Catalog the project's external website as an ExternalReference linked
-        to its SourceControlLibrary.
+        to the repository's Asset.
 
         The URL comes from HomepageSurveyor (projects.homepage_url), which tries
         GitHub's declared homepage, then the packaging manifests, then the README,
@@ -1170,8 +1292,23 @@ class EgeriaPublisher:
     ) -> dict[str, str]:
         """Publish specific, already-locally-catalogued sub-resources (repo
         only today — resource_type='repo') to Egeria as FileFolder/DataFile
-        assets, parented under the repo's SourceControlLibrary asset (or an
-        already-catalogued ancestor folder).
+        assets, parented under the repo's Asset (or an already-catalogued
+        ancestor folder).
+
+        **Known gap, not fixed here (2026-09-14 SourceControlLibrary
+        correction):** the root-level-folder case below still requests
+        `parentRelationshipTypeName: "CapabilityAssetUse"` against
+        `asset_guid`, which was type-valid when the repo's own element was a
+        SoftwareCapability (CapabilityAssetUse's end1) and is NOT valid now
+        that it is a generic Asset — model 0220's Files-and-Folders
+        relationships (FolderHierarchy, NestedFile) are strictly
+        FileFolder-to-FileFolder/DataFile, and neither is a documented
+        Asset-to-FileFolder edge. Left as a TODO rather than guessed at: the
+        right relationship needs checking against a live Egeria server, not
+        invented here. The failure mode is soft — `_create_sub_resource`'s
+        caller catches and logs, so a wrong relationship type here skips that
+        one root folder rather than failing the publish — but the read is
+        real and worth fixing before this path sees real use.
 
         This replaces the old auto-publish behavior (finding "worthy" ->
         immediately create in Egeria, with every publish() call). Egeria
@@ -1223,7 +1360,7 @@ class EgeriaPublisher:
 
         for entry in entries:
             path = entry["path"]
-            qualified_name = f"SourceControlLibrary::{github_url}::{path}"
+            qualified_name = f"GitHubRepository::{github_url}::{path}"
             try:
                 existing_guid = self._find_element_guid(qualified_name)
             except Exception as exc:
@@ -1244,7 +1381,11 @@ class EgeriaPublisher:
                 relationship_type = "NestedFile"
             elif path == "" or parent_path == "":
                 # A root-level (or the synthetic root itself) folder attaches
-                # directly to the repo's SourceControlLibrary asset.
+                # directly to the repo's Asset. "CapabilityAssetUse" is
+                # STALE here since the 2026-09-14 SourceControlLibrary fix
+                # (see this method's docstring) -- kept rather than guessed
+                # at a replacement; expect this specific create to fail soft
+                # (caught and logged by the caller) until it is.
                 parent_guid = asset_guid
                 relationship_type = "CapabilityAssetUse"
             else:

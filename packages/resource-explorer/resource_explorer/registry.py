@@ -88,7 +88,7 @@ class Project:
     subproject_path: str = ""   # relative subdir to index, e.g. "commands" — "" means full repo
     parent_slug: str = ""       # slug of the parent project when this is a sub-project
     extra_docs_paths: list[str] = field(default_factory=list)  # repo-relative paths outside subproject_path to ingest as docs/examples
-    egeria_asset_guid: str = ""  # GUID of the SourceControlLibrary asset in Egeria; "" = not yet published
+    egeria_asset_guid: str = ""  # GUID of this project's own Asset in Egeria; "" = not yet published
     governance_state: str = "certified"
     group_slug: str = ""  # slug of the umbrella project group this repo belongs to; "" = ungrouped
 
@@ -4669,7 +4669,12 @@ class ProjectRegistry:
     # ── Egeria integration ────────────────────────────────────────────────────
 
     def get_egeria_asset_guid(self, slug: str) -> str | None:
-        """Return the cached Egeria SourceControlLibrary GUID for a project, or None."""
+        """Return the cached GUID of this project's own Egeria Asset, or None.
+
+        Named for the repository's Asset since 2026-09-14 -- it cached a
+        SourceControlLibrary GUID before that was corrected (see
+        egeria_publisher.py's module docstring); the column name and this
+        method's name are unchanged, only what they point at."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             row = conn.execute(
@@ -4680,7 +4685,7 @@ class ProjectRegistry:
         return None
 
     def set_egeria_asset_guid(self, slug: str, guid: str) -> None:
-        """Persist the Egeria SourceControlLibrary GUID for a project."""
+        """Persist the GUID of this project's own Egeria Asset."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute(
