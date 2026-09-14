@@ -622,3 +622,15 @@ export const getDepthOffer = (slug) => get(`/api/projects/${encodeURIComponent(s
  *  outcome declined | accepted | chose, with the ids and run ids. */
 export const postDepthOfferOutcome = (githubUrl, { outcome, analysisIds = [], runIds = [] }) =>
   post('/api/discovery/disposition/depth-offer', { github_url: githubUrl, outcome, analysis_ids: analysisIds, run_ids: runIds });
+/* ── Records ────────────────────────────────────────────────────────────── */
+
+/** Save a report: the act of writing a list down. `members` null = the
+ *  whole list. The server re-reads the list and snapshots it. */
+export const saveReport = (slug, analysisId, { question = '', metric = '', members = null, facet = '', name = '', scope = 'all' } = {}) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/report`,
+       { question, metric, members, facet, name, scope });
+
+/** Both kinds, newest first, reports carrying out_of_date. */
+export const listRecords = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/records`);
+export const recordExportHref = (slug, id, fmt) =>
+  `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
