@@ -68,6 +68,9 @@ class TestTheBranches:
         by = {b["path"]: b for b in tr["branches"]}
         assert by["server"]["ports"] == 1 and by["server"]["own_ports"][0]["name"] == "8000"
         assert tr["ports"] == 2 and tr["wires"] == 1 and tr["topology"] == ""
+        assert tr["ports_owned"] == 1 and tr["ports_unowned"] == 1 and tr["components_with_ports"] == 1
+        assert tr["topology_totals"] == "2 ports across 1 component · 1 wire · 1 not attributable to any shown component, counted apart."
+        assert by["pyegeria"]["min_confidence"] == 30
         lv = {l["path"]: l for l in leaves(seeded, "p", "server")}
         assert lv["server"]["ports"][0]["protocol"] == "http"
 

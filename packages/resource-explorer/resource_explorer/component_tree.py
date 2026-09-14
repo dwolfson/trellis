@@ -127,7 +127,8 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         bpath = f"{pre}/{seg}" if pre else seg
         b = branches.setdefault(bpath, {"path": bpath, "name": seg, "components": 0, "low_confidence": 0,
                                         "types": Counter(), "ports": 0, "own": None, "children": 0,
-                                        "accepted": 0, "rejected": 0, "undecided": 0, "structural": False})
+                                        "accepted": 0, "rejected": 0, "undecided": 0, "structural": False,
+                                        "min_confidence": None})
         if c["path"] == bpath:
             b["own"] = c
             b["structural"] = bool(c.get("structural"))
@@ -138,8 +139,10 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         b["components"] += 1
         if c["path"] != bpath:
             b["children"] += 1
-        if (c.get("confidence") or 0) <= LOW_CONFIDENCE:
+        conf = c.get("confidence") or 0
+        if conf <= LOW_CONFIDENCE:
             b["low_confidence"] += 1
+        b["min_confidence"] = conf if b["min_confidence"] is None else min(b["min_confidence"], conf)
         if c.get("type"):
             b["types"][c["type"]] += 1
         b["ports"] += len(ports.get(c["path"], []))
@@ -164,6 +167,7 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         b["own_ports"] = ports.get(b["path"], [])
         out.append(b)
 
+    owned = sum(len(v) for v in ports.values())
     total = sum(1 for c in comps if not c.get("structural"))
     accepted = sum(1 for c in comps if not c.get("structural") and (resolve_verdict(c["path"], verdicts) or {}).get("verdict") == "accepted")
     return {
@@ -171,8 +175,28 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         "total_components": total, "accepted": accepted,
         "reviewed": sum(1 for c in comps if not c.get("structural") and verdicts.get(c["path"])),
         "ports": n_ports, "wires": n_wires,
+        # The foot's two ends: what was declared, and what could not be
+        # attributed to any shown component -- counted apart, never attached
+        # to a guess (the diagram's caption rule, one surface out).
+        "ports_owned": owned, "ports_unowned": n_ports - owned,
+        "components_with_ports": sum(1 for v in ports.values() if v),
         "topology": topology_sentence(registry, slug, n_ports, n_wires),
+        "topology_totals": totals_sentence(n_ports, n_wires, sum(1 for v in ports.values() if v), n_ports - owned),
     }
+
+
+def totals_sentence(n_ports: int, n_wires: int, n_components: int, unowned: int) -> str:
+    """'71 ports across 9 components · 3 not attributable to any shown
+    component, counted apart.' With 71 in play, a reader has to see the
+    total without adding up a column. '' when there is no topology."""
+    if not n_ports and not n_wires:
+        return ""
+    head = f"{n_ports:,} port{'s' if n_ports != 1 else ''} across {n_components:,} component{'s' if n_components != 1 else ''}"
+    if n_wires:
+        head += f" · {n_wires:,} wire{'s' if n_wires != 1 else ''}"
+    if unowned:
+        head += f" · {unowned:,} not attributable to any shown component, counted apart"
+    return head + "."
 
 
 def topology_sentence(registry: ProjectRegistry, slug: str, n_ports: int, n_wires: int) -> str:
