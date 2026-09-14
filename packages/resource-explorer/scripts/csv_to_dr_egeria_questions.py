@@ -95,7 +95,13 @@ REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
 # two Answering columns, is excluded from the Dr.Egeria output. It MUST stay in
 # this list: perspective columns are identified by elimination, so any column
 # missing from here silently becomes a phantom Perspective on every question.
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes"]
+# "Catalog History" (added to the CSV by #45, 2026-09-12) is provenance prose
+# for the question's own row, never a scope. It was missing here for two days
+# and the first regeneration after it (#58) emitted 17 "Link Perspective to
+# Question -> Perspective::Catalog History" blocks — the phantom the sentence
+# above warns about, caught before any heal executed them (the Perspective
+# does not exist on the platform, so each would have failed).
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History"]
 
 
 def _block(command: str, **fields: str) -> str:
