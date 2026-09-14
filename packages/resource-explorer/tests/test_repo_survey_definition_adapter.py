@@ -53,6 +53,10 @@ def test_all_step_keys_are_registered():
         # 2026-09-12: dependency_support — which curated technologies the
         # dependency list indicates, and whether Egeria holds a type for each.
         "repo_dependency_support",
+        # 2026-09-14: deployment_evidence / egeria_interfaces — layer-1
+        # deployment evidence and consumed-Egeria-interfaces, both zero-fetch
+        # ("Cataloguing in layers", project owner decision).
+        "repo_deployment_evidence", "repo_egeria_interfaces",
         "repo_security_features", "repo_ci_quality", "repo_maturity",
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
         "repo_foss_scorecard", "repo_cve_scan", "repo_community_support", "repo_interface_surface",

@@ -296,5 +296,16 @@ instance_keyed_not_checks:
   # happens to match for this repo — plus one `coverage` row. Same shape as
   # cve_scan: the instance set is the dependency list's, not a fixed list.
   - dependency_support
+  # One finding per DISTRIBUTION the repo declares (label = verdict:
+  # application/library/unknown), plus a coverage row — the keys are
+  # whatever repo_manifest_parse's DistributionParser found, not a fixed
+  # check list. Same shape as dependency_support/cve_scan.
+  - deployment_evidence
+  # One finding per consumed Egeria VIEW SERVICE and one per Dr.Egeria
+  # COMMAND FAMILY (both label-keyed on the instance name, check_name fixed
+  # as "view_service"/"dr_egeria_family"), plus a coverage row — the keys
+  # are whatever this repo's code symbols/doc paths matched, not a fixed
+  # check list.
+  - egeria_interfaces
   - architecture_recovery
   - sub_resource_survey

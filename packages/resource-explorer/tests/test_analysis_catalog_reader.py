@@ -172,7 +172,13 @@ class TestFilterByIntent:
                        # fetches nothing from the repository. The one Egeria call it
                        # makes is catalog consultation, not acquisition, and it
                        # declares requires_resources={} so the loop below holds.
-                       "dependency_support"} \
+                       "dependency_support",
+                       # deployment_evidence / egeria_interfaces (2026-09-14,
+                       # "Cataloguing in layers"): both read only
+                       # already-parsed findings/dependencies/symbols/file-
+                       # inventory rows and declare requires_resources={},
+                       # so the loop below holds for them too.
+                       "deployment_evidence", "egeria_interfaces"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):
