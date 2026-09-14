@@ -41,6 +41,7 @@ import {
   getDeclaredVsReceived,
   getResourceRuns,
   getSurveyCandidates,
+  listSurveyDefinitions,
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
@@ -3420,6 +3421,20 @@ async function loadSurveyPane() {
   const all = data.candidates || [];
   const stage = data.phase || state.stage;
 
+  // Point 2: step_count/fetch_steps live on the catalog-wide definitions
+  // list, not the candidates row -- joined here by qualified_name. Cached
+  // (listSurveyDefinitions), and its own failure must not blank the pane
+  // that already has real candidates to show; the fetch clause just stays
+  // off the row, same as when the field is absent for any other reason.
+  try {
+    const defs = await listSurveyDefinitions();
+    const byName = new Map(defs.map((d) => [d.qualified_name, d]));
+    for (const c of all) {
+      const d = byName.get(c.qualified_name);
+      if (d) { c.step_count = d.step_count; c.fetch_steps = d.fetch_steps; c.unregistered_steps = d.unregistered_steps; }
+    }
+  } catch { /* the row still has everything the candidates call gave it */ }
+
   // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
   // paragraph. The four-line cold-server warning becomes a chip that says
   // which scope you are looking at, with a retry.
@@ -6018,12 +6033,18 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   }
   if (slug !== state.selectedSlug) return;   // a faster click, or a different resource, won
   const rows = data.measurements || [];
-  if (btn) btn.textContent = `the numbers behind this ${rows.length} ›`;
   if (data.not_applicable) {
+    // Not_applicable is not zero -- "0" claims a count was taken and found
+    // empty, which is a different fact than "this analysis keeps no
+    // measurements table". The link keeps its un-counted label, and the
+    // reason is the server's own (verified live against
+    // re/stage-page-backend: "dependency_analysis records findings, not
+    // measurements -- see the findings list.") -- not a fabricated one.
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">${
-      esc(data.not_applicable === true ? `${analysisId} records measurements, not members — there is nothing to list.` : data.not_applicable)}</div>`;
+      esc(data.reason || `${analysisId} keeps no measurements table.`)}</div>`;
     return;
   }
+  if (btn) btn.textContent = `the numbers behind this ${rows.length} ›`;
   slot.innerHTML = `
     <table class="ml-[22px] mt-s2 w-full max-w-[60ch] border-collapse text-caveat">
       ${rows.map((m) => `<tr class="border-b border-rule">

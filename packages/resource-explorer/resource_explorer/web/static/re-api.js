@@ -380,6 +380,13 @@ export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = 
   get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates${
     phase ? `?phase=${encodeURIComponent(phase)}` : ''}`);
 
+/** Every authored Survey Definition, catalog-wide -- step_count/fetch_steps
+ *  live here, not on a candidates row: the candidates route asks "which
+ *  suit THIS resource" (Egeria-backed, per repo); this asks "what surveys
+ *  exist" (local, cacheable). Joined onto candidate rows by qualified_name
+ *  (stage-page round, point 2). */
+export const listSurveyDefinitions = () => cached('survey-definitions', () => get('/api/survey-definitions/definitions'));
+
 /** Launch one Survey Definition. `ref` is its qualified_name or guid. */
 export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
   post(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/run`,
