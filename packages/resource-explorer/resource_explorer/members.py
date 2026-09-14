@@ -28,6 +28,7 @@ import json
 from dataclasses import dataclass, field
 
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
 
 DEFAULT_LIMIT = 200
 
@@ -45,7 +46,7 @@ class MemberSet:
     analysis_id: str
     metric: str
     title: str
-    total: int
+    total: int | None
     scope: str
     scope_honoured: bool
     groups: list = field(default_factory=list)
@@ -53,6 +54,13 @@ class MemberSet:
     source: str = ""              # what was read: a table or the findings
     inventory: str = ""           # the short form: "6,423 files · 4,425 vendored"
     run_at: str = ""              # when the analysis this set came from last ran -- the server's date, not the browser's
+    #: True when this analysis produces no member-shaped rows at all — it
+    #: measures, it does not enumerate. `total` is None (not 0) in this
+    #: state: zero is a count, and there was nothing to count. See
+    #: `members_for`'s reader-selection comment for the signal this is
+    #: decided from.
+    not_applicable: bool = False
+    reason: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -61,7 +69,7 @@ class MemberSet:
             "groups": [{"name": g.name, "count": g.count, "members": g.members, "truncated": g.truncated}
                        for g in self.groups],
             "note": self.note, "source": self.source, "inventory": self.inventory,
-            "run_at": self.run_at,
+            "run_at": self.run_at, "not_applicable": self.not_applicable, "reason": self.reason,
         }
 
 
@@ -247,7 +255,12 @@ _READERS = {
 def last_run_at(registry: ProjectRegistry, slug: str, analysis_id: str) -> str:
     """When this analysis last ran, from the registry's own bookkeeping. The
     provenance line is composed on the server so it cannot be forged; a line
-    that took its date from the browser was not (review, 2026-09-12)."""
+    that took its date from the browser was not (review, 2026-09-12).
+
+    `get_analysis_last_run` credits DERIVED runs too (a survey run that
+    executed this analysis's steps under a different analysis_id's
+    analysis_run row) — using it here, rather than a narrower query, is what
+    makes "run date not recorded" honest for an analysis that just ran."""
     try:
         runs = registry.get_analysis_last_run("repo", slug) or {}
         return (runs.get(analysis_id) or {}).get("last_run_at", "") or ""
@@ -255,11 +268,62 @@ def last_run_at(registry: ProjectRegistry, slug: str, analysis_id: str) -> str:
         return ""
 
 
+def _is_metrics_only(analysis_id: str) -> bool:
+    """True when the analysis-kind registry says this analysis writes only
+    measurements — no finding rows, hence nothing member-shaped to list.
+
+    The signal is `AnalysisKindResults.render == "metrics"` in
+    `surveyors/repo_survey_definition_adapter.py`'s `ANALYSIS_KINDS`. That
+    field is the registry's own, purpose-built claim about shape — it exists
+    precisely so a generic surface (there, the Results dashboard; here, the
+    members rail) can switch on it without new per-kind code, and unlike
+    "does a query return rows today" it does not depend on what happened to
+    run. It is corroborated by `analysis_catalog.yaml`'s `annotation_types`
+    for the analyses it currently flags: repository_health carries only
+    `QualityScoreAnnotation`, architecture_summary only
+    `ResourceMeasureAnnotation`, rag_ingestion none at all — none of those
+    is a per-item finding type. `annotation_types` was not used as the
+    primary signal because it is not consistently binary across the catalog
+    (several findings-producing kinds also carry `ClassificationAnnotation`-
+    only lists), whereas `render` is exactly the frontend-shape tag this
+    decision needs.
+
+    render="findings_list" and render="custom" analyses with no registered
+    reader keep the existing findings fallback (case b) — "custom" already
+    covers every kind with member-shaped output today (dependency_analysis,
+    data_file_profiling, api_structure, architecture_recovery, ...) via its
+    own `_READERS` entry, and an unrecognised analysis_id (not in
+    ANALYSIS_KINDS at all) is treated the same way, preserving prior
+    behaviour for anything this registry doesn't know about."""
+    kind = ANALYSIS_KINDS.get(analysis_id)
+    if kind is None or kind.results is None:
+        return False
+    return kind.results.render == "metrics"
+
+
 def members_for(registry: ProjectRegistry, slug: str, analysis_id: str, metric: str = "",
                 scope: str = "public", limit: int = DEFAULT_LIMIT) -> MemberSet:
     scope = "all" if scope == "all" else "public"
     reader = _READERS.get((analysis_id, metric or None)) or _READERS.get((analysis_id, None))
-    ms = reader(registry, slug, scope, limit) if reader is not None else _findings_members(registry, slug, analysis_id, scope, limit)
+    if reader is not None:
+        ms = reader(registry, slug, scope, limit)
+    elif _is_metrics_only(analysis_id):
+        # Case (c): a registered analysis kind that writes only metrics.
+        # The old fallback read project_analysis_findings here and reported a
+        # measured, honest-looking zero for a table this analysis never
+        # writes — "0 findings" for repository_health, which runs and writes
+        # project_analysis_metrics every time. There is nothing to list, so
+        # `total` is None (uncounted), not 0 (counted and empty).
+        ms = MemberSet(analysis_id, metric or "members", "members", None, scope, False,
+                       not_applicable=True,
+                       reason=(f"{analysis_id.replace('_', ' ')} records measurements, not members — "
+                               "there is nothing to list."),
+                       source="project_analysis_metrics")
+    else:
+        # Case (b): no reader, but this kind's findings table is the right
+        # place to look (or the analysis is unknown to this registry) —
+        # unchanged behaviour.
+        ms = _findings_members(registry, slug, analysis_id, scope, limit)
     ms.run_at = last_run_at(registry, slug, analysis_id)
     return ms
 

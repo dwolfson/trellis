@@ -380,6 +380,13 @@ export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = 
   get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates${
     phase ? `?phase=${encodeURIComponent(phase)}` : ''}`);
 
+/** Every authored Survey Definition, catalog-wide -- step_count/fetch_steps
+ *  live here, not on a candidates row: the candidates route asks "which
+ *  suit THIS resource" (Egeria-backed, per repo); this asks "what surveys
+ *  exist" (local, cacheable). Joined onto candidate rows by qualified_name
+ *  (stage-page round, point 2). */
+export const listSurveyDefinitions = () => cached('survey-definitions', () => get('/api/survey-definitions/definitions'));
+
 /** Launch one Survey Definition. `ref` is its qualified_name or guid. */
 export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
   post(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/run`,
@@ -417,6 +424,25 @@ export const getSurveySummary = (slug, stage = '') =>
 export const getAnalysisTrend = (slug, analysisId, metric = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
     encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
+
+/**
+ * The fact behind a number (stage-page round, point 10): not the members a
+ * count counted, but the measurements an analysis recorded — `965 source
+ * files` alongside `175,716 lines_of_code`, each with a name, a value, and
+ * where a value opens (a members list, or nothing to open). One call fills
+ * both the in-pane table and the "the numbers behind this N" link's count.
+ */
+export const getMeasurements = (slug, analysisId) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
+    encodeURIComponent(analysisId)}/measurements`);
+
+/** Every analysis this repo could run — the row plus what feeds its popover
+ *  (stage, declared run time, availability, perspectives, ruleset link, the
+ *  full description) in one call, so a description popover needs no second
+ *  fetch (stage-page round, points 1-3). */
+export const getAnalysesIndex = (slug, stage = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index${
+    stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
 
 /** Recent activity for one resource — the runs, with their per-step detail. */
 /* ── Members: the things a count counted ─────────────────────────────────

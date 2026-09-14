@@ -1,0 +1,227 @@
+# pyegeria OMVS client class -> Egeria view service, curated from the
+# installed pyegeria package (measured 2026-09-14 against
+# .venv/lib/python3.13/site-packages/pyegeria/omvs/*.py).
+#
+# WHY THIS FILE EXISTS — same shape of problem as dependency_support.yaml's
+# header: a repository "consumes an Egeria interface" by IMPORTING AND
+# INSTANTIATING one of these classes, and neither fact is captured anywhere
+# zero-fetch can read. `project_code_symbols` (repo_symbol_extraction's own
+# table) holds only symbol DEFINITIONS — classes/functions/methods the
+# surveyed repo itself declares — never `import` statements and never call/
+# instantiation sites. So `egeria_interfaces.py` cannot see "this repo does
+# `from pyegeria.omvs import ClassificationExplorer`"; the closest zero-fetch
+# signal is a symbol whose own SIGNATURE, RETURN TYPE, or base-class list
+# (inheritance, from project_code_relationships) mentions one of these class
+# names as a type reference — which undercounts real usage (a plain
+# `self.client = ClassificationExplorer(...)` in `__init__` leaves no trace
+# at all in either table) and the classifier says so on every result via
+# `basis`.
+#
+# `view_service` is the human name; derived here from each module's own REST
+# path prefix (`/servers/{server}/api/open-metadata/<slug>`), title-cased.
+# `view_service` is null for a class Egeria does not expose as a distinct
+# view service under its own path — `RegisteredInfo`/`SolutionArchitect`
+# reuse another view service's path (asset-catalog / metadata-expert
+# respectively, both noted via `shares_path_with`), and
+# `ValidMetadataLists`/`ValidTypeLists` are helper subclasses of
+# `ValidMetadataManager`, mapped to the same view service as their parent.
+#
+# Excluded entirely (not client classes, or not view-service clients):
+# core_omag_server_config, full_omag_server_config (server config, not a view
+# service), platform_services/server_operations (platform/server admin
+# clients, a different Egeria layer), specification_properties (a properties
+# model, not a client).
+
+client_classes:
+
+  - client_class: ActionAuthor
+    module: action_author
+    view_service: "Action Author"
+    url_slug: action-author
+
+  - client_class: ActorManager
+    module: actor_manager
+    view_service: "Actor Manager"
+    url_slug: actor-manager
+
+  - client_class: AssetCatalog
+    module: asset_catalog
+    view_service: "Asset Catalog"
+    url_slug: asset-catalog
+
+  - client_class: AssetMaker
+    module: asset_maker
+    view_service: "Asset Maker"
+    url_slug: asset-maker
+
+  - client_class: MyProfile
+    module: my_profile
+    view_service: "My Profile"
+    url_slug: my-profile
+
+  - client_class: AutomatedCuration
+    module: automated_curation
+    view_service: "Automated Curation"
+    url_slug: automated-curation
+
+  - client_class: ClassificationExplorer
+    module: classification_explorer
+    view_service: "Classification Explorer"
+    url_slug: classification-explorer
+
+  - client_class: CollectionManager
+    module: collection_manager
+    view_service: "Collection Manager"
+    url_slug: collection-manager
+
+  - client_class: GlossaryManager
+    module: glossary_manager
+    view_service: "Glossary Manager"
+    url_slug: glossary-manager
+    # GlossaryManager(CollectionManager) — its own module and URL prefix
+    # both differ from CollectionManager's, so it is its own view service,
+    # not folded into CollectionManager's entry.
+
+  - client_class: CommunityMatters
+    module: community_matters_omvs
+    view_service: "Community Matters"
+    url_slug: community-matters
+
+  - client_class: ConnectionMaker
+    module: connection_maker
+    view_service: "Connection Maker"
+    url_slug: connection-maker
+
+  - client_class: DataDesigner
+    module: data_designer
+    view_service: "Data Designer"
+    url_slug: data-designer
+
+  - client_class: DataDiscovery
+    module: data_discovery
+    view_service: "Data Discovery"
+    url_slug: data-discovery
+
+  - client_class: DataEngineer
+    module: data_engineer
+    view_service: "Data Engineer"
+    url_slug: data-engineer
+
+  - client_class: DigitalBusiness
+    module: digital_business
+    view_service: "Digital Business"
+    url_slug: digital-business
+
+  - client_class: ExternalReferences
+    module: external_links
+    view_service: "External Links"
+    url_slug: external-links
+
+  - client_class: GovernanceOfficer
+    module: governance_officer
+    view_service: "Governance Officer"
+    url_slug: governance-officer
+
+  - client_class: LineageLinker
+    module: lineage_linker
+    view_service: "Lineage Linker"
+    url_slug: lineage-linker
+
+  - client_class: LocationArena
+    module: location_arena
+    view_service: "Location Arena"
+    url_slug: location-arena
+
+  - client_class: MetadataExpert
+    module: metadata_expert
+    view_service: "Metadata Expert"
+    url_slug: metadata-expert
+
+  - client_class: NotificationManager
+    module: notification_manager
+    view_service: "Notification Manager"
+    url_slug: notification-manager
+
+  - client_class: PeopleOrganizer
+    module: people_organizer
+    view_service: "People Organizer"
+    url_slug: people-organizer
+
+  - client_class: PrivacyOfficer
+    module: privacy_officer
+    view_service: "Privacy Officer"
+    url_slug: privacy-officer
+
+  - client_class: ProductManager
+    module: product_manager
+    view_service: "Product Manager"
+    url_slug: product-manager
+
+  - client_class: ProjectManager
+    module: project_manager
+    view_service: "Project Manager"
+    url_slug: project-manager
+
+  - client_class: ReferenceDataManager
+    module: reference_data
+    view_service: "Reference Data"
+    url_slug: reference-data
+
+  - client_class: RegisteredInfo
+    module: registered_info
+    view_service: "Asset Catalog"
+    url_slug: asset-catalog
+    shares_path_with: AssetCatalog
+
+  - client_class: RuntimeManager
+    module: runtime_manager
+    view_service: "Runtime Manager"
+    url_slug: runtime-manager
+
+  - client_class: SchemaMaker
+    module: schema_maker
+    view_service: "Schema Maker"
+    url_slug: schema-maker
+
+  - client_class: SecurityOfficer
+    module: security_officer
+    view_service: "Security Officer"
+    url_slug: security-officer
+
+  - client_class: SolutionArchitect
+    module: solution_architect
+    view_service: "Metadata Expert"
+    url_slug: metadata-expert
+    shares_path_with: MetadataExpert
+
+  - client_class: SubjectArea
+    module: subject_area
+    view_service: "Subject Area"
+    url_slug: subject-area
+
+  - client_class: TemplateManager
+    module: template_manager_omvs
+    view_service: "Template Manager"
+    url_slug: template-manager
+
+  - client_class: TimeKeeper
+    module: time_keeper
+    view_service: "Time Keeper"
+    url_slug: time-keeper
+
+  - client_class: ValidMetadataManager
+    module: valid_metadata
+    view_service: "Valid Metadata"
+    url_slug: valid-metadata
+
+  - client_class: ValidMetadataLists
+    module: valid_metadata_lists
+    view_service: "Valid Metadata"
+    url_slug: valid-metadata
+    shares_path_with: ValidMetadataManager
+
+  - client_class: ValidTypeLists
+    module: valid_type_lists
+    view_service: "Valid Metadata"
+    url_slug: valid-metadata
+    shares_path_with: ValidMetadataManager

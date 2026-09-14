@@ -131,6 +131,44 @@ Which curated technologies the dependency list indicates (psycopg2 -> PostgreSQL
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Repo Discovery Survey — Repo Deployment Evidence
+
+### Qualified Name
+GovActionProcessStep::RepoDiscoverySurvey::repo_deployment_evidence
+
+### Description
+Per declared distribution (repo_manifest_parse's output): which deployment evidence exists — a console entry point, a __main__.py, an (unambiguous) Dockerfile/compose/Helm chart, a web-framework dependency — and the verdict that evidence supports: application (evidence found), library (importable, none found), or unknown (no manifest read yet). Layer 1 of 'Cataloguing in layers' (project owner, 2026-09-14): before a distribution is proposed to Egeria as a SoftwareCapability classified Application, this is the evidence that verdict rests on.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_deployment_evidence |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Repo Discovery Survey — Repo Egeria Interfaces
+
+### Qualified Name
+GovActionProcessStep::RepoDiscoverySurvey::repo_egeria_interfaces
+
+### Description
+Which Egeria view services this repository consumes — one per pyegeria client class its code symbols reference (signature/return-type/base-class text; imports are not captured anywhere in this codebase, so this is a lower bound, not a count) — mapped via the curated configdata/egeria_view_services.yaml, plus Dr.Egeria doc-path evidence and a best-effort command-family guess from filenames. A repo with no pyegeria dependency reads nothing_found, not never-run.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_egeria_interfaces |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Repo Discovery Survey
@@ -224,6 +262,30 @@ GovActionProcessStep::RepoDiscoverySurvey::repo_interface_surface
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoDiscoverySurvey::repo_dependency_support
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_dependency_support
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_deployment_evidence
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_deployment_evidence
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_egeria_interfaces
 
 ### Guard
 Any

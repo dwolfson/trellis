@@ -380,16 +380,6 @@ Are there outstanding CVEs?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-Are there outstanding CVEs?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -904,16 +894,6 @@ What dependencies does this require?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-What dependencies does this require?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -977,16 +957,6 @@ ___
 
 ### Perspective Name
 Perspective::Admin
-
-### Question Name
-Do we already support these dependencies?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Do we already support these dependencies?
@@ -1075,16 +1045,6 @@ What deployment styles does this support?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-What deployment styles does this support?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -1138,16 +1098,6 @@ ___
 
 ### Perspective Name
 Perspective::Admin
-
-### Question Name
-Do we know what the cost to run it is?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Do we know what the cost to run it is?
@@ -1220,16 +1170,6 @@ ___
 
 ### Perspective Name
 Perspective::Admin
-
-### Question Name
-Is there a validation / deployment test for it?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Is there a validation / deployment test for it?
@@ -1687,16 +1627,6 @@ What kinds of integrations does it support?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-What kinds of integrations does it support?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2039,16 +1969,6 @@ How well documented is it?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-How well documented is it?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2138,16 +2058,6 @@ How is it supported?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-How is it supported?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2221,16 +2131,6 @@ ___
 
 ### Perspective Name
 Perspective::Admin
-
-### Question Name
-Is there a current, published, security analysis?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Is there a current, published, security analysis?
@@ -2497,16 +2397,6 @@ Is intellectual property (IP) provenance managed via CLA or DCO?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-Is intellectual property (IP) provenance managed via CLA or DCO?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2580,16 +2470,6 @@ ___
 
 ### Perspective Name
 Perspective::Admin
-
-### Question Name
-Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
@@ -2744,16 +2624,6 @@ How does the repository handle secrets, credentials, and sensitive configuration
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-How does the repository handle secrets, credentials, and sensitive configurations?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2813,16 +2683,6 @@ Does the repository publish a clear process for reporting security vulnerabiliti
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-Does the repository publish a clear process for reporting security vulnerabilities?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -2876,16 +2736,6 @@ ___
 
 ### Perspective Name
 Perspective::Architecture
-
-### Question Name
-Does the repository have automated build tooling in place?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 Does the repository have automated build tooling in place?
@@ -3525,7 +3375,7 @@ User Questions
 What languages and file types make up this repository?
 
 ### Description
-language_file_classification is one of the oldest analyses here and no question referenced it.
+Counts files by language and type from the file inventory, and lines of code, comments and docstrings across the source files; no fetch beyond the inventory Scouting already holds.
 
 ### Summary
 Language mix is the cheapest signal of whether this is something we can maintain in-house.
@@ -3641,16 +3491,6 @@ What data files does it ship, and what shape are they?
 
 ___
 
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
-
-### Question Name
-What data files does it ship, and what shape are they?
-
-___
-
 ## Link Element To Scope
 
 ### Target Element
@@ -3724,16 +3564,6 @@ ___
 
 ### Perspective Name
 Perspective::Architecture
-
-### Question Name
-What APIs and code symbols does it expose to callers?
-
-___
-
-## Link Perspective to Question
-
-### Perspective Name
-Perspective::Catalog History
 
 ### Question Name
 What APIs and code symbols does it expose to callers?

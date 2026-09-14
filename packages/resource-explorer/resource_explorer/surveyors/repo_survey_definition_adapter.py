@@ -82,6 +82,8 @@ from resource_explorer.surveyors.sub_surveyors import (
     LicenseClassifierSurveyor,
     RepoClassificationSurveyor,
     DependencySupportSurveyor,
+    DeploymentEvidenceSurveyor,
+    EgeriaInterfacesSurveyor,
     MaturitySurveyor,
     RagIngestionSurveyor,
     RepoConventionsSurveyor,
@@ -782,6 +784,35 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Reads project_dependencies (repo_manifest_parse's output) and the
         # curated mapping; asks Egeria's technology-type catalog once. No fetch
         # of the repository itself — Discovery tier under rule 17.
+    ),
+    "repo_deployment_evidence": StepInfo(
+        "repo_deployment_evidence", DeploymentEvidenceSurveyor,
+        "Per declared distribution (repo_manifest_parse's output): which "
+        "deployment evidence exists — a console entry point, a __main__.py, "
+        "an (unambiguous) Dockerfile/compose/Helm chart, a web-framework "
+        "dependency — and the verdict that evidence supports: application "
+        "(evidence found), library (importable, none found), or unknown (no "
+        "manifest read yet). Layer 1 of 'Cataloguing in layers' (project "
+        "owner, 2026-09-14): before a distribution is proposed to Egeria as "
+        "a SoftwareCapability classified Application, this is the evidence "
+        "that verdict rests on.",
+        ["ClassificationAnnotation"],
+        # Reads project_analysis_findings (kind="distribution", "repo_conventions"),
+        # project_dependencies, project_file_inventory — no fetch of its own.
+    ),
+    "repo_egeria_interfaces": StepInfo(
+        "repo_egeria_interfaces", EgeriaInterfacesSurveyor,
+        "Which Egeria view services this repository consumes — one per "
+        "pyegeria client class its code symbols reference (signature/"
+        "return-type/base-class text; imports are not captured anywhere in "
+        "this codebase, so this is a lower bound, not a count) — mapped via "
+        "the curated configdata/egeria_view_services.yaml, plus Dr.Egeria "
+        "doc-path evidence and a best-effort command-family guess from "
+        "filenames. A repo with no pyegeria dependency reads nothing_found, "
+        "not never-run.",
+        ["ClassificationAnnotation"],
+        # Reads project_dependencies, project_code_symbols,
+        # project_code_relationships, project_file_inventory — no fetch.
     ),
     "repo_conventions": StepInfo(
         "repo_conventions", RepoConventionsSurveyor,
@@ -1957,6 +1988,110 @@ def _dependency_support_headline(registry, slug: str) -> dict | None:
         label += " — Egeria could not be checked"
         return {"label": label, "status": "warn"}
     return {"label": label, "status": "info" if n_t else "warn"}
+
+
+def _deployment_evidence_results(registry, slug: str) -> dict:
+    """Per-distribution verdicts from the persisted findings — grouped by
+    verdict, each row carrying its evidence/could_not_check/consumers."""
+    rows = registry.query_findings(slug, "deployment_evidence")
+    if not rows:
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No deployment-evidence assessment yet — run the analysis."}}
+
+    distributions, coverage = [], {}
+    for r in rows:
+        detail = _parse_detail_json(r)
+        if r["check_name"] == "distribution":
+            distributions.append({
+                "name": detail.get("name"),
+                "verdict": r.get("label"),
+                "summary": r["summary"],
+                "ecosystem": detail.get("ecosystem"),
+                "evidence": detail.get("evidence") or [],
+                "consumers_in_repo": detail.get("consumers_in_repo"),
+                "could_not_check": detail.get("could_not_check") or [],
+                "confidence": r.get("confidence"),
+            })
+        elif r["check_name"] == "coverage":
+            coverage = {**detail, "summary": r["summary"], "label": r["label"]}
+
+    return {
+        "distributions": distributions,
+        "coverage": coverage,
+        "surveyed_at": rows[0].get("surveyed_at", "") if rows else "",
+        "message": ("Layer 1 evidence: a distribution reads 'application' only when console "
+                    "entry points, a __main__, unambiguous deployment files, or a web-framework "
+                    "dependency were found — 'library' is importable-with-no-evidence, and "
+                    "'unknown' means no manifest has been read yet."),
+    }
+
+
+def _deployment_evidence_headline(registry, slug: str) -> dict | None:
+    res = _deployment_evidence_results(registry, slug)
+    if "_status" in res:
+        return None
+    cov = res.get("coverage") or {}
+    if cov.get("label") == "no_manifest_read":
+        return {"label": "No declared distributions — repo_manifest_parse has not run", "status": "warn"}
+    n_app = cov.get("application", 0)
+    n_lib = cov.get("library", 0)
+    n_unk = cov.get("unknown", 0)
+    label = f"{n_app} application(s), {n_lib} librar{'y' if n_lib == 1 else 'ies'}"
+    if n_unk:
+        label += f", {n_unk} unknown"
+    return {"label": label, "status": "info" if n_app else "warn"}
+
+
+def _egeria_interfaces_results(registry, slug: str) -> dict:
+    """Consumed view services + Dr.Egeria command-family evidence from the
+    persisted findings."""
+    rows = registry.query_findings(slug, "egeria_interfaces")
+    if not rows:
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "No Egeria-interfaces assessment yet — run the analysis."}}
+
+    view_services, families, coverage = [], [], {}
+    for r in rows:
+        detail = _parse_detail_json(r)
+        if r["check_name"] == "view_service":
+            view_services.append({
+                "view_service": r.get("item_key", r["label"]), "summary": r["summary"],
+                "client_classes": detail.get("client_classes") or [],
+                "symbol_count": detail.get("symbol_count", 0),
+                "confidence": r.get("confidence"),
+            })
+        elif r["check_name"] == "dr_egeria_family":
+            families.append({
+                "family": r.get("item_key", r["label"]), "summary": r["summary"],
+                "paths": detail.get("paths") or [], "basis": detail.get("basis"),
+            })
+        elif r["check_name"] == "coverage":
+            coverage = {**detail, "summary": r["summary"], "label": r["label"]}
+
+    return {
+        "view_services": view_services,
+        "dr_egeria_families": families,
+        "coverage": coverage,
+        "surveyed_at": rows[0].get("surveyed_at", "") if rows else "",
+        "message": (coverage.get("basis_note") or
+                    "Consumption evidence is a lower bound: no import table exists in this "
+                    "codebase, so only symbols whose own text names a pyegeria client class "
+                    "are counted."),
+    }
+
+
+def _egeria_interfaces_headline(registry, slug: str) -> dict | None:
+    res = _egeria_interfaces_results(registry, slug)
+    if "_status" in res:
+        return None
+    cov = res.get("coverage") or {}
+    if cov.get("state") == "nothing_found":
+        return {"label": "No pyegeria dependency found", "status": "warn"}
+    n_vs = len(res.get("view_services") or [])
+    n_fam = len(res.get("dr_egeria_families") or [])
+    label = (f"{n_vs} Egeria view service{'s' if n_vs != 1 else ''}, "
+             f"{n_fam} Dr.Egeria command famil{'y' if n_fam == 1 else 'ies'}")
+    return {"label": label, "status": "info" if n_vs else "warn"}
 
 
 def _maturity_results(registry, slug: str) -> dict:
@@ -4219,6 +4354,20 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _dependency_support_results, None, "custom",
             headline_reader=_dependency_support_headline,
+        ),
+    ),
+    "deployment_evidence": AnalysisKind(
+        "deployment_evidence", ["repo_deployment_evidence"],
+        results=AnalysisKindResults(
+            _deployment_evidence_results, None, "custom",
+            headline_reader=_deployment_evidence_headline,
+        ),
+    ),
+    "egeria_interfaces": AnalysisKind(
+        "egeria_interfaces", ["repo_egeria_interfaces"],
+        results=AnalysisKindResults(
+            _egeria_interfaces_results, None, "custom",
+            headline_reader=_egeria_interfaces_headline,
         ),
     ),
     "architecture_diagram": AnalysisKind(

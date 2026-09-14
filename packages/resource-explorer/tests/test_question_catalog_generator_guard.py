@@ -32,3 +32,61 @@ def test_the_committed_catalog_is_what_its_csv_generates(tmp_path):
         f"--output {YAML.relative_to(ROOT)}\n"
         "-- never the YAML by hand."
     )
+
+
+QUESTIONS_DOC = ROOT / "docs" / "dr-egeria" / "questions" / "scouting-questions.md"
+QUESTIONS_SCRIPT = ROOT / "scripts" / "csv_to_dr_egeria_questions.py"
+FOUNDATIONS = ROOT / "docs" / "dr-egeria" / "foundations"
+
+
+def _perspectives_the_foundations_define() -> set[str]:
+    """Every `Perspective::<name>` the foundations batch creates — the only
+    names a `Link Perspective to Question` block may legitimately reference."""
+    names: set[str] = set()
+    for doc in FOUNDATIONS.glob("*.md"):
+        for line in doc.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("Perspective::"):
+                names.add(line)
+    return names
+
+
+def test_the_committed_questions_document_is_what_its_csv_generates(tmp_path):
+    """Same guard as the YAML, for the Dr.Egeria document the questions batch
+    executes — it is generated from the same CSV and its header says so."""
+    out = tmp_path / "scouting-questions.md"
+    r = subprocess.run([sys.executable, str(QUESTIONS_SCRIPT), str(CSV), "--output", str(out)],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert QUESTIONS_DOC.read_text(encoding="utf-8") == out.read_text(encoding="utf-8"), (
+        "docs/dr-egeria/questions/scouting-questions.md does not match what the CSV "
+        "generates. Edit the CSV, then run\n"
+        f"  python scripts/csv_to_dr_egeria_questions.py {CSV.relative_to(ROOT)} "
+        f"--output {QUESTIONS_DOC.relative_to(ROOT)}\n-- never the document by hand."
+    )
+
+
+def test_every_perspective_the_document_links_exists_in_the_foundations():
+    """The generator identifies perspective columns by elimination, so a CSV
+    column missing from its OPTIONAL_LEAD_COLUMNS becomes a phantom
+    Perspective on every question. Happened 2026-09-12: "Catalog History" was
+    added to the CSV (#45) and the next regeneration (#58) emitted 17
+    `Link Perspective to Question -> Perspective::Catalog History` blocks for a
+    Perspective that does not exist. Caught two days later by reading a diff,
+    not by any test — this is that test."""
+    defined = _perspectives_the_foundations_define()
+    assert defined, "no Perspective:: names found under docs/dr-egeria/foundations — the scan broke"
+    linked: set[str] = set()
+    text = QUESTIONS_DOC.read_text(encoding="utf-8")
+    for block in text.split("\n___\n"):
+        if "## Link Perspective to Question" not in block:
+            continue
+        after = block.split("### Perspective Name", 1)
+        if len(after) == 2:
+            linked.add(after[1].strip().splitlines()[0].strip())
+    phantoms = sorted(linked - defined)
+    assert not phantoms, (
+        f"scouting-questions.md links Perspectives the foundations never create: {phantoms}. "
+        "A CSV column is being read as a perspective — add it to OPTIONAL_LEAD_COLUMNS in "
+        "scripts/csv_to_dr_egeria_questions.py and regenerate."
+    )

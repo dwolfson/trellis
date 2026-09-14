@@ -130,6 +130,18 @@ class TestTheRoute:
         monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: None)
         assert client.post("/api/projects/p/members/cve_scan/report", json={}).status_code == 401
 
+    def test_a_metrics_only_analysis_refuses_to_save_a_report(self, client, registry):
+        # A "0 findings" report of repository_health (writes only
+        # project_analysis_metrics) would be exactly the false record
+        # REPORT-ACTS says must never be made -- the route must 422, not 200
+        # with an empty snapshot.
+        from resource_explorer.activity_logger import log_analysis_run
+        log_analysis_run(registry, "repo", "p", "P repo", "success", "ran", "repository_health")
+        registry.upsert_metric("p", "repository_health", {"quality_score": 90})
+        r = client.post("/api/projects/p/members/repository_health/report", json={"metric": "quality_score"})
+        assert r.status_code == 422, r.text
+        assert "not members" in r.json()["detail"]
+
 
 class TestTheThreeActsOnAReport:
     """REPORT-ACTS (designer, 2026-09-14): an act on a report is an act on

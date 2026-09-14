@@ -428,3 +428,40 @@ def test_freshness_skip_offers_running_anyway_in_background():
     assert re.search(r"12000\s*\)\s*;", body), (
         "_handleFreshnessSkip's toast duration changed away from 12s"
     )
+
+
+APP_JS = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next" / "app.js"
+
+
+def _open_members_not_applicable_branch() -> str:
+    """The `if (data.not_applicable) { ... }` block inside /next's
+    `openMembers` -- the rail's metrics-only-analysis branch (RE: a
+    metrics-only analysis has no members, 2026-09-14)."""
+    text = APP_JS.read_text()
+    start = text.index("async function openMembers(")
+    marker = "if (data.not_applicable)"
+    i = text.index(marker, start)
+    end = text.index("const groups = data.groups", i)
+    return text[i:end]
+
+
+class TestNextRailMetricsOnlyBranch:
+    """/next's app.js equivalent of the render-mode mirrors above: the rail
+    must render a metrics-only analysis (repository_health, and the like) as
+    one sentence in the list's slot, never a save-as-report offer over an
+    empty snapshot."""
+
+    def test_open_members_has_a_not_applicable_branch(self):
+        branch = _open_members_not_applicable_branch()
+        assert "data.reason" in branch
+
+    def test_the_branch_offers_no_report_and_no_whole_list_footer(self):
+        branch = _open_members_not_applicable_branch()
+        assert "data-report-whole" not in branch
+        assert "data-report-sel" not in branch
+        assert "The whole list" not in branch
+        assert "wireSelection" not in branch
+
+    def test_the_branch_returns_before_the_ordinary_groups_render(self):
+        branch = _open_members_not_applicable_branch()
+        assert branch.rstrip().endswith("return;\n  }") or "return;" in branch
