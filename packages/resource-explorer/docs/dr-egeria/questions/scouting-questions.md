@@ -284,7 +284,7 @@ User Questions
 Has this repository already been catalogued in Egeria and when?
 
 ### Description
-"Known inventory" check — is there already a SourceControlLibrary asset for this repo, independent of whether it's registered in Resource Explorer's own local registry. Ties to the Scouting "shop for data" search work.
+"Known inventory" check — is there already a catalog asset for this repo, independent of whether it's registered in Resource Explorer's own local registry. Ties to the Scouting "shop for data" search work.
 
 ### Summary
 Has someone already done this analysis? What did they learn?
