@@ -1691,3 +1691,96 @@ def curate_commit_status(slug: str, curation_id: str) -> dict:
     if not rec or rec["entity_slug"] != slug:
         raise HTTPException(status_code=404, detail="No such curation")
     return rec
+
+
+# ── Records: the report record beside the catalogue record ───────────────
+#
+# REPORT-RECORD-AND-TWO-CALLS C1-C4. One table, two kinds; a report is the
+# act of writing a list down. The server re-reads the members payload at
+# save time, so what is stored is a snapshot of names as they were -- never
+# the client's copy and never a query.
+
+class SaveReport(BaseModel):
+    question: str = ""                 # asked-as
+    metric: str = ""
+    members: list[str] | None = None   # None = the whole list
+    facet: str = ""
+    name: str = ""                     # typed name wins; else proposed server-side
+    scope: str = "all"
+
+
+@router.post("/{slug}/members/{analysis_id}/report")
+def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request) -> dict:
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at, members_for
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import build_report, default_name
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to save a report — a record needs an author.")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    payload = members_for(registry, slug, analysis_id, metric=body.metric, scope=body.scope, limit=1000).to_dict()
+    run_at = last_run_at(registry, slug, analysis_id)
+    report = build_report(question=body.question, slug=slug, display_name=project.display_name or slug,
+                          analysis_id=analysis_id, metric=body.metric or payload.get("metric", ""), run_at=run_at,
+                          facet=body.facet, members_payload=payload, selected=body.members)
+    if not report["shown"]:
+        raise HTTPException(status_code=400, detail="Nothing to record — the selection matched no members.")
+    from datetime import datetime, timezone
+    names = [r["name"] for g in report["groups"] for r in g["rows"]]
+    name = body.name.strip() or default_name(project.display_name or slug, total=report["total"], names=names,
+                                              facet=body.facet, metric=report["metric"],
+                                              written_on=datetime.now(timezone.utc).isoformat())
+    rec = Curations(registry).create_report("repo", slug, author=author, name=name, report=report)
+    return {"record": rec}
+
+
+@router.get("/{slug}/records")
+def list_records(slug: str) -> dict:
+    """Both kinds, newest first, each report carrying its out-of-date
+    sentence when its analysis has re-run since."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import out_of_date
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    out = []
+    for rec in Curations(registry).for_resource("repo", slug):
+        if rec.get("kind") == "report":
+            rec["out_of_date"] = out_of_date(rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")))
+        out.append(rec)
+    return {"records": out}
+
+
+@router.get("/{slug}/records/{record_id}")
+def get_record(slug: str, record_id: str, fmt: str = "") -> object:
+    """The record, or an export of it: `?fmt=md` / `?fmt=csv` carry the same
+    header sentence and provenance line. The record is the thing."""
+    from fastapi.responses import PlainTextResponse
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import out_of_date, to_csv, to_markdown
+
+    registry = ProjectRegistry()
+    rec = Curations(registry).get(record_id)
+    if not rec or rec["entity_slug"] != slug:
+        raise HTTPException(status_code=404, detail="No such record")
+    if rec.get("kind") == "report":
+        rec["out_of_date"] = out_of_date(rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")))
+    if fmt == "md":
+        return PlainTextResponse(to_markdown(rec), media_type="text/markdown",
+                                 headers={"Content-Disposition": f'attachment; filename="{record_id[:8]}.md"'})
+    if fmt == "csv":
+        return PlainTextResponse(to_csv(rec), media_type="text/csv",
+                                 headers={"Content-Disposition": f'attachment; filename="{record_id[:8]}.csv"'})
+    return rec

@@ -50,6 +50,9 @@ import {
   getCuratePlan,
   getRunCost,
   getDepthOffer,
+  saveReport,
+  listRecords,
+  recordExportHref,
   postDepthOfferOutcome,
   curateCommit,
   getCuration,
@@ -3013,6 +3016,11 @@ async function loadDispositionPane() {
     <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
     <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="text-caps uppercase tracking-caps text-ink">Records</span>
+      <span class="text-provenance text-ink-muted">what was catalogued, and what was written down · a snapshot, not a query</span>
+    </div>
+    <div id="records" class="mb-s4 text-caveat text-ink-muted">Reading the records…</div>
+    <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
       <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
     </div>
@@ -3041,6 +3049,51 @@ async function loadDispositionPane() {
   }
   renderJournalWrite(slug);
   await renderJournalEntries(slug);
+  await renderRecords(slug);
+}
+
+/** Records under the resource, beside the journal and the verdict trail --
+ *  not inside the journal, which is prose testimony and which a
+ *  thirty-two-row table fights. A catalogue record shows its steps inline
+ *  as Curate draws them; a report shows its header sentence. Same row
+ *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
+async function renderRecords(slug) {
+  const host = $('records');
+  if (!host) return;
+  let recs;
+  try { recs = (await listRecords(slug)).records || []; }
+  catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
+  host.innerHTML = recs.map((r) => {
+    const when = `<span class="tnum">${esc(ago(r.requested_at))}</span> <span class="tnum">(${esc(String(r.requested_at).slice(0, 10))})</span>`;
+    if (r.kind === 'report') {
+      const rep = r.report || {};
+      return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
+        <div class="text-answer text-ink">${esc(r.name)}</div>
+        <div class="text-caveat text-ink"><strong>${tnum(esc(rep.header || ''))}</strong></div>
+        <div class="text-provenance text-ink-muted">${tnum(esc(rep.provenance || ''))} · a snapshot, not a query</div>
+        <div class="text-provenance text-ink-muted">report · ${esc(r.author)} · ${when}${rep.question ? ` · asked as <em>${esc(rep.question)}</em>` : ''}
+          · <a class="text-accent-ink underline" href="${recordExportHref(slug, r.id, 'md')}">markdown</a>
+          · <a class="text-accent-ink underline" href="${recordExportHref(slug, r.id, 'csv')}">csv</a>
+          · <button data-record-open="${esc(r.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">rows${icon('chevron-right', { size: 12 })}</button></div>
+        ${r.out_of_date ? `<div class="text-provenance text-state-warn">⚠ ${esc(r.out_of_date)}</div>` : ''}
+        <div data-record-rows hidden class="mt-s1 text-provenance">${(rep.groups || []).map((g) => `
+          <div class="text-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</div>
+          <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="font-mono text-ink">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
+            g.truncated ? `<li class="text-ink-muted">and more — the first ${g.rows.length} are shown</li>` : ''}</ul>`).join('')}</div>
+      </div>`;
+    }
+    // curateRecordHtml carries the author, date and state line itself.
+    return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
+      <div class="text-answer text-ink">catalogued${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
+      ${curateRecordHtml(r)}
+    </div>`;
+  }).join('');
+  host.querySelectorAll('[data-record-open]').forEach((b) => b.addEventListener('click', () => {
+    const rows = host.querySelector(`[data-record="${b.dataset.recordOpen}"] [data-record-rows]`);
+    if (rows) rows.hidden = !rows.hidden;
+  }));
 }
 
 function renderJournalWrite(slug) {
@@ -4209,10 +4262,41 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
     const f = facetLabel();
     return `${project?.display_name || slug} — ${n} ${n === 1 ? singular(what) : what}${f ? `, ${f}` : ''}`;
   }
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const what = (metric || data.metric || 'members').replace(/_/g, ' ');
+  async function save(members, facet, name, status) {
+    status.textContent = '…';
+    try {
+      const out = await saveReport(slug, analysisId, {
+        question: `${what} of ${slug}`, metric: metric || data.metric || '', members, facet, name, scope: state.memberScope || memberScope(),
+      });
+      const r = out.record;
+      status.innerHTML = `<span class="text-state-ok-on-dark">→ record “${esc(r.name)}” · ${esc(r.report?.header || '')}</span>`;
+    } catch (err) {
+      status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'Sign in to save a report — a record needs an author.' : err.message)}</span>`;
+    }
+  }
   function render() {
     const sel = picks();
-    if (!sel.length) { footer.hidden = true; footer.innerHTML = ''; return; }
     footer.hidden = false;
+    if (!sel.length) {
+      // Nothing picked: the one act that makes sense on a list nobody has
+      // triaged is to write it down, so it is the one act offered before
+      // anything is picked (REPORT-RECORD-AND-TWO-CALLS C2).
+      footer.innerHTML = `
+        <div class="mb-[3px] text-caps text-chrome-ink">The whole list · <span class="tnum">${total}</span> ${esc(what)}
+          <span class="text-chrome-muted">· from <span class="font-mono">${esc(analysisId)}</span>${runAt ? ` · <span class="tnum">${esc(ago(runAt))}</span>` : ' · run date not recorded'} · a snapshot, not a query</span></div>
+        <input id="report-name" type="text" placeholder="${esc(project?.display_name || slug)} — ${total} ${esc(what)}, today"
+          class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink placeholder:text-chrome-muted">
+        <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
+          <button data-report-whole class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline" ${me ? '' : 'disabled'}>save as report</button>
+          <span class="text-chrome-muted">${me ? 'work list, RFA and journal need a selection' : 'sign in to save a report — a record needs an author'}</span>
+          <span id="promote-status" class="text-chrome-muted"></span>
+        </div>`;
+      footer.querySelector('[data-report-whole]')?.addEventListener('click', () =>
+        save(null, '', footer.querySelector('#report-name').value.trim(), footer.querySelector('#promote-status')));
+      return;
+    }
     const facet = facetLabel();
     footer.innerHTML = `
       <div class="mb-[3px] text-caps text-chrome-ink"><span class="tnum">${sel.length}</span> selected${facet ? ` · ${esc(facet)}` : ''}
@@ -4223,9 +4307,12 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
         <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
         <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
         <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
+        <button data-report-sel class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">save as report</button>
         <span id="promote-status" class="text-chrome-muted"></span>
       </div>`;
     const nameEl = footer.querySelector('#promote-name');
+    footer.querySelector('[data-report-sel]').addEventListener('click', () =>
+      save(picks().map((c) => c.dataset.pick), facetLabel(), nameEl.value.trim(), footer.querySelector('#promote-status')));
     nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
     footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
       const status = footer.querySelector('#promote-status');
@@ -4245,6 +4332,7 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       }
     }));
   }
+  render();   // the whole-list state, before any pick
 }
 
 async function openMembers({ slug, analysisId, metric = '', title = '' }) {
@@ -4302,7 +4390,7 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
     ${shown < data.total && !groups.some((g) => g.truncated)
       ? `<div class="mt-s1 text-caps text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${data.total}</span> listed; the rest are nested under what is shown</div>` : ''}
     <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>
-    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2" hidden></div>`;
+    <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2"></div>`;
 
   out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
   wireSelection(out, { slug, analysisId, metric, data });

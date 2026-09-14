@@ -260,6 +260,30 @@ def _ensure_schema(conn) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_resource_curation_entity "
                  "ON resource_curation(entity_type, entity_slug, requested_at)")
+    # One table, two kinds (REPORT-RECORD-AND-TWO-CALLS C1, 2026-09-13). A
+    # report is a catalogue record with no steps: a named, dated, authored
+    # record of what was true about a selection at a moment, with its
+    # provenance attached. `kind` and `name` were added after the table
+    # shipped; every pre-existing row is a catalogue.
+    cols = _columns(conn, "resource_curation")
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN kind TEXT NOT NULL DEFAULT 'catalogue'")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "report" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN report TEXT NOT NULL DEFAULT '{}'")
+
+
+def _columns(conn, table: str) -> set[str]:
+    try:
+        if getattr(conn, "is_postgres", False):
+            rows = conn.execute("SELECT column_name FROM information_schema.columns "
+                                "WHERE table_name = ? AND table_schema = current_schema()", (table,)).fetchall()
+            return {r["column_name"] for r in rows}
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {r["name"] for r in rows}
+    except Exception:
+        return set()
 
 
 @dataclass
@@ -295,6 +319,28 @@ class Curations:
                 "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, state, steps, activity_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (cid, entity_type, slug, author, now, json.dumps(selection), json.dumps(manifest), json.dumps(rows), activity_id))
+        return self.get(cid)
+
+    def create_report(self, entity_type: str, slug: str, *, author: str, name: str, report: dict) -> dict:
+        """A report record: the act of writing a list down. No steps; done
+        the moment it is written. `report` holds the question as asked, the
+        analysis id and its run_at, the facet, total and shown, and the rows
+        themselves -- a snapshot of names with their detail, never a stored
+        filter. Append-only: a correction is a new record naming what it
+        corrects (`corrects`), never an edit."""
+        if not author:
+            raise ValueError("a report needs an author")
+        if not name.strip():
+            raise ValueError("a report needs a name")
+        cid = uuid.uuid4().hex
+        now = _now()
+        with self._conn() as conn:
+            _ensure_schema(conn)
+            conn.execute(
+                "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, "
+                "state, steps, activity_id, kind, name, report, finished_at) "
+                "VALUES (?, ?, ?, ?, ?, '{}', '{}', 'done', '[]', '', 'report', ?, ?, ?)",
+                (cid, entity_type, slug, author, now, name.strip(), json.dumps(report), now))
         return self.get(cid)
 
     def get(self, cid: str) -> dict | None:
@@ -335,9 +381,11 @@ class Curations:
     @staticmethod
     def _decode(row) -> dict:
         d = dict(row) if not isinstance(row, dict) else dict(row)
-        for k in ("selection", "manifest", "steps"):
+        for k in ("selection", "manifest", "steps", "report"):
             try:
                 d[k] = json.loads(d.get(k) or ("[]" if k == "steps" else "{}"))
             except ValueError:
                 d[k] = [] if k == "steps" else {}
+        d.setdefault("kind", "catalogue")
+        d.setdefault("name", "")
         return d
