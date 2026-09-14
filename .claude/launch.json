@@ -28,6 +28,19 @@
         "8811"
       ],
       "port": 8811
+    },
+    {
+      "name": "egeria-advisor",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--package",
+        "egeria-advisor",
+        "egeria-advisor-web",
+        "--port",
+        "8880"
+      ],
+      "port": 8880
     }
   ]
 }
