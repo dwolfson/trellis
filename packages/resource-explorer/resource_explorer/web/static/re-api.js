@@ -640,3 +640,15 @@ export const recordExportHref = (slug, id, fmt) =>
 export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}) =>
   post(`/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
        { action, rows, name, suggest_to: suggestTo, journal_id: journalId });
+
+/* ── Component review ───────────────────────────────────────────────────── */
+
+/** The branches under `prefix` ('' = root): counts, type mix, low-confidence
+ *  count, declared ports, the resolved verdict. */
+export const getComponentTree = (slug, prefix = '') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/tree?prefix=${encodeURIComponent(prefix)}`);
+export const getComponentLeaves = (slug, branch) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=${encodeURIComponent(branch)}`);
+/** One verdict row per scope; accepted ones queue their materialisation. */
+export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
