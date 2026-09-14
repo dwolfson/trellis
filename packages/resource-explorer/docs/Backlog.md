@@ -5295,3 +5295,40 @@ only write it would ever need.
 updated in place). `docs/dr-egeria/questions/update-questions-2026-09-13.md` holds the 19 blocks,
 executed once (19/19), all 52 verified matching afterwards, GUIDs unchanged. Contains no Link
 commands, so it cannot duplicate anything; not in `_batch.json`.
+
+### Catalogue in layers — and two Egeria-type corrections (2026-09-14)
+
+**Decision (project owner, 2026-09-14):** catalogue a repository in layers. Layer 1: the top-level
+components it delivers (for egeria-trellis: RE, EA, Trellis core — coarse). Layer 2, only when
+someone wants to understand one of those more: its next level (RE-Web, CLI, agents, the finer
+shared Trellis components RE uses). No finer unless a specific need arrives. Expose the interfaces
+RE provides and its interactions with the Egeria platform through pyegeria and Dr.Egeria. Full
+type mapping in the design project: `CATALOGUE-IN-LAYERS.md`.
+
+Two things the current model gets wrong, both the same misreading of 0056 Resource Managers:
+
+- **`SoftwareLibrary` per Python package is a type error.** `curate_plan.py` proposes every
+  distribution in a workspace as `SoftwareLibrary`; in Egeria that classification means *a server
+  managing distribution of software modules for deployment* (PyPI, Nexus) — the thing that manages
+  libraries, not a library. Layer 1 is `SoftwareCapability` classified `Application`, proposed from
+  deployment evidence (console entry point, Dockerfile, compose service); importable-only packages
+  are not capabilities — component assets at layer 2 if catalogued, *probably not catalogued* by
+  default. Fix: the evidence classifier below + the Curate rows (/next).
+- **Repository-as-`SourceControlLibrary` is the same misreading one level up.** The publisher
+  creates one `SourceControlLibrary` per repository (`egeria_publisher.py`, since August); the
+  classification names the *service* (GitHub), and the repository is what the service manages.
+  Load-bearing: every published SurveyReport and annotation hangs off those elements, and the
+  resync/outbox key on their qualifiedNames. **Schedule, do not hot-fix**: needs a migration plan
+  (one `SourceControlLibrary` for GitHub; repositories as the assets it manages via
+  `CapabilityAssetUse`; existing elements re-parented or re-typed) and a decision on whether old
+  SurveyReports move. Not blocking the layers work — layer 1/2 elements attach beneath whatever the
+  repository element is.
+
+Two Discovery-tier, zero-fetch analyses to build (measuring session): `deployment_evidence` —
+which distributions carry a console entry point / Dockerfile / compose service, hence which are
+applications; and `egeria_interfaces` — which pyegeria client classes (→ Egeria view services) and
+which Dr.Egeria command families a repository uses, so RE's interactions with the platform are
+relationships to elements the platform already catalogues, never new ones. Layer 2 promotion is
+the accepted architecture-recovery verdicts — the component column and wire diagram (designer's
+open item) are the layer-2 act. Depth is a decision: the catalogue pane offers layer 2 the way the
+DepthOffer pane offers deeper surveys, recorded on the catalogue record.
