@@ -723,6 +723,48 @@ async def set_working_set(body: WorkingSetRequest) -> dict:
     return {"entity_type": body.entity_type, "entity_slug": body.entity_slug, "hidden": body.hidden}
 
 
+class DepthOfferDispositionRequest(BaseModel):
+    github_url: str
+    outcome: str
+    analysis_ids: list[str] = []
+    run_ids: list[str] = []
+
+
+@router.post("/disposition/depth-offer")
+async def record_depth_offer_route(body: DepthOfferDispositionRequest) -> dict:
+    """Record the outcome of the /next pane's DepthOffer (designer,
+    2026-09-13) on the latest disposition-history row for this url — once
+    per verdict. `decided_by` comes from the signed-in caller
+    (`run_queue.requested_by()`), never from the request body: a client
+    claiming to be someone else is exactly what a body field would let
+    through."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_queue import requested_by
+    from resource_explorer.workflows.depth_offer import DEPTH_OFFER_OUTCOMES
+
+    if body.outcome not in DEPTH_OFFER_OUTCOMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"outcome must be one of {sorted(DEPTH_OFFER_OUTCOMES)}, got {body.outcome!r}",
+        )
+    if body.outcome in ("accepted", "chose") and not body.analysis_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=f"outcome {body.outcome!r} requires a non-empty analysis_ids",
+        )
+
+    registry = ProjectRegistry()
+    try:
+        return registry.record_depth_offer(
+            body.github_url, body.outcome, body.analysis_ids, body.run_ids,
+            decided_by=requested_by(),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/disposition-history")
 async def get_disposition_history(github_url: str) -> list[dict]:
     """Every disposition ever set for a repo, oldest first — backs the
