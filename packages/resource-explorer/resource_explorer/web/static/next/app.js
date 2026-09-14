@@ -5791,16 +5791,16 @@ async function renderCurate(slug) {
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
         sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
       ${CURATE_COLUMNS.map((c) => `
-        <div class="mb-s1 mt-s3 flex items-baseline gap-s2">
-          <span class="font-heading text-question text-ink">${esc(c.title)}</span>
+        <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
+          <span class="font-heading text-name font-normal text-ink">${esc(c.title)}</span>
           ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
           ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
         </div>
         ${c.key === 'made_of'
           ? `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`
           : (plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
-      <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
-        <span class="font-heading text-question text-ink">what gets written</span>
+      <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
+        <span class="font-heading text-name font-normal text-ink">what gets written</span>
         <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
       </div>
       ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
@@ -5911,9 +5911,9 @@ function branchRowHtml(b) {
   // a branch whose only typed component is itself does not say it twice.
   const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
   const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
-  return `<div class="border-b border-rule py-s2" data-branch="${esc(b.path)}">
+  return `<div class="border-b border-rule py-[5px]" data-branch="${esc(b.path)}">
     <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
-      <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-answer text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
+      <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-caveat text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
       <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
       ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
       ${types ? `<span class="text-provenance text-ink-muted">· ${types}</span>` : ''}
@@ -5968,12 +5968,14 @@ async function renderComponentTree(slug, prefix = '') {
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
       / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
-    ${rows.map(branchRowHtml).join('')}
+    ${(state.componentShowAll ? rows : rows.slice(0, 8)).map(branchRowHtml).join('')}
+    ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
     ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
     <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>
     <div id="component-diagram" class="mt-s3"></div>`;
   host.querySelectorAll('[data-tree-sort]').forEach((b) => b.addEventListener('click', () => { state.componentSort = b.dataset.treeSort; renderComponentTree(slug, prefix); }));
+  host.querySelector('[data-tree-more]')?.addEventListener('click', () => { state.componentShowAll = true; renderComponentTree(slug, prefix); });
   host.querySelectorAll('[data-ports-open]').forEach((b) => b.addEventListener('click', () => {
     const br = tree.branches.find((x) => x.path === b.dataset.portsOpen);
     if (br) openPortsInRail(slug, br.path, br.own_ports || []);
