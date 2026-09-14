@@ -77,9 +77,47 @@ class TestFallbackAndScope:
         # scope is recorded but not honoured -- the caller can see it was
         # asked for and not applied, rather than assume it was
         assert m["scope"] == "public" and m["scope_honoured"] is False
+        assert m["not_applicable"] is False
 
     def test_bad_scope_is_coerced_not_trusted(self, db):
         assert members_for(db, "p", "interface_surface", scope="everything").to_dict()["scope"] == "public"
 
     def test_children_of_an_unknown_key_is_empty_not_an_error(self, db):
         assert children_for(db, "p", "cve_scan", "nope:x") == []
+
+
+class TestMetricsOnlyAnalysisHasNoMembers:
+    """The defect: `members ›` on a repository_health row opened the rail
+    with "MEMBERS for egeria_trellis · 0 …" -- a measured-looking zero from
+    project_analysis_findings, a table repository_health never writes. See
+    resource_explorer/members.py's `_is_metrics_only`."""
+
+    def test_metrics_only_analysis_is_not_applicable_with_reason_and_a_real_run_at(self, db):
+        from resource_explorer.activity_logger import log_analysis_run
+
+        log_analysis_run(db, "repo", "p", "P", "success", "ran repository_health", "repository_health")
+        db.upsert_metric("p", "repository_health", {"quality_score": 0})
+        m = members_for(db, "p", "repository_health").to_dict()
+        assert m["not_applicable"] is True
+        assert m["total"] is None                 # uncounted, not a measured zero
+        assert m["source"] == "project_analysis_metrics"
+        assert "repository health" in m["reason"] and "not members" in m["reason"]
+        assert m["run_at"]                         # the run just happened -- not blank
+
+    def test_a_findings_kind_analysis_with_no_reader_still_uses_the_fallback(self, db):
+        # security_scan writes project_analysis_findings and has no entry in
+        # members._READERS -- case (b), untouched by the metrics-only carve-out.
+        db.upsert_finding("p", "security_scan", [
+            {"check_name": "hardcoded_secret", "label": "high", "summary": "found one"},
+        ], surveyed_at="2026-09-01T00:00:00")
+        m = members_for(db, "p", "security_scan").to_dict()
+        assert m["not_applicable"] is False
+        assert m["total"] == 1 and m["source"] == "project_analysis_findings"
+
+    def test_a_registered_reader_is_unaffected(self, db):
+        db.upsert_finding("p", "cve_scan", [
+            {"check_name": "java:pkg-a", "label": "high", "summary": "1 advisory",
+             "detail": {"package": "pkg-a", "version": "1.0", "severity": "HIGH", "advisory_ids": ["GHSA-1"]}},
+        ], surveyed_at="2026-09-01T00:00:00")
+        m = members_for(db, "p", "cve_scan").to_dict()
+        assert m["not_applicable"] is False and m["total"] == 1

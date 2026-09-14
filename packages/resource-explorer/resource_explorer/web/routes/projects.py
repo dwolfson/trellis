@@ -1727,6 +1727,12 @@ def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     payload = members_for(registry, slug, analysis_id, metric=body.metric, scope=body.scope, limit=1000).to_dict()
+    if payload.get("not_applicable"):
+        # A "0 findings" report of a metrics-only analysis is exactly the
+        # false record REPORT-ACTS says must never be made — refuse rather
+        # than writing a report of a list that was never a list.
+        raise HTTPException(status_code=422, detail=payload.get("reason") or
+                            "This analysis records measurements, not members — there is nothing to report.")
     run_at = last_run_at(registry, slug, analysis_id)
     report = build_report(question=body.question, slug=slug, display_name=project.display_name or slug,
                           analysis_id=analysis_id, metric=body.metric or payload.get("metric", ""), run_at=run_at,
