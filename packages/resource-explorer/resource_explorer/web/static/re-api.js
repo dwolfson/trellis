@@ -610,3 +610,15 @@ export const getCuration = (slug, id) =>
  *  renders "not known" on any failure rather than withholding the action. */
 export const getRunCost = (analysisId) =>
   get(`/api/analyses/${encodeURIComponent(analysisId)}/cost`);
+
+/* ── Depth offer ────────────────────────────────────────────────────────── */
+
+/** The analyses at the analysis and assessment tiers that have never run
+ *  on this resource, each priced with the split, and a measured-only total
+ *  that names what it excludes. {slug, measured_before, analyses[], total}. */
+export const getDepthOffer = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/depth-offer`);
+
+/** Record what happened to the offer on the verdict it belongs to:
+ *  outcome declined | accepted | chose, with the ids and run ids. */
+export const postDepthOfferOutcome = (githubUrl, { outcome, analysisIds = [], runIds = [] }) =>
+  post('/api/discovery/disposition/depth-offer', { github_url: githubUrl, outcome, analysis_ids: analysisIds, run_ids: runIds });

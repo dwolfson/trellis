@@ -53,7 +53,20 @@ export function verdictLineHtml(r, esc) {
     rel ? ` · <span class="tnum">${esc(rel)}</span>` : ''}${
     when ? ` <span class="tnum">(${esc(String(when).slice(0, 10))})</span>` : ''}${
     r.decided_by ? ` · ${esc(r.decided_by)}` : ''}${
-    r.reason ? ` · <span class="text-ink">${esc(r.reason)}</span>` : ''}`;
+    r.reason ? ` · <span class="text-ink">${esc(r.reason)}</span>` : ''}${
+    depthOfferText(r.depth_offer, esc)}`;
+}
+
+/** " · depth offered, declined" / " · depth offered, 3 run" / " · depth
+ *  offered, chose 2" -- the offer's outcome lives on the verdict it was
+ *  made against, so a corpus of declines can be read off the trail. */
+export function depthOfferText(d, esc) {
+  if (!d || !d.outcome) return '';
+  const n = (d.analysis_ids || []).length;
+  const what = d.outcome === 'declined' ? 'declined'
+    : d.outcome === 'accepted' ? `<span class="tnum">${n}</span> run`
+    : d.outcome === 'chose' ? `chose <span class="tnum">${n}</span>` : esc(String(d.outcome));
+  return ` · <span class="text-ink-muted">depth offered, ${what}</span>`;
 }
 
 /** "changed once" / "changed 3 times" -- never `time(s)`. */

@@ -49,6 +49,8 @@ import {
   getMembers,
   getCuratePlan,
   getRunCost,
+  getDepthOffer,
+  postDepthOfferOutcome,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -2689,6 +2691,106 @@ function dispositionPickerHtml(p) {
  *  (FUNNEL-COST-RULINGS §4, 2026-09-13). */
 const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);
 
+/* ── The depth offer ─────────────────────────────────────────────────────
+ *
+ * FUNNEL-COST-RULINGS §3 and REPORT-RECORD-AND-TWO-CALLS §B (designer,
+ * 2026-09-13). Keep investigating should schedule the deeper surveys --
+ * with one condition: it OFFERS, it does not silently queue. At the moment
+ * a verdict of investigating or tracking is recorded, the pane shows what
+ * that verdict does not do, names the analyses at the analysis and
+ * assessment tiers that have never run on this resource, prices them with
+ * the split, and offers three buttons. Once per verdict, in the pane,
+ * never a modal; the verdict is already recorded when this appears and
+ * nothing waits on an answer. The decline is RECORDED on the verdict: a
+ * corpus of declines says depth is not worth its price here, which is a
+ * finding about the analyses, and it cannot be read off anything if the
+ * decline leaves no trace. Never on abandoned or ignored -- offering to
+ * spend at the moment someone decided to stop spending is the one place
+ * this reads as an argument. recommended and using only when the repo has
+ * never been measured: adopting something nobody looked at is the case
+ * worth a sentence. */
+function depthOfferApplies(disposition, measuredBefore) {
+  if (disposition === 'investigating' || disposition === 'tracking') return true;
+  if (disposition === 'recommended' || disposition === 'using') return !measuredBefore;
+  return false;
+}
+
+async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
+  if (!host || !p?.github_url) return;
+  const disposition = p.disposition || 'undecided';
+  if (disposition === 'abandoned' || disposition === 'ignored' || disposition === 'undecided') { host.innerHTML = ''; return; }
+  let offer;
+  try { offer = await getDepthOffer(p.slug); } catch { host.innerHTML = ''; return; }
+  if (!depthOfferApplies(disposition, !!offer.measured_before)) { host.innerHTML = ''; return; }
+  // Once per verdict: the latest verdict row carries the answer, if any.
+  if (!afterVerdict) {
+    try {
+      const rows = await getDispositionHistory(p.github_url);
+      const latest = [...(rows || [])].sort((a, b) => whenMs(b.decided_at) - whenMs(a.decided_at))[0];
+      if (!latest || latest.depth_offer) { host.innerHTML = ''; return; }
+    } catch { host.innerHTML = ''; return; }
+  }
+  const rows = offer.analyses || [];
+  if (!rows.length) { host.innerHTML = ''; return; }
+  const total = offer.total || {};
+  const priceCell = (c) => {
+    if (!c || c.basis === 'unknown') return `<span class="text-ink-muted">not priced</span>`;
+    if (c.basis === 'declared') return `<span class="text-ink-muted">declared ${esc(String(c.declared || c.sentence || ''))}</span>`;
+    if (c.split_runs) return `<span class="tnum">${esc(fmtSeconds(c.steps_seconds))}</span> to run · <span class="tnum">${esc(fmtSeconds(c.publish_seconds))}</span> to publish`;
+    return `about <span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">· not yet split</span>`;
+  };
+  host.innerHTML = `
+    <div data-depth-offer class="mt-s3 border-t border-rule pt-s2">
+      <div class="text-caveat text-ink">This verdict does not schedule anything. <span class="tnum">${rows.length}</span>
+        ${rows.length === 1 ? 'analysis' : 'analyses'} at the analysis and assessment tiers ${rows.length === 1 ? 'has' : 'have'} never run on
+        <span class="font-mono">${esc(p.slug)}</span>:</div>
+      <table class="mt-s1 w-full border-collapse text-provenance">
+        ${rows.map((a) => `<tr class="border-b border-rule">
+          <td class="py-[2px] pr-s2"><input type="checkbox" data-depth-pick="${esc(a.analysis_id)}" hidden></td>
+          <td class="py-[2px] pr-s3 font-mono text-ink">${esc(a.analysis_id)}</td>
+          <td class="py-[2px] pr-s3 text-ink-muted">${esc(a.tier || '')}</td>
+          <td class="py-[2px] text-ink">${priceCell(a.cost)}</td>
+        </tr>`).join('')}
+      </table>
+      <div class="mt-s1 text-provenance text-ink-muted">${tnum(esc(total.sentence || ''))}</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
+        <button data-depth="accepted" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Run these in background</button>
+        <button data-depth="choose" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Choose which</button>
+        <button data-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
+        <span data-depth-status class="text-provenance text-ink-muted"></span>
+      </div>
+    </div>`;
+  const box = host.querySelector('[data-depth-offer]');
+  const status = box.querySelector('[data-depth-status]');
+  const finish = async (outcome, ids) => {
+    const runIds = [];
+    for (const id of ids) {
+      try { const started = await runAnalysis(p.slug, id); if (started?.run_id) runIds.push(started.run_id); }
+      catch (err) { status.innerHTML = `<span class="text-accent-ink">${esc(id)}: ${esc(err.message)}</span>`; }
+    }
+    try {
+      await postDepthOfferOutcome(p.github_url, { outcome, analysisIds: ids, runIds });
+    } catch (err) {
+      status.innerHTML = `<span class="text-accent-ink">recorded locally only: ${esc(err.message)}</span>`;
+      return;
+    }
+    box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
+      outcome === 'declined' ? 'declined' : `<span class="tnum">${ids.length}</span> queued in the background`} · on the verdict's record</div>`;
+    renderDispositionHistory(p.github_url);
+  };
+  box.querySelector('[data-depth="accepted"]').addEventListener('click', () => finish('accepted', rows.map((a) => a.analysis_id)));
+  box.querySelector('[data-depth="declined"]').addEventListener('click', () => finish('declined', []));
+  box.querySelector('[data-depth="choose"]').addEventListener('click', (ev) => {
+    box.querySelectorAll('[data-depth-pick]').forEach((c) => { c.hidden = false; c.checked = true; });
+    ev.currentTarget.textContent = 'Run chosen in background';
+    ev.currentTarget.onclick = () => {
+      const ids = [...box.querySelectorAll('[data-depth-pick]:checked')].map((c) => c.dataset.depthPick);
+      if (!ids.length) { status.textContent = 'nothing chosen — Not now records the decline'; return; }
+      finish('chose', ids);
+    };
+  });
+}
+
 function wireDispositionPicker(host, p, { note, onSet }) {
   const commit = async (value, reason = '') => {
     note('Saving…');
@@ -2697,6 +2799,9 @@ function wireDispositionPicker(host, p, { note, onSet }) {
       p.disposition = value;
       renderSidebar();
       await onSet(value);
+      // The offer, at the moment the verdict is recorded, in the pane.
+      const slot = $('depth-offer') || $('resource-action');
+      if (slot) renderDepthOffer(p, slot, { afterVerdict: true });
     } catch (err) {
       note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
     }
@@ -2904,6 +3009,7 @@ async function loadDispositionPane() {
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
     <div id="disposition-picker" class="mb-s2"></div>
     <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
+    <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
       <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
@@ -2927,6 +3033,7 @@ async function loadDispositionPane() {
     };
     mountPicker();
     renderDispositionHistory(project.github_url);
+    renderDepthOffer(project, $('depth-offer'));
   } else {
     $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
   }
