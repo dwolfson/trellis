@@ -221,8 +221,32 @@ def _handle_curate_commit(target: dict, result_ref: str) -> RunOutcome:
                       error=("failed: " + ", ".join(failed)) if failed else "")
 
 
+def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
+    """Accepted components become Egeria SolutionComponents, one at a time,
+    after a branch verdict. Each result is recorded on the activity entry;
+    the run fails only if a materialization did (the detail says which)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.curate import materialize_component_if_accepted
+
+    registry = ProjectRegistry()
+    slug = target["slug"]
+    failed, done = [], 0
+    for path in target.get("paths") or []:
+        try:
+            res = materialize_component_if_accepted(registry, "repo", slug, path, "accepted")
+            if res and res.get("status") == "error":
+                failed.append(f"{path}: {res.get('error')}")
+            else:
+                done += 1
+        except Exception as exc:
+            failed.append(f"{path}: {type(exc).__name__}: {exc}")
+    return RunOutcome(state="failed" if failed else "succeeded",
+                      error=(f"{done} materialised; failed: " + "; ".join(failed)[:1500]) if failed else "")
+
+
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "curate_commit": _handle_curate_commit,
+    "materialize_components": _handle_materialize_components,
     "analysis_run": _handle_analysis_run,
     "stage_batch": _handle_stage_batch,
     "scouting_scan": _handle_scouting_scan,

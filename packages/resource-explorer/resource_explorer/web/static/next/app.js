@@ -54,6 +54,9 @@ import {
   listRecords,
   recordExportHref,
   actOnRecord,
+  getComponentTree,
+  getComponentLeaves,
+  postBranchVerdicts,
   postDepthOfferOutcome,
   curateCommit,
   getCuration,
@@ -5793,7 +5796,9 @@ async function renderCurate(slug) {
           ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
           ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
         </div>
-        ${(plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
+        ${c.key === 'made_of'
+          ? `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`
+          : (plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
       <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
         <span class="font-heading text-question text-ink">what gets written</span>
         <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
@@ -5812,9 +5817,9 @@ async function renderCurate(slug) {
 
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
-      state.curate.picks = [...picks]; draw();
+      state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
     }));
-    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); });
+    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); renderComponentTree(slug); });
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
     }));
@@ -5848,6 +5853,146 @@ async function renderCurate(slug) {
     });
   };
   draw();
+  renderComponentTree(slug);
+}
+
+
+
+/* ── Component review at the branch ──────────────────────────────────────
+ *
+ * The designer's ports round (2026-09-14). Rows are branches of the path
+ * the components are keyed by -- kafka's 642 become 71 -- and the decision
+ * is made at the branch: a branch verdict inherits, a component's own
+ * wins, and an inherited one says so (accepted · with pyegeria/) rather
+ * than posing as a decision someone made about that file. Confidence
+ * routes; it never hides: the ⚠ count rides on the branch. Grouping nodes
+ * stay marked with the classic UI's words. Ports are two words on the row
+ * where they exist, nothing where they do not, and one sentence at the
+ * foot when a repository declares none, saying what it looked in. Bulk
+ * accept goes through the shared preview dialog (rule 4): nothing runs
+ * until confirmed. No undo, and the word is not offered -- a verdict is a
+ * new row and the trail keeps both; the word is change. */
+function verdictBadge(v) {
+  if (!v) return `<span class="text-ink-muted">undecided</span>`;
+  const word = esc(v.verdict);
+  return v.inherited_from
+    ? `<span class="text-ink">${word}</span> <span class="text-ink-muted">· with <span class="font-mono">${esc(v.inherited_from)}/</span></span>`
+    : `<span class="text-ink">${word}</span>${v.decided_by ? ` <span class="text-ink-muted">· ${esc(v.decided_by)}</span>` : ''}`;
+}
+
+function portsWords(n, own) {
+  if (own && own.length) return `<span class="text-ink-muted">· ${own.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>`;
+  return n ? `<span class="text-ink-muted">· <span class="tnum">${n}</span> port${n === 1 ? '' : 's'} declared below</span>` : '';
+}
+
+function branchRowHtml(b) {
+  // The branch's own type leads; the mix beneath it is the CHILDREN's, so
+  // a branch whose only typed component is itself does not say it twice.
+  const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
+  const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
+  return `<div class="border-b border-rule py-s2" data-branch="${esc(b.path)}">
+    <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
+      <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-answer text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
+      <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
+      ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
+      ${types ? `<span class="text-provenance text-ink-muted">· ${types}</span>` : ''}
+      ${b.low_confidence ? `<span class="text-provenance text-state-warn">· ⚠ <span class="tnum">${b.low_confidence}</span> at or below 50%</span>` : ''}
+      ${portsWords(b.ports, b.own_ports)}
+    </div>
+    <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
+      <span>${verdictBadge(b.verdict)}</span>
+      <span class="text-ink-muted"><span class="tnum">${b.accepted}</span> accepted · <span class="tnum">${b.rejected}</span> rejected · <span class="tnum">${b.undecided}</span> undecided</span>
+      <button data-branch-verdict="accepted" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept all ${b.components}</button>
+      <button data-branch-verdict="rejected" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject all</button>
+    </div>
+    <div data-branch-leaves hidden class="mt-s1 pl-s3"></div>
+  </div>`;
+}
+
+function leafRowHtml(l) {
+  return `<div class="flex flex-wrap items-baseline gap-x-s2 border-b border-rule py-[3px] text-provenance">
+    <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
+    ${l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
+    ${l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : ''}
+    ${l.ports?.length ? `<span class="text-ink-muted">· ${l.ports.map((p) => `${esc(p.name)}${p.direction ? ` ${esc(p.direction)}` : ''}`).join(', ')}</span>` : ''}
+    <span>· ${verdictBadge(l.verdict)}</span>
+    <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
+    <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+  </div>`;
+}
+
+async function renderComponentTree(slug, prefix = '') {
+  const host = $('component-tree');
+  if (!host) return;
+  let tree;
+  try { tree = await getComponentTree(slug, prefix); }
+  catch (err) { host.innerHTML = `<span class="text-accent-ink">The components could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  if (!tree.branches.length) {
+    host.innerHTML = `<div class="text-caveat text-ink-muted">No components recovered on this resource yet.</div>
+      ${tree.topology ? `<div class="mt-s1 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> components accepted ·
+      <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
+      ports and wires read from the deployment artifacts (<span class="tnum">${tree.ports}</span> ports, <span class="tnum">${tree.wires}</span> wires); the diagram shows those belonging to accepted components
+      ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}</div>
+    ${tree.branches.map(branchRowHtml).join('')}
+    ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
+    <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>`;
+
+  host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
+    const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`;
+    try {
+      const out = await getComponentLeaves(slug, b.dataset.branchOpen);
+      box.innerHTML = out.leaves.map(leafRowHtml).join('') || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
+        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
+    } catch (err) {
+      box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`;
+    }
+  }));
+  host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
+    const br = tree.branches.find((x) => x.path === b.dataset.scope);
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 });
+  }));
+}
+
+/** The shared preview dialog, because rule 4 makes it mandatory: the act
+ *  names what it would do before it does it. Rejecting creates nothing in
+ *  Egeria, so it records at once. */
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
+  const status = $('component-tree-status');
+  const go = async () => {
+    if (status) status.textContent = 'recording…';
+    try {
+      const out = await postBranchVerdicts(slug, scopes, verdict);
+      if (status) status.innerHTML = verdict === 'accepted'
+        ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · <span class="tnum">${out.queued ?? 0}</span> component${out.queued === 1 ? '' : 's'} queued for Egeria — the pane does not wait</span>`
+        : `<span class="text-state-ok">→ rejected · nothing created</span>`;
+      renderComponentTree(slug);
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
+    }
+  };
+  if (verdict !== 'accepted' || count <= 1) { go(); return; }
+  const el = openDialog('Accept at the branch', `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = `
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
+      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as Egeria SolutionComponents${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
+    <p class="text-caveat text-ink-muted">Publish time for component creation is not yet measured — the first branch is what fixes it. Queued, so the pane returns at once. Nothing runs until you confirm.</p>
+    <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
+    <div class="mt-s3 flex gap-s3">
+      <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept ${count}</button>
+      <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+    </div>`;
+  body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
 }
 
 function rowKey(i) { return `qrow-${i}`; }
