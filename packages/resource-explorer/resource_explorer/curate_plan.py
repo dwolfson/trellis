@@ -181,8 +181,14 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     accepted = sum(1 for v in comp_v.values() if v.get("verdict") == "accepted")
     made_of = [
         _row("Component", f"{accepted} of {len(comps):,} components accepted · {len(comp_v)} reviewed",
-             evidence="ports and wires are derived from the accepted components' interfaces and relationships; "
-                      "review is per component and lives on Architecture verdicts (current UI) until it moves here",
+             # True today, and no more (designer, 2026-09-14): interfaces.propose()
+             # reads deployment artifacts at survey time and consults no verdict;
+             # acceptance changes which ports get DRAWN. "Derived from the
+             # accepted components" claimed the stronger thing, in the sentence a
+             # curator reads to decide whether to trust the column.
+             evidence="ports and wires are read from the repository's deployment artifacts; the diagram shows those "
+                      "belonging to accepted components; review is per component and lives on Architecture verdicts "
+                      "(current UI) until it moves here",
              source="architecture_recovery", state=arch.get("state", ""), count=accepted,
              members={"analysis_id": "architecture_recovery"}, candidate=accepted > 0,
              detail={"reviewed": len(comp_v), "blueprints_reviewed": len(bp_v),

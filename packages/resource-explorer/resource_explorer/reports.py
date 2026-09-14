@@ -36,6 +36,25 @@ def header_sentence(*, total: int, shown: int, noun: str) -> str:
     return f"{shown:,} of {total:,} {noun} — capped by the request."
 
 
+def correction_clause(corrected: dict | None) -> str:
+    """When the corrected record was a SELECTION, the correction (the whole
+    current list) has a different population, and a reader cannot tell
+    whether a row is absent because it was fixed or because it fell out of
+    the facet. So the header names what it is not carrying (designer,
+    2026-09-14): 'Corrects "High advisories with a fix", whose selection was
+    high, fix available; this record is the whole list.' No clause when the
+    populations already match -- a sentence explaining that they match is
+    noise."""
+    if not corrected:
+        return ""
+    rep = corrected.get("report") or {}
+    facet = (rep.get("facet") or "").strip()
+    if not facet:
+        return ""
+    return (f' Corrects "{corrected.get("name", "")}", whose selection was {facet}; '
+            f"this record is the whole list.")
+
+
 def build_report(*, question: str, slug: str, display_name: str, analysis_id: str, metric: str,
                  run_at: str, facet: str, members_payload: dict, selected: list[str] | None = None) -> dict:
     """The record's body, from a members payload as the pane received it.
