@@ -199,11 +199,25 @@ def list_definitions() -> list[dict]:
     from resource_explorer.surveyors.survey_definition_docs import (
         _PROCESS_PREFIX, documented_definitions,
     )
-    return [
-        {
+    from resource_explorer.workflows.stage_page import fetch_step_counts
+
+    rows = []
+    for name, doc in sorted(documented_definitions().items()):
+        # `doc.steps` (survey_definition_docs.py::parse_document) is already
+        # the step-key form `STEP_REGISTRY` is keyed on — the last segment of
+        # each step's Qualified Name — for EVERY step the document declares,
+        # Egeria-native ones included, so an unregistered key here really is
+        # "this codebase has no surveyor for it," not a parsing gap. Reusing
+        # the live definition's own step list (point 2, STAGE-PAGE-ROUND.md)
+        # rather than the generator's static SPECS is what keeps this count
+        # matching what an actual run would do.
+        step_count, fetch_steps, unregistered = fetch_step_counts(doc.steps)
+        rows.append({
             "name": name,
             "qualified_name": f"{_PROCESS_PREFIX}{name}",
-            "step_count": len(doc.steps),
+            "step_count": step_count,
+            "fetch_steps": fetch_steps,
+            "unregistered_steps": unregistered,
             "branches": doc.branches,
             # Was hardcoded "repo" here regardless of what the document
             # actually was — harmless while every authored document happened
@@ -212,9 +226,8 @@ def list_definitions() -> list[dict]:
             # authored. Now genuinely read from the doc (inferred from its
             # filename by documented_definitions()) rather than assumed.
             "resource_type": doc.resource_type,
-        }
-        for name, doc in sorted(documented_definitions().items())
-    ]
+        })
+    return rows
 
 
 @router.get("/{entity_type}/{slug}/candidates")
