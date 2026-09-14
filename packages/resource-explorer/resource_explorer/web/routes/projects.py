@@ -906,6 +906,24 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     return result
 
 
+@router.get("/{slug}/depth-offer")
+async def get_depth_offer(slug: str) -> dict:
+    """The /next pane's DepthOffer (designer, 2026-09-13): the assessment/
+    analysis-tier analyses that have never run on this repo, priced with the
+    measured/declared/unknown split, plus a total across only the measured
+    ones. See `workflows/depth_offer.build_depth_offer` for the shape and
+    the reasoning — this route is a thin 404-translating adapter, same
+    pattern as GET /{slug}/analyses/last-activity above."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.depth_offer import build_depth_offer
+
+    registry = ProjectRegistry()
+    try:
+        return build_depth_offer(registry, slug)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/{slug}/analyses/{analysis_id}/results")
 async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = None) -> dict:
     """Latest structured results for one repo analysis — the real

@@ -455,8 +455,22 @@ class TestTheSkipNamesThePrice:
         # `runs`-table median is 92s and the split sums to 90.27s: a sentence
         # that said "1m 32s in all" beside "1m 30s to publish" would carry two
         # numbers that disagree — the list-answer defect, in a toast.
-        assert "about 1m 30s in all" in sentence, sentence
+        # 0.07 + 90.2: publish is >90% of the total, so the total names its
+        # dominant half rather than restating "1m 30s" beside "1m 30s".
+        assert "1m 30s in all, nearly all of it publishing" in sentence, sentence
+        assert "about 1m 30s in all" not in sentence, sentence
         assert "1m 32s" not in sentence, sentence
+
+    def test_a_balanced_split_keeps_the_plain_total(self, pg_registry):
+        """When neither half dominates, "about X in all" is the honest total and
+        naming a dominant half would be false."""
+        from resource_explorer.workflows.analysis import estimate_run_cost
+
+        _succeeded_run(pg_registry, "zz_balanced_probe", 100)
+        _split_activity(pg_registry, "zz_balanced_probe", 40.0, 60.0)
+        sentence = estimate_run_cost(pg_registry, "zz_balanced_probe").sentence()
+        assert "about 1m 40s in all (median of 1 run)." in sentence, sentence
+        assert "nearly all of it" not in sentence, sentence
 
     def test_no_split_rows_leaves_the_sentence_byte_identical(self, pg_registry):
         """Old runs (predating the split instrumentation) must fall back to
