@@ -48,6 +48,9 @@ import {
   getMemberChildren,
   getMembers,
   getCuratePlan,
+  getRunCost,
+  getDepthOffer,
+  postDepthOfferOutcome,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -2688,6 +2691,108 @@ function dispositionPickerHtml(p) {
  *  (FUNNEL-COST-RULINGS §4, 2026-09-13). */
 const TERMINAL_DISPOSITIONS = new Set(['using', 'abandoned', 'ignored']);
 
+/* ── The depth offer ─────────────────────────────────────────────────────
+ *
+ * FUNNEL-COST-RULINGS §3 and REPORT-RECORD-AND-TWO-CALLS §B (designer,
+ * 2026-09-13). Keep investigating should schedule the deeper surveys --
+ * with one condition: it OFFERS, it does not silently queue. At the moment
+ * a verdict of investigating or tracking is recorded, the pane shows what
+ * that verdict does not do, names the analyses at the analysis and
+ * assessment tiers that have never run on this resource, prices them with
+ * the split, and offers three buttons. Once per verdict, in the pane,
+ * never a modal; the verdict is already recorded when this appears and
+ * nothing waits on an answer. The decline is RECORDED on the verdict: a
+ * corpus of declines says depth is not worth its price here, which is a
+ * finding about the analyses, and it cannot be read off anything if the
+ * decline leaves no trace. Never on abandoned or ignored -- offering to
+ * spend at the moment someone decided to stop spending is the one place
+ * this reads as an argument. recommended and using only when the repo has
+ * never been measured: adopting something nobody looked at is the case
+ * worth a sentence. */
+function depthOfferApplies(disposition, measuredBefore) {
+  if (disposition === 'investigating' || disposition === 'tracking') return true;
+  if (disposition === 'recommended' || disposition === 'using') return !measuredBefore;
+  return false;
+}
+
+async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
+  if (!host || !p?.github_url) return;
+  const disposition = p.disposition || 'undecided';
+  if (disposition === 'abandoned' || disposition === 'ignored' || disposition === 'undecided') { host.innerHTML = ''; return; }
+  let offer;
+  try { offer = await getDepthOffer(p.slug); } catch { host.innerHTML = ''; return; }
+  if (!depthOfferApplies(disposition, !!offer.measured_before)) { host.innerHTML = ''; return; }
+  // Once per verdict: the latest verdict row carries the answer, if any.
+  if (!afterVerdict) {
+    try {
+      const rows = await getDispositionHistory(p.github_url);
+      const latest = [...(rows || [])].sort((a, b) => whenMs(b.decided_at) - whenMs(a.decided_at))[0];
+      if (!latest || latest.depth_offer) { host.innerHTML = ''; return; }
+    } catch { host.innerHTML = ''; return; }
+  }
+  const rows = offer.analyses || [];
+  if (!rows.length) { host.innerHTML = ''; return; }
+  const total = offer.total || {};
+  const priceCell = (c) => {
+    if (!c || c.basis === 'unknown') return `<span class="text-ink-muted">not priced</span>`;
+    if (c.basis === 'declared') return `<span class="text-ink-muted">declared ${esc(declaredWord(c) || c.sentence || '')}</span>`;
+    if (c.split_runs) return `<span class="tnum">${esc(fmtSeconds(c.steps_seconds))}</span> to run · <span class="tnum">${esc(fmtSeconds(c.publish_seconds))}</span> to publish`;
+    return `about <span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">· not yet split</span>`;
+  };
+  host.innerHTML = `
+    <div data-depth-offer class="mt-s3 border-t border-rule pt-s2">
+      <div class="text-caveat text-ink">This verdict does not schedule anything. <span class="tnum">${rows.length}</span>
+        ${rows.length === 1 ? 'analysis' : 'analyses'} at the analysis and assessment tiers ${rows.length === 1 ? 'has' : 'have'} never run on
+        <span class="font-mono">${esc(p.slug)}</span>:</div>
+      <table class="mt-s1 w-full border-collapse text-provenance">
+        ${rows.map((a) => `<tr class="border-b border-rule">
+          <td class="py-[2px] pr-s2"><input type="checkbox" data-depth-pick="${esc(a.analysis_id)}" hidden></td>
+          <td class="py-[2px] pr-s3 font-mono text-ink">${esc(a.analysis_id)}</td>
+          <td class="py-[2px] pr-s3 text-ink-muted">${esc(a.tier || '')}</td>
+          <td class="py-[2px] text-ink">${priceCell(a.cost)}</td>
+        </tr>`).join('')}
+      </table>
+      <div class="mt-s1 text-provenance text-ink-muted">${tnum(esc(total.sentence || ''))}</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
+        <button data-depth="accepted" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Run these in background</button>
+        <button data-depth="choose" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Choose which</button>
+        <button data-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
+        <span data-depth-status class="text-provenance text-ink-muted"></span>
+      </div>
+    </div>`;
+  const box = host.querySelector('[data-depth-offer]');
+  const status = box.querySelector('[data-depth-status]');
+  const finish = async (outcome, ids) => {
+    const runIds = [];
+    for (const id of ids) {
+      try { const started = await runAnalysis(p.slug, id); if (started?.run_id) runIds.push(started.run_id); }
+      catch (err) { status.innerHTML = `<span class="text-accent-ink">${esc(id)}: ${esc(err.message)}</span>`; }
+    }
+    try {
+      await postDepthOfferOutcome(p.github_url, { outcome, analysisIds: ids, runIds });
+    } catch (err) {
+      // Nothing was recorded. Say so; the offer stays so it can be answered.
+      status.innerHTML = `<span class="text-accent-ink">${
+        err.status === 401 ? 'not recorded — sign in to answer the offer' : `not recorded: ${esc(err.message)}`}</span>`;
+      return;
+    }
+    box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
+      outcome === 'declined' ? 'declined' : `<span class="tnum">${ids.length}</span> queued in the background`} · on the verdict's record</div>`;
+    renderDispositionHistory(p.github_url);
+  };
+  box.querySelector('[data-depth="accepted"]').addEventListener('click', () => finish('accepted', rows.map((a) => a.analysis_id)));
+  box.querySelector('[data-depth="declined"]').addEventListener('click', () => finish('declined', []));
+  box.querySelector('[data-depth="choose"]').addEventListener('click', (ev) => {
+    box.querySelectorAll('[data-depth-pick]').forEach((c) => { c.hidden = false; c.checked = true; });
+    ev.currentTarget.textContent = 'Run chosen in background';
+    ev.currentTarget.onclick = () => {
+      const ids = [...box.querySelectorAll('[data-depth-pick]:checked')].map((c) => c.dataset.depthPick);
+      if (!ids.length) { status.textContent = 'nothing chosen — Not now records the decline'; return; }
+      finish('chose', ids);
+    };
+  });
+}
+
 function wireDispositionPicker(host, p, { note, onSet }) {
   const commit = async (value, reason = '') => {
     note('Saving…');
@@ -2696,6 +2801,9 @@ function wireDispositionPicker(host, p, { note, onSet }) {
       p.disposition = value;
       renderSidebar();
       await onSet(value);
+      // The offer, at the moment the verdict is recorded, in the pane.
+      const slot = $('depth-offer') || $('resource-action');
+      if (slot) renderDepthOffer(p, slot, { afterVerdict: true });
     } catch (err) {
       note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
     }
@@ -2903,6 +3011,7 @@ async function loadDispositionPane() {
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Verdicts</div>
     <div id="disposition-picker" class="mb-s2"></div>
     <div id="disposition-history" class="mb-s4 text-provenance text-ink-muted">Loading history…</div>
+    <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Journal</span>
       <span class="text-provenance text-ink-muted">why it matters, and to whom · written to be read</span>
@@ -2926,6 +3035,7 @@ async function loadDispositionPane() {
     };
     mountPicker();
     renderDispositionHistory(project.github_url);
+    renderDepthOffer(project, $('depth-offer'));
   } else {
     $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
   }
@@ -5838,7 +5948,7 @@ function bindRowActions(el, entry, i) {
     replaceRow(entry, i, 'loading');
     loadAnswer(entry, i, state.selectedSlug);
   });
-  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', () => rerun(entry, i));
+  el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget));
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
   el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
@@ -5852,13 +5962,102 @@ function bindRowActions(el, entry, i) {
  * marker that cannot tell a stalled run from a slow one is worse than none:
  * it converts "we don't know" into "wait a bit longer" forever.
  */
-async function rerun(entry, i) {
+/* ── The run choice ──────────────────────────────────────────────────────
+ *
+ * The one-click re-run stops being one click (REPORT-RECORD-AND-TWO-CALLS
+ * §A, 2026-09-13). Not because the choice matters every time, but because
+ * an action must name what it would do before it does it, and this is the
+ * action whose price moved by a factor of six while it was being
+ * discussed. The link opens a small popover anchored to itself; nothing
+ * queues from the link. Background first, because on the evidence it is
+ * right nearly every time; the waiting option keeps its own name.
+ *
+ * Four price variants, and BOTH buttons in all four, including not known:
+ * a missing price is a reason to say so, not to withhold the action -- the
+ * first run is what fixes it. */
+function fmtSeconds(sec) {
+  if (sec == null || Number.isNaN(Number(sec))) return '';
+  const s = Number(sec);
+  if (s < 1) return `${s.toFixed(1)}s`;
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60); const r = Math.round(s - m * 60);
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+/** The price line for one of the four variants. `cost` is a RunCost or
+ *  null (the read failed / nothing recorded). */
+/** The declared word -- "fast" -- from RunCost.declared, or from the
+ *  sentence's quotes when the serialiser carries only the sentence. */
+function declaredWord(cost) {
+  if (cost?.declared) return String(cost.declared);
+  const m = /'([^']+)'/.exec(String(cost?.sentence || ''));
+  return m ? m[1] : '';
+}
+
+function priceLineHtml(cost, analysisId) {
+  if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) {
+    return `<span class="text-ink-muted">Price not known — no run of <span class="font-mono">${esc(analysisId)}</span> has been recorded yet. The first run is what fixes it.</span>`;
+  }
+  if (cost.basis === 'declared') {
+    const w = declaredWord(cost);
+    return `<span class="text-ink"><span class="text-ink-muted">declared</span> ${esc(w || cost.sentence || '')}</span>
+      <span class="text-ink-muted">· not measured</span>`;
+  }
+  // measured
+  if (cost.split_runs) {
+    // the server's sentence carries the dominant-half rule
+    return `<span class="text-ink">${tnum(esc(cost.sentence || `about ${fmtSeconds(cost.seconds)} in all`))}</span>`;
+  }
+  return `<span class="text-ink">about <span class="tnum">${esc(fmtSeconds(cost.seconds))}</span> in all</span>
+    <span class="text-ink-muted">· median of <span class="tnum">${cost.runs}</span> run${cost.runs === 1 ? '' : 's'} · not yet split into run and publish</span>`;
+}
+
+async function openRunChoice(entry, i, anchor) {
+  const analysisId = (entry.analysis_ids || [])[0];
+  if (!analysisId) return;
+  document.querySelector('[data-run-choice]')?.remove();
+  anchor.insertAdjacentHTML('afterend', `
+    <div data-run-choice class="mt-[4px] inline-block max-w-[60ch] rounded-sm border border-rule-strong bg-paper p-s2 text-caveat shadow-lg">
+      <div data-run-price class="text-ink-muted">Reading the price…</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
+        <button data-run-mode="background" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-ink">Background</button>
+        <button data-run-mode="wait" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">Run and wait</button>
+        <button data-run-cancel class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+      </div>
+    </div>`);
+  const box = anchor.parentElement.querySelector('[data-run-choice]');
+  box.querySelector('[data-run-cancel]').addEventListener('click', () => box.remove());
+  box.querySelectorAll('[data-run-mode]').forEach((b) => b.addEventListener('click', () => {
+    box.remove();
+    rerun(entry, i, { background: b.dataset.runMode === 'background' });
+  }));
+  let cost = null;
+  try { cost = await getRunCost(analysisId); } catch { cost = null; }
+  const line = box.querySelector('[data-run-price]');
+  if (line) line.innerHTML = priceLineHtml(cost, analysisId);
+}
+
+async function rerun(entry, i, { background = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
 
   state.runsInFlight.set(entry.question, { analysisId, label: `Queued · ${analysisId}` });
   replaceRow(entry, i, state.answers.get(entry.question));
+
+  if (background) {
+    // Enqueue and stop watching. The row says it is queued in the worker
+    // and how to see the result; nothing here pretends to know when.
+    try {
+      await runAnalysis(slug, analysisId);
+      state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
+    } catch (err) {
+      state.runsInFlight.delete(entry.question);
+      state.answers.set(entry.question, { __error: `The run could not be started: ${err.message}` });
+    }
+    replaceRow(entry, i, state.answers.get(entry.question));
+    return;
+  }
 
   try {
     const started = await runAnalysis(slug, analysisId);
