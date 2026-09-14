@@ -4175,6 +4175,14 @@ function analysisUnderQuestionHtml(fact, id, checks) {
       <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(id)}${when ? ` · ${esc(ago(when))}` : ''} ›</span>
     </button>
     <div class="pl-[22px] text-provenance">
+      <!-- Left un-gated for a metrics-only analysis (repository_health, and
+           the like) deliberately: `fact` here has no applicability flag —
+           knowing that costs the analysis-kind registry lookup that
+           /members/<id> already does server-side — and duplicating that
+           registry into the detail-row manifest for one control is a
+           bigger surface than letting the click render the rail's own
+           sentence, which it now does (see members_for's not_applicable
+           branch). -->
       <button type="button" data-members="${esc(id)}" data-title="${esc(id.replace(/_/g, ' '))}"
         class="cursor-pointer bg-transparent p-0 text-accent-ink underline">members ›</button>
     </div>`;
@@ -4476,6 +4484,22 @@ async function openMembers({ slug, analysisId, metric = '', title = '' }) {
     return;
   }
   if (railStale(ticket)) return;
+  if (data.not_applicable) {
+    // Metrics-only analysis (repository_health, and the like): the list
+    // slot holds one sentence, not a zero from the wrong table — and no
+    // save-as-report offer, since there is nothing to report.
+    out.innerHTML = `
+      <div class="mb-s1 flex items-baseline gap-s2">
+        <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
+        <span class="min-w-0 truncate text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span> · ${esc(data.title)}</span>
+        <button data-act="close-members" class="ml-auto cursor-pointer bg-transparent text-caps text-chrome-muted underline">close</button>
+      </div>
+      <div class="mb-s2 text-caps text-chrome-muted"><span class="font-mono">${esc(data.analysis_id)}</span>${data.run_at ? ` · <span class="tnum">${esc(ago(data.run_at))}</span>` : ''}</div>
+      <div class="text-caps text-chrome-muted">${esc(data.reason || `${data.analysis_id} records measurements, not members — there is nothing to list.`)}</div>
+      <div class="mt-s2 text-caps text-chrome-muted">read from <span class="font-mono">${esc(data.source)}</span></div>`;
+    out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
+    return;
+  }
   const groups = data.groups || [];
   const shown = groups.reduce((n, g) => n + g.members.length, 0);
   out.innerHTML = `
