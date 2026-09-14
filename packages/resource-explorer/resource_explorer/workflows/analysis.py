@@ -555,12 +555,23 @@ class RunCost:
                 # median, still what the button costs on average) stays in
                 # the payload for callers that want it, not in this sentence.
                 sn = f"median of {self.split_runs} run{'s' if self.split_runs != 1 else ''}"
+                total = self.steps_seconds + self.publish_seconds
+                # "about 1m 32s to publish — about 1m 32s in all" states one
+                # figure twice when the run half rounds away, and a total that
+                # restates its larger half verbatim reads as a bug in the
+                # sentence (designer, 2026-09-13). Rule: the total names its
+                # dominant half instead of repeating it, once that half is
+                # more than nine tenths of the whole.
+                if total > 0 and max(self.steps_seconds, self.publish_seconds) > 0.9 * total:
+                    dominant = "publishing" if self.publish_seconds >= self.steps_seconds else "running"
+                    tail = (f"{_humanise_duration(total)} in all, nearly all of it "
+                            f"{dominant} ({sn}).")
+                else:
+                    tail = f"about {_humanise_duration(total)} in all ({sn})."
                 return (
                     f"A re-run takes about {_humanise_split_seconds(self.steps_seconds)} "
                     f"to run and about {_humanise_split_seconds(self.publish_seconds)} "
-                    f"to publish — about "
-                    f"{_humanise_duration(self.steps_seconds + self.publish_seconds)} "
-                    f"in all ({sn})."
+                    f"to publish — {tail}"
                 )
             return f"A re-run costs about {_humanise_duration(self.seconds)} ({n})."
         if self.basis == "declared" and self.declared:
