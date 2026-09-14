@@ -1999,6 +1999,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
             )
+            # DepthOffer (designer, 2026-09-13): the outcome of the /next
+            # pane's "run these never-run analyses" offer, recorded on the
+            # LATEST repo_disposition_history row for the url — once per
+            # verdict (record_depth_offer() enforces "once" by refusing a
+            # second write once this is non-null). NULL until offered.
+            if "depth_offer" not in self._get_table_columns(conn, "repo_disposition_history"):
+                conn.execute(
+                    "ALTER TABLE repo_disposition_history ADD COLUMN depth_offer TEXT DEFAULT NULL"
+                )
             # Locally-tracked sub-resources — the "Catalog" stage of the
             # repo scope-narrowing funnel (docs/repo-scope-narrowing-funnel.md,
             # D2). Built generically across resource types from the start,
@@ -5840,15 +5849,75 @@ class ProjectRegistry:
 
     def get_disposition_history(self, github_url: str) -> list[dict]:
         """Every disposition ever set for this repo, oldest first — backs
-        the Disposition sub-tab's timeline view."""
+        the Disposition sub-tab's timeline view. `depth_offer` comes back
+        parsed (a dict) or None — never the raw JSON string."""
         key = self._normalize_github_url(github_url)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT disposition, reason, decided_by, decided_at "
+                "SELECT disposition, reason, decided_by, decided_at, depth_offer "
                 "FROM repo_disposition_history WHERE github_url = ? ORDER BY decided_at ASC",
                 (key,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("depth_offer")
+            d["depth_offer"] = json.loads(raw) if raw else None
+            result.append(d)
+        return result
+
+    def record_depth_offer(
+        self, github_url: str, outcome: str, analysis_ids: list[str],
+        run_ids: list[str], decided_by: str,
+    ) -> dict:
+        """Record the outcome of a DepthOffer pane on the LATEST
+        repo_disposition_history row for this url (designer, 2026-09-13).
+
+        Once per verdict: refuses (raises `ValueError`) a second write once
+        the latest row already carries a `depth_offer` — the pane only
+        offers when it reads null, but that is a UI courtesy, not the
+        enforcement; this is. Raises `LookupError` when there is no
+        disposition history row at all for this url (nothing to attach the
+        offer to — a verdict has to exist first). Both are ValueError's
+        cousins by convention (see `set_disposition`'s callers), kept as two
+        distinct exception TYPES rather than two message strings so a route
+        can map them to 404 vs 409 without parsing text.
+
+        `decided_by` is the caller's job to resolve (the signed-in user via
+        `run_queue.requested_by()`) — this method just stores whatever it is
+        given, the same trust boundary `enqueue_run`'s own `requested_by`
+        param already has."""
+        from datetime import UTC, datetime
+
+        from resource_explorer.workflows.depth_offer import DEPTH_OFFER_OUTCOMES
+
+        if outcome not in DEPTH_OFFER_OUTCOMES:
+            raise ValueError(
+                f"outcome must be one of {sorted(DEPTH_OFFER_OUTCOMES)}, got {outcome!r}"
+            )
+        key = self._normalize_github_url(github_url)
+        payload = {
+            "offered_at": datetime.now(UTC).isoformat(),
+            "outcome": outcome,
+            "analysis_ids": list(analysis_ids or []),
+            "run_ids": list(run_ids or []),
+            "decided_by": decided_by,
+        }
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, depth_offer FROM repo_disposition_history "
+                "WHERE github_url = ? ORDER BY id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"no disposition history for {github_url!r}")
+            if row["depth_offer"]:
+                raise ValueError(f"depth offer already recorded for {github_url!r}")
+            conn.execute(
+                "UPDATE repo_disposition_history SET depth_offer = ? WHERE id = ?",
+                (json.dumps(payload), row["id"]),
+            )
+        return payload
 
     # ── sub-resources — the local "Catalog" stage of the repo scope-
     # narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D4) ────────────
