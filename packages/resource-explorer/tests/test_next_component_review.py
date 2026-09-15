@@ -33,7 +33,12 @@ class TestReviewHappensAtTheBranch:
         body = app[app.index("function recordVerdicts("):app.index("function rowKey(i)")]
         assert "openDialog('Accept at the branch'" in body
         assert "Nothing runs until you confirm." in body
-        assert "will be created as Egeria SolutionComponents" in body
+        # Not "SolutionComponents" -- naming an unverified type in a
+        # confirmation dialog before it's pinned is how the SoftwareLibrary
+        # mistake happened one round earlier (docs/Backlog.md, "Catalogue in
+        # layers"). Plain words until the type is confirmed against a live
+        # server, per the designer's own phrasing.
+        assert "will be created as software components in Egeria — the exact Egeria type is not yet pinned" in body
         assert "not yet measured" in body, "an unmeasured price is said, not invented"
         assert "if (verdict !== 'accepted' || count <= 1) { go(); return; }" in body   # rejecting creates nothing; one leaf needs no preview
 
