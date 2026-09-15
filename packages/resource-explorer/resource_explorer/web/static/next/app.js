@@ -165,11 +165,16 @@ const STAGES = [
  * the Questions row itself (point 10, `provenanceLine`'s "the numbers behind
  * this N" link). See that function's comment for what has and has not moved
  * yet: findings and disagreements stay on `by_analysis` for this slice. */
+/* `Find repos` left the strip (SPEC-ACTIONABLE-AND-HONEST.md, point 2, the
+ * owner's round 2026-09-15): the uniform-strip rule ("grey out what a
+ * stage lacks, never remove") is for things that are PER-STAGE, and finding
+ * candidate repos is corpus-level work, the same action on Scouting as on
+ * Curate -- nine dashed-underline copies of one non-stage-scoped action was
+ * nine wrong promises, not nine honest gaps. It now lives beside the
+ * sidebar's Repos/DBs/FS switcher (findReposButtonHtml, bindSidebar),
+ * unchanged in what it can say: still "not built in /next", just no longer
+ * pretending to be a ninth stage's affordance. */
 const SUB_TABS = [
-  // NAMED FOR WHAT IT IS. Calling it "Search" inherits the current UI's label
-  // and teaches the wrong noun on first contact: it is not a search of the
-  // selected resource, it is how candidate repos are found and imported.
-  { id: 'search', label: 'Find repos', does: 'Repo discovery — find and import candidate repos' },
   { id: 'questions', label: 'Questions', does: 'The question checklist', built: true },
   { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
   { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
@@ -1572,9 +1577,13 @@ function renderSidebar() {
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
+      <button data-act="find-repos" title="Find and import candidate repos"
+        aria-label="Find and import candidate repos"
+        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
+        >${icon('circle-plus', { size: 14 })}</button>
       <button data-act="mark-key" title="What the marks in this list mean"
         aria-label="What the marks in this list mean"
-        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
+        class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
         >${icon('circle-help', { size: 14 })}</button>
     </div>
     ${state.showMarkKey ? markKeyHtml() : ''}
@@ -1794,6 +1803,20 @@ function bindSidebar() {
   const acts = {
     'show-empty-facets': () => { state.showEmptyFacets = true; renderSidebar(); },
     'mark-key': () => { state.showMarkKey = !state.showMarkKey; renderSidebar(); },
+    // Corpus-level, not a stage: the same action on Scouting as on Curate,
+    // so it lives beside the switcher that already scopes the whole left
+    // column, not in the per-stage strip (SPEC-ACTIONABLE-AND-HONEST.md,
+    // point 2). Still not built in /next -- says so, same as the deferred
+    // stage tabs did, just from here instead.
+    'find-repos': () => {
+      const d = openDialog('Find repos', 'Repo discovery — find and import candidate repos');
+      d.querySelector('#wl-detail-body').innerHTML = `
+        <p class="max-w-[60ch] text-answer text-ink">Repo discovery — find and import candidate repos.</p>
+        <p class="max-w-[60ch] text-answer text-ink">
+          <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
+            >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
+        </p>`;
+    },
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {
       state.selectMode = !state.selectMode;

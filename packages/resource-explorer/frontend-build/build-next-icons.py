@@ -55,6 +55,10 @@ ICONS = {
     # 2026-09-13: the list sentence's "the full list is in the pane" link used
     # a text › doing an icon's job (designer, on #60); this is the icon.
     "chevron-right": "opens the list this answer was compiled from, in the pane",
+    # 2026-09-15: `Find repos` left the sub-tab strip for the sidebar's
+    # Repos/DBs/FS switcher (SPEC-ACTIONABLE-AND-HONEST.md, point 2) and
+    # needed its own affordance there.
+    "circle-plus": "find and import candidate repos",
 }
 #: Icons renamed or absent upstream, mapped to the nearest real one.
 FALLBACK = {
