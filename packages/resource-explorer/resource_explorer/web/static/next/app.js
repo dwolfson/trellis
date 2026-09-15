@@ -5885,7 +5885,7 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
   const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
-      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as Egeria SolutionComponents${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
+      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as software components in Egeria — the exact Egeria type is not yet pinned${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
     <p class="text-caveat text-ink-muted">Publish time for component creation is not yet measured — the first branch is what fixes it. Queued, so the pane returns at once. Nothing runs until you confirm.</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
