@@ -448,9 +448,18 @@ function readEnvelope(entry, env) {
   // The caveat — the most important content on the screen. These sentences
   // already exist in the survey output; they used to sit three panes away in
   // the chat rail, which is not where the decision is made.
+  // A caveat on a multi-analysis row names its analysis, or it does not
+  // render (designer, SPEC-ACTIONABLE-AND-HONEST.md point 5): "This
+  // analysis ran and found nothing" reads as a claim about whichever
+  // number sits above it when three analyses answer one question, and it
+  // is usually a claim about a DIFFERENT one. `f.note` is the analysis's
+  // own prose, written as if it would be read alone -- attributed here,
+  // not rewritten, since the sentence itself is correct and only its
+  // referent was ambiguous.
+  const attribute = (f, text) => (facts.length > 1 ? `${f.analysis_id} — ${text}` : text);
   const caveats = [];
   for (const f of facts) {
-    if (f.note) caveats.push(f.note);
+    if (f.note) caveats.push(attribute(f, f.note));
     if (f.state === PARTIAL && !f.note) {
       caveats.push(`${f.analysis_id} covered only part of what it measures.`);
     }
