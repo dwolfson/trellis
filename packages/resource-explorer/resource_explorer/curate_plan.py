@@ -318,6 +318,14 @@ def _ensure_schema(conn) -> None:
         conn.execute("ALTER TABLE resource_curation ADD COLUMN corrects TEXT NOT NULL DEFAULT ''")
     if "corrected_by" not in cols:
         conn.execute("ALTER TABLE resource_curation ADD COLUMN corrected_by TEXT NOT NULL DEFAULT '{}'")
+    # The layer-2 catalogue-depth offer (owner's ruling, 2026-09-15): the
+    # same shape as DepthOffer's outcome, but recorded on the catalogue
+    # record rather than a disposition-history row -- the layer-2 act is
+    # component materialization, which belongs to a curate commit, not to a
+    # disposition verdict. '{}' means "not yet offered", same convention
+    # DepthOffer's own null column uses.
+    if "layer2_offer" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN layer2_offer TEXT NOT NULL DEFAULT '{}'")
 
 
 def _columns(conn, table: str) -> set[str]:
@@ -411,6 +419,34 @@ class Curations:
             conn.execute("UPDATE resource_curation SET uses = ? WHERE id = ?", (json.dumps(uses), cid))
         return self.get(cid)
 
+    def record_layer2_offer(self, cid: str, outcome: str, decided_by: str) -> dict:
+        """Record the outcome of the layer-2 catalogue-depth offer on this
+        catalogue record (owner's ruling, 2026-09-15) -- same
+        accepted/declined/chose vocabulary DepthOffer uses for a repo's
+        never-run analyses, mirrored here at once-per-CATALOGUE-RECORD
+        rather than once-per-disposition-verdict, since the layer-2 act
+        (component materialization) belongs to a curate commit, not to a
+        disposition.
+
+        Once per record: raises `ValueError` if this record already carries
+        an offer outcome -- the pane only offers when it reads none, but
+        that is a UI courtesy, not the enforcement; this is (same shape as
+        `registry.record_depth_offer`)."""
+        from resource_explorer.workflows.catalogue_depth_offer import LAYER2_OFFER_OUTCOMES
+
+        if outcome not in LAYER2_OFFER_OUTCOMES:
+            raise ValueError(f"outcome must be one of {sorted(LAYER2_OFFER_OUTCOMES)}, got {outcome!r}")
+        rec = self.get(cid)
+        if not rec:
+            raise LookupError(cid)
+        if rec.get("layer2_offer"):
+            raise ValueError(f"catalogue record {cid} already carries a layer-2 offer outcome")
+        payload = {"outcome": outcome, "decided_by": decided_by, "at": _now()}
+        with self._conn() as conn:
+            conn.execute("UPDATE resource_curation SET layer2_offer = ? WHERE id = ?",
+                         (json.dumps(payload), cid))
+        return self.get(cid)
+
     def get(self, cid: str) -> dict | None:
         with self._conn() as conn:
             _ensure_schema(conn)
@@ -449,7 +485,7 @@ class Curations:
     @staticmethod
     def _decode(row) -> dict:
         d = dict(row) if not isinstance(row, dict) else dict(row)
-        for k in ("selection", "manifest", "steps", "report", "uses", "corrected_by"):
+        for k in ("selection", "manifest", "steps", "report", "uses", "corrected_by", "layer2_offer"):
             empty = "[]" if k in ("steps", "uses") else "{}"
             try:
                 d[k] = json.loads(d.get(k) or empty)

@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from resource_explorer.egeria_timing import time_egeria_call
 from resource_explorer.surveyors.survey_report import (
     annotation_qualified_name, assert_unique_qualified_names)
 
@@ -417,8 +418,15 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             # with (see registry.complete_publish_run_if_done).
             touched_run_ids.add(run_id[: -len("::links")] if run_id.endswith("::links") else run_id)
         try:
-            guid = apply_element(row, clients, find_element_guid,
-                                 resolve_row_guids=registry.get_outbox_guids)
+            # Every outbox creator is a write (the module docstring's own
+            # comment on _CREATORS: "only the plural, per-element writes are
+            # queued") -- `row["element_kind"]` names WHICH write
+            # (annotation/collection_membership/resource_list/annotation_
+            # link), the same per-call-name granularity the layer-2
+            # catalogue-depth offer needs and nothing before this recorded.
+            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"):
+                guid = apply_element(row, clients, find_element_guid,
+                                     resolve_row_guids=registry.get_outbox_guids)
         except OutboxNotReadyError as exc:
             # Not a failure: this link's referent annotation(s) have not
             # landed yet. Hand it back to 'pending' with no attempt burned —

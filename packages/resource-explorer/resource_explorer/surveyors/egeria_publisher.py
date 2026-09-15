@@ -48,6 +48,7 @@ import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from resource_explorer.egeria_timing import time_egeria_call
 from resource_explorer.surveyors.survey_report import AnnotationType, SurveyResult
 
 if TYPE_CHECKING:
@@ -579,10 +580,11 @@ class EgeriaPublisher:
             cached = self._registry.get_setting(self._GITHUB_SCL_SETTING_KEY)
             if cached:
                 try:
-                    check = self._asset_maker.find_software_capabilities(
-                        search_string=qualified_name, starts_with=True,
-                        ignore_case=False, output_format="JSON",
-                    )
+                    with time_egeria_call(self._registry, "find_software_capabilities", "query"):
+                        check = self._asset_maker.find_software_capabilities(
+                            search_string=qualified_name, starts_with=True,
+                            ignore_case=False, output_format="JSON",
+                        )
                     if isinstance(check, list) and any(
                         e.get("elementHeader", {}).get("guid") == cached for e in check
                     ):
@@ -594,10 +596,11 @@ class EgeriaPublisher:
                     return cached  # network error — trust the cache rather than re-create
 
         try:
-            existing = self._asset_maker.find_software_capabilities(
-                search_string=qualified_name, starts_with=True,
-                ignore_case=False, output_format="JSON",
-            )
+            with time_egeria_call(self._registry, "find_software_capabilities", "query"):
+                existing = self._asset_maker.find_software_capabilities(
+                    search_string=qualified_name, starts_with=True,
+                    ignore_case=False, output_format="JSON",
+                )
             match = next(
                 (e for e in (existing or [])
                  if (e.get("properties") or {}).get("qualifiedName") == qualified_name),
@@ -622,8 +625,9 @@ class EgeriaPublisher:
         }
         if self.zone_names:
             props["zoneMembership"] = self.zone_names
-        guid = self._asset_maker.create_software_capability(
-            body={"class": "NewElementRequestBody", "properties": props})
+        with time_egeria_call(self._registry, "create_software_capability", "write"):
+            guid = self._asset_maker.create_software_capability(
+                body={"class": "NewElementRequestBody", "properties": props})
         log.info("Created the GitHub SourceControlLibrary, GUID %s", guid)
         if self._registry:
             self._registry.set_setting(self._GITHUB_SCL_SETTING_KEY, guid)
@@ -646,12 +650,13 @@ class EgeriaPublisher:
             cached = self._registry.get_egeria_asset_guid(result.resource_slug)
             if cached:
                 try:
-                    check = self._asset_maker.find_assets(
-                        search_string=qualified_name,
-                        starts_with=True,
-                        ignore_case=False,
-                        output_format="JSON",
-                    )
+                    with time_egeria_call(self._registry, "find_assets", "query"):
+                        check = self._asset_maker.find_assets(
+                            search_string=qualified_name,
+                            starts_with=True,
+                            ignore_case=False,
+                            output_format="JSON",
+                        )
                     if isinstance(check, list) and any(
                         e.get("elementHeader", {}).get("guid") == cached for e in check
                     ):
@@ -669,12 +674,13 @@ class EgeriaPublisher:
 
         # Search Egeria for an existing asset with this qualifiedName
         try:
-            existing = self._asset_maker.find_assets(
-                search_string=qualified_name,
-                starts_with=True,
-                ignore_case=False,
-                output_format="JSON",
-            )
+            with time_egeria_call(self._registry, "find_assets", "query"):
+                existing = self._asset_maker.find_assets(
+                    search_string=qualified_name,
+                    starts_with=True,
+                    ignore_case=False,
+                    output_format="JSON",
+                )
             if isinstance(existing, list) and existing:
                 # EXACT qualifiedName only. The search is starts_with=True, so
                 # a repo whose URL is a PREFIX of another's matches both — and
@@ -752,18 +758,20 @@ class EgeriaPublisher:
         if self.zone_names:
             props["zoneMembership"] = self.zone_names
         body = {"class": "NewElementRequestBody", "properties": props}
-        guid = self._asset_maker.create_asset(body=body)
+        with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "Asset"}):
+            guid = self._asset_maker.create_asset(body=body)
         log.info("Created GitHub repository asset GUID %s for %s", guid, result.resource_slug)
         # Own it: GitHub is the service the repository asset belongs to,
         # exactly once, at creation — a cache hit or a found-existing match
         # above means this link already exists from a prior run.
         try:
             scl_guid = self._find_or_create_github_scl()
-            self._asset_maker.add_capability_asset_use(
-                scl_guid, guid,
-                body={"class": "NewRelationshipRequestBody",
-                      "properties": {"class": "CapabilityAssetUseProperties", "useType": "OWNS"}},
-            )
+            with time_egeria_call(self._registry, "add_capability_asset_use", "write"):
+                self._asset_maker.add_capability_asset_use(
+                    scl_guid, guid,
+                    body={"class": "NewRelationshipRequestBody",
+                          "properties": {"class": "CapabilityAssetUseProperties", "useType": "OWNS"}},
+                )
         except Exception as exc:
             # Best-effort: the repository asset is real and usable either way
             # (the report attaches to IT, not to the SCL) -- a missing
@@ -1014,7 +1022,8 @@ class EgeriaPublisher:
                 },
             },
         }
-        report_guid = self._asset_maker.create_asset(body=body)
+        with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "SurveyReport"}):
+            report_guid = self._asset_maker.create_asset(body=body)
 
         # Persist so the pull path (EgeriaReader) and CLI can reference it
         if self._registry:

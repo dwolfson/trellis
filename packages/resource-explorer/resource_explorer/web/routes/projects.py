@@ -924,6 +924,64 @@ async def get_depth_offer(slug: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/{slug}/catalogue-depth-offer")
+async def get_catalogue_depth_offer(slug: str) -> dict:
+    """The layer-2 catalogue-depth offer (owner's ruling, 2026-09-15, on the
+    designer's REPLY-CATALOGUE-IN-LAYERS.md §3): DepthOffer's three rules
+    (not a nag, not a gate, not a scold) applied to promoting accepted
+    architecture-recovery verdicts into real Egeria SolutionComponents,
+    instead of to never-run analyses. See
+    `workflows/catalogue_depth_offer.build_catalogue_depth_offer` for the
+    shape and the reasoning — this route is a thin 404-translating adapter,
+    same pattern as GET /{slug}/depth-offer above."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.catalogue_depth_offer import build_catalogue_depth_offer
+
+    registry = ProjectRegistry()
+    try:
+        return build_catalogue_depth_offer(registry, slug)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class CatalogueDepthOfferOutcome(BaseModel):
+    outcome: str
+
+
+@router.post("/{slug}/curate/commits/{cid}/layer2-offer")
+async def record_catalogue_depth_offer(slug: str, cid: str, body: CatalogueDepthOfferOutcome,
+                                       request: Request) -> dict:
+    """Record the outcome of the layer-2 catalogue-depth offer on ONE
+    catalogue record — once per record (`Curations.record_layer2_offer`
+    refuses a second write). `decided_by` comes from the signed-in caller,
+    never from the request body, same reasoning `record_depth_offer_route`
+    gives for the identical choice."""
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.catalogue_depth_offer import LAYER2_OFFER_OUTCOMES
+
+    if body.outcome not in LAYER2_OFFER_OUTCOMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"outcome must be one of {sorted(LAYER2_OFFER_OUTCOMES)}, got {body.outcome!r}",
+        )
+    user = get_current_user(request)
+    decided_by = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not decided_by:
+        raise HTTPException(status_code=401, detail="Sign in to answer the offer — it needs someone to have made the decision.")
+
+    registry = ProjectRegistry()
+    curations = Curations(registry)
+    rec = curations.get(cid)
+    if not rec or rec.get("entity_slug") != slug:
+        raise HTTPException(status_code=404, detail=f"Catalogue record {cid!r} not found for {slug!r}")
+    try:
+        return curations.record_layer2_offer(cid, body.outcome, decided_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/{slug}/analyses/{analysis_id}/results")
 async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = None) -> dict:
     """Latest structured results for one repo analysis — the real

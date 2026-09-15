@@ -1954,6 +1954,34 @@ class ProjectRegistry:
                     updated_at TEXT NOT NULL
                 )
             """)
+            # Per-call Egeria timing (owner's ruling, 2026-09-15): every
+            # measured RunCost/depth-offer price in this codebase so far has
+            # been per ANALYSIS RUN, never per individual Egeria API call --
+            # the layer-2 catalogue-depth offer wants "1.5s median" for one
+            # write, which nothing recorded. `kind` distinguishes write from
+            # query, deliberately: the owner's own point is that insert/
+            # update cost and query cost are different populations, and a
+            # query's cost is itself sensitive to its own parameters (graph
+            # depth, page size) -- `params_json` carries those, so a reader
+            # can bucket by them rather than averaging a shallow lookup
+            # together with a deep graph walk. `call_name` is the pyegeria
+            # method name (`create_solution_component`, `find_assets`, …),
+            # not a higher-level label -- the same method can move between
+            # call sites without losing its own history.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_call_timings (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    call_name    TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    seconds      REAL NOT NULL,
+                    params_json  TEXT NOT NULL DEFAULT '{}',
+                    recorded_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_call_timings_call "
+                "ON egeria_call_timings(call_name, kind)"
+            )
             # Repo triage disposition — undecided (default) / tracking /
             # investigating / recommended / using / abandoned / ignored.
             # `recommended` and `using` are both positive terminal states,
@@ -2761,6 +2789,65 @@ class ProjectRegistry:
                        updated_at = excluded.updated_at""",
                 (key, value, datetime.utcnow().isoformat()),
             )
+
+    # ── per-call Egeria timing ────────────────────────────────────────────
+
+    def record_egeria_call_timing(
+        self, call_name: str, kind: str, seconds: float, params: dict | None = None,
+    ) -> None:
+        """One row per Egeria API call actually made — `kind` is `"write"`
+        or `"query"`, never conflated (owner's ruling, 2026-09-15: an
+        insert/update and a lookup are different cost populations, and
+        averaging them under one number hides both). `params` is whatever
+        the caller considers cost-relevant for THIS call (a query's
+        `graph_query_depth`, a write's target type) -- stored, not
+        interpreted here; `read_egeria_call_timing_stats` is what buckets by
+        it. Best-effort by the caller's own convention throughout this
+        module: never let a timing-recording failure fail the write it is
+        timing (see `_publish_homepage_reference`'s docstring for the same
+        argument made about a different best-effort site)."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO egeria_call_timings (call_name, kind, seconds, params_json, recorded_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                (call_name, kind, seconds, json.dumps(params or {}), datetime.utcnow().isoformat()),
+            )
+
+    def read_egeria_call_timing_stats(
+        self, call_name: str, kind: str, *, param_filter: dict | None = None, sample: int = 500,
+    ) -> dict:
+        """`{count, median, p90}` (seconds) for `call_name`/`kind`, most
+        recent `sample` rows. `param_filter` narrows to rows whose
+        `params_json` matches every given key exactly (e.g.
+        `{"graph_query_depth": 3}`) -- a query's cost depends on its own
+        parameters, so mixing a depth-1 lookup with a depth-5 graph walk
+        into one median would misprice both. `median`/`p90` are `None` when
+        `count` is 0 -- never a fabricated number standing in for "nothing
+        recorded yet"."""
+        import statistics
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT seconds, params_json FROM egeria_call_timings
+                   WHERE call_name = ? AND kind = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (call_name, kind, sample),
+            ).fetchall()
+        secs: list[float] = []
+        for r in rows:
+            if param_filter:
+                try:
+                    params = json.loads(r["params_json"] or "{}")
+                except ValueError:
+                    params = {}
+                if any(params.get(k) != v for k, v in param_filter.items()):
+                    continue
+            secs.append(r["seconds"])
+        if not secs:
+            return {"count": 0, "median": None, "p90": None}
+        secs.sort()
+        p90_idx = min(len(secs) - 1, int(len(secs) * 0.9))
+        return {"count": len(secs), "median": statistics.median(secs), "p90": secs[p90_idx]}
 
     def save_context(self, entity_type: str, entity_slug: str, context: dict) -> None:
         from datetime import timezone
