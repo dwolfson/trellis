@@ -249,9 +249,12 @@ either type.
 
 ### Publishing
 
-`EgeriaPublisher` finds or creates a `SourceControlLibrary` asset by exact `qualifiedName`,
-then attaches a `SurveyReport` and one annotation per result. The exact-match search is load-
-bearing: a prefix match once made two sibling repos share an asset, and each other's findings.
+`EgeriaPublisher` finds or creates the repository's own `Asset` by exact `qualifiedName`
+(`GitHubRepository::<github_url>`, linked to a singleton `SourceControlLibrary` for GitHub
+itself via `CapabilityAssetUse` — corrected 2026-09-14, see the module's own docstring for
+the type error this replaced), then attaches a `SurveyReport` and one annotation per result.
+The exact-match search is load-bearing: a prefix match once made two sibling repos share an
+asset, and each other's findings.
 
 ---
 

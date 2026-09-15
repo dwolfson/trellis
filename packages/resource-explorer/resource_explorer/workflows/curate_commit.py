@@ -10,7 +10,7 @@ step on the record, and the next step runs unless it depends on it.
 
 Steps, in order:
   publish_asset     survey + publish, the existing publish path -- creates
-                    or finds the SourceControlLibrary asset and links a
+                    or finds the repository's own Asset and links a
                     SurveyReport (measurements LINKED, not copied)
   classifications   enrichment judgements COPIED onto the asset as
                     Confidentiality / Criticality / Retention, with the

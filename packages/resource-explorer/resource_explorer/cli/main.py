@@ -1158,7 +1158,7 @@ def survey(
 
     Without --publish: prints the survey as a markdown report (no Egeria required).
     With --publish: also pushes to Egeria.  Sub-projects that share a GitHub URL
-    with their parent will share the same SourceControlLibrary asset in Egeria.
+    with their parent will share the same repository Asset in Egeria.
 
     Examples:
 
@@ -1472,7 +1472,7 @@ def egeria_reports(
     asset_guid = registry.get_egeria_asset_guid(slug)
     console.print(f"\n[bold]Egeria surveys for {project.display_name}[/bold]")
     if asset_guid:
-        console.print(f"Asset GUID : [cyan]{asset_guid}[/cyan]  (SourceControlLibrary)")
+        console.print(f"Asset GUID : [cyan]{asset_guid}[/cyan]")
     else:
         console.print("Asset GUID : [dim]not registered[/dim]")
     console.print(f"Platform   : {reader.platform_url}\n")

@@ -226,8 +226,11 @@ class EgeriaResync:
         stale = []
         for r in rows:
             try:
-                check = am.find_software_capabilities(
-                    search_string=f"SourceControlLibrary::{r['github_url']}",
+                # find_assets, not find_software_capabilities: the repository
+                # is a plain Asset since the 2026-09-14 SourceControlLibrary
+                # correction (egeria_publisher.py's module docstring).
+                check = am.find_assets(
+                    search_string=f"GitHubRepository::{r['github_url']}",
                     starts_with=True, ignore_case=False, output_format="JSON",
                 )
             except Exception as exc:
