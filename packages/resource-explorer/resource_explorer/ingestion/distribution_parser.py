@@ -60,9 +60,18 @@ def _pyproject(path: Path) -> dict | None:
     name = project.get("name") or (data.get("tool", {}).get("poetry", {}) or {}).get("name")
     if not name:
         return None
-    scripts = sorted((project.get("scripts") or {}).keys())
-    if not scripts:
-        scripts = sorted(((data.get("tool", {}).get("poetry", {}) or {}).get("scripts") or {}).keys())
+    # `scripts` stays a bare list of names — every existing reader (deployment_
+    # evidence.py, curate.py, tests) treats it that way. `script_targets` is
+    # new: the name -> "module:function" mapping the manifest actually
+    # declares, needed by interface_surface's `declared` rung to say what the
+    # entry point IS ("pyegeria.cli:main"), not just that one exists.
+    project_scripts = project.get("scripts") or {}
+    script_table = "[project.scripts]"
+    if not project_scripts:
+        project_scripts = (data.get("tool", {}).get("poetry", {}) or {}).get("scripts") or {}
+        script_table = "[tool.poetry.scripts]"
+    scripts = sorted(project_scripts.keys())
+    script_targets = {k: str(v) for k, v in project_scripts.items()}
     packages: list[str] = []
     tool = data.get("tool", {}) or {}
     st = tool.get("setuptools", {}) or {}
@@ -71,7 +80,9 @@ def _pyproject(path: Path) -> dict | None:
     elif isinstance((tool.get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {}) or {}).get("packages"), list):
         packages = list(tool["hatch"]["build"]["targets"]["wheel"]["packages"])
     return {"name": str(name), "ecosystem": "python", "scripts": scripts, "packages": packages,
-            "version": str(project.get("version") or "")}
+            "version": str(project.get("version") or ""),
+            "script_targets": script_targets,
+            "script_table": script_table if scripts else ""}
 
 
 def _package_json(path: Path) -> dict | None:
@@ -82,9 +93,18 @@ def _package_json(path: Path) -> dict | None:
     if not isinstance(data, dict) or not data.get("name") or data.get("private") is True:
         return None
     bin_ = data.get("bin")
-    scripts = sorted(bin_.keys()) if isinstance(bin_, dict) else ([data["name"]] if isinstance(bin_, str) else [])
+    if isinstance(bin_, dict):
+        scripts = sorted(bin_.keys())
+        script_targets = {k: str(v) for k, v in bin_.items()}
+    elif isinstance(bin_, str):
+        scripts = [data["name"]]
+        script_targets = {data["name"]: bin_}
+    else:
+        scripts, script_targets = [], {}
     return {"name": str(data["name"]), "ecosystem": "javascript", "scripts": scripts, "packages": [],
-            "version": str(data.get("version") or "")}
+            "version": str(data.get("version") or ""),
+            "script_targets": script_targets,
+            "script_table": "package.json bin" if scripts else ""}
 
 
 _GRADLE_GROUP = re.compile(r"^\s*group\s*=?\s*['\"]([^'\"]+)['\"]", re.M)

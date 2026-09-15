@@ -12,7 +12,11 @@ than they agree, which is why they are never merged into one verdict.
 """
 from __future__ import annotations
 
+import pytest
+
 from resource_explorer.surveyors.sub_surveyors.interface_surface import (
+    DECLARED,
+    IMPLEMENTED,
     IMPLIED,
     SPECIFIED,
     detect,
@@ -36,7 +40,7 @@ class TestEvidenceStrength:
         f = _by_name(detect([], ["fastapi"]))
         assert f["http_api"]["label"] == IMPLIED
         assert f["published_spec"]["label"] == "no"
-        assert "no contract is published" in f["published_spec"]["summary"]
+        assert "without a published contract" in f["published_spec"]["summary"]
 
     def test_a_spec_supersedes_the_weaker_duplicate(self):
         """With both signals present, the strong one stands alone — a repo
@@ -98,6 +102,177 @@ class TestHonestAbsence:
         substring match would credit any vendored bundle."""
         assert _by_name(detect(["docs/swagger-ui-bundle.js"], []))[
             "published_spec"]["label"] == "no"
+
+
+def _distribution(name="pyegeria", scripts=None, targets=None, table="[project.scripts]",
+                  manifest="pyproject.toml", ecosystem="python"):
+    return {"name": name, "ecosystem": ecosystem, "scripts": scripts or [],
+            "script_targets": targets or {}, "script_table": table,
+            "manifest": manifest, "packages": [], "version": ""}
+
+
+def _deployment_evidence(evidence):
+    return {"name": "pyegeria", "ecosystem": "python", "evidence": evidence,
+            "consumers_in_repo": [], "could_not_check": []}
+
+
+class TestTheThreeRungLadder:
+    """§6 of SPEC-ACTIONABLE-AND-HONEST.md: declared beats implemented beats
+    implied for the SAME interface kind, and each rung reads from stored
+    facts — never a second parse of the manifest or a second file walk."""
+
+    def test_a_declared_entry_point_beats_a_bare_dependency(self):
+        """The exact defect the designer named: `cli — implied. Depends on
+        click` on a repo whose own manifest names the entry point."""
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        f = _by_name(detect([], ["click"], dist, []))
+        assert f["cli"]["label"] == DECLARED
+        assert 'pyegeria = "pyegeria.cli:main" in [project.scripts]' in f["cli"]["summary"]
+        assert f["cli"]["detail"]["spec_path"] == "pyproject.toml"
+
+    def test_the_egeria_python_sentence(self):
+        """The designer's expected sentence, verbatim modulo punctuation."""
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        f = _by_name(detect([], [], dist, []))
+        evidence = f["cli"]["detail"]["evidence"][0]
+        assert evidence["value"] == 'pyegeria = "pyegeria.cli:main" in [project.scripts]'
+
+    def test_implemented_without_a_declared_entry_point(self):
+        """A __main__.py under the distribution's own package, and no
+        [project.scripts] entry at all — implemented, not implied, because
+        deployment_evidence already recorded the fact."""
+        de = [_deployment_evidence([{"kind": "dunder_main", "path": "pyegeria/__main__.py"}])]
+        f = _by_name(detect([], ["click"], [], de))
+        assert f["cli"]["label"] == IMPLEMENTED
+        assert f["cli"]["detail"]["evidence"][0]["value"] == "pyegeria/__main__.py"
+
+    def test_declared_beats_implemented_for_the_same_kind(self):
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        de = [_deployment_evidence([{"kind": "dunder_main", "path": "pyegeria/__main__.py"}])]
+        findings = detect([], ["click"], dist, de)
+        cli = [f for f in findings if f["check_name"] == "cli"]
+        assert len(cli) == 1 and cli[0]["label"] == DECLARED
+
+    def test_a_committed_spec_still_beats_a_declared_entry_point_for_a_different_kind(self):
+        """http_api and cli are independent kinds — a spec for one must not
+        suppress or alter the other's rung."""
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        f = _by_name(detect(["openapi.yaml"], [], dist, []))
+        assert f["http_api"]["label"] == DECLARED
+        assert f["cli"]["label"] == DECLARED
+        assert f["published_spec"]["label"] == "yes"
+        # An entry point is not a published CONTRACT — only the spec kind is.
+        assert f["published_spec"]["detail"]["kinds"] == ["http_api"]
+
+    def test_routes_could_not_check_when_nothing_records_them(self):
+        """The honest half of the defect: a fastapi dependency with no
+        openapi.yaml cannot be promoted to `implemented` because no
+        Discovery-tier step records route decorators — reported, not
+        guessed past."""
+        f = _by_name(detect([], ["fastapi"]))
+        assert f["http_api"]["label"] == IMPLIED
+        routes = f["http_api"]["detail"]["routes"]
+        assert routes is not None
+        assert routes["could_not_check_reason"] == "route decorators are not recorded"
+        assert "could not be checked" in f["http_api"]["summary"]
+
+    def test_cli_implied_carries_no_could_not_check_note(self):
+        """Unlike http_api, cli's implemented rung WAS checked (via
+        deployment_evidence's dunder_main) and simply found nothing — that is
+        a checked zero, not an unchecked gap, so no could_not_check_reason."""
+        f = _by_name(detect([], ["click"], [], []))
+        assert f["cli"]["label"] == IMPLIED
+        assert f["cli"]["detail"]["routes"] is None
+
+    def test_confidence_scale_declared_implemented_implied(self):
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        de = [_deployment_evidence([{"kind": "dunder_main", "path": "x/__main__.py"}])]
+        declared = _by_name(detect([], [], dist, []))["cli"]
+        implemented = _by_name(detect([], [], [], de))["cli"]
+        implied = _by_name(detect([], ["click"], [], []))["cli"]
+        assert declared["confidence"] > implemented["confidence"] > implied["confidence"]
+
+    def test_item_keys_stay_unique_per_kind(self):
+        """Never two rows for the same interface kind, whatever the mix of
+        evidence — the list-shaped item_key contract test_annotation_check_
+        names.py enforces at the surveyor layer."""
+        dist = [_distribution(scripts=["pyegeria"], targets={"pyegeria": "pyegeria.cli:main"})]
+        de = [_deployment_evidence([{"kind": "dunder_main", "path": "x/__main__.py"}])]
+        findings = detect(["openapi.yaml"], ["click", "fastapi"], dist, de)
+        names = [f["check_name"] for f in findings]
+        assert len(names) == len(set(names))
+
+    def test_none_passed_for_the_new_parameters_behaves_like_before(self):
+        """Every pre-existing call site (and every test above this class)
+        passes only (paths, deps) — the new parameters must default safely."""
+        assert detect([], ["fastapi"]) == detect([], ["fastapi"], None, None)
+
+
+class TestHeadlineWording:
+    """The designer's exact headline (§6): "2 interfaces declared or
+    implemented · 0 with a published contract" — a task, not a judgement."""
+
+    @pytest.fixture
+    def registry(self, tmp_path):
+        from resource_explorer.registry import Project, ProjectRegistry
+        r = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+        r.add(Project(slug="p", display_name="P", github_url="https://github.com/x/p", description=""))
+        return r
+
+    def test_declared_and_implemented_count_toward_the_headline(self, registry):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _interface_surface_headline,
+        )
+
+        registry.upsert_finding("p", "interface_surface", [
+            {"check_name": "cli", "label": DECLARED, "summary": "declared", "detail": {}},
+            {"check_name": "http_api", "label": IMPLEMENTED, "summary": "implemented", "detail": {}},
+            {"check_name": "published_spec", "label": "no", "summary": "no spec", "detail": {"kinds": []}},
+        ])
+        h = _interface_surface_headline(registry, "p")
+        assert h["label"] == "2 interfaces declared or implemented · 0 with a published contract"
+        assert h["tone"] == "warn"
+
+    def test_a_published_contract_is_counted_and_toned_good(self, registry):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _interface_surface_headline,
+        )
+
+        registry.upsert_finding("p", "interface_surface", [
+            {"check_name": "http_api", "label": DECLARED, "summary": "declared", "detail": {}},
+            {"check_name": "published_spec", "label": "yes", "summary": "yes",
+             "detail": {"kinds": ["http_api"]}},
+        ])
+        h = _interface_surface_headline(registry, "p")
+        assert h["label"] == "1 interface declared or implemented · 1 with a published contract"
+        assert h["tone"] == "good"
+
+    def test_implied_only_never_reaches_the_headline_as_declared(self, registry):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _interface_surface_headline,
+        )
+
+        registry.upsert_finding("p", "interface_surface", [
+            {"check_name": "cli", "label": IMPLIED, "summary": "implied", "detail": {}},
+            {"check_name": "published_spec", "label": "no", "summary": "no spec", "detail": {"kinds": []}},
+        ])
+        h = _interface_surface_headline(registry, "p")
+        assert "implied, no published contract" in h["label"]
+
+    def test_the_old_specified_label_still_counts_as_strong(self, registry):
+        """Rows a survey run before this migration left in the table — read-
+        side compatibility, per interface_surface.py's own SPECIFIED note."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _interface_surface_headline,
+        )
+
+        registry.upsert_finding("p", "interface_surface", [
+            {"check_name": "http_api", "label": "specified", "summary": "old label", "detail": {}},
+            {"check_name": "published_spec", "label": "yes", "summary": "yes",
+             "detail": {"kinds": ["http_api"]}},
+        ])
+        h = _interface_surface_headline(registry, "p")
+        assert h["label"].startswith("1 interface declared or implemented")
 
 
 class TestRegistration:

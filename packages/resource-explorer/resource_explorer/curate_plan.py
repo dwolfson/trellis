@@ -161,15 +161,22 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
                                state="needs_human"))
 
     iface = _fact(layer, slug, "interface_surface")
-    # interface_surface's vocabulary is `specified` / `implied` / `no`
-    kinds = [f for f in _findings(iface) if f.get("check_name") != "published_spec" and f.get("label") in ("specified", "implied")]
+    # interface_surface's vocabulary became `declared` / `implemented` /
+    # `implied` / `no` on 2026-09-14 (SPEC-ACTIONABLE-AND-HONEST.md §6),
+    # replacing the old two-rung `specified` / `implied`. `specified` is kept
+    # here as an accepted alias for rows a survey run BEFORE that date left
+    # in the table — interface_surface.py itself never emits it again, so
+    # this is read-side compatibility only, not a live label.
+    _STRONG = ("declared", "implemented", "specified")
+    kinds = [f for f in _findings(iface) if f.get("check_name") != "published_spec"
+             and f.get("label") in (*_STRONG, "implied")]
     spec = next((f for f in _findings(iface) if f.get("check_name") == "published_spec"), None)
     if kinds:
         names = ", ".join(f["check_name"] for f in kinds)
         contract = "no contract" if (spec and spec.get("label") == "no") else "contract published"
         implied = all(f.get("label") == "implied" for f in kinds)
         what_it_is.append(_row(
-            "Endpoint", f"Endpoint × {len(kinds)} · {names} · {'implied' if implied else 'specified'}, {contract}",
+            "Endpoint", f"Endpoint × {len(kinds)} · {names} · {'implied' if implied else 'declared or implemented'}, {contract}",
             evidence="; ".join(f.get("summary", "") for f in kinds)[:400], source="interface_surface",
             state=iface.get("state", ""), count=len(kinds), members={"analysis_id": "interface_surface"},
             detail={"interfaces": [f["check_name"] for f in kinds], "implied": implied}))
