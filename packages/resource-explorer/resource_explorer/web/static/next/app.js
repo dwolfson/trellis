@@ -61,6 +61,8 @@ import {
   getComponentLeaves,
   postBranchVerdicts,
   postDepthOfferOutcome,
+  getCatalogueDepthOffer,
+  postCatalogueDepthOfferOutcome,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -5634,7 +5636,8 @@ async function renderCurate(slug) {
           class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalogue →</button>
         <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
-      ${curateRecordHtml(latest)}`;
+      ${curateRecordHtml(latest)}
+      <div id="catalogue-depth-offer"></div>`;
 
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
@@ -5666,6 +5669,7 @@ async function renderCurate(slug) {
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
         draw();
+        renderCatalogueDepthOffer(slug, host);
       } catch (err) {
         b.disabled = false; b.textContent = 'Catalogue →';
         const why = err.status === 401 ? 'sign in to catalogue' : err.status === 409 ? err.message : `not catalogued: ${err.message}`;
@@ -5675,6 +5679,74 @@ async function renderCurate(slug) {
   };
   draw();
   renderComponentTree(slug);
+  renderCatalogueDepthOffer(slug, host);
+}
+
+/* ── The layer-2 catalogue-depth offer ────────────────────────────────────
+ *
+ * DepthOffer's three rules (FUNNEL-COST-RULINGS §3), applied to promoting
+ * accepted architecture-recovery verdicts into real Egeria components
+ * instead of running never-run analyses (owner's ruling, 2026-09-15, on
+ * REPLY-CATALOGUE-IN-LAYERS.md §3):
+ *
+ *   not a nag   — offered once per catalogue record, in the pane, never a
+ *                 modal (the backend refuses a second write on the same
+ *                 record; already_decided is the UI's own courtesy check).
+ *   not a gate  — layer 1 is already committed by the time this appears;
+ *                 nothing here waits on an answer.
+ *   not a scold — "N components recovered, M not catalogued" is a fact
+ *                 about the record. No imperative sentence; the reader
+ *                 decides whether it matters.
+ *
+ * Unlike DepthOffer, "accepted" here has no per-item choice to make: the
+ * accept/reject decision already happens branch by branch in the component
+ * tree (recordVerdicts). So the offer's one action is a link that opens the
+ * tree, not a queue-in-background button — "choose which" would be asking
+ * the reader to redo a decision the tree already offers properly.
+ */
+async function renderCatalogueDepthOffer(slug, host) {
+  const slot = host.querySelector('#catalogue-depth-offer');
+  if (!slot) return;
+  let offer;
+  try { offer = await getCatalogueDepthOffer(slug); } catch { slot.innerHTML = ''; return; }
+  if (slug !== state.selectedSlug) return;   // a faster click, or a different resource, won
+  if (!offer.layer1_done || offer.already_decided || !offer.remaining_components) { slot.innerHTML = ''; return; }
+
+  const priceLine = () => {
+    const c = offer.cost || {};
+    if (c.basis !== 'measured') return `<span class="text-ink-muted">${esc(c.sentence || 'not yet measured')}</span>`;
+    return `<span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">${esc(c.sentence.replace(/^about [^(]+/, '').trim())}</span>`;
+  };
+  slot.innerHTML = `
+    <div data-catalogue-depth-offer class="mt-s3 border-t border-rule pt-s2">
+      <div class="text-caveat text-ink"><span class="tnum">${offer.total_components}</span> component${offer.total_components === 1 ? '' : 's'} recovered ·
+        <span class="tnum">${offer.remaining_components}</span> not catalogued.</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
+        <button data-catalogue-depth="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
+          >catalogue the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
+        <button data-catalogue-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
+        <span data-catalogue-depth-status class="text-provenance text-ink-muted"></span>
+      </div>
+    </div>`;
+  const box = slot.querySelector('[data-catalogue-depth-offer]');
+  const status = box.querySelector('[data-catalogue-depth-status]');
+  const finish = async (outcome) => {
+    try {
+      await postCatalogueDepthOfferOutcome(slug, offer.curation_id, outcome);
+    } catch (err) {
+      status.innerHTML = `<span class="text-accent-ink">${
+        err.status === 401 ? 'not recorded — sign in to answer the offer' : `not recorded: ${esc(err.message)}`}</span>`;
+      return;
+    }
+    if (outcome === 'declined') {
+      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the catalogue record</div>`;
+    } else {
+      box.remove();
+      document.getElementById('component-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+  box.querySelector('[data-catalogue-depth="declined"]').addEventListener('click', () => finish('declined'));
+  box.querySelector('[data-catalogue-depth="accepted"]').addEventListener('click', () => finish('accepted'));
 }
 
 

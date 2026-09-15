@@ -648,6 +648,18 @@ export const getDepthOffer = (slug) => get(`/api/projects/${encodeURIComponent(s
  *  outcome declined | accepted | chose, with the ids and run ids. */
 export const postDepthOfferOutcome = (githubUrl, { outcome, analysisIds = [], runIds = [] }) =>
   post('/api/discovery/disposition/depth-offer', { github_url: githubUrl, outcome, analysis_ids: analysisIds, run_ids: runIds });
+
+/** DepthOffer's sibling for layer 2 (owner's ruling, 2026-09-15): promoting
+ *  accepted architecture-recovery verdicts into real Egeria components,
+ *  instead of running never-run analyses. {slug, curation_id, layer1_done,
+ *  already_decided, total_components, accepted, remaining_components, cost}. */
+export const getCatalogueDepthOffer = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/catalogue-depth-offer`);
+
+/** Record the outcome on ONE catalogue record — once per record, same
+ *  outcome vocabulary as DepthOffer's. */
+export const postCatalogueDepthOfferOutcome = (slug, curationId, outcome) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(curationId)}/layer2-offer`,
+       { outcome });
 /* ── Records ────────────────────────────────────────────────────────────── */
 
 /** Save a report: the act of writing a list down. `members` null = the
