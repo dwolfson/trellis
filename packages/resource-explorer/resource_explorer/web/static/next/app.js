@@ -42,6 +42,7 @@ import {
   getResourceRuns,
   getSurveyCandidates,
   listSurveyDefinitions,
+  getAnalysesIndex,
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
@@ -3503,7 +3504,11 @@ async function loadSurveyPane() {
     ${!all.length ? paneMessage('No survey definitions for this resource',
         'The adapter registered none for this technology type. That is a fact about '
         + 'the catalog, not about the repository.') : ''}
-    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>`;
+    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
+
+    <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
+      <div class="text-caveat text-ink-muted">Reading the analyses…</div>
+    </div>`;
   bindSubTabs();
 
   el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
@@ -3519,6 +3524,188 @@ async function loadSurveyPane() {
       const ref = b.dataset.runSurvey || b.dataset.planSurvey;
       planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
     }));
+
+  renderAnalysesIndexSection(slug, stage);
+}
+
+/* ── Survey & analyses: the analyses half (SPEC-THE-STAGE-PAGE.md, points
+ * 1-3, "AnalysesIndex") ────────────────────────────────────────────────────
+ *
+ * The definitions above answer "what can I run"; this answers "what has
+ * this repo's catalog already got, and is it worth pressing". One call
+ * (getAnalysesIndex) carries the row AND its popover -- catalog is the
+ * entry's own to_dict, verbatim, so a description popover never needs a
+ * second fetch.
+ */
+const ANALYSES_SORT_KEY = 're-next.analysesIndexSort';
+
+function analysesIndexSort() {
+  try {
+    const v = localStorage.getItem(ANALYSES_SORT_KEY);
+    return ['name', 'never_run', 'cost'].includes(v) ? v : 'name';
+  } catch { return 'name'; }
+}
+
+/** State glyph from last_run_status/last_run_at -- the same vocabulary as
+ *  factGlyph, not re-derived: `success` -> measured, an explicit failure ->
+ *  error, nothing recorded -> unrun. */
+function analysisRowGlyph(row) {
+  if (!row.last_run_at) return factGlyph('unrun');
+  const s = String(row.last_run_status || '').toLowerCase();
+  if (s === 'success' || s === 'ok' || s === '') return factGlyph('measured');
+  if (s === 'failure' || s === 'error' || s === 'failed') return factGlyph('error');
+  return factGlyph('measured');
+}
+
+/** The compact two-number price this row wants -- "0.2s · 80s publish" or
+ *  "declared fast" -- not the fuller sentence priceLineHtml renders for the
+ *  run-choice popover, which is too much copy for a list row. */
+function analysisRowPrice(cost) {
+  if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) return 'price not known';
+  if (cost.basis === 'declared') return `declared ${esc(declaredWord(cost) || cost.sentence || '')}`;
+  const bits = [fmtSeconds(cost.steps_seconds != null ? cost.steps_seconds : cost.seconds)];
+  if (cost.publish_seconds) bits.push(`${fmtSeconds(cost.publish_seconds)} publish`);
+  return bits.join(' · ');
+}
+
+function analysisIndexRowHtml(row) {
+  const g = analysisRowGlyph(row);
+  const qn = (row.questions || []).length;
+  return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
+    <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+    <div class="min-w-0 flex-1">
+      <div class="flex flex-wrap items-baseline gap-s2">
+        <span class="text-answer text-ink">${esc(row.name || row.analysis_id)}</span>
+        <button type="button" data-analysis-popover="${esc(row.analysis_id)}"
+          class="cursor-pointer bg-transparent p-0 text-caveat text-ink-muted underline">what it does</button>
+        ${row.recommended ? `<span class="rounded-pill border border-accent px-2 py-[1px] text-provenance text-accent-ink">recommended</span>` : ''}
+      </div>
+      <div class="mt-[2px] text-provenance text-ink-muted">
+        ${qn
+          ? `<button type="button" data-analysis-questions="${esc(row.analysis_id)}"
+               class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${qn} question${qn === 1 ? '' : 's'} ›</button>`
+          : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
+        · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
+        · ${analysisRowPrice(row.cost)}
+      </div>
+    </div>
+    <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
+      class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
+      >${row.last_run_at ? 're-run' : 'run'} →</button>
+  </div>`;
+}
+
+/** The description popover: the full prose PLUS the catalog facts named in
+ *  the design (stage, declared run time, availability, perspectives) --
+ *  `row.catalog` is the analysis catalog entry's own to_dict, so nothing
+ *  here re-fetches to fill it. No ruleset-link field exists on the catalog
+ *  entry today; shown only when one is actually present, never invented. */
+function openAnalysisPopover(row) {
+  const c = row.catalog || {};
+  const d = openDialog(row.name || row.analysis_id, row.analysis_id);
+  const facts = [
+    ['stage', c.intent],
+    ['declared run time', c.run_time],
+    ['availability', c.availability],
+    ['perspectives', (c.perspectives || []).join(', ') || 'none declared'],
+    ['scope', c.target_shape],
+  ].filter(([, v]) => v);
+  d.querySelector('#wl-detail-body').innerHTML = `
+    <p class="max-w-[70ch] whitespace-pre-line">${esc(row.description || row.short_description || '')}</p>
+    <table class="mt-s3 w-full max-w-[50ch] border-collapse text-caveat">
+      ${facts.map(([k, v]) => `<tr class="border-b border-rule">
+        <td class="py-[4px] pr-s3 text-ink-muted">${esc(k)}</td>
+        <td class="py-[4px] text-ink">${esc(String(v))}</td>
+      </tr>`).join('')}
+    </table>`;
+}
+
+function openAnalysisQuestionsPopover(row) {
+  const d = openDialog(`Questions naming ${row.name || row.analysis_id}`, row.analysis_id);
+  d.querySelector('#wl-detail-body').innerHTML = (row.questions || []).map((q) => `
+    <div class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-s2">
+      <span class="min-w-0 flex-1">${esc(q.question)}</span>
+      <button type="button" data-goto-question="${esc(q.stage)}"
+        class="shrink-0 cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(q.stage)} ›</button>
+    </div>`).join('') || '<p>No question names this analysis.</p>';
+  d.querySelectorAll('[data-goto-question]').forEach((b) => b.addEventListener('click', () => {
+    state.stage = b.dataset.gotoQuestion;
+    state.subTab = 'questions';
+    closeCellDetail();
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  }));
+}
+
+async function renderAnalysesIndexSection(slug, stage) {
+  const host = $('analyses-index-section');
+  if (!host) return;
+  let data;
+  try {
+    data = await getAnalysesIndex(slug);
+  } catch (err) {
+    if (slug === state.selectedSlug && state.subTab === 'survey') {
+      host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
+    }
+    return;
+  }
+  if (slug !== state.selectedSlug || state.subTab !== 'survey') return;   // a faster click, or a different pane, won
+
+  const rows = data.analyses || [];
+  const sort = analysesIndexSort();
+  const sorted = [...rows].sort((a, b) => {
+    if (sort === 'never_run') return (b.last_run_at ? 0 : 1) - (a.last_run_at ? 0 : 1);
+    if (sort === 'cost') return (a.cost?.seconds ?? Infinity) - (b.cost?.seconds ?? Infinity);
+    return (a.name || a.analysis_id).localeCompare(b.name || b.analysis_id);
+  });
+  const here = sorted.filter((r) => r.tier === stage);
+  const elsewhere = sorted.filter((r) => r.tier !== stage);
+
+  host.innerHTML = `
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Analyses ·
+        <span class="tnum">${rows.length}</span> ·
+        <span class="tnum">${data.counts?.never_run ?? 0}</span> never run ·
+        <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</span>
+      <span class="ml-auto flex gap-[6px] text-caveat">
+        ${[['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
+          <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
+            class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">${esc(label)}</button>`).join('')}
+      </span>
+    </div>
+    ${here.map(analysisIndexRowHtml).join('') || `<p class="text-caveat text-ink-muted">No analyses run at this stage.</p>`}
+    ${elsewhere.length ? `
+      <details class="mt-s3">
+        <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
+          Other stages · <span class="tnum">${elsewhere.length}</span></summary>
+        ${elsewhere.map(analysisIndexRowHtml).join('')}
+      </details>` : ''}`;
+
+  host.querySelectorAll('[data-analyses-sort]').forEach((b) => b.addEventListener('click', () => {
+    try { localStorage.setItem(ANALYSES_SORT_KEY, b.dataset.analysesSort); } catch { /* per-viewer convenience only */ }
+    renderAnalysesIndexSection(slug, stage);
+  }));
+  host.querySelectorAll('[data-analysis-popover]').forEach((b) => b.addEventListener('click', () => {
+    openAnalysisPopover(rows.find((r) => r.analysis_id === b.dataset.analysisPopover));
+  }));
+  host.querySelectorAll('[data-analysis-questions]').forEach((b) => b.addEventListener('click', () => {
+    openAnalysisQuestionsPopover(rows.find((r) => r.analysis_id === b.dataset.analysisQuestions));
+  }));
+  host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
+    const aid = b.dataset.analysisRun;
+    b.disabled = true;
+    const original = b.textContent;
+    b.textContent = 'Queueing…';
+    try {
+      await runAnalysis(slug, aid);
+      b.textContent = 'Queued — reload to see it';
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = original;
+      b.title = err.status === 401 ? 'Sign in to run an analysis' : err.message;
+    }
+  }));
 }
 
 /** RUN GOES THROUGH THE SAME PREVIEW as the matrix's two plans.
