@@ -108,13 +108,36 @@ class Fact:
         return self.state in (MEASURED, NOTHING_FOUND, PARTIAL)
 
     def as_dict(self) -> dict:
+        # destination/destination_basis (SPEC-ACTIONABLE-AND-HONEST.md §3,
+        # destinations.py): read-time resolution, no stored field. `value`'s
+        # own "checks" list — the {check_name, label, ...} shape most
+        # REPO_ANALYSIS_RESULTS_MAP readers return — gets one per row,
+        # carrying this Fact's own `state` so a whole-analysis
+        # NOT_ESTABLISHED/disagreement (rule (1)) is never masked by a
+        # per-row label that happens to look fine. The Fact itself also
+        # carries a top-level destination for callers reading it as one
+        # finding (a whole_analysis_only analysis, or before any per-check
+        # rows are inspected) — check_name == analysis_id, matching how
+        # destinations._check_declaration resolves a whole-analysis id.
+        from resource_explorer.destinations import annotate_checks, resolve_destination
+
+        value = dict(self.value or {})
+        checks = value.get("checks")
+        if isinstance(checks, list):
+            value["checks"] = annotate_checks(
+                self.analysis_id, list(checks), whole_state=self.state,
+            )
+        destination, destination_basis = resolve_destination(
+            self.analysis_id, self.analysis_id, "", self.state,
+        )
         return {
             "analysis_id": self.analysis_id, "state": self.state,
             "headline": self.headline,
-            "value": self.value, "provenance": self.provenance,
+            "value": value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "can_run": self.can_run,
             "note": self.note, "is_known": self.is_known,
             "evidence_only": self.evidence_only,
+            "destination": destination, "destination_basis": destination_basis,
         }
 
 
@@ -784,7 +807,22 @@ class FactLayer:
 
     # ── many analyses ───────────────────────────────────────────────────────
     def facts(self, slug: str, analysis_ids: list) -> list:
-        return [self.fact(slug, a) for a in analysis_ids]
+        results = [self.fact(slug, a) for a in analysis_ids]
+        # The one choke point every consumer of "what is known about this
+        # resource" already goes through (resource_facts, bulk_resource_facts,
+        # the Questions tab's has_data checks) — so the gaps collection
+        # (gaps.py) stays current whenever the page is, with no separate
+        # scheduler loop. Best-effort: a resource with no registered project
+        # (or a fresh one this call raced with a deletion) must not turn an
+        # otherwise-successful facts read into a 500.
+        if results:
+            from resource_explorer.gaps import record_gaps_for
+
+            try:
+                record_gaps_for(self._registry, slug)
+            except ValueError as exc:
+                log.debug("gap recording skipped for %s: %s", slug, exc)
+        return results
 
     def answer(self, slug: str, question: dict) -> Envelope:
         """An envelope for one catalogued question.

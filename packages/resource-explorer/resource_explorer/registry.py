@@ -1916,6 +1916,36 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_rfa_dismissals_entity "
                 "ON rfa_dismissals(entity_slug)"
             )
+            # A finding about the ANALYSIS, not the repository — a
+            # disagreement between two measures, or a check that could not be
+            # established — belongs in a gaps list the project owns rather
+            # than on the resource's own findings (SPEC-ACTIONABLE-AND-HONEST.md
+            # §3, "the missing half is whose absence it is"). Upserted, keyed
+            # on (project_slug, analysis_id, gap_kind, check_name) — a repeat
+            # sighting of the same gap bumps last_seen_at rather than
+            # duplicating (see collect_gaps/upsert_gap in gaps.py), matching
+            # the finding rows it is derived from, which are themselves
+            # replaced per run rather than accumulated forever.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_gaps (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug     TEXT NOT NULL,
+                    analysis_id      TEXT NOT NULL,
+                    gap_kind         TEXT NOT NULL,
+                    check_name       TEXT NOT NULL DEFAULT '',
+                    sentence         TEXT NOT NULL DEFAULT '',
+                    evidence_json    TEXT DEFAULT NULL,
+                    first_seen_at    TEXT NOT NULL,
+                    last_seen_at     TEXT NOT NULL,
+                    resolved_at      TEXT DEFAULT NULL,
+                    rfa_activity_id  TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_gaps_identity "
+                "ON analysis_gaps(project_slug, analysis_id, gap_kind, check_name)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -3834,6 +3864,13 @@ class ProjectRegistry:
             # now enumerates the FKs so a future table cannot be forgotten.
             conn.execute("DELETE FROM project_analysis_findings WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_analysis_metrics WHERE project_slug = ?", (normalized,))
+            # analysis_gaps (gaps.py, added alongside destinations.py) — same
+            # omission this whole block documents, caught this time by
+            # test_remove_deletes_from_every_table_with_a_fk on first run
+            # rather than live, because that test now enumerates every FK to
+            # projects.slug instead of relying on someone remembering to add
+            # a line here.
+            conn.execute("DELETE FROM analysis_gaps WHERE project_slug = ?", (normalized,))
             # The four superseded per-kind tables from Phase B. The analysis-kind
             # redesign (D3) deliberately kept them rather than dropping them, for
             # a soak period — so they still exist, still carry a FK, and still
@@ -3862,7 +3899,7 @@ class ProjectRegistry:
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
         "project_data_profiles", "project_analysis_findings",
-        "project_analysis_metrics",
+        "project_analysis_metrics", "analysis_gaps",
     )
 
     # Every table keyed by (entity_type, entity_slug) that can carry
@@ -4422,6 +4459,119 @@ class ProjectRegistry:
             conn.execute(
                 "UPDATE project_analysis_findings SET egeria_annotation_guid = ? WHERE id = ?",
                 (guid, finding_id),
+            )
+
+    def upsert_gap(
+        self, project_slug: str, analysis_id: str, gap_kind: str, check_name: str,
+        sentence: str, evidence: dict | None = None, seen_at: str | None = None,
+    ) -> int:
+        """Record one sighting of a gap about the ANALYSIS, not the repository
+        (SPEC-ACTIONABLE-AND-HONEST.md §3) — a disagreement between two
+        measures, or a check that could not be established.
+
+        Upsert keyed on (project_slug, analysis_id, gap_kind, check_name) —
+        the identity index above enforces this at the database level too, so
+        a caller cannot duplicate a gap even if it calls this twice for the
+        same sighting. A repeat sighting bumps `last_seen_at` and refreshes
+        `sentence`/`evidence_json` (the underlying measurement may have
+        changed even though the gap itself has not); `first_seen_at` and any
+        existing `resolved_at`/`rfa_activity_id` are left untouched, so a gap
+        already worked stays that way until something explicitly clears it —
+        this method never resolves a gap and never reopens one.
+
+        Raises ValueError for an unregistered slug, same guard and reason as
+        `upsert_finding` — this table carries the same FOREIGN KEY."""
+        slug = self._normalize_slug(project_slug)
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record a gap for project '{slug}' — no such project "
+                "in the registry."
+            )
+        seen_at = seen_at or datetime.utcnow().isoformat()
+        evidence_json = json.dumps(evidence) if evidence else None
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM analysis_gaps WHERE project_slug = ? AND analysis_id = ? "
+                "AND gap_kind = ? AND check_name = ?",
+                (slug, analysis_id, gap_kind, check_name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE analysis_gaps SET last_seen_at = ?, sentence = ?, "
+                    "evidence_json = ? WHERE id = ?",
+                    (seen_at, sentence, evidence_json, existing["id"]),
+                )
+                return existing["id"]
+            conn.execute(
+                "INSERT INTO analysis_gaps "
+                "(project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (slug, analysis_id, gap_kind, check_name, sentence, evidence_json,
+                 seen_at, seen_at),
+            )
+            # Neither cursor wrapper exposes lastrowid across both dialects
+            # (see PostgresCursorWrapper/SQLiteCursorWrapper above) — read the
+            # id back by the same identity the unique index enforces, exactly
+            # as the existing-row branch above already does.
+            row = conn.execute(
+                "SELECT id FROM analysis_gaps WHERE project_slug = ? AND analysis_id = ? "
+                "AND gap_kind = ? AND check_name = ?",
+                (slug, analysis_id, gap_kind, check_name),
+            ).fetchone()
+            return row["id"] if row else 0
+
+    def list_gaps(self, project_slug: str) -> list[dict]:
+        """Every unresolved-or-not gap for one project, newest-seen first.
+        Includes resolved rows — a caller wanting only open ones filters on
+        `resolved_at is None`, same convention as this file's other
+        soft-delete/soft-resolve columns (`superseded_at`, `cleared_at`)."""
+        slug = self._normalize_slug(project_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at, resolved_at, rfa_activity_id "
+                "FROM analysis_gaps WHERE project_slug = ? ORDER BY last_seen_at DESC",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["evidence"] = json.loads(d.pop("evidence_json") or "null") or {}
+            except (TypeError, ValueError):
+                d["evidence"] = {}
+                d.pop("evidence_json", None)
+            out.append(d)
+        return out
+
+    def get_gap(self, gap_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at, resolved_at, rfa_activity_id "
+                "FROM analysis_gaps WHERE id = ?",
+                (gap_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["evidence"] = json.loads(d.pop("evidence_json") or "null") or {}
+        except (TypeError, ValueError):
+            d["evidence"] = {}
+            d.pop("evidence_json", None)
+        return d
+
+    def mark_gap_rfa(self, gap_id: int, rfa_activity_id: str) -> None:
+        """Stamp the RFA raised for one gap. Never overwrites an existing
+        stamp — the route calling this checks for one first and refuses with
+        409 (same convention as outbox.py's retry route) rather than raising
+        a second RFA for a gap already worked."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE analysis_gaps SET rfa_activity_id = ? WHERE id = ?",
+                (rfa_activity_id, gap_id),
             )
 
     def analysis_result_summary(self, slugs: list, kinds: list) -> dict:

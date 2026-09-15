@@ -44,6 +44,24 @@ analyses:
       - soap
       - cli
       - published_spec
+    # destination (SPEC-ACTIONABLE-AND-HONEST.md §3, resource_explorer/destinations.py):
+    # each interface-kind check states whether the interface exists and how
+    # strongly — a fact, not something with a correct next action, so context
+    # by default. `implied` (a dependency suggests it, nothing confirms it) is
+    # the one rung the designer calls "worth looking for properly" — a task.
+    # Unsure of the exact label vocabulary interface_surface.py emits per kind
+    # beyond `specified`/`implied` (see its own SPECIFIED/IMPLIED constants) —
+    # left as a comment rather than guessed further.
+    destinations:
+      http_api: {default: context, labels: {implied: task}}
+      grpc: {default: context, labels: {implied: task}}
+      graphql: {default: context, labels: {implied: task}}
+      messaging: {default: context, labels: {implied: task}}
+      soap: {default: context, labels: {implied: task}}
+      cli: {default: context, labels: {implied: task}}
+      # The designer's own worked example (§3 table row 2): "no" is a task —
+      # raise an RFA to publish a spec; "yes" is context.
+      published_spec: {default: context, labels: {"no": task, "yes": context}}
 
   chaoss_metrics:
     findings_kind: chaoss_metrics
@@ -54,6 +72,32 @@ analyses:
       - contributor_turnover
       - release_frequency
       - time_to_first_response
+    # The designer's own worked example (§3 table row 1): elephant factor has
+    # no correct action on its own — whether concentrated authorship matters
+    # depends what the repo is for — so it is a judgement, informing the
+    # (not yet built, per §3's "the road to it, which nothing currently
+    # builds") sole-maintainer-risk Enrichment field. organizational_diversity
+    # and contributor_turnover are the same shape (a distribution, not a
+    # gap) — judgement. release_frequency is a plain fact — context.
+    # time_to_first_response usually reaches NOT_ESTABLISHED (issue/PR
+    # response times are not gathered — see the docs/coverage-audit premise
+    # this whole feature answers) which resolve_destination computes as
+    # `ours` regardless of this default; context is the fallback for the rare
+    # case it IS measured.
+    #
+    # judgement_field: null for all three below — checked against
+    # web/routes/context.py's ContextData/EnrichmentField (2026-09-14): the
+    # fixed fields are environment/org_owner/geographic_location/
+    # responsible_steward/backup_status/sensitivity/purpose/notes, and the
+    # free-keyed `enrichment` dict has no established key for "is
+    # concentrated authorship a risk here" yet. Naming one now would be
+    # inventing a field this layer does not own; left null and said so.
+    destinations:
+      elephant_factor: {default: judgement, judgement_field: null}
+      organizational_diversity: {default: judgement, judgement_field: null}
+      contributor_turnover: {default: judgement, judgement_field: null}
+      release_frequency: {default: context}
+      time_to_first_response: {default: context}
 
   cii_badge:
     findings_kind: cii_badge
@@ -62,6 +106,13 @@ analyses:
       - badge_level
       - badge_freshness
       - criteria_coverage
+    # badge_level/criteria_coverage are facts about a third party's badge —
+    # nothing here to raise an RFA about. badge_freshness's "stale" label is
+    # the one actionable case (re-check or re-apply for the badge).
+    destinations:
+      badge_level: {default: context}
+      badge_freshness: {default: context, labels: {stale: task}}
+      criteria_coverage: {default: context}
 
   refresh_plan:
     findings_kind: refresh_plan
@@ -75,6 +126,15 @@ analyses:
       - repo_rag_ingestion
       - repo_website_ingestion
       - refresh_needed
+    # Every one of these IS a "this step's data is stale" finding by
+    # construction (see the checks-list comment above) — always a task
+    # (re-run the step) when it fires, context when it does not.
+    destinations:
+      repo_file_inventory: {default: context, labels: {stale: task}}
+      repo_manifest_parse: {default: context, labels: {stale: task}}
+      repo_rag_ingestion: {default: context, labels: {stale: task}}
+      repo_website_ingestion: {default: context, labels: {stale: task}}
+      refresh_needed: {default: context, labels: {"yes": task, "true": task}}
 
   security_summary:
     findings_kind: security_summary
@@ -86,6 +146,16 @@ analyses:
       - security_posture
       - input_coverage
       - summary_freshness
+    # security_posture is a reducer over other checks with no single fix of
+    # its own (a scored/evaluative verdict, per the designer's "no correct
+    # action" rule) — judgement. input_coverage is a fact about what the
+    # summary could see (context, unsure whether a low-coverage label ever
+    # fires — left undeclared per-label rather than guessed). summary_freshness
+    # names its own remedy (re-run the summary) when stale.
+    destinations:
+      security_posture: {default: judgement, judgement_field: null}
+      input_coverage: {default: context}
+      summary_freshness: {default: context, labels: {stale: task}}
 
   community_support:
     findings_kind: community_support
@@ -96,6 +166,18 @@ analyses:
       - attention_exceeds_participation
       - channels
       - responsiveness
+    # attention/participation/channels are plain facts. responsiveness is
+    # documented (facts.py:_r_community, docs/coverage-audit-2026-09-11.md)
+    # as usually NOT_ESTABLISHED — resolve_destination computes `ours` for
+    # that regardless of this default. attention_exceeds_participation
+    # ("widely used, narrowly maintained") is the same shape as elephant
+    # factor — a signal with no correct action on its own — judgement.
+    destinations:
+      attention: {default: context}
+      participation: {default: context}
+      attention_exceeds_participation: {default: judgement, judgement_field: null}
+      channels: {default: context}
+      responsiveness: {default: context}
 
   foss_scorecard:
     findings_kind: foss_scorecard
@@ -117,6 +199,38 @@ analyses:
       - branch_protection
       - signed_releases
       - dependency_update
+    # Uniform vocabulary across all 16 (foss_scorecard.py: PASS="pass",
+    # FAIL="fail", PARTIAL="partial", UNKNOWN="unknown" — confirmed by
+    # reading the source, not guessed). `fail`/`partial` are absences someone
+    # can fix by turning on a GitHub setting or workflow step — task.
+    # `unknown` is "the analysis ran but did not report this check" or the
+    # supply-chain data was never collected — that is a coverage gap in OUR
+    # measurement, not a repo fact, but it is not a state result_status or
+    # this registry can declare into `ours` (rule (1) only fires on
+    # NOT_ESTABLISHED/disagreement, and foss_scorecard's `unknown` is a
+    # finding label, not a Fact-layer state) — left as context rather than
+    # invented; a fuller fix belongs to a future pass that gives
+    # foss_scorecard's own `unknown` a real result_status state.
+    # `license`/`maintained`/`contributors`/`releases` describe the project's
+    # own supply/governance shape rather than a single fixable control —
+    # context by default, still `task` on an outright `fail`.
+    destinations:
+      token_permissions: {default: context, labels: {fail: task, partial: task, pass: context}}
+      pinned_dependencies: {default: context, labels: {fail: task, partial: task, pass: context}}
+      dangerous_workflow: {default: context, labels: {fail: task, partial: task, pass: context}}
+      sbom: {default: context, labels: {fail: task, partial: task, pass: context}}
+      maintained: {default: context, labels: {fail: task}}
+      license: {default: context, labels: {fail: task}}
+      ci_tests: {default: context, labels: {fail: task, partial: task, pass: context}}
+      security_policy: {default: context, labels: {fail: task, partial: task, pass: context}}
+      releases: {default: context, labels: {fail: task}}
+      contributors: {default: context, labels: {fail: task}}
+      sast: {default: context, labels: {fail: task, partial: task, pass: context}}
+      vulnerabilities: {default: context, labels: {fail: task, partial: task, pass: context}}
+      code_review: {default: context, labels: {fail: task, partial: task, pass: context}}
+      branch_protection: {default: context, labels: {fail: task, partial: task, pass: context}}
+      signed_releases: {default: context, labels: {fail: task, partial: task, pass: context}}
+      dependency_update: {default: context, labels: {fail: task, partial: task, pass: context}}
 
   repo_conventions:
     findings_kind: repo_conventions
@@ -127,6 +241,16 @@ analyses:
       - deployment_docker
       - catalog_info
       - doc_breadth
+    # Labels confirmed by reading ingestion/repo_conventions_parser.py
+    # (2026-09-14): pass/gap for the first three and doc_breadth, present/
+    # absent for catalog_info. Each is a fixable absence — task on the
+    # negative label.
+    destinations:
+      security_policy_content: {default: context, labels: {gap: task, not_found: task, pass: context}}
+      automated_build: {default: context, labels: {gap: task, pass: context}}
+      deployment_docker: {default: context, labels: {gap: task, pass: context}}
+      catalog_info: {default: context, labels: {absent: task, present: context}}
+      doc_breadth: {default: context, labels: {gap: task, pass: context}}
 
   ci_quality:
     findings_kind: ci_quality
@@ -135,6 +259,15 @@ analyses:
       - ci_runs_tests
       - ci_runs_lint
       - ci_runs_build
+    # Unsure of the exact label vocabulary emitted by
+    # ingestion/ci_workflow_parser.py's three _CHECKS beyond "this is a
+    # keyword-evidence pass/gap style check, same shape as
+    # repo_conventions" — declared on that assumption; a gap here is
+    # fixable (add the missing CI step).
+    destinations:
+      ci_runs_tests: {default: context, labels: {gap: task, pass: context}}
+      ci_runs_lint: {default: context, labels: {gap: task, pass: context}}
+      ci_runs_build: {default: context, labels: {gap: task, pass: context}}
 
   security_scan:
     findings_kind: security_hygiene   # not the analysis id — see header
@@ -143,6 +276,13 @@ analyses:
       - security_policy
       - ci_config
       - license
+    # Confirmed by reading surveyors/sub_surveyors/security_hygiene.py
+    # (2026-09-14): each "gap" already carries a RequestForActionAnnotation
+    # with its own action_requested text — this check IS the task, verbatim.
+    destinations:
+      security_policy: {default: context, labels: {gap: task, pass: context}}
+      ci_config: {default: context, labels: {gap: task, pass: context}}
+      license: {default: context, labels: {gap: task, pass: context}}
 
   # ── The four GAP analyses (docs/gap-analyses-design.md), 2026-09-01 ────────
   #
@@ -164,6 +304,17 @@ analyses:
       - scan_summary
       - ruleset_available
       - ruleset_freshness
+    # scan_summary: a leaked secret found is urgent but "rotate/remove the
+    # secret" is not a repo-hygiene RFA the same shape as the others here —
+    # still a task by default since it is fixable, unsure of the exact
+    # clean/leak label vocabulary so no per-label override declared.
+    # ruleset_available/ruleset_freshness are about OUR scanning capability,
+    # not the repo — task when unavailable/stale (fixable by us), context
+    # otherwise.
+    destinations:
+      scan_summary: {default: task}
+      ruleset_available: {default: context, labels: {"no": task}}
+      ruleset_freshness: {default: context, labels: {stale: task}}
 
   telemetry_scan:
     findings_kind: telemetry_scan_findings
@@ -171,6 +322,14 @@ analyses:
     checks:
       - scan_summary
       - disclosure_document
+    destinations:
+      # A telemetry call site found is a fact about the repo, not
+      # automatically a problem — whether it needs disclosure is a
+      # judgement (does the deployment context require it).
+      scan_summary: {default: judgement, judgement_field: null}
+      # Absent disclosure with telemetry present is fixable — add the
+      # document. Unsure of exact label vocabulary for "absent".
+      disclosure_document: {default: context, labels: {absent: task, missing: task}}
 
   contribution_provenance:
     findings_kind: contribution_provenance_findings
@@ -185,6 +344,19 @@ analyses:
       - cla_dco_stated
       - cla_dco_enforced
       - cla_dco_provenance
+    destinations:
+      scan_summary: {default: context}
+      # Not stated is fixable — add a CONTRIBUTING/DCO statement.
+      cla_dco_stated: {default: context, labels: {gap: task, absent: task}}
+      # This header's own comment says cla_dco_enforced currently cannot
+      # reach a gap verdict at all (no branch-protection data fetched) — it
+      # reports UNVERIFIED, i.e. result_status NOT_ESTABLISHED, which
+      # resolve_destination already computes as `ours` regardless of any
+      # default declared here. context is the honest fallback for the day
+      # it can be measured.
+      cla_dco_enforced: {default: context}
+      # A combined verdict over the two above — no single fix of its own.
+      cla_dco_provenance: {default: context}
 
   sla_content:
     findings_kind: sla_content_findings
@@ -192,6 +364,10 @@ analyses:
     checks:
       - scan_summary
       - sla_content
+    destinations:
+      scan_summary: {default: context}
+      # Absent SLA content is fixable — document response/support commitments.
+      sla_content: {default: context, labels: {gap: task, absent: task}}
 
   security_features:
     findings_kind: security_features
@@ -201,6 +377,13 @@ analyses:
       - secret_scanning_push_protection
       - secret_scanning_non_provider_patterns
       - dependabot_security_updates
+    # Confirmed (security_features.py): pass/gap, gap = the GitHub setting
+    # is off — a togglable fix, task.
+    destinations:
+      secret_scanning: {default: context, labels: {gap: task, pass: context}}
+      secret_scanning_push_protection: {default: context, labels: {gap: task, pass: context}}
+      secret_scanning_non_provider_patterns: {default: context, labels: {gap: task, pass: context}}
+      dependabot_security_updates: {default: context, labels: {gap: task, pass: context}}
 
   documentation_coverage:
     findings_kind: documentation      # not the analysis id — see header
@@ -209,6 +392,16 @@ analyses:
       - collection_present
       - hygiene_files
       - quality_score
+    # Confirmed (surveyors/sub_surveyors/documentation.py): collection_present
+    # and hygiene_files carry which doc types/hygiene files WERE found as
+    # their label (a descriptive fact, not a pass/gap flag) — context.
+    # quality_score's label is Comprehensive/Partial/Minimal/Unverified — a
+    # scored, evaluative verdict with no single correct action (the
+    # designer's own example of the judgement shape) — judgement.
+    destinations:
+      collection_present: {default: context}
+      hygiene_files: {default: context}
+      quality_score: {default: judgement, judgement_field: null}
 
   repo_classification:
     findings_kind: repo_classification
@@ -226,18 +419,49 @@ analyses:
       - expected_api-reference
       - expected_examples
       - expected_changelog
+    # repo_role/architecture_recovery_gate are classification facts driving
+    # what else runs, not something a repo owner acts on. classification_error
+    # is about OUR classifier's own trouble, not the repository — context
+    # rather than a repo-owner task; it is not a NOT_ESTABLISHED result_status
+    # state so resolve_destination's computed `ours` rule does not apply to
+    # it, and inventing a static `ours` here would violate rule (1)'s "never
+    # declared statically" — left as context and said so.
+    # expected_* are built at runtime as f"expected_{item.kind}" (see this
+    # file's own comment above) against github/expectations.py's doc-type
+    # table — unsure of the exact present/missing label vocabulary, declared
+    # on the same pass/gap-style assumption as repo_conventions.
+    destinations:
+      repo_role: {default: context}
+      architecture_recovery_gate: {default: context}
+      classification_error: {default: context}
+      expected_readme: {default: context, labels: {gap: task, missing: task, pass: context}}
+      expected_architecture: {default: context, labels: {gap: task, missing: task, pass: context}}
+      expected_deployment: {default: context, labels: {gap: task, missing: task, pass: context}}
+      expected_api-reference: {default: context, labels: {gap: task, missing: task, pass: context}}
+      expected_examples: {default: context, labels: {gap: task, missing: task, pass: context}}
+      expected_changelog: {default: context, labels: {gap: task, missing: task, pass: context}}
 
   license_classification:
     findings_kind: license_classification
     source: surveyors/sub_surveyors/license_classifier.py:70-133
     checks:
       - license_risk_tier
+    # A risk TIER (e.g. permissive/copyleft/proprietary/unknown) has no
+    # single correct action — whether copyleft matters depends what the
+    # repo is for — judgement, per the designer's model. "unknown" (no
+    # license identified at all) is the one label with a clear fix.
+    destinations:
+      license_risk_tier: {default: judgement, judgement_field: null, labels: {unknown: task}}
 
   maturity:
     findings_kind: maturity
     source: surveyors/sub_surveyors/maturity.py:41-108
     checks:
       - project_maturity
+    # The designer's own worked example (§3 table row 3): "project maturity —
+    # established" is context, nothing to do.
+    destinations:
+      project_maturity: {default: context}
 
   # `check_name` here is NOT a check in the pass/fail sense the rest of this
   # section uses — it names which of two independent survey steps' component
@@ -262,6 +486,12 @@ analyses:
     checks:
       - detect
       - coupling
+    # Which of two survey steps' component sets a diagram was rendered from
+    # (see this entry's own header comment) — provenance metadata about how
+    # the picture was built, not a finding a repo owner acts on.
+    destinations:
+      detect: {default: context}
+      coupling: {default: context}
 
 # Analyses with no per-check decomposition — they answer as a whole, so a
 # question joins to the analysis id directly and there is nothing finer to
@@ -284,6 +514,32 @@ whole_analysis_only:
   - rag_ingestion
   - website_ingestion
   - egeria_publish
+
+# destinations for `whole_analysis_only` ids (SPEC-ACTIONABLE-AND-HONEST.md
+# §3, resource_explorer/destinations.py). Each answers as a whole, so its
+# single implicit "check" is the analysis id itself — resource_explorer.
+# destinations._check_declaration looks these up with check_name == kind for
+# exactly that reason. Everything here is a fact or a run/ingestion
+# housekeeping result, never a per-check pass/gap the repo owner acts on
+# directly — context by default throughout. architecture_doc_lens and
+# architecture_summary are the two the designer's §4/§5 discussion names
+# directly ("a measured zero, not a gap in coverage" / "collapse per-
+# component findings into one statement") — both facts about what the
+# analysis found, not a task.
+whole_analysis_destinations:
+  architecture_doc_lens: {default: context}
+  architecture_summary: {default: context}
+  repository_health: {default: context}
+  dependency_analysis: {default: context}
+  language_file_classification: {default: context}
+  api_structure: {default: context}
+  code_symbol_extraction: {default: context}
+  data_file_profiling: {default: context}
+  manifest_parse: {default: context}
+  repo_profile_refresh: {default: context}
+  rag_ingestion: {default: context}
+  website_ingestion: {default: context}
+  egeria_publish: {default: context}
 
 # Excluded — `check_name` is an instance key here, not a check. See header.
 instance_keyed_not_checks:
