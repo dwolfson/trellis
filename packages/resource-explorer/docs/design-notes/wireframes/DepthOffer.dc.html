@@ -1,0 +1,159 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .btn{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+         border:1px solid var(--accent);border-radius:2px;color:var(--accent-ink);padding:4px 10px}
+    .btn-quiet{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+               border:1px solid var(--rule);border-radius:2px;color:var(--ink-muted);padding:4px 10px}
+    .arow{display:grid;grid-template-columns:minmax(0,1fr) 150px 90px;gap:var(--s3);
+          padding:5px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+  </style>
+</helmet>
+
+<div style="width:1000px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Disposition &middot; §3</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:28ch">Keep investigating, and the price of meaning it</h1>
+    <p style="max-width:74ch;color:var(--ink-muted);margin:0">
+      The measurement said depth is not driven by the keep/stop decision &mdash; eight of sixteen terminal
+      verdicts had no attributable run before them. This is the join: at the moment someone records
+      <em>investigating</em> or <em>tracking</em>, the analyses that would deepen it are named, priced with the
+      split you now have, and <strong style="font-weight:500;color:var(--ink)">offered</strong>. Nothing queues
+      from a verdict.
+    </p>
+  </div>
+
+  <!-- the verdict just recorded -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">Just recorded</div>
+    <div class="prov" style="color:var(--ink-muted)">
+      <span style="color:var(--ink);font-size:15px">investigating</span> &middot;
+      <span class="tnum">just now</span> &middot; <span class="mono">dwolfson</span> &middot;
+      worth a look before <span class="tnum">6.2</span>
+    </div>
+  </div>
+
+  <!-- the offer -->
+  <div style="margin-top:var(--s3);border:1px solid var(--rule-strong);border-radius:2px;padding:var(--s4)">
+    <div style="font-size:17px" class="h">This verdict does not schedule anything.</div>
+    <p style="margin:var(--s2) 0 var(--s3);max-width:70ch">
+      Four analyses at the analysis and assessment tiers have never run on
+      <span class="mono">egeria-python</span>. Running them is what would make
+      <em>investigating</em> mean something a week from now.
+    </p>
+
+    <div class="caps" style="color:var(--ink-muted);padding-bottom:var(--s1);border-bottom:1px solid var(--rule)">
+      <span style="display:inline-block;width:calc(100% - 260px)">Never run here</span>
+      <span style="display:inline-block;width:150px">run &middot; publish</span>
+      <span>tier</span>
+    </div>
+    <div style="margin-top:var(--s1)">
+      <div class="arow">
+        <span class="mono">security_scan</span>
+        <span class="prov tnum" style="color:var(--ink-muted)">4s &middot; 18s</span>
+        <span class="prov" style="color:var(--ink-muted)">assessment</span>
+      </div>
+      <div class="arow">
+        <span class="mono">ci_quality</span>
+        <span class="prov tnum" style="color:var(--ink-muted)">2s &middot; 11s</span>
+        <span class="prov" style="color:var(--ink-muted)">assessment</span>
+      </div>
+      <div class="arow">
+        <span class="mono">architecture_recovery</span>
+        <span class="prov tnum" style="color:var(--ink-muted)">6s &middot; 1m 20s</span>
+        <span class="prov" style="color:var(--ink-muted)">analysis</span>
+      </div>
+      <div class="arow" style="border-bottom:0">
+        <span class="mono">interface_surface</span>
+        <span class="prov" style="color:var(--ink-muted)">declared <em>fast</em></span>
+        <span class="prov" style="color:var(--ink-muted)">analysis</span>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:baseline;gap:var(--s3);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--rule)">
+      <span style="font-size:15px">About <span class="tnum">12s</span> to run and about
+        <span class="tnum">1m 49s</span> to publish &mdash; <span class="tnum">2m 1s</span> in all across three;
+        <span class="mono">interface_surface</span> is not priced.</span>
+    </div>
+
+    <div style="display:flex;gap:var(--s2);margin-top:var(--s3)">
+      <button class="btn">Run these in background</button>
+      <button class="btn-quiet">Choose which</button>
+      <button class="btn-quiet">Not now</button>
+    </div>
+  </div>
+
+  <!-- what the decline records -->
+  <div style="margin-top:var(--s6);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s6)">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">The decline is data, and it is on the record</div>
+      <p style="margin:var(--s2) 0 0;max-width:52ch">
+        <em>Not now</em> is recorded on the verdict, not swallowed: the trail reads
+        <span class="prov" style="color:var(--ink-muted)">investigating &middot; just now &middot; dwolfson &middot;
+        depth offered, declined</span>.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:52ch;color:var(--ink-muted)">
+        Because the honest reading of a corpus of declines is not <em>the funnel is broken</em>, it is
+        <strong style="font-weight:500;color:var(--ink)">depth is not worth its price here</strong> &mdash; and
+        that is a finding about the analyses, not about the people. It cannot be read off anything if the
+        decline leaves no trace.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Three things it must not become</div>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:52ch">
+        <strong style="font-weight:500;color:var(--ink)">Not a nag.</strong> Once per verdict, in the pane, never
+        as a modal and never again for the same verdict.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:52ch">
+        <strong style="font-weight:500;color:var(--ink)">Not a gate.</strong> The verdict is already recorded when
+        this appears. Nothing here can undo it and nothing waits on an answer.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:52ch">
+        <strong style="font-weight:500;color:var(--ink)">Not a scold.</strong> <em>This verdict does not schedule
+        anything</em> is a fact about the mechanism. It is not <em>you should run these</em>.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:80ch">
+      <strong style="font-weight:500">On terminal verdicts it does not appear at all.</strong>
+      <em>abandoned</em> and <em>ignored</em> are decisions to stop spending, and offering to spend at exactly that
+      moment is the one place this would read as an argument. <em>recommended</em> and <em>using</em> get it only
+      when a repo has never been measured at all &mdash; adopting something nobody looked at is the case worth a
+      sentence, and it is four of the eight the measurement found.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

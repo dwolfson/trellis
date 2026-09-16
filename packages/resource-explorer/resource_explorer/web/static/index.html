@@ -3463,17 +3463,37 @@ function _renderFindingsListResults(data) {
   }).join('');
 }
 
+// What each repository_health score means and what counts as good, taken
+// verbatim from docs/dr-egeria/governance-metrics/re-governance-metrics.md —
+// keep the two in sync if a target or measurement there changes. A bare
+// "activity: 100" tells the reader nothing about scale or the pass bar; this
+// is why the table below existed unexplained until now.
+const METRIC_INFO = {
+  activity: { summary: 'How much recent development this repository is receiving (0-100).', target: '40+ is regular maintenance; below that is occasional.' },
+  community: { summary: 'Whether this repository has a community beyond its maintainers (0-100).', target: '30+ means more than a single-maintainer project.' },
+  release_cadence: { summary: 'How regularly this repository publishes releases (0-100).', target: '50+ means releases roughly every 50 days or better; 0 means no releases or a long gap.' },
+  freshness: { summary: 'How recently this repository was last touched (0-100).', target: '60+ means pushed within roughly the last 20 days.' },
+  overall: { summary: 'Unweighted mean of activity, community, release cadence and freshness.', target: '70+ healthy, 40-70 a warning, below 40 a gap. Missing this is not itself a verdict — a finished library needs no recent commits.' },
+};
+
 // Renders any {metric_name: value, ..., surveyed_at, detail?} shape (as
 // returned by registry.query_metrics()) as a small key-value grid.
 function _renderMetricsResults(data) {
   // _status is an envelope, not a metric — it must never render as a row.
   const entries = Object.entries(data).filter(([k]) => k !== 'surveyed_at' && k !== 'detail' && k !== '_status');
   if (!entries.length) return _renderEmptyResultState(data);
-  return entries.map(([name, value]) => `
+  return entries.map(([name, value]) => {
+    const info = METRIC_INFO[name];
+    const title = info ? ` title="${_esc(info.summary + ' Target: ' + info.target)}"` : '';
+    const label = info
+      ? `<span class="text-slate-500 border-b border-dotted border-slate-600 cursor-help"${title}>${_esc(name.replace(/_/g, ' '))}</span>`
+      : `<span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>`;
+    return `
     <div class="text-xs text-slate-300 flex justify-between gap-2">
-      <span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>
+      ${label}
       <span>${_esc(String(value))}</span>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 // Repo classification (docs/architecture-recovery-design.md §5.5b).

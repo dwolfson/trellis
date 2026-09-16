@@ -1,0 +1,222 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .act{font-family:var(--heading);font-weight:600;font-size:13px;color:var(--accent-ink);
+         background:transparent;border:0;padding:0;text-decoration:underline;text-underline-offset:3px}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .kind{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase;
+          border:1px solid var(--rule);border-radius:11px;padding:1px 9px;color:var(--ink-muted);white-space:nowrap}
+  </style>
+</helmet>
+
+<div style="width:1040px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Record &middot; report &middot; the three acts</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:28ch">Acting on what was true</h1>
+    <p style="max-width:76ch;color:var(--ink-muted);margin:0">
+      The three acts on a <em>list</em> operate on a live selection. On a report the rows are frozen, so the acts
+      mean something different and must say so: <strong style="font-weight:500;color:var(--ink)">they act on the
+      snapshot, and what they create points back at the record rather than at a query.</strong> That is the
+      difference between a work item someone can still read next month and one whose numbers have quietly moved
+      underneath it.
+    </p>
+  </div>
+
+  <!-- the report, compressed, with its footer -->
+  <div style="margin-top:var(--s6)">
+    <div style="display:flex;align-items:baseline;gap:var(--s2)">
+      <span class="kind">report</span>
+      <span class="h" style="font-size:17px">Dependencies to review before <span class="tnum">6.2</span></span>
+      <span class="prov" style="color:var(--ink-muted);margin-left:auto"><span class="tnum">32</span> of <span class="tnum">32</span> &mdash; nothing capped</span>
+    </div>
+    <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1);padding-bottom:var(--s3);border-bottom:1px solid var(--rule)">
+      from <span class="mono">dependency_analysis</span>, run <span class="tnum">2026-09-13 09:14</span> &middot;
+      written by <span class="mono">dwolfson</span>, <span class="tnum">09:16</span> &middot; a snapshot, not a query
+    </div>
+
+    <div style="background:var(--paper-surface);border:1px solid var(--rule);border-top:0;border-radius:0 0 2px 2px;padding:var(--s3)">
+      <div class="caps" style="margin-bottom:var(--s2)">
+        The whole report &middot; <span class="tnum">32</span> rows
+        <span style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--ink-muted)">&middot; as recorded <span class="tnum">2026-09-13</span></span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s3)">
+        <button class="act">add to work list</button>
+        <button class="act">raise RFA</button>
+        <button class="act">note in journal</button>
+        <span class="prov" style="color:var(--ink-muted);margin-left:var(--s3)">or <span style="text-decoration:underline;text-underline-offset:3px">pick rows</span> to act on some of them</span>
+      </div>
+    </div>
+    <p class="prov" style="color:var(--ink-muted);max-width:76ch;margin:var(--s2) 0 0">
+      <strong style="font-weight:500;color:var(--ink)">The whole report is the default</strong>, where a list
+      defaults to nothing. The rows were already chosen once &mdash; that is what saving them was. Picking is for
+      the person triaging a report they were handed, not for the person who wrote it.
+    </p>
+  </div>
+
+  <!-- the three outcomes -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">What each one makes</div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)">
+
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">add to work list</div>
+        <p style="margin:var(--s2) 0;font-size:15px">&ldquo;I will deal with this.&rdquo;</p>
+        <div class="prov" style="color:var(--ink-muted);border-top:1px solid var(--rule);padding-top:var(--s2)">
+          The rationale, composed on the server:
+        </div>
+        <p class="prov" style="margin:var(--s1) 0 0;color:var(--ink)">
+          <span class="tnum">32</span> of <span class="tnum">32</span> dependencies &middot; from
+          <span class="mono">dependency_analysis</span>, run <span class="tnum">2026-09-13</span> &middot;
+          <strong style="font-weight:500">as recorded in &ldquo;Dependencies to review before 6.2&rdquo;</strong>
+        </p>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2)">
+          Lands as: <span style="color:var(--ink)">now in &ldquo;Dependencies to fix before 6.2&rdquo;</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">raise RFA</div>
+        <p style="margin:var(--s2) 0;font-size:15px">&ldquo;Someone must.&rdquo;</p>
+        <div class="prov" style="color:var(--ink-muted);border-top:1px solid var(--rule);padding-top:var(--s2)">
+          The detail carries the same line, and the RFA
+          <strong style="font-weight:500;color:var(--ink)">points at the record</strong> &mdash; not at a
+          re-derived list.
+        </div>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          So the person who receives it opens exactly what the person who raised it was looking at. That is the
+          whole reason the record exists; an RFA that re-queried would make it decorative.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">note in journal</div>
+        <p style="margin:var(--s2) 0;font-size:15px">&ldquo;Worth knowing.&rdquo;</p>
+        <div class="prov" style="color:var(--ink-muted);border-top:1px solid var(--rule);padding-top:var(--s2)">
+          The entry opens <strong style="font-weight:500;color:var(--ink)">seeded with a citation, not a
+          sentence</strong>:
+        </div>
+        <p class="prov" style="margin:var(--s1) 0 0;font-family:var(--mono);font-size:12.5px;
+                  border:1px solid var(--rule);border-radius:2px;padding:var(--s2);color:var(--ink)">
+          Per &ldquo;Dependencies to review before 6.2&rdquo; (<span class="tnum">2026-09-13</span>):&#8201;<span style="border-left:1.5px solid var(--accent);margin-left:1px">&nbsp;</span>
+        </p>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2)">
+          The cheap one, and the one that makes the link I specified real: a journal entry citing a record is what
+          joins what someone thought to what was true when they thought it.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- staleness -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">When the report's evidence has moved</div>
+
+    <div style="margin-top:var(--s2);background:var(--paper-surface);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+      <div class="prov" style="color:var(--warn);display:flex;gap:var(--s2);align-items:baseline">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        <span>Out of date &mdash; <span class="mono">cve_scan</span> re-ran on <span class="tnum">09-12</span>. No correcting record has been written yet.</span>
+      </div>
+      <div class="caps" style="margin:var(--s3) 0 var(--s2)">
+        The whole report &middot; <span class="tnum">19</span> rows
+        <span style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--ink-muted)">&middot; as recorded <span class="tnum">2026-09-11</span></span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s3)">
+        <button class="act">add to work list</button>
+        <button class="act">raise RFA</button>
+        <button class="act">note in journal</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s6);margin-top:var(--s3)">
+      <p style="margin:0;max-width:52ch">
+        <strong style="font-weight:500">Not blocked &mdash; carried.</strong> The acts stay live, and what they
+        create says what it was made from:
+        <em>&hellip; as recorded in &ldquo;High advisories with a fix&rdquo;, whose evidence has since moved &mdash;
+        <span class="mono">cve_scan</span> re-ran <span class="tnum">09-12</span>.</em>
+      </p>
+      <p style="margin:0;max-width:52ch;color:var(--ink-muted)">
+        Flag, do not invalidate &mdash; the same rule the enrichment judgements follow, one layer out. Someone may
+        have perfectly good reasons to act on last week's list; what they may not do is act on it without the work
+        item knowing. A blocked button would just send them to copy the rows by hand.
+      </p>
+    </div>
+  </div>
+
+  <!-- used-by -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">And the record learns it was used</div>
+    <div style="margin-top:var(--s2);padding-left:var(--s3);border-left:2px solid var(--rule)">
+      <div class="prov" style="color:var(--ink-muted);padding:3px 0">
+        Used &middot; added to work list &ldquo;Dependencies to fix before <span class="tnum">6.2</span>&rdquo; &middot;
+        <span class="tnum">09-14 08:12</span> &middot; <span class="mono">dwolfson</span>
+      </div>
+      <div class="prov" style="color:var(--ink-muted);padding:3px 0">
+        Used &middot; cited in the journal &middot; <span class="tnum">09-14 08:20</span> &middot; <span class="mono">dwolfson</span>
+      </div>
+    </div>
+    <p style="margin:var(--s3) 0 0;max-width:76ch">
+      A record's <strong style="font-weight:500">uses are a separate append-only list attached to it</strong>, not
+      an edit of it. The content stays frozen &mdash; that is what makes it a record &mdash; while what it caused
+      accumulates beside it.
+    </p>
+    <p class="prov" style="margin:var(--s2) 0 0;max-width:76ch;color:var(--ink-muted)">
+      Which is the answer to the fair question of why a record should exist at all rather than a download: it is
+      traceable in both directions. From a work item you can reach what was true when it was raised; from the
+      record you can see what it caused. A CSV in someone's downloads folder does neither.
+    </p>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:82ch">
+      <strong style="font-weight:500">Four things these acts must not do.</strong>
+      Re-derive the list (the record becomes decorative the moment they do).
+      Mutate the record (uses attach; content is frozen).
+      Name a slug where a list has a name &mdash; <em>now in &ldquo;Dependencies to fix before 6.2&rdquo;</em>,
+      as promotion learned.
+      Or appear at all to an anonymous viewer without saying why: <em>Sign in to act on a report &mdash; a work
+      item needs someone who raised it.</em> Gated, not hidden.
+    </p>
+  </div>
+
+  <div style="margin-top:var(--s3);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:82ch;color:var(--ink-muted)">
+      <strong style="font-weight:500;color:var(--ink)">Still not drawn, and named:</strong> the
+      <em>write a correction</em> act. The sentence exists on an out-of-date record and there is no button, which
+      makes it a dead end &mdash; a record that can say it is wrong and offers no way to say what is right. It is
+      the next small round, not part of this one.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

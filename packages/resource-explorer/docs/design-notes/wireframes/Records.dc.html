@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-tint:#fff3e4;
+      --ok:#1d6b3f; --warn:#9c4212;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .kind{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase;
+          border:1px solid var(--rule);border-radius:11px;padding:1px 9px;color:var(--ink-muted);white-space:nowrap}
+    .rec{display:grid;grid-template-columns:96px minmax(0,1fr);gap:var(--s3);
+         padding:var(--s3) 0;border-bottom:1px solid var(--rule)}
+    .when{font-size:13px;color:var(--ink-muted);text-align:right;font-feature-settings:"tnum"}
+    .step{display:flex;gap:var(--s2);align-items:baseline;font-size:13px;line-height:1.6}
+  </style>
+</helmet>
+
+<div style="width:960px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Resource &middot; records</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:26ch">One record, two kinds</h1>
+    <p style="max-width:74ch;color:var(--ink-muted);margin:0">
+      Curate's commit already is a record: <em>an append-only row &mdash; who, when, what was selected, what the
+      manifest said</em>, with steps writing their outcomes to it as they land. Strip the steps and that is a
+      report. So a report is not a new type; it is the kind of record that has nothing to do but be true.
+      They list together, newest first, under the resource they are about.
+    </p>
+  </div>
+
+  <div style="margin-top:var(--s4)">
+
+    <div class="rec">
+      <div class="when"><span class="tnum">09-13</span><br><span class="tnum" style="opacity:.7">09:16</span></div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:var(--s2)">
+          <span class="kind">report</span>
+          <span class="h" style="font-size:17px">Dependencies to review before <span class="tnum">6.2</span></span>
+        </div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+          <span class="tnum">32</span> of <span class="tnum">32</span> dependencies &middot; from
+          <span class="mono">dependency_analysis</span>, run <span class="tnum">09:14</span> &middot;
+          <span class="mono">dwolfson</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rec">
+      <div class="when"><span class="tnum">09-12</span><br><span class="tnum" style="opacity:.7">23:41</span></div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:var(--s2)">
+          <span class="kind">catalogue</span>
+          <span class="h" style="font-size:17px">Catalogued to Egeria</span>
+        </div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+          <span class="tnum">31</span> of <span class="tnum">31</span> sub-resources &middot; plus
+          <span class="tnum">1</span> ancestor folder &middot; <span class="mono">dwolfson</span>
+        </div>
+        <div style="margin-top:var(--s2);padding-left:var(--s3);border-left:1px solid var(--rule)">
+          <div class="step"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg><span>publish the asset &middot; <span style="color:var(--ink-muted)">survey report linked</span></span></div>
+          <div class="step"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg><span>classifications &middot; <span style="color:var(--ink-muted)">Confidentiality, Retention &middot; steward <span class="mono">dwolfson</span>, interim</span></span></div>
+          <div class="step"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg><span>sub-resources &middot; <span style="color:var(--ink-muted)"><span class="tnum">31</span> locators</span></span></div>
+          <div class="step"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M5 12h14"/></svg><span>components &middot; skipped &mdash; <span style="color:var(--ink-muted)">accepted components materialize at acceptance</span></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rec">
+      <div class="when"><span class="tnum">09-11</span><br><span class="tnum" style="opacity:.7">17:02</span></div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:var(--s2)">
+          <span class="kind">report</span>
+          <span class="h" style="font-size:17px">High advisories with a fix</span>
+        </div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+          <span class="tnum">9</span> of <span class="tnum">19</span> advisories &middot; high, fix available &middot; from
+          <span class="mono">cve_scan</span>, run <span class="tnum">09-11</span> &middot; <span class="mono">dwolfson</span>
+        </div>
+        <div class="prov" style="color:var(--warn);margin-top:var(--s1)">
+          Out of date &mdash; <span class="mono">cve_scan</span> re-ran on <span class="tnum">09-12</span> and two of these
+          are no longer high. No correcting record has been written yet.
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="margin-top:var(--s6);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s6)">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">What both kinds carry</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        A name, a date, a server-stamped author, the selection as a snapshot of names, and the provenance of
+        every number in it. Append-only; a correction is a new record that names what it corrects.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">What only a catalogue record carries</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        Steps, their outcomes as they land, and a remedy when one fails. A report has no steps, which is why it
+        needs no worker and can be written by anyone signed in, in one press.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:80ch">
+      <strong style="font-weight:500">Where this sits.</strong> Records belong to the resource, beside the journal
+      and the verdict trail, not inside them &mdash; the journal is prose testimony and a thirty-two-row table
+      inside it fights what it is for. A journal entry may cite a record; that is the link between what someone
+      thought and what was true when they thought it.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

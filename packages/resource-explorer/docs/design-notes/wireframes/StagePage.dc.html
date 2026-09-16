@@ -1,0 +1,176 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-line:#444141; --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .tab{font-family:var(--heading);font-weight:600;font-size:14px;padding-bottom:3px}
+    .now{display:grid;grid-template-columns:150px minmax(0,1fr);gap:var(--s3);padding:var(--s2) 0;border-bottom:1px solid var(--rule)}
+  </style>
+</helmet>
+
+<div width="1120" style="width:1120px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">The owner's round &middot; points 1, 2, 3, 6, 7, 9, 10</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:30ch">The answer is in two places and the fact is in neither</h1>
+    <p style="max-width:78ch;margin:0">
+      Seven points, one cause. The owner says <em>&ldquo;the question focus is right; the facts are hard to
+      find&rdquo;</em>, and the code says why, more sharply than the complaint does: the
+      <strong style="font-weight:500">Questions</strong> row renders the answer and cannot reach the members at
+      all, while <strong style="font-weight:500">Dashboard &middot; by question</strong> renders
+      <em>the same sentence from the same envelope</em> so that it can offer a
+      <span class="mono">detail</span> disclosure whose payload opens in a <span class="tnum">290</span>px rail.
+      Two panes hold the answer; the fact is two clicks away, in the pane the person did not start in, in a column
+      too narrow for it.
+    </p>
+  </div>
+
+  <!-- what duplicates -->
+  <div style="margin-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">What a stage page renders more than once today</div>
+    <div style="margin-top:var(--s2)">
+      <div class="now"><span class="prov" style="color:var(--ink-muted)">the answer sentence</span>
+        <span class="prov">Questions row &middot; Dashboard by-question head &middot; the evidence rail's headline list &mdash; one string, three surfaces</span></div>
+      <div class="now"><span class="prov" style="color:var(--ink-muted)">findings and counts</span>
+        <span class="prov">under the question, again under the analysis, a third time in the rail</span></div>
+      <div class="now"><span class="prov" style="color:var(--ink-muted)">disagreements</span>
+        <span class="prov">computed twice from two sources, emitting the identical sentence</span></div>
+      <div class="now"><span class="prov" style="color:var(--ink-muted)">descriptions</span>
+        <span class="prov">first sentence on the survey row, the whole thing again behind <em>definition history</em>; the analysis's own description a third time on the dashboard section</span></div>
+      <div class="now"><span class="prov" style="color:var(--ink-muted)">re-run</span>
+        <span class="prov">three call sites, three interfaces &mdash; the priced popover, an unpriced dialog link, the batched depth-offer table</span></div>
+      <div class="now" style="border-bottom:0"><span class="prov" style="color:var(--ink-muted)">perspectives</span>
+        <span class="prov">on every Questions row, wrapping; absent from Survey and from Dashboard by-analysis &mdash; the inverse duplication</span></div>
+    </div>
+    <p class="prov" style="color:var(--ink-muted);max-width:78ch;margin:var(--s3) 0 0">
+      Point 6 is not a tidiness complaint. Each of these is a second place the same fact can be wrong in, and this
+      project has spent two weeks finding exactly that class of defect in the data. The page has it in the layout.
+    </p>
+  </div>
+
+  <!-- the spine -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The spine</div>
+    <p style="max-width:78ch;margin:var(--s2) 0 0;font-size:17px" class="h">
+      One object: the analysis. One entry: the question. One place for the fact: the pane, under the answer.
+    </p>
+    <p class="prov" style="max-width:78ch;color:var(--ink-muted);margin:var(--s2) 0 0">
+      Everything below follows from those three, and each of the owner's seven points lands on one of them.
+    </p>
+  </div>
+
+  <!-- the sub-tabs, after -->
+  <div style="margin-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">The sub-tab strip, after the fold</div>
+
+    <div style="background:var(--chrome);color:var(--chrome-ink);border-radius:2px;padding:var(--s3) var(--s4);display:flex;gap:var(--s6);align-items:baseline">
+      <span class="tab" style="color:var(--chrome-muted);border-bottom:1px dashed currentColor">Find repos</span>
+      <span class="tab" style="color:var(--chrome-ink);border-bottom:2px solid var(--accent)">Questions</span>
+      <span class="tab" style="color:var(--chrome-muted)">Survey &amp; analyses</span>
+      <span class="tab" style="color:var(--chrome-muted)">By analysis</span>
+      <span class="tab" style="color:var(--chrome-muted)">Disposition</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4);margin-top:var(--s3)">
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">Questions absorbs Dashboard &middot; by question</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          They render the same answer from the same envelope, so they are one pane. The Questions row gains the
+          <span class="mono">detail</span> disclosure the dashboard had, and it opens
+          <strong style="font-weight:500">in place, under the answer, in the pane</strong>.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          That is points <strong style="font-weight:500;color:var(--ink)">9</strong> and
+          <strong style="font-weight:500;color:var(--ink)">10</strong> answered by the same move: summary with
+          detail, collapsed by default, and the fact one click from the answer rather than two clicks and a pane
+          away. It also deletes the first three duplications outright.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">Survey becomes Survey &amp; analyses</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          Definitions <em>and</em> the analyses they run, in one index &mdash; because an analysis that answers no
+          catalogued question currently has no home in <span class="mono">/next</span> at all until a verdict
+          makes the depth offer mention it.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          Point <strong style="font-weight:500;color:var(--ink)">1</strong>. The old UI's per-analysis cards were
+          right to exist; what was wrong with them was the two hundred words of prose above the buttons, which is
+          point <strong style="font-weight:500;color:var(--ink)">3</strong>.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">Dashboard keeps only what it alone does</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          The by-analysis view survives under its own name, <em>By analysis</em>, because reading a repository one
+          analysis at a time is a real second question. The toggle goes: a view that is also a tab is a tab.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          <em>Measured, but no question asks</em> moves here with it &mdash; it is a statement about analyses, and
+          it belongs beside them rather than trailing the question list.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">The rail keeps provenance, and only provenance</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <em>Evidence</em> &mdash; what produced this, when, from how many measurements &mdash; is narrow by
+          nature and belongs in <span class="tnum">290</span>px. Rows do not.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          The code already admits why members went there: the Analysis pane
+          <em>&ldquo;held an empty ask box and eighteen hundred pixels of nothing&rdquo;</em>. The rail was chosen
+          because the pane was empty, not because the rail fits &mdash; and the pane is no longer empty.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- the smaller rulings -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">And the four that are copy or a missing clause</div>
+
+    <div style="margin-top:var(--s2)">
+      <div class="now"><span class="prov"><strong style="font-weight:500">2 &middot; granularity</strong></span>
+        <span class="prov">A definition row says how many of its steps fetch: <em><span class="tnum">7</span> steps &middot; none fetch</em> beside <em><span class="tnum">4</span> steps &middot; <span class="tnum">2</span> fetch</em>. That one clause is what stops a zero-fetch bundle and a genuine fetch reading as peers &mdash; and it is the axis the tiering already turns on.</span></div>
+
+      <div class="now"><span class="prov"><strong style="font-weight:500">6 &middot; other stages</strong></span>
+        <span class="prov">Two different facts render identically today. Either <em>these matched this stage's questions but belong to other stages</em>, or the stage filter did not resolve and the route returned every definition for the technology type &mdash; in which case say <em>the stage filter did not resolve &middot; showing all <span class="tnum">11</span> for this technology type</em>. A fast path must not lie.</span></div>
+
+      <div class="now"><span class="prov"><strong style="font-weight:500">7 &middot; perspectives</strong></span>
+        <span class="prov">Every pane either filters by them or says it does not. Survey sends them &mdash; the route already honours them and <span class="mono">/next</span> simply never passes them. <em>By analysis</em> says <em>not filtered by perspective</em>. And nothing held renders as <em>no perspective held &middot; everything shown</em>, never as a filtered state that happens to match all.</span></div>
+
+      <div class="now" style="border-bottom:0"><span class="prov"><strong style="font-weight:500">4 &middot; visuals</strong></span>
+        <span class="prov">Yes, but under one rule, because of why they were removed: a tile read <em>Health 82/100</em> while the card beneath it said <em>82.2</em>. <strong style="font-weight:500">A visual may only show a number the row beneath it also shows</strong>, from the same value, rounded the same way. Under that rule the radar can come back; without it, it will disagree with its own caption again.</span></div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

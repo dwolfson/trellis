@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-alt:#201f1d; --chrome-surface:#2d2b2b; --chrome-line:#444141;
+      --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16);
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66; --accent-tint:#fff3e4;
+      --warn:#9c4212;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--chrome);color:var(--chrome-ink);
+         font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+    a{color:var(--accent-ink);text-underline-offset:3px}
+    a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;line-height:1.3;
+          letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .q{font-family:var(--heading);font-weight:600;font-size:17px;line-height:1.25}
+    .chip{font-family:var(--heading);font-weight:600;font-size:13px;line-height:1.3;
+          border:1px solid var(--rule);border-radius:11px;padding:1px 9px;color:var(--ink-muted)}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .btn-dark{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+              border:1px solid var(--chrome-line);border-radius:2px;color:var(--accent-on-dark);
+              padding:5px 10px;display:inline-flex;align-items:center;gap:6px}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden">
+
+  <!-- masthead -->
+  <div style="display:flex;align-items:center;gap:var(--s3);padding:10px var(--s4);border-bottom:1px solid var(--chrome-line)">
+    <div style="font-family:var(--heading);font-weight:600;font-size:19px;letter-spacing:.01em">Resource Explorer</div>
+    <div class="mono" style="border:1px solid var(--accent);border-radius:2px;padding:2px 8px;color:var(--accent-on-dark);font-size:13px">egeria_python_git</div>
+    <div style="margin-left:auto;display:flex;gap:var(--s4);align-items:center" class="caps">
+      <span style="color:var(--chrome-muted)">Egeria Understanding</span>
+      <span style="color:var(--accent-on-dark)">Chat</span>
+    </div>
+  </div>
+
+  <!-- intent nav -->
+  <div style="display:flex;gap:var(--s6);padding:9px var(--s4);border-bottom:1px solid var(--chrome-line);
+              font-family:var(--heading);font-weight:600;font-size:14px">
+    <span style="color:var(--accent-on-dark)">Investigation</span>
+    <span style="color:var(--chrome-muted)">Scouting</span>
+    <span style="color:var(--chrome-muted)">Discovery</span>
+    <span style="color:var(--chrome-muted)">Assessment</span>
+    <span style="color:var(--chrome-ink);border-bottom:2px solid var(--accent);padding-bottom:2px">Analysis</span>
+    <span style="color:var(--chrome-muted)">Enrichment</span>
+    <span style="color:var(--chrome-muted)">Understanding</span>
+    <span style="color:var(--chrome-muted)">Curate</span>
+    <span style="color:var(--chrome-muted)">Automate</span>
+  </div>
+
+  <div style="flex:1;display:grid;grid-template-columns:212px minmax(0,1fr) 290px;min-height:0">
+
+    <!-- sidebar -->
+    <div style="border-right:1px solid var(--chrome-line);padding:var(--s3);display:flex;flex-direction:column;gap:var(--s3)">
+      <div class="caps" style="color:var(--chrome-muted)">Investigation</div>
+      <div style="border:1px solid var(--chrome-line);border-radius:2px;padding:5px 8px;font-size:13px">Egeria Understanding</div>
+      <div class="caps" style="color:var(--chrome-muted);margin-top:var(--s2)">Egeria project · <span class="tnum">5</span></div>
+      <div style="display:flex;flex-direction:column;gap:7px;font-size:13px">
+        <span>egeria</span>
+        <span>egeria-docs</span>
+        <span style="background:var(--chrome-surface);border-left:2px solid var(--accent);margin-left:-6px;padding:2px 6px">egeria-python</span>
+        <span>egeria-workspaces</span>
+        <span>odpi/egeria-trellis</span>
+      </div>
+    </div>
+
+    <!-- paper pane -->
+    <div style="background:var(--paper);color:var(--ink);padding:var(--s4) var(--s6);overflow:hidden">
+
+      <!-- the question row -->
+      <div style="border-bottom:1px solid var(--rule);padding-bottom:var(--s3)">
+        <div style="display:flex;align-items:baseline;gap:var(--s2)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1d6b3f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg>
+          <span class="q">What dependencies does this require?</span>
+          <span style="margin-left:auto;display:flex;gap:6px">
+            <span class="chip">Consumer</span><span class="chip">Data Expert</span><span class="chip">Security</span>
+          </span>
+        </div>
+        <div style="font-size:15px;margin:var(--s2) 0 var(--s1) 20px"><span class="tnum">32</span> dependencies</div>
+        <div class="prov" style="color:var(--ink-muted);margin-left:20px">
+          <span class="mono">dependency_analysis</span> &middot; run just now &middot;
+          <span class="lnk">evidence</span> &middot; <span class="lnk">copy as evidence</span> &middot; <span class="lnk">re-run</span>
+        </div>
+      </div>
+
+      <!-- the member tree, opened from the answer -->
+      <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px">
+        <div style="display:flex;align-items:baseline;gap:var(--s2);padding:var(--s3) var(--s3) var(--s2);border-bottom:1px solid var(--rule)">
+          <span class="caps">The list</span>
+          <span style="font-size:15px">&middot; <span class="tnum">32</span> dependencies</span>
+          <span class="prov" style="color:var(--ink-muted)">&middot; all <span class="tnum">32</span> shown &middot; no facets &mdash; one ecosystem</span>
+          <span style="margin-left:auto;display:flex;gap:var(--s2)" class="caps">
+            <span style="border:1px solid var(--rule);border-radius:2px;padding:2px 8px;color:var(--ink-muted)">save as report</span>
+          </span>
+        </div>
+
+        <div style="padding:var(--s2) var(--s3) var(--s3)">
+          <div class="caps" style="color:var(--ink-muted);padding:var(--s2) 0;border-bottom:1px solid var(--rule)">
+            pypi <span class="tnum">32</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 var(--s6);margin-top:var(--s2)">
+            <div style="display:flex;flex-direction:column">
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">fastapi</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">optional</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">uvicorn</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">optional</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">altair</span><span class="prov tnum" style="color:var(--ink-muted);margin-left:auto">runtime &middot; ==6.2.2</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">click</span><span class="prov tnum" style="color:var(--ink-muted);margin-left:auto">runtime &middot; ==8.5.0</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column">
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">httpx</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">runtime</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">inflect</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">runtime</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">jupyter</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">runtime</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">jupyter-notebook-parser</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">runtime</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column">
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">loguru</span><span class="prov" style="color:var(--ink-muted);margin-left:auto">runtime</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="mono">markers</span><span class="prov tnum" style="color:var(--ink-muted);margin-left:auto">runtime &middot; &gt;=0.3.0</span></div>
+              <div style="display:flex;gap:var(--s2);padding:5px 0;border-bottom:1px solid var(--rule)"><span class="prov" style="color:var(--ink-muted)"><span class="tnum">22</span> further rows, below the fold</span><span></span></div>
+            </div>
+          </div>
+
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--rule)">
+            Read from <span class="mono">dependency_analysis</span>, run just now &middot; scope <em>all</em> &middot; nothing capped.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- rail -->
+    <div style="border-left:1px solid var(--chrome-line);padding:var(--s3);display:flex;flex-direction:column;gap:var(--s3);overflow:hidden">
+
+      <div>
+        <div class="caps" style="color:var(--chrome-muted);padding-bottom:var(--s1);border-bottom:1px solid var(--chrome-line)">
+          Evidence &middot; for <span class="mono" style="letter-spacing:0">egeria_python_git</span>
+        </div>
+        <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s2)">
+          What dependencies does this require?<br>
+          Answered from <span class="tnum">1</span> of <span class="tnum">1</span> measurements &middot; no retrieval.
+        </div>
+      </div>
+
+      <div class="caps" style="color:var(--chrome-muted);margin-top:var(--s2)">You &middot; <span class="mono" style="letter-spacing:0">egeria_python_git</span></div>
+      <div style="font-size:15px">list the dependencies</div>
+
+      <div style="border-left:2px solid var(--accent);padding-left:var(--s3)">
+        <div style="font-size:15px;line-height:1.55">
+          <strong style="font-weight:500"><span class="tnum">32</span> declared dependencies</strong>, all on pypi.
+        </div>
+        <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s1)">
+          Ten of them were shown to the model; the list itself is in the pane.
+        </div>
+
+        <button class="btn-dark" style="margin-top:var(--s3)">
+          Open the list &middot; <span class="mono" style="color:var(--chrome-ink)">dependency_analysis</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+
+        <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--chrome-line)">
+          From compiled evidence &middot; <span class="mono">dependency_analysis</span>, run just now &middot;
+          <span class="tnum">10</span> of <span class="tnum">32</span> packed.
+        </div>
+      </div>
+
+      <div style="margin-top:auto;border-top:1px solid var(--chrome-line);padding-top:var(--s2)"
+           class="caps">
+        <span style="color:var(--chrome-muted)">Ask about this resource&hellip;</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
