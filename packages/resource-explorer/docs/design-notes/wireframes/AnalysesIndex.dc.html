@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .btn{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+         border:1px solid var(--accent);border-radius:2px;color:var(--accent-ink);padding:2px 8px}
+    .arow{display:grid;grid-template-columns:20px minmax(0,1fr) 130px 140px 150px 96px;gap:var(--s2);
+          align-items:baseline;padding:6px 0;border-bottom:1px solid var(--rule)}
+    .drow{display:grid;grid-template-columns:minmax(0,1fr) 170px 130px 96px;gap:var(--s2);
+          align-items:baseline;padding:7px 0;border-bottom:1px solid var(--rule)}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .pill{border:1px solid var(--rule-strong);border-radius:11px;padding:0 7px;font-family:var(--heading);
+          font-weight:600;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}
+  </style>
+</helmet>
+
+<div style="width:1160px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Points 1, 2, 3</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:32ch">Survey &amp; analyses: one index, two granularities</h1>
+    <p style="max-width:80ch;color:var(--ink-muted);margin:0">
+      An analysis that answers no catalogued question has no home in <span class="mono">/next</span> today. It can
+      be reached only as <span class="mono">re-run</span> under an answered question, or when a verdict makes the
+      depth offer mention it. The owner is right that the old UI's per-analysis cards were worth having &mdash;
+      and right that what was wrong with them was the two hundred words above the buttons.
+    </p>
+  </div>
+
+  <!-- definitions -->
+  <div style="margin-top:var(--s6)">
+    <div style="display:flex;align-items:baseline;gap:var(--s2);padding-bottom:var(--s2);border-bottom:1px solid var(--rule-strong)">
+      <span class="h" style="font-size:17px">Survey definitions</span>
+      <span class="prov" style="color:var(--ink-muted)">&middot; bundles someone authored &middot; <span class="tnum">3</span> at this stage</span>
+      <span class="prov" style="color:var(--ink-muted);margin-left:auto">filtered by perspective &middot; Architecture, Admin</span>
+    </div>
+
+    <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:minmax(0,1fr) 170px 130px 96px;gap:var(--s2);padding:var(--s2) 0;border-bottom:1px solid var(--rule)">
+      <span>definition</span><span>steps</span><span>last run</span><span></span>
+    </div>
+
+    <div class="drow">
+      <span><span style="font-size:15px">Repo Architecture Discovery</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span></span>
+      <span class="prov"><span class="tnum">4</span> steps &middot; <strong style="font-weight:500;color:var(--warn)"><span class="tnum">2</span> fetch</strong></span>
+      <span class="prov" style="color:var(--ink-muted)">never run</span>
+      <span><button class="btn">Run →</button></span>
+    </div>
+    <div class="drow">
+      <span><span style="font-size:15px">Repo Discovery Survey</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span></span>
+      <span class="prov"><span class="tnum">7</span> steps &middot; none fetch</span>
+      <span class="prov" style="color:var(--ink-muted)">ran <span class="tnum">3d</span> ago</span>
+      <span><button class="btn">Run →</button></span>
+    </div>
+    <div class="drow" style="border-bottom:0">
+      <span><span style="font-size:15px">Repo Refresh</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span></span>
+      <span class="prov"><span class="tnum">14</span> steps &middot; <strong style="font-weight:500;color:var(--warn)"><span class="tnum">9</span> fetch</strong> &middot; all tiers</span>
+      <span class="prov" style="color:var(--ink-muted)">ran <span class="tnum">11d</span> ago</span>
+      <span><button class="btn">Plan →</button></span>
+    </div>
+
+    <div class="prov" style="color:var(--ink-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--rule)">
+      <span class="lnk">Other stages · <span class="tnum">4</span></span> — these matched this stage's questions
+      and belong to discovery <span class="tnum">2</span> · assessment <span class="tnum">1</span> · analysis
+      <span class="tnum">1</span>.
+    </div>
+  </div>
+
+  <p class="prov" style="color:var(--ink-muted);max-width:80ch;margin:var(--s3) 0 0">
+    <strong style="font-weight:500;color:var(--ink)">The fetch count is the whole of point 2.</strong>
+    <em>Repo Architecture Discovery</em> and <em>Repo Discovery Survey</em> sit under one heading and read as peers;
+    one fetches twice and the other not at all, which is the axis the tiering itself turns on and the only thing a
+    person needs to know before pressing. <em>What it does</em> is a popover, and the full description lives in it
+    &mdash; not on the row, and not twice on the row.
+  </p>
+
+  <!-- analyses -->
+  <div style="margin-top:var(--s6)">
+    <div style="display:flex;align-items:baseline;gap:var(--s2);padding-bottom:var(--s2);border-bottom:1px solid var(--rule-strong)">
+      <span class="h" style="font-size:17px">Analyses at this stage</span>
+      <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">9</span> &middot; <span class="tnum">3</span> never run here</span>
+      <span class="prov" style="color:var(--ink-muted);margin-left:auto"><span class="lnk">by name</span> &middot; <span class="lnk">never run first</span> &middot; <span class="lnk">by what it costs</span></span>
+    </div>
+
+    <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:20px minmax(0,1fr) 130px 140px 150px 96px;gap:var(--s2);padding:var(--s2) 0;border-bottom:1px solid var(--rule)">
+      <span></span><span>analysis</span><span>answers</span><span>last run</span><span>price</span><span></span>
+    </div>
+
+    <div class="arow">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1d6b3f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      <span><span class="mono" style="font-size:14px">language_file_classification</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span></span>
+      <span class="prov"><span class="lnk"><span class="tnum">2</span> questions ›</span></span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">2m</span> ago</span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">0.2s</span> &middot; <span class="tnum">80s</span> publish</span>
+      <span><button class="btn">re-run</button></span>
+    </div>
+
+    <div class="arow">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/></svg>
+      <span><span class="mono" style="font-size:14px">secret_scan</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span>
+        <span class="pill" style="margin-left:6px">recommended</span></span>
+      <span class="prov" style="color:var(--ink-muted)">no question asks</span>
+      <span class="prov" style="color:var(--ink-muted)">never run</span>
+      <span class="prov" style="color:var(--ink-muted)">declared <em>fast</em></span>
+      <span><button class="btn">run</button></span>
+    </div>
+
+    <div class="arow" style="border-bottom:0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--gap)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v8"/><path d="M8 12h8"/><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"/></svg>
+      <span><span class="mono" style="font-size:14px">repository_health</span>
+        <span class="lnk prov" style="margin-left:6px">what it does</span></span>
+      <span class="prov"><span class="lnk"><span class="tnum">1</span> question ›</span></span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">19d</span> ago</span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">4s</span> &middot; not yet split</span>
+      <span><button class="btn">re-run</button></span>
+    </div>
+
+    <div class="prov" style="color:var(--ink-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--rule)">
+      <span class="tnum">3</span> of these answer no catalogued question. That may mean a question is missing, or
+      that the analysis is evidence for a judgement rather than an answer to one — or that it serves the chat's
+      ad-hoc questions, which the catalog cannot see.
+    </div>
+  </div>
+
+  <!-- the popover + the third case -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4);
+              display:grid;grid-template-columns:400px minmax(0,1fr);gap:var(--s6);align-items:start">
+    <div class="card" style="background:var(--paper-surface)">
+      <div class="caps"><span class="mono" style="letter-spacing:0;text-transform:none">secret_scan</span></div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        Scans HEAD content for committed-credential patterns using a vendored gitleaks ruleset
+        (<span class="tnum">222</span> rules, MIT). Reports which ruleset and version produced the result, and its
+        age &mdash; a stale ruleset misses formats that did not exist when it was written and returns a confident
+        clean.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        Never claims <em>no secrets</em>: only <em>no matches against this ruleset, in the current HEAD snapshot of
+        tracked files</em>. Says nothing about git history, which is where a removed secret still lives.
+      </p>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2);padding-top:var(--s2);border-top:1px solid var(--rule)">
+        assessment &middot; declared <em>fast</em> &middot; queued &middot; Security, Admin &middot;
+        <span class="lnk">ruleset source ↗</span>
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Why a popover and not the row</div>
+      <p style="margin:var(--s2) 0 0;max-width:58ch">
+        That is one of nine, and it is the <em>short</em> half of what
+        <span class="mono">secret_scan</span> says about itself. Nine of those on a page is a page nobody reads,
+        and the row needs four facts to be pressable: does it answer anything, when did it last run, what does it
+        cost, and can I run it. The prose is what you open when the four are not enough.
+      </p>
+      <p class="prov" style="margin:var(--s3) 0 0;max-width:58ch;color:var(--ink-muted)">
+        Note what the description is doing in that popover, though: it is the most careful writing in this
+        project. <em>Never claims &ldquo;no secrets&rdquo;</em> is a caveat about the answer, and it belongs
+        wherever the answer appears &mdash; which is the caveat line under the question, not only here.
+      </p>
+      <p class="prov" style="margin:var(--s3) 0 0;max-width:58ch;color:var(--ink-muted)">
+        <strong style="font-weight:500;color:var(--ink)">And the third case, point 5.</strong> The sentence
+        <em>&ldquo;either a question is missing, or the analysis is evidence for a judgement&rdquo;</em> is missing
+        the case the owner already ruled on 09-11: an analysis also serves the chat's ad-hoc questions. Not
+        orphaned &mdash; the catalog simply cannot say what it serves. Three cases, not two, and the index above
+        carries the third.
+      </p>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

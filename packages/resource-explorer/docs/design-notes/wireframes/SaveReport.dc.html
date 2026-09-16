@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-surface:#2d2b2b; --chrome-line:#444141;
+      --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .act{font-family:var(--heading);font-weight:600;font-size:13px;color:var(--accent-on-dark);
+         background:transparent;border:0;padding:0;text-decoration:underline;text-underline-offset:3px}
+    .footer{background:var(--chrome);color:var(--chrome-ink);border-radius:2px;padding:var(--s3)}
+    .note{max-width:58ch;color:var(--ink-muted);margin:var(--s2) 0 0}
+  </style>
+</helmet>
+
+<div style="width:960px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Pane &middot; the act</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:24ch">Saving a list is a fourth act, not a download</h1>
+    <p style="max-width:72ch;color:var(--ink-muted);margin:0">
+      The selection footer already exists and already carries the hard parts &mdash; a snapshot of names rather than a
+      query, a provenance line composed on the server, a name that proposes itself. A report is that footer's
+      fourth act. Nothing new is invented here except the destination.
+    </p>
+  </div>
+
+  <!-- the footer, selection -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">A selection</div>
+    <div class="footer">
+      <div class="caps" style="margin-bottom:var(--s1)">
+        <span class="tnum">16</span> selected &middot; high, plus <span class="tnum">1</span> added by hand
+        <span style="color:var(--chrome-muted);text-transform:none;letter-spacing:0;font-size:13px">
+          &middot; from <span class="mono">cve_scan</span> &middot; <span class="tnum">2d</span> ago &middot; a snapshot, not a query</span>
+      </div>
+      <div style="border:1px solid var(--chrome-line);border-radius:2px;padding:3px 7px;margin-bottom:var(--s2);font-size:14px">
+        egeria-workspaces &mdash; <span class="tnum">16</span> advisories, high plus one by hand
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--s3)">
+        <button class="act">add to work list</button>
+        <button class="act">raise RFA</button>
+        <button class="act">note in journal</button>
+        <button class="act">save as report</button>
+      </div>
+    </div>
+    <p class="note">
+      The fourth act answers a different question from the other three. <em>Add to work list</em> says
+      I will deal with this; <em>raise RFA</em> says someone must; <em>note in journal</em> says this is worth
+      knowing. <strong style="font-weight:500">Save as report says: this is what was true, and I want to be able to
+      show it to someone.</strong> There is still no fifth act called <em>ignore</em>.
+    </p>
+  </div>
+
+  <!-- the footer, whole list -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">Nothing picked</div>
+    <div class="footer">
+      <div class="caps" style="margin-bottom:var(--s1)">
+        The whole list &middot; <span class="tnum">32</span> dependencies
+        <span style="color:var(--chrome-muted);text-transform:none;letter-spacing:0;font-size:13px">
+          &middot; from <span class="mono">dependency_analysis</span> &middot; run just now &middot; a snapshot, not a query</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--s3)">
+        <button class="act">save as report</button>
+        <span class="prov" style="color:var(--chrome-muted)">Pick rows to add them to a work list, raise an RFA, or note them.</span>
+      </div>
+    </div>
+    <p class="note">
+      A report is the one act that makes sense on a list nobody has triaged, so it is the one act offered before
+      anything is picked. The other three need a selection and say so rather than sitting there disabled.
+    </p>
+  </div>
+
+  <!-- naming -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The name</div>
+    <div style="display:flex;gap:var(--s4);align-items:flex-start;margin-top:var(--s2)">
+      <div style="flex:1">
+        <div style="border:1px solid var(--rule);border-radius:2px;padding:6px 9px;font-size:14px">
+          egeria-python &mdash; <span class="tnum">32</span> dependencies, <span class="tnum">2026-09-13</span>
+        </div>
+        <p class="note">
+          Proposed from the facet and the count, on the server, and <strong style="font-weight:500">a typed name
+          wins until it is cleared</strong> &mdash; touched tracked from the input event, never inferred from the
+          string. That lesson is a week old and cost two rounds; it does not need learning twice.
+        </p>
+      </div>
+      <div style="flex:1">
+        <div style="border:1px solid var(--rule);border-radius:2px;padding:6px 9px;font-size:14px">
+          Dependencies to review before <span class="tnum">6.2</span>
+        </div>
+        <p class="note">
+          Typed over. It keeps the prefix, and it survives every further pick, every facet change, and clearing
+          the selection to none.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s6);border:1px solid var(--rule);border-radius:2px;padding:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Anonymous</div>
+    <p style="margin:var(--s2) 0 0;max-width:72ch">
+      <em>Sign in to save a report &mdash; a record needs an author.</em> Gated, not hidden, and the
+      author is the server's: the write model has no author field to forge, exactly as promotion, the journal and
+      Curate already work.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

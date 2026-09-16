@@ -1,0 +1,171 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .frow{display:grid;grid-template-columns:18px minmax(0,1fr) 210px;gap:var(--s3);
+          padding:var(--s2) 0;border-bottom:1px solid var(--rule);align-items:baseline}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .dest{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+          border:1px solid var(--rule-strong);border-radius:11px;padding:1px 8px;white-space:nowrap;color:var(--ink-muted)}
+  </style>
+</helmet>
+
+<div style="width:1120px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Point 3</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:32ch">A gap in the analytic is our job, not the reader's</h1>
+    <p style="max-width:80ch;margin:0">
+      Two years of honesty rules have produced a surface that is scrupulous about what it cannot say and silent
+      about what to do. <em>&ldquo;responsiveness &mdash; not established. Not measurable from what is collected
+      &mdash; issue and pull-request response times are not gathered&rdquo;</em> is
+      <strong style="font-weight:500">a true sentence about the analysis</strong> put in front of someone who
+      wanted to know about the repository. There is nothing they can do with it, because the work it implies is
+      ours.
+    </p>
+    <p class="prov" style="max-width:80ch;color:var(--ink-muted);margin:var(--s3) 0 0">
+      The rule that got us here is right and stays: absence and failure are states, never blanks. What was missing
+      is the other half &mdash; <strong style="font-weight:500;color:var(--ink)">whose absence it is.</strong>
+    </p>
+  </div>
+
+  <!-- the two audiences -->
+  <div style="margin-top:var(--s4);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4)">
+    <div class="card">
+      <div class="caps" style="color:var(--ink-muted)">A finding about the repository</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        <em>elephant factor &mdash; sole. One contributor accounts for half of all commits.</em>
+        That is about the thing being investigated. It belongs on the page, and it should say where it goes next.
+      </p>
+    </div>
+    <div class="card" style="background:var(--paper-surface)">
+      <div class="caps" style="color:var(--warn)">A finding about the analysis</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        <em>responsiveness &mdash; not established. Response times are not gathered.</em>
+        That is about <strong style="font-weight:500">us</strong>. It belongs in a gaps list the project owns, and
+        on the page it collapses to one line.
+      </p>
+    </div>
+  </div>
+
+  <p style="max-width:80ch;margin:var(--s3) 0 0">
+    So the eleven-row wall of <em>not established</em> becomes, on the resource:
+  </p>
+  <div class="card" style="margin-top:var(--s2);max-width:80ch">
+    <p class="prov" style="margin:0">
+      <span class="tnum">3</span> of <span class="tnum">11</span> community measures cannot be computed from what
+      is collected &mdash; <span class="lnk">what is missing, and why ›</span>. Not a finding about this
+      repository.
+    </p>
+  </div>
+  <p class="prov" style="max-width:80ch;color:var(--ink-muted);margin:var(--s2) 0 0">
+    Same information, one line, and the clause at the end is what makes it readable: it tells the person this is
+    not their problem. Behind the link, the same three sentences, plus the one thing the wall never had &mdash;
+    <strong style="font-weight:500;color:var(--ink)">an RFA against the analysis</strong>, so the gap is on a
+    work list belonging to whoever maintains it rather than on a page belonging to someone who cannot fix it.
+  </p>
+
+  <!-- the three destinations -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">And every finding about the repository names where it goes</div>
+    <p class="prov" style="max-width:80ch;margin:var(--s2) 0 var(--s3)">
+      Three destinations, and the third is as important as the others &mdash; because a finding that implies no
+      action is not a failure, and pretending otherwise is how every dashboard turns into a chore list nobody
+      reads.
+    </p>
+
+    <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:18px minmax(0,1fr) 210px;gap:var(--s3);padding-bottom:var(--s1);border-bottom:1px solid var(--rule)">
+      <span></span><span>finding</span><span>what it is for</span>
+    </div>
+
+    <div class="frow">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <span><strong style="font-weight:500">elephant factor &mdash; sole.</strong> One contributor wrote 93% of
+        <span class="tnum">413</span> commits.</span>
+      <span><span class="dest" style="border-color:var(--accent);color:var(--accent-ink)">a judgement</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; is that a risk here? ›</span></span>
+    </div>
+
+    <div class="frow">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v8"/><path d="M8 12h8"/><circle cx="12" cy="12" r="9"/></svg>
+      <span><strong style="font-weight:500">published spec &mdash; no.</strong> No specification file found; the
+        interfaces are inferred.</span>
+      <span><span class="dest">a task</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; raise an RFA ›</span></span>
+    </div>
+
+    <div class="frow">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      <span><strong style="font-weight:500">project maturity &mdash; established.</strong>
+        <span class="tnum">3.9</span> years old.</span>
+      <span><span class="dest">context</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; nothing to do</span></span>
+    </div>
+
+    <div class="frow" style="border-bottom:0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--gap)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      <span><strong style="font-weight:500">symbol count &mdash; two analyses disagree.</strong>
+        <span class="tnum">8,756</span> against <span class="tnum">8,362</span>.</span>
+      <span><span class="dest" style="border-color:var(--gap);color:var(--gap)">ours</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; in the gaps list</span></span>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4)">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">A judgement is not a task</div>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:54ch">
+        <em>One contributor wrote 93%</em> has no correct action &mdash; whether it matters depends on what the
+        repository is for, which is why it is an <strong style="font-weight:500;color:var(--ink)">Enrichment
+        field</strong> and not a work item. The destination link goes to the judgement it informs, and the
+        judgement already carries the measurement it was made against, so when the number moves the judgement
+        says <em>review &mdash; evidence moved</em>. That machinery shipped in <span class="mono">#34</span>; this
+        is the road to it.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Two analyses disagreeing is never the reader's problem</div>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:54ch">
+        <em><span class="tnum">8,756</span> / <span class="tnum">8,362</span> &mdash; they may not be measuring
+        the same thing</em> is a true and careful sentence, and there is nothing a curator can do about it. It
+        stays visible &mdash; a number nobody can reconcile must not be quietly picked between &mdash; but it is
+        marked <strong style="font-weight:500;color:var(--ink)">ours</strong>, and it appears on the gaps list
+        with the two analyses named.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;max-width:54ch;color:var(--ink-muted)">
+        This also puts a number on the owner's instinct that the analytics need work: the gaps list <em>is</em>
+        that number, accumulated by the interface rather than asserted in a meeting.
+      </p>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

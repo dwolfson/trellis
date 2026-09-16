@@ -1,0 +1,207 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .diagram{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;line-height:1.7;
+             border:1px solid var(--rule);border-radius:2px;padding:var(--s3);background:#fbfaf9;
+             white-space:pre;overflow:hidden}
+    .opt{display:grid;grid-template-columns:150px minmax(0,1fr);gap:var(--s3);
+         padding:var(--s3) 0;border-bottom:1px solid var(--rule)}
+  </style>
+</helmet>
+
+<div style="width:1040px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--warn)">Correction first</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:30ch">Ports are not derived from the accepted set</h1>
+    <p style="max-width:78ch;margin:0">
+      The Curate column says <em>&ldquo;ports and wires are derived from the accepted components' interfaces and
+      relationships&rdquo;</em>. They are not. They are derived
+      <strong style="font-weight:500">at survey time, from deployment artifacts only</strong> &mdash; Dockerfile
+      <span class="mono">EXPOSE</span>, compose <span class="mono">ports</span>/<span class="mono">depends_on</span>,
+      OpenAPI, <span class="mono">.proto</span>, GraphQL, FastAPI route markers &mdash; and attached to a component
+      by longest path-prefix match. Acceptance is not consulted anywhere in
+      <span class="mono">interfaces.propose()</span>. Rejecting a component leaves its port rows untouched.
+    </p>
+    <p class="prov" style="max-width:78ch;color:var(--ink-muted);margin:var(--s3) 0 0">
+      What acceptance <em>does</em> change is which ports get <strong style="font-weight:500;color:var(--ink)">drawn</strong>:
+      the diagram is rendered fresh on every read, drops rejected components, and drops any port whose owner is
+      not a shown node &mdash; reporting the count in its caption rather than attaching it to a guess. That is
+      display, not derivation, and the sentence claims the stronger thing.
+    </p>
+  </div>
+
+  <!-- the three options -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Three ways out, and the ruling</div>
+
+    <div class="opt">
+      <div>
+        <div class="h" style="font-size:17px">Fix the sentence</div>
+        <div class="prov" style="color:var(--ok);margin-top:var(--s1)">now</div>
+      </div>
+      <div>
+        <p style="margin:0;max-width:62ch">
+          <em>&ldquo;ports and wires are read from the repository's deployment artifacts; the diagram shows those
+          belonging to accepted components&rdquo;</em>. One line, and it is true today.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;max-width:62ch;color:var(--ink-muted)">
+          This is the one that ships. A column asserting a derivation the code does not perform is the same defect
+          class as the inventory counting vendored files &mdash; and it is in the sentence a curator reads to
+          decide whether to trust the column.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div>
+        <div class="h" style="font-size:17px">Adopt on accept</div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">the destination</div>
+      </div>
+      <div>
+        <p style="margin:0;max-width:62ch">
+          Accepting a component <strong style="font-weight:500">adopts its declared ports</strong> &mdash; they
+          become curated facts with the acceptance's author and date, written to
+          <span class="mono">architecture_materialized_ports</span>, which exists and which nothing writes today.
+          The materializer exists too, and has no caller.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;max-width:62ch;color:var(--ink-muted)">
+          Blocked, and not by us: <span class="mono">SolutionPort</span> creation is a generic-metadata workaround
+          for pyegeria ISSUE-85, and wires cannot be published at all &mdash; the outbox has no creator for them,
+          and <span class="mono">SolutionLinkingWire</span> relationships carry no
+          <span class="mono">qualifiedName</span>, so the outbox's idempotency cannot cover a retry. That was
+          measured and deliberately deferred on 2026-09-03. It stays deferred, and stays named.
+        </p>
+      </div>
+    </div>
+
+    <div class="opt" style="border-bottom:0">
+      <div>
+        <div class="h" style="font-size:17px">Give ports a verdict</div>
+        <div class="prov" style="color:var(--warn);margin-top:var(--s1)">no</div>
+      </div>
+      <div>
+        <p style="margin:0;max-width:62ch">
+          A port is not a proposal about the world; it is a line in a Dockerfile. There is nothing for a person to
+          agree or disagree with, which is exactly what the classic UI already says:
+          <em>read-only, no verdict to give</em>.
+        </p>
+        <p class="prov" style="margin:var(--s2) 0 0;max-width:62ch;color:var(--ink-muted)">
+          If a declared port is wrong, the repository is wrong, and the fix is a pull request rather than a
+          verdict. Keep the asymmetry: components are proposals, ports are readings.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- the honest scarcity -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">And the thing that decides the whole shape</div>
+    <p style="margin:var(--s2) 0 0;max-width:78ch">
+      <strong style="font-weight:500">On most repositories there are almost no ports and no wires at all.</strong>
+      Ports exist &ldquo;essentially not at all&rdquo; for logical components; Prometheus, one of the better cases,
+      has <span class="tnum">1</span> port and <span class="tnum">0</span> wires. A dedicated ports-and-wires
+      screen would be an empty room on nearly every resource &mdash; and an emptiness that holds everywhere is a
+      bug report about the reader, not a finding about the corpus.
+    </p>
+    <p style="margin:var(--s3) 0 0;max-width:78ch">
+      So <strong style="font-weight:500">ports are a column on the component, not a screen</strong>: two words on
+      the row where they exist, nothing where they do not, and one honest sentence at the foot of the tree when a
+      repository declares none.
+    </p>
+    <div class="card" style="margin-top:var(--s3);max-width:78ch">
+      <p class="prov" style="margin:0">
+        No declared topology &mdash; <span class="mono">egeria-python</span> declares no ports and no wires.
+        Ports are read from Dockerfiles, compose files and API documents; this repository has none of those with
+        an exposed interface.
+      </p>
+    </div>
+    <p class="prov" style="margin:var(--s2) 0 0;max-width:78ch;color:var(--ink-muted)">
+      That sentence says what it looked in, so a reader can tell &ldquo;nothing declared&rdquo; from
+      &ldquo;nobody looked&rdquo;. Which is the whole difference between <span class="mono">∅</span> and
+      <span class="mono">?</span>, on the one surface where the emptiness is the normal case.
+    </p>
+  </div>
+
+  <!-- the diagram as the reading surface -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The diagram reads; the tree acts</div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s4);margin-top:var(--s2)">
+      <div class="diagram">  ┌──────────────────────┐
+  │ pyegeria/            │  accepted
+  │   library            │
+  └──────┬───────────────┘
+         │
+    ╭────┴─────╮  8080/tcp · 12 ops
+    │  :http   │
+    ╰────┬─────╯
+         ▼
+  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+    mermaid_utilities/     pending
+  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+</div>
+      <div>
+        <p style="margin:0;max-width:50ch">
+          It is <strong style="font-weight:500">already verdict-aware</strong>: rendered fresh on every read,
+          rejected components dropped, accepted solid, undecided dashed, a rejected blueprint ungrouping its
+          members. Nothing needs building for it to respond to the tree &mdash; accept a branch and the next read
+          redraws.
+        </p>
+        <p class="prov" style="margin:var(--s3) 0 0;max-width:50ch;color:var(--ink-muted)">
+          What it is <em>not</em> is the acting surface. It comes back from Kroki as a finished SVG, so nodes are
+          not controls without a mapping layer nobody has asked for. Reading and acting side by side, on paper, in
+          the diagram font &mdash; the one place the type system is deliberately overridden.
+        </p>
+        <p class="prov" style="margin:var(--s3) 0 0;max-width:50ch;color:var(--ink-muted)">
+          Two ceilings it carries and must keep saying out loud:
+          <span class="tnum">50,000</span> characters, reported and never truncated, and
+          <span class="tnum">20</span> classed nodes &mdash; past which some <em>pending</em> nodes lose their
+          dashes, on the stated grounds that losing the styling beats losing the diagram. On a
+          <span class="tnum">609</span>-component repository both bite, so the tree is the surface that scales and
+          the diagram is the one that explains.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:88ch">
+      <strong style="font-weight:500">What this round does not touch.</strong> The two perspectives
+      (<span class="mono">detect</span> and <span class="mono">coupling</span>) propose different component sets
+      and are never merged, while a verdict is keyed by scope and therefore lands on both. That is a real
+      ambiguity and it needs its own round &mdash; naming it here so it is not mistaken for settled.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-line:#444141; --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66;
+      --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .pop{border:1px solid var(--rule-strong);border-radius:4px;background:var(--paper-surface);
+         padding:var(--s3);width:360px;box-shadow:0 3px 10px rgba(45,43,43,.16)}
+    .btn{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+         border:1px solid var(--accent);border-radius:2px;color:var(--accent-ink);padding:4px 10px}
+    .btn-quiet{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+               border:1px solid var(--rule);border-radius:2px;color:var(--ink-muted);padding:4px 10px}
+    .variant{border-top:1px solid var(--rule);padding:var(--s3) 0}
+  </style>
+</helmet>
+
+<div style="width:1000px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Pane &middot; re-run</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:26ch">The one click buys the number</h1>
+    <p style="max-width:74ch;color:var(--ink-muted);margin:0">
+      You asked whose call this is. Mine, and the ruling is that <strong style="font-weight:500;color:var(--ink)">`/next`'s
+      one-click re-run stops being one click</strong> &mdash; not because the choice matters every time, but because
+      <em>an action must name what it would do before it does it</em>, and this is the action whose price moved by
+      a factor of six while we were discussing it. The extra click is what buys the sentence.
+    </p>
+  </div>
+
+  <!-- the row it hangs off -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">Where it hangs</div>
+    <div class="prov" style="color:var(--ink-muted)">
+      <span class="mono">dependency_analysis</span> &middot; run <span class="tnum">2m</span> ago &middot;
+      <span class="lnk">evidence</span> &middot; <span class="lnk">copy as evidence</span> &middot;
+      <span style="border:1px solid var(--accent);border-radius:2px;padding:1px 6px;color:var(--accent-ink)">re-run</span>
+    </div>
+    <p class="prov" style="color:var(--ink-muted);max-width:64ch;margin:var(--s2) 0 0">
+      The link opens the popover below, anchored to itself. Nothing queues from the link.
+    </p>
+  </div>
+
+  <!-- the popover, measured split -->
+  <div style="margin-top:var(--s4);display:grid;grid-template-columns:360px minmax(0,1fr);gap:var(--s6);align-items:start">
+    <div class="pop">
+      <div class="caps" style="color:var(--ink-muted)">Re-run <span class="mono" style="letter-spacing:0;text-transform:none">dependency_analysis</span></div>
+      <p style="margin:var(--s2) 0 var(--s3);font-size:15px">
+        About <span class="tnum">0.1s</span> to run and about <span class="tnum">1m 32s</span> to publish &mdash;
+        <span class="tnum">1m 32s</span> in all, nearly all of it publishing.
+      </p>
+      <div style="display:flex;gap:var(--s2)">
+        <button class="btn">Run in background</button>
+        <button class="btn-quiet">Run and wait</button>
+      </div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--rule)">
+        Median of <span class="tnum">1</span> run &middot; measured
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">One correction to the copy that shipped</div>
+      <p style="margin:var(--s2) 0 0;max-width:56ch">
+        The freshness sentence currently reads <em>&ldquo;about 1m 32s to publish &mdash; about 1m 32s in
+        all&rdquo;</em>, which repeats the same figure twice because the run half rounds to a tenth of a second.
+        A total that restates its larger half verbatim reads as a bug in the sentence.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        When one half is more than nine tenths of the total, say which: <em>&mdash; 1m 32s in all, nearly all of
+        it publishing.</em> The split is still there and the sentence stops stuttering. The general rule: the
+        total names its dominant half rather than repeating it.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        <strong style="font-weight:500;color:var(--ink)">Background first</strong>, because on this evidence
+        it is right nearly every time &mdash; and the waiting option keeps its own name rather than being
+        &ldquo;cancel&rdquo;.
+      </p>
+    </div>
+  </div>
+
+  <!-- the four price variants -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The price, four ways &mdash; the same four the run dialog already has</div>
+
+    <div class="variant">
+      <div style="display:grid;grid-template-columns:360px minmax(0,1fr);gap:var(--s6)">
+        <p style="margin:0;font-size:15px">About <span class="tnum">4s</span> to run and about
+          <span class="tnum">18s</span> to publish &mdash; <span class="tnum">22s</span> in all.</p>
+        <p class="prov" style="margin:0;color:var(--ink-muted)"><strong style="font-weight:500;color:var(--ink)">Measured, split.</strong>
+          Neither half dominates, so the total is just the sum and needs no clause.</p>
+      </div>
+    </div>
+
+    <div class="variant">
+      <div style="display:grid;grid-template-columns:360px minmax(0,1fr);gap:var(--s6)">
+        <p style="margin:0;font-size:15px">About <span class="tnum">70s</span> in all &mdash;
+          <span style="color:var(--ink-muted)">run and publish not recorded separately for this one yet</span>.</p>
+        <p class="prov" style="margin:0;color:var(--ink-muted)"><strong style="font-weight:500;color:var(--ink)">Measured, unsplit.</strong>
+          Rows written before this morning. The figure is true and the clause says what it cannot tell you &mdash;
+          it must never be presented as a run cost.</p>
+      </div>
+    </div>
+
+    <div class="variant">
+      <div style="display:grid;grid-template-columns:360px minmax(0,1fr);gap:var(--s6)">
+        <p style="margin:0;font-size:15px">Declared <em>fast</em> &mdash;
+          <span style="color:var(--ink-muted)">never measured on this resource</span>.</p>
+        <p class="prov" style="margin:0;color:var(--ink-muted)"><strong style="font-weight:500;color:var(--ink)">Declared.</strong>
+          A word, never a figure. <em>Fast</em> is a catalog claim about the analysis, and after this week we know
+          exactly how little that predicts about the wait.</p>
+      </div>
+    </div>
+
+    <div class="variant">
+      <div style="display:grid;grid-template-columns:360px minmax(0,1fr);gap:var(--s6)">
+        <p style="margin:0;font-size:15px">Cost not known &mdash;
+          <span style="color:var(--ink-muted)">nothing has run this here, and the catalog declares nothing</span>.</p>
+        <p class="prov" style="margin:0;color:var(--ink-muted)"><strong style="font-weight:500;color:var(--ink)">Unknown.</strong>
+          Both buttons still offered. A missing price is a reason to say so, not a reason to withhold the action
+          &mdash; and the first run is what fixes it.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

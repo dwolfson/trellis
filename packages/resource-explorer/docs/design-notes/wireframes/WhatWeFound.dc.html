@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .bad{border-left:3px solid var(--warn);padding-left:var(--s3)}
+    .good{border-left:3px solid var(--ok);padding-left:var(--s3)}
+    .rung{display:grid;grid-template-columns:120px minmax(0,1fr) 190px;gap:var(--s3);
+          padding:var(--s2) 0;border-bottom:1px solid var(--rule);align-items:baseline}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+  </style>
+</helmet>
+
+<div style="width:1120px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Points 4, 5, 6</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:32ch">Say which population, and whose caveat</h1>
+    <p style="max-width:80ch;margin:0">
+      All three are one habit: a row composed from several analyses over several populations, written as though it
+      came from one.
+    </p>
+  </div>
+
+  <!-- point 5 -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Point 5 &middot; the two sentences that cannot both be true</div>
+
+    <div class="bad" style="margin-top:var(--s2)">
+      <div style="font-size:15px"><span class="tnum">24</span> components recovered &mdash; <span class="tnum">4</span> of <span class="tnum">87</span> components reviewed (<span class="tnum">4</span> accepted); <span class="tnum">0</span> of <span class="tnum">12</span> blueprints reviewed &middot; <span class="mono">architecture_doc_lens</span> ran and found nothing. &middot; <span class="tnum">87</span> candidate components, none documented</div>
+      <div class="prov" style="color:var(--accent-ink);margin-top:var(--s1)">This analysis ran and found nothing &mdash; a measured zero, not a gap in coverage.</div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)"><span class="mono">architecture_recovery, architecture_doc_lens, architecture_summary</span> &middot; run <span class="tnum">2d</span> ago</div>
+    </div>
+
+    <p style="max-width:80ch;margin:var(--s3) 0 0">
+      <strong style="font-weight:500">Both are true, and the row makes them contradict.</strong> The provenance
+      names <strong style="font-weight:500">three</strong> analyses. The <span class="tnum">24</span> is
+      <span class="mono">architecture_recovery</span>'s. The nothing is
+      <span class="mono">architecture_doc_lens</span>'s &mdash; and the answer line already says so, attributed,
+      in the middle of itself. Then the caveat says it again as
+      <em>&ldquo;<strong style="font-weight:500">This</strong> analysis&rdquo;</em>, unattributed, directly under a
+      number from a different one.
+    </p>
+    <p class="prov" style="max-width:80ch;color:var(--ink-muted);margin:var(--s2) 0 0">
+      The rule, and it is the same one <span class="mono">#88</span> just applied to rationale-as-caveat:
+      <strong style="font-weight:500;color:var(--ink)">a caveat on a multi-analysis row names its analysis, or it
+      does not render.</strong> <em>This</em> has no referent where there are three.
+    </p>
+
+    <div class="good" style="margin-top:var(--s3)">
+      <div style="font-size:15px"><span class="tnum">24</span> components at depth <span class="tnum">1</span>, of <span class="tnum">87</span> recovered &middot; <span class="tnum">4</span> reviewed, <span class="tnum">4</span> accepted &middot; <span class="tnum">0</span> of <span class="tnum">12</span> blueprints reviewed</div>
+      <div class="prov" style="color:var(--accent-ink);margin-top:var(--s1)"><span class="mono">architecture_doc_lens</span> ran and found nothing &mdash; a measured zero, not a gap in coverage. No component carries documentation.</div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)"><span class="mono">architecture_recovery</span> &middot; <span class="mono">architecture_doc_lens</span> &middot; <span class="mono">architecture_summary</span> &middot; run <span class="tnum">2d</span> ago</div>
+    </div>
+  </div>
+
+  <!-- point 4 -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">Point 4 &middot; <span class="tnum">24</span> recovered from what?</div>
+    <p style="max-width:80ch;margin:var(--s2) 0 var(--s3)">
+      Three populations, and the line mixes them without naming any: <strong style="font-weight:500">24</strong>
+      is the projection at depth 1, <strong style="font-weight:500">87</strong> is every recovered component,
+      and <strong style="font-weight:500">12</strong> is the candidate blueprints. All three are legitimate and
+      none is interchangeable, so <strong style="font-weight:500">every count carries its population</strong> —
+      <em>at depth 1</em>, <em>recovered</em>, <em>candidate</em> — and no sentence holds two populations without
+      the word <em>of</em> between them.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4)">
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">And why we think each is what it is</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          A component's type came from a detector, with a confidence and a <span class="mono">proposed_by</span>
+          list that the row never shows. It should: <em>a console entry point</em>,
+          <em>a compose service</em>, <em>two detectors agree</em>. Those are the words that let someone
+          accept or reject without opening the evidence table &mdash; and the branch tree is where they belong.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">Completeness, stated</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          &ldquo;We are not showing complete lists&rdquo; is fair, and the honest fix is not always to show all
+          of them &mdash; it is to say what is shown and what is not:
+          <em><span class="tnum">24</span> of <span class="tnum">87</span> shown at this depth &middot;
+          <span class="tnum">63</span> nested below &middot; <span class="lnk">all <span class="tnum">87</span> ›</span></em>.
+          The tree already carries this at the branch; the answer row does not.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- point 6 -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">Point 6 &middot; what a public interface is, and the rung that is missing</div>
+
+    <p style="max-width:80ch;margin:var(--s2) 0 var(--s3)">
+      <span class="mono">interface_surface</span> already has a ladder &mdash; its own comment says
+      <em>&ldquo;openapi.yaml is 'specified'; a fastapi dependency is only 'implied'&rdquo;</em>. Two rungs, and
+      the truth is almost always on the one between them.
+    </p>
+
+    <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:120px minmax(0,1fr) 190px;gap:var(--s3);padding-bottom:var(--s1);border-bottom:1px solid var(--rule)">
+      <span>rung</span><span>what it means</span><span>evidence</span>
+    </div>
+    <div class="rung">
+      <span><strong style="font-weight:500">declared</strong></span>
+      <span>a contract committed in the repository, or an entry point the packaging declares</span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="mono">openapi.yaml</span>, <span class="mono">.proto</span>, <span class="mono">[project.scripts]</span></span>
+    </div>
+    <div class="rung" style="background:var(--paper-surface)">
+      <span><strong style="font-weight:500;color:var(--warn)">implemented</strong>
+        <span class="prov" style="color:var(--warn)">&middot; missing</span></span>
+      <span>the interface exists in the code, whether or not anything documents it &mdash; routes, commands,
+        exported operations</span>
+      <span class="prov" style="color:var(--ink-muted)">FastAPI route decorators, click commands, the CLI's own
+        entry function</span>
+    </div>
+    <div class="rung" style="border-bottom:0">
+      <span><strong style="font-weight:500">implied</strong></span>
+      <span>something in the dependency list suggests an interface and nothing confirms it</span>
+      <span class="prov" style="color:var(--ink-muted)">depends on <span class="mono">click</span>, depends on <span class="mono">fastapi</span></span>
+    </div>
+
+    <div class="bad" style="margin-top:var(--s4)">
+      <div class="prov"><strong style="font-weight:500">cli &mdash; implied.</strong> Depends on
+        <span class="mono">click</span> &mdash; suggests a cli, but nothing in the repo specifies one.</div>
+    </div>
+    <p style="max-width:80ch;margin:var(--s3) 0 0">
+      <strong style="font-weight:500">That sentence is wrong on this repository, and the fact that refutes it is
+      already in the codebase four times over.</strong> <span class="mono">[project.scripts]</span> is read by
+      <span class="mono">repo_role.py</span>, by <span class="mono">distribution_parser.py</span> &mdash; whose
+      own docstring calls it <em>&ldquo;the CLI entry point as a fact&rdquo;</em> &mdash; by an
+      architecture-recovery rule, and by <span class="mono">deployment_evidence.py</span>, which shipped
+      yesterday and calls a console entry point the <em>strongest signal</em>.
+      <span class="mono">interface_surface</span> consults none of them.
+    </p>
+    <p class="prov" style="max-width:80ch;color:var(--ink-muted);margin:var(--s2) 0 0">
+      Which is the vendored-rule defect again, one analytic over: a fact known by one walk and not read by
+      another, producing a confident sentence that the repository itself contradicts. The guard test for walks
+      exists because of the last one.
+    </p>
+
+    <div class="good" style="margin-top:var(--s3)">
+      <div class="prov"><strong style="font-weight:500">cli &mdash; declared.</strong>
+        <span class="mono">pyegeria = "pyegeria.cli:main"</span> in
+        <span class="mono">[project.scripts]</span>.</div>
+      <div class="prov" style="margin-top:var(--s1)"><strong style="font-weight:500">http api &mdash;
+        implemented.</strong> <span class="tnum">31</span> FastAPI routes across
+        <span class="tnum">4</span> modules; no committed specification.
+        <span class="lnk">the <span class="tnum">31</span> routes ›</span></div>
+      <div class="prov" style="margin-top:var(--s1);color:var(--ink-muted)">
+        <span class="tnum">2</span> interfaces declared or implemented &middot; <span class="tnum">0</span> with a
+        published contract &mdash; a task, not a judgement.
+      </div>
+    </div>
+
+    <p class="prov" style="max-width:80ch;color:var(--ink-muted);margin:var(--s3) 0 0">
+      And the visualisation follows from the ladder rather than needing its own design: interfaces group by rung,
+      the count of each is the headline, and <em>implied</em> stops being a claim about the repository and becomes
+      what it is &mdash; a list of things worth looking for properly.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

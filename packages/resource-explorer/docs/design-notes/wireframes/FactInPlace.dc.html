@@ -1,0 +1,180 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-line:#444141; --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .q{font-family:var(--heading);font-weight:600;font-size:17px;line-height:1.25}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .pill{border:1px solid var(--rule-strong);border-radius:11px;padding:1px 8px;font-family:var(--heading);
+          font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-muted)}
+    .mrow{display:grid;grid-template-columns:minmax(0,1fr) 120px 150px;gap:var(--s3);
+          padding:4px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+  </style>
+</helmet>
+
+<div style="width:1080px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Point 10 &middot; the headline</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:28ch">The fact opens under the answer</h1>
+    <p style="max-width:78ch;color:var(--ink-muted);margin:0">
+      Today, from the row below, the six measurements behind
+      <em><span class="tnum">175,716</span> lines of code across <span class="tnum">965</span> source files</em>
+      are reached by leaving Questions for Dashboard, finding the same sentence again, opening
+      <span class="mono">detail</span>, and clicking a lone <span class="mono">members ›</span> that fills a
+      <span class="tnum">290</span>px rail. Four moves, one of them a pane change, to see a number the row already
+      summarised.
+    </p>
+  </div>
+
+  <!-- the row, collapsed -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">Collapsed &mdash; unchanged from today except the last link</div>
+    <div style="border-bottom:1px solid var(--rule);padding-bottom:var(--s3)">
+      <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1d6b3f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg>
+        <span class="q">How big is this repository, and in what languages?</span>
+        <span style="margin-left:auto;display:flex;gap:6px"><span class="pill">Architecture</span><span class="pill">Admin</span></span>
+      </div>
+      <div style="margin:var(--s2) 0 var(--s1) 22px;font-size:15px">
+        <span class="tnum">175,716</span> lines of code across <span class="tnum">965</span> source files
+      </div>
+      <div class="prov" style="color:var(--ink-muted);margin-left:22px">
+        <span class="mono">language_file_classification</span> &middot; run <span class="tnum">2m</span> ago &middot;
+        <span class="lnk">evidence</span> &middot; <span class="lnk">copy as evidence</span> &middot;
+        <span class="lnk">re-run</span> &middot;
+        <span class="lnk" style="color:var(--accent-ink)">the numbers behind this <span class="tnum">6</span> ›</span>
+      </div>
+    </div>
+    <p class="prov" style="color:var(--ink-muted);max-width:78ch;margin:var(--s2) 0 0">
+      One new link, last in the provenance row, and it says what it opens and how much of it there is. Not
+      <em>detail</em>, which names a UI gesture rather than a thing; not <em>members</em>, which is the data
+      model's word for rows a person would call numbers, files or packages.
+    </p>
+  </div>
+
+  <!-- the row, open -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted);margin-bottom:var(--s2)">Open &mdash; in the pane, under the answer, the centre column keeping its place</div>
+
+    <div style="border-bottom:1px solid var(--rule);padding-bottom:var(--s3)">
+      <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1d6b3f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"/></svg>
+        <span class="q">How big is this repository, and in what languages?</span>
+        <span style="margin-left:auto;display:flex;gap:6px"><span class="pill">Architecture</span><span class="pill">Admin</span></span>
+      </div>
+      <div style="margin:var(--s2) 0 var(--s1) 22px;font-size:15px">
+        <span class="tnum">175,716</span> lines of code across <span class="tnum">965</span> source files
+      </div>
+      <div class="prov" style="color:var(--ink-muted);margin-left:22px">
+        <span class="mono">language_file_classification</span> &middot; run <span class="tnum">2m</span> ago &middot;
+        <span class="lnk">evidence</span> &middot; <span class="lnk">copy as evidence</span> &middot;
+        <span class="lnk">re-run</span> &middot;
+        <span style="color:var(--accent-ink)">the numbers behind this <span class="tnum">6</span> ⌄</span>
+      </div>
+
+      <!-- the disclosure -->
+      <div style="margin:var(--s3) 0 0 22px;border-left:2px solid var(--rule);padding-left:var(--s3)">
+        <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:minmax(0,1fr) 120px 150px;gap:var(--s3);padding-bottom:var(--s1);border-bottom:1px solid var(--rule)">
+          <span>measurement</span><span>value</span><span>opens</span>
+        </div>
+        <div style="margin-top:var(--s1)">
+          <div class="mrow"><span class="mono">code_lines</span><span class="tnum">175,716</span><span class="prov" style="color:var(--ink-muted)">&mdash;</span></div>
+          <div class="mrow"><span class="mono">source_files</span><span class="tnum">965</span><span class="prov"><span class="lnk">the <span class="tnum">965</span> files ›</span></span></div>
+          <div class="mrow"><span class="mono">languages</span><span class="tnum">7</span><span class="prov"><span class="lnk">the <span class="tnum">7</span> languages ›</span></span></div>
+          <div class="mrow"><span class="mono">largest_language</span><span>Python &middot; <span class="tnum">71%</span></span><span class="prov" style="color:var(--ink-muted)">&mdash;</span></div>
+          <div class="mrow"><span class="mono">generated_files</span><span class="tnum">12</span><span class="prov"><span class="lnk">the <span class="tnum">12</span> files ›</span></span></div>
+          <div class="mrow" style="border-bottom:0"><span class="mono">binary_files</span><span class="tnum">0</span><span class="prov" style="color:var(--ink-muted)">a zero stays a zero</span></div>
+        </div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2);padding-top:var(--s2);border-top:1px solid var(--rule)">
+          Read from <span class="mono">language_file_classification</span>, run <span class="tnum">2m</span> ago
+          &middot; vendored and generated paths excluded &middot;
+          <span class="lnk">save as report</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- the three rules -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4);
+              display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s4)">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">The numbers come first, the rows come next</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        The disclosure shows the <strong style="font-weight:500">measurements</strong> — six rows, each a name and
+        a value — and each one that has rows behind it says so with its own count.
+        <span class="tnum">965</span> file names are not the fact behind
+        <em><span class="tnum">965</span> source files</em>; the number is, and the names are one step further for
+        the person who wants them.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+        That is what the owner could not find: not a list, a table of six.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Rows still go to the rail, and now they earn it</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        <em>the <span class="tnum">965</span> files ›</em> opens the members rail exactly as it does today, with
+        its groups, its scope chips and its footer. A column of mono file names is the one thing
+        <span class="tnum">290</span>px suits.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+        The rail stops being where you go to find out what a number means, and becomes where you go to see the
+        things it counted. Counts open what they counted &mdash; one layer down, not one pane over.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Every state keeps its sentence</div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        A metrics-only analysis says <em>records measurements, not members</em> where the row's
+        <em>opens</em> cell would be &mdash; which is the fix that just shipped, moved one surface out so the
+        promise is never made.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+        An unset renders <em>not recorded</em>, never a zero. A zero stays a zero. Both already ruled; both apply
+        here unchanged.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:88ch">
+      <strong style="font-weight:500">What this deletes.</strong> Dashboard &middot; by question exists to host
+      this disclosure; once the disclosure is on the row, that view is the answer sentence rendered a second time
+      for no remaining reason. Its anchor nav, its <em>N questions at this stage</em> summary line and its
+      disagreement blocks all have homes: the summary on the Questions header, which already counts answered and
+      loading; the disagreements under the question they dispute, where one of the two implementations already
+      puts them.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
