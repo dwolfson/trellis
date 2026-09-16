@@ -335,10 +335,17 @@ def _r_community(reg, p) -> tuple:
     stats = reg.get_latest_project_stats(p.slug) or {}
     known = {k: v.get("label") for k, v in rows.items()
              if v.get("label") and v.get("label") != "not_established"}
+    # Each finding already carries a plain-English `summary` (e.g. "Open for
+    # participation via ..."); keep it alongside the label so the evidence UI
+    # can explain the value instead of showing a bare word like "open".
+    summaries = {k: v.get("summary") for k, v in rows.items() if v.get("summary")}
     value = {
         "attention": known.get("attention", ""),
+        "attention_detail": summaries.get("attention", ""),
         "participation": known.get("participation", ""),
+        "participation_detail": summaries.get("participation", ""),
         "channels": known.get("channels", ""),
+        "channels_detail": summaries.get("channels", ""),
         "widely_used_narrowly_maintained":
             known.get("attention_exceeds_participation") == "yes",
         "authorship_concentration": elephant.get("label", ""),

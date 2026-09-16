@@ -6509,7 +6509,20 @@ function measureHtml(key, v) {
     return `<div>${label} <span class="text-chrome-muted">not set</span></div>`;
   }
   if (Array.isArray(v)) {
-    const items = v.slice(0, 6).map((it) => {
+    // Language/file-type breakdowns (e.g. `by_type`) are counted, sortable
+    // rows like {type_label, file_count} — none of the finding-shaped field
+    // names below, so without this branch every row fell through to an
+    // empty name and empty text and rendered as a blank line.
+    const isCountRow = (it) => it && typeof it === 'object' &&
+      (it.type_label !== undefined || it.file_count !== undefined);
+    const sorted = isCountRow(v[0])
+      ? [...v].sort((a, b) => (b.file_count || 0) - (a.file_count || 0))
+      : v;
+    const shownCount = isCountRow(v[0]) ? 10 : 6;
+    const items = sorted.slice(0, shownCount).map((it) => {
+      if (isCountRow(it)) {
+        return `<div class="ml-s2"><span class="text-accent-on-dark">${esc(it.type_label ?? '')}</span> ${tnum(esc(it.file_count ?? ''))}</div>`;
+      }
       if (it && typeof it === 'object') {
         const name = it.check_name || it.name || it.id || '';
         const text = it.summary || it.detail || it.label || '';
@@ -6517,8 +6530,8 @@ function measureHtml(key, v) {
       }
       return `<div class="ml-s2">${tnum(esc(it))}</div>`;
     }).join('');
-    const more = v.length > 6
-      ? `<div class="ml-s2 text-chrome-muted">and <span class="tnum">${v.length - 6}</span> more</div>`
+    const more = v.length > shownCount
+      ? `<div class="ml-s2 text-chrome-muted">and <span class="tnum">${v.length - shownCount}</span> more</div>`
       : '';
     return `<div>${label} <span class="tnum">${v.length}</span></div>${items}${more}`;
   }
@@ -6532,11 +6545,22 @@ function measureHtml(key, v) {
   // filled the rail with raw diagram code — which reads as the app having
   // broken, not as a measure. The rail is 290px; nothing that wide belongs in
   // it, and the diagram already has its own action.
-  if (shown.length > 120) {
+  //
+  // Explanation fields are the opposite case: they exist ONLY so a bare score
+  // or label (`activity: 100`, `attention: low`) has something to explain it,
+  // and collapsing one to "171 characters" throws away the reason it was put
+  // there in the first place. Named by suffix/convention rather than length,
+  // because a genuine prose explanation and a raw dump are not the same shape
+  // even when they happen to be a similar number of characters.
+  const isExplanation = /(^|_)(detail|summary)$/.test(key) || key === 'measures_disagree';
+  if (shown.length > 120 && !isExplanation) {
     const isDiagram = /^(mermaid|diagram|svg)$/i.test(key);
     return `<div>${label} <span class="text-chrome-muted">${
       isDiagram ? 'diagram source' : 'text'} · <span class="tnum">${shown.length}</span> characters${
       isDiagram ? ' — use “Open diagram in pane”' : ''}</span></div>`;
+  }
+  if (isExplanation) {
+    return `<div class="text-chrome-muted">${esc(shown)}</div>`;
   }
   return `<div>${label} <span class="tnum">${tnum(esc(shown))}</span></div>`;
 }

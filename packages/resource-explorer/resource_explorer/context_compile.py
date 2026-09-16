@@ -51,11 +51,23 @@ log = logging.getLogger(__name__)
 #: answered from a neighbouring section instead. The rung now carries real
 #: first entries, so the instruction it needs is about partiality, not about
 #: non-results.
+#: The "name the actual items" clause was added 2026-09-16 after a live
+#: failure: asked "what languages does this repo use?" with a
+#: `language_file_classification` section carrying a real `by_type` breakdown
+#: (Python, Markdown, etc. with counts), the model answered with the file/byte
+#: totals instead of naming a single language — the evidence had the answer
+#: and the answer never used it. Unlike the instructions this file already
+#: A/B-tests, this one has NOT yet been measured against the rung it displaces
+#: (docs/experiments/compiled-vs-rag.md's harness); the same before/after
+#: comparison this file's other comments describe should be run before
+#: trusting the cost is worth it, not just the fix.
 _INSTRUCTIONS = (
     "Answer using only the evidence below. Every section states which analysis "
     "produced it. A section marked 'abridged' shows only the first few entries "
     "of each list or mapping — its counts and entries are partial, so do not "
-    "report an abridged list as complete. If the evidence does not answer the "
+    "report an abridged list as complete. When evidence names specific items "
+    "(languages, files, authors, etc.) with values, name them in the answer "
+    "rather than only a total. If the evidence does not answer the "
     "question, say so and name what is missing — do not infer from absence."
 )
 #: A sentence asking yes/no answers to carry their evidence line was added
@@ -76,7 +88,8 @@ _INSTRUCTIONS = (
 #: one section that used to be exempt from the ladder now climbs it too.
 _INSTRUCTIONS_SHORT = (
     "Answer only from the evidence below; name the analysis behind each point. "
-    "'Abridged' sections show first entries only. If it does not answer, say "
+    "'Abridged' sections show first entries only. Name specific items and "
+    "values from evidence, not only totals. If it does not answer, say "
     "which analysis would and whether it has run. Do not infer from absence."
 )
 
