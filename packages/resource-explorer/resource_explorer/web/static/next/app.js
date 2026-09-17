@@ -144,7 +144,7 @@ const STAGES = [
   { id: 'enrichment',    label: 'Enrichment' },
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
-  { id: 'understanding', label: 'Understanding' },
+  { id: 'understanding', label: 'Understanding', built: true },
   { id: 'curate',        label: 'Curate' },
   { id: 'automate',      label: 'Automate' },
 ];
@@ -578,8 +578,13 @@ function renderIntentNav() {
       return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px] font-heading
         text-accent-on-dark ${active ? 'border-b-2 border-accent' : 'border-b-2 border-transparent'}">${esc(s.label)}</button>`;
     }
-    if (s.unbuilt) {
+    if (!s.built && !s.frame) {
       // Marked, not dimmed: chrome-muted is a 6.7:1 role, not a fade.
+      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: `unbuilt` was read here
+      // and set nowhere — every STAGES entry declares `built`, never
+      // `unbuilt`, so this branch was dead and six stages rendered as live.
+      // Inverted to read the flag that actually exists, so a stage added
+      // without `built` is honest by default.
       return `<span title="Not implemented — zero rows in the analysis catalog and the activity log"
         class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted"
         style="border-bottom:1px dashed currentColor">${esc(s.label)}</span>`;
@@ -2998,7 +3003,13 @@ function subTabsHtml() {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
-      if (t.id === 'questions' || t.built) {
+      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: a sub-tab's own `built`
+      // flag said nothing about whether the STAGE it's shown under is
+      // built, so all four module-level built:true SUB_TABS advertised
+      // working panes on all six unbuilt stages too. Live only when the tab
+      // AND the current stage are built.
+      const stageDef = STAGES.find((s) => s.id === state.stage);
+      if (stageDef?.built && (t.id === 'questions' || t.built)) {
         return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
       }
       return `<button data-deferred="${t.id}" title="${esc(t.does)} — not built in /next"
@@ -5061,7 +5072,9 @@ async function loadPane() {
     return;
   }
 
-  if (stageDef?.frame || stageDef?.unbuilt) {
+  // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
+  // the nav item above — inverted to read `built`, which actually exists.
+  if (stageDef?.frame || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
       stageDef.frame
