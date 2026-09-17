@@ -271,26 +271,30 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     # Built once for the whole sweep — creating a client per resource would
     # mean ~20 redundant bearer-token round trips for a check that is otherwise
     # one call each.
-    # MetadataExpert, not AssetMaker — because what RE publishes for a repo is
-    # not an Asset. Confirmed from the server 2026-08-21:
+    # MetadataExpert, not AssetMaker — historically because what RE published
+    # for a repo was not an Asset (typeName SourceControlLibrary, confirmed
+    # from the server 2026-08-21: superTypes ResourceManager,
+    # SoftwareCapability, Referenceable, OpenMetadataRoot), so
+    # `AssetMaker.get_asset_by_guid` correctly returned NotFound for it, and a
+    # sweep built on that call marked every healthy repo stale the moment it
+    # was republished — the false positive this module calls the more
+    # damaging direction in three other places. Caught by republishing one
+    # repo for real and watching the next sweep declare it gone.
     #
-    #     typeName   : SourceControlLibrary
-    #     superTypes : ResourceManager, SoftwareCapability, Referenceable,
-    #                  OpenMetadataRoot
+    # A repo's own element IS a genuine Asset since the 2026-09-14
+    # SourceControlLibrary correction (egeria_publisher.py's module
+    # docstring), so `get_asset_by_guid` would work on it now — but
+    # `get_metadata_element_by_guid` is type-agnostic, got all four of the
+    # original probe cases right (three genuinely deleted, one that exists),
+    # and this sweep also checks investigation Projects and WorkingSet
+    # Collections, neither of which is an Asset either. Kept as the one
+    # client that is correct for everything this loop checks, rather than
+    # narrowed back to AssetMaker now that it would work for one of the three.
     #
-    # So `AssetMaker.get_asset_by_guid` correctly returns NotFound for it, and a
-    # sweep built on that call marks every healthy repo stale the moment it is
-    # republished — the false positive this module calls the more damaging
-    # direction in three other places. Caught by republishing one repo for real
-    # and watching the next sweep declare it gone.
-    #
-    # `get_metadata_element_by_guid` is type-agnostic and got all four probe
-    # cases right: three genuinely deleted, one that exists.
-    #
-    # Worth knowing while reading this file: the naming lies throughout. The
-    # column is `egeria_asset_guid`, the publisher method is
-    # `_find_or_create_asset`, and neither is about an Asset. That is precisely
-    # why reaching for AssetMaker felt natural.
+    # Worth knowing while reading this file: the naming used to lie
+    # throughout — the column `egeria_asset_guid` and the publisher method
+    # `_find_or_create_asset` predate the correction and were about a
+    # SoftwareCapability, not an Asset. Both names are accurate again now.
     cfg = get_config().egeria
     element_client = MetadataExpert(cfg.view_server, cfg.platform_url,
                                  cfg.user_id, cfg.user_password)

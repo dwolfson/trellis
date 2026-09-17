@@ -42,6 +42,7 @@ import {
   getResourceRuns,
   getSurveyCandidates,
   listSurveyDefinitions,
+  getAnalysesIndex,
   getSurveyDashboards,
   runSurveyDefinition,
   getMe,
@@ -60,6 +61,8 @@ import {
   getComponentLeaves,
   postBranchVerdicts,
   postDepthOfferOutcome,
+  getCatalogueDepthOffer,
+  postCatalogueDepthOfferOutcome,
   curateCommit,
   getCuration,
   promoteMembers,
@@ -164,11 +167,16 @@ const STAGES = [
  * the Questions row itself (point 10, `provenanceLine`'s "the numbers behind
  * this N" link). See that function's comment for what has and has not moved
  * yet: findings and disagreements stay on `by_analysis` for this slice. */
+/* `Find repos` left the strip (SPEC-ACTIONABLE-AND-HONEST.md, point 2, the
+ * owner's round 2026-09-15): the uniform-strip rule ("grey out what a
+ * stage lacks, never remove") is for things that are PER-STAGE, and finding
+ * candidate repos is corpus-level work, the same action on Scouting as on
+ * Curate -- nine dashed-underline copies of one non-stage-scoped action was
+ * nine wrong promises, not nine honest gaps. It now lives beside the
+ * sidebar's Repos/DBs/FS switcher (findReposButtonHtml, bindSidebar),
+ * unchanged in what it can say: still "not built in /next", just no longer
+ * pretending to be a ninth stage's affordance. */
 const SUB_TABS = [
-  // NAMED FOR WHAT IT IS. Calling it "Search" inherits the current UI's label
-  // and teaches the wrong noun on first contact: it is not a search of the
-  // selected resource, it is how candidate repos are found and imported.
-  { id: 'search', label: 'Find repos', does: 'Repo discovery — find and import candidate repos' },
   { id: 'questions', label: 'Questions', does: 'The question checklist', built: true },
   { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
   { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
@@ -442,9 +450,18 @@ function readEnvelope(entry, env) {
   // The caveat — the most important content on the screen. These sentences
   // already exist in the survey output; they used to sit three panes away in
   // the chat rail, which is not where the decision is made.
+  // A caveat on a multi-analysis row names its analysis, or it does not
+  // render (designer, SPEC-ACTIONABLE-AND-HONEST.md point 5): "This
+  // analysis ran and found nothing" reads as a claim about whichever
+  // number sits above it when three analyses answer one question, and it
+  // is usually a claim about a DIFFERENT one. `f.note` is the analysis's
+  // own prose, written as if it would be read alone -- attributed here,
+  // not rewritten, since the sentence itself is correct and only its
+  // referent was ambiguous.
+  const attribute = (f, text) => (facts.length > 1 ? `${f.analysis_id} — ${text}` : text);
   const caveats = [];
   for (const f of facts) {
-    if (f.note) caveats.push(f.note);
+    if (f.note) caveats.push(attribute(f, f.note));
     if (f.state === PARTIAL && !f.note) {
       caveats.push(`${f.analysis_id} covered only part of what it measures.`);
     }
@@ -1571,9 +1588,13 @@ function renderSidebar() {
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
+      <button data-act="find-repos" title="Find and import candidate repos"
+        aria-label="Find and import candidate repos"
+        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
+        >${icon('circle-plus', { size: 14 })}</button>
       <button data-act="mark-key" title="What the marks in this list mean"
         aria-label="What the marks in this list mean"
-        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
+        class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
         >${icon('circle-help', { size: 14 })}</button>
     </div>
     ${state.showMarkKey ? markKeyHtml() : ''}
@@ -1793,6 +1814,20 @@ function bindSidebar() {
   const acts = {
     'show-empty-facets': () => { state.showEmptyFacets = true; renderSidebar(); },
     'mark-key': () => { state.showMarkKey = !state.showMarkKey; renderSidebar(); },
+    // Corpus-level, not a stage: the same action on Scouting as on Curate,
+    // so it lives beside the switcher that already scopes the whole left
+    // column, not in the per-stage strip (SPEC-ACTIONABLE-AND-HONEST.md,
+    // point 2). Still not built in /next -- says so, same as the deferred
+    // stage tabs did, just from here instead.
+    'find-repos': () => {
+      const d = openDialog('Find repos', 'Repo discovery — find and import candidate repos');
+      d.querySelector('#wl-detail-body').innerHTML = `
+        <p class="max-w-[60ch] text-answer text-ink">Repo discovery — find and import candidate repos.</p>
+        <p class="max-w-[60ch] text-answer text-ink">
+          <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
+            >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
+        </p>`;
+    },
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {
       state.selectMode = !state.selectMode;
@@ -3503,7 +3538,11 @@ async function loadSurveyPane() {
     ${!all.length ? paneMessage('No survey definitions for this resource',
         'The adapter registered none for this technology type. That is a fact about '
         + 'the catalog, not about the repository.') : ''}
-    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>`;
+    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
+
+    <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
+      <div class="text-caveat text-ink-muted">Reading the analyses…</div>
+    </div>`;
   bindSubTabs();
 
   el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
@@ -3519,6 +3558,188 @@ async function loadSurveyPane() {
       const ref = b.dataset.runSurvey || b.dataset.planSurvey;
       planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
     }));
+
+  renderAnalysesIndexSection(slug, stage);
+}
+
+/* ── Survey & analyses: the analyses half (SPEC-THE-STAGE-PAGE.md, points
+ * 1-3, "AnalysesIndex") ────────────────────────────────────────────────────
+ *
+ * The definitions above answer "what can I run"; this answers "what has
+ * this repo's catalog already got, and is it worth pressing". One call
+ * (getAnalysesIndex) carries the row AND its popover -- catalog is the
+ * entry's own to_dict, verbatim, so a description popover never needs a
+ * second fetch.
+ */
+const ANALYSES_SORT_KEY = 're-next.analysesIndexSort';
+
+function analysesIndexSort() {
+  try {
+    const v = localStorage.getItem(ANALYSES_SORT_KEY);
+    return ['name', 'never_run', 'cost'].includes(v) ? v : 'name';
+  } catch { return 'name'; }
+}
+
+/** State glyph from last_run_status/last_run_at -- the same vocabulary as
+ *  factGlyph, not re-derived: `success` -> measured, an explicit failure ->
+ *  error, nothing recorded -> unrun. */
+function analysisRowGlyph(row) {
+  if (!row.last_run_at) return factGlyph('unrun');
+  const s = String(row.last_run_status || '').toLowerCase();
+  if (s === 'success' || s === 'ok' || s === '') return factGlyph('measured');
+  if (s === 'failure' || s === 'error' || s === 'failed') return factGlyph('error');
+  return factGlyph('measured');
+}
+
+/** The compact two-number price this row wants -- "0.2s · 80s publish" or
+ *  "declared fast" -- not the fuller sentence priceLineHtml renders for the
+ *  run-choice popover, which is too much copy for a list row. */
+function analysisRowPrice(cost) {
+  if (!cost || cost.basis === 'unknown' || (cost.basis === 'measured' && !cost.runs)) return 'price not known';
+  if (cost.basis === 'declared') return `declared ${esc(declaredWord(cost) || cost.sentence || '')}`;
+  const bits = [fmtSeconds(cost.steps_seconds != null ? cost.steps_seconds : cost.seconds)];
+  if (cost.publish_seconds) bits.push(`${fmtSeconds(cost.publish_seconds)} publish`);
+  return bits.join(' · ');
+}
+
+function analysisIndexRowHtml(row) {
+  const g = analysisRowGlyph(row);
+  const qn = (row.questions || []).length;
+  return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
+    <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
+    <div class="min-w-0 flex-1">
+      <div class="flex flex-wrap items-baseline gap-s2">
+        <span class="text-answer text-ink">${esc(row.name || row.analysis_id)}</span>
+        <button type="button" data-analysis-popover="${esc(row.analysis_id)}"
+          class="cursor-pointer bg-transparent p-0 text-caveat text-ink-muted underline">what it does</button>
+        ${row.recommended ? `<span class="rounded-pill border border-accent px-2 py-[1px] text-provenance text-accent-ink">recommended</span>` : ''}
+      </div>
+      <div class="mt-[2px] text-provenance text-ink-muted">
+        ${qn
+          ? `<button type="button" data-analysis-questions="${esc(row.analysis_id)}"
+               class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${qn} question${qn === 1 ? '' : 's'} ›</button>`
+          : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
+        · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
+        · ${analysisRowPrice(row.cost)}
+      </div>
+    </div>
+    <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
+      class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
+      >${row.last_run_at ? 're-run' : 'run'} →</button>
+  </div>`;
+}
+
+/** The description popover: the full prose PLUS the catalog facts named in
+ *  the design (stage, declared run time, availability, perspectives) --
+ *  `row.catalog` is the analysis catalog entry's own to_dict, so nothing
+ *  here re-fetches to fill it. No ruleset-link field exists on the catalog
+ *  entry today; shown only when one is actually present, never invented. */
+function openAnalysisPopover(row) {
+  const c = row.catalog || {};
+  const d = openDialog(row.name || row.analysis_id, row.analysis_id);
+  const facts = [
+    ['stage', c.intent],
+    ['declared run time', c.run_time],
+    ['availability', c.availability],
+    ['perspectives', (c.perspectives || []).join(', ') || 'none declared'],
+    ['scope', c.target_shape],
+  ].filter(([, v]) => v);
+  d.querySelector('#wl-detail-body').innerHTML = `
+    <p class="max-w-[70ch] whitespace-pre-line">${esc(row.description || row.short_description || '')}</p>
+    <table class="mt-s3 w-full max-w-[50ch] border-collapse text-caveat">
+      ${facts.map(([k, v]) => `<tr class="border-b border-rule">
+        <td class="py-[4px] pr-s3 text-ink-muted">${esc(k)}</td>
+        <td class="py-[4px] text-ink">${esc(String(v))}</td>
+      </tr>`).join('')}
+    </table>`;
+}
+
+function openAnalysisQuestionsPopover(row) {
+  const d = openDialog(`Questions naming ${row.name || row.analysis_id}`, row.analysis_id);
+  d.querySelector('#wl-detail-body').innerHTML = (row.questions || []).map((q) => `
+    <div class="mb-s2 flex items-baseline gap-s2 border-b border-rule pb-s2">
+      <span class="min-w-0 flex-1">${esc(q.question)}</span>
+      <button type="button" data-goto-question="${esc(q.stage)}"
+        class="shrink-0 cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(q.stage)} ›</button>
+    </div>`).join('') || '<p>No question names this analysis.</p>';
+  d.querySelectorAll('[data-goto-question]').forEach((b) => b.addEventListener('click', () => {
+    state.stage = b.dataset.gotoQuestion;
+    state.subTab = 'questions';
+    closeCellDetail();
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  }));
+}
+
+async function renderAnalysesIndexSection(slug, stage) {
+  const host = $('analyses-index-section');
+  if (!host) return;
+  let data;
+  try {
+    data = await getAnalysesIndex(slug);
+  } catch (err) {
+    if (slug === state.selectedSlug && state.subTab === 'survey') {
+      host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
+    }
+    return;
+  }
+  if (slug !== state.selectedSlug || state.subTab !== 'survey') return;   // a faster click, or a different pane, won
+
+  const rows = data.analyses || [];
+  const sort = analysesIndexSort();
+  const sorted = [...rows].sort((a, b) => {
+    if (sort === 'never_run') return (b.last_run_at ? 0 : 1) - (a.last_run_at ? 0 : 1);
+    if (sort === 'cost') return (a.cost?.seconds ?? Infinity) - (b.cost?.seconds ?? Infinity);
+    return (a.name || a.analysis_id).localeCompare(b.name || b.analysis_id);
+  });
+  const here = sorted.filter((r) => r.tier === stage);
+  const elsewhere = sorted.filter((r) => r.tier !== stage);
+
+  host.innerHTML = `
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Analyses ·
+        <span class="tnum">${rows.length}</span> ·
+        <span class="tnum">${data.counts?.never_run ?? 0}</span> never run ·
+        <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</span>
+      <span class="ml-auto flex gap-[6px] text-caveat">
+        ${[['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
+          <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
+            class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">${esc(label)}</button>`).join('')}
+      </span>
+    </div>
+    ${here.map(analysisIndexRowHtml).join('') || `<p class="text-caveat text-ink-muted">No analyses run at this stage.</p>`}
+    ${elsewhere.length ? `
+      <details class="mt-s3">
+        <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
+          Other stages · <span class="tnum">${elsewhere.length}</span></summary>
+        ${elsewhere.map(analysisIndexRowHtml).join('')}
+      </details>` : ''}`;
+
+  host.querySelectorAll('[data-analyses-sort]').forEach((b) => b.addEventListener('click', () => {
+    try { localStorage.setItem(ANALYSES_SORT_KEY, b.dataset.analysesSort); } catch { /* per-viewer convenience only */ }
+    renderAnalysesIndexSection(slug, stage);
+  }));
+  host.querySelectorAll('[data-analysis-popover]').forEach((b) => b.addEventListener('click', () => {
+    openAnalysisPopover(rows.find((r) => r.analysis_id === b.dataset.analysisPopover));
+  }));
+  host.querySelectorAll('[data-analysis-questions]').forEach((b) => b.addEventListener('click', () => {
+    openAnalysisQuestionsPopover(rows.find((r) => r.analysis_id === b.dataset.analysisQuestions));
+  }));
+  host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
+    const aid = b.dataset.analysisRun;
+    b.disabled = true;
+    const original = b.textContent;
+    b.textContent = 'Queueing…';
+    try {
+      await runAnalysis(slug, aid);
+      b.textContent = 'Queued — reload to see it';
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = original;
+      b.title = err.status === 401 ? 'Sign in to run an analysis' : err.message;
+    }
+  }));
 }
 
 /** RUN GOES THROUGH THE SAME PREVIEW as the matrix's two plans.
@@ -5415,7 +5636,8 @@ async function renderCurate(slug) {
           class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalogue →</button>
         <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
-      ${curateRecordHtml(latest)}`;
+      ${curateRecordHtml(latest)}
+      <div id="catalogue-depth-offer"></div>`;
 
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
@@ -5447,6 +5669,7 @@ async function renderCurate(slug) {
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
         draw();
+        renderCatalogueDepthOffer(slug, host);
       } catch (err) {
         b.disabled = false; b.textContent = 'Catalogue →';
         const why = err.status === 401 ? 'sign in to catalogue' : err.status === 409 ? err.message : `not catalogued: ${err.message}`;
@@ -5456,6 +5679,74 @@ async function renderCurate(slug) {
   };
   draw();
   renderComponentTree(slug);
+  renderCatalogueDepthOffer(slug, host);
+}
+
+/* ── The layer-2 catalogue-depth offer ────────────────────────────────────
+ *
+ * DepthOffer's three rules (FUNNEL-COST-RULINGS §3), applied to promoting
+ * accepted architecture-recovery verdicts into real Egeria components
+ * instead of running never-run analyses (owner's ruling, 2026-09-15, on
+ * REPLY-CATALOGUE-IN-LAYERS.md §3):
+ *
+ *   not a nag   — offered once per catalogue record, in the pane, never a
+ *                 modal (the backend refuses a second write on the same
+ *                 record; already_decided is the UI's own courtesy check).
+ *   not a gate  — layer 1 is already committed by the time this appears;
+ *                 nothing here waits on an answer.
+ *   not a scold — "N components recovered, M not catalogued" is a fact
+ *                 about the record. No imperative sentence; the reader
+ *                 decides whether it matters.
+ *
+ * Unlike DepthOffer, "accepted" here has no per-item choice to make: the
+ * accept/reject decision already happens branch by branch in the component
+ * tree (recordVerdicts). So the offer's one action is a link that opens the
+ * tree, not a queue-in-background button — "choose which" would be asking
+ * the reader to redo a decision the tree already offers properly.
+ */
+async function renderCatalogueDepthOffer(slug, host) {
+  const slot = host.querySelector('#catalogue-depth-offer');
+  if (!slot) return;
+  let offer;
+  try { offer = await getCatalogueDepthOffer(slug); } catch { slot.innerHTML = ''; return; }
+  if (slug !== state.selectedSlug) return;   // a faster click, or a different resource, won
+  if (!offer.layer1_done || offer.already_decided || !offer.remaining_components) { slot.innerHTML = ''; return; }
+
+  const priceLine = () => {
+    const c = offer.cost || {};
+    if (c.basis !== 'measured') return `<span class="text-ink-muted">${esc(c.sentence || 'not yet measured')}</span>`;
+    return `<span class="tnum">${esc(fmtSeconds(c.seconds))}</span> <span class="text-ink-muted">${esc(c.sentence.replace(/^about [^(]+/, '').trim())}</span>`;
+  };
+  slot.innerHTML = `
+    <div data-catalogue-depth-offer class="mt-s3 border-t border-rule pt-s2">
+      <div class="text-caveat text-ink"><span class="tnum">${offer.total_components}</span> component${offer.total_components === 1 ? '' : 's'} recovered ·
+        <span class="tnum">${offer.remaining_components}</span> not catalogued.</div>
+      <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
+        <button data-catalogue-depth="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
+          >catalogue the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
+        <button data-catalogue-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
+        <span data-catalogue-depth-status class="text-provenance text-ink-muted"></span>
+      </div>
+    </div>`;
+  const box = slot.querySelector('[data-catalogue-depth-offer]');
+  const status = box.querySelector('[data-catalogue-depth-status]');
+  const finish = async (outcome) => {
+    try {
+      await postCatalogueDepthOfferOutcome(slug, offer.curation_id, outcome);
+    } catch (err) {
+      status.innerHTML = `<span class="text-accent-ink">${
+        err.status === 401 ? 'not recorded — sign in to answer the offer' : `not recorded: ${esc(err.message)}`}</span>`;
+      return;
+    }
+    if (outcome === 'declined') {
+      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the catalogue record</div>`;
+    } else {
+      box.remove();
+      document.getElementById('component-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+  box.querySelector('[data-catalogue-depth="declined"]').addEventListener('click', () => finish('declined'));
+  box.querySelector('[data-catalogue-depth="accepted"]').addEventListener('click', () => finish('accepted'));
 }
 
 
@@ -5666,7 +5957,7 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
   const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
-      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as Egeria SolutionComponents${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
+      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as software components in Egeria — the exact Egeria type is not yet pinned${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
     <p class="text-caveat text-ink-muted">Publish time for component creation is not yet measured — the first branch is what fixes it. Queued, so the pane returns at once. Nothing runs until you confirm.</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
@@ -6218,7 +6509,20 @@ function measureHtml(key, v) {
     return `<div>${label} <span class="text-chrome-muted">not set</span></div>`;
   }
   if (Array.isArray(v)) {
-    const items = v.slice(0, 6).map((it) => {
+    // Language/file-type breakdowns (e.g. `by_type`) are counted, sortable
+    // rows like {type_label, file_count} — none of the finding-shaped field
+    // names below, so without this branch every row fell through to an
+    // empty name and empty text and rendered as a blank line.
+    const isCountRow = (it) => it && typeof it === 'object' &&
+      (it.type_label !== undefined || it.file_count !== undefined);
+    const sorted = isCountRow(v[0])
+      ? [...v].sort((a, b) => (b.file_count || 0) - (a.file_count || 0))
+      : v;
+    const shownCount = isCountRow(v[0]) ? 10 : 6;
+    const items = sorted.slice(0, shownCount).map((it) => {
+      if (isCountRow(it)) {
+        return `<div class="ml-s2"><span class="text-accent-on-dark">${esc(it.type_label ?? '')}</span> ${tnum(esc(it.file_count ?? ''))}</div>`;
+      }
       if (it && typeof it === 'object') {
         const name = it.check_name || it.name || it.id || '';
         const text = it.summary || it.detail || it.label || '';
@@ -6226,8 +6530,8 @@ function measureHtml(key, v) {
       }
       return `<div class="ml-s2">${tnum(esc(it))}</div>`;
     }).join('');
-    const more = v.length > 6
-      ? `<div class="ml-s2 text-chrome-muted">and <span class="tnum">${v.length - 6}</span> more</div>`
+    const more = v.length > shownCount
+      ? `<div class="ml-s2 text-chrome-muted">and <span class="tnum">${v.length - shownCount}</span> more</div>`
       : '';
     return `<div>${label} <span class="tnum">${v.length}</span></div>${items}${more}`;
   }
@@ -6241,11 +6545,22 @@ function measureHtml(key, v) {
   // filled the rail with raw diagram code — which reads as the app having
   // broken, not as a measure. The rail is 290px; nothing that wide belongs in
   // it, and the diagram already has its own action.
-  if (shown.length > 120) {
+  //
+  // Explanation fields are the opposite case: they exist ONLY so a bare score
+  // or label (`activity: 100`, `attention: low`) has something to explain it,
+  // and collapsing one to "171 characters" throws away the reason it was put
+  // there in the first place. Named by suffix/convention rather than length,
+  // because a genuine prose explanation and a raw dump are not the same shape
+  // even when they happen to be a similar number of characters.
+  const isExplanation = /(^|_)(detail|summary)$/.test(key) || key === 'measures_disagree';
+  if (shown.length > 120 && !isExplanation) {
     const isDiagram = /^(mermaid|diagram|svg)$/i.test(key);
     return `<div>${label} <span class="text-chrome-muted">${
       isDiagram ? 'diagram source' : 'text'} · <span class="tnum">${shown.length}</span> characters${
       isDiagram ? ' — use “Open diagram in pane”' : ''}</span></div>`;
+  }
+  if (isExplanation) {
+    return `<div class="text-chrome-muted">${esc(shown)}</div>`;
   }
   return `<div>${label} <span class="tnum">${tnum(esc(shown))}</span></div>`;
 }

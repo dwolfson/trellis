@@ -161,7 +161,7 @@ class TestOrderingAndParentResolution:
         pub.publish_sub_resources("myproj", GITHUB_URL, "asset-guid", ["docs"])
 
         body = pub._automated_curation.create_elem_from_template.call_args_list[0].args[0]
-        expected_qn = f"SourceControlLibrary::{GITHUB_URL}::docs"
+        expected_qn = f"GitHubRepository::{GITHUB_URL}::docs"
         assert body["replacementProperties"] == {
             "class": "AssetProperties", "qualifiedName": expected_qn,
         }

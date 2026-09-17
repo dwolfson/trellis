@@ -329,7 +329,7 @@ Practically, this means: sizing a deployment that will run Architecture Recovery
 uv run resource-explorer survey my-repo --publish
 ```
 
-This runs a local survey, then calls `EgeriaPublisher` to create a `SourceControlLibrary` element in Egeria with file type annotations.
+This runs a local survey, then calls `EgeriaPublisher` to create the repository's own `Asset` element in Egeria with file type annotations.
 
 ### Survey a database in Egeria
 

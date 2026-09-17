@@ -1,5 +1,15 @@
 # Egeria Push & Pull — Design Document
 
+**Correction (2026-09-14, docs/Backlog.md "Catalogue in layers"):** the
+decision this document records — one `SourceControlLibrary` per repository —
+was a type error, the same misreading of 0056 Resource Managers as the
+`SoftwareLibrary`-per-package one found the same day. `SourceControlLibrary`
+names the *service* (GitHub); a repository is what the service manages. The
+corrected model — one `SourceControlLibrary` for GitHub, each repository its
+own `Asset` linked via `CapabilityAssetUse` — is in `egeria_publisher.py`'s
+module docstring. Left below unedited as the historical record of the
+original decision and its reasoning, not as current design.
+
 ## Status — All phases complete
 
 | Phase | Files | Status |

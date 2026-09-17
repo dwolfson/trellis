@@ -93,28 +93,57 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     disposition = (disp or {}).get("disposition") or "undecided"
 
     # ── what it is ─────────────────────────────────────────────────────
+    #
+    # `SoftwareLibrary` per distribution was a type error (docs/Backlog.md,
+    # "Catalogue in layers", 2026-09-14): in Egeria that classification names
+    # a server managing distribution of software modules (PyPI, Nexus) — the
+    # thing that manages libraries, not a library. Layer 1 is
+    # `SoftwareCapability` classified `Application`, proposed only where
+    # `deployment_evidence` found deployment evidence for the distribution;
+    # an importable-only distribution is not a layer-1 capability at all —
+    # at most a layer-2 component, offered unticked (`_row(candidate=False)`)
+    # since a package with no deployment evidence is "probably not
+    # catalogued" by default, not a claim this row can back.
     what_it_is: list[dict] = []
-    dist = registry.query_findings(slug, "distribution")
-    if dist:
-        for d in dist:
+    dep_ev = registry.query_findings(slug, "deployment_evidence")
+    dist_rows = [d for d in dep_ev if d.get("check_name") == "distribution"]
+    if dist_rows:
+        for d in dist_rows:
             det = _detail(d)
-            lab = det.get("name") or d["check_name"]
-            where = {"python": "PyPI", "javascript": "npm", "java": "Maven"}.get(det.get("ecosystem", ""), det.get("ecosystem", ""))
-            what_it_is.append(_row(
-                "SoftwareLibrary", f"Software Library · {lab}" + (f", on {where}" if d.get("label") == "published" else f" ({det.get('ecosystem','')}, not published)"),
-                evidence=d.get("summary", ""), source="manifest_parse", state="measured",
-                members={"analysis_id": "dependency_analysis"}, detail=det))
+            name = det.get("name") or "?"
+            ecosystem = det.get("ecosystem", "")
+            evidence_kinds = ", ".join(sorted({e.get("kind", "").replace("_", " ")
+                                                for e in (det.get("evidence") or []) if e.get("kind")}))
+            # `kind` doubles as the row's pick identity (app.js's
+            # `data-curate-pick`) -- a monorepo declares several
+            # distributions, so it must carry the name, not just the type,
+            # or two applications collapse onto one checkbox.
+            if d.get("label") == "application":
+                what_it_is.append(_row(
+                    f"SoftwareCapability::{name}", f"Software Capability · {name}",
+                    evidence=evidence_kinds or d.get("summary", ""), source="deployment_evidence",
+                    state="measured", members={"analysis_id": "dependency_analysis"}, detail=det))
+            else:  # "library" -- importable, no deployment evidence
+                what_it_is.append(_row(
+                    f"SoftwareComponentCandidate::{name}",
+                    f"Component, not catalogued by default · {name} — importable {ecosystem} "
+                    "distribution, no deployment evidence",
+                    evidence=d.get("summary", ""), source="deployment_evidence",
+                    state="measured", candidate=False, detail=det))
     else:
+        # Its own kind, not bare "SoftwareCapability" -- that string is the
+        # intended-use row's identity a few lines down, and both would
+        # otherwise collapse onto one checkbox in app.js's pick set.
         mp = _fact(layer, slug, "manifest_parse")
         manifests = ((mp.get("value") or {}).get("dependencies") or {}).get("manifests") or []
         if manifests:
             what_it_is.append(_row(
-                "SoftwareLibrary", "Software Library · name not read",
-                evidence=f"manifests present ({', '.join(manifests)}); the distribution name is read by the "
-                         "manifest_parse step from 2026-09-12 — re-survey to have it",
+                "SoftwareCapabilityCandidate", "Software Capability · deployment evidence not yet measured",
+                evidence=f"manifests present ({', '.join(manifests)}); run deployment_evidence to "
+                         "classify as an application or a component",
                 source="manifest_parse", state=mp.get("state", ""), detail={"manifests": manifests}))
         else:
-            what_it_is.append(_row("SoftwareLibrary", "Software Library?",
+            what_it_is.append(_row("SoftwareCapabilityCandidate", "Software Capability?",
                                    evidence="no dependency manifest found", source="manifest_parse",
                                    state=mp.get("state", "")))
 
@@ -132,15 +161,22 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
                                state="needs_human"))
 
     iface = _fact(layer, slug, "interface_surface")
-    # interface_surface's vocabulary is `specified` / `implied` / `no`
-    kinds = [f for f in _findings(iface) if f.get("check_name") != "published_spec" and f.get("label") in ("specified", "implied")]
+    # interface_surface's vocabulary became `declared` / `implemented` /
+    # `implied` / `no` on 2026-09-14 (SPEC-ACTIONABLE-AND-HONEST.md §6),
+    # replacing the old two-rung `specified` / `implied`. `specified` is kept
+    # here as an accepted alias for rows a survey run BEFORE that date left
+    # in the table — interface_surface.py itself never emits it again, so
+    # this is read-side compatibility only, not a live label.
+    _STRONG = ("declared", "implemented", "specified")
+    kinds = [f for f in _findings(iface) if f.get("check_name") != "published_spec"
+             and f.get("label") in (*_STRONG, "implied")]
     spec = next((f for f in _findings(iface) if f.get("check_name") == "published_spec"), None)
     if kinds:
         names = ", ".join(f["check_name"] for f in kinds)
         contract = "no contract" if (spec and spec.get("label") == "no") else "contract published"
         implied = all(f.get("label") == "implied" for f in kinds)
         what_it_is.append(_row(
-            "Endpoint", f"Endpoint × {len(kinds)} · {names} · {'implied' if implied else 'specified'}, {contract}",
+            "Endpoint", f"Endpoint × {len(kinds)} · {names} · {'implied' if implied else 'declared or implemented'}, {contract}",
             evidence="; ".join(f.get("summary", "") for f in kinds)[:400], source="interface_surface",
             state=iface.get("state", ""), count=len(kinds), members={"analysis_id": "interface_surface"},
             detail={"interfaces": [f["check_name"] for f in kinds], "implied": implied}))
@@ -289,6 +325,14 @@ def _ensure_schema(conn) -> None:
         conn.execute("ALTER TABLE resource_curation ADD COLUMN corrects TEXT NOT NULL DEFAULT ''")
     if "corrected_by" not in cols:
         conn.execute("ALTER TABLE resource_curation ADD COLUMN corrected_by TEXT NOT NULL DEFAULT '{}'")
+    # The layer-2 catalogue-depth offer (owner's ruling, 2026-09-15): the
+    # same shape as DepthOffer's outcome, but recorded on the catalogue
+    # record rather than a disposition-history row -- the layer-2 act is
+    # component materialization, which belongs to a curate commit, not to a
+    # disposition verdict. '{}' means "not yet offered", same convention
+    # DepthOffer's own null column uses.
+    if "layer2_offer" not in cols:
+        conn.execute("ALTER TABLE resource_curation ADD COLUMN layer2_offer TEXT NOT NULL DEFAULT '{}'")
 
 
 def _columns(conn, table: str) -> set[str]:
@@ -382,6 +426,34 @@ class Curations:
             conn.execute("UPDATE resource_curation SET uses = ? WHERE id = ?", (json.dumps(uses), cid))
         return self.get(cid)
 
+    def record_layer2_offer(self, cid: str, outcome: str, decided_by: str) -> dict:
+        """Record the outcome of the layer-2 catalogue-depth offer on this
+        catalogue record (owner's ruling, 2026-09-15) -- same
+        accepted/declined/chose vocabulary DepthOffer uses for a repo's
+        never-run analyses, mirrored here at once-per-CATALOGUE-RECORD
+        rather than once-per-disposition-verdict, since the layer-2 act
+        (component materialization) belongs to a curate commit, not to a
+        disposition.
+
+        Once per record: raises `ValueError` if this record already carries
+        an offer outcome -- the pane only offers when it reads none, but
+        that is a UI courtesy, not the enforcement; this is (same shape as
+        `registry.record_depth_offer`)."""
+        from resource_explorer.workflows.catalogue_depth_offer import LAYER2_OFFER_OUTCOMES
+
+        if outcome not in LAYER2_OFFER_OUTCOMES:
+            raise ValueError(f"outcome must be one of {sorted(LAYER2_OFFER_OUTCOMES)}, got {outcome!r}")
+        rec = self.get(cid)
+        if not rec:
+            raise LookupError(cid)
+        if rec.get("layer2_offer"):
+            raise ValueError(f"catalogue record {cid} already carries a layer-2 offer outcome")
+        payload = {"outcome": outcome, "decided_by": decided_by, "at": _now()}
+        with self._conn() as conn:
+            conn.execute("UPDATE resource_curation SET layer2_offer = ? WHERE id = ?",
+                         (json.dumps(payload), cid))
+        return self.get(cid)
+
     def get(self, cid: str) -> dict | None:
         with self._conn() as conn:
             _ensure_schema(conn)
@@ -420,7 +492,7 @@ class Curations:
     @staticmethod
     def _decode(row) -> dict:
         d = dict(row) if not isinstance(row, dict) else dict(row)
-        for k in ("selection", "manifest", "steps", "report", "uses", "corrected_by"):
+        for k in ("selection", "manifest", "steps", "report", "uses", "corrected_by", "layer2_offer"):
             empty = "[]" if k in ("steps", "uses") else "{}"
             try:
                 d[k] = json.loads(d.get(k) or empty)

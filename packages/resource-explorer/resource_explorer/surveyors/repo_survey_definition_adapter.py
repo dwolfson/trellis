@@ -560,9 +560,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     "repo_interface_surface": StepInfo(
         "repo_interface_surface", InterfaceSurfaceSurveyor,
         "What can be talked to, and whether the contract is written down — "
-        "from the file inventory and declared dependencies. A committed "
-        "openapi.yaml is 'specified'; a fastapi dependency is only 'implied', "
-        "and never counts as a published API.",
+        "three rungs: 'declared' (a committed contract, or an entry point "
+        "the packaging declares), 'implemented' (the code runs as one, from "
+        "stored evidence such as a distribution's own __main__.py), and "
+        "'implied' (a dependency name only, e.g. fastapi) — read from the "
+        "file inventory, declared dependencies, and the distribution/"
+        "deployment-evidence facts other steps already recorded. None of "
+        "the first two rungs counts as a published API on its own.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
     ),
@@ -1549,20 +1553,28 @@ def _interface_surface_results(registry, slug: str) -> dict:
 
 
 def _interface_surface_headline(registry, slug: str) -> dict | None:
-    """Specified interfaces, and whether a contract is published.
+    """Declared-or-implemented interfaces, and whether a contract is published.
 
-    An implied interface never reaches the headline on its own: "depends on
-    fastapi" is not an API this project offers, and a headline is exactly where
-    that distinction gets lost.
+    Three rungs since 2026-09-14 (SPEC-ACTIONABLE-AND-HONEST.md §6): `declared`
+    (a committed contract OR a packaging-declared entry point), `implemented`
+    (the code runs as one, with no higher rung available), `implied` (a
+    dependency name only). `specified` is read here too — the OLD label, for
+    rows a survey run before that date left in the table; a fresh run never
+    writes it again. An implied-only interface never reaches the headline on
+    its own: "depends on fastapi" is not an API this project offers, and a
+    headline is exactly where that distinction gets lost.
     """
     rows = _interface_surface_results(registry, slug)["findings"]
     if not rows:
         return None
-    specified = [r["check_name"] for r in rows if r["label"] == "specified"]
-    published = next((r["label"] for r in rows
-                      if r["check_name"] == "published_spec"), "")
-    if specified:
-        return {"label": f"{', '.join(specified)} (specified)", "tone": "good"}
+    strong = [r["check_name"] for r in rows if r["label"] in ("declared", "implemented", "specified")]
+    published_row = next((r for r in rows if r["check_name"] == "published_spec"), None)
+    published = published_row["label"] if published_row else ""
+    published_count = len((published_row.get("detail") or {}).get("kinds") or []) if published == "yes" else 0
+    if strong:
+        return {"label": (f"{len(strong)} interface{'s' if len(strong) != 1 else ''} declared or "
+                          f"implemented · {published_count} with a published contract"),
+                "tone": "good" if published_count else "warn"}
     implied = [r["check_name"] for r in rows if r["label"] == "implied"]
     if implied:
         return {"label": f"{', '.join(implied[:3])} implied, no published contract",
@@ -4624,7 +4636,10 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "documentation_conventions", "Documentation & Conventions",
         "README/CHANGELOG/CONTRIBUTING coverage and doc-quality, plus repo-convention "
         "signals (build automation, deployment evidence, catalog self-description).",
-        ["documentation_coverage", "repo_conventions"],
+        # deployment_evidence added 2026-09-14 — this dashboard's own
+        # description already named it as one of the repo-convention signals
+        # it covers, before the analysis existed to fill that slot.
+        ["documentation_coverage", "repo_conventions", "deployment_evidence"],
     ),
     # Opened 2026-08-31 (docs/Backlog.md "Survey Results dashboards cover 14 of
     # 29 analyses"): all three architecture analyses were homeless in this
@@ -4659,7 +4674,11 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         # dependency_support added 2026-09-12: it reads the same
         # project_dependencies rows dependency_analysis reports on, so the two
         # are one question asked twice — what is here, and what does it mean.
-        ["dependency_analysis", "dependency_support"],
+        # egeria_interfaces added 2026-09-14, beside it: same shape of question
+        # (what does a declared dependency — here, pyegeria — indicate this
+        # repo consumes), just answered from code symbols/doc paths instead of
+        # a curated name mapping.
+        ["dependency_analysis", "dependency_support", "egeria_interfaces"],
     ),
     # interface_surface added 2026-08-31, same Backlog entry — "what can be
     # talked to, and whether the contract is written down" is the same

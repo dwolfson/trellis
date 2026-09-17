@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-tint:#fff3e4;
+      --warn:#9c4212;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .row{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:var(--s3);
+         padding:6px 0;border-bottom:1px solid var(--rule)}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+  </style>
+</helmet>
+
+<div style="width:900px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="display:flex;align-items:baseline;gap:var(--s2)">
+    <span class="caps" style="border:1px solid var(--rule);border-radius:11px;padding:1px 9px;color:var(--ink-muted)">Record &middot; report</span>
+    <span class="prov" style="color:var(--ink-muted)">under <span class="mono">egeria-python</span></span>
+  </div>
+
+  <h1 class="h" style="font-weight:400;font-size:34px;margin:var(--s3) 0 var(--s2);max-width:30ch">
+    Dependencies to review before <span class="tnum">6.2</span>
+  </h1>
+
+  <div style="font-size:15px;border-left:3px solid var(--accent);padding-left:var(--s3);margin-bottom:var(--s4)">
+    <span class="tnum">32</span> of <span class="tnum">32</span> dependencies &mdash; nothing capped.
+  </div>
+
+  <div class="prov" style="color:var(--ink-muted);border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s3);margin-bottom:var(--s4)">
+    Asked as <em>&ldquo;list the dependencies&rdquo;</em> &middot; answered from
+    <span class="mono">dependency_analysis</span>, run <span class="tnum">2026-09-13 09:14</span> &middot;
+    written by <span class="mono">dwolfson</span>, <span class="tnum">2026-09-13 09:16</span> &middot;
+    a snapshot, not a query.
+  </div>
+
+  <div class="caps" style="color:var(--ink-muted);padding-bottom:var(--s2);border-bottom:1px solid var(--rule)">
+    pypi <span class="tnum">32</span>
+  </div>
+
+  <div style="margin-top:var(--s2)">
+    <div class="row"><span class="mono">fastapi</span><span class="prov" style="color:var(--ink-muted)">optional</span></div>
+    <div class="row"><span class="mono">uvicorn</span><span class="prov" style="color:var(--ink-muted)">optional</span></div>
+    <div class="row"><span class="mono">altair</span><span class="prov tnum" style="color:var(--ink-muted)">runtime &middot; ==6.2.2</span></div>
+    <div class="row"><span class="mono">click</span><span class="prov tnum" style="color:var(--ink-muted)">runtime &middot; ==8.5.0</span></div>
+    <div class="row"><span class="mono">httpx</span><span class="prov" style="color:var(--ink-muted)">runtime</span></div>
+    <div class="row"><span class="mono">inflect</span><span class="prov" style="color:var(--ink-muted)">runtime</span></div>
+    <div class="row"><span class="mono">jupyter</span><span class="prov" style="color:var(--ink-muted)">runtime</span></div>
+    <div class="row"><span class="mono">jupyter-notebook-parser</span><span class="prov" style="color:var(--ink-muted)">runtime</span></div>
+    <div class="row"><span class="mono">loguru</span><span class="prov" style="color:var(--ink-muted)">runtime</span></div>
+    <div class="row"><span class="mono">markers</span><span class="prov tnum" style="color:var(--ink-muted)">runtime &middot; &gt;=0.3.0</span></div>
+    <div class="row" style="border-bottom:0">
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">22</span> further rows, all recorded</span><span></span>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4);
+              display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s6)">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Take it elsewhere</div>
+      <div style="display:flex;gap:var(--s3);margin-top:var(--s2)" class="caps">
+        <span class="lnk">Markdown</span><span class="lnk">CSV</span>
+      </div>
+      <p class="prov" style="color:var(--ink-muted);margin:var(--s2) 0 0;max-width:44ch">
+        Exports <em>of</em> the record, carrying the same header sentence and the same provenance line. The record
+        is the thing; a file is a view of it. Today every provenance line this project composes so carefully lives
+        on the clipboard and dies on the first paste.
+      </p>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Act on it</div>
+      <div style="display:flex;gap:var(--s3);margin-top:var(--s2)" class="caps">
+        <span class="lnk">add to work list</span><span class="lnk">raise RFA</span><span class="lnk">note in journal</span>
+      </div>
+      <p class="prov" style="color:var(--ink-muted);margin:var(--s2) 0 0;max-width:44ch">
+        The same three, because a report is a thing you hand to someone. The rows travel with their provenance
+        line, not as bare names.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-left:1px solid var(--rule);
+              border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:70ch">
+      <strong style="font-weight:500">Append-only, like everything else that carries an author.</strong>
+      A report is never edited. If it was wrong, or the world moved, the correction is a new record that says what
+      it corrects &mdash; the rule Curate already states about reversal, and the reason the journal has no
+      review flags. The list above will be wrong eventually; that is what the run date is for.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

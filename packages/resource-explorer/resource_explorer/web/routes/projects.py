@@ -924,6 +924,64 @@ async def get_depth_offer(slug: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/{slug}/catalogue-depth-offer")
+async def get_catalogue_depth_offer(slug: str) -> dict:
+    """The layer-2 catalogue-depth offer (owner's ruling, 2026-09-15, on the
+    designer's REPLY-CATALOGUE-IN-LAYERS.md §3): DepthOffer's three rules
+    (not a nag, not a gate, not a scold) applied to promoting accepted
+    architecture-recovery verdicts into real Egeria SolutionComponents,
+    instead of to never-run analyses. See
+    `workflows/catalogue_depth_offer.build_catalogue_depth_offer` for the
+    shape and the reasoning — this route is a thin 404-translating adapter,
+    same pattern as GET /{slug}/depth-offer above."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.catalogue_depth_offer import build_catalogue_depth_offer
+
+    registry = ProjectRegistry()
+    try:
+        return build_catalogue_depth_offer(registry, slug)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class CatalogueDepthOfferOutcome(BaseModel):
+    outcome: str
+
+
+@router.post("/{slug}/curate/commits/{cid}/layer2-offer")
+async def record_catalogue_depth_offer(slug: str, cid: str, body: CatalogueDepthOfferOutcome,
+                                       request: Request) -> dict:
+    """Record the outcome of the layer-2 catalogue-depth offer on ONE
+    catalogue record — once per record (`Curations.record_layer2_offer`
+    refuses a second write). `decided_by` comes from the signed-in caller,
+    never from the request body, same reasoning `record_depth_offer_route`
+    gives for the identical choice."""
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.catalogue_depth_offer import LAYER2_OFFER_OUTCOMES
+
+    if body.outcome not in LAYER2_OFFER_OUTCOMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"outcome must be one of {sorted(LAYER2_OFFER_OUTCOMES)}, got {body.outcome!r}",
+        )
+    user = get_current_user(request)
+    decided_by = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not decided_by:
+        raise HTTPException(status_code=401, detail="Sign in to answer the offer — it needs someone to have made the decision.")
+
+    registry = ProjectRegistry()
+    curations = Curations(registry)
+    rec = curations.get(cid)
+    if not rec or rec.get("entity_slug") != slug:
+        raise HTTPException(status_code=404, detail=f"Catalogue record {cid!r} not found for {slug!r}")
+    try:
+        return curations.record_layer2_offer(cid, body.outcome, decided_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/{slug}/analyses/{analysis_id}/results")
 async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = None) -> dict:
     """Latest structured results for one repo analysis — the real
@@ -956,24 +1014,39 @@ async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = 
     # way to ask for anything else. Passing it to a reader that does not accept
     # it would be a TypeError, hence the signature check rather than a blanket
     # kwarg.
+    result = None
     if depth is not None:
         import inspect
 
         if "max_depth" in inspect.signature(results_reader).parameters:
             if depth in ("all", "full", "none"):
-                return results_reader(registry, slug, max_depth=None)
-            try:
-                parsed = int(depth)
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"depth must be an integer or 'all', got {depth!r}",
-                )
-            if parsed < 0:
-                raise HTTPException(status_code=400, detail="depth must be >= 0")
-            return results_reader(registry, slug, max_depth=parsed)
+                result = results_reader(registry, slug, max_depth=None)
+            else:
+                try:
+                    parsed = int(depth)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"depth must be an integer or 'all', got {depth!r}",
+                    )
+                if parsed < 0:
+                    raise HTTPException(status_code=400, detail="depth must be >= 0")
+                result = results_reader(registry, slug, max_depth=parsed)
+    if result is None:
+        result = results_reader(registry, slug)
 
-    return results_reader(registry, slug)
+    # destination/destination_basis per finding (SPEC-ACTIONABLE-AND-HONEST.md
+    # §3, resource_explorer/destinations.py) — the same annotation
+    # Fact.as_dict() applies, added here too because this route returns the
+    # raw results dict directly rather than through FactLayer. `_status`
+    # (result_status.py, when the reader attached one) supplies the
+    # whole-analysis state so rule (1) still wins over a per-row label.
+    if isinstance(result, dict) and isinstance(result.get("checks"), list):
+        from resource_explorer.destinations import annotate_checks
+
+        status = (result.get("_status") or {}).get("state", "")
+        annotate_checks(analysis_id, result["checks"], whole_state=status)
+    return result
 
 
 @router.get("/{slug}/analyses/{analysis_id}/trend")
@@ -1655,7 +1728,7 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
 # fail elsewhere. See curate_plan.py for the design rules held.
 
 class CurateSelection(BaseModel):
-    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareLibrary, Endpoint, ...
+    confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareCapability::<name>, Endpoint, ...
     sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
     data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
     note: str = ""
@@ -1979,3 +2052,84 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
                                       result_ref=activity_id, requested_by=_requested_by())
         out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
     return out
+
+
+@router.get("/{slug}/gaps")
+def get_gaps(slug: str) -> dict:
+    """The gaps collection this project owns (SPEC-ACTIONABLE-AND-HONEST.md
+    §3, resource_explorer/gaps.py): findings about the ANALYSIS rather than
+    the repository — a disagreement between two measures, or a check that
+    could not be established — collapsed on the resource page to one line
+    ("3 of 11 community measures cannot be computed … Not a finding about
+    this repository") and expanded here.
+
+    Reads what FactLayer.facts() already recorded (that call is the one
+    choke point every page load already goes through — see gaps.py's own
+    docstring) rather than re-collecting, so this route is a plain read like
+    every other GET here."""
+    from resource_explorer.gaps import gaps_summary
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return gaps_summary(registry, slug)
+
+
+@router.post("/{slug}/gaps/{gap_id}/rfa")
+def raise_gap_rfa(slug: str, gap_id: int, request: Request) -> dict:
+    """Raise an RFA for one gap.
+
+    The designer's model (§3) is an RFA *against the analysis* — the gap is
+    not the reader's problem, it is whoever maintains the analysis's. This
+    codebase's RFA entity types today are exactly {repo, database,
+    filesystem, investigation} (activity_logger.log_rfa's real callers,
+    grepped 2026-09-14) — there is no `analysis` entity type, so "against the
+    analysis" is not representable yet. Raising it against the repo with the
+    analysis named in the summary/detail is the honest fallback, not a
+    silent downgrade: it is disclosed here, in the docstring, and again in
+    this change's PR body, rather than pretending the RFA landed where the
+    design says it should.
+
+    404 when the project or the gap does not exist (or the gap belongs to a
+    different project — a slug/gap_id mismatch is a caller error, not "not
+    found" for a DIFFERENT reason, but the response is the same either way).
+    409 when this gap already has an RFA — same convention as
+    outbox.py's retry route: raising a second RFA for a gap already worked
+    would duplicate the work item, not merely re-request it."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    gap = registry.get_gap(gap_id)
+    if not gap or gap["project_slug"] != slug:
+        raise HTTPException(status_code=404, detail=f"No such gap {gap_id} for project '{slug}'")
+    if gap.get("rfa_activity_id"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Gap {gap_id} already has an RFA ({gap['rfa_activity_id']}) — "
+                   "raising a second one would duplicate the work item.",
+        )
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    kind_label = "a disagreement between two measures" if gap["gap_kind"] == "disagreement" \
+        else "a check that could not be established"
+    summary = f"{gap['analysis_id']}: {gap['sentence']}"
+    detail = (
+        f"This is {kind_label} in the '{gap['analysis_id']}' analysis, not a "
+        f"finding about {project.display_name or slug} itself — raised "
+        "against the repository because no 'analysis' RFA entity type exists "
+        "yet (see this route's docstring)."
+    )
+    rfa_id = log_rfa(
+        registry, "repo", slug, project.display_name or slug, "open", summary,
+        detail=detail, analysis_name=gap["analysis_id"],
+        items=[{"kind": "gap", "gap_id": gap_id, "gap_kind": gap["gap_kind"],
+                "check_name": gap["check_name"]}],
+    )
+    registry.mark_gap_rfa(gap_id, rfa_id)
+    return {"gap_id": gap_id, "rfa": rfa_id, "raised_against": "repo", "raised_by": author}

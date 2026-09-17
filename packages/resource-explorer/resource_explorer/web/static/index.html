@@ -3228,6 +3228,15 @@ const _REPO_RESULTS_RENDER_MODE = {
   // project_analysis_findings kind="ci_quality"/"repo_conventions", all in
   // one run). Same shape as code_symbol_extraction's own results.
   manifest_parse: 'custom',
+  // 'custom', not 'findings_list': three verdict groups (application/library/
+  // could-not-check-attribution) each need their own evidence list rendered,
+  // not a flat label -> pass/gap row. See _renderDeploymentEvidenceResults.
+  deployment_evidence: 'custom',
+  // 'custom': view services and Dr.Egeria command families are two different
+  // kinds of row with different confidence meanings, plus a "floor, not a
+  // full count" basis note that a generic mode has nowhere to put. See
+  // _renderEgeriaInterfacesResults.
+  egeria_interfaces: 'custom',
 };
 
 // What the trend chart's Y axis actually is, per analysis kind — the chart
@@ -3454,17 +3463,37 @@ function _renderFindingsListResults(data) {
   }).join('');
 }
 
+// What each repository_health score means and what counts as good, taken
+// verbatim from docs/dr-egeria/governance-metrics/re-governance-metrics.md —
+// keep the two in sync if a target or measurement there changes. A bare
+// "activity: 100" tells the reader nothing about scale or the pass bar; this
+// is why the table below existed unexplained until now.
+const METRIC_INFO = {
+  activity: { summary: 'How much recent development this repository is receiving (0-100).', target: '40+ is regular maintenance; below that is occasional.' },
+  community: { summary: 'Whether this repository has a community beyond its maintainers (0-100).', target: '30+ means more than a single-maintainer project.' },
+  release_cadence: { summary: 'How regularly this repository publishes releases (0-100).', target: '50+ means releases roughly every 50 days or better; 0 means no releases or a long gap.' },
+  freshness: { summary: 'How recently this repository was last touched (0-100).', target: '60+ means pushed within roughly the last 20 days.' },
+  overall: { summary: 'Unweighted mean of activity, community, release cadence and freshness.', target: '70+ healthy, 40-70 a warning, below 40 a gap. Missing this is not itself a verdict — a finished library needs no recent commits.' },
+};
+
 // Renders any {metric_name: value, ..., surveyed_at, detail?} shape (as
 // returned by registry.query_metrics()) as a small key-value grid.
 function _renderMetricsResults(data) {
   // _status is an envelope, not a metric — it must never render as a row.
   const entries = Object.entries(data).filter(([k]) => k !== 'surveyed_at' && k !== 'detail' && k !== '_status');
   if (!entries.length) return _renderEmptyResultState(data);
-  return entries.map(([name, value]) => `
+  return entries.map(([name, value]) => {
+    const info = METRIC_INFO[name];
+    const title = info ? ` title="${_esc(info.summary + ' Target: ' + info.target)}"` : '';
+    const label = info
+      ? `<span class="text-slate-500 border-b border-dotted border-slate-600 cursor-help"${title}>${_esc(name.replace(/_/g, ' '))}</span>`
+      : `<span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>`;
+    return `
     <div class="text-xs text-slate-300 flex justify-between gap-2">
-      <span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>
+      ${label}
       <span>${_esc(String(value))}</span>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 // Repo classification (docs/architecture-recovery-design.md §5.5b).
@@ -3738,6 +3767,113 @@ function _renderDependencySupportResults(data) {
       + `${_esc(u.join(', '))}</div></details>`;
   }
   return head + techBlock + unmatchedBlock;
+}
+
+// _renderDeploymentEvidenceResults — kind-plugin for `deployment_evidence`.
+//
+// Layer 1 of "Cataloguing in layers" (project owner, 2026-09-14): the
+// verdict a Curate proposal's SoftwareCapability/Application classification
+// rests on. Three groups a reader must tell apart — application (evidence
+// found), library (importable, none found), and the could_not_check items a
+// verdict's own evidence couldn't attribute to one distribution in a
+// multi-distribution repo — every state a sentence, never a bare count.
+function _renderDeploymentEvidenceResults(data) {
+  if (data && data._status) return _renderEmptyResultState(data);
+  const dists = data.distributions || [];
+  const cov = data.coverage || {};
+  if (!dists.length && !cov.summary) return _renderEmptyResultState(data);
+
+  if (cov.label === 'no_manifest_read') {
+    return `<div class="text-xs text-amber-400/90 leading-snug">No declared-distribution rows are held for `
+      + `this repository — nothing to judge (run <span class="mono">manifest_parse</span> first).</div>`;
+  }
+
+  const head = `<div class="text-xs text-slate-300 mb-2">${_esc(cov.summary || '')}</div>`
+    + `<div class="text-[10px] text-slate-500 leading-snug mb-2">${_esc(data.message || '')}</div>`;
+
+  const groups = { application: [], library: [], unknown: [] };
+  for (const d of dists) (groups[d.verdict] || groups.unknown).push(d);
+
+  const verdictLabel = { application: 'Application', library: 'Library', unknown: 'Could not check' };
+  const verdictCls = { application: 'text-emerald-300', library: 'text-slate-400', unknown: 'text-amber-300' };
+
+  const groupBlocks = ['application', 'library', 'unknown'].map(v => {
+    const items = groups[v];
+    if (!items.length) return '';
+    const rows = items.map(d => {
+      const evidenceKinds = (d.evidence || []).map(e => e.kind);
+      const evLine = evidenceKinds.length
+        ? `<div class="text-[11px] text-slate-500 mono">${_esc(evidenceKinds.join(', '))}</div>` : '';
+      const cnc = d.could_not_check || [];
+      const cncLine = cnc.length
+        ? `<div class="text-[11px] text-amber-400/80 leading-snug">${cnc.length} evidence item`
+          + `${cnc.length === 1 ? '' : 's'} could not be attributed to this distribution specifically — `
+          + `${_esc(cnc[0].reason || '')}</div>` : '';
+      const consumers = d.consumers_in_repo;
+      const consumersLine = consumers && consumers.length
+        ? `<div class="text-[11px] text-slate-500">consumed in-repo by ${_esc(consumers.join(', '))}</div>` : '';
+      return `<div class="py-1 border-b border-slate-800/60">`
+        + `<div class="flex items-baseline gap-2"><span class="text-sm text-slate-200">${_esc(d.name)}</span>`
+        + (d.ecosystem ? `<span class="text-[10px] text-slate-600 mono">${_esc(d.ecosystem)}</span>` : '') + `</div>`
+        + evLine + cncLine + consumersLine
+        + `</div>`;
+    }).join('');
+    return `<div class="mb-2">`
+      + `<div class="text-[11px] uppercase tracking-wide ${verdictCls[v]} mb-1">${verdictLabel[v]} (${items.length})</div>`
+      + rows + `</div>`;
+  }).join('');
+
+  return head + (groupBlocks || `<div class="text-xs text-slate-500 italic">No declared distributions.</div>`);
+}
+
+// _renderEgeriaInterfacesResults — kind-plugin for `egeria_interfaces`.
+//
+// Two different kinds of row (view services this repo's code actually
+// references, and Dr.Egeria command families guessed from filenames) plus
+// a "floor, not a full count" basis note — no import table exists anywhere
+// in this codebase, so the count can only ever be a lower bound. A repo
+// with no pyegeria dependency at all reads `nothing_found`, not `never_run`.
+function _renderEgeriaInterfacesResults(data) {
+  if (data && data._status) return _renderEmptyResultState(data);
+  const cov = data.coverage || {};
+  const viewServices = data.view_services || [];
+  const families = data.dr_egeria_families || [];
+  if (!viewServices.length && !families.length && !cov.summary) return _renderEmptyResultState(data);
+
+  if (cov.state === 'nothing_found') {
+    return `<div class="text-xs text-slate-400 flex items-start gap-1.5">`
+      + `<span class="text-slate-500">✓</span>`
+      + `<span>${_esc(cov.summary || 'No pyegeria dependency found — nothing to assess.')}</span></div>`;
+  }
+
+  const head = `<div class="text-xs text-slate-300 mb-2">${_esc(cov.summary || '')}</div>`
+    + `<div class="text-[10px] text-slate-500 leading-snug mb-2">${_esc(data.message || '')}</div>`;
+
+  const vsRows = viewServices.map(vs => `<div class="py-1 border-b border-slate-800/60">`
+    + `<div class="flex items-baseline gap-2"><span class="text-sm text-slate-200">${_esc(vs.view_service)}</span>`
+    + `<span class="text-[10px] text-slate-500">${vs.symbol_count} reference${vs.symbol_count === 1 ? '' : 's'}</span></div>`
+    + `<div class="text-[11px] text-slate-500 mono">${_esc((vs.client_classes || []).join(', '))}</div>`
+    + `</div>`).join('');
+  const vsBlock = viewServices.length
+    ? `<div class="mb-2"><div class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">`
+      + `View services (${viewServices.length})</div>${vsRows}</div>`
+    : `<div class="text-xs text-slate-500 italic mb-2">No view services matched from code symbols.</div>`;
+
+  const famRows = families.map(f => `<div class="py-1 border-b border-slate-800/60">`
+    + `<div class="text-sm text-slate-200">${_esc(f.family)}</div>`
+    + `<div class="text-[11px] text-slate-500">${_esc(f.summary || '')}</div>`
+    + `</div>`).join('');
+  const famBlock = families.length
+    ? `<div class="mb-2"><div class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">`
+      + `Dr.Egeria command families (${families.length})</div>${famRows}</div>`
+    : `<div class="text-xs text-slate-500 italic mb-2">No Dr.Egeria command families guessed from filenames.</div>`;
+
+  const basisNote = cov.basis_note || data.message;
+  const basisBlock = basisNote
+    ? `<div class="text-[11px] text-amber-400/70 leading-snug">${_esc(basisNote)} — a floor, not a full count.</div>`
+    : '';
+
+  return head + vsBlock + famBlock + basisBlock;
 }
 
 function _renderManifestParseResults(data) {
@@ -4599,6 +4735,8 @@ const _CUSTOM_RESULT_RENDERERS = {
   architecture_recovery: _renderArchitectureRecoveryResults,
   architecture_diagram: _renderArchitectureDiagramResults,
   dependency_support: _renderDependencySupportResults,
+  deployment_evidence: _renderDeploymentEvidenceResults,
+  egeria_interfaces: _renderEgeriaInterfacesResults,
   dependency_analysis: _renderDependencyAnalysisResults,
   data_file_profiling: _renderDataFileProfilingResults,
   language_file_classification: _renderLanguageFileClassificationResults,

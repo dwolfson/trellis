@@ -96,8 +96,11 @@ def main() -> int:
             unknown.append((slug, guid, "no github_url on the project row"))
             continue
         try:
-            check = maker.find_software_capabilities(
-                search_string=f"SourceControlLibrary::{url}",
+            # find_assets, not find_software_capabilities: the repository is
+            # a plain Asset since the 2026-09-14 SourceControlLibrary
+            # correction (egeria_publisher.py's module docstring).
+            check = maker.find_assets(
+                search_string=f"GitHubRepository::{url}",
                 starts_with=True, ignore_case=False, output_format="JSON",
             )
             if not isinstance(check, list):

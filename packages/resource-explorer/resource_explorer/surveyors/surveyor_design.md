@@ -105,7 +105,7 @@ explorer/surveyors/
 
 1. **Separation of concerns** — Sub-surveyors produce plain Python dataclasses (`SurveyResult`), no Egeria dependency. `EgeriaPublisher` handles all API calls. Surveys are useful standalone even without Egeria running.
 2. **Reuse existing data** — Sub-surveyors read from the SQLite registry and pgvector (already indexed). They do not re-download from GitHub. The `project-explorer add` / `refresh` pipeline feeds the survey.
-3. **Asset auto-registration** — `EgeriaPublisher` finds or creates the GitHub repo as a `SourceControlLibrary` in Egeria before attaching the `SurveyReport` (see Q2).
+3. **Asset auto-registration** — `EgeriaPublisher` finds or creates the GitHub repo as an `Asset` in Egeria before attaching the `SurveyReport` (see Q2). **Historical note (2026-09-14):** originally a `SourceControlLibrary`, corrected once that was found to be a type error — see `egeria_publisher.py`'s module docstring.
 4. **CLI integration** — New `project-explorer survey <project> [--publish]` command. Without `--publish` the survey prints as markdown. With `--publish` it also pushes to Egeria (see Q4).
 5. **Governance action integration** — `--publish` also exposes an option to trigger a defined Egeria governance action process (via pyegeria) to catalog the asset, not just record the survey. This keeps cataloguing as a deliberate user choice rather than automatic.
 

@@ -43,6 +43,8 @@ import os
 import re
 from typing import TYPE_CHECKING
 
+from resource_explorer.egeria_timing import time_egeria_call
+
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
 
@@ -172,7 +174,7 @@ class ComponentMaterializer:
     def qualified_name_for(entity_type: str, entity_slug: str, scope_locator: str) -> str:
         """`SolutionComponent::{entity_type}::{entity_slug}::{scope_locator}` —
         same naming shape as every other qualifiedName in this codebase
-        (`SourceControlLibrary::{url}`, `SurveyReport::GitHubRepo::{slug}
+        (`GitHubRepository::{url}`, `SurveyReport::GitHubRepo::{slug}
         ::{ts}`): kind, then the path that makes it unique. scope_locator is
         the join key architecture_recovery findings already use (a
         component's path prefix), so this needs no separate identity."""
@@ -313,7 +315,8 @@ class ComponentMaterializer:
             "properties": properties,
         }
         try:
-            guid = self._solution_architect.create_solution_component(body)
+            with time_egeria_call(self._registry, "create_solution_component", "write"):
+                guid = self._solution_architect.create_solution_component(body)
         except Exception as exc:
             raise MaterializationError(f"Egeria rejected the new SolutionComponent: {exc}") from exc
         if not guid or not _UUID_RE.match(guid):

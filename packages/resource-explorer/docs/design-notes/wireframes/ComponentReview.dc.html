@@ -1,0 +1,213 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+      --diagram:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .btn{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+         border:1px solid var(--accent);border-radius:2px;color:var(--accent-ink);padding:3px 9px}
+    .btn-q{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+           border:1px solid var(--rule);border-radius:2px;color:var(--ink-muted);padding:3px 9px}
+    .badge{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+           border:1px solid var(--rule);border-radius:11px;padding:1px 8px;white-space:nowrap}
+    .branch{display:grid;grid-template-columns:22px minmax(0,1fr) 92px 120px 190px;gap:var(--s2);
+            align-items:baseline;padding:7px 0;border-bottom:1px solid var(--rule)}
+    .leaf{display:grid;grid-template-columns:22px minmax(0,1fr) 92px 120px 190px;gap:var(--s2);
+          align-items:baseline;padding:5px 0;border-bottom:1px solid var(--rule);padding-left:26px}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+  </style>
+</helmet>
+
+<div style="width:1120px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Analysis &middot; components</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:30ch">Review at the branch people recognise</h1>
+    <p style="max-width:78ch;color:var(--ink-muted);margin:0">
+      Your own spike settled the shape before I drew anything: at recovery scale a flat per-component queue
+      fails, and <strong style="font-weight:500;color:var(--ink)">no human-accepted component is cohesive under
+      any bar</strong> &mdash; curators accepted top-level named packages, a signal nothing measures. So the
+      surface is not a queue ordered by confidence. It is <strong style="font-weight:500;color:var(--ink)">the
+      repository's own naming</strong>, and the decision is made at the branch.
+    </p>
+  </div>
+
+  <!-- the scale -->
+  <div style="margin-top:var(--s4);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3)">
+    <div class="card">
+      <div class="h" style="font-size:26px"><span class="tnum">609</span></div>
+      <div class="prov" style="color:var(--ink-muted)">components recovered on <span class="mono">kafka</span>, logical perspective</div>
+    </div>
+    <div class="card">
+      <div class="h" style="font-size:26px"><span class="tnum">1</span></div>
+      <div class="prov" style="color:var(--ink-muted)">median node size, every repository measured</div>
+    </div>
+    <div class="card">
+      <div class="h" style="font-size:26px"><span class="tnum">0</span></div>
+      <div class="prov" style="color:var(--ink-muted)">verdicts recorded on <span class="mono">kafka</span>; <span class="tnum">4</span> of <span class="tnum">85</span> on <span class="mono">egeria_python</span></div>
+    </div>
+    <div class="card">
+      <div class="h" style="font-size:26px">&asymp;<span class="tnum">20</span></div>
+      <div class="prov" style="color:var(--ink-muted)">named branches a person would actually decide about</div>
+    </div>
+  </div>
+  <p class="prov" style="color:var(--ink-muted);max-width:78ch;margin:var(--s2) 0 0">
+    Six hundred decisions is not a review, it is an abandonment. Twenty is a morning. The tree is what converts
+    one into the other, and nothing about the data has to change for it &mdash; every component already carries
+    the path prefix it was keyed by.
+  </p>
+
+  <!-- the surface -->
+  <div style="margin-top:var(--s6)">
+    <div style="display:flex;align-items:baseline;gap:var(--s2);padding-bottom:var(--s2);border-bottom:1px solid var(--rule-strong)">
+      <span class="h" style="font-size:17px"><span class="tnum">85</span> components</span>
+      <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">4</span> reviewed, <span class="tnum">4</span> accepted &middot; <span class="tnum">81</span> undecided</span>
+      <span class="prov" style="color:var(--ink-muted);margin-left:auto">by the repository's own naming &middot; <span class="lnk" style="text-decoration:underline;text-underline-offset:3px">by confidence</span> &middot; <span class="lnk" style="text-decoration:underline;text-underline-offset:3px">by type</span></span>
+    </div>
+
+    <div class="caps" style="color:var(--ink-muted);display:grid;grid-template-columns:22px minmax(0,1fr) 92px 120px 190px;gap:var(--s2);padding:var(--s2) 0;border-bottom:1px solid var(--rule)">
+      <span></span><span>name</span><span>type</span><span>declared</span><span>verdict</span>
+    </div>
+
+    <!-- branch 1, decided -->
+    <div class="branch">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      <span><span class="mono" style="font-size:14px">pyegeria/</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">23</span> components</span></span>
+      <span class="prov" style="color:var(--ink-muted)">library</span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">2</span> ports</span>
+      <span><span class="badge" style="color:var(--ok);border-color:var(--ok)">accepted</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">2d</span> &middot; change</span></span>
+    </div>
+
+    <div class="leaf">
+      <span></span>
+      <span><span class="mono">pyegeria/_client.py</span></span>
+      <span class="prov" style="color:var(--ink-muted)">module</span>
+      <span class="prov" style="color:var(--ink-muted)">&mdash;</span>
+      <span class="prov" style="color:var(--ink-muted)">accepted &middot; with <span class="mono">pyegeria/</span></span>
+    </div>
+    <div class="leaf">
+      <span></span>
+      <span><span class="mono">pyegeria/commands/</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">9</span></span></span>
+      <span class="prov" style="color:var(--ink-muted)">cli</span>
+      <span class="prov" style="color:var(--ink-muted)"><span class="tnum">1</span> port</span>
+      <span><span class="badge" style="color:var(--accent-ink);border-color:var(--accent)">retyped &rarr; cli</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; its own</span></span>
+    </div>
+
+    <!-- branch 2, undecided -->
+    <div class="branch">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      <span><span class="mono" style="font-size:14px">pyegeria/mermaid_utilities/</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">14</span> components &middot;
+          <span style="color:var(--accent-ink)">3 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg> at or below 50%</span></span></span>
+      <span class="prov" style="color:var(--ink-muted)">untyped</span>
+      <span class="prov" style="color:var(--ink-muted)">&mdash;</span>
+      <span style="display:flex;gap:var(--s1);flex-wrap:wrap">
+        <button class="btn">accept all <span class="tnum">14</span></button>
+        <button class="btn-q">reject</button>
+        <button class="btn-q">open</button>
+      </span>
+    </div>
+
+    <!-- branch 3, structural -->
+    <div class="branch" style="border-bottom:0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      <span><span class="mono" style="font-size:14px">tests/</span>
+        <span class="prov" style="color:var(--ink-muted)">&middot; <span class="tnum">31</span> components</span></span>
+      <span class="prov" style="color:var(--ink-muted)">grouping</span>
+      <span class="prov" style="color:var(--ink-muted)">&mdash;</span>
+      <span class="prov" style="color:var(--ink-muted)">grouping only &mdash; directories that hold components, not components themselves</span>
+    </div>
+  </div>
+
+  <!-- inheritance + the bulk preview -->
+  <div style="margin-top:var(--s6);display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:var(--s6);align-items:start">
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Inheritance, and the one rule that overrides it</div>
+      <p style="margin:var(--s2) 0 0;max-width:58ch">
+        A verdict on a branch applies to every component under it, and
+        <strong style="font-weight:500">a component's own verdict wins</strong> &mdash; which is what your
+        curation-lenses design already proposed, and what makes the retyped
+        <span class="mono">commands/</span> row above legible beside its accepted parent. An inherited verdict
+        says so (<em>accepted &middot; with <span class="mono">pyegeria/</span></em>) rather than pretending to be
+        a decision someone made about that file.
+      </p>
+      <p class="prov" style="margin:var(--s3) 0 0;max-width:58ch;color:var(--ink-muted)">
+        It costs nothing in the data: verdicts are already per <span class="mono">scope_locator</span> and already
+        append-only, so a branch verdict is one row at the branch's scope and the reader resolves the longest
+        prefix. No schema change, no bulk endpoint required for correctness &mdash; though one would make
+        <em>accept all 14</em> a single call instead of fourteen.
+      </p>
+      <p class="prov" style="margin:var(--s3) 0 0;max-width:58ch;color:var(--ink-muted)">
+        <strong style="font-weight:500;color:var(--ink)">Confidence routes; it never hides.</strong> The ⚠ count
+        rides on the branch so a weak cluster is visible before it is opened, and <em>by confidence</em> is a
+        sort, not a filter. Nothing is withheld for being uncertain &mdash; that is the point of reviewing it.
+      </p>
+    </div>
+
+    <div class="card" style="background:var(--paper-surface)">
+      <div class="caps">Accept all <span class="tnum">14</span></div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        <span class="mono">pyegeria/mermaid_utilities/</span> &middot; <span class="tnum">14</span> components,
+        <span class="tnum">3</span> of them at or below 50% confidence.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        <span class="tnum">14</span> will be created as Egeria <span class="mono">SolutionComponent</span>s;
+        none exist yet. About <span class="tnum">50s</span> to publish &mdash; queued, so the pane returns at once.
+      </p>
+      <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+        Nothing runs until you confirm.
+      </p>
+      <div style="display:flex;gap:var(--s2);margin-top:var(--s3)">
+        <button class="btn">Accept <span class="tnum">14</span></button>
+        <button class="btn-q">Cancel</button>
+      </div>
+      <p class="prov" style="margin:var(--s3) 0 0;color:var(--ink-muted);border-top:1px solid var(--rule);padding-top:var(--s2)">
+        The same dialog <em>Run across the set</em> and <em>Bring up to date</em> use &mdash; rule 4, and the one
+        place a bulk accept can say what it would spend before spending it.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--s4);border:1px solid var(--rule);border-radius:2px;padding:var(--s3)">
+    <p class="prov" style="margin:0;max-width:88ch">
+      <strong style="font-weight:500">No undo, and the word is not offered.</strong> A verdict is a new row, never
+      an update, so unaccepting is a <em>rejected</em> row and the trail keeps both &mdash; the classic UI's
+      <em>change</em> is the right word and it already exists. The badge carries the age and opens the trail, the
+      same trail format the verdict history uses. And a proposal with no addressable scope still says so where its
+      buttons would be: <em>no addressable scope &mdash; this proposal cannot be accepted or rejected on its
+      own.</em>
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

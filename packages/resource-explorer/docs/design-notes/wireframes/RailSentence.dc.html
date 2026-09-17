@@ -1,0 +1,159 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --chrome:#1b1a19; --chrome-alt:#201f1d; --chrome-line:#444141;
+      --chrome-ink:#f3f2f2; --chrome-muted:#9b9797;
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411; --accent-on-dark:#e1ad66;
+      --warn:#9c4212; --warn-on-dark:#f2a26a;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    a{color:var(--accent-ink)} a:hover{color:var(--accent)}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .rail{background:var(--chrome);color:var(--chrome-ink);border-radius:2px;padding:var(--s3);width:290px}
+    .btn-dark{font-family:var(--heading);font-weight:600;font-size:13px;background:transparent;
+              border:1px solid var(--chrome-line);border-radius:2px;color:var(--accent-on-dark);
+              padding:5px 10px;display:inline-flex;align-items:center;gap:6px}
+    .case{display:grid;grid-template-columns:290px minmax(0,1fr);gap:var(--s6);align-items:start;
+          padding:var(--s4) 0;border-bottom:1px solid var(--rule)}
+  </style>
+</helmet>
+
+<div style="width:1000px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Rail &middot; a list answer</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:24ch">The sentence, and the four things it must never do</h1>
+    <p style="max-width:70ch;color:var(--ink-muted);margin:0">
+      Prose never enumerates. The sentence carries the <em>whole</em> count, because the whole count is known
+      &mdash; <span class="mono">members_for()</span> returns <span class="mono">total</span> uncapped &mdash; and
+      it names how much of the list the model actually saw, because that is the provenance of the sentence
+      beside it. The items live in the pane.
+    </p>
+  </div>
+
+  <!-- case 1 -->
+  <div class="case">
+    <div class="rail">
+      <div style="font-size:15px"><strong style="font-weight:500"><span class="tnum">32</span> declared dependencies</strong>, all on pypi.</div>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s1)">Ten of them were shown to the model; the list itself is in the pane.</div>
+      <button class="btn-dark" style="margin-top:var(--s3)">Open the list &middot; <span class="mono" style="color:var(--chrome-ink)">dependency_analysis</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--chrome-line)">
+        From compiled evidence &middot; <span class="mono">dependency_analysis</span>, run just now &middot; <span class="tnum">10</span> of <span class="tnum">32</span> packed.
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Case one &middot; the model saw part of it</div>
+      <p style="margin:var(--s2) 0 0;max-width:56ch">
+        Four parts, in this order: <strong style="font-weight:500">the claim with the true total</strong>,
+        <strong style="font-weight:500">what the model was given</strong>, <strong style="font-weight:500">the way
+        to the list</strong>, <strong style="font-weight:500">where the sentence came from</strong>.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        The second clause is not an apology. Without it, a partial view reads as the corpus &mdash; which is how
+        <em>Here are some of them</em> happened: the compiler marked its elision honestly
+        (<span class="mono">&hellip; and 22 more</span>) and the prose channel dropped the number.
+        <span class="tnum">10</span> and <span class="tnum">32</span> now appear in the same sentence, so they
+        cannot disagree silently.
+      </p>
+    </div>
+  </div>
+
+  <!-- case 2 -->
+  <div class="case">
+    <div class="rail">
+      <div style="font-size:15px"><strong style="font-weight:500"><span class="tnum">5</span> deployment conventions</strong>, <span class="tnum">2</span> of them needing attention.</div>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s1)">All five were shown to the model.</div>
+      <button class="btn-dark" style="margin-top:var(--s3)">Open the list &middot; <span class="mono" style="color:var(--chrome-ink)">repo_conventions</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--chrome-line)">
+        From compiled evidence &middot; <span class="mono">repo_conventions</span>, run <span class="tnum">2m</span> ago &middot; all <span class="tnum">5</span> packed.
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Case two &middot; the model saw all of it</div>
+      <p style="margin:var(--s2) 0 0;max-width:56ch">
+        The clause stays, and says so: <em>All five were shown to the model.</em> Dropping it when the news is
+        good teaches people that its absence means nothing, and then its presence means nothing either.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        The link stays too, even at five rows &mdash; the list is where acting on it happens.
+      </p>
+    </div>
+  </div>
+
+  <!-- case 3 -->
+  <div class="case">
+    <div class="rail">
+      <div style="font-size:15px"><strong style="font-weight:500"><span class="tnum">1,412</span> files</strong> in this repository's own code.</div>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s1)">Twenty were shown to the model; the list shows <span class="tnum">200</span> at a time.</div>
+      <button class="btn-dark" style="margin-top:var(--s3)">Open the list &middot; <span class="mono" style="color:var(--chrome-ink)">file_inventory</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--chrome-line)">
+        From compiled evidence &middot; <span class="mono">file_inventory</span>, indexed <span class="tnum">2026-09-12</span> &middot; <span class="tnum">20</span> of <span class="tnum">1,412</span> packed.
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Case three &middot; the pane is capped too</div>
+      <p style="margin:var(--s2) 0 0;max-width:56ch">
+        Three numbers now: what exists, what the model saw, what the pane will show. All three in the rail,
+        because the person decides whether to open it from here.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        The pane repeats its own cap in its footer, and a group the server truncated says so on the group &mdash;
+        the <span class="mono">truncated</span> flag is already in the payload and must not be dropped on the
+        way to the eye. A saved report inherits the same sentence: a cap that lives only in a footnote
+        outlives the person who knew about it.
+      </p>
+    </div>
+  </div>
+
+  <!-- case 4 -->
+  <div class="case" style="border-bottom:0">
+    <div class="rail">
+      <div style="font-size:15px"><strong style="font-weight:500"><span class="tnum">24</span> components recovered</strong>, <span class="tnum">4</span> accepted.</div>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s1)">All of them were shown to the model.</div>
+      <div class="prov" style="color:var(--warn-on-dark);margin-top:var(--s3);border:1px solid var(--chrome-line);border-radius:2px;padding:var(--s2)">
+        No list to open &mdash; <span class="mono">architecture_recovery</span> has no member reader yet.
+      </div>
+      <div class="prov" style="color:var(--chrome-muted);margin-top:var(--s3);padding-top:var(--s2);border-top:1px solid var(--chrome-line)">
+        From compiled evidence &middot; <span class="mono">architecture_recovery</span>, run <span class="tnum">13d</span> ago.
+      </div>
+    </div>
+    <div>
+      <div class="caps" style="color:var(--ink-muted)">Case four &middot; there is nothing to open</div>
+      <p style="margin:var(--s2) 0 0;max-width:56ch">
+        Marked, not hidden. An analysis with no member reader says so where the link would be, in the same place
+        every time, so its absence is a fact about that analysis rather than a fact about this answer.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:56ch;color:var(--ink-muted)">
+        This is the rule that killed <em>Open as candidates</em>: the old control decided from the shape of the
+        prose and could deliver nothing. Offer the list an answer was answered <em>from</em>, or say there
+        isn't one.
+      </p>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

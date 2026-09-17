@@ -20,10 +20,17 @@ PUBLISHER = (Path(__file__).resolve().parents[1] / "resource_explorer" / "survey
 
 
 def test_the_sweep_verifies_the_way_the_publisher_verifies():
+    """`projects.egeria_asset_guid` is a repository's own Asset GUID (since
+    the 2026-09-14 SourceControlLibrary correction -- egeria_publisher.py's
+    module docstring), so both the sweep and `_find_or_create_asset` must
+    verify it the same way: `find_assets`, not `find_software_capabilities`
+    (that method still exists in the publisher, but only for the separate
+    GitHub SourceControlLibrary singleton, a different kind of GUID this
+    sweep never caches)."""
     src = SCRIPT.read_text()
-    assert "find_software_capabilities" in src, \
+    assert "find_assets" in src, \
         "the sweep no longer uses the publisher's verification"
-    assert "find_software_capabilities" in PUBLISHER.read_text()
+    assert "find_assets" in PUBLISHER.read_text()
 
 
 def test_the_sweep_does_not_decide_staleness_by_asset_guid_lookup():

@@ -40,6 +40,19 @@ def _seed(registry):
         "check_name": "python:pyegeria", "label": "published",
         "summary": "pyegeria — python distribution declared in pyproject.toml; 3 command-line entry point(s): a, b, c; publish workflow: release.yml.",
         "detail": {"name": "pyegeria", "ecosystem": "python", "scripts": ["a", "b", "c"], "packages": [], "manifest": "pyproject.toml", "publish_workflow": "release.yml"}}])
+    # deployment_evidence, not the raw `distribution` finding, is what
+    # curate_plan reads for "what it is" (docs/Backlog.md, "Catalogue in
+    # layers" -- SoftwareLibrary per distribution was a type error). Three
+    # console scripts is deployment evidence, so the verdict is "application".
+    registry.upsert_finding("p", "deployment_evidence", [
+        {"check_name": "distribution", "label": "application",
+         "summary": "pyegeria — application (console_script)",
+         "detail": {"name": "pyegeria", "ecosystem": "python",
+                    "evidence": [{"kind": "console_script", "path": "pyproject.toml", "detail": "a"}],
+                    "consumers_in_repo": [], "could_not_check": []}},
+        {"check_name": "coverage", "label": "checked",
+         "summary": "1 application(s), 0 libraries, 0 unknown",
+         "detail": {"application": 1, "library": 0, "unknown": 0, "distribution_count": 1}}])
     registry.upsert_finding("p", "interface_surface", [
         {"check_name": "cli", "label": "implied", "summary": "Depends on click — suggests a cli"},
         {"check_name": "http_api", "label": "implied", "summary": "Depends on fastapi — suggests a http api"},
@@ -68,8 +81,8 @@ class TestThePlan:
         _seed(registry)
         plan = build_plan(registry, "p")
         kinds = {r["kind"]: r for r in plan["what_it_is"]}
-        assert kinds["SoftwareLibrary"]["label"] == "Software Library · pyegeria, on PyPI"
-        assert kinds["SoftwareLibrary"]["source"] == "manifest_parse"
+        assert kinds["SoftwareCapability::pyegeria"]["label"] == "Software Capability · pyegeria"
+        assert kinds["SoftwareCapability::pyegeria"]["source"] == "deployment_evidence"
         assert kinds["Endpoint"]["label"] == "Endpoint × 2 · cli, http_api · implied, no contract"
         assert kinds["InfrastructureAsset"]["label"] == "Infrastructure Asset? 2 Dockerfiles"   # a question mark, not "(suggested)"
         assert kinds["SoftwareCapability"]["state"] == "needs_human"                            # no intended use recorded
@@ -98,8 +111,8 @@ class TestThePlan:
     def test_a_name_not_yet_read_is_said_not_guessed(self, registry):
         registry.upsert_finding("p", "manifest_parse", [])
         registry.upsert_metric("p", "manifest_parse", {"dependency_count": 3}, detail={"dependencies": {"manifests": ["pyproject.toml"]}})
-        row = next(r for r in build_plan(registry, "p")["what_it_is"] if r["kind"] == "SoftwareLibrary")
-        assert "not read" in row["label"] or "Software Library?" in row["label"]
+        row = next(r for r in build_plan(registry, "p")["what_it_is"] if r["kind"] == "SoftwareCapabilityCandidate")
+        assert "not yet measured" in row["label"] or "Software Capability?" in row["label"]
 
 
 class TestTheRecord:
@@ -128,12 +141,12 @@ class TestTheCommitRoute:
         _seed(registry)
         registry.set_disposition("https://github.com/x/p", "using", resource_slug="p")
         r = client.post("/api/projects/p/curate/commit",
-                        json={"confirm": ["SoftwareLibrary", "Endpoint"], "sub_resources": ["docs"], "note": "go"})
+                        json={"confirm": ["SoftwareCapability::pyegeria", "Endpoint"], "sub_resources": ["docs"], "note": "go"})
         assert r.status_code == 200, r.text
         body = r.json()
         rec = body["curation"]
         assert rec["author"] == "peterprofile" and rec["state"] == "queued"
-        assert rec["manifest"]["entities"] == ["SoftwareLibrary", "Endpoint"]
+        assert rec["manifest"]["entities"] == ["SoftwareCapability::pyegeria", "Endpoint"]
         assert rec["manifest"]["contained"] == {"data_files": 0, "sub_resources": 1}
         assert [s["name"] for s in rec["steps"]] == ["publish_asset", "classifications", "sub_resources", "components"]
         run = registry.get_run(body["run_id"]) if hasattr(registry, "get_run") else None

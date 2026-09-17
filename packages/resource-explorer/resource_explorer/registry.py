@@ -88,7 +88,7 @@ class Project:
     subproject_path: str = ""   # relative subdir to index, e.g. "commands" — "" means full repo
     parent_slug: str = ""       # slug of the parent project when this is a sub-project
     extra_docs_paths: list[str] = field(default_factory=list)  # repo-relative paths outside subproject_path to ingest as docs/examples
-    egeria_asset_guid: str = ""  # GUID of the SourceControlLibrary asset in Egeria; "" = not yet published
+    egeria_asset_guid: str = ""  # GUID of this project's own Asset in Egeria; "" = not yet published
     governance_state: str = "certified"
     group_slug: str = ""  # slug of the umbrella project group this repo belongs to; "" = ungrouped
 
@@ -1916,6 +1916,36 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_rfa_dismissals_entity "
                 "ON rfa_dismissals(entity_slug)"
             )
+            # A finding about the ANALYSIS, not the repository — a
+            # disagreement between two measures, or a check that could not be
+            # established — belongs in a gaps list the project owns rather
+            # than on the resource's own findings (SPEC-ACTIONABLE-AND-HONEST.md
+            # §3, "the missing half is whose absence it is"). Upserted, keyed
+            # on (project_slug, analysis_id, gap_kind, check_name) — a repeat
+            # sighting of the same gap bumps last_seen_at rather than
+            # duplicating (see collect_gaps/upsert_gap in gaps.py), matching
+            # the finding rows it is derived from, which are themselves
+            # replaced per run rather than accumulated forever.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_gaps (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug     TEXT NOT NULL,
+                    analysis_id      TEXT NOT NULL,
+                    gap_kind         TEXT NOT NULL,
+                    check_name       TEXT NOT NULL DEFAULT '',
+                    sentence         TEXT NOT NULL DEFAULT '',
+                    evidence_json    TEXT DEFAULT NULL,
+                    first_seen_at    TEXT NOT NULL,
+                    last_seen_at     TEXT NOT NULL,
+                    resolved_at      TEXT DEFAULT NULL,
+                    rfa_activity_id  TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_gaps_identity "
+                "ON analysis_gaps(project_slug, analysis_id, gap_kind, check_name)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -1954,6 +1984,34 @@ class ProjectRegistry:
                     updated_at TEXT NOT NULL
                 )
             """)
+            # Per-call Egeria timing (owner's ruling, 2026-09-15): every
+            # measured RunCost/depth-offer price in this codebase so far has
+            # been per ANALYSIS RUN, never per individual Egeria API call --
+            # the layer-2 catalogue-depth offer wants "1.5s median" for one
+            # write, which nothing recorded. `kind` distinguishes write from
+            # query, deliberately: the owner's own point is that insert/
+            # update cost and query cost are different populations, and a
+            # query's cost is itself sensitive to its own parameters (graph
+            # depth, page size) -- `params_json` carries those, so a reader
+            # can bucket by them rather than averaging a shallow lookup
+            # together with a deep graph walk. `call_name` is the pyegeria
+            # method name (`create_solution_component`, `find_assets`, …),
+            # not a higher-level label -- the same method can move between
+            # call sites without losing its own history.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_call_timings (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    call_name    TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    seconds      REAL NOT NULL,
+                    params_json  TEXT NOT NULL DEFAULT '{}',
+                    recorded_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_call_timings_call "
+                "ON egeria_call_timings(call_name, kind)"
+            )
             # Repo triage disposition — undecided (default) / tracking /
             # investigating / recommended / using / abandoned / ignored.
             # `recommended` and `using` are both positive terminal states,
@@ -2761,6 +2819,65 @@ class ProjectRegistry:
                        updated_at = excluded.updated_at""",
                 (key, value, datetime.utcnow().isoformat()),
             )
+
+    # ── per-call Egeria timing ────────────────────────────────────────────
+
+    def record_egeria_call_timing(
+        self, call_name: str, kind: str, seconds: float, params: dict | None = None,
+    ) -> None:
+        """One row per Egeria API call actually made — `kind` is `"write"`
+        or `"query"`, never conflated (owner's ruling, 2026-09-15: an
+        insert/update and a lookup are different cost populations, and
+        averaging them under one number hides both). `params` is whatever
+        the caller considers cost-relevant for THIS call (a query's
+        `graph_query_depth`, a write's target type) -- stored, not
+        interpreted here; `read_egeria_call_timing_stats` is what buckets by
+        it. Best-effort by the caller's own convention throughout this
+        module: never let a timing-recording failure fail the write it is
+        timing (see `_publish_homepage_reference`'s docstring for the same
+        argument made about a different best-effort site)."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO egeria_call_timings (call_name, kind, seconds, params_json, recorded_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                (call_name, kind, seconds, json.dumps(params or {}), datetime.utcnow().isoformat()),
+            )
+
+    def read_egeria_call_timing_stats(
+        self, call_name: str, kind: str, *, param_filter: dict | None = None, sample: int = 500,
+    ) -> dict:
+        """`{count, median, p90}` (seconds) for `call_name`/`kind`, most
+        recent `sample` rows. `param_filter` narrows to rows whose
+        `params_json` matches every given key exactly (e.g.
+        `{"graph_query_depth": 3}`) -- a query's cost depends on its own
+        parameters, so mixing a depth-1 lookup with a depth-5 graph walk
+        into one median would misprice both. `median`/`p90` are `None` when
+        `count` is 0 -- never a fabricated number standing in for "nothing
+        recorded yet"."""
+        import statistics
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT seconds, params_json FROM egeria_call_timings
+                   WHERE call_name = ? AND kind = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (call_name, kind, sample),
+            ).fetchall()
+        secs: list[float] = []
+        for r in rows:
+            if param_filter:
+                try:
+                    params = json.loads(r["params_json"] or "{}")
+                except ValueError:
+                    params = {}
+                if any(params.get(k) != v for k, v in param_filter.items()):
+                    continue
+            secs.append(r["seconds"])
+        if not secs:
+            return {"count": 0, "median": None, "p90": None}
+        secs.sort()
+        p90_idx = min(len(secs) - 1, int(len(secs) * 0.9))
+        return {"count": len(secs), "median": statistics.median(secs), "p90": secs[p90_idx]}
 
     def save_context(self, entity_type: str, entity_slug: str, context: dict) -> None:
         from datetime import timezone
@@ -3747,6 +3864,13 @@ class ProjectRegistry:
             # now enumerates the FKs so a future table cannot be forgotten.
             conn.execute("DELETE FROM project_analysis_findings WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_analysis_metrics WHERE project_slug = ?", (normalized,))
+            # analysis_gaps (gaps.py, added alongside destinations.py) — same
+            # omission this whole block documents, caught this time by
+            # test_remove_deletes_from_every_table_with_a_fk on first run
+            # rather than live, because that test now enumerates every FK to
+            # projects.slug instead of relying on someone remembering to add
+            # a line here.
+            conn.execute("DELETE FROM analysis_gaps WHERE project_slug = ?", (normalized,))
             # The four superseded per-kind tables from Phase B. The analysis-kind
             # redesign (D3) deliberately kept them rather than dropping them, for
             # a soak period — so they still exist, still carry a FK, and still
@@ -3775,7 +3899,7 @@ class ProjectRegistry:
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
         "project_data_profiles", "project_analysis_findings",
-        "project_analysis_metrics",
+        "project_analysis_metrics", "analysis_gaps",
     )
 
     # Every table keyed by (entity_type, entity_slug) that can carry
@@ -4337,6 +4461,119 @@ class ProjectRegistry:
                 (guid, finding_id),
             )
 
+    def upsert_gap(
+        self, project_slug: str, analysis_id: str, gap_kind: str, check_name: str,
+        sentence: str, evidence: dict | None = None, seen_at: str | None = None,
+    ) -> int:
+        """Record one sighting of a gap about the ANALYSIS, not the repository
+        (SPEC-ACTIONABLE-AND-HONEST.md §3) — a disagreement between two
+        measures, or a check that could not be established.
+
+        Upsert keyed on (project_slug, analysis_id, gap_kind, check_name) —
+        the identity index above enforces this at the database level too, so
+        a caller cannot duplicate a gap even if it calls this twice for the
+        same sighting. A repeat sighting bumps `last_seen_at` and refreshes
+        `sentence`/`evidence_json` (the underlying measurement may have
+        changed even though the gap itself has not); `first_seen_at` and any
+        existing `resolved_at`/`rfa_activity_id` are left untouched, so a gap
+        already worked stays that way until something explicitly clears it —
+        this method never resolves a gap and never reopens one.
+
+        Raises ValueError for an unregistered slug, same guard and reason as
+        `upsert_finding` — this table carries the same FOREIGN KEY."""
+        slug = self._normalize_slug(project_slug)
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record a gap for project '{slug}' — no such project "
+                "in the registry."
+            )
+        seen_at = seen_at or datetime.utcnow().isoformat()
+        evidence_json = json.dumps(evidence) if evidence else None
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM analysis_gaps WHERE project_slug = ? AND analysis_id = ? "
+                "AND gap_kind = ? AND check_name = ?",
+                (slug, analysis_id, gap_kind, check_name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE analysis_gaps SET last_seen_at = ?, sentence = ?, "
+                    "evidence_json = ? WHERE id = ?",
+                    (seen_at, sentence, evidence_json, existing["id"]),
+                )
+                return existing["id"]
+            conn.execute(
+                "INSERT INTO analysis_gaps "
+                "(project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (slug, analysis_id, gap_kind, check_name, sentence, evidence_json,
+                 seen_at, seen_at),
+            )
+            # Neither cursor wrapper exposes lastrowid across both dialects
+            # (see PostgresCursorWrapper/SQLiteCursorWrapper above) — read the
+            # id back by the same identity the unique index enforces, exactly
+            # as the existing-row branch above already does.
+            row = conn.execute(
+                "SELECT id FROM analysis_gaps WHERE project_slug = ? AND analysis_id = ? "
+                "AND gap_kind = ? AND check_name = ?",
+                (slug, analysis_id, gap_kind, check_name),
+            ).fetchone()
+            return row["id"] if row else 0
+
+    def list_gaps(self, project_slug: str) -> list[dict]:
+        """Every unresolved-or-not gap for one project, newest-seen first.
+        Includes resolved rows — a caller wanting only open ones filters on
+        `resolved_at is None`, same convention as this file's other
+        soft-delete/soft-resolve columns (`superseded_at`, `cleared_at`)."""
+        slug = self._normalize_slug(project_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at, resolved_at, rfa_activity_id "
+                "FROM analysis_gaps WHERE project_slug = ? ORDER BY last_seen_at DESC",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["evidence"] = json.loads(d.pop("evidence_json") or "null") or {}
+            except (TypeError, ValueError):
+                d["evidence"] = {}
+                d.pop("evidence_json", None)
+            out.append(d)
+        return out
+
+    def get_gap(self, gap_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, project_slug, analysis_id, gap_kind, check_name, sentence, "
+                "evidence_json, first_seen_at, last_seen_at, resolved_at, rfa_activity_id "
+                "FROM analysis_gaps WHERE id = ?",
+                (gap_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["evidence"] = json.loads(d.pop("evidence_json") or "null") or {}
+        except (TypeError, ValueError):
+            d["evidence"] = {}
+            d.pop("evidence_json", None)
+        return d
+
+    def mark_gap_rfa(self, gap_id: int, rfa_activity_id: str) -> None:
+        """Stamp the RFA raised for one gap. Never overwrites an existing
+        stamp — the route calling this checks for one first and refuses with
+        409 (same convention as outbox.py's retry route) rather than raising
+        a second RFA for a gap already worked."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE analysis_gaps SET rfa_activity_id = ? WHERE id = ?",
+                (rfa_activity_id, gap_id),
+            )
+
     def analysis_result_summary(self, slugs: list, kinds: list) -> dict:
         """Per (resource, analysis): is there stored output, and how old is it.
 
@@ -4669,7 +4906,12 @@ class ProjectRegistry:
     # ── Egeria integration ────────────────────────────────────────────────────
 
     def get_egeria_asset_guid(self, slug: str) -> str | None:
-        """Return the cached Egeria SourceControlLibrary GUID for a project, or None."""
+        """Return the cached GUID of this project's own Egeria Asset, or None.
+
+        Named for the repository's Asset since 2026-09-14 -- it cached a
+        SourceControlLibrary GUID before that was corrected (see
+        egeria_publisher.py's module docstring); the column name and this
+        method's name are unchanged, only what they point at."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             row = conn.execute(
@@ -4680,7 +4922,7 @@ class ProjectRegistry:
         return None
 
     def set_egeria_asset_guid(self, slug: str, guid: str) -> None:
-        """Persist the Egeria SourceControlLibrary GUID for a project."""
+        """Persist the GUID of this project's own Egeria Asset."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute(
