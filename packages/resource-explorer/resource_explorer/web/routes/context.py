@@ -112,14 +112,33 @@ def get_context(entity_type: str, slug: str) -> dict:
 
 
 @router.post("/{entity_type}/{slug}")
-def save_context(entity_type: str, slug: str, data: ContextData) -> dict:
+async def save_context(entity_type: str, slug: str, data: ContextData, request: Request) -> dict:
     """Save context for a resource.
 
     Any critical field left blank generates an enrichment RFA in the activity log
     so it shows up in the RFA panel as an open question.
+
+    `enrichment` and `question_answers` are saved one-at-a-time elsewhere
+    (PATCH .../field, and saveQuestionAnswer's own read-modify-write) and
+    both default to `{}` on `ContextData` when a caller's body omits them —
+    which the classic `/` Context form's `saveContextForm` always does, since
+    it only ever sends the fixed fields it renders. Passing that request's
+    `ContextData` straight to `model_dump()` would erase every enrichment
+    judgement and human answer recorded through `/next` the next time someone
+    saves the classic form. So: only replace either collection when the
+    caller's raw body actually names it; otherwise keep what is already on
+    record. A caller that DOES mean to clear one sends `{"enrichment": {}}`
+    explicitly (still `{}`, but now present in the body), which this still
+    honours.
     """
     registry = ProjectRegistry()
+    raw = await request.json()
     context = data.model_dump()
+    existing = registry.get_context(entity_type, slug) or {}
+    if "enrichment" not in raw:
+        context["enrichment"] = existing.get("enrichment", {})
+    if "question_answers" not in raw:
+        context["question_answers"] = existing.get("question_answers", {})
     context["updated_at"] = datetime.now(timezone.utc).isoformat()
     registry.save_context(entity_type, slug, context)
 
