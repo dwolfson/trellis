@@ -4594,15 +4594,21 @@ function _renderArchitectureDiagramResults(data) {
     ? `<div class="text-xs text-slate-300 leading-snug mb-1">${_esc(data.caption)}</div>`
     : '';
 
-  // Which perspective this is, and what else is on file. Same wording and
+  // Which extractor drew this, and what else is on file. Same wording and
   // same reasoning as the chat fact view's copy of this line: repo_arch_detect
   // and repo_arch_coupling propose genuinely different pictures, and handing
   // a reader one of two with no sign the other exists is how their disagreeing
   // component counts went unnoticed (see _architecture_diagram_results).
+  //
+  // "found by" per RULING-WHAT-A-VERDICT-IS-ABOUT.md §0/§3 — `data.perspective`
+  // here actually carries a `run_label` value ("detect"/"coupling"), not a
+  // Component.perspective reading, and the old "shown:" wording papered over
+  // that collision rather than naming it. The JSON key stays as-is (no schema
+  // change); only the rendered word changes.
   const perspective = data.perspective
-    ? `<div class="text-[10px] text-slate-500 mt-1">shown: ${_esc(data.perspective)}` +
+    ? `<div class="text-[10px] text-slate-500 mt-1">found by ${_esc(data.perspective)}` +
       ((data.other_perspectives_available || []).length
-        ? ` · also on file: ${_esc(data.other_perspectives_available.join(', '))}`
+        ? ` · ${_esc(data.other_perspectives_available.join(', '))} also on file`
         : '') + `</div>`
     : '';
 
@@ -11855,9 +11861,12 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
           // exists — not a picker yet, just honesty about what "the"
           // diagram is.
           if (f.value.perspective) {
-            lines.push(`\n  <span class="text-slate-500">shown: ${_esc(f.value.perspective)}` +
+            // "found by" — see the classic-panel copy of this line for why
+            // (RULING-WHAT-A-VERDICT-IS-ABOUT.md §0/§3: this value is a
+            // run_label, not a Component.perspective reading).
+            lines.push(`\n  <span class="text-slate-500">found by ${_esc(f.value.perspective)}` +
               ((f.value.other_perspectives_available || []).length
-                ? ` · also on file: ${_esc(f.value.other_perspectives_available.join(', '))}`
+                ? ` · ${_esc(f.value.other_perspectives_available.join(', '))} also on file`
                 : '') + `</span>`);
           }
         } else {

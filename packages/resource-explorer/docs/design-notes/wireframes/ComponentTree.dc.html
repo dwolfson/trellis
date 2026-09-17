@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    .mine{border-left:3px solid var(--gap);padding-left:var(--s3)}
+    /* the tree */
+    .tree{border:1px solid var(--rule);border-radius:2px;background:#fff}
+    .hdr{display:grid;grid-template-columns:minmax(0,1fr) 128px 118px 96px;
+         gap:var(--s3);padding:var(--s2) var(--s3);border-bottom:1px solid var(--rule-strong)}
+    .hdr>div{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;
+             text-transform:uppercase;color:var(--ink-muted)}
+    .br{display:grid;grid-template-columns:minmax(0,1fr) 128px 118px 96px;
+        gap:var(--s3);padding:var(--s3);border-bottom:1px solid var(--rule);align-items:start}
+    .br:last-child{border-bottom:0}
+    .kid{padding-left:var(--s4);border-left:2px solid var(--rule);margin:var(--s2) 0 0}
+    .btn{display:inline-block;border:1px solid var(--rule-strong);border-radius:2px;
+         padding:1px var(--s2);font-size:12px;margin-right:var(--s1);white-space:nowrap}
+    .btn.p{border-color:var(--accent);color:var(--accent-ink)}
+    .agree{color:var(--accent-ink);font-size:13px}
+    .flag{color:var(--warn);font-size:13px}
+    .none{color:var(--ink-muted);font-size:13px;font-style:italic}
+  </style>
+</helmet>
+
+<div style="width:1240px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Item 2 &middot; unblocked by the verdict ruling</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:34ch">The branch tree, and why we think each is what it is</h1>
+    <p style="max-width:84ch;margin:0">
+      The owner's point 4 &mdash; <em>&ldquo;it isn't clear what we are showing in terms of components, potential
+      components, why we think they are which kind&rdquo;</em> &mdash; is four questions, and the tree answers all
+      four in the same rows: <strong style="font-weight:500">what this is</strong>,
+      <strong style="font-weight:500">why we think so</strong>,
+      <strong style="font-weight:500">how much of it you are seeing</strong>, and
+      <strong style="font-weight:500">what you can do about it.</strong>
+    </p>
+  </div>
+
+  <!-- the tree -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Curate &middot; components &middot; <span class="mono">egeria-workspaces</span></div>
+
+    <div class="prov" style="color:var(--ink-muted);margin:var(--s2) 0 var(--s3)">
+      <span class="tnum">69</span> branches from <span class="tnum">641</span> scopes &middot;
+      sort <span class="lnk">by size</span> /
+      <strong style="font-weight:500;color:var(--ink)">by evidence</strong> &mdash; weakest first, because that is
+      the queue &middot; <span class="lnk">reading: deployment ▾</span>
+    </div>
+
+    <div class="tree">
+      <div class="hdr">
+        <div>branch &middot; and why we think so</div>
+        <div>found by</div>
+        <div>ports</div>
+        <div>verdict</div>
+      </div>
+
+      <!-- weak, and honest about it -->
+      <div class="br">
+        <div>
+          <div><span class="mono">notebooks/</span> &middot; <strong style="font-weight:500">kind not established</strong></div>
+          <div class="prov" style="color:var(--warn);margin-top:var(--s1)">
+            Proposed on directory cohesion alone, <span class="tnum">30%</span> &mdash; nothing declares it and
+            nothing deploys it.
+          </div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+            Rejecting this is as useful an answer as accepting it.
+          </div>
+        </div>
+        <div class="prov">coupling</div>
+        <div class="prov none">none declared</div>
+        <div><span class="btn">accept</span><span class="btn p">reject</span></div>
+      </div>
+      <!-- accepted, then one extractor withdrew -->
+      <div class="br">
+        <div>
+          <div><span class="mono">egeria-ui/</span> &middot; <strong style="font-weight:500">a deployed component</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+            a compose service, <span class="tnum">70%</span>
+          </div>
+          <div class="flag" style="margin-top:var(--s1)">&#9888; review &mdash; no longer proposed by coupling</div>
+          <div class="prov" style="margin-top:var(--s2)">
+            <span class="lnk">what changed &rsaquo;</span>
+          </div>
+        </div>
+        <div class="prov">detect<br><span style="color:var(--ink-muted)">coupling, until 09-14</span></div>
+        <div class="prov"><span class="lnk"><span class="tnum">3</span> ports &rsaquo;</span></div>
+        <div>
+          <div class="prov"><strong style="font-weight:500">accepted</strong></div>
+          <div class="prov" style="color:var(--ink-muted)"><span class="tnum">2d</span> ago &middot; dwolfson</div>
+        </div>
+      </div>
+
+      <!-- two ports, spelled out -->
+      <div class="br">
+        <div>
+          <div><span class="mono">egeria-platform/</span> &middot; <strong style="font-weight:500">a deployed component</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+            a compose service with a health check, <span class="tnum">80%</span>
+          </div>
+        </div>
+        <div class="prov">detect</div>
+        <div class="prov"><span class="tnum">9443</span>, <span class="tnum">9444</span></div>
+        <div><span class="btn p">accept</span><span class="btn">reject</span></div>
+      </div>
+
+      <!-- single strong -->
+      <div class="br">
+        <div>
+          <div><span class="mono">pyegeria/commands/</span> &middot; <strong style="font-weight:500">cli</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+            a console entry point declared in <span class="mono">[project.scripts]</span>, <span class="tnum">90%</span>
+          </div>
+          <div class="prov" style="margin-top:var(--s2)">
+            <span class="lnk">the evidence &rsaquo;</span> &middot;
+            <span class="lnk"><span class="tnum">31</span> scopes under this branch &rsaquo;</span>
+          </div>
+        </div>
+        <div class="prov">detect</div>
+        <div class="prov none">none declared</div>
+        <div><span class="btn p">accept</span><span class="btn">reject</span></div>
+      </div>
+
+      <!-- strongest: two extractors agree -->
+      <div class="br">
+        <div>
+          <div><span class="mono">coco-mds/</span> &middot; <strong style="font-weight:500">a deployed component</strong></div>
+          <div class="agree" style="margin-top:var(--s1)">&#9679;&#9679; two extractors agree this is a component</div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">
+            a compose service with a Dockerfile, <span class="tnum">75%</span> &middot;
+            an import boundary in <span class="tnum">24</span> months of co-change, <span class="tnum">45%</span>
+          </div>
+          <div class="prov" style="margin-top:var(--s2)">
+            <span class="lnk">the evidence &rsaquo;</span> &middot;
+            <span class="lnk"><span class="tnum">14</span> scopes under this branch &rsaquo;</span>
+          </div>
+        </div>
+        <div class="prov">detect<br>coupling</div>
+        <div class="prov"><span class="lnk"><span class="tnum">15</span> ports &rsaquo;</span></div>
+        <div><span class="btn p">accept</span><span class="btn">reject</span></div>
+      </div>
+
+    </div>
+
+    <!-- the foot: both ends of the sentence -->
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--s4);margin-top:var(--s3)">
+      <div class="prov" style="color:var(--ink-muted)">
+        <span class="tnum">5</span> of <span class="tnum">69</span> branches shown at this depth &middot;
+        <span class="tnum">64</span> below &middot; <span class="lnk">all <span class="tnum">69</span> &rsaquo;</span><br>
+        <span class="tnum">71</span> ports across <span class="tnum">9</span> branches &middot;
+        <span class="tnum">3</span> not attributable to any shown branch,
+        <span class="lnk">counted apart &rsaquo;</span>
+      </div>
+      <div class="prov" style="text-align:right">
+        <span class="btn">accept all <span class="tnum">5</span> shown</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- what the row is doing -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The four rules the rows follow</div>
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4);margin-top:var(--s3)">
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">1 &middot; the evidence is the sentence, not a score</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <em>a compose service with a Dockerfile</em> beats <em><span class="tnum">75%</span></em> by itself,
+          because it tells you what to check. The percentage stays, after the words, for the person comparing two
+          rows. A row whose only evidence is a number cannot be judged without opening the table &mdash; which is
+          the thing the tree exists to avoid.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">2 &middot; agreement counts as evidence, and the queue runs weakest first</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <span class="tnum">75%</span> and <span class="tnum">45%</span> from two unrelated methods is better
+          evidence than a single <span class="tnum">90%</span>, so agreement feeds the ordering rather than
+          sitting beside it &mdash; which sinks <span class="mono">coco-mds/</span> to the bottom, because
+          <strong style="font-weight:500">the shipped sort runs weakest first and that is the better
+          choice.</strong> <span class="mono">#86</span>'s comment says why: <em>&ldquo;ordering by confidence
+          puts the weakest clusters first without hiding one&rdquo;</em>. A review queue should open on what needs
+          attention; I had drawn this strongest-first, which is a catalogue to browse, not a queue to work. The
+          label becomes <em>by evidence</em> rather than <em>by confidence</em>, since agreement is now in it.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">3 &middot; weakness is stated, not hidden</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <span class="mono">notebooks/</span> is a real proposal and a bad one, and the row says so in words:
+          <em>proposed on directory cohesion alone &mdash; nothing declares it and nothing deploys it.</em> With
+          <em>reject</em> as the emphasised action, because on this row it is the more likely correct answer. A
+          tree that only encourages accepting is a tree that manufactures a catalogue.
+        </p>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">4 &middot; absence is a state, in both columns</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <em>none declared</em> in the ports column, never an empty cell &mdash; and it is a claim about the
+          deployment artifacts, not about the component. <em>kind not established</em> where no detector could
+          name a type. The <span class="tnum">3</span> unattributable ports are counted apart rather than
+          attached to a guess, which is <span class="mono">#85</span>'s own decision and the right one.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- the accept act -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">Accepting a branch is the layer-2 catalogue act</div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s4);margin-top:var(--s3)">
+      <div>
+        <p class="prov" style="margin:0 0 var(--s3)">
+          From <span class="mono">REPLY-CATALOGUE-IN-LAYERS.md</span>: layer 2 <em>is</em> the accepted verdicts,
+          so the confirmation must say it catalogues &mdash; and must not name a type nobody has verified.
+        </p>
+        <div class="card" style="background:#fff">
+          <div class="h" style="font-size:19px;font-weight:400">Accept <span class="tnum">5</span> branches</div>
+          <p class="prov" style="margin:var(--s2) 0 0">
+            Catalogues them as software components under <span class="mono">resource-explorer</span>. The exact
+            Egeria type is not yet pinned.
+          </p>
+          <p class="prov" style="color:var(--ink-muted);margin:var(--s2) 0 0">
+            About <span class="tnum">8s</span> of Egeria writes (measured, <span class="tnum">1.5s</span>
+            median per element). The outcome goes on the record either way.
+          </p>
+          <div style="margin-top:var(--s3)"><span class="btn p">accept and catalogue</span><span class="btn">cancel</span></div>
+        </div>
+      </div>
+      <div class="mine">
+        <div class="caps" style="color:var(--gap)">Open, and mine to answer next</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          <strong style="font-weight:500">The tree shows one reading at a time</strong> &mdash; the selector says
+          <em>deployment</em> &mdash; and a verdict is about the path, so a verdict earned here shows on the
+          logical reading too. That is correct under the ruling, and it means switching readings must not look
+          like a fresh set of proposals with mysteriously pre-filled verdicts. The honest shape is probably a
+          line at the top of a switched reading: <em><span class="tnum">12</span> of these
+          <span class="tnum">31</span> branches already carry a verdict, recorded on another reading.</em>
+          Drawing that is the next round, with the wire diagram.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- data provenance for the drawing itself -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule);padding-top:var(--s3)">
+    <div class="caps" style="color:var(--ink-muted)">Data in this drawing</div>
+    <p class="prov" style="color:var(--ink-muted);max-width:84ch;margin:var(--s2) 0 0">
+      <strong style="font-weight:500;color:var(--ink)">Measured</strong>, from
+      <span class="mono">#85</span> on <span class="mono">egeria-workspaces</span>:
+      <span class="tnum">641</span> scopes &rarr; <span class="tnum">69</span> branches in
+      <span class="tnum">2.9s</span>; <span class="tnum">71</span> ports,
+      <span class="tnum">68</span> with an owner, <span class="tnum">3</span> without; the
+      <span class="tnum">1.5s</span> median Egeria write.
+      <strong style="font-weight:500;color:var(--ink)">Illustrative</strong>: the five branch names and their
+      individual confidences, which stand in for shapes the row must handle &mdash; two extractors agreeing, one
+      strong declaration, an accepted verdict whose proposal was withdrawn, a two-port case, and a proposal weak
+      enough that rejecting is the better answer. Do not treat the per-row percentages as spec.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

@@ -100,6 +100,36 @@ class TestVerdictsInherit:
         assert resolve_verdict("z", v) is None
 
 
+class TestAgreementAndWithdrawal:
+    """RULING-WHAT-A-VERDICT-IS-ABOUT.md §2a-§2c: a component is proposals
+    kept together by path, not one proposal chosen over the other."""
+
+    def test_agreement_rolls_up_to_the_branch_for_sorting(self, registry, monkeypatch):
+        comps = [
+            {"path": "pyegeria/commands", "name": "cli", "type": "Console Command",
+             "confidence": 75, "agreement": True},
+            {"path": "pyegeria/utils", "name": "utils", "type": "", "confidence": 90,
+             "agreement": False},
+        ]
+        monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: comps)
+        tr = component_tree(registry, "p")
+        by = {b["path"]: b for b in tr["branches"]}
+        assert by["pyegeria"]["agreement_count"] == 1
+
+    def test_withdrawal_flags_an_accepted_verdict_without_touching_it(self, registry, monkeypatch):
+        comps = [
+            {"path": "pyegeria/commands", "name": "cli", "type": "Console Command",
+             "confidence": 75, "withdrawn_by": ["coupling"],
+             "proposals": [{"run_label": "detect", "type": "Console Command", "confidence": 75}]},
+        ]
+        monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: comps)
+        registry.record_component_verdict("repo", "p", "pyegeria/commands", "accepted", decided_by="a")
+        lv = {l["path"]: l for l in leaves(registry, "p", "pyegeria")}
+        row = lv["pyegeria/commands"]
+        assert row["verdict"]["verdict"] == "accepted"          # flag, do not invalidate
+        assert row["withdrawn_by"] == ["coupling"]
+
+
 class TestTheRoute:
     def test_a_branch_verdict_is_one_row_and_materialisation_is_queued(self, client, seeded):
         r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["pyegeria/"], "verdict": "accepted"})

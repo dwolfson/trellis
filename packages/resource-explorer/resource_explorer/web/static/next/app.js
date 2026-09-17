@@ -5823,15 +5823,34 @@ function branchRowHtml(b) {
   </div>`;
 }
 
+/** RULING-WHAT-A-VERDICT-IS-ABOUT.md §2a/§2b/§2c. When two extractors
+ *  currently propose this path, both are shown -- not whichever wrote last
+ *  -- with the agreement line that is the strongest signal the recovery
+ *  has. `withdrawn_by` flags an accepted verdict whose extractor no longer
+ *  proposes the path; it never invalidates the verdict itself. `run_label`
+ *  ("detect"/"coupling") renders as "found by"; `perspective` (physical/
+ *  deployment/logical/dev) renders as "reading" -- two different axes that
+ *  used to share one word (§0). */
 function leafRowHtml(l) {
-  return `<div class="flex flex-wrap items-baseline gap-x-s2 border-b border-rule py-[3px] text-provenance">
-    <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
-    ${l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
-    ${l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : ''}
-    ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
-    <span>· ${verdictBadge(l.verdict)}</span>
-    <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
-    <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+  const multi = (l.proposals || []).length >= 2;
+  const proposalLines = multi ? l.proposals.map((p) => `
+    <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · <span class="tnum">${p.confidence ?? 0}</span>%</div>
+  `).join('') : '';
+  const agreementLine = l.agreement
+    ? `<div class="pl-s2 text-provenance text-accent-ink">two extractors agree this is a component</div>` : '';
+  const withdrawnLine = (l.withdrawn_by || []).length
+    ? `<div class="pl-s2 text-provenance text-state-warn">⚠ review — no longer proposed by ${esc(l.withdrawn_by.join(', '))}</div>` : '';
+  return `<div class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
+    <div class="flex flex-wrap items-baseline gap-x-s2 text-provenance">
+      <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
+      ${!multi && l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
+      ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : '')}
+      ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
+      <span>· ${verdictBadge(l.verdict)}</span>
+      <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
+      <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+    </div>
+    ${proposalLines}${agreementLine}${withdrawnLine}
   </div>`;
 }
 
@@ -5853,9 +5872,15 @@ async function renderComponentTree(slug, prefix = '') {
   // A sort, never a filter: the ⚠ count already rides on the branch, so
   // ordering by confidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.
-  if (sort === 'confidence') rows.sort((a, b) => (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
+  //
+  // Agreement outranks a single high confidence (RULING-WHAT-A-VERDICT-IS-
+  // ABOUT.md §2b) — two independent extractors landing on the same path is
+  // a better bet than one extractor at 90%, so it sorts first, confidence
+  // only breaking ties within the same agreement count.
+  if (sort === 'confidence') rows.sort((a, b) => (b.agreement_count || 0) - (a.agreement_count || 0)
+    || (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
   host.innerHTML = `
-    <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> components accepted ·
+    <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> component paths accepted ·
       <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
       ports and wires read from the deployment artifacts; the diagram shows those belonging to accepted components
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
@@ -5915,8 +5940,20 @@ async function renderComponentDiagram(slug, host) {
   if (slug !== state.selectedSlug) return;
   const src = fact?.value?.mermaid;
   if (!src) { host.innerHTML = `<div class="text-provenance text-ink-muted">No diagram to read — architecture_diagram has not rendered one for this resource.</div>`; return; }
+  // Which extractor drew this, and what else is on file — a value the
+  // classic Curate panel already showed and this surface silently dropped.
+  // RULING-WHAT-A-VERDICT-IS-ABOUT.md §3: `fact.value.perspective` here is a
+  // run_label ("detect"/"coupling"), not a Component.perspective reading, so
+  // it renders as "found by", never "perspective".
+  const foundBy = fact.value.perspective
+    ? `<div class="text-provenance text-ink-muted mt-s1">found by ${esc(fact.value.perspective)}` +
+      ((fact.value.other_perspectives_available || []).length
+        ? ` · ${esc(fact.value.other_perspectives_available.join(', '))} also on file`
+        : '') + `</div>`
+    : '';
   host.innerHTML = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">The diagram reads; the tree acts</div>
     <div class="text-provenance text-ink-muted">${tnum(esc(fact.value.caption || fact.headline || ''))}</div>
+    ${foundBy}
     <div data-diagram-svg class="mt-s1 w-full overflow-auto rounded-sm border border-rule-strong" style="max-height:min(60vh,560px)">rendering…</div>`;
   try {
     const t = tokens();
