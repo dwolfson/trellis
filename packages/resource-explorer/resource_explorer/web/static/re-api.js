@@ -699,3 +699,36 @@ export const getComponentLeaves = (slug, branch) =>
 /** One verdict row per scope; accepted ones queue their materialisation. */
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
+
+/* ── Automate ────────────────────────────────────────────────────────────
+ * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).
+ * Local-first: subscriptions and schedules live in RE's own registry, not
+ * as Egeria NotificationType elements yet — see notification_subscriptions'
+ * table docstring in registry.py. */
+
+/** Subscriptions, each carrying `has_schedule` — whether an enabled,
+ *  recurring schedule exists for the same (entity, analysis_id). Detection
+ *  only ever runs off a scheduled completion, so an active subscription
+ *  with no schedule can never fire; callers must show that, not hide it. */
+export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId = '', activeOnly = false } = {}) => {
+  const params = new URLSearchParams();
+  if (entityType) params.set('entity_type', entityType);
+  if (entitySlug) params.set('entity_slug', entitySlug);
+  if (analysisId) params.set('analysis_id', analysisId);
+  if (activeOnly) params.set('active_only', 'true');
+  const qs = params.toString();
+  return get(`/api/automate/subscriptions${qs ? `?${qs}` : ''}`);
+};
+
+export const setSubscriptionActive = (id, active) =>
+  post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
+
+/** Every scheduled analysis across every resource — what a subscription
+ *  actually needs to fire. Global by design; there is no per-resource
+ *  variant because the Automate pane's own filter checkbox does that
+ *  client-side, same as the current UI's Schedules overview. */
+export const listAllSchedules = () => get('/api/schedules/');
+
+export const deleteSchedule = (entityType, entitySlug, analysisId) =>
+  request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
+          { method: 'DELETE' });

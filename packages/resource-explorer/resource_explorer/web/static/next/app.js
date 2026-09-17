@@ -42,6 +42,7 @@ import { renderCurate } from '/static/next/stages/curate.js';
 // worklist.js, not a per-resource stage; see next/rfa.js's own header
 // comment for why it lives at this level rather than under stages/.
 import { toggleRfaDrawer } from '/static/next/rfa.js';
+import { renderAutomate } from '/static/next/stages/automate.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -147,12 +148,24 @@ const STAGES = [
   { id: 'discovery',     label: 'Discovery' },
   { id: 'assessment',    label: 'Assessment' },
   { id: 'analysis',      label: 'Analysis' },
-  { id: 'enrichment',    label: 'Enrichment' },
+  // Enrichment was marked "not built" here. ITEM-1-ENRICHMENT-IMPLEMENTED.md
+  // verified the judgement/observation fields, the save-and-revisit round
+  // trip, and the evidence-moved perishability flag all work; the catalog
+  // has 7 human-supplied questions tagged this phase, so the generic
+  // Questions engine (loadPane()) reaches renderEnrichment() without a
+  // special case, the same as any other built stage.
+  { id: 'enrichment',    label: 'Enrichment', built: true },
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
   { id: 'understanding', label: 'Understanding', built: true },
   { id: 'curate',        label: 'Curate' },
-  { id: 'automate',      label: 'Automate' },
+  // Automate is a real, deliberately partial port (PLAN-FINISH-REPOS.md
+  // item 4): renderAutomate() (next/stages/automate.js) shows and toggles
+  // real subscriptions and the real global Schedules overview. Creating a
+  // subscription is NOT built -- it rides on an Assessment/Analysis card's
+  // "Notify me" action, and neither stage exists in /next yet -- and that one
+  // gap is named and linked out rather than the whole stage being deferred.
+  { id: 'automate',      label: 'Automate',      built: true },
 ];
 
 /** Sub-tab order is IDENTICAL across every stage, on purpose. A stage that
@@ -4779,7 +4792,7 @@ function fmtBytes(n) {
  *  of any kind, so "links out preserving the resource" was not satisfiable
  *  without adding one. Additive: an unrecognised slug selects nothing and
  *  the app starts exactly as before. */
-function oldUiHref() {
+export function oldUiHref() {
   return state.selectedSlug
     ? `/?resource=${encodeURIComponent(state.selectedSlug)}`
     : '/';
@@ -4971,6 +4984,17 @@ async function loadPane() {
   // absent while its data sat one GET away.
   if (state.stage === 'understanding') {
     await loadChartsPane();
+    renderPerspectiveRow();
+    return;
+  }
+
+  // Automate is subscriptions/schedules, not questions -- its own two-tab
+  // subnav (renderAutomate(), next/stages/automate.js), same bypass shape as
+  // Understanding just above. Global by default, like the current UI's
+  // Schedules overview: it works with no resource selected, and filters to
+  // one via its own "Just <slug>" checkbox rather than requiring a selection.
+  if (state.stage === 'automate') {
+    await renderAutomate();
     renderPerspectiveRow();
     return;
   }
