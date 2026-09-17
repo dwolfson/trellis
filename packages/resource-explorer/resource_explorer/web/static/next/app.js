@@ -38,6 +38,7 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/for
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+import { openActivityPanel } from '/static/next/stages/activity.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
 import {
   ApiError,
@@ -530,6 +531,19 @@ function renderTopBar() {
   link.textContent = state.selectedSlug
     ? '/next · open current UI'
     : '/next · open current UI';
+  wireActivityButton();
+}
+
+/** Activity is a persistent header surface, not a STAGES entry (see
+ *  activity.js's own top-of-file comment) — wired once, like the sidebar
+ *  drawer and text-size controls above, rather than per render. */
+let activityButtonWired = false;
+function wireActivityButton() {
+  if (activityButtonWired) return;
+  const btn = $('activity-open-btn');
+  if (!btn) return;
+  activityButtonWired = true;
+  btn.addEventListener('click', () => openActivityPanel());
 }
 
 /** The app's own text-size control: 100 / 112 / 125%.
