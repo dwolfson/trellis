@@ -13,12 +13,12 @@ document and this gets regenerated from it.
 
 ## Start here — what is ready to pick up
 
-**One survey, then three items.** Everything else on the last board had already shipped — see below,
+**One classification pass, then three items.** Everything else on the last board had already shipped — see below,
 because the reason matters more than the list.
 
 | | take this | read | verified |
 |---|---|---|---|
-| **Parity inventory** | *What does classic do that `/next` does not?* — **do this first** | `SPEC-PARITY-INVENTORY-AND-GROUPS.md` | One read of `index.html`, enumerating classic's behaviours as **present** / **deferred** (a decision exists) / **undiscussed** (nobody ruled). Separating the last two is the whole value. `/next` is not feature complete and the gap is unmeasured, so this may reorder everything below it. First entry already found: groups render (`next/app.js:1579`) but do not collapse. |
+| **Parity inventory** | *First pass done — classify it* | `INVENTORY-CLASSIC-TO-NEXT.md` | **Sixteen candidate gaps, one of them decided.** Ten absent entirely (the whole Admin section, repair, outbox, resync, Prefect, discovery sources, question catalog, group admin, scout source mode, persisted sidebar width); five partly present (group collapse, per-answer feedback, perspective persistence, chat, bulk); one deferred on record (databases and filesystems). **What is left needs the project owner:** marking each *deferred* (a decision exists) vs *undiscussed*. I can only cite the one decision that came through these notes. Half an hour with the table. |
 | **Stale publish** | *Publish state after a redeploy* — publish rows name created elements that a wipe destroyed, and nothing ever checks | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Defect confirmed by me** at `342e0ca3`: `registry.py` ~1015/~1052/~1109 store `egeria_report_guid`; no function resolves one. Fix is one `ClassificationExplorer.get_element_by_guid` per connection. §5 is a short survey to do first. |
 | **Sort direction** | *The review queue opens on the branches needing least attention* | `REVIEW-VERDICT-RULING.md` §2 | `app.js:5880` runs agreement descending and confidence ascending, so best-evidenced branches head a weakest-first queue. Agreement should **raise effective evidence** and therefore sink a branch; one ordering, one direction. Label becomes *by evidence*. My §2b wording caused this — *outranks* read as *sorts above*. Small. |
 | **Honest classic row** | *The classic panel still shows one of two proposals as the answer* | `RULING-CLASSIC-AND-NEXT.md` §3 | **Required, not optional** — the project owner ruled 09-17 that classic retires only if `/next` earns it, so there is no timeline. `repo_survey_definition_adapter.py:2951` keeps `max(comp_rows, key=surveyed_at)` and `_archRow` renders it. One clause (*also proposed by coupling ›*), **not** parity; plus the primary becomes best-evidenced rather than most recent. |
