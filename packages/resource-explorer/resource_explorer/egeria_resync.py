@@ -41,6 +41,7 @@ REPAIR_STEPS = (
     "reauthor_survey_definitions",
     "clear_stale_assets",
     "clear_orphan_publish_claims",
+    "flag_vanished_publishes",
     "clear_stale_investigations",
     "clear_stale_contexts",
     "catalog_assets",
@@ -79,11 +80,32 @@ REGISTRATION_ONLY_ANALYSES = frozenset({"repository_health"})
 #: judgment call about what an asset should look like, not a pure cleanup —
 #: left for a human to trigger deliberately, same reasoning REPAIR_STEPS'
 #: `republish_survey_results`/`relink_investigation_members` stay manual.
+#:
+#: `clear_stale_investigations`/`clear_stale_contexts` moved OUT 2026-09-17
+#: (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md item 4,
+#: REPLY-PUBLISH-STATE-GO-AHEAD.md §3): `investigations.egeria_project_guid`/
+#: `entity_egeria_project_context.egeria_project_guid` can hold a GUID this
+#: app created OR one a person deliberately bound to an already-existing
+#: Egeria Project (`bind_egeria_project`), with nothing distinguishing the
+#: two — so "clears a LOCAL record after verifying live" was never actually
+#: true for these two: a bound GUID a person chose is not a local record this
+#: app can regenerate, and a transient resolve failure (an outage, a
+#: permissions change, a restart) would silently unmake that choice with
+#: nothing left to show it happened. That violates this set's own "never
+#: needs a human decision" criterion — clearing a person's binding always
+#: does. Both repair steps stay in REPAIR_STEPS for a human to apply
+#: deliberately from Admin > Egeria Alignment, same as `catalog_assets`.
+#:
+#: `flag_vanished_publishes` added the same day, and belongs here for the
+#: opposite reason those two left: it never deletes anything — it only WRITES
+#: a flag (`egeria_linkage_status`), and the row it's about stays exactly as
+#: it was (§4's "flag, do not delete"). A false positive here costs a reader
+#: one wrong badge state until the next pass corrects it, not a decision
+#: silently unmade.
 SAFE_SCHEDULED_STEPS = (
     "clear_stale_assets",
     "clear_orphan_publish_claims",
-    "clear_stale_investigations",
-    "clear_stale_contexts",
+    "flag_vanished_publishes",
 )
 
 
@@ -152,7 +174,7 @@ class EgeriaResync:
         if self._clients:
             return True, ""
         try:
-            from pyegeria import AssetMaker, CollectionManager, ProjectManager
+            from pyegeria import AssetMaker, ClassificationExplorer, CollectionManager, ProjectManager
 
             from resource_explorer.config import get_config
 
@@ -160,9 +182,15 @@ class EgeriaResync:
             am = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
             pm = ProjectManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
             cm = CollectionManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-            for c in (am, pm, cm):
+            # ClassificationExplorer, not MetadataExpert — PUBLISH-STATE-AFTER-
+            # REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §1:
+            # MetadataExpert is for special situations with a differently-
+            # shaped response; ClassificationExplorer.get_element_by_guid is
+            # the plain existence check.
+            ce = ClassificationExplorer(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+            for c in (am, pm, cm, ce):
                 c.create_egeria_bearer_token()
-            self._clients = {"asset": am, "project": pm, "collection": cm}
+            self._clients = {"asset": am, "project": pm, "collection": cm, "classification": ce}
             return True, ""
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
@@ -197,6 +225,7 @@ class EgeriaResync:
 
         res.findings.append(self._scan_assets(res))
         res.findings.append(self._scan_orphan_publish_claims())
+        res.findings.append(self._scan_vanished_publishes(res))
         res.findings.append(self._scan_investigation_guids(res))
         res.findings.append(self._scan_contexts(res))
         res.findings.append(self._scan_unlinked_members(res))
@@ -307,6 +336,39 @@ class EgeriaResync:
                    "Nothing points at a catalog entry, so the badge is false.",
             items=[{"slug": r["slug"], "claims": r["n"]} for r in rows],
             repair_step="clear_orphan_publish_claims",
+        )
+
+    def _scan_vanished_publishes(self, res: ScanResult) -> Finding:
+        """Publish claims that ARE locally coherent, whose report Egeria no
+        longer has. PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+        REPLY-PUBLISH-STATE-GO-AHEAD.md §2 — the condition
+        `_scan_orphan_publish_claims` cannot see, because it only checks local
+        consistency. This is the other one: `egeria_report_guid` names a
+        record `project_egeria_surveys` still has, and Egeria does not.
+
+        Never deletes. `_do_flag_vanished_publishes` only writes a flag
+        (`egeria_linkage_status`, entity_type='repo_publish') — the row itself
+        is the only evidence a publish happened, and it stays exactly as it
+        is (§4's rule).
+        """
+        ce = self._clients["classification"]
+        latest = self._registry.get_latest_egeria_surveys_all_projects()
+        vanished = []
+        for slug, survey in latest.items():
+            guid = survey["egeria_report_guid"]
+            v = self._resolves(
+                lambda g: ce.get_element_by_guid(g, graph_query_depth=0), guid)
+            if v is False:
+                vanished.append({"slug": slug, "guid": guid})
+            elif v is None:
+                res.undetermined.append({"kind": "publish", "ref": slug, "reason": "lookup failed"})
+        return Finding(
+            key="vanished_publishes",
+            title="Published elements no longer in the store",
+            detail="The report these claims point to no longer resolves in Egeria "
+                   "— flagged on the record, not deleted.",
+            items=vanished,
+            repair_step="flag_vanished_publishes",
         )
 
     def _scan_investigation_guids(self, res: ScanResult) -> Finding:
@@ -927,6 +989,30 @@ class EgeriaResync:
                     " WHERE coalesce(egeria_report_guid, '') <> '')"
                 ).rowcount
         return {"claims_deleted": deleted}
+
+    def _do_flag_vanished_publishes(self) -> dict:
+        """Flag, never delete — the counterpart to `_do_clear_orphan_publish_
+        claims` for the row that IS locally coherent. Also self-heals: a
+        project whose latest publish now resolves has its flag cleared, so
+        a republish is not stuck showing "no longer in the store" forever.
+        """
+        res = ScanResult()
+        finding = self._scan_vanished_publishes(res)
+        vanished_slugs = {i["slug"] for i in finding.items}
+        for item in finding.items:
+            self._registry.mark_egeria_linkage_stale(
+                "repo_publish", item["slug"], stale_guid=item["guid"],
+                detail="the published report no longer resolves in Egeria",
+            )
+        healed = 0
+        for slug in self._registry.get_latest_egeria_surveys_all_projects():
+            if slug in vanished_slugs:
+                continue
+            if self._registry.get_egeria_linkage("repo_publish", slug):
+                self._registry.clear_egeria_linkage_status("repo_publish", slug)
+                healed += 1
+        return {"flagged": len(finding.items), "healed": healed,
+                "undetermined": len(res.undetermined)}
 
     def _do_clear_stale_investigations(self) -> dict:
         res = ScanResult()

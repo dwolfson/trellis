@@ -573,6 +573,15 @@ export const getActivityEntry = (entryId) =>
 export const listActivity = (limit = 50) => get(`/api/activity/?limit=${limit}`);
 export const listRfas = () => get('/api/activity/rfas');
 
+/** Record a response action (defer | reassign | complete | reopen — "reopen"
+ *  is just `status: 'open'` again, the same endpoint) against one RFA.
+ *  `web/routes/activity.py:update_rfa_action` — local-only for now (see
+ *  next/rfa.js's own note on why), with a best-effort Egeria ToDo sync
+ *  attempted server-side, non-blocking of this call's result. */
+export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '', resolutionNote = '' } = {}) =>
+  patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`,
+        { status, assignee, defer_until: deferUntil, resolution_note: resolutionNote });
+
 /**
  * Poll one activity entry until it stops running.
  *
@@ -690,3 +699,74 @@ export const getComponentLeaves = (slug, branch) =>
 /** One verdict row per scope; accepted ones queue their materialisation. */
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
+
+/* ── Automate ────────────────────────────────────────────────────────────
+ * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).
+ * Local-first: subscriptions and schedules live in RE's own registry, not
+ * as Egeria NotificationType elements yet — see notification_subscriptions'
+ * table docstring in registry.py. */
+
+/** Subscriptions, each carrying `has_schedule` — whether an enabled,
+ *  recurring schedule exists for the same (entity, analysis_id). Detection
+ *  only ever runs off a scheduled completion, so an active subscription
+ *  with no schedule can never fire; callers must show that, not hide it. */
+export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId = '', activeOnly = false } = {}) => {
+  const params = new URLSearchParams();
+  if (entityType) params.set('entity_type', entityType);
+  if (entitySlug) params.set('entity_slug', entitySlug);
+  if (analysisId) params.set('analysis_id', analysisId);
+  if (activeOnly) params.set('active_only', 'true');
+  const qs = params.toString();
+  return get(`/api/automate/subscriptions${qs ? `?${qs}` : ''}`);
+};
+
+export const setSubscriptionActive = (id, active) =>
+  post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
+
+/** Every scheduled analysis across every resource — what a subscription
+ *  actually needs to fire. Global by design; there is no per-resource
+ *  variant because the Automate pane's own filter checkbox does that
+ *  client-side, same as the current UI's Schedules overview. */
+export const listAllSchedules = () => get('/api/schedules/');
+
+export const deleteSchedule = (entityType, entitySlug, analysisId) =>
+  request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
+          { method: 'DELETE' });
+
+/* ── Admin (PLAN-FINISH-REPOS.md item 5) ────────────────────────────────────
+ * Read-mostly system/catalog-configuration views, reachable from the header's
+ * own ⚙ Admin button — see next/admin/*.js. Every route here already backs
+ * classic's index.html Admin panes; nothing new was added on the server. */
+
+/** The Annotation Types registry — every schema RE knows how to publish as
+ *  an Egeria annotation, and its property/class bindings. */
+export const listAnnotationTypes = () => get('/api/analyses/annotation-types');
+export const getAnnotationType = (typeName) =>
+  get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
+
+/** The full, unscoped Question catalog — every authored question with its
+ *  funnel stage, perspectives and answering mechanism. Read-only browser;
+ *  the catalog itself is edited via the source CSV, not this route. */
+export const listQuestionCatalog = (resourceType = 'repo') =>
+  get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+
+/** The in-process log ring buffer (`observability/logging_setup.py`) —
+ *  bounded, in-memory, empty after a restart. The response carries buffer
+ *  metadata (held/capacity/full/note) alongside the records precisely so a
+ *  caller can tell "nothing logged", "buffer emptied by a restart" and "your
+ *  filter excluded everything" apart — collapsing them to one empty state is
+ *  the absence-as-answer failure this codebase keeps finding. */
+export const listLogs = ({ limit = 300, level = '', logger = '' } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) params.set('level', level);
+  if (logger) params.set('logger', logger);
+  return get(`/api/logs/?${params}`);
+};
+
+/** Prefect flow-run status for locally-dispatched (`executes_at: prefect`)
+ *  survey steps only — `executes_at: egeria` steps are coordinated by Egeria
+ *  itself and are not reflected here. */
+export const getPrefectStatus = () => get('/api/prefect/status');
+export const listPrefectFlowRuns = (limit = 50) => get(`/api/prefect/flow-runs?limit=${limit}`);
+export const cancelPrefectFlowRun = (flowRunId) =>
+  post(`/api/prefect/flow-runs/${encodeURIComponent(flowRunId)}/cancel`);

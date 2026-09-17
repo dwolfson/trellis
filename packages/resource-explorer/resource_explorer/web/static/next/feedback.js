@@ -219,3 +219,143 @@ function _buildButton() {
 }
 
 _buildButton();
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Per-answer feedback
+ *
+ * The button above is about the product. This is about one ANSWER, and it
+ * lives here rather than in app.js for two reasons: app.js is being split
+ * into per-stage modules by another stream, and this control has to survive
+ * that split unchanged; and the whole question-row surface is rebuilt with
+ * innerHTML as each answer lands, so anything attached to a row has to be
+ * re-attached rather than bound once.
+ *
+ * Hence: a MutationObserver on the rows container, and delegated clicks on
+ * document. Nothing here imports app.js and app.js does not import this.
+ *
+ * WHICH rows get the control: only those carrying an `evidence` button.
+ * That is app.js's own marker for `answered | automatic` (provenanceLine) —
+ * the two states where there IS an answer to agree or disagree with.
+ * Offering "was this right?" under "never run" would be asking about a
+ * sentence that makes no claim.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+const ANSWER_VERDICTS = [
+  ['agree', 'Right'],
+  ['partly', 'Partly'],
+  ['disagree', 'Wrong'],
+];
+
+function _rowQuestion(row) {
+  const el = row.querySelector('span.font-heading.text-question');
+  return el ? el.textContent.trim() : '';
+}
+
+function _currentSlug() {
+  const el = document.getElementById('scope-slug');
+  const s = el ? el.textContent.trim() : '';
+  return s && s !== 'no resource selected' ? s : '';
+}
+
+function _attachTo(row) {
+  if (!row) return;
+  // Idempotence is keyed on the BAR, not on a flag on the row. app.js
+  // replaces a row's innerHTML in place when its answer lands
+  // (`replaceRow`), which destroys the bar while leaving the row element —
+  // and its dataset — intact. A flag on the row would survive that and stop
+  // the bar ever coming back.
+  if (row.querySelector('[data-fb-answer]')) return;
+  // `evidence` is app.js's marker for a row that actually answered.
+  if (!row.querySelector('[data-evidence]')) return;
+  const question = _rowQuestion(row);
+  if (!question) return;
+
+  const bar = document.createElement('div');
+  bar.className = 'ml-[22px] mt-[6px] flex flex-wrap items-center gap-s2 text-provenance text-ink-muted';
+  bar.dataset.fbAnswer = question;
+  bar.innerHTML = `<span>Was this right?</span>${ANSWER_VERDICTS.map(
+    ([v, label]) => `<button type="button" data-fb-verdict="${v}"
+      class="cursor-pointer bg-transparent text-accent-ink underline">${label}</button>`,
+  ).join('')}`;
+  row.appendChild(bar);
+}
+
+function _scanRows() {
+  const rows = document.getElementById('question-rows');
+  if (!rows) return;
+  rows.querySelectorAll('[id^="qrow-"]').forEach(_attachTo);
+}
+
+/** Replace the bar with a sentence. Every outcome says what was recorded —
+ *  a control that silently accepts a "this is wrong" and shows nothing is
+ *  the same failure as a vote that does not record. */
+function _said(bar, text, warn) {
+  bar.innerHTML = `<span class="${warn ? 'text-state-warn' : ''}">${_escapeHtml(text)}</span>`;
+}
+
+async function _sendAnswerVerdict(bar, verdict) {
+  const question = bar.dataset.fbAnswer || '';
+  const slug = _currentSlug();
+  if (!slug) { _said(bar, 'No resource selected — not recorded.', true); return; }
+
+  // Only a disagreement asks for words. Making everyone type turns a
+  // one-click signal into a form nobody fills in; asking the person who says
+  // "wrong" what they know is the one case where the words are the point.
+  let comment = '';
+  if (verdict === 'disagree') {
+    const typed = window.prompt('What is wrong with this answer? (optional)', '');
+    if (typed === null) return;        // cancelled — record nothing
+    comment = typed.trim();
+  }
+
+  _said(bar, 'Recording…');
+  try {
+    const res = await fetch('/api/feedback/answer', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug, question, verdict, comment,
+        session_id: _sessionId(),
+        page: location.pathname + location.search,
+      }),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { const d = await res.json(); if (d && d.detail) detail = d.detail; } catch { /* not JSON */ }
+      _said(bar, `Not recorded: ${detail}`, true);
+      return;
+    }
+    const data = await res.json();
+    // The server's own sentence, not one composed here — it is the only side
+    // that knows whether a gap was raised and against which analysis.
+    _said(bar, data.gap
+      ? `Recorded — ${data.gap_reason}. It is now in this project's gaps, marked ${data.gap.destination}.`
+      : `Recorded — ${data.gap_reason}.`);
+  } catch (e) {
+    _said(bar, `Not recorded: ${e && e.message ? e.message : 'could not reach the server'}`, true);
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-fb-verdict]');
+  if (!btn) return;
+  const bar = btn.closest('[data-fb-answer]');
+  if (!bar) return;
+  _sendAnswerVerdict(bar, btn.dataset.fbVerdict);
+});
+
+function _watchRows() {
+  const rows = document.getElementById('question-rows');
+  if (!rows) {
+    // The container is in index.html, but this module can load before the
+    // element exists in some orders; retry on the next frame rather than
+    // binding to nothing and failing silently.
+    requestAnimationFrame(_watchRows);
+    return;
+  }
+  _scanRows();
+  new MutationObserver(_scanRows).observe(rows, { childList: true, subtree: true });
+}
+
+_watchRows();

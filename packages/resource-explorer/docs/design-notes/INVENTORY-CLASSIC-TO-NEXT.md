@@ -1,112 +1,122 @@
-# Inventory: what classic does that `/next` does not
+# Inventory: how far `/next` actually is
 
-**First pass** · `SPEC-PARITY-INVENTORY-AND-GROUPS.md` §2
-**Read against:** `main` at `1b370cbe` · classic `index.html` 18,306 lines;
-`next/` 6,861 lines of `app.js` plus `worklist.js`, `feedback.js`, `format.js`
-**Date:** 2026-09-17
+**Rebuilt 2026-09-17** from the project owner's assessment, which replaced my
+own. Read against `main` at `fa9ac4dc`.
 
 ---
 
-## 0 · What this is, and what it is not
+## 0 · Why this was rebuilt
 
-**This is a screen, not an exhaustive read.** I enumerated classic's views by
-`id`, its persisted preferences by `localStorage` key, and then compared
-occurrence counts per subsystem across *all* of `next/`, spot-verifying each
-non-zero result by reading it. That finds whole missing subsystems reliably. It
-will miss a behaviour that lives inside a shared function and has no distinct
-vocabulary — the group-collapse case would have been missed this way, because it
-is three behaviours inside a sidebar renderer that `/next` also has.
+My first version screened subsystem vocabulary counts between `index.html` and
+`next/`. It found sixteen candidates, missed Automate, missed the Understanding
+and Activity stages, missed work lists and RFAs, and credited `/next` with
+honestly declaring deferrals it does not actually show. **The project owner
+produced a better inventory in one message than the screen produced in an
+afternoon** — because the question is "how far is this from doing the job",
+which is a judgement about the product, not a diff between two files.
 
-**One correction mid-pass, worth recording as method.** My first screen counted
-only `next/app.js` and reported feedback as absent. `next/feedback.js` exists.
-Counts across an incomplete file set are not evidence; I re-ran against the whole
-directory before writing anything below.
+So this document is organised by the owner's ten points. Where I verified
+something in the code, it is cited. Where I did not, it says so.
 
-**And I cannot finish the classification.** Separating **deferred** (a decision
-exists) from **undiscussed** (nobody ruled) requires knowing which decisions were
-made, and the design notes only record decisions that came through me. Entries
-below are marked **deferred** only where I can cite the decision. Everything else
-is **unclassified** — not "undiscussed", because I do not know.
+**Decision (project owner, 2026-09-17):** roughly half done on repositories, and
+other resource types are not worth looking at until repositories are finished.
 
 ---
 
-## 1 · Absent from `/next` entirely
+## 1 · Enrichment — partially built; needs design, analysis and implementation
 
-Each verified by reading, not only by count. Counts are `index.html` →
-all of `next/`.
+`STAGES` carries no `built` flag for it. Because of the defect in
+`DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md`, it **renders as though built**.
+Scope not yet assessed by me.
 
-| # | classic behaviour | evidence | screen |
-|---|---|---|---|
-| 1 | **The whole Admin section** — ten views: discovery sources, Egeria links, feedback review, groups, logs, Prefect, question catalog, repair, resync, outbox | `id="admin-*-view"` ×10 | 338 → 2 |
-| 2 | **Repair** | `admin-repair-view` | 120 → 0 |
-| 3 | **Egeria outbox** | `admin-outbox-view` | 44 → 1 |
-| 4 | **Resync** | `admin-resync-view` | 39 → 0 |
-| 5 | **Prefect integration** | `admin-prefect-view` | 38 → 0 |
-| 6 | **Discovery sources** | `admin-discovery-sources-view` | 30 → 0 |
-| 7 | **Question catalog editing** | `admin-question-catalog-view` | 23 → 0 |
-| 8 | **Group administration** — creating groups and assigning resources to them | `admin-groups-view` | — |
-| 9 | **Scout source mode**, persisted | `re.scoutSourceMode` | 11 → 0 |
-| 10 | **Resizable sidebar**, persisted width | `pe_sidebar_w` | 9 → 0 |
+## 2 · Understanding — not really started
 
-Items 2–8 are all inside item 1, listed separately because they are separate
-capabilities, not one screen.
+Same: no `built` flag, renders as built. The comment at `next/app.js:145` claims
+it *"renders charts now"* and that the catalog rows it lacked *"were never what
+fed it"* — the owner's read is that this overstates it. **The comment is the only
+thing asserting the stage works; treat it as unverified.**
 
-**Admin is the largest single gap and the one least visible from the design
-notes**, which contain no mention of it. Whether `/next` needs it at all is a
-real question — an admin surface may legitimately stay in classic forever — but
-that is a decision nobody has recorded, which is exactly what this inventory is
-for.
+## 3 · Curate — incomplete, especially component selection and blueprints
 
-## 2 · Partly present — the halves that are missing
+The verdict-ruling work (`#107`) landed here, so the component row and coverage
+sentence are current. Blueprints and selection are not done. This is the stage
+with the most design already invested and still not finished.
 
-| # | classic behaviour | what `/next` has | what is missing |
-|---|---|---|---|
-| 11 | **Collapsible resource groups** | groups render with a count (`next/app.js:1579-1586`, header `:1678`) | the fold itself; persisted collapse state (`_COLLAPSED_GROUPS_KEY`, `index.html:5169`); group-level selection covering a collapsed group's members (`:5473`); **filter force-expands so a match cannot hide in a fold** (`:5748`) |
-| 12 | **Feedback** | submission — a floating button and modal with categories (`next/feedback.js`) | the **per-answer** form (`Feedback('${env.query_hash}', -1, …)`) and the **review side** (`admin-feedback-view`; `next/feedback.js` has zero references to admin, review or store) |
-| 13 | **Perspectives** | the role row (`renderPerspectiveRow`) | persistence of the active set (`pe_perspectives`), 29 → 10 |
-| 14 | **Chat** | `renderChatLog` | 91 → 34; the panel's persisted open state (`pe_chat_panel_open`) among it |
-| 15 | **Bulk operations** | some (54 → 17) | unaudited — needs a read, not a count |
+## 4 · Automate — not started
 
-## 3 · Deferred, with the decision on record
+No `built` flag; renders as built, with four sub-tabs advertising working panes.
 
-| # | behaviour | decision |
-|---|---|---|
-| 16 | **Databases and filesystems** — classic has `db-survey-view` and `filesystem-survey-view` | `/next` answers *"Repos only, in /next"* on three panes, and Disposition says *"no verdict can be recorded for a {db\|filesystem} yet — dispositions exist for repositories only."* Ruled, and the copy states it. |
+## 5 · Admin — not started
 
-One entry. That is the point of the exercise: sixteen candidate gaps, and exactly
-one of them has a decision anyone can cite.
+Verified absent: 338 references in `index.html`, 2 under `next/`. Ten views —
+discovery sources, Egeria links, feedback review, groups, logs, outbox, Prefect,
+question catalog, repair, resync.
 
-## 4 · Two findings that are about the design, not about parity
+## 6 · Activity — not started
 
-**(a) Classic's per-answer feedback is the machinery I have been designing, and
-`/next` replaced it with something weaker.** `Feedback(query_hash, -1, …)`
-attaches a rating to **one specific answer**. `/next`'s floating modal attaches a
-comment to **the session**. Those are not the same capability: a reader who
-disagrees with one claim is producing a finding about that claim, and
-`SPEC-ACTIONABLE-AND-HONEST.md` §3's four destinations exist precisely to route
-it — a disagreement's destination is **ours**, and the gaps collection is where it
-belongs. Classic already had the capture end of that loop, keyed by
-`query_hash`, and nothing in my design notes mentions it.
+Classic has `activity-view`. `/next`'s 21 "activity" references are to the
+activity *log* as a data source, not a view.
 
-So the destinations work and the feedback subsystem should be one thing. Per-
-answer feedback is not a parity item to restore; it is an input the gaps
-collection should already be reading.
+## 7 · Work lists — orphaned, and I found where
 
-**(b) Group administration and group display are being tracked as one gap and are
-two.** Item 8 (creating groups, assigning resources) is an authoring capability;
-item 11 (folding them) is a display one. `/next` can fold groups it cannot
-create, and that is a coherent place to stop — the fold is worth building without
-waiting on the admin surface.
+**Verified, and it is one missing call.** Everything exists:
 
-## 5 · What I could not do, and what would finish this
+- the backend — `web/routes/work_lists.py`, `work_lists.WorkLists`
+- the pane renderer — `next/worklist.js`, 89KB, exporting `renderWorkListPane`
+  at `:170`
+- the nav — `renderWorkListNav` (`app.js:673`), called at `:609`
+- the state — `workListSlug`, `lastWorkListSlug`, `workListIndex` (`:130-133`)
+- the import — `app.js:26` pulls `listWorkLists`, `openWorkList`,
+  `saveAsWorkList`, `openDialog`, `closeCellDetail`, `CELL`
 
-- **Classify deferred versus undiscussed.** Items 1–15 need someone who knows
-  whether a decision exists. That is a half-hour with this table, not a round.
-- **Audit the behaviours inside shared renderers**, which this method misses by
-  construction. Group collapse was found by the project owner noticing it, not by
-  any pass — so the true gap count is a floor, not a total.
-- **Item 15** needs reading rather than counting.
+**`renderWorkListPane` is never called anywhere in `app.js`** — it is not even
+among the names imported at `:26`. The feature is complete at both ends and
+unwired at exactly one point, which is why it does not work.
 
-**The floor is sixteen candidates, one of them decided.** That is the number
-behind *"`/next` is not feature complete"* — and it says the retirement question
-cannot be reopened for a while, which is the useful thing to know now.
+The owner's read on the idea: working through a cohort at a time is a real
+strength in the early phases, and less useful once the work is detailed
+per-resource analysis. That bounds where it should be carried through, and it
+suggests the cohort pane belongs to Scouting and Assessment rather than
+everywhere.
+
+## 8 · Feedback — present, not effectively used
+
+`next/feedback.js` submits: a floating button, a modal, categories. Missing the
+**per-answer** form classic has (`Feedback(query_hash, -1, …)`) and the review
+side (`admin-feedback-view`). As noted before: per-answer feedback is the capture
+end of the loop the four destinations and the gaps collection were written for,
+and it is the half that was dropped.
+
+## 9 · Chat — under-utilised power
+
+Owner's assessment; not yet analysed by me. `renderChatLog` exists; classic has
+91 references to 34 under `next/`, plus a persisted panel-open state
+(`pe_chat_panel_open`) that `/next` does not keep.
+
+## 10 · RFAs — not started, and this one is declared
+
+`app.js:601` links out: *"The RFA drawer is not built in /next — opens the
+current UI"*. So unlike items 1–6, this deferral is honest and visible. It is
+the model the six unbuilt stages were supposed to follow.
+
+---
+
+## Cross-cutting
+
+- **`DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md`** covers items 1, 2, 4 and part of
+  3 and 6: `unbuilt` is read in three places and set in none, so six stages
+  render as live. Until that lands, no statement about `/next`'s completeness can
+  be made from the UI itself.
+- **Silently partial is the dangerous tier**, and it is where most of this list
+  sits. Item 10 is the only deferral a user can see.
+- **Group collapse** (`SPEC-PARITY-INVENTORY-AND-GROUPS.md` §3) and the
+  **persisted sidebar width** and **scout source mode** remain, small.
+
+## What I got wrong, kept here deliberately
+
+The screen's premise was that a capability missing from `/next` would also be
+missing its vocabulary. Four of the ten items above disprove that: Automate,
+Understanding and Activity all appear as labels, and work lists appears 44 times
+while being unreachable. **A count of occurrences cannot distinguish wired from
+present.** The method that would have worked is the one the owner used: open the
+UI and try to do the job.
