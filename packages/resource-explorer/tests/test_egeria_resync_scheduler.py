@@ -4,10 +4,16 @@ unattended counterpart to a human clicking Apply in Admin > Egeria Alignment.
 Built 2026-09-04 after a full Egeria repository-store wipe: the human-driven
 recovery path (EgeriaResync.scan()/apply()) worked exactly as designed, but
 nothing ran it until someone remembered to. scan_and_clear() automates only
-SAFE_SCHEDULED_STEPS — the four clear_* repairs that verify live before
-writing, cost no real time, and never need a human decision — leaving
-anything expensive (archive downloads) or needs_decision (Egeria Project
-bindings) untouched for a person to handle deliberately.
+SAFE_SCHEDULED_STEPS — the clear_* repairs that verify live before writing,
+cost no real time, and never need a human decision — leaving anything
+expensive (archive downloads) or needs_decision (Egeria Project bindings)
+untouched for a person to handle deliberately.
+
+`clear_stale_investigations`/`clear_stale_contexts` moved OUT of
+SAFE_SCHEDULED_STEPS 2026-09-17: they can clear a GUID a person deliberately
+bound to an already-existing Egeria Project, which is a human decision no
+matter how confidently the resolve check verified it — see
+egeria_resync.py's own comment on SAFE_SCHEDULED_STEPS.
 
 These tests are about the DECISION LOGIC (which steps get proposed to
 apply()), not EgeriaResync's own scan/apply internals — those already have
@@ -64,8 +70,8 @@ class TestScanAndClear:
     def test_only_present_safe_steps_are_proposed_not_the_whole_set(self):
         """Regression guard: must not blindly apply all of SAFE_SCHEDULED_STEPS
         regardless of what scan() actually found — only what's present."""
-        finding = Finding(key="stale_contexts", title="t", detail="d",
-                           repair_step="clear_stale_contexts")
+        finding = Finding(key="orphan_publish_claims", title="t", detail="d",
+                           repair_step="clear_orphan_publish_claims")
         with patch("resource_explorer.egeria_resync.EgeriaResync") as MockResync:
             instance = MockResync.return_value
             instance.scan.return_value = _scan_result(finding)
@@ -73,7 +79,24 @@ class TestScanAndClear:
             scan_and_clear()
 
         applied_steps = instance.apply.call_args[0][0]
-        assert applied_steps == ["clear_stale_contexts"]
+        assert applied_steps == ["clear_orphan_publish_claims"]
+
+    def test_investigation_and_context_bindings_are_never_auto_cleared(self):
+        """A background pass must not clear a GUID a person deliberately
+        bound to an already-existing Egeria Project — moved out of
+        SAFE_SCHEDULED_STEPS 2026-09-17, tested directly here rather than
+        only via the disjointness check below, since this is the actual
+        hazard that motivated the move."""
+        for step, key in (("clear_stale_investigations", "stale_investigation_guids"),
+                          ("clear_stale_contexts", "stale_contexts")):
+            finding = Finding(key=key, title="t", detail="d", repair_step=step)
+            with patch("resource_explorer.egeria_resync.EgeriaResync") as MockResync:
+                instance = MockResync.return_value
+                instance.scan.return_value = _scan_result(finding)
+                result = scan_and_clear()
+
+            instance.apply.assert_not_called()
+            assert result["applied"] == {}
 
     def test_a_needs_decision_finding_is_never_applied_even_if_step_name_matches(self):
         """Defense in depth: even if a future finding reused one of
