@@ -202,3 +202,105 @@ class TestSabotage:
         _stats(reg, slug, contributors_count=4)
         gaps = collect_gaps(reg, slug)
         assert not any(g["gap_kind"] == DISAGREEMENT for g in gaps)
+
+
+class TestAPersonsDisagreement:
+    """`record_disagreement` — a person read one answer and said it is wrong.
+
+    The done test for PLAN-FINISH-REPOS item 8: it lands in the gaps
+    collection, marked `ours`. These assert the destination, that a person's
+    gap is distinguishable from a measured one, that repeat clicks do not
+    stack, and that a question no analysis answers is still recorded rather
+    than attributed to a guessed analysis.
+    """
+
+    def test_it_lands_in_the_gaps_collection_as_ours(self, reg, slug):
+        from resource_explorer.destinations import OURS
+        from resource_explorer.gaps import record_disagreement
+
+        gap = record_disagreement(
+            reg, slug, "Is it actively maintained?", "community_support",
+            comment="The last release was three years ago.",
+        )
+        assert gap["destination"] == OURS
+
+        summary = gaps_summary(reg, slug)
+        rows = [r for r in summary["gaps"] if r["gap_kind"] == DISAGREEMENT]
+        assert len(rows) == 1
+        assert rows[0]["destination"] == OURS
+        assert rows[0]["analysis_id"] == "community_support"
+        assert "three years ago" in rows[0]["sentence"]
+
+    def test_a_persons_gap_is_distinguishable_from_a_measured_one(self, reg, slug):
+        """Both are `disagreement` and both are `ours`, but they are work for
+        different people — so `source` separates them and
+        `disputed_by_a_person` counts only the human ones."""
+        from resource_explorer.gaps import SOURCE_MEASURED, SOURCE_PERSON, record_disagreement
+
+        _seed_disagreement(reg, slug)
+        _stats(reg, slug, 40)
+        record_gaps_for(reg, slug)
+        record_disagreement(reg, slug, "Who maintains it?", "chaoss_metrics")
+
+        summary = gaps_summary(reg, slug)
+        sources = {r["check_name"]: r["source"] for r in summary["gaps"]}
+        assert sources["question:Who maintains it?"] == SOURCE_PERSON
+        assert all(
+            v == SOURCE_MEASURED
+            for k, v in sources.items() if not k.startswith("question:")
+        )
+        assert summary["counts"]["disputed_by_a_person"] == 1
+        # A subset, not a fourth bucket.
+        assert summary["counts"][DISAGREEMENT] >= 1
+
+    def test_two_people_disagreeing_is_one_gap(self, reg, slug):
+        from resource_explorer.gaps import record_disagreement
+
+        record_disagreement(reg, slug, "Is it maintained?", "community_support", comment="no")
+        record_disagreement(reg, slug, "Is it maintained?", "community_support", comment="also no")
+
+        rows = [r for r in gaps_summary(reg, slug)["gaps"]
+                if r["check_name"] == "question:Is it maintained?"]
+        assert len(rows) == 1
+        # The latest sighting refreshes the sentence rather than being lost.
+        assert "also no" in rows[0]["sentence"]
+
+    def test_an_unattributed_disagreement_is_still_recorded(self, reg, slug):
+        """A question the catalog answers with a direct field names no
+        analysis. Recording nothing would discard the only signal that an
+        answer is wrong; inventing an analysis id would charge a dispute to
+        something that never answered it."""
+        from resource_explorer.gaps import record_disagreement
+
+        gap = record_disagreement(reg, slug, "What licence is it under?", "")
+        assert gap["analysis_id"] == ""
+        assert gap["evidence"]["analysis_attributed"] is False
+
+        rows = [r for r in gaps_summary(reg, slug)["gaps"]
+                if r["check_name"] == "question:What licence is it under?"]
+        assert len(rows) == 1
+        assert rows[0]["analysis_id"] == ""
+
+    def test_collecting_measured_gaps_does_not_clobber_a_persons(self, reg, slug):
+        """`record_gaps_for` runs on every page load. A person's gap uses a
+        `question:`-prefixed check_name precisely so the identity index can
+        never collide with a real check, and so a re-collection leaves it
+        standing."""
+        from resource_explorer.gaps import record_disagreement
+
+        record_disagreement(reg, slug, "Is it maintained?", "community_support")
+        _seed_not_measurable(reg, slug)
+        record_gaps_for(reg, slug)
+
+        checks = {r["check_name"] for r in gaps_summary(reg, slug)["gaps"]}
+        assert "question:Is it maintained?" in checks
+
+    def test_measured_gaps_still_say_ours(self, reg, slug):
+        """The destination is stated on every row, not only the new ones —
+        so a consumer reads one word for both halves of the collection."""
+        from resource_explorer.destinations import OURS
+
+        _seed_not_measurable(reg, slug)
+        record_gaps_for(reg, slug)
+        rows = gaps_summary(reg, slug)["gaps"]
+        assert rows and all(r["destination"] == OURS for r in rows)

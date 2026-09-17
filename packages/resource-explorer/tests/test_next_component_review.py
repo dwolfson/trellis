@@ -9,13 +9,24 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 
 
 def _app():
-    return (NEXT / "app.js").read_text(encoding="utf-8")
+    """app.js plus every stages/*.js module, concatenated. PLAN-FINISH-
+    REPOS.md Part 2 §1 (APP-JS-SPLIT-IMPLEMENTED.md) moved per-stage
+    rendering out of app.js into next/stages/ -- this test greps for
+    function bodies by name and does not need to know which file a
+    function ended up in, only that the source text it searches covers
+    all of them."""
+    src = (NEXT / "app.js").read_text(encoding="utf-8")
+    for f in sorted((NEXT / "stages").glob("*.js")):
+        src += "\n" + f.read_text(encoding="utf-8")
+    return src
 
 
 class TestReviewHappensAtTheBranch:
     def test_rows_are_branches_and_verdicts_say_where_they_came_from(self):
         app = _app()
-        body = app[app.index("function verdictBadge("):app.index("function rowKey(i)")]
+        # verdictBadge moved to stages/curate.js; bound to recordVerdicts,
+        # the last function in that file, rather than app.js's rowKey.
+        body = app[app.index("function verdictBadge("):app.index("function recordVerdicts(")]
         assert "data-branch-open" in body and "accept all ${b.components}" in body
         assert "· with <span class=\"font-mono\">${esc(v.inherited_from)}/</span>" in body   # inherited says so
         assert "grouping only — a directory that holds components, not a component itself" in body
@@ -23,14 +34,16 @@ class TestReviewHappensAtTheBranch:
 
     def test_ports_are_a_column_and_the_foot_says_what_it_looked_in(self):
         app = _app()
-        body = app[app.index("function verdictBadge("):app.index("function rowKey(i)")]
+        body = app[app.index("function verdictBadge("):app.index("function recordVerdicts(")]
         assert "function portsWords(" in body
         assert "tree.topology" in body
         assert "read from the deployment artifacts" in body and "derived from" not in body
 
     def test_bulk_accept_goes_through_the_preview_and_nothing_runs_until_confirmed(self):
         app = _app()
-        body = app[app.index("function recordVerdicts("):app.index("function rowKey(i)")]
+        # recordVerdicts is the last function in stages/curate.js -- no
+        # next-function marker to bound it, so take the rest of the file.
+        body = app[app.index("function recordVerdicts("):]
         assert "openDialog('Accept at the branch'" in body
         assert "Nothing runs until you confirm." in body
         # Not "SolutionComponents" -- naming an unverified type in a

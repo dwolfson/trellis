@@ -109,3 +109,89 @@ class TestScanUnlinkedMembers:
 
         assert finding.items == []
         r._clients["collection"].get_member_list.assert_not_called()
+
+
+class TestScanAndFlagVanishedPublishes:
+    """PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+    REPLY-PUBLISH-STATE-GO-AHEAD.md §2: a publish claim that is locally
+    coherent (its egeria_report_guid IS in project_egeria_surveys) but no
+    longer resolves in Egeria is flagged, never deleted or cleared by
+    _do_clear_orphan_publish_claims, which only ever touches the OTHER
+    condition (locally unmoored)."""
+
+    def _resync_with(self, registry, resolve_return):
+        r = EgeriaResync(registry=registry)
+        r._clients = {"classification": MagicMock(
+            get_element_by_guid=MagicMock(return_value=resolve_return))}
+        return r
+
+    def test_a_resolving_report_is_not_flagged(self):
+        registry = MagicMock()
+        registry.get_latest_egeria_surveys_all_projects.return_value = {
+            "kafka": {"egeria_report_guid": "report-1"},
+        }
+        r = self._resync_with(registry, resolve_return={"guid": "report-1"})
+        finding = r._scan_vanished_publishes(ScanResult())
+
+        assert finding.items == []
+
+    def test_a_vanished_report_is_flagged_not_deleted(self):
+        registry = MagicMock()
+        registry.get_latest_egeria_surveys_all_projects.return_value = {
+            "kafka": {"egeria_report_guid": "report-1"},
+        }
+        r = self._resync_with(registry, resolve_return="No elements found")
+        finding = r._scan_vanished_publishes(ScanResult())
+
+        assert finding.items == [{"slug": "kafka", "guid": "report-1"}]
+        assert finding.repair_step == "flag_vanished_publishes"
+
+    def test_a_lookup_failure_is_undetermined_not_flagged(self):
+        registry = MagicMock()
+        registry.get_latest_egeria_surveys_all_projects.return_value = {
+            "kafka": {"egeria_report_guid": "report-1"},
+        }
+        r = EgeriaResync(registry=registry)
+        r._clients = {"classification": MagicMock(
+            get_element_by_guid=MagicMock(side_effect=ConnectionError("down")))}
+        res = ScanResult()
+        finding = r._scan_vanished_publishes(res)
+
+        assert finding.items == []
+        assert res.undetermined == [{"kind": "publish", "ref": "kafka", "reason": "lookup failed"}]
+
+    def test_do_flag_writes_the_linkage_flag_and_heals_when_republished(self):
+        """The repair writes the flag for what's vanished, and clears any
+        stale flag for a project whose latest publish now resolves again —
+        a republish must not leave the old badge stuck forever."""
+        registry = MagicMock()
+        registry.get_latest_egeria_surveys_all_projects.return_value = {
+            "kafka": {"egeria_report_guid": "report-1"},
+            "storm": {"egeria_report_guid": "report-2"},
+        }
+        r = EgeriaResync(registry=registry)
+        r._clients = {"classification": MagicMock(get_element_by_guid=MagicMock(
+            side_effect=lambda g, **kw: "No elements found" if g == "report-1" else {"guid": g}))}
+        registry.get_egeria_linkage.return_value = {"status": "stale"}  # storm had a stale flag from before
+
+        result = r._do_flag_vanished_publishes()
+
+        registry.mark_egeria_linkage_stale.assert_called_once_with(
+            "repo_publish", "kafka", stale_guid="report-1",
+            detail="the published report no longer resolves in Egeria")
+        registry.clear_egeria_linkage_status.assert_called_once_with("repo_publish", "storm")
+        assert result == {"flagged": 1, "healed": 1, "undetermined": 0}
+
+    def test_flag_vanished_publishes_is_never_in_a_delete_step(self):
+        """It must never delete a row — the counterpart to
+        _do_clear_orphan_publish_claims, not a replacement for it."""
+        registry = MagicMock()
+        registry.get_latest_egeria_surveys_all_projects.return_value = {}
+        r = EgeriaResync(registry=registry)
+        r._clients = {"classification": MagicMock()}
+        registry.get_egeria_linkage.return_value = None
+
+        result = r._do_flag_vanished_publishes()
+
+        registry.mark_egeria_linkage_stale.assert_not_called()
+        assert "deleted" not in result and "cleared" not in result

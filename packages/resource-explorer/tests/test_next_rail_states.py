@@ -14,7 +14,14 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 
 
 def _app():
-    return (NEXT / "app.js").read_text(encoding="utf-8")
+    """app.js plus every stages/*.js module, concatenated -- see the
+    identical helper's docstring in test_next_component_review.py.
+    `renderEnrichmentEvidence` moved to stages/enrichment.js in the
+    PLAN-FINISH-REPOS.md Part 2 §1 split."""
+    src = (NEXT / "app.js").read_text(encoding="utf-8")
+    for f in sorted((NEXT / "stages").glob("*.js")):
+        src += "\n" + f.read_text(encoding="utf-8")
+    return src
 
 
 class TestTheRailRules:
