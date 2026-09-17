@@ -2993,6 +2993,24 @@ Two ways to close it, and they are not equivalent:
 
 ---
 
+#### LOW — architecture recovery's primary-component pick should be best-evidenced, not most-recent
+
+Named by the designer, 2026-09-17, while specifying item 3 (Curate)'s build-ready spec
+(`SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md`) — out of that item's scope, recorded here rather than
+dropped.
+
+`repo_survey_definition_adapter.py:2951` picks the single overall "primary" component proposal for
+a scope with `max(comp_rows, key=lambda r: r["surveyed_at"])` — whichever extractor run happens to
+be newest wins, regardless of which proposal is better supported. `RULING-WHAT-A-VERDICT-IS-ABOUT.md`
+§2a/§2b already established that `detect` and `coupling` are independent proposers kept separately
+(grouped by `run_label`, not collapsed) precisely so one doesn't silently win over the other — this
+`latest` pick is the one place that principle doesn't reach, since it still exists as the single
+overall value anything not yet reading `proposals` depends on. Fixing it means defining "best
+evidenced" (more corroborating evidence rows? a higher-confidence extractor named as such?) before
+changing the selection — a design question, not a one-line swap.
+
+---
+
 #### MEDIUM — dependency analysis needs a required/optional/**selective** axis, not just manifest `dep_type`
 
 Raised by the project owner, 2026-09-17, testing `/next`'s dependency view live.
