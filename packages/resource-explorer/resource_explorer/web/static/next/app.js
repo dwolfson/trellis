@@ -2665,6 +2665,17 @@ function resourceHeaderHtml(slug) {
     published = `<span class="text-accent-ink">published, but the Egeria link is stale —`
       + ` the catalog entry cannot be reached</span>`;
   }
+  // Fourth publish state (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+  // REPLY-PUBLISH-STATE-GO-AHEAD.md §4): the DATE stays — the row is the only
+  // evidence a publish happened — and the sentence states what was observed
+  // (a failed resolve), never why (a wipe and an individual deletion look
+  // identical from here). No "publish again" button here: /next has no
+  // publish trigger of its own yet to wire it to; the Analysis pane's
+  // existing publish action is where that stands until one exists.
+  if (ov?.publish_stale) {
+    published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
+      + ` publish again from the Analysis pane</span>`;
+  }
 
   return `
     <div class="flex flex-wrap items-baseline gap-s3">

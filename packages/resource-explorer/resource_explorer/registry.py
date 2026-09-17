@@ -5671,6 +5671,25 @@ class ProjectRegistry:
         surveys = self.get_egeria_surveys(slug)
         return surveys[0] if surveys else None
 
+    def get_latest_egeria_surveys_all_projects(self) -> dict[str, dict]:
+        """{project_slug: latest survey row}, one query for every project —
+        what a resolve-against-Egeria pass needs to check without a
+        per-project round trip. Mirrors `_scan_assets`' own bulk-query shape
+        in egeria_resync.py. Only rows carrying a real `egeria_report_guid`
+        are returned; a survey published with none is not a publish claim
+        this check has anything to resolve."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT s.project_slug, s.surveyed_at, s.egeria_report_guid,
+                          s.published_at, s.annotation_count
+                   FROM project_egeria_surveys s
+                   JOIN (SELECT project_slug, MAX(surveyed_at) AS ts
+                         FROM project_egeria_surveys GROUP BY project_slug) latest
+                     ON s.project_slug = latest.project_slug AND s.surveyed_at = latest.ts
+                   WHERE coalesce(s.egeria_report_guid, '') <> ''"""
+            ).fetchall()
+        return {r["project_slug"]: dict(r) for r in rows}
+
     def record_published_annotation_types(
         self, slug: str, annotation_types: set[str], report_guid: str = "",
         published_at: str | None = None,

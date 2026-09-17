@@ -2931,10 +2931,17 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     // card. 'repo' means only shared types matched, so all that is known is
     // that the repo was published; shown dimmer and hedged rather than
     // claiming a precision the join cannot support.
+    // Fourth publish state, on top of the two tiers above (PUBLISH-STATE-
+    // AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4):
+    // the date stays — it is the only evidence a publish happened — and the
+    // warning states what was observed (a failed resolve), never why.
+    const staleSuffix = la.publish_stale
+      ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>`
+      : '';
     const lastPublishedHtml = la.last_published_at
       ? la.last_published_scope === 'repo'
-        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The repo was published at ${_esc(la.last_published_at)}.">☁ Repo published ${_relTime(la.last_published_at)}</span>`
-        : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>`
+        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The repo was published at ${_esc(la.last_published_at)}.">☁ Repo published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
+        : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
       : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),
@@ -2987,7 +2994,14 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     // annotation types, not proof this analysis itself was published) also
     // keeps it visible rather than implying a precision the join can't back.
     const _localStepKeys = a.re_analysis_steps || [];
-    const _cleanlyPublished = la.last_published_at && la.last_published_scope !== 'repo' && !la.last_publish_failed;
+    // A third reason the Publish button is a real action, not redundant:
+    // the elements it published are confirmed gone from the store
+    // (la.publish_stale — PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+    // REPLY-PUBLISH-STATE-GO-AHEAD.md §4). "Publish again" is honest about
+    // being a re-publish, not a repair: it creates new elements with new
+    // GUIDs, same cost as a first publish.
+    const _cleanlyPublished = la.last_published_at && la.last_published_scope !== 'repo'
+      && !la.last_publish_failed && !la.publish_stale;
     // Hidden too when a run publishes on its own, matching the Survey
     // Definition cards. Auto-publish fires whenever the resource has an
     // assigned Egeria Project, so on those repos the button offers to repeat
@@ -2998,12 +3012,12 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     // is a real retry rather than a duplicate — which is why this does not
     // simply collapse into _cleanlyPublished.
     const _autoPublishes = !!(lastActivity.__auto_publishes__ || {}).auto_publishes;
-    const _publishIsRedundant = _cleanlyPublished || (_autoPublishes && !la.last_publish_failed);
+    const _publishIsRedundant = _cleanlyPublished || (_autoPublishes && !la.last_publish_failed && !la.publish_stale);
     const publishButton = (entityType === 'repo' && slug && _localStepKeys.length && !_publishIsRedundant)
       ? `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(_localStepKeys)}, this, ${JSON.stringify(a.name)}, ${JSON.stringify(a.id)})'
            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-           title="${la.last_publish_failed ? 'The last automatic publish attempt failed — retry it; findings are already stored, only the Egeria write needs to happen.' : "Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset"}">
-           ☁ ${la.last_publish_failed ? 'Retry publish' : 'Publish'}
+           title="${la.publish_stale ? 'The elements this last published are no longer in the store — this creates new ones with new GUIDs, same cost as a first publish.' : la.last_publish_failed ? 'The last automatic publish attempt failed — retry it; findings are already stored, only the Egeria write needs to happen.' : "Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset"}">
+           ☁ ${la.publish_stale ? 'Publish again' : la.last_publish_failed ? 'Retry publish' : 'Publish'}
          </button>`
       : '';
 
@@ -8333,10 +8347,15 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
   // necessarily included, just not attributably to this one card. Shown
   // distinctly (dimmer, "whole-repo" caveat in the tooltip) rather than
   // claiming the same precision a real per-candidate publish would.
+  // Fourth publish state (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+  // REPLY-PUBLISH-STATE-GO-AHEAD.md §4) — see the local Analyses cards'
+  // identical treatment above for the reasoning.
+  const candStaleSuffix = c.publish_stale
+    ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>` : '';
   const lastPublishedHtml = c.last_published_at
     ? c.last_published_scope === 'repo'
-      ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>`
-      : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
+      ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>${candStaleSuffix}`
+      : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>${candStaleSuffix}`
     // Was '' — so "never published" and "we did not look" rendered the same
     // (as nothing), while the local cards beside these said "Not published".
     : c.publishes_itself
@@ -8411,13 +8430,16 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         // auto-publish gate deliberately excludes: an unassigned resource, or
         // a re-publish, both reachable from the deep report's own
         // "Publish survey →".
-        if (c.auto_publishes) return '';
+        // Except when the store has confirmed lost what was published —
+        // publish_stale (§4 above) makes this a real action again, same
+        // reasoning as the local Analyses cards.
+        if (c.auto_publishes && !c.publish_stale) return '';
         const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
         if (entityType !== 'repo' || !stepKeys.length) return '';
         return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
             class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-            title="${c.steps_native ? `Publishes the ${c.steps_local} step(s) that ran in Resource Explorer — the other ${c.steps_native} wrote straight to Egeria` : "Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset"}">
-            ☁ Publish
+            title="${c.publish_stale ? 'The elements this last published are no longer in the store — this creates new ones with new GUIDs, same cost as a first publish.' : c.steps_native ? `Publishes the ${c.steps_local} step(s) that ran in Resource Explorer — the other ${c.steps_native} wrote straight to Egeria` : "Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset"}">
+            ☁ ${c.publish_stale ? 'Publish again' : 'Publish'}
           </button>`;
       })()}
       ${(() => {
@@ -8581,8 +8603,14 @@ function _renderResultsCardStatusHtml(d) {
   const surveyedHtml = d.last_surveyed_at
     ? `<span class="text-slate-500" title="Repo-wide, not specific to this card: ${_esc(d.last_surveyed_at)}">📅 Repo surveyed ${_relTime(d.last_surveyed_at)}</span>`
     : '';
+  // Fourth publish state (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
+  // REPLY-PUBLISH-STATE-GO-AHEAD.md §4). This card is read-only — no publish
+  // button lives here — so the warning is informational; the real action is
+  // the Analyses/Survey Definition cards' own Publish button, which already
+  // reappears on the same signal.
   const publishedHtml = d.last_published_at
-    ? `<span class="text-slate-500" title="Last published: ${_esc(d.last_published_at)}">☁ Published ${_relTime(d.last_published_at)}</span>`
+    ? `<span class="text-slate-500" title="Last published: ${_esc(d.last_published_at)}">☁ Published ${_relTime(d.last_published_at)}</span>${
+        d.publish_stale ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>` : ''}`
     : d.has_results
       ? `<span class="text-slate-600">☁ Not published</span>`
       : '';

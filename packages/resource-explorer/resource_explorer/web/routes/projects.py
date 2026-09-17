@@ -292,6 +292,14 @@ class ScoutingOverview(BaseModel):
     # longer reach.
     egeria_link_stale: bool = False
     egeria_link_stale_guid: str = ""
+    # Set when the latest published SurveyReport's GUID no longer resolves in
+    # Egeria (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-
+    # STATE-GO-AHEAD.md) — a fourth publish-state reading distinct from
+    # egeria_link_stale above (that one is the ASSET GUID; this is the
+    # REPORT GUID a publish claim points to). Flagged, never cleared
+    # automatically — see egeria_resync.py's _do_flag_vanished_publishes.
+    publish_stale: bool = False
+    publish_stale_guid: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -322,10 +330,13 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         security_and_analysis = {}
 
     linkage = registry.get_egeria_linkage("repo", project.slug) or {}
+    publish_linkage = registry.get_egeria_linkage("repo_publish", project.slug) or {}
 
     return ScoutingOverview(
         egeria_link_stale=linkage.get("status") == "stale",
         egeria_link_stale_guid=linkage.get("stale_guid", ""),
+        publish_stale=publish_linkage.get("status") == "stale",
+        publish_stale_guid=publish_linkage.get("stale_guid", ""),
         slug=project.slug,
         display_name=project.display_name,
         github_url=project.github_url,
@@ -842,6 +853,12 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
     published_by_type = registry.get_last_published_annotation_types(slug)
     published_by_analysis = registry.get_last_published_analyses(slug)
+    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
+    # AHEAD.md §4: one flag for the whole repo (there is one publish-state
+    # resolve per project, not per analysis), carried onto every analysis's
+    # own dict so each card can show it beside its own published-at.
+    publish_linkage = registry.get_egeria_linkage("repo_publish", slug) or {}
+    publish_stale = publish_linkage.get("status") == "stale"
 
     result: dict[str, dict] = {}
     for a in get_analyses("repo", include_egeria_live=False):
@@ -893,6 +910,7 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
             "last_run_partial": run.get("last_run_partial", False),
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
+            "publish_stale": bool(pub_at) and publish_stale,
         }
     # Repo-level, carried under a reserved key so the per-analysis map keeps
     # its shape — same convention get_analysis_last_run uses for
@@ -1141,6 +1159,10 @@ def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False
     # (get_dashboard_annotation_types). Real Egeria publish history, not a
     # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
     published_by_type = registry.get_last_published_annotation_types(slug)
+    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
+    # AHEAD.md §4 — one flag for the whole repo, same as get_analyses_last_
+    # activity above.
+    publish_stale = (registry.get_egeria_linkage("repo_publish", slug) or {}).get("status") == "stale"
 
     dashboards = []
     for dashboard in SURVEY_RESULT_DASHBOARDS.values():
@@ -1210,6 +1232,7 @@ def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False
             "has_results": has_results,
             "analyses": analyses,
             "last_published_at": last_published_at,
+            "publish_stale": bool(last_published_at) and publish_stale,
             # Repo-wide, not per-dashboard — there's no per-analysis_id run
             # timestamp to draw on today (unlike last_published_at above,
             # which genuinely is per-dashboard). Still an honest "as of"
