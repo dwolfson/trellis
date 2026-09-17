@@ -573,6 +573,15 @@ export const getActivityEntry = (entryId) =>
 export const listActivity = (limit = 50) => get(`/api/activity/?limit=${limit}`);
 export const listRfas = () => get('/api/activity/rfas');
 
+/** Record a response action (defer | reassign | complete | reopen — "reopen"
+ *  is just `status: 'open'` again, the same endpoint) against one RFA.
+ *  `web/routes/activity.py:update_rfa_action` — local-only for now (see
+ *  next/rfa.js's own note on why), with a best-effort Egeria ToDo sync
+ *  attempted server-side, non-blocking of this call's result. */
+export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '', resolutionNote = '' } = {}) =>
+  patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`,
+        { status, assignee, defer_until: deferUntil, resolution_note: resolutionNote });
+
 /**
  * Poll one activity entry until it stops running.
  *
