@@ -143,7 +143,13 @@ const STAGES = [
   { id: 'discovery',     label: 'Discovery' },
   { id: 'assessment',    label: 'Assessment' },
   { id: 'analysis',      label: 'Analysis' },
-  { id: 'enrichment',    label: 'Enrichment' },
+  // Enrichment was marked "not built" here. ITEM-1-ENRICHMENT-IMPLEMENTED.md
+  // verified the judgement/observation fields, the save-and-revisit round
+  // trip, and the evidence-moved perishability flag all work; the catalog
+  // has 7 human-supplied questions tagged this phase, so the generic
+  // Questions engine (loadPane()) reaches renderEnrichment() without a
+  // special case, the same as any other built stage.
+  { id: 'enrichment',    label: 'Enrichment', built: true },
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
   { id: 'understanding', label: 'Understanding', built: true },
