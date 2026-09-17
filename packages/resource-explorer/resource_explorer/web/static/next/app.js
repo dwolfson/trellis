@@ -38,6 +38,10 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/for
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+// The RFA drawer (PLAN-FINISH-REPOS.md item 10) — chrome-level, like
+// worklist.js, not a per-resource stage; see next/rfa.js's own header
+// comment for why it lives at this level rather than under stages/.
+import { toggleRfaDrawer } from '/static/next/rfa.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -605,15 +609,16 @@ function renderIntentNav() {
          existed once you had already found it. -->
     <span id="worklist-nav" class="flex items-center"></span>
     <span class="ml-auto flex gap-s2 text-subtab">
-      <a href="/" title="The RFA drawer is not built in /next — opens the current UI"
-        class="px-[10px] py-[9px] text-accent-on-dark no-underline"
-        style="border-bottom:1px dashed currentColor">RFAs <span id="rfa-count" class="tnum">${
-        state.counts.rfas === null ? '–' : state.counts.rfas}</span> ↗</a>
+      <button id="rfa-drawer-toggle" type="button"
+        class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">RFAs <span id="rfa-count" class="tnum">${
+        state.counts.rfas === null ? '–' : state.counts.rfas}</span></button>
       <button id="chat-toggle" aria-expanded="true"
         class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">Chat ×</button>
     </span>`;
 
   renderWorkListNav();
+
+  $('rfa-drawer-toggle').addEventListener('click', () => toggleRfaDrawer(state.selectedSlug || ''));
 
   $('chat-toggle').addEventListener('click', () => {
     const nowOpen = !$('app-grid').classList.contains('rail-closed');
