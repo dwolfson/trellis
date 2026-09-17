@@ -30,6 +30,20 @@
       "port": 8811
     },
     {
+      "name": "resource-explorer-wt-chat",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--package",
+        "resource-explorer",
+        "resource-explorer",
+        "web",
+        "--port",
+        "8817"
+      ],
+      "port": 8817
+    },
+    {
       "name": "egeria-advisor",
       "runtimeExecutable": "uv",
       "runtimeArgs": [

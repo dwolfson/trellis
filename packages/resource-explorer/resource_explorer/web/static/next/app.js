@@ -49,11 +49,16 @@ import { renderAutomate } from '/static/next/stages/automate.js';
 // #intent-nav/currentNavIntent, NOT a STAGES entry. See next/admin/index.js's
 // own header comment for scope (five real ports, six named deferrals).
 import { openAdminPanel } from '/static/next/admin/index.js';
+// Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
+// the "Ask" rail and the pane it promotes an answer into, beside whichever
+// stage is active rather than one of the eight itself. See next/chat.js's
+// own header comment for the placement rule this follows and why it (unlike
+// rfa.js) imports state/esc/$ back from app.js.
+import { renderRail, renderRailScope } from '/static/next/chat.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
   addInvestigationMember,
-  ask,
   CHART_MEASURE,
   REPO_CHARTS,
   getAnswer,
@@ -95,7 +100,6 @@ import {
   removeInvestigationMember,
   removeProject,
   runAnalysis,
-  sendFeedback,
   setDisposition,
   setWorkingSetHidden,
   getContext,
@@ -913,7 +917,7 @@ function loadScript(src) {
  * A diagram cannot live in the rail: it is at most 290px wide and a topology
  * graph there is unreadable. So the rail shows a marker and promotes.
  */
-function answerForm(turn) {
+export function answerForm(turn) {
   if (turn.mermaid) return 'diagram';
   if (turn.chart) return 'chart';
   if (turn.listSources && turn.listSources.length) return 'list';
@@ -1152,7 +1156,7 @@ function factMermaid(env) {
 }
 
 /** Render a promoted artefact in the content pane, at full width. */
-async function promoteToPane(turn) {
+export async function promoteToPane(turn) {
   const el = $('content');
   if (!el) return;
   state.promoted = turn;
@@ -1988,373 +1992,13 @@ async function loadWorkingSet() {
 
 /* ════════════════════════════════════════════════════════════════════════
  * The right rail — Ask, scoped here
+ *
+ * Moved to next/chat.js (PLAN-FINISH-REPOS.md item 9). app.js still owns
+ * the shared pane-promotion machinery chat.js calls into
+ * (`promoteToPane`, `answerForm`, `copyAsEvidence`, `railFrame`/
+ * `railClaim`/`ensureRailShowing`, `openMembers`) — chat.js's own header
+ * comment says why that machinery stayed here rather than moving with it.
  * ════════════════════════════════════════════════════════════════════════ */
-
-
-/* A browser-generated id, so the agent can keep cross-turn memory.
- *
- * Computed on FIRST USE, not at module scope: `LS` is a `const` declared
- * further down this file, and a top-level IIFE up here runs inside its
- * temporal dead zone — which threw on load and rendered nothing at all. */
-let _sessionId = null;
-function sessionId() {
-  if (_sessionId) return _sessionId;
-  _sessionId = LS.get('re-next.sessionId', '');
-  if (!_sessionId) {
-    _sessionId = (crypto.randomUUID && crypto.randomUUID()) || `s-${Date.now()}-${Math.random()}`;
-    LS.set('re-next.sessionId', _sessionId);
-  }
-  return _sessionId;
-}
-
-/**
- * The rail is a chat DRAWER with a transcript, not a single question box.
- *
- * A first pass showed one question and one answer, because that is what the
- * static mock showed. History is not a nicety: the whole argument for the
- * sidecar is that a session accumulates — you ask, you narrow, you ask again
- * — and each answer is evidence you may want to cite later.
- *
- * Turns are labelled with the resource they were asked about, because the
- * transcript outlives the selection and an answer about a different repo
- * that is not marked as such is worse than no answer.
- */
-function railScopeText() {
-  return state.selectedSlug ? `scoped to ${esc(state.selectedSlug)}` : 'no resource selected';
-}
-
-/** The rail's scope line follows the selection. renderRail() runs at boot
- *  and on clear only -- re-running it on every selection would wipe the
- *  chat and the evidence slot -- so the line is updated on its own. It
- *  read "scoped to amundsen" under a pane showing egeria_python (owner's
- *  screenshots, 2026-09-13). */
-function renderRailScope() {
-  const el = $('rail-scope');
-  if (el) el.innerHTML = railScopeText();
-}
-
-function renderRail() {
-  $('rail').innerHTML = `
-    <div class="mb-s3 flex items-baseline gap-s2">
-      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Ask</span>
-      <span id="rail-scope" class="text-caps text-chrome-muted">${railScopeText()}</span>
-      ${state.chat.length ? `<span class="ml-auto flex items-center gap-s2">
-        <button data-act="copy-transcript" title="Copy the whole transcript as markdown, with each answer's source line"
-          class="cursor-pointer bg-transparent text-caps text-chrome-muted hover:text-chrome-ink"
-          >${icon('copy', { size: 13 })} transcript</button>
-        <button data-act="clear-chat"
-          class="cursor-pointer bg-transparent text-caps text-chrome-muted underline hover:text-chrome-ink"
-          >clear</button>
-      </span>` : ''}
-    </div>
-
-    <div id="rail-evidence" class="mb-s3"></div>
-    <div id="chat-log" class="mb-s3 flex flex-col gap-s3"></div>
-
-    <textarea id="ask-input" rows="3" placeholder="Ask about this resource…"
-      class="mb-s2 w-full rounded-sm border border-chrome-line bg-transparent p-s2 text-subtab
-             text-chrome-ink placeholder:text-chrome-muted"></textarea>
-    <div class="flex items-baseline gap-s2">
-      <button id="ask-submit"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
-               text-chip text-accent-on-dark">Ask</button>
-      <span class="text-caps text-chrome-muted">⌘/Ctrl + Enter</span>
-    </div>`;
-
-  $('ask-submit').addEventListener('click', submitAsk);
-  $('ask-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitAsk();
-  });
-  $('rail').querySelector('[data-act="clear-chat"]')?.addEventListener('click', () => {
-    state.chat = [];
-    renderRail();
-  });
-  $('rail').querySelector('[data-act="copy-transcript"]')?.addEventListener('click', (e) =>
-    copyAsEvidence(state.chat.map(turnAsMarkdown).join('\n\n---\n\n'), e.currentTarget));
-  renderChatLog();
-}
-
-/** One turn's source footer.
- *
- *  A REQUIREMENT, not decoration: an answer composed from survey metadata
- *  and an answer retrieved from embeddings must not look alike. When the
- *  response does not say which, this says THAT — it never guesses, and it
- *  never quietly implies retrieval. */
-function sourceLine(body) {
-  const manifest = body.compiled && body.compiled.manifest;
-  if (manifest && typeof manifest === 'object') {
-    const parts = Object.keys(manifest).filter((k) => {
-      const v = manifest[k];
-      return Array.isArray(v) ? v.length : v != null && v !== '';
-    });
-    return parts.length
-      ? `From compiled evidence · ${parts.join(', ')}`
-      : 'Compiled evidence was empty · answered from retrieval';
-  }
-  return 'No compiled evidence on this answer · source not reported';
-}
-
-/** Mermaid source fenced inside an answer, if there is any.
- *
- *  Several analyses carry their diagram source as text (architecture_recovery
- *  writes its Mermaid into the answer), so this is how a topology answer
- *  reaches the pane without a new endpoint. */
-function extractMermaid(text) {
-  const m = /```mermaid\s*\n([\s\S]*?)```/.exec(String(text || ''));
-  return m ? m[1].trim() : null;
-}
-
-/** The analyses an answer was compiled from that have a member list. The
- *  old "Open as candidates (N)" counted answer lines under 80 characters --
- *  it read 11 for a lead sentence and ten bullets about 32 dependencies and
- *  could deliver nothing, since dependency names match no registered
- *  resource (REPLY-BLANK-RAIL, 2026-09-12). Deleted. What an answer can
- *  honestly offer is the list it was answered FROM: the member tree of a
- *  packed evidence section, which the pane already renders in full. */
-const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_profiling', 'api_structure',
-  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse']);
-function listSources(body) {
-  const packed = body?.compiled?.manifest?.packed;
-  if (!Array.isArray(packed)) return [];
-  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
-}
-
-/** The lists an answer was compiled from, with their TOTAL and what the
- *  model was shown -- one sentence each, the whole count, and a way out.
- *  The compiler records `manifest.lists[section][field] = {total, shown:
- *  {FULL, SUMMARY}}` for every packed reader-derived section, and the
- *  section's packed rung says which `shown` applies. The prose channel
- *  laundered "... and 22 more" into "here are some of them" with 32 in the
- *  sentence and 10 on the page and nothing saying which was the list
- *  (REPLY-BLANK-RAIL §2); this is the total said out loud beside the
- *  answer, from the manifest rather than recounted, so the pane's member
- *  tree and the rail agree by construction. */
-function listSentences(body) {
-  const m = body?.compiled?.manifest;
-  const lists = m?.lists;
-  if (!lists || typeof lists !== 'object' || !Array.isArray(m.packed)) return [];
-  const out = [];
-  for (const p of m.packed) {
-    if (!p || p.role !== 'evidence' || !lists[p.key]) continue;
-    const rung = String(p.rung || 'FULL').toUpperCase();
-    // One sentence per SECTION. Nested lists arrive one per sub-key
-    // (by_ecosystem.java, .javascript, .python); a person asked about the
-    // dependencies, not about Java's, so they are summed and the sub-keys
-    // counted -- "68 dependencies · in 3 ecosystems".
-    const byParent = new Map();
-    for (const [field, ext] of Object.entries(lists[p.key])) {
-      if (!ext || typeof ext.total !== 'number') continue;
-      const shown = ext.shown && typeof ext.shown === 'object'
-        ? (ext.shown[rung] ?? ext.shown.FULL ?? ext.total) : ext.total;
-      const dot = field.indexOf('.');
-      const parent = dot > 0 ? field.slice(0, dot) : field;
-      const cur = byParent.get(parent) || { total: 0, shown: 0, parts: 0 };
-      cur.total += ext.total; cur.shown += shown; cur.parts += dot > 0 ? 1 : 0;
-      byParent.set(parent, cur);
-    }
-    for (const [field, agg] of byParent) {
-      out.push({ key: p.key, field, total: agg.total, shown: agg.shown, parts: agg.parts, rung,
-                 members: MEMBER_LISTED.has(p.key) });
-    }
-  }
-  return out;
-}
-
-/** "32 dependencies · by ecosystem · 10 shown to the model · the full list
- *  is in the pane". A field like `by_ecosystem.python` reads as "by
- *  ecosystem · python". */
-const LIST_NOUNS = {
-  dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
-  api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
-  sub_resource_survey: 'sub-resources', manifest_parse: 'manifest entries',
-};
-function listSentenceHtml(l, i) {
-  const mapped = LIST_NOUNS[l.key];
-  // "68 dependencies · in 3 ecosystems" when the noun is known and the list
-  // was grouped; "3 findings · security scan" when it is not.
-  const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');
-  const head = mapped
-    ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
-    : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
-  const partial = l.shown < l.total;
-  // Three things the designer's read of #60 fixed: the packer's rung is
-  // internal and "at full" read as "shown fully"; a section with no member
-  // reader rendered nothing where the link would be (the silent-omission
-  // rule); and › was a text glyph doing an icon's job.
-  return `<div class="mt-s2 text-chip text-chrome-ink">
-    ${head}${
-      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
-      l.members
-        // The control says what pressing it does; it is the only clickable
-        // part of the line, and the middot before it does the sentence
-        // break's work.
-        ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
-            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`
-        // Case four on the sheet: metadata, not a control, in the slot the
-        // link would occupy -- the absence becomes a fact about that
-        // analysis, and a list of which readers to write next.
-        : ` · <span class="text-chrome-muted">No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.</span>`}
-  </div>`;
-}
-
-function renderChatLog() {
-  const log = $('chat-log');
-  if (!log) return;
-  log.innerHTML = state.chat.map((t, i) => {
-    const offScope = t.slug && t.slug !== state.selectedSlug;
-    return `
-    <div class="border-l-2 ${offScope ? 'border-chrome-line' : 'border-accent'} pl-s2">
-      <div class="text-caps uppercase tracking-caps text-chrome-muted">
-        You${t.slug ? ` · ${esc(t.slug)}` : ''}${offScope ? ' · not the current resource' : ''}
-      </div>
-      <div class="mb-s2 text-subtab text-chrome-ink">${esc(t.question)}</div>
-
-      ${t.pending ? `<div class="text-chip text-chrome-muted">Asking…</div>` : ''}
-      ${t.error ? `<div class="text-chip text-accent-on-dark">${esc(t.error)}</div>` : ''}
-      ${t.answer ? `
-        <div class="rounded-sm border border-chrome-line p-s3 text-subtab">
-          <div class="whitespace-pre-wrap text-chrome-ink">${tnum(esc(t.answer))}</div>
-          ${(t.lists || []).map((l) => listSentenceHtml(l, t.slug || '')).join('')}
-          ${(() => {
-            const form = answerForm(t);
-            const bits = [];
-            if (form === 'chart' || form === 'diagram') {
-              // A diagram cannot live in a 290px rail. The rail says what it
-              // is and promotes; the pane is where it becomes readable.
-              bits.push(`<button data-promote="${i}"
-                class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
-                       text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
-                Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
-            }
-            const said = new Set((t.lists || []).map((l) => l.key));
-            for (const src of (t.listSources || [])) {
-              if (said.has(src)) continue;     // the sentence below carries the link
-              // The list this was answered from, whole, in the pane's own
-              // member tree -- counts open what they counted.
-              bits.push(`<button data-list-source="${esc(src)}" data-list-slug="${esc(t.slug || '')}"
-                class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-[10px] py-[4px]
-                       text-chip text-chrome-ink">Open the list · <span class="font-mono">${esc(src)}</span> ›</button>`);
-            }
-            return bits.length ? `<div class="mt-s3 flex flex-wrap gap-s2">${bits.join('')}</div>` : '';
-          })()}
-          <div class="mt-[10px] border-t border-chrome-line-soft pt-[9px] text-caps text-chrome-muted">
-            ${esc(t.source)}${t.intent ? ` · intent ${esc(t.intent)}` : ''}${t.cached ? ' · cached' : ''}
-          </div>
-          ${t.queryHash ? feedbackHtml(t, i) : ''}
-          <div class="mt-s2">
-            <button data-copy-turn="${i}" title="Copy this answer and its source line as markdown"
-              class="cursor-pointer bg-transparent text-caps text-chrome-muted opacity-100
-                     hover:text-chrome-ink focus-visible:text-chrome-ink"
-              >${icon('copy', { size: 13 })} copy as evidence</button>
-          </div>
-        </div>` : ''}
-    </div>`;
-  }).join('');
-
-  log.querySelectorAll('[data-vote]').forEach((b) => b.addEventListener('click', () => {
-    vote(Number(b.dataset.turn), Number(b.dataset.vote));
-  }));
-  log.querySelectorAll('[data-list-source]').forEach((b) => b.addEventListener('click', () => {
-    const slug = b.dataset.listSlug || state.selectedSlug;
-    if (!slug) return;
-    openMembers({ slug, analysisId: b.dataset.listSource, title: b.dataset.listSource.replace(/_/g, ' ') });
-  }));
-  log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
-    promoteToPane(state.chat[Number(b.dataset.promote)]);
-  }));
-  log.querySelectorAll('[data-copy-turn]').forEach((b) => b.addEventListener('click', () =>
-    copyAsEvidence(turnAsMarkdown(state.chat[Number(b.dataset.copyTurn)]), b)));
-  log.scrollTop = log.scrollHeight;
-}
-
-/** Three states, not a thumb pair.
- *
- *  The endpoint records +1 / 0 / -1 as three explicit outcomes, and "partly
- *  right" is the one that actually distinguishes a routing problem from a
- *  content problem. Folding it into either neighbour loses the signal the
- *  vote exists to collect. Words rather than emoji, since emoji is not this
- *  UI's icon system. */
-const VOTES = [
-  [1, 'thumbs-up', 'Helpful', 'text-state-ok-on-dark'],
-  // "Partly right" is the value that separates a routing problem from a
-  // content problem. It is a real third state, not a midpoint.
-  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'text-state-warn-on-dark'],
-  [-1, 'thumbs-down', 'Not helpful', 'text-state-warn-on-dark'],
-];
-
-function feedbackHtml(turn, i) {
-  if (turn.voted !== undefined) {
-    const said = { 1: 'Marked helpful.', 0: 'Marked partly right.', '-1': 'Marked not helpful.' };
-    return `<div class="mt-s2 text-caps text-chrome-muted">${esc(said[String(turn.voted)])}</div>`;
-  }
-  if (turn.voteError) {
-    return `<div class="mt-s2 text-caps text-state-warn-on-dark">Vote not recorded: ${esc(turn.voteError)}</div>`;
-  }
-  // Thumbs, not the words `yes / partly / no`. Substituting words for a
-  // conventional pictogram turned a one-glance control into reading; the
-  // objection to emoji was platform variance and non-recolourability, which
-  // a Lucide glyph inheriting currentColor does not have.
-  return `<div class="mt-s2 flex flex-wrap items-center gap-s3 text-caps">
-    <span class="text-chrome-muted">Was this right?</span>
-    ${VOTES.map(([v, ic, title, cls]) => `<button data-turn="${i}" data-vote="${v}"
-      title="${esc(title)}" aria-label="${esc(title)}"
-      class="cursor-pointer bg-transparent text-chrome-muted hover:${cls}"
-      >${icon(ic, { size: 16 })}</button>`).join('')}
-  </div>`;
-}
-
-async function vote(i, value) {
-  const turn = state.chat[i];
-  if (!turn || !turn.queryHash) return;
-  try {
-    await sendFeedback(turn.queryHash, value, turn.compileId || null);
-    turn.voted = value;
-  } catch (err) {
-    // Say it failed. A vote that silently did not record is worse than no
-    // vote control, because the person believes they have reported it.
-    turn.voteError = err.message;
-  }
-  renderChatLog();
-}
-
-/** Narrow the sidebar to the resources an answer named. */
-async function submitAsk() {
-  const input = $('ask-input');
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-
-  const turn = { question: q, slug: state.selectedSlug, pending: true };
-  state.chat.push(turn);
-  renderChatLog();
-
-  try {
-    const body = await ask(q, {
-      resourceSlug: state.selectedSlug,
-      perspectives: state.activePerspectives,
-      sessionId: sessionId(),
-    });
-    turn.pending = false;
-    turn.answer = body.response || '';
-    turn.intent = body.intent || '';
-    turn.cached = Boolean(body.cached);
-    turn.source = sourceLine(body);
-    // Never computed here — the hash always comes off a server response, so
-    // a vote lands under the same key however the answer was produced.
-    turn.queryHash = body.query_hash || '';
-    turn.compileId = body.compiled?.manifest?.compile_id || null;
-    turn.listSources = listSources(body);
-    turn.lists = listSentences(body);
-    // The chart the server chose to attach (statistical/health/comparison
-    // intents produce one). A Plotly figure, and far too wide for the rail.
-    turn.chart = body.chart || null;
-    turn.mermaid = extractMermaid(turn.answer);
-  } catch (err) {
-    turn.pending = false;
-    turn.error = `The question could not be asked: ${err.message}`;
-  }
-  renderChatLog();
-}
 
 /* ════════════════════════════════════════════════════════════════════════
  * The content pane
@@ -5834,7 +5478,7 @@ function measureHtml(key, v) {
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** Put text on the clipboard, and say so on the button that asked. */
-async function copyAsEvidence(markdown, btn) {
+export async function copyAsEvidence(markdown, btn) {
   const done = (msg, ok = true) => {
     if (!btn) return;
     const prev = btn.innerHTML;
@@ -5894,15 +5538,8 @@ function rowAsMarkdown(entry, i) {
   return out.join('\n');
 }
 
-/** One chat turn, as markdown with its source line. */
-function turnAsMarkdown(t) {
-  const out = [`**${t.question}**`, ''];
-  out.push(t.answer || `_${t.error || 'No answer.'}_`, '');
-  const bits = [t.slug, t.source].filter(Boolean);
-  if (t.intent) bits.push(`intent ${t.intent}`);
-  out.push(`— ${bits.join(' · ')}`);
-  return out.join('\n');
-}
+// `turnAsMarkdown` moved to next/chat.js (item 9) — it was chat-only and
+// every call site went with it.
 
 const STATE_LABEL = {
   answered: 'answered', automatic: 'automatic', unrun: 'not run',
