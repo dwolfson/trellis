@@ -12,16 +12,20 @@
  *     built here too, against `/api/schedules/`.
  *   - CREATING a subscription is NOT built here, and that is the honest
  *     boundary, not a corner cut. Classic creates one from a "🔔 Notify me"
- *     button on an Assessment/Analysis card (index.html, `_notifyMe` /
- *     "Cross-stage definitions"), and /next has no Assessment or Analysis
- *     card at all yet — both stages render as "not in /next" (see
- *     `STAGES` in app.js). Building a standalone create-subscription form
- *     here, detached from the card it is supposed to sit on, would recreate
- *     the exact half-built-feature outcome PLAN-FINISH-REPOS.md's own stub
- *     comment warns against. So creation stays a link into the current UI
- *     (`oldUiHref`), same pattern as the RFA drawer and every deferred
- *     sub-tab in app.js -- the difference is that here it names the ONE
- *     missing piece rather than deferring the whole stage.
+ *     button on an Assessment/Analysis CARD (index.html, `_notifyMe` /
+ *     "Cross-stage definitions"). Assessment and Analysis are now built
+ *     stages in /next (item 11), but through the generic Questions-checklist
+ *     engine -- QUESTION ROWS, not the card grid classic's Notify-me button
+ *     is attached to. That card grid still has no /next equivalent, so the
+ *     gap this section describes is unchanged even though the stages
+ *     themselves are no longer "not in /next" (see `STAGES` in app.js).
+ *     Building a standalone create-subscription form here, detached from the
+ *     card it is supposed to sit on, would recreate the exact half-built-
+ *     feature outcome PLAN-FINISH-REPOS.md's own stub comment warns against.
+ *     So creation stays a link into the current UI (`oldUiHref`), same
+ *     pattern as the RFA drawer and every deferred sub-tab in app.js -- the
+ *     difference is that here it names the ONE missing piece rather than
+ *     deferring the whole stage.
  *
  * Like Understanding (next/stages/understanding.js), Automate bypasses the
  * generic Questions-checklist engine entirely -- `loadPane()` in app.js
