@@ -67,8 +67,13 @@ class TestTimestampSpellings:
         assert raw == [], f"timestamp compared as a string, not an instant: {raw}"
 
     def test_all_shell_modules_parse(self, tmp_path):
-        for f in ("app.js", "worklist.js", "format.js", "feedback.js"):
-            mod = tmp_path / f.replace(".js", ".mjs")
+        # stages/*.js added in the PLAN-FINISH-REPOS.md Part 2 §1 split --
+        # discovered rather than named, so a new stage module is covered
+        # for free instead of needing this list remembered too.
+        shell_modules = ["app.js", "worklist.js", "format.js", "feedback.js"]
+        shell_modules += [f"stages/{p.name}" for p in sorted((NEXT / "stages").glob("*.js"))]
+        for f in shell_modules:
+            mod = tmp_path / Path(f).name.replace(".js", ".mjs")
             mod.write_text((NEXT / f).read_text(encoding="utf-8"), encoding="utf-8")
             r = subprocess.run(["node", "--check", str(mod)], capture_output=True, text=True)
             assert r.returncode == 0, f"{f}: {r.stderr[:400]}"
@@ -82,7 +87,9 @@ class TestTheLicenceConfirmIsGated:
     licence, or nothing examined) offers nothing."""
 
     def test_the_offer_reads_the_tier_finding_not_the_headline(self):
-        src = (NEXT / "app.js").read_text(encoding="utf-8")
-        body = src[src.index("function proposedFrom("):src.index("async function renderEnrichment(")]
+        # proposedFrom/renderEnrichment moved to stages/enrichment.js in the
+        # PLAN-FINISH-REPOS.md Part 2 §1 split.
+        src = (NEXT / "stages" / "enrichment.js").read_text(encoding="utf-8")
+        body = src[src.index("function proposedFrom("):src.index("function renderEnrichment(")]
         assert "license_risk_tier" in body and "'none'" in body
         assert "f.headline ||" not in body.split("const raw")[0], "the gate must run before the headline is read"
