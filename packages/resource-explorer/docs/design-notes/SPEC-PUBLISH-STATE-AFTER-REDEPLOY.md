@@ -52,12 +52,12 @@ detected with **no operator discipline at all**. This is the version worth
 having, because a fix that depends on someone remembering to run something
 after a wipe will be wrong the first time someone forgets.
 
-**Dan — this is the one thing I cannot settle from the code: does Egeria expose
-a stable identifier that changes when a store is wiped and redeployed** (a
-platform origin, a metadata collection id, a cohort or server instance id)?
-Nothing in `resource_explorer` reads one today — `config.py` has only
-`platform_url` and `view_server`, which survive a redeploy unchanged and so
-cannot be used for this. You would know instantly.
+**One question for the project owner, and the only thing here that cannot be
+settled from the code: does Egeria expose a stable identifier that changes when a
+store is wiped and redeployed** (a platform origin, a metadata collection id, a
+cohort or server instance id)? Nothing in `resource_explorer` reads one today —
+`config.py` has only `platform_url` and `view_server`, which survive a redeploy
+unchanged and so cannot serve. The answer decides between (a) and (b) above.
 
 **(b) If there is no such identifier: an operator-recorded epoch.** One row —
 `egeria_store_epoch`, a timestamp — written by whatever redeploys the store.

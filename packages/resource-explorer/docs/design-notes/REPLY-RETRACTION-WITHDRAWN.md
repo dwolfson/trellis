@@ -18,10 +18,11 @@ The report gives three reasons and each is stronger than the one before:
 - No correction mechanism exists for published resource types at all.
 - Published elements take `update_asset` for property merges only — nothing
   retypes or annotates one.
-- **A project-owner decision of 2026-09-14 already ruled on this:** rather than
-  retract or migrate the published `SourceControlLibrary` elements, wipe and
-  redeploy Egeria once the publish code is corrected. Dev environment, no real
-  users to protect.
+- **The project owner had already ruled on this, a day before I asked for it:**
+
+  **Decision (project owner, 2026-09-14):** rather than retract or migrate the
+  published `SourceControlLibrary` elements, wipe and redeploy Egeria once the
+  publish code is corrected — dev environment, no real users to protect.
 
 And the premise under my §4 was half false. I wrote that both errors were
 load-bearing since August and that every published SurveyReport hung off those

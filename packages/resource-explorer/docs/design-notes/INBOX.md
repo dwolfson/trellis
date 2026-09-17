@@ -23,7 +23,7 @@ in order, or take one each and say which.
 | **Honest rows** | *Find repos leaves the strip; the caveat names its analysis* | `SPEC-ACTIONABLE-AND-HONEST.md` §2, §4/5/6 | `SUB_TABS` drops `search` (it moves beside the sidebar's `Repos · DBs · FS` switcher); a caveat on a multi-analysis row names its analysis **or does not render**; every count carries its population and no sentence holds two without *of*. |
 | **Verdict subject** | *What a verdict is about* — **the big one** | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §2a–2d, §3; drawn on canvas page six | Both proposals on the component row instead of latest-wins; the agreement line; the withdrawal flag; the coverage sentence naming its two populations; the diagram captioning which reading it draws. **No schema change.** |
 | **Findings that act** | *The analytics half* | `SPEC-ACTIONABLE-AND-HONEST.md` §6 + "Whose work this is" | `interface_surface` reads the declared entry points `repo_role.py`, `distribution_parser.py` and `deployment_evidence.py` already read, and gains the **implemented** rung; every finding carries a `destination` (judgement / task / context / ours); the gaps list as a real collection, **seeded** with the entry in `REPLY-RETRACTION-WITHDRAWN.md` §3; `proposed_by` and the type evidence on component rows. |
-| **Stale publish** | *Publish state after a redeploy* | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Confirmed defect.** Publish state is stored in the registry (`project_egeria_surveys`, `project_published_annotation_types`, `project_published_analyses`) and nothing ever resolves a stored `egeria_report_guid`, so since the 09-14 wipe the UI reports deleted elements as published. Publish rows carry the identity of the store they went to; a third state reads *the store was redeployed on 09-14 — these elements no longer exist*. **§3 has one question for Dan** before building. |
+| **Stale publish** | *Publish state after a redeploy* | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Confirmed defect.** Publish state is stored in the registry (`project_egeria_surveys`, `project_published_annotation_types`, `project_published_analyses`) and nothing ever resolves a stored `egeria_report_guid`, so since the 09-14 wipe the UI reports deleted elements as published. Publish rows carry the identity of the store they went to; a third state reads *the store was redeployed on 09-14 — these elements no longer exist*. **§3 has one question for the project owner** before building. |
 
 ### Closed without building — verified by me against `main` at `342e0ca3`
 
@@ -86,7 +86,7 @@ table. Do not surface either of the first two under the old word.
 
 | written | designer reply | subject | state |
 |---|---|---|---|
-| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | Publish state is stored locally and never reconciled; the store-identity fix; the third publish state | **ready to start — Stale publish**, after one answer from Dan |
+| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | Publish state is stored locally and never reconciled; the store-identity fix; the third publish state | **ready to start — Stale publish**, after one answer from the project owner |
 | 09-17 | `ComponentTree.dc.html` (canvas page 7) | The branch tree: type evidence in words, agreement in the sort, absence in both columns, accept as the catalogue act | drawn; spec follows **Verdict subject** |
 | 09-17 | `REPLY-RETRACTION-WITHDRAWN.md` | Withdrawing §4; two kinds of correction under one word; the gaps-list seed | needs no build; its §4 question is answered by the spec above |
 | 09-16 | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` + `VerdictSubject` | What a verdict is *about*; the three meanings of "perspective"; the withdrawal asymmetry | **ready to start — Verdict subject** |
@@ -292,6 +292,12 @@ measurement.
   a line or the grep that came back empty, and names who checked it. Mine say so
   when I could not check: no repo checkout is reachable from the designer session
   unless the user connects one, so a citation of mine may be a relay of yours.
+- **Attribute decisions by role, not by first name** — *the project owner ruled
+  X* — and give each ruling the repo-wide greppable callout,
+  `**Decision (project owner, <date>):** ...`, rather than folding it into
+  prose. Repo convention, in the root `CLAUDE.md`; these notes are a project
+  record, not private correspondence. A username inside a UI mockup is sample
+  data, not attribution, and is fine.
 - **A designer ruling can be wrong.** Six are on the record here — the greyed
   `Find repos` tab, port scarcity, the `SoftwareLibrary` type, `lines_of_code`,
   the stale ports board rows, and the retraction that the owner had already ruled
