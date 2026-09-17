@@ -9,7 +9,12 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 
 
 def _app():
-    return (NEXT / "app.js").read_text(encoding="utf-8")
+    """app.js plus every stages/*.js module, concatenated -- see the
+    identical helper's docstring in test_next_component_review.py."""
+    src = (NEXT / "app.js").read_text(encoding="utf-8")
+    for f in sorted((NEXT / "stages").glob("*.js")):
+        src += "\n" + f.read_text(encoding="utf-8")
+    return src
 
 
 class TestTheScreenHoldsTheDesignRules:
@@ -26,20 +31,25 @@ class TestTheScreenHoldsTheDesignRules:
 
     def test_the_population_rule_is_said_and_the_button_is_gated_not_hidden(self):
         app = _app()
-        body = app[app.index("async function renderCurate("):app.index("function rowKey(i)")]
+        # renderCurate moved to stages/curate.js; bound to its own next
+        # function (renderCatalogueDepthOffer), not app.js's rowKey.
+        body = app[app.index("async function renderCurate("):app.index("async function renderCatalogueDepthOffer(")]
         assert "Only worthy things get curated" in body
         assert "data-curate-go ${plan.in_population && me ? '' : 'disabled'}" in body
         assert "sign in to catalogue" in body
 
     def test_every_count_opens_its_members_and_the_manifest_names_the_three_rules(self):
         app = _app()
-        body = app[app.index("function curateRowHtml("):app.index("function rowKey(i)")]
+        # Spans curateRowHtml (the button's HTML) through renderCurate (the
+        # click wiring for it), so bounded at the next function after
+        # renderCurate, not immediately after curateRowHtml.
+        body = app[app.index("function curateRowHtml("):app.index("async function renderCatalogueDepthOffer(")]
         assert "data-curate-members" in body and "openMembers({ slug, analysisId: b.dataset.curateMembers" in body
         assert "testimony copied · measurements linked · unresolved things travel" in body
         assert "Reversing this needs a correction, which stays on the record." in body
 
     def test_the_commit_is_polled_and_the_record_redrawn_per_step(self):
         app = _app()
-        body = app[app.index("async function renderCurate("):app.index("function rowKey(i)")]
+        body = app[app.index("async function renderCurate("):app.index("async function renderCatalogueDepthOffer(")]
         assert "await pollActivity(out.activity_id" in body and "getCuration(slug, out.curation.id)" in body
         assert "runs in the worker, not here" in app
