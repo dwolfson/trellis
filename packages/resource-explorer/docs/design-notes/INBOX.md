@@ -13,55 +13,66 @@ document and this gets regenerated from it.
 
 ## Start here — what is ready to pick up
 
-Three items are specified and unblocked, plus one question that a single grep
-answers. **Honest rows and Verdict subject are `/next` work; Findings that act is analytics**, so two sessions can run
-without crossing. Honest rows and Verdict subject both touch the answer-row compiler — take them
-in order, or take one each and say which.
+**One item.** Everything else on the last board had already shipped — see below,
+because the reason matters more than the list.
 
-| | take this | read | the change |
+| | take this | read | verified |
 |---|---|---|---|
-| **Honest rows** | *Find repos leaves the strip; the caveat names its analysis* | `SPEC-ACTIONABLE-AND-HONEST.md` §2, §4/5/6 | `SUB_TABS` drops `search` (it moves beside the sidebar's `Repos · DBs · FS` switcher); a caveat on a multi-analysis row names its analysis **or does not render**; every count carries its population and no sentence holds two without *of*. |
-| **Verdict subject** | *What a verdict is about* — **the big one** | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §2a–2d, §3; drawn on canvas page six | Both proposals on the component row instead of latest-wins; the agreement line; the withdrawal flag; the coverage sentence naming its two populations; the diagram captioning which reading it draws. **No schema change.** |
-| **Findings that act** | *The analytics half* | `SPEC-ACTIONABLE-AND-HONEST.md` §6 + "Whose work this is" | `interface_surface` reads the declared entry points `repo_role.py`, `distribution_parser.py` and `deployment_evidence.py` already read, and gains the **implemented** rung; every finding carries a `destination` (judgement / task / context / ours); the gaps list as a real collection, **seeded** with the entry in `REPLY-RETRACTION-WITHDRAWN.md` §3; `proposed_by` and the type evidence on component rows. |
-| **Stale publish** | *Publish state after a redeploy* | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Confirmed defect, and now unblocked.** Publish state lives in three registry tables and nothing resolves a stored `egeria_report_guid`, so since the 09-14 wipe the UI reports created elements that are gone as published. Fix is one `get_metadata_element_by_guid` per connection against the newest publish row — the `MetadataExpert` client is already built for exactly this in `rfa_egeria_sync.py`. A fourth publish state, stating what was observed and **not** inferring a cause. §5 is one survey to do first: created-element GUIDs perish with the database, archive-sourced GUIDs survive, and a store that mixes them needs the origin recorded. |
+| **Stale publish** | *Publish state after a redeploy* — publish rows name created elements that a wipe destroyed, and nothing ever checks | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Defect confirmed by me** at `342e0ca3`: `registry.py` ~1015/~1052/~1109 store `egeria_report_guid`; no function resolves one. Fix is one `ClassificationExplorer.get_element_by_guid` per connection. §5 is a short survey to do first. |
 
-### Closed without building — verified by me against `main` at `342e0ca3`
+### In flight right now — do not take
 
-- **The plural ports case, the tree's foot sentence, and sort-by-confidence** —
-  all three shipped in `#85`/`#86`, and I have now read all three:
-  `portsWords()` in `next/app.js` (≤2 spelled out, 3+ opens the rail, and a
-  `n ports declared below` case I had not specified); `totals_sentence()` in
-  `component_tree.py`, verbatim from my doc plus a wires clause; and the
-  `sort === 'confidence'` branch in `renderComponentTree`. The implementer's
-  citations were accurate. I had these on the board as ready-to-start, which was
-  wrong — see the note below.
-- **The retraction** — **withdrawn**, and see `REPLY-RETRACTION-WITHDRAWN.md`.
-  A project-owner decision of 2026-09-14 already ruled: wipe and redeploy Egeria
-  rather than retract or migrate, dev environment, no real users. `SoftwareLibrary`
-  was never published at all. And `corrects`/`corrected_by` is scoped to curation
-  reports — records this app owns — not to published types, so my *"`#83`'s
-  machinery, exactly its case"* was wrong about which act it is.
+**Verdict subject** (`RULING-WHAT-A-VERDICT-IS-ABOUT.md`) is being built as I
+write this: `component_tree.py`, `repo_survey_definition_adapter.py`,
+`index.html`, `next/app.js` and `test_architecture_verdict_coverage.py` are all
+modified in the shared checkout. Whoever has them, has them.
 
-### Why the board was wrong, and the convention that fixes it
+*And a warning I caused:* I ran `git checkout -b re/design-verdict-ruling` in the
+shared checkout, which moved the branch for everyone in that working directory —
+a whole-tree operation of exactly the kind root `CLAUDE.md` rule 1 prohibits.
+Nothing was lost (the branch came off `342e0ca3`, so the tree was identical, and
+my commits touch only `design-notes/`), but work committed there lands on a
+branch nobody chose. Switch or merge as suits you.
 
-The state column derives from the reply documents. `#85` was already credited
-against `SPEC-PORTS-ROUND-ONE.md`, no `*-IMPLEMENTED.md` was written for round
-two, and so three shipped items sat on the board as ready-to-start.
-**Derived-from-documents is not derived-from-code.** I gave a line citation for
-the one item that had genuinely not shipped and none for the three that had,
-which is the wrong way round.
+### Shipped, verified against `342e0ca3` — three boards' worth
 
-**So: a ready-to-start row must cite the code it was checked against** — a path
-and a line, or the grep that came back empty — and name who checked it. A row
-that cites nothing is a row nobody verified, and it should be as easy to
-falsify at a glance as it is to read.
+Everything below was on a previous board as ready-to-start. All of it was
+already done.
 
-**A vocabulary change crosses all five.** Three different things in this product
-are called *perspective*: `run_label` (`detect`/`coupling`), `Component.perspective`
-(`physical`/`deployment`/`logical`/`dev`), and the twelve role chips in the chrome.
-In the UI the first is **found by** and the second is **reading**; *perspective*
-keeps only its chrome meaning. `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §0 has the
-table. Do not surface either of the first two under the old word.
+- **`interface_surface`'s three-rung ladder**, reading `[project.scripts]` from
+  DistributionParser — `interface_surface.py:87-88`, `_cli_entry_points` at
+  `:174`, and its docstring states the defect I wrote the spec about: *"a
+  `[project.scripts]` entry point IS the CLI, not a hint of one."*
+- **The four destinations** — `destinations.py`, with `judgement`/`task`/`context`
+  declarable and **`ours` computed rather than declared**, which is better than
+  what I specified: a check should not be able to nominate its own gap as
+  someone else's problem.
+- **The gaps collection** — `gaps.py`, dated 09-15, with `not_measurable` and
+  `disagreement` as its only two shapes.
+- **`proposed_by` on the component rows** — `component_tree.py:231` at HEAD.
+- **`Find repos` out of `SUB_TABS`** — four entries at `app.js:179`, no `search`.
+- **The caveat attribution rule** — `app.js:453` carries it as a comment, and
+  `attribute(f, f.note)` at `:464` implements it.
+- **The plural ports case, the tree's foot sentence, sort-by-confidence** —
+  `portsWords()`, `totals_sentence()`, and the `sort === 'confidence'` branch.
+
+### Why this kept happening, and the rule that actually fixes it
+
+Three rounds running, this board listed shipped work as ready-to-start. Same
+mechanism every time: **the state column derived from whether a
+`*-IMPLEMENTED.md` existed, and reply documents lag the code.** `gaps.py` is
+dated 09-15 — it was being written while I was writing the spec that asked for
+it.
+
+I wrote the convention that fixes this into this file yesterday — *a
+ready-to-start row must cite the code it was checked against* — and then added
+four rows with no citations. Stating a rule is not following it.
+
+**So the default flips.** A row does not go on this board as ready-to-start
+until someone has looked at the code and put the citation in the row. Absent a
+citation the row is *unknown*, never *ready*. "Unanswered until proven shipped"
+manufactures work; "unknown until verified" costs one grep. The designer session
+can now read the repo directly, so there is no excuse left.
 
 ### Blocked, or still on the designer's desk
 

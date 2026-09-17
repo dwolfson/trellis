@@ -64,19 +64,38 @@ all of them — and it is also why the same check must not be pointed at
 archive-sourced GUIDs, which are durable by construction.
 
 **The check.** On connecting, resolve the newest stored `egeria_report_guid`
-with `MetadataExpert.get_metadata_element_by_guid`. If it does not resolve, every
+with **`ClassificationExplorer.get_element_by_guid`**
+(`pyegeria/omvs/classification_explorer.py:3181`). If it does not resolve, every
 publish row recorded before this connection is suspect, and the UI says so.
 
-Three things make this cheap rather than the per-row verification I ruled out for
-cost:
+Two details from the signature, both worth getting right:
+
+- **Pass a minimal `graph_query_depth`.** It defaults to `3`, which pulls a
+  graph. An existence check wants the element and nothing around it.
+- **The return type is the answer.** The docstring: *"Returns a string if no
+  elements found; otherwise a dict of the element."* So `isinstance(result, dict)`
+  is the test — not an exception, and not a truthiness check on a string that
+  happens to be non-empty.
+
+**A correction, because I recommended the wrong client and for a bad reason.** I
+specified `MetadataExpert.get_metadata_element_by_guid`, and
+**`MetadataExpert` is for special situations** — a differently-shaped response,
+and most of its methods have equivalents on `ClassificationExplorer`, which is
+the client to reach for. `ClassificationExplorer` is already imported in
+`worker.py`.
+
+What made me confident was the wrong kind of evidence: I cited
+`rfa_egeria_sync.py`'s construction of `MetadataExpert` *"for verification/
+reconciliation"* as precedent, and treated the precedent as validation.
+**Existing usage is evidence about what happened, not about what is correct.**
+That is the same mistake as deriving this board's state from reply documents
+instead of from the code — trusting a record of a decision in place of the thing
+it describes. Twice in two days, in two forms.
+
+What still holds, and is why this shape is right:
 
 - **One call per connection, not one per render.** The cost rules say a price is
-  either named or not paid; one call at connect time is not a price worth naming.
-- **The client is already constructed.** `rfa_egeria_sync.py` builds
-  `MetadataExpert` precisely for *"the fully generic metadata-element read
-  (`get_metadata_element_by_guid`, used elsewhere for verification/
-  reconciliation)"*. This is that purpose, and the precedent is already in the
-  codebase.
+  either named or not paid; one call at connect time is not worth naming.
 - **No new Egeria concept, and no operator discipline.** Nothing has to be
   recorded when someone wipes the store, so nothing is wrong the first time
   someone forgets.
