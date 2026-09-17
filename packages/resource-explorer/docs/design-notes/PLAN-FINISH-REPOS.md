@@ -102,7 +102,7 @@ imposed** beyond the dependencies in the last column.
 | 4 | **Automate** — not started | `next/stages/automate.js` | the stage does the automation job, or honestly says it defers to classic | Part 2 |
 | 5 | **Admin** — not started | `next/admin/*`, `web/routes/*` | the ten classic admin views are either reachable in `/next` or each recorded as a deliberate deferral | independent — start now in `wt-admin` |
 | 6 | **Activity** — not started | `next/stages/activity.js` | the activity log is readable in `/next`, not only a data source | Part 2 |
-| 7 | **Work lists** — orphaned | `next/worklist.js` | working a cohort start-to-finish is possible in Scouting and Assessment; **deliberately not carried into detailed per-resource analysis**, per the owner's read | Part 2 §0 |
+| 7 | **Work lists** — orphaned | `next/worklist.js` | working a cohort start-to-finish is possible in the early phases; **how much further it carries is an experiment, not a boundary** — the owner's read is that it is strongest early and weakens as work gets detailed, so build it forward and find where it stops paying | Part 2 §0 |
 | 8 | **Feedback** — present, not used | `next/feedback.js`; `web/routes/feedback.py`; `gaps.py` | per-answer feedback exists, and a disagreement lands in the gaps collection as destination `ours` | independent |
 | 9 | **Chat** — under-utilised | `next/chat.js` (extract) | assessed first, then scoped — the only item here with no agreed shape yet | needs a design round |
 | 10 | **RFAs** — not started | `next/rfa.js`; `rfa_egeria_sync.py` | an RFA can be raised and tracked in `/next`; today `app.js:601` honestly links out to classic | independent |
