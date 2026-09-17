@@ -1,0 +1,233 @@
+"""Admin's own /next surface (PLAN-FINISH-REPOS.md item 5): pinning that the
+header's ⚙ Admin button opens a real overlay panel — chrome-level, decoupled
+from #intent-nav, the same pattern as Activity — with five real ports
+(Annotation Types browse, Question Catalog, Logs, Feedback, Prefect) and six
+named, specific deferrals (Groups, Discovery Sources, Egeria Alignment,
+Egeria Links, Publish Queue, Repair), each linking out to classic via the
+shared `oldUiHref()` helper.
+
+No browser verification of a signed-in session happened for this file — see
+docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
+checked live. These tests grep/slice function bodies out of the concatenated
+source, the established pattern for /next JS modules without a browser —
+see test_next_activity_pane.py and test_next_automate_pane.py's identical
+`_app()` helper, reproduced here.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
+
+DEFERRED_TAB_IDS = [
+    "admin-groups",
+    "admin-discovery-sources",
+    "admin-resync",
+    "admin-egeria-links",
+    "admin-outbox",
+    "admin-repair",
+]
+BUILT_TAB_IDS = [
+    "annotations",
+    "admin-question-catalog",
+    "admin-prefect",
+    "admin-feedback",
+    "admin-logs",
+]
+
+
+def _app():
+    src = (NEXT / "app.js").read_text(encoding="utf-8")
+    for f in sorted((NEXT / "stages").glob("*.js")):
+        src += "\n" + f.read_text(encoding="utf-8")
+    return src
+
+
+def _admin_index_src():
+    return (NEXT / "admin" / "index.js").read_text(encoding="utf-8")
+
+
+def _admin_module(name):
+    return (NEXT / "admin" / name).read_text(encoding="utf-8")
+
+
+def _index_html():
+    return (NEXT / "index.html").read_text(encoding="utf-8")
+
+
+def _reapi_src():
+    return (NEXT.parent / "re-api.js").read_text(encoding="utf-8")
+
+
+class TestAdminIsNotAStagesEntry:
+    """Admin is a header-triggered overlay, exactly like Activity -- not a
+    STAGES array entry with `built: true`, and not read via currentNavIntent."""
+
+    def test_admin_is_absent_from_the_stages_array(self):
+        app = _app()
+        stages_block = app[app.index("const STAGES = ["):app.index("];", app.index("const STAGES = ["))]
+        assert "id: 'admin'" not in stages_block
+
+    def test_the_module_documents_why_it_is_not_a_stage(self):
+        src = _admin_index_src()
+        assert "NOT one of app.js's STAGES entries" in src
+        assert "decoupled from" in src
+
+
+class TestTheHeaderButtonOpensAdmin:
+    def test_the_placeholder_outbound_link_is_gone(self):
+        html = _index_html()
+        assert "Admin and feedback are not built in /next" not in html
+
+    def test_the_header_control_is_a_button_not_an_outbound_link(self):
+        html = _index_html()
+        assert 'id="admin-open-btn"' in html
+        btn_start = html.index('id="admin-open-btn"')
+        tag_start = html.rindex("<", 0, btn_start)
+        assert html[tag_start:tag_start + 10].lower().startswith("<button")
+
+    def test_app_js_wires_the_button_to_openadminpanel(self):
+        app = _app()
+        assert "import { openAdminPanel } from '/static/next/admin/index.js';" in app
+        assert "function wireAdminButton()" in app
+        body = app[app.index("function wireAdminButton()"):app.index("function wireAdminButton()") + 400]
+        assert "$('admin-open-btn')" in body
+        assert "openAdminPanel()" in body
+
+    def test_the_wiring_is_idempotent(self):
+        app = _app()
+        body = app[app.index("function wireAdminButton()"):app.index("function wireAdminButton()") + 400]
+        assert "if (adminButtonWired) return;" in body
+
+
+class TestGroupsAndTabsMatchClassic:
+    """Classic groups eleven panes into Configure/Reconcile/Observe
+    (commits 4fb48071/26320f89). The /next port must offer the same
+    grouping and the same set of destinations -- not a reshuffled subset."""
+
+    def test_three_groups_named_configure_reconcile_observe(self):
+        src = _admin_index_src()
+        assert "{ name: 'Configure'" in src
+        assert "{ name: 'Reconcile'" in src
+        assert "{ name: 'Observe'" in src
+
+    def test_every_classic_tab_id_is_present(self):
+        src = _admin_index_src()
+        for tab_id in BUILT_TAB_IDS + DEFERRED_TAB_IDS:
+            assert f"id: '{tab_id}'" in src, f"missing tab id {tab_id!r}"
+
+    def test_exactly_five_tabs_are_wired_to_a_real_renderer(self):
+        src = _admin_index_src()
+        render_count = src.count("render: render")
+        assert render_count == len(BUILT_TAB_IDS)
+
+
+class TestDeferralsAreSpecificNotGeneric:
+    """The Automate item's house style (ITEM-4-AUTOMATE-IMPLEMENTED.md):
+    name specifically what is deferred and why, not a generic 'not built'
+    string, and link out via the shared oldUiHref() helper."""
+
+    def test_every_deferred_tab_names_a_specific_does_and_why(self):
+        src = _admin_index_src()
+        for tab_id in DEFERRED_TAB_IDS:
+            i = src.index(f"id: '{tab_id}'")
+            block = src[i:src.index("} },", i) + 4]
+            assert "does:" in block
+            assert "why:" in block
+            # A generic placeholder would defeat the whole point of naming
+            # the reason -- each block's `why` must be long enough to be an
+            # actual explanation, not a one-word stub.
+            why_start = block.index("why:")
+            why_text = block[why_start:why_start + 200]
+            assert len(why_text) > 40
+
+    def test_deferred_panes_link_out_via_the_shared_helper(self):
+        src = _admin_index_src()
+        assert "import { $, esc, icon, oldUiHref } from '/static/next/app.js';" in src
+        assert "oldUiHref()" in src
+
+    def test_no_deferred_tab_id_also_carries_a_render_function(self):
+        src = _admin_index_src()
+        for tab_id in DEFERRED_TAB_IDS:
+            i = src.index(f"id: '{tab_id}'")
+            block = src[i:src.index("} },", i) + 4]
+            assert "render:" not in block
+
+
+class TestAnnotationTypesBrowse:
+    def test_lists_against_the_real_route(self):
+        api = _reapi_src()
+        assert "export const listAnnotationTypes = () => get('/api/analyses/annotation-types');" in api
+
+    def test_renders_a_detail_view_and_names_the_deferred_mutations(self):
+        src = _admin_module("annotation_types.js")
+        assert "export async function renderAnnotationTypes(host)" in src
+        assert "Register" in src or "Edit/Delete in current UI" in src
+        assert "oldUiHref" in src
+
+
+class TestQuestionCatalogBrowse:
+    def test_reads_the_real_route(self):
+        api = _reapi_src()
+        assert "/api/analyses/question-catalog" in api
+
+    def test_filters_by_stage_and_perspective_client_side(self):
+        src = _admin_module("question_catalog.js")
+        assert "state.stage" in src
+        assert "state.perspectives" in src
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("question_catalog.js")
+        assert "export async function renderQuestionCatalog(host)" in src
+
+
+class TestLogsPane:
+    def test_reads_the_real_route(self):
+        api = _reapi_src()
+        assert "export const listLogs = (" in api
+        assert "/api/logs/" in api
+
+    def test_three_distinct_empty_states_not_one_generic_message(self):
+        src = _admin_module("logs.js")
+        assert "buffer is empty" in src
+        assert "No records match this filter" in src
+        assert "No records to show" in src
+
+    def test_auto_refresh_stops_when_switching_away_from_this_pane(self):
+        src = _admin_module("logs.js")
+        assert "adminPane !== 'logs'" in src
+
+
+class TestFeedbackPane:
+    def test_reads_the_real_gated_route(self):
+        src = _admin_module("feedback.js")
+        assert "/api/curate/feedback" in src
+
+    def test_reuses_classics_admin_token_key_and_header(self):
+        src = _admin_module("feedback.js")
+        assert "re_admin_token" in src
+        assert "X-Admin-Token" in src
+
+    def test_a_403_renders_the_token_gate_not_an_empty_list(self):
+        src = _admin_module("feedback.js")
+        assert "res.status === 403" in src
+        assert "tokenGateHtml" in src
+
+    def test_absent_rating_renders_an_em_dash_not_zero_stars(self):
+        src = _admin_module("feedback.js")
+        i = src.index("function ratingHtml")
+        body = src[i:i + 300]
+        assert "r === null || r === undefined" in body
+        assert "—" in body
+
+
+class TestPrefectPane:
+    def test_reads_status_and_flow_runs_and_can_cancel(self):
+        api = _reapi_src()
+        assert "export const getPrefectStatus = ()" in api
+        assert "export const listPrefectFlowRuns = (" in api
+        assert "export const cancelPrefectFlowRun = (" in api
+
+    def test_cancel_is_confirmed_before_the_write(self):
+        src = _admin_module("prefect.js")
+        assert "window.confirm(" in src
