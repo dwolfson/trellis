@@ -144,6 +144,19 @@ class TestScanAndClear:
         independent of any particular Finding fixture."""
         assert set(SAFE_SCHEDULED_STEPS).isdisjoint(EXPENSIVE_STEPS)
 
+    def test_flag_vanished_publishes_is_applied_unattended(self):
+        """It only ever writes a flag, never deletes — safe to schedule,
+        unlike the two investigation/context steps above."""
+        finding = Finding(key="vanished_publishes", title="t", detail="d",
+                           repair_step="flag_vanished_publishes")
+        with patch("resource_explorer.egeria_resync.EgeriaResync") as MockResync:
+            instance = MockResync.return_value
+            instance.scan.return_value = _scan_result(finding)
+            instance.apply.return_value = {"flag_vanished_publishes": {"flagged": 1, "healed": 0}}
+            scan_and_clear()
+
+        instance.apply.assert_called_once_with(["flag_vanished_publishes"])
+
 
 class TestScheduler:
     def test_start_and_stop_do_not_raise(self):
