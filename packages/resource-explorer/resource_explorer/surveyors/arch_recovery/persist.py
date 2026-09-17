@@ -687,7 +687,10 @@ def _persist_blueprints(registry, slug: str, cluster_sets: dict,
         rows = [{
             "check_name": "candidate_blueprint",
             "label": cluster.name,
-            "summary": (f"{cluster.size} component(s), {perspective} perspective"
+            # "reading", not "perspective" — RULING-WHAT-A-VERDICT-IS-ABOUT.md
+            # §0: this is Component.perspective (physical/deployment/logical/
+            # dev), a different axis from the chrome's own Perspective chips.
+            "summary": (f"{cluster.size} component(s), {perspective} reading"
                         + (f", nested under {parent}" if parent else "")
                         + (" — OVER the ~10 goal and no further declared structure"
                            if cluster.oversized else "")),

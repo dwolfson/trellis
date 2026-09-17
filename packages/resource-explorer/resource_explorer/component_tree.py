@@ -128,7 +128,7 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         b = branches.setdefault(bpath, {"path": bpath, "name": seg, "components": 0, "low_confidence": 0,
                                         "types": Counter(), "ports": 0, "own": None, "children": 0,
                                         "accepted": 0, "rejected": 0, "undecided": 0, "structural": False,
-                                        "min_confidence": None})
+                                        "min_confidence": None, "agreement_count": 0})
         if c["path"] == bpath:
             b["own"] = c
             b["structural"] = bool(c.get("structural"))
@@ -143,6 +143,12 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         if conf <= LOW_CONFIDENCE:
             b["low_confidence"] += 1
         b["min_confidence"] = conf if b["min_confidence"] is None else min(b["min_confidence"], conf)
+        # RULING-WHAT-A-VERDICT-IS-ABOUT.md §2b: two extractors landing on the
+        # same path is the strongest signal the recovery has — stronger than
+        # one extractor's high confidence — so it has to be sortable at the
+        # branch level, not just visible on the leaf row.
+        if c.get("agreement"):
+            b["agreement_count"] += 1
         if c.get("type"):
             b["types"][c["type"]] += 1
         b["ports"] += len(ports.get(c["path"], []))
@@ -229,5 +235,14 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
         out.append({"path": p, "name": c.get("name") or p, "type": c.get("type") or "",
                     "confidence": c.get("confidence"), "low_confidence": (c.get("confidence") or 0) <= LOW_CONFIDENCE,
                     "proposed_by": c.get("proposed_by") or [], "ports": ports.get(p, []),
-                    "verdict": resolve_verdict(p, verdicts), "materialized": bool(c.get("materialized"))})
+                    "verdict": resolve_verdict(p, verdicts), "materialized": bool(c.get("materialized")),
+                    # §2a/§2b/§2c: one card entry per extractor CURRENTLY
+                    # proposing this path (both, when both do), whether two
+                    # of them agree, and which extractor used to propose this
+                    # path and no longer does — a flag on an accepted verdict,
+                    # never an invalidation of it (the verdict itself is
+                    # untouched; see resolve_verdict above).
+                    "proposals": c.get("proposals") or [],
+                    "agreement": bool(c.get("agreement")),
+                    "withdrawn_by": c.get("withdrawn_by") or []})
     return out
