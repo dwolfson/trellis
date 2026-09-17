@@ -42,6 +42,7 @@ import { renderCurate } from '/static/next/stages/curate.js';
 // worklist.js, not a per-resource stage; see next/rfa.js's own header
 // comment for why it lives at this level rather than under stages/.
 import { toggleRfaDrawer } from '/static/next/rfa.js';
+import { openActivityPanel } from '/static/next/stages/activity.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
 import {
   ApiError,
@@ -534,6 +535,19 @@ function renderTopBar() {
   link.textContent = state.selectedSlug
     ? '/next · open current UI'
     : '/next · open current UI';
+  wireActivityButton();
+}
+
+/** Activity is a persistent header surface, not a STAGES entry (see
+ *  activity.js's own top-of-file comment) — wired once, like the sidebar
+ *  drawer and text-size controls above, rather than per render. */
+let activityButtonWired = false;
+function wireActivityButton() {
+  if (activityButtonWired) return;
+  const btn = $('activity-open-btn');
+  if (!btn) return;
+  activityButtonWired = true;
+  btn.addEventListener('click', () => openActivityPanel());
 }
 
 /** The app's own text-size control: 100 / 112 / 125%.
