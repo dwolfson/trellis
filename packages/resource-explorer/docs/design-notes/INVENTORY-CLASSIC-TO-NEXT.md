@@ -46,16 +46,20 @@ with the most design already invested and still not finished.
 
 No `built` flag; renders as built, with four sub-tabs advertising working panes.
 
-## 5 · Admin — not started
+## 5 · Admin — **shipped 2026-09-17**, `#124`
 
-Verified absent: 338 references in `index.html`, 2 under `next/`. Ten views —
-discovery sources, Egeria links, feedback review, groups, logs, outbox, Prefect,
-question catalog, repair, resync.
+Five real ports plus six named deferrals — `next/admin/index.js`, `logs.js`,
+`prefect.js`, `question_catalog.js`, `annotation_types.js`, `feedback.js`, with
+`test_next_admin_pane.py`. See `ITEM-5-ADMIN-IMPLEMENTED.md`.
 
-## 6 · Activity — not started
+*Was: "not started — 338 references in `index.html`, 2 under `next/`."*
 
-Classic has `activity-view`. `/next`'s 21 "activity" references are to the
-activity *log* as a data source, not a view.
+## 6 · Activity — **shipped 2026-09-17**, `#122`
+
+`next/stages/activity.js`, with `ITEM-6-ACTIVITY-IMPLEMENTED.md`.
+
+*Was: "not started — the 21 references are to the activity log as a data
+source, not a view."*
 
 ## 7 · Work lists — orphaned, and I found where
 
@@ -81,11 +85,15 @@ everywhere.
 
 ## 8 · Feedback — present, not effectively used
 
-`next/feedback.js` submits: a floating button, a modal, categories. Missing the
-**per-answer** form classic has (`Feedback(query_hash, -1, …)`) and the review
-side (`admin-feedback-view`). As noted before: per-answer feedback is the capture
-end of the loop the four destinations and the gaps collection were written for,
-and it is the half that was dropped.
+**Largely shipped.** `ITEM-8-FEEDBACK-IMPLEMENTED.md` built the per-answer
+verdict landing as destination `ours` in the gaps collection, and `#124` added
+the review side as `next/admin/feedback.js`. What remains is one deferred UI
+choice the implementer flagged: the comment uses `window.prompt` rather than an
+inline field — *"if the designer wants it inline, that is a UI round, not a
+rework of this path."* Agreed, and it is not worth a round on its own.
+
+*Was: "present, not effectively used — missing the per-answer form and the
+review side."*
 
 ## 9 · Chat — under-utilised power
 
@@ -120,3 +128,24 @@ Understanding and Activity all appear as labels, and work lists appears 44 times
 while being unreachable. **A count of occurrences cannot distinguish wired from
 present.** The method that would have worked is the one the owner used: open the
 UI and try to do the job.
+
+
+---
+
+## 11 · Corrected 2026-09-17, and the method failed a third time
+
+The coordinating implementer flagged that §5 and §6 listed Admin and Activity as
+absent when both had shipped (`#124`, `#122`). Correct, and §8 was stale too —
+`#124` added `next/admin/feedback.js`, the review side I had called missing.
+
+**The same method failure, third instance.** My screen greps `next/app.js`, and
+`#124` put Admin in a new directory, `next/admin/*`, touching `app.js` for only
+seventeen lines. So a whole shipped subsystem read as zero — exactly as Automate
+read as present because its label was there, and as work lists read as present
+because the name appeared 44 times unreachable.
+
+**Occurrence counting cannot answer this question, and I should stop reaching for
+it.** The durable check is the one the implementers now maintain themselves: an
+`ITEM-N-*-IMPLEMENTED.md` per item. Six of those existed when this document was
+written and I did not read them. That is the list; this document should be
+derived from it plus the owner's judgement, and never again from a grep.
