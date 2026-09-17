@@ -732,3 +732,41 @@ export const listAllSchedules = () => get('/api/schedules/');
 export const deleteSchedule = (entityType, entitySlug, analysisId) =>
   request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
           { method: 'DELETE' });
+
+/* ── Admin (PLAN-FINISH-REPOS.md item 5) ────────────────────────────────────
+ * Read-mostly system/catalog-configuration views, reachable from the header's
+ * own ⚙ Admin button — see next/admin/*.js. Every route here already backs
+ * classic's index.html Admin panes; nothing new was added on the server. */
+
+/** The Annotation Types registry — every schema RE knows how to publish as
+ *  an Egeria annotation, and its property/class bindings. */
+export const listAnnotationTypes = () => get('/api/analyses/annotation-types');
+export const getAnnotationType = (typeName) =>
+  get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
+
+/** The full, unscoped Question catalog — every authored question with its
+ *  funnel stage, perspectives and answering mechanism. Read-only browser;
+ *  the catalog itself is edited via the source CSV, not this route. */
+export const listQuestionCatalog = (resourceType = 'repo') =>
+  get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+
+/** The in-process log ring buffer (`observability/logging_setup.py`) —
+ *  bounded, in-memory, empty after a restart. The response carries buffer
+ *  metadata (held/capacity/full/note) alongside the records precisely so a
+ *  caller can tell "nothing logged", "buffer emptied by a restart" and "your
+ *  filter excluded everything" apart — collapsing them to one empty state is
+ *  the absence-as-answer failure this codebase keeps finding. */
+export const listLogs = ({ limit = 300, level = '', logger = '' } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) params.set('level', level);
+  if (logger) params.set('logger', logger);
+  return get(`/api/logs/?${params}`);
+};
+
+/** Prefect flow-run status for locally-dispatched (`executes_at: prefect`)
+ *  survey steps only — `executes_at: egeria` steps are coordinated by Egeria
+ *  itself and are not reflected here. */
+export const getPrefectStatus = () => get('/api/prefect/status');
+export const listPrefectFlowRuns = (limit = 50) => get(`/api/prefect/flow-runs?limit=${limit}`);
+export const cancelPrefectFlowRun = (flowRunId) =>
+  post(`/api/prefect/flow-runs/${encodeURIComponent(flowRunId)}/cancel`);

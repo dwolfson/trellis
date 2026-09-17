@@ -44,6 +44,11 @@ import { renderCurate } from '/static/next/stages/curate.js';
 import { toggleRfaDrawer } from '/static/next/rfa.js';
 import { openActivityPanel } from '/static/next/stages/activity.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
+// Admin (PLAN-FINISH-REPOS.md item 5) — chrome-level, same pattern as
+// Activity: reachable from the header's own ⚙ Admin button, decoupled from
+// #intent-nav/currentNavIntent, NOT a STAGES entry. See next/admin/index.js's
+// own header comment for scope (five real ports, six named deferrals).
+import { openAdminPanel } from '/static/next/admin/index.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -536,6 +541,7 @@ function renderTopBar() {
     ? '/next · open current UI'
     : '/next · open current UI';
   wireActivityButton();
+  wireAdminButton();
 }
 
 /** Activity is a persistent header surface, not a STAGES entry (see
@@ -548,6 +554,17 @@ function wireActivityButton() {
   if (!btn) return;
   activityButtonWired = true;
   btn.addEventListener('click', () => openActivityPanel());
+}
+
+/** Admin, same pattern as Activity above — chrome-level, wired once. See
+ *  next/admin/index.js's own header comment. */
+let adminButtonWired = false;
+function wireAdminButton() {
+  if (adminButtonWired) return;
+  const btn = $('admin-open-btn');
+  if (!btn) return;
+  adminButtonWired = true;
+  btn.addEventListener('click', () => openAdminPanel());
 }
 
 /** The app's own text-size control: 100 / 112 / 125%.
