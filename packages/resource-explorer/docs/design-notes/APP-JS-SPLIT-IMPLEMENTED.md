@@ -169,6 +169,46 @@ moved out.
   prefix, which the new files fall under identically — it doesn't gate what
   gets served.
 
+## Addendum (same day): the split broke 15 Python tests, now fixed
+
+Missed above: four test files locate app.js's JS functions by raw string
+search against the file's text, and 15 tests across them broke when the
+functions they searched for moved into `stages/*.js` — a `ValueError`
+(marker not found at all) or a silently empty slice (a start/end marker
+pair split across two files, so the concatenation put the end marker
+*before* the start marker). Full pytest run would have caught this
+immediately; I only ran the syntax check above and didn't think to run
+the existing suite before calling the refactor done. Fixed in a follow-up
+commit on this branch:
+
+- `test_next_component_review.py`, `test_next_curate_pane.py`,
+  `test_next_rail_states.py` — their `_app()` helper now concatenates
+  `app.js` with every `stages/*.js` file, so a name search doesn't need
+  to know which file a function ended up in.
+- Several slices used `rowKey(i)` (stayed in app.js) as an end boundary
+  for content now entirely inside `curate.js` — rebound to the actual
+  next function in that file (`portsWords`/`recordVerdicts`/
+  `curateWritesHtml`/`renderCatalogueDepthOffer`, picked per test by
+  checking which function's body the asserted strings actually live in
+  — two needed `renderCatalogueDepthOffer` specifically because the
+  checked content spans from `renderCurate`/`curateRowHtml` through the
+  click-handler wiring inside `renderCurate` itself).
+- `test_next_enrichment_fidelity.py`'s `proposedFrom`/`renderEnrichment`
+  slice now reads `stages/enrichment.js` directly; its
+  `test_all_shell_modules_parse` discovers `stages/*.js` via glob instead
+  of a hardcoded list, so a future new stage module gets syntax-checked
+  without anyone remembering to add it here.
+
+All 81 tests across the four affected files pass after this fix
+(`uv run pytest tests/test_next_component_review.py
+tests/test_next_depth_offer.py tests/test_next_rail_states.py
+tests/test_next_enrichment_fidelity.py tests/test_frontend_render_modes.py
+tests/test_next_journal_fidelity.py tests/test_next_run_choice.py
+tests/test_next_curate_pane.py tests/test_next_records.py -q`). A full
+`pytest tests/` run for the whole package was still in progress when this
+was written; if it surfaces anything else, it'll be a separate note, not
+a silent edit to this paragraph.
+
 ## The done test, traced for one stage
 
 Picked **Enrichment**, since it already has real code (unlike the six stub
