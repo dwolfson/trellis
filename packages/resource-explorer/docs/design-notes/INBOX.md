@@ -14,16 +14,16 @@ document and this gets regenerated from it.
 ## Start here — what is ready to pick up
 
 Three items are specified and unblocked, plus one question that a single grep
-answers. **A and B are `/next` work, E is analytics**, so two sessions can run
-without crossing. A and B both touch the answer-row compiler — take them in order
-or take one each and say which.
+answers. **Honest rows and Verdict subject are `/next` work; Findings that act is analytics**, so two sessions can run
+without crossing. Honest rows and Verdict subject both touch the answer-row compiler — take them
+in order, or take one each and say which.
 
 | | take this | read | the change |
 |---|---|---|---|
-| **A** | *Find repos leaves the strip; the caveat names its analysis* | `SPEC-ACTIONABLE-AND-HONEST.md` §2, §4/5/6 | `SUB_TABS` drops `search` (it moves beside the sidebar's `Repos · DBs · FS` switcher); a caveat on a multi-analysis row names its analysis **or does not render**; every count carries its population and no sentence holds two without *of*. |
-| **B** | *What a verdict is about* — **the big one** | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §2a–2d, §3; drawn on canvas page six | Both proposals on the component row instead of latest-wins; the agreement line; the withdrawal flag; the coverage sentence naming its two populations; the diagram captioning which reading it draws. **No schema change.** |
-| **E** | *The analytics half* | `SPEC-ACTIONABLE-AND-HONEST.md` §6 + "Whose work this is" | `interface_surface` reads the declared entry points `repo_role.py`, `distribution_parser.py` and `deployment_evidence.py` already read, and gains the **implemented** rung; every finding carries a `destination` (judgement / task / context / ours); the gaps list as a real collection, **seeded** with the entry in `REPLY-RETRACTION-WITHDRAWN.md` §3; `proposed_by` and the type evidence on component rows. |
-| **C** | *Publish state after a redeploy* | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Confirmed defect.** Publish state is stored in the registry (`project_egeria_surveys`, `project_published_annotation_types`, `project_published_analyses`) and nothing ever resolves a stored `egeria_report_guid`, so since the 09-14 wipe the UI reports deleted elements as published. Publish rows carry the identity of the store they went to; a third state reads *the store was redeployed on 09-14 — these elements no longer exist*. **§3 has one question for Dan** before building. |
+| **Honest rows** | *Find repos leaves the strip; the caveat names its analysis* | `SPEC-ACTIONABLE-AND-HONEST.md` §2, §4/5/6 | `SUB_TABS` drops `search` (it moves beside the sidebar's `Repos · DBs · FS` switcher); a caveat on a multi-analysis row names its analysis **or does not render**; every count carries its population and no sentence holds two without *of*. |
+| **Verdict subject** | *What a verdict is about* — **the big one** | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §2a–2d, §3; drawn on canvas page six | Both proposals on the component row instead of latest-wins; the agreement line; the withdrawal flag; the coverage sentence naming its two populations; the diagram captioning which reading it draws. **No schema change.** |
+| **Findings that act** | *The analytics half* | `SPEC-ACTIONABLE-AND-HONEST.md` §6 + "Whose work this is" | `interface_surface` reads the declared entry points `repo_role.py`, `distribution_parser.py` and `deployment_evidence.py` already read, and gains the **implemented** rung; every finding carries a `destination` (judgement / task / context / ours); the gaps list as a real collection, **seeded** with the entry in `REPLY-RETRACTION-WITHDRAWN.md` §3; `proposed_by` and the type evidence on component rows. |
+| **Stale publish** | *Publish state after a redeploy* | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Confirmed defect.** Publish state is stored in the registry (`project_egeria_surveys`, `project_published_annotation_types`, `project_published_analyses`) and nothing ever resolves a stored `egeria_report_guid`, so since the 09-14 wipe the UI reports deleted elements as published. Publish rows carry the identity of the store they went to; a third state reads *the store was redeployed on 09-14 — these elements no longer exist*. **§3 has one question for Dan** before building. |
 
 ### Closed without building — verified by me against `main` at `342e0ca3`
 
@@ -66,8 +66,8 @@ table. Do not surface either of the first two under the old word.
 ### Blocked, or still on the designer's desk
 
 - **The component branch tree with its type evidence** — **drawn**, on canvas
-  page seven. Its spec waits for **B** to land, because the tree is built out of
-  B's row changes and writing the prose before that is specifying against a
+  page seven. Its spec waits for **Verdict subject** to land, because the tree is built out of
+  the Verdict subject row changes and writing the prose before that is specifying against a
   guess. One correction is already on the drawing: I had it sorted
   strongest-first, and `#86`'s weakest-first is better — a review queue should
   open on what needs attention.
@@ -86,11 +86,11 @@ table. Do not surface either of the first two under the old word.
 
 | written | designer reply | subject | state |
 |---|---|---|---|
-| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | Publish state is stored locally and never reconciled; the store-identity fix; the third publish state | **ready to start — C**, after one answer from Dan |
-| 09-17 | `ComponentTree.dc.html` (canvas page 7) | The branch tree: type evidence in words, agreement in the sort, absence in both columns, accept as the catalogue act | drawn; spec follows **B** |
+| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | Publish state is stored locally and never reconciled; the store-identity fix; the third publish state | **ready to start — Stale publish**, after one answer from Dan |
+| 09-17 | `ComponentTree.dc.html` (canvas page 7) | The branch tree: type evidence in words, agreement in the sort, absence in both columns, accept as the catalogue act | drawn; spec follows **Verdict subject** |
 | 09-17 | `REPLY-RETRACTION-WITHDRAWN.md` | Withdrawing §4; two kinds of correction under one word; the gaps-list seed | needs no build; its §4 question is answered by the spec above |
-| 09-16 | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` + `VerdictSubject` | What a verdict is *about*; the three meanings of "perspective"; the withdrawal asymmetry | **ready to start — B** |
-| 09-15 | `SPEC-ACTIONABLE-AND-HONEST.md` + `Actionable` / `WhatWeFound` | Whose absence it is; the four destinations; population and caveat attribution; the interface ladder's missing rung | answered in part — `#98`–`#104`; **A** and **E** remain |
+| 09-16 | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` + `VerdictSubject` | What a verdict is *about*; the three meanings of "perspective"; the withdrawal asymmetry | **ready to start — Verdict subject** |
+| 09-15 | `SPEC-ACTIONABLE-AND-HONEST.md` + `Actionable` / `WhatWeFound` | Whose absence it is; the four destinations; population and caveat attribution; the interface ladder's missing rung | answered in part — `#98`–`#104`; **Honest rows** and **Findings that act** remain |
 | 09-14 | `REPLY-CATALOGUE-IN-LAYERS.md` | Conceding the type error; layer 2 = accepted verdicts; the retraction | answered — the bulk-accept wording landed; §4 **superseded** by `REPLY-RETRACTION-WITHDRAWN.md` |
 | 09-14 | `SPEC-THE-STAGE-PAGE.md` + `StagePage` / `FactInPlace` / `AnalysesIndex` | The owner's round — points 1/2/3/6/7/9/10, the fold, and the fact under the answer | answered — `#93` (endpoints), `#94`, `#99` (the split) |
 | 09-14 | `REPLY-PORTS-SCARCITY-CORRECTED.md` | A correction against myself on port scarcity; the plural ports case; round two's agenda | answered — `#85`, `#86` (all three items; no `*-IMPLEMENTED.md` was written, which is how this row went stale) |
