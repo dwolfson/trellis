@@ -13,12 +13,14 @@ document and this gets regenerated from it.
 
 ## Start here — what is ready to pick up
 
-**One item.** Everything else on the last board had already shipped — see below,
+**Three items.** Everything else on the last board had already shipped — see below,
 because the reason matters more than the list.
 
 | | take this | read | verified |
 |---|---|---|---|
 | **Stale publish** | *Publish state after a redeploy* — publish rows name created elements that a wipe destroyed, and nothing ever checks | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Defect confirmed by me** at `342e0ca3`: `registry.py` ~1015/~1052/~1109 store `egeria_report_guid`; no function resolves one. Fix is one `ClassificationExplorer.get_element_by_guid` per connection. §5 is a short survey to do first. |
+| **Sort direction** | *The review queue opens on the branches needing least attention* | `REVIEW-VERDICT-RULING.md` §2 | `app.js:5880` runs agreement descending and confidence ascending, so best-evidenced branches head a weakest-first queue. Agreement should **raise effective evidence** and therefore sink a branch; one ordering, one direction. Label becomes *by evidence*. My §2b wording caused this — *outranks* read as *sorts above*. Small. |
+| **Honest classic row** | *The classic panel still shows one of two proposals as the answer* | `RULING-CLASSIC-AND-NEXT.md` §3 | **Required, not optional** — the project owner ruled 09-17 that classic retires only if `/next` earns it, so there is no timeline. `repo_survey_definition_adapter.py:2951` keeps `max(comp_rows, key=surveyed_at)` and `_archRow` renders it. One clause (*also proposed by coupling ›*), **not** parity; plus the primary becomes best-evidenced rather than most recent. |
 
 ### Just landed, and reviewed
 
@@ -39,8 +41,9 @@ the zero-total omission reasoned out). Three things came back:
   as the top-level primary, and the classic panel reads it — so a curator there
   still sees whichever extractor ran last, presented as the answer. It may defer
   the two-proposal display; it may not present one proposal as the answer. One
-  clause fixes it. **Needs a project-owner answer first:** is the classic panel
-  being retired on a known timeline?
+  clause fixes it. **Answered 09-17** — see `RULING-CLASSIC-AND-NEXT.md`: classic
+  retires only if `/next` earns it, so there is no timeline and the clause is
+  required. Capability may live in `/next` alone; honesty may not.
 - **If there must be a primary, it should be the best-evidenced, not the most
   recent** — *most recently surveyed* is a fact about the scheduler, not about
   the component.
