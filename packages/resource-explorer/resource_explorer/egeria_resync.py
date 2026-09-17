@@ -79,11 +79,24 @@ REGISTRATION_ONLY_ANALYSES = frozenset({"repository_health"})
 #: judgment call about what an asset should look like, not a pure cleanup —
 #: left for a human to trigger deliberately, same reasoning REPAIR_STEPS'
 #: `republish_survey_results`/`relink_investigation_members` stay manual.
+#:
+#: `clear_stale_investigations`/`clear_stale_contexts` moved OUT 2026-09-17
+#: (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md item 4,
+#: REPLY-PUBLISH-STATE-GO-AHEAD.md §3): `investigations.egeria_project_guid`/
+#: `entity_egeria_project_context.egeria_project_guid` can hold a GUID this
+#: app created OR one a person deliberately bound to an already-existing
+#: Egeria Project (`bind_egeria_project`), with nothing distinguishing the
+#: two — so "clears a LOCAL record after verifying live" was never actually
+#: true for these two: a bound GUID a person chose is not a local record this
+#: app can regenerate, and a transient resolve failure (an outage, a
+#: permissions change, a restart) would silently unmake that choice with
+#: nothing left to show it happened. That violates this set's own "never
+#: needs a human decision" criterion — clearing a person's binding always
+#: does. Both repair steps stay in REPAIR_STEPS for a human to apply
+#: deliberately from Admin > Egeria Alignment, same as `catalog_assets`.
 SAFE_SCHEDULED_STEPS = (
     "clear_stale_assets",
     "clear_orphan_publish_claims",
-    "clear_stale_investigations",
-    "clear_stale_contexts",
 )
 
 
