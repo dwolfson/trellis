@@ -101,7 +101,7 @@ Repo Discovery Survey — Repo Interface Surface
 GovActionProcessStep::RepoDiscoverySurvey::repo_interface_surface
 
 ### Description
-What can be talked to, and whether the contract is written down — from the file inventory and declared dependencies. A committed openapi.yaml is 'specified'; a fastapi dependency is only 'implied', and never counts as a published API.
+What can be talked to, and whether the contract is written down — three rungs: 'declared' (a committed contract, or an entry point the packaging declares), 'implemented' (the code runs as one, from stored evidence such as a distribution's own __main__.py), and 'implied' (a dependency name only, e.g. fastapi) — read from the file inventory, declared dependencies, and the distribution/deployment-evidence facts other steps already recorded. None of the first two rungs counts as a published API on its own.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
