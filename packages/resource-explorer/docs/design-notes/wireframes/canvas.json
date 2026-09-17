@@ -27,6 +27,10 @@
     {
       "id": "page-7",
       "name": "The branch tree"
+    },
+    {
+      "id": "page-8",
+      "name": "Curate: selection & blueprints"
     }
   ],
   "artboards": [
@@ -166,6 +170,14 @@
       "w": 1240,
       "h": 2360,
       "page": "page-7"
+    },
+    {
+      "file": "CurateSelection.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1260,
+      "h": 2500,
+      "page": "page-8"
     }
   ],
   "annotations": [
@@ -240,10 +252,18 @@
       "w": 300,
       "page": "page-7",
       "text": "Item 2 of the work plan \u2014 the component branch tree, unblocked by the verdict ruling on page six.\n\nThe owner's point 4 is four questions in one: what this is, why we think so, how much of it you are seeing, and what you can do about it. The tree answers all four in the same rows.\n\nMeasured figures are from #85 on egeria-workspaces; the five branch rows are illustrative shapes, not spec. The artboard says which is which at the foot \u2014 a drawing should carry its own provenance."
+    },
+    {
+      "id": "curate-brief",
+      "x": 1360,
+      "y": 0,
+      "w": 300,
+      "page": "page-8",
+      "text": "Item 3 of the plan. Read against main at 7b7bc2b4.\n\nTwo halves. Selection is a control that already exists one level out \u2014 selectMode is resource-level in the sidebar; the tree has per-row accept and no way to act on several.\n\nBlueprints are the live defect: the coverage sentence says '0 of 12 clusters in the logical reading reviewed' and blueprints have ZERO UI references in /next. A count that opens nothing.\n\nAnd a blueprint verdict is reading-scoped (perspective::cluster_name) where a component's is path-scoped \u2014 one table, two identity regimes, and the screen has to say which."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-7"
+    "page": "page-8"
   }
 }

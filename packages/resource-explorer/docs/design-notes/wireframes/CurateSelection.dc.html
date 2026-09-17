@@ -1,0 +1,228 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3);background:#fff}
+    .mine{border-left:3px solid var(--gap);padding-left:var(--s3)}
+    .bad{border-left:3px solid var(--warn);padding-left:var(--s3)}
+    .btn{display:inline-block;border:1px solid var(--rule-strong);border-radius:2px;
+         padding:1px var(--s2);font-size:12px;margin-right:var(--s1);white-space:nowrap}
+    .btn.p{border-color:var(--accent);color:var(--accent-ink)}
+    .row{display:grid;grid-template-columns:22px minmax(0,1fr) 120px 92px;gap:var(--s3);
+         padding:var(--s2) var(--s3);border-bottom:1px solid var(--rule);align-items:start}
+    .brow{display:grid;grid-template-columns:minmax(0,1fr) 150px 92px;gap:var(--s3);
+          padding:var(--s3);border-bottom:1px solid var(--rule);align-items:start}
+    .box{width:13px;height:13px;border:1px solid var(--rule-strong);border-radius:2px;margin-top:4px}
+    .box.on{background:var(--accent);border-color:var(--accent)}
+    .bar{background:#fff;border:1px solid var(--rule);border-radius:2px}
+    .tint{background:rgba(32,31,29,.035)}
+  </style>
+</helmet>
+
+<div style="width:1260px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Item 3 · Curate</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:36ch">Selecting components, and the blueprints nothing opens</h1>
+    <p style="max-width:84ch;margin:0">
+      Two halves, and the second is the one with a live defect behind it. The coverage sentence
+      already says <em><span class="tnum">0</span> of <span class="tnum">12</span> clusters in the
+      logical reading reviewed</em> &mdash; naming twelve things.
+      <strong style="font-weight:500">Blueprints have no UI in <span class="mono">/next</span> at
+      all</strong>: zero references across <span class="mono">app.js</span> and all ten stage
+      modules. A count that opens nothing is the one thing this app does not do.
+    </p>
+  </div>
+
+  <!-- half one: selection -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">One &middot; selection on the branch tree</div>
+    <p class="prov" style="max-width:84ch;margin:var(--s2) 0 var(--s3)">
+      <span class="mono">selectMode</span> exists, but for <strong style="font-weight:500">resources
+      in the sidebar</strong> (<span class="mono">app.js:119</span>, a checkbox per slug). The tree
+      has accept and reject per row and no way to act on several. Same control, one level in.
+    </p>
+
+    <div class="bar">
+      <div class="row tint" style="border-bottom:1px solid var(--rule-strong)">
+        <div><div class="box on"></div></div>
+        <div class="caps" style="color:var(--ink-muted)">branch &middot; and why we think so</div>
+        <div class="caps" style="color:var(--ink-muted)">found by</div>
+        <div class="caps" style="color:var(--ink-muted)">verdict</div>
+      </div>
+
+      <div class="row">
+        <div><div class="box on"></div></div>
+        <div>
+          <div><span class="mono">coco-mds/</span> &middot; <strong style="font-weight:500">a deployed component</strong></div>
+          <div class="prov" style="color:var(--accent-ink);margin-top:var(--s1)">&#9679;&#9679; two extractors agree this is a component</div>
+        </div>
+        <div class="prov">detect<br>coupling</div>
+        <div><span class="btn">accept</span></div>
+      </div>
+
+      <div class="row">
+        <div><div class="box on"></div></div>
+        <div>
+          <div><span class="mono">egeria-platform/</span> &middot; <strong style="font-weight:500">a deployed component</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">a compose service with a health check, <span class="tnum">80%</span></div>
+        </div>
+        <div class="prov">detect</div>
+        <div><span class="btn">accept</span></div>
+      </div>
+
+      <div class="row">
+        <div><div class="box"></div></div>
+        <div>
+          <div><span class="mono">notebooks/</span> &middot; <strong style="font-weight:500">kind not established</strong></div>
+          <div class="prov" style="color:var(--warn);margin-top:var(--s1)">directory cohesion alone, <span class="tnum">30%</span> — nothing declares or deploys it</div>
+        </div>
+        <div class="prov">coupling</div>
+        <div><span class="btn p">reject</span></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:var(--s4);margin-top:var(--s3)">
+      <div class="prov" style="color:var(--ink-muted)">
+        <span class="tnum">2</span> of <span class="tnum">5</span> shown selected &middot;
+        <span class="lnk">select all <span class="tnum">69</span> branches ›</span><br>
+        Selection is per branch, and a branch carries its scopes with it — accepting
+        <span class="mono">coco-mds/</span> accepts the <span class="tnum">14</span> scopes under it,
+        which the confirmation says out loud.
+      </div>
+      <div style="text-align:right"><span class="btn p">accept <span class="tnum">2</span> selected</span><span class="btn">reject <span class="tnum">2</span></span></div>
+    </div>
+
+    <div class="card" style="margin-top:var(--s4);max-width:560px">
+      <div class="h" style="font-size:19px;font-weight:400">Accept <span class="tnum">2</span> branches</div>
+      <div class="prov" style="margin-top:var(--s2)">
+        <span class="mono">coco-mds/</span> · <span class="tnum">14</span> scopes<br>
+        <span class="mono">egeria-platform/</span> · <span class="tnum">6</span> scopes
+      </div>
+      <p class="prov" style="margin:var(--s2) 0 0">
+        Catalogues them as software components under <span class="mono">resource-explorer</span>.
+        The exact Egeria type is not yet pinned.
+      </p>
+      <p class="prov" style="color:var(--ink-muted);margin:var(--s2) 0 0">
+        About <span class="tnum">30s</span> of Egeria writes (measured, <span class="tnum">1.5s</span>
+        median per element). The outcome goes on the record either way.
+      </p>
+      <div style="margin-top:var(--s3)"><span class="btn p">accept and catalogue</span><span class="btn">cancel</span></div>
+    </div>
+    <p class="prov" style="color:var(--ink-muted);max-width:84ch;margin:var(--s2) 0 0">
+      The wording is not new — <span class="mono">REPLY-CATALOGUE-IN-LAYERS.md</span> ruled it, and
+      the price has a measured basis unlike component creation. What selection adds is the scope
+      count per branch, because a curator accepting two branches is accepting twenty scopes and
+      should be told so before, not after.
+    </p>
+  </div>
+
+  <!-- half two: blueprints -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">Two &middot; the blueprints, and why they behave differently</div>
+
+    <div class="bad" style="margin-top:var(--s2)">
+      <div class="prov"><strong style="font-weight:500">Live, today:</strong> <em><span class="tnum">4</span> of <span class="tnum">87</span> component paths reviewed · <span class="tnum">0</span> of <span class="tnum">12</span> clusters in the logical reading reviewed</em></div>
+      <div class="prov" style="color:var(--warn);margin-top:var(--s1)">The second clause names twelve clusters and opens nothing. Counts open what they counted.</div>
+    </div>
+
+    <p style="max-width:84ch;margin:var(--s3) 0 var(--s3)">
+      <strong style="font-weight:500">And a blueprint verdict is not like a component verdict.</strong>
+      A component is keyed by path, so its verdict holds whatever reading you were in when you found
+      it. A cluster is keyed <span class="mono">perspective::cluster_name</span> — it
+      <em>only exists inside one reading</em>. So the same table holds two identity regimes, and the
+      screen has to say which it is showing or a curator will expect a blueprint verdict to carry
+      across readings the way a component's does.
+    </p>
+
+    <div class="bar">
+      <div class="brow tint" style="border-bottom:1px solid var(--rule-strong)">
+        <div class="caps" style="color:var(--ink-muted)">cluster &middot; in the logical reading</div>
+        <div class="caps" style="color:var(--ink-muted)">members</div>
+        <div class="caps" style="color:var(--ink-muted)">verdict</div>
+      </div>
+      <div class="brow">
+        <div>
+          <div><strong style="font-weight:500">metadata access services</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">cohesive on imports; <span class="tnum">3</span> of its <span class="tnum">9</span> members are accepted components</div>
+        </div>
+        <div class="prov"><span class="lnk"><span class="tnum">9</span> members ›</span></div>
+        <div><span class="btn p">accept</span><span class="btn">reject</span></div>
+      </div>
+      <div class="brow">
+        <div>
+          <div><strong style="font-weight:500">command-line surface</strong></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">cohesive on co-change; no member carries a verdict yet</div>
+        </div>
+        <div class="prov"><span class="lnk"><span class="tnum">4</span> members ›</span></div>
+        <div><span class="btn p">accept</span><span class="btn">reject</span></div>
+      </div>
+    </div>
+
+    <div class="prov" style="color:var(--ink-muted);margin-top:var(--s3);max-width:84ch">
+      <span class="tnum">2</span> of <span class="tnum">12</span> clusters shown ·
+      <span class="lnk">all <span class="tnum">12</span> in the logical reading ›</span> ·
+      <span class="lnk">the deployment reading has <span class="tnum">5</span> ›</span><br>
+      A verdict here is recorded against <span class="mono">logical::metadata access services</span>
+      and applies in this reading only — switching readings shows a different set, not the same set
+      re&#8209;judged.
+    </div>
+  </div>
+
+  <div class="mine" style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--gap)">What this leaves open</div>
+    <p class="prov" style="margin:var(--s2) 0 0;max-width:84ch">
+      <strong style="font-weight:500;color:var(--ink)">Whether accepting a cluster means anything in
+      Egeria yet.</strong> Component acceptance catalogues; a blueprint's equivalent act is not
+      ruled, and I am not inventing one — the row above records a curator's judgement and says
+      nothing about publishing it. If a cluster should become a
+      <span class="mono">SolutionBlueprint</span>, that is a type decision for the project owner, and
+      the <span class="mono">SoftwareLibrary</span> mistake says not to name a type before anyone
+      has verified it.
+    </p>
+  </div>
+
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule);padding-top:var(--s3)">
+    <div class="caps" style="color:var(--ink-muted)">Data in this drawing</div>
+    <p class="prov" style="color:var(--ink-muted);max-width:84ch;margin:var(--s2) 0 0">
+      <strong style="font-weight:500;color:var(--ink)">Real:</strong> blueprints have zero UI
+      references in <span class="mono">/next</span>; verdicts share one table with the
+      <span class="mono">perspective::cluster_name</span> convention
+      (<span class="mono">repo_survey_definition_adapter.py:2750, 2801</span>);
+      <span class="mono">selectMode</span> is resource-level only
+      (<span class="mono">app.js:119</span>); the <span class="tnum">1.5s</span> median Egeria write
+      and <span class="tnum">69</span> branches from <span class="tnum">641</span> scopes are
+      measured. <strong style="font-weight:500;color:var(--ink)">Illustrative:</strong> the cluster
+      names, member counts and per-branch scope counts. Not spec.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
