@@ -1,0 +1,209 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --paper-surface:#eae9e9; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .bad{border-left:3px solid var(--warn);padding-left:var(--s3)}
+    .good{border-left:3px solid var(--ok);padding-left:var(--s3)}
+    .mine{border-left:3px solid var(--gap);padding-left:var(--s3)}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3)}
+    table{border-collapse:collapse;width:100%}
+    th{text-align:left;font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;
+       text-transform:uppercase;color:var(--ink-muted);padding:0 var(--s3) var(--s2) 0;
+       border-bottom:1px solid var(--rule-strong)}
+    td{padding:var(--s2) var(--s3) var(--s2) 0;border-bottom:1px solid var(--rule);vertical-align:top}
+    .act{display:inline-block;border:1px solid var(--rule-strong);border-radius:2px;
+         padding:2px var(--s2);font-size:13px;color:var(--ink);margin-right:var(--s1)}
+    .act.p{border-color:var(--accent);color:var(--accent-ink)}
+  </style>
+</helmet>
+
+<div style="width:1120px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Ruling &middot; item 1</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:34ch">What a component verdict is about</h1>
+    <p style="max-width:82ch;margin:0">
+      A verdict is about the component &mdash; the thing at that path &mdash; not about the proposal that
+      surfaced it. It stays keyed by <span class="mono">scope_locator</span>, with no schema change. Four things
+      have to change because of that, and one word has to go.
+    </p>
+  </div>
+
+  <!-- the naming -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">First, the word: three things are called &ldquo;perspective&rdquo;</div>
+    <p style="max-width:82ch;margin:var(--s2) 0 var(--s3)">
+      This is why the question was unanswerable. Blueprint verdicts key on the second row; the diagram's
+      preference keys on the first; the chrome's filter is the third and is unrelated to both.
+      <strong style="font-weight:500">One word, three axes</strong> &mdash; and <em>&ldquo;does a verdict apply
+      across perspectives?&rdquo;</em> has a different answer for each.
+    </p>
+    <table>
+      <thead><tr><th style="width:230px">in the code</th><th style="width:250px">values</th><th>what it is</th><th style="width:150px">in the UI</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">run_label</span></td>
+          <td class="prov"><span class="mono">detect</span>, <span class="mono">coupling</span></td>
+          <td>Which survey step wrote the row. Two detectors needing different resources &mdash; a zipball, or a real clone with history.</td>
+          <td><strong style="font-weight:500">found by</strong></td>
+        </tr>
+        <tr>
+          <td><span class="mono">Component.perspective</span></td>
+          <td class="prov"><span class="mono">physical</span>, <span class="mono">deployment</span>, <span class="mono">logical</span>, <span class="mono">dev</span></td>
+          <td>Which architectural reading the component is. A cluster only exists within one.</td>
+          <td><strong style="font-weight:500">reading</strong></td>
+        </tr>
+        <tr>
+          <td>the chrome's Perspective row</td>
+          <td class="prov">Admin, Architecture, Consumer &hellip; (<span class="tnum">12</span>)</td>
+          <td>Whose question you are asking &mdash; the role filter across the top of every stage.</td>
+          <td><strong style="font-weight:500">perspective</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="prov" style="max-width:82ch;color:var(--ink-muted);margin:var(--s3) 0 0">
+      <em>Perspective</em> keeps only its chrome meaning, because that is the one users already hold. The defect
+      under the defect is this project's own favourite kind: a name that means two things, one walk away from
+      another that reads it.
+    </p>
+  </div>
+
+  <!-- 2a the row -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The row &middot; both proposals shown, one verdict recorded</div>
+
+    <p style="max-width:82ch;margin:var(--s2) 0 var(--s3)">
+      Today the card's type, confidence and reading come from
+      <span class="mono">max(comp_rows, key=surveyed_at)</span> &mdash;
+      <strong style="font-weight:500">whichever step wrote last.</strong> So a curator can rule on a card whose
+      attributes came from the other extractor than the drawing they clicked from, and nothing says so.
+    </p>
+
+    <div class="bad">
+      <div class="caps" style="color:var(--warn)">as shipped</div>
+      <div style="margin-top:var(--s2)"><span class="mono">pyegeria/commands/</span> &middot; <strong style="font-weight:500">cli</strong></div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">an import boundary &middot; logical perspective &middot; <span class="tnum">45%</span></div>
+      <div class="prov" style="margin-top:var(--s1)"><span class="act">accept</span><span class="act">reject</span><span class="act">retype</span></div>
+      <div class="prov" style="color:var(--warn);margin-top:var(--s2)">
+        Detect also proposed this path, as a deployment unit at <span class="tnum">75%</span>. Coupling merely
+        wrote later. Nothing on the row admits either fact.
+      </div>
+    </div>
+
+    <div class="good" style="margin-top:var(--s4)">
+      <div class="caps" style="color:var(--ok)">as ruled</div>
+      <div style="margin-top:var(--s2)"><span class="mono">pyegeria/commands/</span> &middot; <strong style="font-weight:500">cli</strong></div>
+      <div class="prov" style="margin-top:var(--s1)">found by <strong style="font-weight:500">detect</strong> &mdash; a console entry point &middot; deployment reading &middot; <span class="tnum">75%</span></div>
+      <div class="prov" style="margin-top:0">found by <strong style="font-weight:500">coupling</strong> &mdash; an import boundary &middot; logical reading &middot; <span class="tnum">45%</span></div>
+      <div style="margin-top:var(--s2);color:var(--accent-ink)"><strong style="font-weight:500">Two extractors agree this is a component.</strong></div>
+      <div class="prov" style="margin-top:var(--s2)"><span class="act p">accept</span><span class="act">reject</span><span class="act">retype</span></div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2)">
+        One verdict, recorded against the path. The trail notes which proposals stood when it was made, so a
+        verdict read next year says what was on screen.
+      </div>
+    </div>
+
+    <p style="max-width:82ch;margin:var(--s4) 0 0">
+      <strong style="font-weight:500">And the agreement is the strongest signal in the data.</strong>
+      <span class="mono">latest wins</span> throws away the fact that two unrelated methods &mdash; one reading
+      manifests and Dockerfiles, one reading twenty-four months of co-change &mdash; landed on the same path.
+      Nothing else in the recovery is evidence of that quality, and it is the answer to
+      <em>&ldquo;why do we think this is which kind&rdquo;</em>. So the sort follows:
+      <strong style="font-weight:500">agreement outranks a single high confidence.</strong> Two detectors at
+      <span class="tnum">75%</span> and <span class="tnum">45%</span> is a better bet than one at
+      <span class="tnum">90%</span>.
+    </p>
+  </div>
+
+  <!-- 2c withdrawal -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">When one extractor withdraws &middot; flag, do not invalidate</div>
+    <p style="max-width:82ch;margin:var(--s2) 0 var(--s3)">
+      This asymmetry is already shipped: <span class="mono">_withdraw_vacated</span> lets a step withdraw only
+      the scopes <em>it</em> wrote, while verdicts are path-keyed. So coupling can withdraw its proposal on a path
+      that still carries a verdict earned from detect's &mdash; and today that reads as nothing at all.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4)">
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">the state</div>
+        <div style="margin-top:var(--s2)"><strong style="font-weight:500">accepted</strong> &middot; <span class="tnum">2d</span> ago &middot; dwolfson</div>
+        <div class="prov" style="color:var(--warn);margin-top:var(--s1)">&#9888; review &mdash; no longer proposed by coupling</div>
+        <div class="prov" style="color:var(--ink-muted);margin-top:var(--s2)">
+          Not &ldquo;still accepted&rdquo; and not &ldquo;unaccepted&rdquo;: accepted, and no longer proposed by
+          one of the extractors that proposed it.
+        </div>
+      </div>
+      <div class="card">
+        <div class="caps" style="color:var(--ink-muted)">why the verdict stands</div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          The thing at that path either exists or does not, and a re-run of a detector is not new information
+          about that. But the person who accepted it deserves to know the ground moved &mdash; which is the
+          perishability treatment the enrichment judgements already have, third time out.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2d the sentence -->
+  <div style="margin-top:var(--s6);border-top:1px solid var(--rule-strong);padding-top:var(--s4)">
+    <div class="caps" style="color:var(--ink-muted)">The coverage sentence holds two identity regimes</div>
+    <div class="bad" style="margin-top:var(--s2)">
+      <div><span class="tnum">4</span> of <span class="tnum">87</span> components reviewed (<span class="tnum">4</span> accepted); <span class="tnum">0</span> of <span class="tnum">12</span> blueprints reviewed</div>
+      <div class="prov" style="color:var(--warn);margin-top:var(--s1)">Components are keyed by path; blueprints by <span class="mono">perspective::cluster_name</span>. Both halves are right and the sentence hides that they count different kinds of thing.</div>
+    </div>
+    <div class="good" style="margin-top:var(--s3)">
+      <div><span class="tnum">4</span> of <span class="tnum">87</span> component paths reviewed &middot; <span class="tnum">0</span> of <span class="tnum">12</span> clusters in the logical reading reviewed</div>
+      <div class="prov" style="color:var(--ink-muted);margin-top:var(--s1)">A cluster only exists within a reading; a component exists whatever you were reading when you found it. The whole ruling, said where it is load-bearing.</div>
+    </div>
+
+    <p style="max-width:82ch;margin:var(--s4) 0 0">
+      And the diagram states its own scope beside the caption it already has &mdash;
+      <em>found by <strong style="font-weight:500">coupling</strong> &middot;
+      <span class="lnk">detect also on file ›</span></em> &mdash; because under this ruling a verdict earned on one
+      drawing styles nodes on the other. <span class="mono">_DIAGRAM_PERSPECTIVE_PREFERENCE</span>'s
+      coupling-first order stays; it is a reasonable default and nothing better is known. What stays recorded as
+      deliberate is that the two are <strong style="font-weight:500">never merged</strong>.
+    </p>
+  </div>
+
+  <!-- scope -->
+  <div class="mine" style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--gap)">Deliberately not settled</div>
+    <p style="max-width:82ch;margin:var(--s2) 0 0">
+      Where two extractors propose components over the same scope at <strong style="font-weight:500">different
+      granularities</strong> &mdash; one composing the other &mdash;
+      <span class="mono">curation-lenses-design.md</span> §4.4's overlap object is needed, with its three
+      resolutions: same component, nested, or distinct per reading. This ruling handles the same-path case, which
+      is the common one. Nested proposals are a round of their own.
+    </p>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
