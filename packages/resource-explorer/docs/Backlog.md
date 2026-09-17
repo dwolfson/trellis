@@ -2993,6 +2993,30 @@ Two ways to close it, and they are not equivalent:
 
 ---
 
+#### MEDIUM — dependency analysis needs a required/optional/**selective** axis, not just manifest `dep_type`
+
+Raised by the project owner, 2026-09-17, testing `/next`'s dependency view live.
+
+`ingestion/dependency_parser.py` (`:111-222`) already tags each parsed dependency with a
+`dep_type` — `runtime` / `dev` / `test` / `optional` / `indirect` — but that vocabulary is
+entirely **manifest-declared**: Python's `[project.optional-dependencies]`, Maven's
+`provided`/`optional` scope, Go's `// indirect`. It has no concept of a dependency that is
+optional as a *capability* but becomes mandatory the moment a deployment turns that capability
+on — the project owner's example: Egeria's core runtime dependencies are unconditional (Java, its
+libraries, Kafka, Postgres), but DuckDB is not an "optional integration" in the same sense as
+those manifest-level optionals — if a given deployment uses the DuckDB integration, DuckDB *is* a
+required dependency **for that deployment**, and if it doesn't, DuckDB is irrelevant to it, not
+merely "nice to have."
+
+This is a real modeling gap, not a display bug: it needs a design decision on how a specific
+deployment's selected integrations get recorded (survey time? enrichment time? a separate
+deployment-profile concept?) before it's buildable — not yet scoped as a plan item. See also
+`PLAN-FINISH-REPOS.md`'s item 3 (Curate) and the un-built `analysis`/`assessment`/`discovery`
+stages in `/next`, any of which could end up being where deployment-level dependency
+classification lives once designed.
+
+---
+
 #### Advanced SQLGlot view analytics
 We can extend our SQL View static analyzer (`sql_analyzer.py`) with further advanced metadata analytics:
 1. **Dialect Compatibility Matrix**: Check query compatibility across target warehouses (e.g. Snowflake, BigQuery, Athena, Redshift) by transpiling view SQL and report compatibility scores.
