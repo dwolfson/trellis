@@ -701,10 +701,24 @@ class TestArchitectureDiagramRendersAPicture:
         # The diagram block specifically, not just some other try/catch
         # elsewhere in this large function.
         diagram_start = fn.index("f.value.mermaid")
-        # 2026-09-08: the success branch grew a "shown: ... also on file: ..."
-        # perspective note (the detect/coupling split), pushing `catch`
-        # further from the window's start than before -- widened rather than
-        # tightened, since the guarantee this pins is about ordering, not a
-        # specific byte distance.
-        nearby = fn[diagram_start:diagram_start + 2200]
-        assert "catch" in nearby
+        # 2026-09-08, then 2026-09-17: a fixed byte window drifted twice as
+        # the success branch grew (the "shown: .../also on file:" perspective
+        # note, then the "found by" rename) -- each growth is legitimate and
+        # has nothing to do with the guarantee this pins, which is ORDERING:
+        # the try{} guarding the diagram fetch has its own catch{}, wherever
+        # that lands. Brace-match the try immediately after diagram_start
+        # rather than picking a byte count that the next unrelated edit will
+        # outgrow again.
+        try_start = fn.index("try {", diagram_start)
+        brace = fn.index("{", try_start)
+        depth = 1
+        i = brace + 1
+        while depth:
+            if fn[i] == "{":
+                depth += 1
+            elif fn[i] == "}":
+                depth -= 1
+            i += 1
+        assert "catch" in fn[i:i + 200], (
+            "the try{} guarding the diagram fetch has no catch{} immediately after it"
+        )
