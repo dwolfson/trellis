@@ -19,6 +19,14 @@
     {
       "id": "page-5",
       "name": "Actionable & honest"
+    },
+    {
+      "id": "page-6",
+      "name": "What a verdict is about"
+    },
+    {
+      "id": "page-7",
+      "name": "The branch tree"
     }
   ],
   "artboards": [
@@ -142,6 +150,22 @@
       "w": 1120,
       "h": 1900,
       "page": "page-5"
+    },
+    {
+      "file": "VerdictSubject.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1120,
+      "h": 2180,
+      "page": "page-6"
+    },
+    {
+      "file": "ComponentTree.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1240,
+      "h": 2360,
+      "page": "page-7"
     }
   ],
   "annotations": [
@@ -200,10 +224,26 @@
       "w": 300,
       "page": "page-5",
       "text": "The owner's second round, 2026-09-15. Read against origin/main 93be502.\n\nPoint 3: the honesty rules made a surface scrupulous about what it cannot say and silent about what to do. The missing half is WHOSE absence it is.\n\nPoints 4/5/6 are one habit: a row composed from several analyses over several populations, written as though it came from one."
+    },
+    {
+      "id": "verdict-brief",
+      "x": 1220,
+      "y": 0,
+      "w": 300,
+      "page": "page-6",
+      "text": "Item 1 of the work plan, ruled. Read against origin/main 05cb63c0 \u2014 after #104.\n\nThe question was unanswerable because three different things in this product are called \"perspective\": run_label (detect/coupling), Component.perspective (physical/deployment/logical/dev), and the twelve role chips in the chrome.\n\nRuling: a verdict is about the component \u2014 the thing at that path \u2014 not about the proposal that surfaced it. No schema change; four render changes and one sort change."
+    },
+    {
+      "id": "tree-brief",
+      "x": 1340,
+      "y": 0,
+      "w": 300,
+      "page": "page-7",
+      "text": "Item 2 of the work plan \u2014 the component branch tree, unblocked by the verdict ruling on page six.\n\nThe owner's point 4 is four questions in one: what this is, why we think so, how much of it you are seeing, and what you can do about it. The tree answers all four in the same rows.\n\nMeasured figures are from #85 on egeria-workspaces; the five branch rows are illustrative shapes, not spec. The artboard says which is which at the foot \u2014 a drawing should carry its own provenance."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-5"
+    "page": "page-7"
   }
 }
