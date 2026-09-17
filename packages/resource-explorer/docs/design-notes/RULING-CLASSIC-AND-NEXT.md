@@ -69,21 +69,19 @@ recent. *Most recently surveyed* is a fact about the scheduler, not about the
 component, and it is the specific thing §2a set out to remove. Leaving it as the
 fallback keeps the arbitrary answer in the one surface least able to caveat it.
 
-## 4 · One question back, because the decision rests on it
+## 4 · Superseded — the traction question was the second one
 
-*"If `/next` gets more traction"* is a decision criterion with no measurement
-behind it. This project does not let a count stand without a basis — `#85`'s
-price line reads *not yet measured — the first branch is what fixes it* rather
-than guessing, and an enrichment judgement carries the measurement it was made
-against so it can say *review — evidence moved*.
+*This section asked what would have to be counted for "if `/next` gets more
+traction" to be answerable. That was premature.*
 
-A retirement decision gated on traction, with nothing counting traction, gets
-made on impression or never gets made at all. **What would have to be true for
-this decision to be answerable?** Not a dashboard — one or two numbers, chosen
-now rather than reconstructed later. Which stages get opened in each surface, or
-how many verdicts get recorded in each, would probably do it.
+**Decision (project owner, 2026-09-17):** the two cannot be compared until
+`/next` is feature complete, and it is missing features present in classic that
+have never been discussed.
 
-I am not specifying that; it is the project owner's call whether it is worth
-counting. But the decision in §1 is load-bearing for everything scoped
-`/next`-only from here, and right now nothing would tell anyone whether its
-condition has been met.
+So the prior question is not how to measure traction but **what classic does that
+`/next` does not** — which nobody has written down, which leaves "feature
+complete" undefined and traction meaningless until it is. See
+`SPEC-PARITY-INVENTORY-AND-GROUPS.md`, which also carries the first entry:
+resource groups render in `/next` but do not collapse.
+
+The §2 rule above is unaffected: capability may diverge, honesty may not.
