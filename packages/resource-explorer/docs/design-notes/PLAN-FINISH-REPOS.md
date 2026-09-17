@@ -89,7 +89,7 @@ are five independent streams.
 
 ---
 
-## Part 3 · The ten items
+## Part 3 · The eleven items
 
 Each row: where it lives, what it depends on, and the done test. **No order is
 imposed** beyond the dependencies in the last column.
@@ -106,6 +106,7 @@ imposed** beyond the dependencies in the last column.
 | 8 | **Feedback** — present, not used | `next/feedback.js`; `web/routes/feedback.py`; `gaps.py` | per-answer feedback exists, and a disagreement lands in the gaps collection as destination `ours` | independent |
 | 9 | **Chat** — under-utilised | `next/chat.js` (extract) | assessed first, then scoped — the only item here with no agreed shape yet | needs a design round |
 | 10 | **RFAs** — not started | `next/rfa.js`; `rfa_egeria_sync.py` | an RFA can be raised and tracked in `/next`; today `app.js:601` honestly links out to classic | independent |
+| 11 | **Discovery, Assessment, Analysis** — not started (added by the owner, 2026-09-17) | `next/app.js` (`STAGES`, the generic Questions-checklist pipeline `loadPane()` already reaches every other stage through); `web/routes/discovery.py` for Discovery's own endpoints | each of the three shows its real catalogued questions/analyses in `/next` instead of the "not built" placeholder, and Discovery's classic-only org-import/repo-search/`/from-list`/CSV-export/disposition-write endpoints are reachable there too (or each is explicitly, individually deferred) | Part 2. A prior assessment (2026-09-17) found Assessment and Analysis have **no bespoke UI or backend in classic at all** — both are the same generic catalog-card/dashboard shell classic already reuses for every stage, pointed at `intent: assessment`/`intent: analysis`; likely cheap once the mechanism exists. Discovery shares that same generic shell but does carry real, dedicated backend logic (`discovery.py`, 774 lines) that has no `/next` equivalent yet and would need its own porting work for parity, not just the card grid. |
 
 **Plus, small and already specified:** group collapse with its force-expand rule
 (`SPEC-PARITY-INVENTORY-AND-GROUPS.md` §3), the classic honesty clause
@@ -136,6 +137,6 @@ retraction the owner had already ruled out, `MetadataExpert` over
 `ClassificationExplorer`, a resolver and a stale-state that both already
 existed, and `members.py` named off a file listing I never opened.
 
-**The ten items are the definition of done.** Nothing gets added to this plan
-from the design record; new work comes from the owner or from something being
-blocked.
+**The eleven items are the definition of done.** Nothing gets added to this
+plan from the design record; new work comes from the owner or from something
+being blocked.
