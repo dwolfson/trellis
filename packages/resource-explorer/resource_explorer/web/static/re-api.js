@@ -317,6 +317,79 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
        compileId ? { query_hash: queryHash, vote, compile_id: compileId }
                  : { query_hash: queryHash, vote });
 
+/**
+ * Join a chat vote to the gaps loop (item 8 — ITEM-8-FEEDBACK-IMPLEMENTED.md).
+ *
+ * `sendFeedback` above records the vote for MetricsCollector's own tracing —
+ * a different consumer than the gaps collection, and not the mechanism
+ * `record_disagreement` (gaps.py) reads. This is the SAME endpoint the
+ * Questions-checklist "Was this right?" bar already posts to
+ * (`/api/feedback/answer`, feedback.js:313) — a chat vote is the same kind of
+ * claim about the same kind of answer, so it goes through the same door
+ * rather than a parallel one. Only `disagree` raises a gap; `agree`/`partly`
+ * still land in the feedback store (feedback.py's module note).
+ *
+ * Requires a resource in scope: the endpoint 404s on an unknown slug and a
+ * chat turn asked with nothing selected has no slug to attribute a gap to —
+ * that turn's vote still reaches `sendFeedback` above, it just cannot join
+ * the per-resource gaps collection. Callers should skip this call rather
+ * than let it throw when `slug` is empty.
+ */
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '' }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page });
+
+/**
+ * SSE variant of `ask()` — POST /api/query/stream, yielding one event per
+ * server line rather than one Promise for the whole answer.
+ *
+ * Async generator, not a callback pair: the caller drives it with `for await`
+ * and can stop consuming (e.g. the resource selection changed underneath it)
+ * without this module needing to know why. Events come back exactly as the
+ * server names them — `{t:'chunk', v}` while text is arriving, one
+ * `{t:'done', ...}` carrying intent/hash/chart/compiled/compile_id and
+ * whichever structured payload (symbol_table, compare_symbols,
+ * alias_suggestion) the done event carried.
+ *
+ * Falls back to nothing: a caller that cannot get a readable stream (an
+ * old browser, a proxy that buffers SSE) should catch and retry with the
+ * plain `ask()` above rather than this function pretending to stream.
+ */
+export async function* askStream(query, { resourceSlug, perspectives = [], sessionId } = {}) {
+  const res = await fetch('/api/query/stream', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      query,
+      project_slug: resourceSlug || null,
+      perspectives: [...perspectives],
+      session_id: sessionId || null,
+    }),
+  });
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+    throw new ApiError(res.status, detail, '/api/query/stream');
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line; a frame may arrive split
+    // across chunks, so only a complete "...\n\n" is safe to parse.
+    let sep;
+    while ((sep = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const line = frame.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      yield JSON.parse(line.slice(6));
+    }
+  }
+}
+
 /* ── Charts ──────────────────────────────────────────────────────────── */
 
 /** The chart kinds `/api/stats/{slug}/charts/{kind}` serves for a repo. */
