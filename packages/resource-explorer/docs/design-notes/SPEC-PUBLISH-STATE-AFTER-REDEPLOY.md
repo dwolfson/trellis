@@ -1,16 +1,14 @@
 # Publish state after a redeploy
 
 **Answers:** the open question in `REPLY-RETRACTION-WITHDRAWN.md` §4
-**Read against:** `main` at `342e0ca3` (after `#105`) — **verified in the code, by me**
-**Date:** 2026-09-17
+**Read against:** `main` at `342e0ca3` (after `#105`) — verified in the code
+**Date:** 2026-09-17 · **Revised** the same day, twice, on the project owner's correction
 
 ---
 
-## 1 · The question is answered, and it is the bad branch
+## 1 · The defect is confirmed
 
-I asked whether `/next`'s publish state is read live from Egeria or stored
-locally. **It is stored locally, and nothing ever checks it against Egeria.**
-
+Publish state is **stored locally, and nothing ever checks it against Egeria.**
 Three tables in the project registry carry it:
 
 | table | `registry.py` | what it stores |
@@ -21,83 +19,106 @@ Three tables in the project registry carry it:
 
 `get_last_published_analyses`, `get_last_published_annotation_types`,
 `has_published_annotation_types_for_report` and
-`get_published_annotation_types_for_report` read them. **There is no function
-anywhere that resolves a stored `egeria_report_guid` to check it still exists.**
+`get_published_annotation_types_for_report` read them. **No function anywhere
+resolves a stored `egeria_report_guid` to check it still exists.**
 
-So after the owner's 2026-09-14 wipe-and-redeploy, every one of those rows names
-a GUID that no longer resolves, and the UI reports all of it as published. That
-is squarely **a fast path must not lie** — and it is worse than the usual case of
-that rule, because the lie is *durable*: nothing in the system will ever
-correct it on its own.
+**Decision (project owner, 2026-09-14):** rather than retract or migrate the
+published `SourceControlLibrary` elements, wipe and redeploy Egeria once the
+publish code is corrected — dev environment, no real users to protect.
 
-## 2 · Which makes this the general case, not the 09-14 case
+That decision is right, and it is also why these rows are now false: what this
+app publishes are elements it **creates**, and a created element's GUID is
+persisted with the element, so a wiped database takes all of them with it. The
+UI has been reporting them as published ever since.
 
-The instinct is to treat this as cleanup after one wipe. It is not. **This is a
-dev environment, so the store will be wiped again** — that is what dev
-environments are for, and the 09-14 decision established wipe-and-redeploy as
-this project's accepted answer to a bad publish. Every future wipe re-creates
-the same false state.
+## 2 · Not the 09-14 case — the general one
 
-So the fix is not a migration. It is the app knowing **which store it published
-into**, so that a different store makes the old rows read as what they are.
+The store will be wiped again; that is what a dev environment is for, and the
+09-14 ruling established wipe-and-redeploy as this project's accepted answer to
+a bad publish. So the fix is not a migration. It is the app being able to tell
+that what it published is no longer there.
 
-## 3 · The fix: publish rows carry the identity of the store they went to
+## 3 · The mechanism: ask, once per connection
 
-Two ways, and the first is much better if it is available:
+**Two corrections against myself before the design, because both changed it.**
 
-**(a) Record the store's own identity.** Read a stable per-deployment
-identifier from Egeria once at connect time, cache it, and stamp it on each
-publish row. A redeployed store returns a different one, and staleness is
-detected with **no operator discipline at all**. This is the version worth
-having, because a fix that depends on someone remembering to run something
-after a wipe will be wrong the first time someone forgets.
+*First, I asked the wrong question.* I asked whether Egeria exposes a stable
+store identity that changes on a redeploy, and built the spec around stamping it
+on each publish row. That is a **proxy** for the thing actually in question.
+What the interface needs to know is not *which store is this* but **do the
+elements we published still exist** — and that can be asked directly, so it
+should be. A proxy can be right while the proposition it stands for is wrong;
+this one would have missed elements deleted from a store that was never wiped.
 
-**One question for the project owner, and the only thing here that cannot be
-settled from the code: does Egeria expose a stable identifier that changes when a
-store is wiped and redeployed** (a platform origin, a metadata collection id, a
-cohort or server instance id)? Nothing in `resource_explorer` reads one today —
-`config.py` has only `platform_url` and `view_server`, which survive a redeploy
-unchanged and so cannot serve. The answer decides between (a) and (b) above.
+*Second, not all stored GUIDs are equally perishable*, which I did not know:
 
-**(b) If there is no such identifier: an operator-recorded epoch.** One row —
-`egeria_store_epoch`, a timestamp — written by whatever redeploys the store.
-Publish rows older than it are stale. Cheap and honest, but it can be forgotten,
-so it is the fallback rather than the design.
+| origin of the element | GUID after a wipe-and-redeploy |
+|---|---|
+| **created** by this app — SurveyReports, annotations, ToDos | **gone**, with the database |
+| **loaded from a content pack / archive** | **survives** — archives carry pre-defined GUIDs, stable and very rarely changed |
 
-**Not (c): verifying on read.** Resolving each GUID when the page renders puts an
-Egeria round trip behind a fast path, and the cost rules say a price like that is
-either named or not paid. One cached fact at connect time costs nothing per
-render.
+So *"a stored Egeria GUID may be stale"* is not a property of stored GUIDs in
+general. It is a property of **created-element** GUIDs. The three publish tables
+hold nothing but created-element GUIDs, which is what makes one check sound for
+all of them — and it is also why the same check must not be pointed at
+archive-sourced GUIDs, which are durable by construction.
 
-## 4 · What it says on screen
+**The check.** On connecting, resolve the newest stored `egeria_report_guid`
+with `MetadataExpert.get_metadata_element_by_guid`. If it does not resolve, every
+publish row recorded before this connection is suspect, and the UI says so.
 
-Publish state gains a third reading beside the two it has. Not *published* and
-not *never published* — **published into a store that no longer holds it**:
+Three things make this cheap rather than the per-row verification I ruled out for
+cost:
+
+- **One call per connection, not one per render.** The cost rules say a price is
+  either named or not paid; one call at connect time is not a price worth naming.
+- **The client is already constructed.** `rfa_egeria_sync.py` builds
+  `MetadataExpert` precisely for *"the fully generic metadata-element read
+  (`get_metadata_element_by_guid`, used elsewhere for verification/
+  reconciliation)"*. This is that purpose, and the precedent is already in the
+  codebase.
+- **No new Egeria concept, and no operator discipline.** Nothing has to be
+  recorded when someone wipes the store, so nothing is wrong the first time
+  someone forgets.
+
+## 4 · What it says on screen — and what it must not claim
+
+Publish state gains a third reading. Not *published* and not *never published*:
 
 > **published** · <span>09-12</span> · <span>14</span> annotations
-> ⚠ the store was redeployed on 09-14 — these elements no longer exist ·
-> *publish again ›*
+> ⚠ these elements are no longer in the store · *publish again ›*
 
-Rules, all of them ones this project already applies elsewhere:
+**The sentence states what was observed, not why.** My first draft read *"the
+store was redeployed on 09-14 — these elements no longer exist"*, which asserts
+a cause the check cannot establish: a failed resolve means the elements are gone,
+and a wipe and an individual deletion look identical from here. Naming the wrong
+cause is worse than naming none, because it sends someone to check the wrong
+thing. **If the redeploy date is independently known, the row may name it; if it
+is inferred from the failed resolve, it may not.**
 
-- **Flag, do not delete.** The row is evidence that a publish happened and what
-  it contained; it stays, the way a withdrawn proposal leaves its verdict
-  standing with a flag. Deleting the history to make the screen tidy would
-  destroy the only record that the elements ever existed.
-- **Name the date, not just the condition.** *The store was redeployed on 09-14*
-  is checkable; *may be out of date* is not.
-- **The action is `publish again`, and it is honest about being a re-publish**,
-  not a repair — it writes new elements with new GUIDs, and the cost ladder
-  applies to it exactly as to a first publish.
-- **Absence is a state:** a resource with no publish rows at all still reads
-  *never published*, which is different from *published, into a store since
-  redeployed*, and both are different from *publish failed*.
+The rest are rules this project already applies:
 
-## 5 · One more thing this exposes, which I am not specifying
+- **Flag, do not delete.** The row is the only evidence that a publish happened
+  and what it contained. It stays, exactly as a withdrawn proposal leaves its
+  verdict standing with a flag. Deleting the history to tidy the screen destroys
+  the record that the elements ever existed.
+- **`publish again` is honest about being a re-publish**, not a repair: it
+  creates new elements with new GUIDs, and the cost ladder applies to it as to a
+  first publish.
+- **Absence is a state, and there are now four of them** — *never published*;
+  *published*; *published, and no longer in the store*; *publish failed*. None of
+  them is a blank.
 
-`rfa_egeria_sync.py` and `members.py` also hold Egeria GUIDs. I have not traced
-whether they have the same problem, and I am not going to guess at it — but if
-the answer is that Egeria GUIDs are stored in more places than these three
-tables, then **the store-identity fact belongs somewhere central** rather than on
-the publish tables, and that changes where (a) lands. Worth one look before
-building.
+## 5 · Where else created GUIDs are stored — one look before building
+
+`rfa_egeria_sync.py` stores the GUIDs of ToDos it creates, and `members.py`
+holds Egeria GUIDs too. ToDos are created elements, so they have exactly this
+problem; `members.py` may hold a mixture, and **a mixture is the case that
+matters**, because a check that flags archive-sourced GUIDs as stale would be
+wrong in the opposite direction.
+
+So before building: find every place a created-element GUID is persisted, and
+confirm whether any store mixes created with archive-sourced. If they do mix,
+**the origin has to be recorded alongside the GUID** — one column, written at
+insert, where the writer knows the answer for free. If they do not mix, the
+per-table check in §3 is sufficient and nothing more is needed.
