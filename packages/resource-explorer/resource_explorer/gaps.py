@@ -28,13 +28,37 @@ from __future__ import annotations
 
 import logging
 
-from resource_explorer.destinations import analyses_with_checks
+from resource_explorer.destinations import OURS, analyses_with_checks
 from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
 
 log = logging.getLogger(__name__)
 
 NOT_MEASURABLE = "not_measurable"
 DISAGREEMENT = "disagreement"
+
+#: Who noticed the gap. Stored inside `evidence` (no schema change) and
+#: surfaced as a top-level `source` by `gaps_summary`, because "two of our
+#: own measures point different ways" and "a person read the answer and said
+#: it is wrong" are different claims that must not render alike — the same
+#: rule result_status.py applies to a measurement, applied to its origin.
+SOURCE_MEASURED = "measured"
+SOURCE_PERSON = "person"
+
+#: `check_name` prefix for a gap raised by a person against one question's
+#: answer. Prefixed so it can never collide with a real check name from
+#: check_registry.yaml, and so the identity index
+#: (project_slug, analysis_id, gap_kind, check_name) keys one gap per
+#: (resource, analysis, question) — a second person disagreeing with the same
+#: answer refreshes that gap rather than creating a parallel one.
+QUESTION_PREFIX = "question:"
+
+
+def question_check_name(question: str) -> str:
+    """The `check_name` a person's disagreement about `question` is stored
+    under. Deterministic and reversible by inspection — the question text is
+    carried whole rather than hashed, so a row in the gaps table can be read
+    without a lookup table."""
+    return f"{QUESTION_PREFIX}{(question or '').strip()}"
 
 
 def _not_measurable_gaps(registry, slug: str) -> list[dict]:
@@ -56,6 +80,7 @@ def _not_measurable_gaps(registry, slug: str) -> list[dict]:
                 out.append({
                     "analysis_id": analysis_id,
                     "gap_kind": NOT_MEASURABLE,
+                    "destination": OURS,
                     "check_name": check_name,
                     "sentence": row.get("summary") or (
                         f"{check_name} could not be established for this "
@@ -64,6 +89,7 @@ def _not_measurable_gaps(registry, slug: str) -> list[dict]:
                     "evidence": {
                         "check_name": check_name, "label": row.get("label"),
                         "confidence": row.get("confidence"),
+                        "source": SOURCE_MEASURED,
                     },
                 })
     return out
@@ -97,9 +123,12 @@ def _disagreement_gaps(registry, slug: str) -> list[dict]:
         out.append({
             "analysis_id": subject,
             "gap_kind": DISAGREEMENT,
+            "destination": OURS,
             "check_name": subject,
             "sentence": note,
-            "evidence": {"question": question, "value": value},
+            "evidence": {
+                "question": question, "value": value, "source": SOURCE_MEASURED,
+            },
         })
     return out
 
@@ -125,6 +154,57 @@ def record_gaps_for(registry, slug: str) -> list[dict]:
     return gaps
 
 
+def record_disagreement(
+    registry, slug: str, question: str, analysis_id: str, comment: str = "",
+    who: str = "", extra_evidence: dict | None = None,
+) -> dict:
+    """A person read one answer and said it is wrong. Recorded as a gap about
+    the ANALYSIS, `ours` — the same destination a disagreement between two of
+    our own measures gets, for the same reason: the repository is not at
+    fault for our answer about it (destinations.py's rule 1, which computes
+    `ours` and never reads it from the registry).
+
+    Returns the gap dict that was stored. `analysis_id` may be "" when the
+    catalog names no analysis for this question — the disagreement is still
+    real and is still recorded, attributed to no analysis rather than to a
+    guessed one. A caller wanting to know which happened reads the returned
+    `analysis_id`, not a separate flag.
+
+    The write is the same `upsert_gap` the measured gaps use, so a second
+    person disagreeing with the same answer refreshes one row (bumping
+    `last_seen_at`) instead of stacking duplicates — the count stays "how
+    many answers are disputed", which is the number a curator acts on, not
+    "how many times someone clicked".
+    """
+    comment = (comment or "").strip()
+    sentence = (
+        f"A person disagreed with the answer to \u201c{(question or '').strip()}\u201d"
+        + (f": {comment}" if comment else ".")
+    )
+    evidence = {
+        "question": question,
+        "comment": comment,
+        "who": who,
+        "source": SOURCE_PERSON,
+        "analysis_attributed": bool(analysis_id),
+    }
+    if extra_evidence:
+        evidence.update(extra_evidence)
+    gap = {
+        "analysis_id": analysis_id or "",
+        "gap_kind": DISAGREEMENT,
+        "destination": OURS,
+        "check_name": question_check_name(question),
+        "sentence": sentence,
+        "evidence": evidence,
+    }
+    registry.upsert_gap(
+        slug, gap["analysis_id"], gap["gap_kind"], gap["check_name"],
+        gap["sentence"], evidence=evidence,
+    )
+    return gap
+
+
 def gaps_summary(registry, slug: str) -> dict:
     """The shape GET /api/projects/{slug}/gaps returns: every stored gap for
     this project, plus counts and `measures_total` per analysis so "3 of 11"
@@ -138,11 +218,26 @@ def gaps_summary(registry, slug: str) -> dict:
     from resource_explorer.destinations import checks_per_analysis
 
     rows = registry.list_gaps(slug)
+    for r in rows:
+        # Every row in this table is, by construction, a finding about the
+        # analysis — that is what the table is. Stated on the row rather than
+        # left for a consumer to infer from the table it came out of, so the
+        # UI reads the same word (`ours`) here and on a finding row.
+        r["destination"] = OURS
+        r["source"] = (r.get("evidence") or {}).get("source") or SOURCE_MEASURED
     open_rows = [r for r in rows if not r.get("resolved_at")]
     counts = {
         NOT_MEASURABLE: sum(1 for r in open_rows if r["gap_kind"] == NOT_MEASURABLE),
         DISAGREEMENT: sum(1 for r in open_rows if r["gap_kind"] == DISAGREEMENT),
         "total": len(open_rows),
+        # A SUBSET of DISAGREEMENT above, not a fourth bucket — the two
+        # numbers overlap on purpose and a consumer must not add them. It is
+        # surfaced because the two kinds go to different people: a disputed
+        # answer is work for whoever wrote the analysis, a measured
+        # disagreement is work for whoever reconciles two measures.
+        "disputed_by_a_person": sum(
+            1 for r in open_rows if r.get("source") == SOURCE_PERSON
+        ),
     }
     by_analysis: dict[str, int] = {}
     for r in open_rows:

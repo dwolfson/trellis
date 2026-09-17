@@ -104,3 +104,135 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
     if updated is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")
     return updated
+
+
+# ── Per-answer feedback ──────────────────────────────────────────────────
+#
+# The floating Feedback button above is about the PRODUCT ("this page is
+# confusing"). This is about one ANSWER ("the answer to that question is
+# wrong"), and the two must not be one control: product feedback goes to
+# whoever builds the UI, a disputed answer goes to whoever wrote the
+# analysis, and folding them together is how a real disagreement about a
+# measurement ends up in a triage queue for button placement.
+#
+# A disagreement lands in the gaps collection (gaps.py) marked `ours` —
+# destinations.py's rule 1: a finding about the analysis is never charged to
+# the repository. Agreement and "partly right" land in the feedback store,
+# because they are real signal about the answer and there is nowhere else
+# that keeps them; they are deliberately NOT gaps, since nothing is owed.
+
+#: What a person can say about one answer. `disagree` is the only verdict
+#: that produces a gap — see the module note above.
+AGREE = "agree"
+PARTLY = "partly"
+DISAGREE = "disagree"
+VALID_VERDICTS = {AGREE, PARTLY, DISAGREE}
+
+
+class AnswerFeedback(BaseModel):
+    slug: str
+    question: str
+    verdict: str
+    comment: str = ""
+    # The analysis the person is disputing. Normally omitted — the server
+    # resolves it from the question catalog, which is the same mapping the
+    # page itself rendered from. A client MAY send it (the row shows several
+    # analyses and the person meant one of them); an id the catalog does not
+    # list for this question is rejected rather than silently recorded, so a
+    # stale page cannot attribute a dispute to an analysis that never
+    # answered it.
+    analysis_id: str = ""
+    session_id: str = ""
+    page: str = ""
+
+
+def _analyses_for_question(question: str) -> list[str]:
+    """Which analyses the catalog says answer this question. Empty is a real
+    answer — several questions are answered by a person or a direct field and
+    name no analysis at all (see QuestionChecklistEntry.kind)."""
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    wanted = (question or "").strip().casefold()
+    for e in get_questions("repo"):
+        if (e.get("question") or "").strip().casefold() == wanted:
+            return list((e.get("answering") or {}).get("analysis_ids") or [])
+    return []
+
+
+@router.post("/answer")
+async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
+    """Record what a person said about one answer, and raise a gap when they
+    disagreed.
+
+    Returns `{"status": "ok", "gap": <gap>|None, "gap_reason": str}`.
+    `gap` is null for agree/partly (nothing is owed) — `gap_reason` says
+    which of those it was, rather than leaving the caller to infer a failure
+    from a null.
+    """
+    from resource_explorer.gaps import record_disagreement
+    from resource_explorer.registry import ProjectRegistry
+
+    verdict = (payload.verdict or "").strip().lower()
+    if verdict not in VALID_VERDICTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"verdict must be one of {sorted(VALID_VERDICTS)}, got {payload.verdict!r}",
+        )
+    question = (payload.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    registry = ProjectRegistry()
+    if registry.get(payload.slug) is None:
+        raise HTTPException(status_code=404, detail=f"Project '{payload.slug}' not found")
+
+    catalogued = _analyses_for_question(question)
+    analysis_id = (payload.analysis_id or "").strip()
+    if analysis_id and analysis_id not in catalogued:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"analysis_id {analysis_id!r} does not answer that question. "
+                f"The catalog names: {catalogued or 'no analysis'}."
+            ),
+        )
+    if not analysis_id:
+        # The first catalogued analysis, matching what the row's provenance
+        # line names first. When the catalog names none, "" is recorded — the
+        # disagreement is real whether or not an analysis can be charged with
+        # it, and inventing an id here would put a person's dispute on an
+        # analysis that never answered the question.
+        analysis_id = catalogued[0] if catalogued else ""
+
+    # Kept whatever the verdict is: this is the record of what was said, and
+    # the gap below is the consequence of one kind of saying. Storing only
+    # disagreements would make "nobody has questioned this answer" and "one
+    # person confirmed it" look identical.
+    store = FeedbackStore()
+    store.add(FeedbackEntry(
+        session_id=payload.session_id,
+        page=payload.page,
+        element_guid=f"answer:{payload.slug}:{question}",
+        message=f"[{verdict}] {(payload.comment or '').strip()}".strip(),
+    ))
+
+    if verdict != DISAGREE:
+        return {
+            "status": "ok", "gap": None,
+            "gap_reason": f"recorded as {verdict} — no gap is owed",
+        }
+
+    gap = record_disagreement(
+        registry, payload.slug, question, analysis_id,
+        comment=payload.comment, who=payload.session_id,
+        extra_evidence={"catalogued_analyses": catalogued},
+    )
+    return {
+        "status": "ok", "gap": gap,
+        "gap_reason": (
+            f"disagreement recorded against {analysis_id}"
+            if analysis_id else
+            "disagreement recorded; the catalog names no analysis for this "
+            "question, so it is attributed to none"
+        ),
+    }
