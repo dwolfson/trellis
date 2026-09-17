@@ -129,7 +129,7 @@ class TestComponentCoverage:
 class TestBlueprintCoverage:
     def test_nothing_clustered_is_all_zeros(self):
         cov = _architecture_verdict_coverage(_Reg(), "acme-widget")
-        assert cov["blueprints"]["total"] == 0
+        assert cov["blueprints_by_perspective"] == {}
 
     def test_blueprints_are_deduped_by_perspective_and_label(self):
         """Two runs (repo_arch_detect and repo_arch_coupling both cluster
@@ -141,15 +141,17 @@ class TestBlueprintCoverage:
             _bp_row("logical", "auth-service", surveyed_at="2026-09-08T00:00:00"),
             _bp_row("physical", "auth-service", surveyed_at="2026-09-08T00:00:00"),
         ])
-        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints"]
-        assert cov["total"] == 2  # logical::auth-service, physical::auth-service
+        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints_by_perspective"]
+        # Each reading counted on its own -- a cluster only exists within one.
+        assert cov["logical"]["total"] == 1
+        assert cov["physical"]["total"] == 1
 
     def test_blueprint_verdict_keys_join_on_perspective_and_label(self):
         reg = _Reg(
             blueprint_rows=[_bp_row("logical", "auth-service")],
             verdicts={"logical::auth-service": _verdict("accepted", verdict_target="blueprint")},
         )
-        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints"]
+        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints_by_perspective"]["logical"]
         assert cov == {"total": 1, "accepted": 1, "rejected": 0, "retyped": 0,
                        "reviewed": 1, "pending": 0}
 
@@ -158,7 +160,7 @@ class TestBlueprintCoverage:
             blueprint_rows=[_bp_row("logical", "auth-service")],
             verdicts={"logical::auth-service": _verdict("accepted", verdict_target="component")},
         )
-        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints"]
+        cov = _architecture_verdict_coverage(reg, "acme-widget")["blueprints_by_perspective"]["logical"]
         assert cov["accepted"] == 0
         assert cov["pending"] == 1
 
@@ -166,34 +168,49 @@ class TestBlueprintCoverage:
 class TestCoverageSentence:
     def test_nothing_proposed_is_a_blank_sentence(self):
         assert _architecture_verdict_coverage_sentence(
-            {"components": {"total": 0}, "blueprints": {"total": 0}}) == ""
+            {"components": {"total": 0}, "blueprints_by_perspective": {}}) == ""
 
     def test_zero_total_clause_is_omitted_not_stated_as_zero_of_zero(self):
         cov = {"components": {"total": 5, "accepted": 0, "rejected": 0,
                               "retyped": 0, "reviewed": 0, "pending": 5},
-               "blueprints": {"total": 0, "accepted": 0, "rejected": 0,
-                             "retyped": 0, "reviewed": 0, "pending": 0}}
+               "blueprints_by_perspective": {}}
         sentence = _architecture_verdict_coverage_sentence(cov)
-        assert "blueprint" not in sentence
-        assert sentence == "0 of 5 components reviewed"
+        assert "cluster" not in sentence
+        assert sentence == "0 of 5 component paths reviewed"
 
-    def test_the_full_sentence_names_every_outcome(self):
+    def test_the_full_sentence_names_every_outcome_and_reading(self):
         cov = {"components": {"total": 109, "accepted": 18, "rejected": 6,
                               "retyped": 1, "reviewed": 25, "pending": 84},
-               "blueprints": {"total": 5, "accepted": 2, "rejected": 0,
-                             "retyped": 0, "reviewed": 2, "pending": 3}}
+               "blueprints_by_perspective": {
+                   "logical": {"total": 5, "accepted": 2, "rejected": 0,
+                               "retyped": 0, "reviewed": 2, "pending": 3},
+               }}
         sentence = _architecture_verdict_coverage_sentence(cov)
         assert sentence == (
-            "25 of 109 components reviewed (18 accepted, 6 rejected, 1 retyped); "
-            "2 of 5 blueprints reviewed (2 accepted)"
+            "25 of 109 component paths reviewed (18 accepted, 6 rejected, 1 retyped); "
+            "2 of 5 clusters in the logical reading reviewed (2 accepted)"
+        )
+
+    def test_each_reading_gets_its_own_clause(self):
+        cov = {"components": {"total": 0},
+               "blueprints_by_perspective": {
+                   "logical": {"total": 12, "accepted": 0, "rejected": 0,
+                               "retyped": 0, "reviewed": 0, "pending": 12},
+                   "physical": {"total": 3, "accepted": 1, "rejected": 0,
+                                "retyped": 0, "reviewed": 1, "pending": 2},
+               }}
+        sentence = _architecture_verdict_coverage_sentence(cov)
+        assert sentence == (
+            "0 of 12 clusters in the logical reading reviewed; "
+            "1 of 3 clusters in the physical reading reviewed (1 accepted)"
         )
 
     def test_singular_noun_for_one(self):
         cov = {"components": {"total": 1, "accepted": 0, "rejected": 0,
                               "retyped": 0, "reviewed": 0, "pending": 1},
-               "blueprints": {"total": 0}}
-        assert "1 component" in _architecture_verdict_coverage_sentence(cov)
-        assert "1 components" not in _architecture_verdict_coverage_sentence(cov)
+               "blueprints_by_perspective": {}}
+        assert "1 component path" in _architecture_verdict_coverage_sentence(cov)
+        assert "1 component paths" not in _architecture_verdict_coverage_sentence(cov)
 
 
 class TestSplicedIntoAnswers:
@@ -219,14 +236,13 @@ class TestSplicedIntoAnswers:
             "verdict_coverage": {
                 "components": {"total": 2, "accepted": 1, "rejected": 0,
                                "retyped": 0, "reviewed": 1, "pending": 1},
-                "blueprints": {"total": 0, "accepted": 0, "rejected": 0,
-                              "retyped": 0, "reviewed": 0, "pending": 0},
+                "blueprints_by_perspective": {},
             },
         })
         h = _architecture_recovery_headline(_Reg(), "acme-widget")
         assert h is not None
         assert "2 components recovered" in h["label"]
-        assert "1 of 2 components reviewed" in h["label"]
+        assert "1 of 2 component paths reviewed" in h["label"]
         assert "1 accepted" in h["label"]
 
     def test_diagram_caption_states_coverage_alongside_the_description(self):
@@ -254,7 +270,7 @@ class TestSplicedIntoAnswers:
         )
         r = _architecture_diagram_results(reg, "acme-widget")
         assert "1 component(s) shown" in r["caption"]
-        assert "1 of 1 component reviewed (1 accepted)" in r["caption"]
+        assert "1 of 1 component path reviewed (1 accepted)" in r["caption"]
 
     def test_diagram_caption_omits_the_blueprint_clause_when_nothing_clustered(self):
         """Coverage's own zero-total omission (TestCoverageSentence above)
@@ -275,5 +291,5 @@ class TestSplicedIntoAnswers:
         }
         reg = _Reg(component_scopes=["a"], recovery_rows_by_scope={"a": [row]})
         r = _architecture_diagram_results(reg, "acme-widget")
-        assert "blueprint" not in r["caption"]
-        assert "0 of 1 component reviewed" in r["caption"]
+        assert "cluster" not in r["caption"]
+        assert "0 of 1 component path reviewed" in r["caption"]

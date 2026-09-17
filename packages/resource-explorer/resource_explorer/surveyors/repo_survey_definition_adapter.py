@@ -49,6 +49,7 @@ from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.result_status import attach as attach_status
 from resource_explorer.surveyors.result_status import status_from_detail as result_status_from_detail
 from resource_explorer.surveyors.arch_recovery import projection as arch_projection
+from resource_explorer.surveyors.arch_recovery.persist import WITHDRAWN_CHECK
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
@@ -2805,11 +2806,23 @@ def _architecture_verdict_coverage(registry, slug: str) -> dict:
         key = f"{detail.get('perspective', '')}::{r.get('label', '')}"
         if key not in latest_bp_by_key or r.get("surveyed_at", "") >= latest_bp_by_key[key].get("surveyed_at", ""):
             latest_bp_by_key[key] = r
-    blueprint_scopes = set(latest_bp_by_key)
+    # RULING-WHAT-A-VERDICT-IS-ABOUT.md §2d — a cluster only exists WITHIN one
+    # `Component.perspective` (reading); a component exists whatever reading
+    # you were in when you found it. Lumping every reading's clusters into one
+    # "blueprints" total hid that the two counts are different KINDS of count
+    # (a path count and a per-reading cluster count), so blueprint coverage is
+    # now bucketed by reading rather than combined.
+    blueprint_scopes_by_perspective: dict[str, set] = {}
+    for key in latest_bp_by_key:
+        perspective = key.split("::", 1)[0]
+        blueprint_scopes_by_perspective.setdefault(perspective, set()).add(key)
 
     return {
         "components": _bucket(component_scopes, "component"),
-        "blueprints": _bucket(blueprint_scopes, "blueprint"),
+        "blueprints_by_perspective": {
+            perspective: _bucket(keys, "blueprint")
+            for perspective, keys in sorted(blueprint_scopes_by_perspective.items())
+        },
     }
 
 
@@ -2818,14 +2831,15 @@ def _architecture_verdict_coverage_sentence(coverage: dict) -> str:
     separate so a caller wanting the raw numbers (e.g. a future UI badge)
     isn't forced to parse a sentence back apart. Omits a clause entirely
     for zero-total (nothing proposed of that kind at all) rather than
-    reporting "0 of 0 reviewed", which states nothing."""
-    clauses = []
-    for kind_name, bucket in (("component", coverage.get("components", {})),
-                              ("blueprint", coverage.get("blueprints", {}))):
-        total = bucket.get("total", 0)
-        if not total:
-            continue
-        reviewed = bucket.get("reviewed", 0)
+    reporting "0 of 0 reviewed", which states nothing.
+
+    §2d's naming: components are keyed by path across every reading, so they
+    are "component paths"; a blueprint/cluster only exists within one reading,
+    so each reading present gets its own named clause — "N of M clusters in
+    the {reading} reading reviewed" — rather than one combined "blueprints"
+    figure that would silently sum counts from different readings together.
+    """
+    def _detail(bucket: dict) -> str:
         parts = []
         if bucket.get("accepted"):
             parts.append(f"{bucket['accepted']} accepted")
@@ -2833,8 +2847,24 @@ def _architecture_verdict_coverage_sentence(coverage: dict) -> str:
             parts.append(f"{bucket['rejected']} rejected")
         if bucket.get("retyped"):
             parts.append(f"{bucket['retyped']} retyped")
-        detail = f" ({', '.join(parts)})" if parts else ""
-        clauses.append(f"{reviewed} of {total} {_plural(kind_name, total)} reviewed{detail}")
+        return f" ({', '.join(parts)})" if parts else ""
+
+    clauses = []
+    comp = coverage.get("components", {})
+    total = comp.get("total", 0)
+    if total:
+        clauses.append(
+            f"{comp.get('reviewed', 0)} of {total} component "
+            f"{_plural('path', total)} reviewed{_detail(comp)}"
+        )
+    for perspective, bucket in sorted((coverage.get("blueprints_by_perspective") or {}).items()):
+        total = bucket.get("total", 0)
+        if not total:
+            continue
+        clauses.append(
+            f"{bucket.get('reviewed', 0)} of {total} {_plural('cluster', total)} "
+            f"in the {perspective} reading reviewed{_detail(bucket)}"
+        )
     return "; ".join(clauses)
 
 
@@ -2910,11 +2940,59 @@ def _architecture_recovery_results(
         evidence_rows = [r for r in rows if r["check_name"] != "component"]
         if not comp_rows:
             continue
-        # Latest "component" row per run wins for name/type/confidence —
-        # earlier runs at the same scope_locator are superseded facts about
-        # the SAME component, unlike evidence, which accumulates.
+        # RULING-WHAT-A-VERDICT-IS-ABOUT.md §2a/§2b — a verdict is about the
+        # PATH, not about whichever step's row happens to have the newest
+        # `surveyed_at`. `detect` and `coupling` are independent proposals for
+        # the same scope_locator, so BOTH are kept (grouped by their own
+        # `run_label`) instead of one silently winning. `latest` below stays
+        # as the single overall pick — needed for anything not yet reading
+        # `proposals` — but the per-run_label groups are the real answer to
+        # "what does each extractor say about this path".
         latest = max(comp_rows, key=lambda r: r["surveyed_at"])
         detail = _json_or_empty(latest.get("detail_json"))
+        by_run_label: dict[str, list] = {}
+        for r in comp_rows:
+            rl = _json_or_empty(r.get("detail_json")).get("run_label") or ""
+            by_run_label.setdefault(rl, []).append(r)
+        # A run_label's own withdrawal (persist.py's `_withdraw_vacated`) is a
+        # `component_withdrawn` row, not a component row, so it never appears
+        # in `comp_rows` above — it has to be read from `evidence_rows`
+        # instead. §2c: an extractor that withdrew a path is no longer a
+        # CURRENT proposer of it, even though its old component row is still
+        # true history — used below to split `proposals` (current) from
+        # `withdrawn_by` (used to propose, does not currently).
+        last_withdrawal_at: dict[str, str] = {}
+        for r in evidence_rows:
+            if r["check_name"] != WITHDRAWN_CHECK:
+                continue
+            wd = _json_or_empty(r.get("detail_json"))
+            rl = wd.get("run_label") or ""
+            ts = r.get("surveyed_at") or ""
+            if ts > last_withdrawal_at.get(rl, ""):
+                last_withdrawal_at[rl] = ts
+        proposals = []
+        withdrawn_by = []
+        for rl, group in sorted(by_run_label.items()):
+            g_latest = max(group, key=lambda r: r["surveyed_at"])
+            g_detail = _json_or_empty(g_latest.get("detail_json"))
+            withdrawn_at = last_withdrawal_at.get(rl, "")
+            active = not (withdrawn_at and withdrawn_at > g_latest["surveyed_at"])
+            entry = {
+                "run_label": rl,
+                "type": g_detail.get("type"),
+                "confidence": g_latest.get("confidence", 0),
+                "perspective": g_detail.get("perspective", "physical"),
+                "surveyed_at": g_latest.get("surveyed_at", ""),
+            }
+            if active:
+                proposals.append(entry)
+            elif rl:
+                withdrawn_by.append(rl)
+        # §2b: agreement is two independent extractors landing on the same
+        # PATH — not on the same type. That is the strongest signal the
+        # recovery has, and it is the thing `max(..., key=surveyed_at)` threw
+        # away by only ever showing one of them.
+        agreement = len({p["run_label"] for p in proposals if p["run_label"]}) >= 2
         # A WITHDRAWAL is not an approach. Its rows are `check_name !=
         # "component"`, so they land in `evidence_rows` and their label
         # ("withdrawn") was being rendered as though a detector by that name had
@@ -2934,6 +3012,14 @@ def _architecture_recovery_results(
             "outcome": detail.get("outcome", ""),
             "run_scope": detail.get("run_scope", ""),
             "proposed_by": approaches or (detail.get("proposed_by") or []),
+            # §2a/§2b/§2c — see the block above. `proposals` carries one entry
+            # per extractor CURRENTLY proposing this path; `agreement` is true
+            # when two or more do; `withdrawn_by` names an extractor that used
+            # to propose this path and no longer does (flag, not invalidate —
+            # a verdict's own acceptance is untouched by this).
+            "proposals": proposals,
+            "agreement": agreement,
+            "withdrawn_by": withdrawn_by,
             "surveyed_at": latest.get("surveyed_at", ""),
             # Granularity is not precision (§2a) — depth/parent are the
             # stored hierarchy, kept even after projection collapses which
