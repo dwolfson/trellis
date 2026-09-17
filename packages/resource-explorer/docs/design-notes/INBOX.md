@@ -13,26 +13,41 @@ document and this gets regenerated from it.
 
 ## Start here — what is ready to pick up
 
-**One item.** Everything else on the last board had already shipped — see below,
+**One classification pass, then three items.** Everything else on the last board had already shipped — see below,
 because the reason matters more than the list.
 
 | | take this | read | verified |
 |---|---|---|---|
+| **Parity inventory** | *First pass done — classify it* | `INVENTORY-CLASSIC-TO-NEXT.md` | **Sixteen candidate gaps, one of them decided.** Ten absent entirely (the whole Admin section, repair, outbox, resync, Prefect, discovery sources, question catalog, group admin, scout source mode, persisted sidebar width); five partly present (group collapse, per-answer feedback, perspective persistence, chat, bulk); one deferred on record (databases and filesystems). **What is left needs the project owner:** marking each *deferred* (a decision exists) vs *undiscussed*. I can only cite the one decision that came through these notes. Half an hour with the table. |
 | **Stale publish** | *Publish state after a redeploy* — publish rows name created elements that a wipe destroyed, and nothing ever checks | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Defect confirmed by me** at `342e0ca3`: `registry.py` ~1015/~1052/~1109 store `egeria_report_guid`; no function resolves one. Fix is one `ClassificationExplorer.get_element_by_guid` per connection. §5 is a short survey to do first. |
+| **Sort direction** | *The review queue opens on the branches needing least attention* | `REVIEW-VERDICT-RULING.md` §2 | `app.js:5880` runs agreement descending and confidence ascending, so best-evidenced branches head a weakest-first queue. Agreement should **raise effective evidence** and therefore sink a branch; one ordering, one direction. Label becomes *by evidence*. My §2b wording caused this — *outranks* read as *sorts above*. Small. |
+| **Honest classic row** | *The classic panel still shows one of two proposals as the answer* | `RULING-CLASSIC-AND-NEXT.md` §3 | **Required, not optional** — the project owner ruled 09-17 that classic retires only if `/next` earns it, so there is no timeline. `repo_survey_definition_adapter.py:2951` keeps `max(comp_rows, key=surveyed_at)` and `_archRow` renders it. One clause (*also proposed by coupling ›*), **not** parity; plus the primary becomes best-evidenced rather than most recent. |
 
-### In flight right now — do not take
+### Just landed, and reviewed
 
-**Verdict subject** (`RULING-WHAT-A-VERDICT-IS-ABOUT.md`) is being built as I
-write this: `component_tree.py`, `repo_survey_definition_adapter.py`,
-`index.html`, `next/app.js` and `test_architecture_verdict_coverage.py` are all
-modified in the shared checkout. Whoever has them, has them.
+**Verdict subject shipped** in PR #107 (`1b370cbe`), with
+`VERDICT-RULING-IMPLEMENTED.md` as its reply. Reviewed in
+`REVIEW-VERDICT-RULING.md`: all four consequences are there, and two are better
+than the spec (blueprint coverage bucketed per reading rather than one clause;
+the zero-total omission reasoned out). Three things came back:
 
-*And a warning I caused:* I ran `git checkout -b re/design-verdict-ruling` in the
-shared checkout, which moved the branch for everyone in that working directory —
-a whole-tree operation of exactly the kind root `CLAUDE.md` rule 1 prohibits.
-Nothing was lost (the branch came off `342e0ca3`, so the tree was identical, and
-my commits touch only `design-notes/`), but work committed there lands on a
-branch nobody chose. Switch or merge as suits you.
+- **One defect — the sort comparator inverts the queue** (`app.js:5880`).
+  Agreement runs descending while confidence runs ascending, so the
+  best-evidenced branches now sort to the top of a weakest-first review queue.
+  My §2b wording caused it: *outranks* reads as *sorts above*, where agreement
+  should raise effective evidence and therefore **sink** a branch. The control
+  should also read *by evidence*, not *by confidence*.
+- **The classic Curate panel still has the original defect.**
+  `repo_survey_definition_adapter.py:2951` keeps `max(comp_rows, key=surveyed_at)`
+  as the top-level primary, and the classic panel reads it — so a curator there
+  still sees whichever extractor ran last, presented as the answer. It may defer
+  the two-proposal display; it may not present one proposal as the answer. One
+  clause fixes it. **Answered 09-17** — see `RULING-CLASSIC-AND-NEXT.md`: classic
+  retires only if `/next` earns it, so there is no timeline and the clause is
+  required. Capability may live in `/next` alone; honesty may not.
+- **If there must be a primary, it should be the best-evidenced, not the most
+  recent** — *most recently surveyed* is a fact about the scheduler, not about
+  the component.
 
 ### Shipped, verified against `342e0ca3` — three boards' worth
 
