@@ -37,7 +37,7 @@
  */
 import { ago } from '/static/next/format.js';
 import {
-  listSubscriptions, setSubscriptionActive, listAllSchedules, deleteSchedule,
+  listSubscriptions, setSubscriptionActive, listAllSchedules, deleteSchedule, runScheduleNow,
 } from '/static/re-api.js';
 import { state, esc, $, icon, oldUiHref } from '/static/next/app.js';
 
@@ -218,6 +218,12 @@ async function renderSchedules() {
       <td class="py-s2 pr-s3 text-caveat">${status}</td>
       <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc((s.last_run || '—').replace('T', ' ').slice(0, 16))}</td>
       <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc((s.next_run || '—').replace('T', ' ').slice(0, 16))}</td>
+      <td class="py-s2 pr-s3">
+        <button data-run-sched="${esc(s.entity_type)}|${esc(s.entity_slug)}|${esc(s.analysis_id)}"
+          title="Run this scheduled analysis now, through the same dispatch the timer uses. Does not change its next scheduled run."
+          class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px]
+                 text-caveat text-accent-ink">Run now</button>
+      </td>
       <td class="py-s2">
         <button data-delete-sched="${esc(s.entity_type)}|${esc(s.entity_slug)}|${esc(s.analysis_id)}"
           title="Remove this schedule"
@@ -246,12 +252,32 @@ async function renderSchedules() {
         <th class="pb-s2 pr-s3 font-normal">Last run</th>
         <th class="pb-s2 pr-s3 font-normal">When</th>
         <th class="pb-s2 pr-s3 font-normal">Next run</th>
+        <th class="pb-s2 pr-s3 font-normal"></th>
         <th class="pb-s2 font-normal"></th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>` : '<p class="text-answer text-ink-muted">No schedules yet.</p>'}`;
 
   bindSubnav(renderAutomate);
+  el.querySelectorAll('[data-run-sched]').forEach((b) => b.addEventListener('click', async () => {
+    const [entityType, entitySlug, analysisId] = b.dataset.runSched.split('|');
+    const original = b.textContent;
+    b.disabled = true;
+    // No timed "started" toast — classic's own runScheduleNow comment notes
+    // some analyses run for minutes, and a toast that expires mid-run would
+    // leave the same silent gap. The button IS the progress indicator.
+    b.textContent = 'Running…';
+    try {
+      const result = await runScheduleNow(entityType, entitySlug, analysisId);
+      const errs = result?.errors || [];
+      b.textContent = errs.length ? `Ran with ${errs.length} error(s)` : 'Ran now';
+      renderSchedules();
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 404 ? 'No schedule' : `Not run: ${err.message}`;
+      setTimeout(() => { b.textContent = original; }, 4000);
+    }
+  }));
   el.querySelectorAll('[data-delete-sched]').forEach((b) => b.addEventListener('click', async () => {
     const [entityType, entitySlug, analysisId] = b.dataset.deleteSched.split('|');
     if (!window.confirm(`Remove the ${analysisId} schedule for ${entitySlug}?`)) return;

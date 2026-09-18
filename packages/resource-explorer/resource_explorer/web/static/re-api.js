@@ -806,6 +806,14 @@ export const deleteSchedule = (entityType, entitySlug, analysisId) =>
   request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
           { method: 'DELETE' });
 
+/** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
+ *  this does is exactly what the cadence would do, not a separate code
+ *  path that could diverge from it. Does NOT advance `next_run`; the
+ *  caller is expected to say so, the same distinction classic's
+ *  `runScheduleNow` draws (index.html). */
+export const runScheduleNow = (entityType, entitySlug, analysisId) =>
+  post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}/run`);
+
 /* ── Admin (PLAN-FINISH-REPOS.md item 5) ────────────────────────────────────
  * Read-mostly system/catalog-configuration views, reachable from the header's
  * own ⚙ Admin button — see next/admin/*.js. Every route here already backs
