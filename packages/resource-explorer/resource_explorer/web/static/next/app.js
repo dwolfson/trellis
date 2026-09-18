@@ -1533,6 +1533,45 @@ function markKeyHtml() {
   </div>`;
 }
 
+// Sidebar group collapse — persisted the same way classic's does (a JSON
+// array of collapsed group slugs in localStorage), but under its own key so
+// the two surfaces (classic's `index.html` and /next) never fight over one
+// entry with different shapes (SPEC-PARITY-INVENTORY-AND-GROUPS.md §3).
+const COLLAPSED_GROUPS_KEY = 're_next_collapsed_sidebar_groups';
+function collapsedGroups() {
+  try { return JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) || '[]'); }
+  catch { return []; }
+}
+// Ported from classic's `_toggleGroupCollapsed` (index.html). Deliberately
+// NOT wired off the native <details> 'toggle' event — that event can also
+// fire from the browser's own initial-state handling when the `open`
+// attribute is set during a render, which would silently overwrite a
+// reader's saved preference with whatever the force-expand-on-filter
+// render happened to show. Driving it from summary's click instead means
+// this only ever runs on a genuine user gesture.
+function toggleGroupCollapsed(slug) {
+  const current = collapsedGroups();
+  const next = current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug];
+  try { localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(next)); }
+  catch { /* per-viewer convenience only */ }
+  renderSidebar();
+}
+
+// Selecting a group selects what it counted — including members hidden
+// inside a currently-collapsed group, because the header's count already
+// includes them and a selection that silently skipped them would disagree
+// with the number the user just read. Ported from classic's
+// `_toggleGroupSelected` (index.html).
+function toggleGroupSelected(groupSlug) {
+  const members = visibleProjects()
+    .filter((p) => (p.group_slug || '') === groupSlug)
+    .map((p) => p.slug);
+  if (!members.length) return;
+  const allSelected = members.every((sl) => state.selected.has(sl));
+  members.forEach((sl) => (allSelected ? state.selected.delete(sl) : state.selected.add(sl)));
+  renderSidebar();
+}
+
 /** The repos passing every active filter, in list order. */
 function visibleProjects() {
   const f = state.filter.trim().toLowerCase();
@@ -1591,6 +1630,16 @@ function renderSidebar() {
   }
   const groupName = (slug) =>
     slug ? (state.groups.find((g) => g.slug === slug)?.display_name || slug) : 'Ungrouped';
+
+  // A filter in effect force-expands every group regardless of its saved
+  // collapse state — otherwise a match sitting inside a collapsed group
+  // would silently disappear from the filtered results, which is worse than
+  // just showing it. Collapse state itself is untouched (still exactly what
+  // it was once the filter clears). `state.scope` defaults to 'working-set'
+  // rather than '', so this mirrors classic's `_projectLifecycleFilter`
+  // default the same way: active unless explicitly cleared to 'All'.
+  const filterActive = !!(state.filter.trim() || state.scope);
+  const collapsedSlugs = collapsedGroups();
 
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
@@ -1681,30 +1730,43 @@ function renderSidebar() {
       </div>`
     : visible.length === 0 ? `
       <div class="text-chip text-chrome-ink">Nothing matches these filters.</div>`
-    : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => `
-      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
-        ${esc(groupName(g))} · <span class="tnum">${rows.length}</span>
-      </div>
-      <div class="mb-s4 flex flex-col gap-[1px]">
-        ${rows.map((p) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
-          p.slug === state.selectedSlug
-            ? 'border-l-2 border-accent bg-chrome-surface'
-            : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
-          ${state.selectMode ? `<input type="checkbox" data-sel="${esc(p.slug)}" ${
-            state.selected.has(p.slug) ? 'checked' : ''} class="shrink-0">` : ''}
-          ${lifecycleMark(p)}${dispositionMark(p)}
-          <button data-slug="${esc(p.slug)}"
-            class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
-            >${esc(p.display_name || p.slug)}</button>
-          ${p.working_set_hidden
-            ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
-            : ''}
-          ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
-            title="Open ${esc(p.display_name || p.slug)} on GitHub"
-            class="shrink-0 text-chrome-muted hover:text-accent-on-dark"
-            >${icon('external-link', { size: 13 })}</a>` : ''}
-        </div>`).join('')}
-      </div>`).join('')}
+    : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
+        const memberSlugs = rows.map((p) => p.slug);
+        const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
+        const collapsed = !filterActive && collapsedSlugs.includes(g);
+        const groupCb = state.selectMode
+          ? `<input type="checkbox" data-group-sel="${esc(g)}" class="shrink-0"
+               ${selectedHere === memberSlugs.length && memberSlugs.length ? 'checked' : ''}>`
+          : '';
+        return `<details class="mb-s4" data-group="${esc(g)}" ${collapsed ? '' : 'open'}>
+        <summary class="mb-[7px] flex cursor-pointer items-center gap-[6px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
+          ${groupCb}
+          <span class="min-w-0 truncate">${esc(groupName(g))}</span>
+          <span class="tnum">${rows.length}${
+            state.selectMode && selectedHere ? `, ${selectedHere} selected` : ''}</span>
+        </summary>
+        <div class="flex flex-col gap-[1px]">
+          ${rows.map((p) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
+            p.slug === state.selectedSlug
+              ? 'border-l-2 border-accent bg-chrome-surface'
+              : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
+            ${state.selectMode ? `<input type="checkbox" data-sel="${esc(p.slug)}" ${
+              state.selected.has(p.slug) ? 'checked' : ''} class="shrink-0">` : ''}
+            ${lifecycleMark(p)}${dispositionMark(p)}
+            <button data-slug="${esc(p.slug)}"
+              class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
+              >${esc(p.display_name || p.slug)}</button>
+            ${p.working_set_hidden
+              ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
+              : ''}
+            ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
+              title="Open ${esc(p.display_name || p.slug)} on GitHub"
+              class="shrink-0 text-chrome-muted hover:text-accent-on-dark"
+              >${icon('external-link', { size: 13 })}</a>` : ''}
+          </div>`).join('')}
+        </div>
+      </details>`;
+      }).join('')}
   `;
 
   bindSidebar();
@@ -1790,6 +1852,25 @@ function bindSidebar() {
     else state.selected.delete(cb.dataset.sel);
     renderSidebar();
   }));
+  // The group-select checkbox lives inside <summary>, whose own default
+  // click action is toggling the <details> open/closed — preventDefault()
+  // suppresses that (and the checkbox's own native check-toggle, which is
+  // fine since toggleGroupSelected's re-render redraws it either way).
+  el.querySelectorAll('input[data-group-sel]').forEach((cb) => cb.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleGroupSelected(cb.dataset.groupSel);
+  }));
+  // The rest of <summary> drives collapse/expand ourselves (preventDefault
+  // + our own toggle) rather than the native disclosure + a 'toggle'
+  // listener — see toggleGroupCollapsed's comment for why.
+  el.querySelectorAll('details[data-group] > summary').forEach((summary) => {
+    summary.addEventListener('click', (e) => {
+      if (e.target.closest('input[data-group-sel]')) return;
+      e.preventDefault();
+      toggleGroupCollapsed(summary.closest('details').dataset.group);
+    });
+  });
   el.querySelectorAll('button[data-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.workListSlug = b.dataset.worklist;
     renderSidebar();
@@ -4233,7 +4314,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
-              : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+              : `<span class="min-w-0 break-words font-mono text-chrome-ink">${esc(m.name)}</span>`}
             ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
           </li>`).join('')}
           ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
