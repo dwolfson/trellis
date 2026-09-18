@@ -60,7 +60,10 @@ class TestAutomateIsWiredIn:
         # It must come before the generic "not in /next" built-check, the way
         # Understanding's branch does, or a stage flagged built:true here
         # would still fall through to the shared Questions engine.
-        j = app.index("if (stageDef?.frame || !stageDef?.built) {")
+        # RULING-NAV-GROUPING.md: the frame check now reads `stageDef.class`
+        # (declared once on STAGES) rather than a separate `stageDef.frame`
+        # flag -- see NAV-GROUPING-IMPLEMENTED.md.
+        j = app.index("if (stageDef?.class === 'frame' || !stageDef?.built) {")
         assert i < j
 
 

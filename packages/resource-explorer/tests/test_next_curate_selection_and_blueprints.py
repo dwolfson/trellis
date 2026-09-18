@@ -162,7 +162,15 @@ class TestDeferredStylingComesFromOneHelper:
 
     def test_the_stage_nav_and_subtab_rail_use_it_not_an_inline_copy(self):
         app = _app()
-        nav_body = app[app.index("function renderIntentNav("):app.index("/** The list OF work lists")]
+        # RULING-NAV-GROUPING.md's rewrite of the stage nav factored each
+        # item's markup out of renderIntentNav() into navItemHtml() (so
+        # grouping/numbering/separators can be derived from STAGES.class
+        # without duplicating the per-item rendering three times) -- the
+        # dashed-styling call now lives there rather than inline in
+        # renderIntentNav's own body. Scan from navItemHtml() (which
+        # immediately precedes renderIntentNav) through the work-list
+        # section, so this still covers "the stage nav" as a whole.
+        nav_body = app[app.index("function navItemHtml("):app.index("/** The list OF work lists")]
         assert "deferredAttrs(false" in nav_body
         subtab_body = app[app.index("function subTabsHtml("):app.index("export function bindSubTabs(")]
         assert "deferredAttrs(false" in subtab_body
@@ -174,4 +182,10 @@ class TestDeferredStylingComesFromOneHelper:
     def test_curate_is_flipped_to_built_now_that_this_item_ships(self):
         app = _app()
         stages_body = app[app.index("const STAGES = ["):app.index("];", app.index("const STAGES = ["))]
-        assert "{ id: 'curate',        label: 'Curate',        built: true }" in stages_body
+        # RULING-NAV-GROUPING.md added `class: 'run'` to Curate's entry
+        # alongside `built: true` -- the flip this test guards is `built`,
+        # so match on that rather than the now-stale exact-literal line.
+        assert "id: 'curate'" in stages_body
+        curate_entry = stages_body[stages_body.index("id: 'curate'"):]
+        curate_entry = curate_entry[:curate_entry.index("},")]
+        assert "built: true" in curate_entry
