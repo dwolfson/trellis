@@ -773,6 +773,21 @@ export const getComponentLeaves = (slug, branch) =>
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
 
+/** SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2 — clustering.py's candidate
+ *  blueprints, each carrying its own verdict/materialization state and its
+ *  members'/children's, already resolved server-side. `perspectives` lists
+ *  every reading present, since a cluster only exists within one (§3). */
+export const getComponentBlueprints = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/blueprints`);
+
+/** Accept/reject one cluster. Accepting materialises a real Egeria
+ *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
+ *  members/children for CollectionMembership — the caller does not wait on
+ *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
+export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '') =>
+  post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
+       { perspective, cluster_name: clusterName, verdict, note });
+
 /* ── Automate ────────────────────────────────────────────────────────────
  * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).
  * Local-first: subscriptions and schedules live in RE's own registry, not
@@ -805,6 +820,14 @@ export const listAllSchedules = () => get('/api/schedules/');
 export const deleteSchedule = (entityType, entitySlug, analysisId) =>
   request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
           { method: 'DELETE' });
+
+/** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
+ *  this does is exactly what the cadence would do, not a separate code
+ *  path that could diverge from it. Does NOT advance `next_run`; the
+ *  caller is expected to say so, the same distinction classic's
+ *  `runScheduleNow` draws (index.html). */
+export const runScheduleNow = (entityType, entitySlug, analysisId) =>
+  post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}/run`);
 
 /* ── Admin (PLAN-FINISH-REPOS.md item 5) ────────────────────────────────────
  * Read-mostly system/catalog-configuration views, reachable from the header's
