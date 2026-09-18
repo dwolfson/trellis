@@ -386,6 +386,27 @@ function leafRowHtml(l) {
   </div>`;
 }
 
+/** A branch's leaves grouped by scope-hierarchy cluster (designer, 2026-09-17
+ *  — see the addendum in docs/design-notes/ITEM-3-CURATE-IMPLEMENTED.md).
+ *  `packages/` alone held 64 of 69 components as one flat list; the same
+ *  clustering that already groups the blueprints panel's "scope-hierarchy ·
+ *  collection" rows (`component_tree.group_leaves`, reading `scope_hierarchy.
+ *  derive()`) turns that into ~8 groups of ~10 here too. Default OPEN when
+ *  the group still has undecided work, default CLOSED once it is fully
+ *  decided — the depth-1 accepted signal a reader used to get from the flat
+ *  list is still here, just per-group instead of per-branch. */
+function leafGroupHtml(g) {
+  const open = g.undecided > 0;
+  return `<details class="border-b border-rule py-[3px]" ${open ? 'open' : ''}>
+    <summary class="cursor-pointer text-provenance">
+      <span class="font-mono text-ink">${esc(g.name)}/</span>
+      <span class="text-ink-muted">· <span class="tnum">${g.accepted}</span> accepted ·
+        <span class="tnum">${g.rejected}</span> rejected · <span class="tnum">${g.undecided}</span> undecided</span>
+    </summary>
+    <div class="pl-s3">${g.members.map(leafRowHtml).join('')}</div>
+  </details>`;
+}
+
 /** The tree's own checkbox selection (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md
  *  §1). No select-mode toggle -- the spec is explicit that the tree's rows
  *  are already a work queue, unlike the sidebar's navigation rows, so the
@@ -503,7 +524,15 @@ async function renderComponentTree(slug, prefix = '') {
     box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`;
     try {
       const out = await getComponentLeaves(slug, b.dataset.branchOpen);
-      box.innerHTML = out.leaves.map(leafRowHtml).join('') || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      // Grouped by scope-hierarchy cluster when the backend found groups
+      // worth having (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped
+      // leaves — a group of one collapses nothing — render plainly, same as
+      // before this restructuring. A branch with no groups at all (small
+      // branches, same as always) falls back to the flat list.
+      const groups = out.groups || [];
+      const ungrouped = out.ungrouped || out.leaves;
+      box.innerHTML = (groups.map(leafGroupHtml).join('') + ungrouped.map(leafRowHtml).join(''))
+        || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {

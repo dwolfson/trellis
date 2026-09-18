@@ -2016,12 +2016,19 @@ def components_tree(slug: str, prefix: str = "") -> dict:
 
 @router.get("/{slug}/components/leaves")
 def components_leaves(slug: str, branch: str) -> dict:
-    from resource_explorer.component_tree import leaves
+    from resource_explorer.component_tree import group_leaves, leaves
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return {"branch": branch, "leaves": leaves(registry, slug, branch)}
+    rows = leaves(registry, slug, branch)
+    # `groups`/`ungrouped` (2026-09-17): the same flat rows, re-shaped by
+    # scope-hierarchy cluster (component_tree.group_leaves) so a curator
+    # opening a large branch sees ~10-row groups instead of one long list.
+    # `leaves` stays flat and unchanged for the one other caller that reads
+    # this function directly (branch_verdicts' materialization filter).
+    groups, ungrouped = group_leaves(rows)
+    return {"branch": branch, "leaves": rows, "groups": groups, "ungrouped": ungrouped}
 
 
 class BranchVerdicts(BaseModel):
