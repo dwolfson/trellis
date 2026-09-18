@@ -211,9 +211,17 @@ async function renderSchedules() {
         ? '<span class="text-state-warn">⚠ error</span>'
         : '<span class="text-state-ok">✓ ok</span>';
     const cadence = s.enabled ? s.schedule : `${s.schedule} (disabled)`;
+    // `analysis_id` is dual-purpose (schedules.py's ScheduleEntry docstring):
+    // an analysis catalog id, OR a Survey Definition's qualified name when
+    // target_kind is 'survey' -- a GovActionProcess::* row is a survey, not
+    // an analysis, and a blanket "Analysis" column would misname it. The
+    // API already carries target_kind per row; this just stops discarding it.
+    const kind = s.target_kind === 'survey' ? 'Survey' : 'Analysis';
     return `<tr class="border-b border-rule">
       <td class="py-s2 pr-s3 text-caveat text-ink">${RESOURCE_ICON[s.entity_type] || '•'} ${esc(s.entity_slug)}</td>
-      <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc(s.analysis_id)}</td>
+      <td class="py-s2 pr-s3 text-caveat text-ink-muted">
+        <span class="text-caps uppercase tracking-caps text-ink-muted">${kind}</span> ·
+        ${esc(s.analysis_id)}</td>
       <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc(cadence)}</td>
       <td class="py-s2 pr-s3 text-caveat">${status}</td>
       <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc((s.last_run || '—').replace('T', ' ').slice(0, 16))}</td>
@@ -247,7 +255,7 @@ async function renderSchedules() {
     ${schedules.length ? `<table class="w-full text-left">
       <thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
         <th class="pb-s2 pr-s3 font-normal">Resource</th>
-        <th class="pb-s2 pr-s3 font-normal">Analysis</th>
+        <th class="pb-s2 pr-s3 font-normal">Analysis / Survey</th>
         <th class="pb-s2 pr-s3 font-normal">Cadence</th>
         <th class="pb-s2 pr-s3 font-normal">Last run</th>
         <th class="pb-s2 pr-s3 font-normal">When</th>
