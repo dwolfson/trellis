@@ -3365,8 +3365,28 @@ async function renderAnalysesIndexSection(slug, stage) {
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      await runAnalysis(slug, aid);
-      b.textContent = 'Queued — reload to see it';
+      const started = await runAnalysis(slug, aid);
+      // Watch it rather than tell the user to reload — pollActivity is the
+      // same mechanism the Questions checklist's run button already uses
+      // (rerun(), above). A five-minute timeout still redraws the section
+      // once so a slow run's real state (whatever it reaches) is on screen
+      // instead of the stale pre-run row.
+      b.textContent = 'Running…';
+      try {
+        await pollActivity(started.activity_id, {
+          onTick: (e) => {
+            const s = (e?.status || '').toLowerCase();
+            b.textContent = s === 'queued' || s === 'pending' ? 'Queued…' : 'Running…';
+          },
+        });
+      } catch (err) {
+        if (err.name !== 'PollTimeout') throw err;
+        // Not a failure — this browser stopped watching, the run itself
+        // has not failed (same distinction rerun() draws for questions).
+      }
+      if (slug === state.selectedSlug && state.subTab === 'survey') {
+        await renderAnalysesIndexSection(slug, stage);
+      }
     } catch (err) {
       b.disabled = false;
       b.textContent = original;
