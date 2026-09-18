@@ -3482,6 +3482,25 @@ brought this branch and `main` together (2026-08-26) rather than kept alongside 
 
 #### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
 
+**This heading is now stale and needs a review, not just a re-read.** Prefect was default-on for
+under two weeks: flipped on 2026-08-26 (this entry), then flipped back to **off by default**
+2026-09-04 after that default caused 13 orphaned `prefect.server.api.server:create_app`
+subprocess servers to leak on this machine (see `PrefectConfig.enabled`'s docstring in
+`config.py`, and `CLAUDE.md`'s Prefect setup section, which is the only place that revert is
+currently documented — not here). The project owner raised this 2026-09-18 after reading external
+project-description copy that described local survey execution as "orchestrated as microflows via
+Prefect," and didn't know it was optional/off — a sign the copy (and this Backlog section's own
+headline) is describing the aspirational integration rather than today's default, which is a plain
+`threading.Thread` with Prefect as an opt-in enhancement (`surveyors/prefect_adapter.py`'s
+`run_prefect_step` falls back to local in-process execution whenever no Prefect server answers).
+
+**Needs:** a review of whether default-on should be revisited now that the orphaned-subprocess
+leak is understood (was the leak itself ever root-caused and fixed, or only avoided by defaulting
+off?), and if not, whether `docs/Architecture.md`/external-facing descriptions should be corrected
+to say "optional, off by default" rather than implying it's the normal execution path. This is a
+decision item, not a bug fix — record the review's outcome here once done, with a
+`**Decision (project owner, <date>):**` callout per this repo's convention.
+
 #### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because
