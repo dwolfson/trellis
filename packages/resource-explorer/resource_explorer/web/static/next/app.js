@@ -1627,6 +1627,19 @@ function markKeyHtml() {
   </div>`;
 }
 
+// The find/discover action's stub (below, 'find-repos') is a single honest
+// placeholder for three genuinely different classic mechanisms -- GitHub
+// search + list-import for repos, server-side introspection
+// (POST /api/db-servers/{slug}/discover) for databases, and whatever
+// filesystem registration classic offers. Keeping one copy that always says
+// "repos" was quietly wrong on the DBs/FS tabs; this at least names the
+// right noun per tab until each gets its own real screen (see Backlog.md).
+const FIND_TITLE = {
+  repo: 'Find and import candidate repos',
+  db: 'Discover databases on a registered server',
+  filesystem: 'Register a filesystem path',
+};
+
 // Sidebar group collapse — persisted the same way classic's does (a JSON
 // array of collapsed group slugs in localStorage), but under its own key so
 // the two surfaces (classic's `index.html` and /next) never fight over one
@@ -1738,8 +1751,8 @@ function renderSidebar() {
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
-      <button data-act="find-repos" title="Find and import candidate repos"
-        aria-label="Find and import candidate repos"
+      <button data-act="find-repos" title="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
+        aria-label="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
         class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
         >${icon('circle-plus', { size: 14 })}</button>
       <button data-act="mark-key" title="What the marks in this list mean"
@@ -2002,9 +2015,10 @@ function bindSidebar() {
     // point 2). Still not built in /next -- says so, same as the deferred
     // stage tabs did, just from here instead.
     'find-repos': () => {
-      const d = openDialog('Find repos', 'Repo discovery — find and import candidate repos');
+      const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
+      const d = openDialog(title, title);
       d.querySelector('#wl-detail-body').innerHTML = `
-        <p class="max-w-[60ch] text-answer text-ink">Repo discovery — find and import candidate repos.</p>
+        <p class="max-w-[60ch] text-answer text-ink">${esc(title)}.</p>
         <p class="max-w-[60ch] text-answer text-ink">
           <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
             >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
