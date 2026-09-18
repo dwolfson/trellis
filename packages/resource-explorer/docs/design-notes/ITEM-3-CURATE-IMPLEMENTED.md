@@ -311,6 +311,113 @@ route's reused reader was already covered by
 Full suite: `uv run pytest tests/ -q` — **5013 passed, 103 skipped, 0
 failed**, run twice against this branch (both runs agree).
 
+## Addendum, 2026-09-17: the component tree grouped by scope-hierarchy cluster
+
+The project owner tested Curate live on `odpi/egeria-trellis` itself after this item
+shipped and found "what it's made of" hard to read: `packages/` alone holds 64 of
+the repository's 69 recovered components, and opening that branch showed all 64
+as one flat list (`curate.js`'s `leafRowHtml`, one row per component, sorted by
+path with no further structure). The designer's read: the missing middle level
+already exists — `scope_hierarchy.derive()` (`surveyors/arch_recovery/
+scope_hierarchy.py`) computes exactly the grouping that would fix this, from the
+same scope-locator paths the tree already keys components by, and it's already
+on screen elsewhere as the "scope-hierarchy · collection" rows in the blueprints
+panel below. So: group the flat leaf list by scope-hierarchy cluster instead of
+building a new grouping scheme.
+
+**Verified before building, not taken on faith.** `clustering.py`'s `propose()`
+(~line 497) calls `parents, _structural = scope_hierarchy.derive(scopes)` as its
+first pass, and `Cluster`'s own defaults (`clustering.py` lines 94–100) are
+`signal: str = "scope-hierarchy"` / `carrier: str = "collection"` — so an
+unpromoted, undivided cluster is literally rendered as "scope-hierarchy ·
+collection" by `blueprintRowHtml` (confirmed live: `odpi/egeria-trellis`'s
+blueprints panel shows `packages/resource-explorer/resource_explorer` etc. with
+exactly that label). `repo_survey_definition_adapter.py`'s
+`_candidate_blueprints_results()` (~line 3298) reads those persisted clusters for
+the panel. The designer's premise held: this is the same function, applied to
+the same kind of input (a flat set of scope locators), not merely an analogous
+one.
+
+**Where it's applied instead of joining the persisted rows.** The persisted
+`candidate_blueprint` findings are scoped to one `perspective` at a time (a
+blueprint is keyed `perspective::cluster_name`, see this file's own "Blueprints"
+section above and `RULING-WHAT-A-VERDICT-IS-ABOUT.md` §0), while a branch's
+leaves (`component_tree.leaves()`) mix every perspective with no reading
+selected. Joining through the persisted rows would mean picking one perspective
+for a multi-perspective leaf list, silently dropping components that only exist
+in another reading. `component_tree.group_leaves()` (new) instead calls
+`scope_hierarchy.derive()` directly over the branch's own leaf paths — same
+algorithm, same input shape, no perspective to choose.
+
+**What was built:**
+- `component_tree.group_leaves(leaf_rows)` — `(groups, ungrouped)`. First pass
+  groups by `scope_hierarchy.derive()`'s parent map, same as `clustering.py`'s
+  own first pass. A first-pass group over `clustering.TARGET_CLUSTER_SIZE` (10)
+  is re-derived within its own members (mirroring `clustering.py`'s
+  `_subdivide()`), so a group that has a deeper level to find gets it, and one
+  that doesn't stays one (undecided) oversized group rather than being
+  truncated — same "no signal, no cluster" contract as the blueprint pipeline.
+  `scope_hierarchy.MIN_GROUP = 2` is inherited unchanged: a would-be group of one
+  collapses nothing, so its member comes back in `ungrouped` and renders as a
+  plain row, same as before this change.
+- `GET /api/projects/{slug}/components/leaves` now also returns `groups` and
+  `ungrouped` alongside the unchanged flat `leaves` (the one other caller —
+  `branch_verdicts`' materialization filter — reads `leaves()` directly, not the
+  route, so it is untouched).
+- `curate.js`: `leafGroupHtml(g)` renders a group as `<details>`/`<summary>`
+  (this file's existing disclosure idiom, e.g. `app.js` ~line 4228), the summary
+  showing the group's scope path and `N accepted · N rejected · N undecided` —
+  the exact wording `branchRowHtml` already used one level up, kept consistent
+  rather than inventing new phrasing. **Open by default when the group has any
+  undecided members, closed once fully decided** (accepted+rejected with no
+  undecided remaining) — the designer's exact rule. The branch-open handler now
+  renders `out.groups.map(leafGroupHtml)` followed by `out.ungrouped.map(leafRowHtml)`
+  instead of the old flat `out.leaves.map(leafRowHtml)`; a branch with no
+  qualifying groups (small branches, unchanged from before) still falls back to
+  a flat list because `groups` is simply empty. Every per-leaf capability
+  (accept/reject buttons, proposal/agreement/withdrawal lines, ports) is
+  untouched — grouping only wraps the same `leafRowHtml` output, it does not
+  replace it. Branch-level selection (checkboxes, select-all-shown/matching,
+  branch accept/reject) lives one level up in `branchRowHtml` and was not
+  touched by this change.
+
+**Live verification against `odpi/egeria-trellis`** (`TRELLIS_ANONYMOUS_READ=true`
+dev server on port 8823, no password entered): opening the `packages/` branch
+(64 leaves) produced **14 groups**, not the designer's estimated "~8 groups of
+~10" — worth reporting honestly rather than rounding to the prediction. Sizes
+ranged from 2 to 14: most named-package groups landed at 2–8 members
+(`packages/egeria-advisor` 2, `.../advisor` 5, `.../resource-explorer` 7,
+`.../resource_explorer` 8, `.../surveyors` 4, `.../arch_recovery` 2, `.../web` 2,
+`.../web/static` 2, `.../docs` 6, `.../dr-egeria` 5, `.../scripts/arch-spike` 2),
+while the top-level `packages` bucket itself — files with no named-package home,
+e.g. `trellis-auth`, `trellis-context` — held 14 loose entries that resisted
+further subdivision, because re-deriving `scope_hierarchy` over just those 14
+finds no shared prefix among them (each is already at minimum ancestor depth).
+This matches what the live blueprints panel already showed for the same
+`packages` cluster in the logical reading — flagged `⚠ oversized (target 10)`
+at 11 members (a different count: that panel is logical-perspective-only) and
+likewise left unsplit — confirming this is a genuine property of the corpus's
+own directory shape, not a bug in the new grouping: `TARGET_CLUSTER_SIZE` bounds
+a group only when there is further declared structure to read out of it.
+Fully-decided groups (`resource_explorer`, `surveyors`, `arch_recovery`, `web`,
+`web/static` — all-accepted from earlier verdicts) rendered closed by default,
+as `<details>` with no `open` attribute; every group with any undecided member
+rendered open. `node --check` passed on `curate.js`. `tailwind-next.css` was
+grepped for every class introduced (`border-rule`, `text-provenance`,
+`font-mono`, `pl-s3`, `cursor-pointer`, `py-\[3px\]`, etc.) — all were already
+compiled from other uses in this file, so **no rebuild was needed**.
+
+**Tests** — `tests/test_component_tree.py`, new `TestLeafGrouping` class (4
+tests): siblings group under their shared ancestor and a lone leaf stays
+ungrouped; group verdict counts reflect recorded verdicts (including
+inheritance — accepting a parent accepts its already-nested child too, same
+rule as the branch level); a branch with no qualifying group returns everything
+ungrouped; an oversized first-pass group is subdivided the same way a
+blueprint cluster is. Plus one new route test confirming `/components/leaves`
+exposes `groups`/`ungrouped` alongside the unchanged flat `leaves`. Full suite:
+`uv run pytest tests/ -q` — **5017 passed, 103 skipped, 0 failed**, run to
+completion synchronously against this branch.
+
 ---
 
 ## Addendum — page-level section nav + collapsible sections (2026-09-17)

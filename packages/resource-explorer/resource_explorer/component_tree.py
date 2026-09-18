@@ -28,6 +28,7 @@ import json
 from collections import Counter
 
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.surveyors.arch_recovery import scope_hierarchy
 
 LOW_CONFIDENCE = 50
 
@@ -246,3 +247,94 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
                     "agreement": bool(c.get("agreement")),
                     "withdrawn_by": c.get("withdrawn_by") or []})
     return out
+
+
+def _verdict_counts(rows: list[dict]) -> tuple[int, int, int]:
+    """(accepted, rejected, undecided) over a list of leaf dicts, as `leaves()`
+    already shapes them (each row's `verdict` is `resolve_verdict`'s own
+    resolved shape or `None`)."""
+    accepted = rejected = undecided = 0
+    for row in rows:
+        v = (row.get("verdict") or {}).get("verdict")
+        if v == "accepted":
+            accepted += 1
+        elif v == "rejected":
+            rejected += 1
+        else:
+            undecided += 1
+    return accepted, rejected, undecided
+
+
+def group_leaves(leaf_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """`(groups, ungrouped)` for a branch's flat leaf list (2026-09-17, the
+    Curate tree restructuring).
+
+    The designer's finding: a branch like `packages/` can hold 64 of a
+    repository's ~69 components as one flat list, which is legible at the
+    branch level but not at the leaf level -- and the missing middle level
+    already exists. `scope_hierarchy.derive()` (`surveyors/arch_recovery/
+    scope_hierarchy.py`) computes exactly this grouping already, from the
+    same scope-locator paths `leaves()` returns here -- it is the same
+    function `clustering.py`'s `propose()` calls (its `parents, _structural
+    = scope_hierarchy.derive(scopes)` first pass, `clustering.py` ~line 497)
+    to build the candidate-blueprint clusters shown as "scope-hierarchy ·
+    collection" rows in the blueprints panel. Recomputed here directly over
+    the branch's own leaf paths rather than joined from the persisted
+    `candidate_blueprint` findings, because those are scoped to one
+    perspective at a time (RULING-WHAT-A-VERDICT-IS-ABOUT.md §0) while this
+    branch's leaves mix every perspective -- same algorithm, same input
+    shape (a flat set of scope locators), applied directly so no perspective
+    has to be chosen or components silently dropped for lacking one.
+
+    `derive()`'s own `MIN_GROUP = 2` rule is inherited unchanged: a "group"
+    of one component collapses nothing, so it is not a group -- it comes
+    back in `ungrouped` and renders as a plain row, exactly like a
+    component whose branch has no further structure today.
+
+    A first-pass group left over `TARGET_CLUSTER_SIZE` (10 -- the designer's
+    "the size the clustering was tuned for") is re-derived within its own
+    members, the same way `clustering.py`'s `_subdivide()` does for an
+    oversized blueprint cluster: re-running `derive()` on a *subset* can
+    surface a deeper level the full-branch pass had no reason to look for
+    (nothing groups it against the branch's OTHER members). A subset that
+    still finds no further structure is left as one oversized group rather
+    than truncated -- same "no signal, no cluster" contract as the
+    blueprints panel.
+    """
+    from resource_explorer.surveyors.arch_recovery.clustering import TARGET_CLUSTER_SIZE
+
+    by_path = {row["path"]: row for row in leaf_rows}
+    parents, _structural = scope_hierarchy.derive(sorted(by_path))
+    first_pass: dict[str, list[str]] = {}
+    ungrouped: list[dict] = []
+    for path, row in by_path.items():
+        parent = parents.get(path)
+        if parent:
+            first_pass.setdefault(parent, []).append(path)
+        else:
+            ungrouped.append(row)
+
+    def _split(name: str, member_paths: list[str], depth_left: int) -> list[tuple[str, list[str]]]:
+        if len(member_paths) <= TARGET_CLUSTER_SIZE or depth_left <= 0:
+            return [(name, member_paths)]
+        sub_parents, _ = scope_hierarchy.derive(sorted(set(member_paths)))
+        if not sub_parents:
+            return [(name, member_paths)]                    # no deeper structure to find
+        sub: dict[str, list[str]] = {}
+        for p in member_paths:
+            sub.setdefault(sub_parents.get(p, p), []).append(p)
+        if len(sub) <= 1:
+            return [(name, member_paths)]                     # a "split" into one bucket splits nothing
+        out: list[tuple[str, list[str]]] = []
+        for sub_name, sub_paths in sorted(sub.items()):
+            out.extend(_split(sub_name, sub_paths, depth_left - 1))
+        return out
+
+    groups = []
+    for name, member_paths in sorted(first_pass.items()):
+        for group_name, group_paths in _split(name, member_paths, depth_left=3):
+            members = [by_path[p] for p in group_paths]
+            accepted, rejected, undecided = _verdict_counts(members)
+            groups.append({"name": group_name, "members": members,
+                           "accepted": accepted, "rejected": rejected, "undecided": undecided})
+    return groups, ungrouped

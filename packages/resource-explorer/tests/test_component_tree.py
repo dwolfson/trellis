@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from resource_explorer.component_tree import component_tree, leaves, resolve_verdict, topology_sentence
+from resource_explorer.component_tree import component_tree, group_leaves, leaves, resolve_verdict, topology_sentence
 from resource_explorer.registry import Project, ProjectRegistry
 
 
@@ -130,6 +130,57 @@ class TestAgreementAndWithdrawal:
         assert row["withdrawn_by"] == ["coupling"]
 
 
+class TestLeafGrouping:
+    """2026-09-17: a branch's leaves regrouped by scope-hierarchy cluster —
+    the same `scope_hierarchy.derive()` clustering.py's blueprint proposals
+    already read, applied directly to the branch's own leaf paths. A group
+    of one collapses nothing (`scope_hierarchy.MIN_GROUP`) and stays
+    ungrouped, same as a component whose branch has no further structure."""
+
+    def test_siblings_group_under_their_shared_ancestor(self, seeded):
+        lv = leaves(seeded, "p", "pyegeria")
+        groups, ungrouped = group_leaves(lv)
+        assert len(groups) == 1
+        g = groups[0]
+        assert g["name"] == "pyegeria"
+        assert {m["path"] for m in g["members"]} == {
+            "pyegeria/commands", "pyegeria/commands/cat", "pyegeria/utils"}
+        assert {m["path"] for m in ungrouped} == {"pyegeria"}      # a group of one -> ungrouped
+        assert (g["accepted"], g["rejected"], g["undecided"]) == (0, 0, 3)
+
+    def test_group_verdict_counts_reflect_recorded_verdicts(self, seeded):
+        # "pyegeria/commands/cat" inherits its parent's verdict (`resolve_verdict`),
+        # same as at the branch level -- so accepting "commands" accepts both it
+        # and its child here.
+        seeded.record_component_verdict("repo", "p", "pyegeria/commands", "accepted", decided_by="a")
+        seeded.record_component_verdict("repo", "p", "pyegeria/utils", "rejected", decided_by="a")
+        lv = leaves(seeded, "p", "pyegeria")
+        groups, _ = group_leaves(lv)
+        g = groups[0]
+        assert (g["accepted"], g["rejected"], g["undecided"]) == (2, 1, 0)
+
+    def test_a_branch_with_no_qualifying_group_returns_everything_ungrouped(self, seeded):
+        lv = leaves(seeded, "p", "server")             # a single leaf, no siblings
+        groups, ungrouped = group_leaves(lv)
+        assert groups == []
+        assert {m["path"] for m in ungrouped} == {"server"}
+
+    def test_an_oversized_first_pass_group_is_subdivided_like_a_blueprint_cluster(self, registry, monkeypatch):
+        # 12 siblings directly under "pkg/a" (over TARGET_CLUSTER_SIZE=10) plus
+        # 3 more nested one level deeper under "pkg/a/sub" -- re-deriving within
+        # "pkg/a"'s own members should split "pkg/a/sub"'s three out, the same
+        # way clustering.py's `_subdivide()` finds a level a full-tree pass had
+        # no reason to.
+        comps = [{"path": f"pkg/a/f{i}", "name": f"f{i}", "type": "", "confidence": 90} for i in range(12)]
+        comps += [{"path": f"pkg/a/sub/g{i}", "name": f"g{i}", "type": "", "confidence": 90} for i in range(3)]
+        monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: comps)
+        lv = leaves(registry, "p", "pkg")
+        groups, ungrouped = group_leaves(lv)
+        names = {g["name"]: {m["path"] for m in g["members"]} for g in groups}
+        assert "pkg/a/sub" in names and names["pkg/a/sub"] == {f"pkg/a/sub/g{i}" for i in range(3)}
+        assert sum(len(v) for v in names.values()) + len(ungrouped) == 15
+
+
 class TestTheRoute:
     def test_a_branch_verdict_is_one_row_and_materialisation_is_queued(self, client, seeded):
         r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["pyegeria/"], "verdict": "accepted"})
@@ -142,6 +193,13 @@ class TestTheRoute:
         assert p["verdict"]["verdict"] == "accepted" and p["accepted"] == 4
         lv = client.get("/api/projects/p/components/leaves", params={"branch": "pyegeria"}).json()["leaves"]
         assert all(l["verdict"]["verdict"] == "accepted" for l in lv)
+
+    def test_the_leaves_route_also_exposes_groups_and_ungrouped(self, client, seeded):
+        out = client.get("/api/projects/p/components/leaves", params={"branch": "pyegeria"}).json()
+        assert set(out) == {"branch", "leaves", "groups", "ungrouped"}
+        assert len(out["leaves"]) == 4                              # unchanged flat shape
+        assert len(out["groups"]) == 1 and out["groups"][0]["name"] == "pyegeria"
+        assert {l["path"] for l in out["ungrouped"]} == {"pyegeria"}
 
     def test_reject_queues_nothing_and_anonymous_is_refused(self, client, seeded, monkeypatch):
         r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["tests"], "verdict": "rejected"})
