@@ -185,7 +185,15 @@ const STAGES = [
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
   { id: 'understanding', label: 'Understanding', built: true },
-  { id: 'curate',        label: 'Curate' },
+  // Curate was marked "not built" here. ITEM-3-CURATE-IMPLEMENTED.md
+  // verified the component-tree review, the catalogue-depth offer, and now
+  // multi-branch selection and the blueprint list all work end to end — the
+  // same "flip the flag once the doc says so" pattern as every other stage
+  // above. Curate does not go through the generic Questions engine (it has
+  // its own renderCurate, see loadPane()'s explicit `state.stage === 'curate'`
+  // branch), but the nav's dashed/clickable choice reads this flag exactly
+  // the same as a Questions-engine stage would.
+  { id: 'curate',        label: 'Curate',        built: true },
   // Automate is a real, deliberately partial port (PLAN-FINISH-REPOS.md
   // item 4): renderAutomate() (next/stages/automate.js) shows and toggles
   // real subscriptions and the real global Schedules overview. Creating a
@@ -255,6 +263,30 @@ export function esc(s) {
     // "&#39;". Seen on screen as "Egeria&#39;s catalog". Named entities carry
     // no digits, so the two passes stop interfering.
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+/** The one place a control's dashed "not built" underline comes from.
+ *
+ * `#130` fixed two header buttons (Activity, Admin) that kept this styling
+ * after they were built, because it was written inline at each site —
+ * `style="border-bottom:1px dashed currentColor"` — independent of the flag
+ * that actually gates the behaviour, so a stage or control could become
+ * built and keep looking deferred with nobody the wiser.
+ * SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §5 names this as a rule that will
+ * recur (select-all, blueprint accept, the member-link affordance) and asks
+ * for one shared helper rather than a fourth, fifth, sixth inline copy — used
+ * here to also fix the two pre-existing inline copies (the stage nav's
+ * unbuilt span, the sub-tab rail's deferred button) it was already too late
+ * to catch in #130 itself.
+ *
+ * `isBuilt` is always read from the SAME flag the caller uses to decide
+ * behaviour — never a second, independent guess at whether something is
+ * "done". Returns an attribute string to splice into a template literal;
+ * '' when built, so a built control carries no extra markup at all. */
+export function deferredAttrs(isBuilt, { title = '', extraStyle = '' } = {}) {
+  if (isBuilt) return '';
+  const style = `border-bottom:1px dashed currentColor${extraStyle ? `;${extraStyle}` : ''}`;
+  return ` style="${style}"${title ? ` title="${esc(title)}"` : ''}`;
 }
 
 /** Wrap every run of digits in a tabular-figures span.
@@ -659,9 +691,8 @@ function renderIntentNav() {
       // `unbuilt`, so this branch was dead and six stages rendered as live.
       // Inverted to read the flag that actually exists, so a stage added
       // without `built` is honest by default.
-      return `<span title="Not implemented — zero rows in the analysis catalog and the activity log"
-        class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted"
-        style="border-bottom:1px dashed currentColor">${esc(s.label)}</span>`;
+      return `<span${deferredAttrs(false, { title: 'Not implemented — zero rows in the analysis catalog and the activity log' })}
+        class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted">${esc(s.label)}</span>`;
     }
     return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px]
       ${active ? 'border-b-2 border-accent text-chrome-ink' : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
@@ -2623,9 +2654,8 @@ function subTabsHtml() {
       if (stageDef?.built && (t.id === 'questions' || t.built)) {
         return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
       }
-      return `<button data-deferred="${t.id}" title="${esc(t.does)} — not built in /next"
-        class="cursor-pointer bg-transparent text-ink-muted"
-        style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
+      return `<button data-deferred="${t.id}"${deferredAttrs(false, { title: `${t.does} — not built in /next`, extraStyle: 'padding-bottom:1px' })}
+        class="cursor-pointer bg-transparent text-ink-muted">${t.label}</button>`;
     }).join('')}
   </div>`;
 }

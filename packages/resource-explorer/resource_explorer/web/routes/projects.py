@@ -2077,6 +2077,34 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     return out
 
 
+# ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────
+#
+# "A sibling reader, not a schema change" — verdict_target='blueprint' rows
+# already live in architecture_component_verdicts (registry.py), materialized
+# blueprints already have their own table, and _candidate_blueprints_results
+# already resolves a cluster's own verdict/materialization AND each member/
+# child's, keyed the same way curate.py's blueprint-verdict routes read and
+# write (f"{perspective}::{cluster_name}"). This route only exposes that
+# existing read, the way /components/tree exposes component_tree() — no new
+# table, no new join.
+@router.get("/{slug}/components/blueprints")
+def components_blueprints(slug: str) -> dict:
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        _candidate_blueprints_results,
+    )
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    blueprints = _candidate_blueprints_results(registry, slug)
+    # RULING-WHAT-A-VERDICT-IS-ABOUT.md §0/§2d: a cluster only exists WITHIN
+    # one Component.perspective (reading) — the perspectives present here are
+    # the readings a curator can switch between, distinct from the diagram's
+    # run_label preference and the chrome's unrelated Perspective filter.
+    perspectives = sorted({b["perspective"] for b in blueprints if b.get("perspective")})
+    return {"blueprints": blueprints, "perspectives": perspectives}
+
+
 @router.get("/{slug}/gaps")
 def get_gaps(slug: str) -> dict:
     """The gaps collection this project owns (SPEC-ACTIONABLE-AND-HONEST.md
