@@ -2993,6 +2993,59 @@ Two ways to close it, and they are not equivalent:
 
 ---
 
+#### MEDIUM — `/next` has no real Search/Discover screen; the sidebar's find action is a same-noun-for-every-type stub
+
+Raised by the project owner, 2026-09-18, live-testing `/next`: "did we lose Search? It used to be on
+the Scouting stage." It wasn't lost — `SPEC-ACTIONABLE-AND-HONEST.md` point 2 (2026-09-15, before
+this round of work) deliberately moved it from a mislabeled Scouting-stage "Search" stub to a
+corpus-level circle-plus icon beside the sidebar's Repos/DBs/FS switcher, since finding candidate
+resources isn't specific to one stage. But the thing that moved is itself just a stub: `'find-repos'`
+in `next/app.js` opens a dialog that says "not built in /next yet" and links to classic
+(`app.js:2017-2026`) — it has never had real functionality in `/next`.
+
+**Classic's real mechanism is not one screen — it's three genuinely different ones per resource
+type**, confirmed by reading the actual code, not assumed from the shared icon:
+- **Repos**: a real "Search GitHub" panel (org/language/topic filters, save-as-source, GitHub
+  base-URL override) plus a "From a list" CSV/URL-list importer, both routing into the same
+  review table (`index.html:15674-15708`, `_scoutSourceMode`).
+- **Databases**: server-side introspection, not a search box — connect to an already-registered DB
+  server and list what databases exist on it for one-click registration
+  (`POST /api/db-servers/{slug}/discover`, `index.html:6950-7008`).
+- **Filesystems**: not yet investigated in this pass — likely its own separate mechanism again, not
+  a text search; check before assuming it's closer to either of the above.
+
+A same-icon, same-label stub across all three tabs was actively wrong until PR #142 fixed the
+copy to at least name the right noun per tab (`FIND_TITLE`) — but the underlying screen still
+doesn't exist for any of the three. This needs a real design pass (probably three separate builds,
+not one generic "search" component, given how different the three mechanisms are) before it's
+buildable.
+
+---
+
+#### LOW — sidebar group collapse doesn't respond to clicks for roughly the first minute after app launch
+
+Raised by the project owner, 2026-09-18, live-testing: clicking a group `<summary>` does nothing at
+first launch; it starts working correctly after about a minute with no page reload. Investigated but
+**not root-caused** — recording what was ruled out rather than a guess dressed as a fix:
+
+- The click handler (`toggleGroupCollapsed`, wired in `bindSidebar()`) and the persistence mechanism
+  (`COLLAPSED_GROUPS_KEY` in `localStorage`) don't depend on any known 60-second timer.
+- `re-api.js`'s `CACHE_TTL_MS = 60_000` (used by `listGroups()` and a few other vocabulary calls) is
+  a suspicious timing coincidence but only feeds group *display names*
+  (`app.js:1726`'s `groupName()`), not the grouping-by-`group_slug` or the collapse toggle itself —
+  ruled out as the direct cause on inspection, though not proven unrelated.
+- The user confirmed clicking does **nothing visible** during the affected window (not a
+  collapse-then-immediately-reopen flicker), which argues against a rapid-re-render-undoing-the-click
+  theory and more toward the click listener not being live yet, or landing on a DOM node about to be
+  replaced by an in-flight startup render.
+
+**Next step, not yet done**: reproduce against a genuinely cold server start (this checkout serves
+the live app continuously, so a safe repro needs coordinating a restart) with the browser console
+and Network tab open, to see what's still in flight during the affected window and whether the click
+listener is actually attached to the node the click lands on.
+
+---
+
 #### MEDIUM — `tailwind-next.css` has no build-freshness check and will silently go stale again
 
 Found 2026-09-17/18, live: the RFA drawer (`next/rfa.js`) rendered as an unstyled block at the
