@@ -3085,6 +3085,54 @@ changing the selection — a design question, not a one-line swap.
 
 ---
 
+#### MEDIUM — an optional, separate survey: resolve the transitive dependency tree and audit the full graph against OSV.dev
+
+Raised by the project owner, 2026-09-18, after confirming what `cve_scan` actually covers today.
+
+**Confirmed current state**: `cve_scan.py` genuinely queries OSV.dev live (`https://api.osv.dev/v1/querybatch`,
+`cve_scan.py:47/171`) — that part is real, not a proposal. But `DependencyParser`
+(`ingestion/dependency_parser.py`) only reads manifest files (`pyproject.toml`, `package.json`,
+`go.mod`, etc.) and never a lockfile (`package-lock.json`, `poetry.lock`, `uv.lock`, `go.sum`,
+`Cargo.lock`) — no transitive resolution happens anywhere in the pipeline. This is already flagged
+honestly in the code itself: `cve_scan.py` carries `"excludes_transitive": True` and states outright
+"declared dependencies only — transitive ones are not covered"; `members.py:124` says the same
+independently. So the OSV audit today only ever sees first-party declared dependencies — a
+vulnerability sitting two or three levels deep in a transitive dependency, which is where most
+real-world CVE exposure actually lives, is structurally invisible to the current scan.
+
+**Decision (project owner, 2026-09-18):** this should be built as an **optional, additional
+survey**, not folded into the standard `cve_scan`/first-party pipeline — full transitive resolution
+is a meaningfully heavier operation per ecosystem (each lockfile format is different: npm's
+`package-lock.json`, Python's `poetry.lock`/`uv.lock`, Go's `go.sum`, Rust's `Cargo.lock`, at
+minimum), and shouldn't become mandatory overhead on every routine scan.
+
+**Scope for a future design pass**: per-ecosystem lockfile parsers (probably one new parser per
+ecosystem rather than one generic one, given how different the formats are), a real dependency-graph
+data shape (parent/child, not `DependencyParser`'s current flat per-manifest rows), and either
+querying OSV.dev per resolved package+version or batching the full resolved set the same way
+`cve_scan` already batches direct dependencies.
+
+---
+
+#### LOW — consider ecosyste.ms as a source for additional surveys
+
+Raised by the project owner, 2026-09-18: [ecosyste.ms](https://ecosyste.ms) aggregates open-source
+package/repository metadata across many language ecosystems (dependency data, funding/sustainability
+signals, and more, per its own public description) and might be worth evaluating as a source for one
+or more additional, optional surveys — not yet investigated against this codebase's actual needs or
+API terms.
+
+**Not yet done, and explicitly not assumed**: no code in this repo references ecosyste.ms today: this
+is a fresh idea, not a half-built integration. Before scoping a real survey, a first pass should
+check (1) what ecosyste.ms's actual API offers and whether it duplicates or complements OSV.dev/GitHub/
+existing sub-surveyors, (2) its terms of use/rate limits for a tool that would query it per-repo across
+a large corpus, and (3) whether it could feed the transitive-dependency-resolution item above (if it
+already exposes resolved dependency graphs per package, that could be cheaper than building
+per-ecosystem lockfile parsers in-house) — worth investigating together rather than as two
+independent efforts.
+
+---
+
 #### MEDIUM — dependency analysis needs a required/optional/**selective** axis, not just manifest `dep_type`
 
 Raised by the project owner, 2026-09-17, testing `/next`'s dependency view live.
