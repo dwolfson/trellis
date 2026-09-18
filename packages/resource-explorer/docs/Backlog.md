@@ -2993,6 +2993,27 @@ Two ways to close it, and they are not equivalent:
 
 ---
 
+#### MEDIUM — `tailwind-next.css` has no build-freshness check and will silently go stale again
+
+Found 2026-09-17/18, live: the RFA drawer (`next/rfa.js`) rendered as an unstyled block at the
+bottom of the page instead of a fixed right-hand panel — `inset-y-0`/`z-[80]`/`w-[26rem]` were
+absent from the compiled `next/tailwind-next.css`, which hadn't been rebuilt
+(`frontend-build`'s `npm run build:css:next`) since 2026-09-13, while `rfa.js` and other `/next`
+files kept changing through items 3/5/6/9/10/11. Any class introduced after the last build and
+not coincidentally already present was silently unstyled — no error, no visual cue beyond the
+broken layout itself. Rebuilt as an immediate fix; recording the process gap here since nothing
+stops it recurring for the next item that touches `/next`'s JS/HTML.
+
+Two ways to close it, not mutually exclusive:
+1. **A CI check** that rebuilds `tailwind-next.css` fresh and diffs it against the committed one
+   — fails loudly the moment someone forgets, the same shape as
+   `test_every_findings_producing_analysis_has_a_dashboard` elsewhere in this backlog.
+2. **Make it part of the item-completion checklist** alongside the already-required
+   `*-IMPLEMENTED.md` doc — a `/next` item isn't done until `build:css:next` has been re-run
+   against its own changes.
+
+---
+
 #### LOW — architecture recovery's primary-component pick should be best-evidenced, not most-recent
 
 Named by the designer, 2026-09-17, while specifying item 3 (Curate)'s build-ready spec
