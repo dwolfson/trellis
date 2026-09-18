@@ -56,6 +56,56 @@ const CURATE_COLUMNS = [
   { key: 'relates',       title: 'how it relates',  sub: '' },
 ];
 
+/* ── Page-level section nav (project owner's report after item 3 shipped:
+ * "one very long page with no table of contents at the top, the sections
+ * are not collapsible"). Six sections, each with a stable id the nav's
+ * anchors target and each wrapped in <details>/<summary> so a viewer can
+ * collapse what they are not using -- default open throughout, since the
+ * reported problem was missing structure, not too much visible at once.
+ * Anchor scrolling reuses classic's own convention (index.html's
+ * `_curateJumpTo`/`_curateComponentAnchorId` and the diagram/dialog jumps
+ * at index.html:4266/:4874): `scrollIntoView({ behavior: 'smooth',
+ * block: 'center' })`. This is a page-level table of contents, a narrower
+ * and separate thing from classic's component/blueprint cross-reference
+ * jump -- there was no existing page-nav pattern to port, so this is new. */
+const CURATE_SECTIONS = [
+  { id: 'curate-sec-what-it-is', label: 'what it is' },
+  { id: 'curate-sec-what-holds', label: "what's in it" },
+  { id: 'curate-sec-made-of', label: "what it's made of" },
+  { id: 'curate-sec-blueprints', label: 'blueprints' },
+  { id: 'curate-sec-relates', label: 'how it relates' },
+  { id: 'curate-sec-writes', label: 'what gets written' },
+];
+
+function curateSectionNavHtml() {
+  return `<nav aria-label="Curate sections" class="sticky top-0 z-10 -mx-s2 mb-s3 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] border-b border-rule bg-paper px-s2 py-s2 text-provenance">
+    ${CURATE_SECTIONS.map((s) => `<a href="#${s.id}" data-curate-nav="${s.id}" class="cursor-pointer text-accent-ink underline">${esc(s.label)}</a>`).join('')}
+  </nav>`;
+}
+
+function bindCurateSectionNav(host) {
+  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    const el = document.getElementById(a.dataset.curateNav);
+    if (!el) return;
+    if (el.tagName === 'DETAILS') el.open = true;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }));
+}
+
+/** Wraps a section's already-built inner HTML in the shared collapsible
+ *  shell -- <summary> is the section's existing heading text, `id` is what
+ *  the nav's anchors target, default open. */
+function curateSectionHtml(id, title, extraHeader, inner) {
+  return `<details id="${id}" open class="mt-s4">
+    <summary class="mb-s1 flex cursor-pointer items-baseline gap-s2 border-b border-rule pb-[3px]">
+      <span class="font-heading text-name font-normal text-ink">${esc(title)}</span>
+      ${extraHeader || ''}
+    </summary>
+    ${inner}
+  </details>`;
+}
+
 function curateRowHtml(r, selected, pick) {
   const g = factGlyph(r.state);
   const mark = pick && r.candidate
@@ -141,21 +191,24 @@ export async function renderCurate(slug) {
       ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
         sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
-      ${CURATE_COLUMNS.map((c) => `
-        <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-          <span class="font-heading text-name font-normal text-ink">${esc(c.title)}</span>
-          ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
-          ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
-        </div>
-        ${c.key === 'made_of'
-          ? `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>
-             <div id="blueprint-list" class="mt-s4"></div>`
-          : (plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
-      <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-        <span class="font-heading text-name font-normal text-ink">what gets written</span>
-        <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
-      </div>
-      ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
+      ${curateSectionNavHtml()}
+      ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
+        `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
+         <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
+        (plan.what_it_is || []).map((r) => curateRowHtml(r, picks.has(r.kind), true)).join(''))}
+      ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
+        (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+      ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
+        `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
+      ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
+        `<div id="blueprint-list"></div>`)}
+      ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
+        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+      ${curateSectionHtml('curate-sec-writes', 'what gets written',
+        `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
+        `${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
       <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
         <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
@@ -166,8 +219,9 @@ export async function renderCurate(slug) {
         <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
       ${curateRecordHtml(latest)}
-      <div id="catalogue-depth-offer"></div>`;
+      <div id="catalogue-depth-offer"></div>`)}`;
 
+    bindCurateSectionNav(host);
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);

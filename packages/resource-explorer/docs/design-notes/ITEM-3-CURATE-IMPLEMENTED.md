@@ -310,3 +310,133 @@ route's reused reader was already covered by
 
 Full suite: `uv run pytest tests/ -q` — **5013 passed, 103 skipped, 0
 failed**, run twice against this branch (both runs agree).
+
+---
+
+## Addendum — page-level section nav + collapsible sections (2026-09-17)
+
+**Not a new numbered plan item.** The project owner tested Curate live
+after this item shipped and reported: "one very long page with no table of
+contents at the top, the sections are not collapsible." Branch
+`re/curate-section-nav`, worktree `.claude/worktrees/wt-curate-toc`.
+Nothing was written in the main checkout.
+
+**Scoping note carried over from the brief:** classic's Curate panel has a
+narrower cross-reference "jump to this specific component/blueprint"
+feature (`_curateJumpTo`/`_curateComponentAnchorId`, index.html
+~line 4248-4273) — not a page-level table of contents. There was no
+existing page-nav pattern to port; this is built fresh, and kept
+deliberately small: anchor links + smooth scroll + `<details>`, nothing
+more.
+
+### What changed in `next/stages/curate.js`
+
+- **`CURATE_SECTIONS`** — the six section ids/labels the page now
+  organizes around: `curate-sec-what-it-is`, `curate-sec-what-holds`,
+  `curate-sec-made-of`, `curate-sec-blueprints`, `curate-sec-relates`,
+  `curate-sec-writes`. Blueprints — previously nested inside the "what
+  it's made of" column's markup alongside the component tree — is now its
+  own top-level section with its own id, summary and nav entry; the
+  component tree keeps its own section untouched.
+- **`curateSectionNavHtml()`** — a `<nav>` of six anchor links, one per
+  `CURATE_SECTIONS` entry, rendered once at the top of the pane (below the
+  resource-header/population-rule paragraph, above "what it is").
+  `sticky top-0 z-10` with a `bg-paper` backing (the same opaque-surface
+  utility app.js already uses for its own floating panels) so it stays
+  visible while the six sections scroll underneath it.
+- **`bindCurateSectionNav()`** — click handler for the nav's anchors:
+  prevents the default same-page-hash jump, opens the target `<details>`
+  if it was collapsed, then scrolls with
+  `el.scrollIntoView({ behavior: 'smooth', block: 'center' })` — the exact
+  convention classic's own `_curateJumpTo` (index.html:4266) and its other
+  jump sites (index.html:4874) already use, reused rather than reinvented
+  for consistency.
+- **`curateSectionHtml(id, title, extraHeader, inner)`** — the shared
+  collapsible wrapper: `<details id="${id}" open>` /
+  `<summary>{title}{extraHeader}</summary>`, matching `/next`'s existing
+  disclosure idiom (see app.js's own `<details>` usage for survey
+  definitions' "other stages" and the analyses index's "other stages",
+  e.g. around app.js:3171/:3376). `title` is the section's existing
+  heading text (unchanged from before this addendum); `extraHeader` carries
+  the small provenance/count spans each section already had next to its
+  heading (e.g. "N of M confirmed" on "what it is"). **Default open on
+  every section** — the reported problem was missing navigation/structure,
+  not too much visible at once, so collapse had to stay a viewer option,
+  never a default-hidden state this feature imposes.
+- `renderCurate`'s `draw()` now assembles the six sections through
+  `curateSectionHtml`, `bindCurateSectionNav(host)` runs once per redraw
+  alongside the pane's other event wiring.
+
+**What did not change:** `renderComponentTree()`'s internal row/branch/leaf
+logic. Another agent is building scope-hierarchy component-list grouping
+against that same function concurrently, on `re/curate-tree-scope-groups`.
+This addendum only wraps the *outer* "what it's made of" container that
+`renderCurate()` itself assembles (the `<div id="component-tree">` mount
+point) in the new `<details>` shell — nothing inside what
+`renderComponentTree()` returns was touched, and `test_next_curate_section_nav.py`'s
+`TestComponentTreeInternalsUntouched` pins that boundary so a later merge
+conflict is loud rather than silent.
+
+### Tests
+
+**Frontend (static source)** — `tests/test_next_curate_section_nav.py`
+(new), following the same static-source-holds-the-design-rules pattern:
+
+- All six section ids are declared and the nav links/anchors all six.
+- Blueprints is its own section, separate from "what it's made of" (the
+  component-tree div does not appear inside the blueprints section's call
+  site and vice versa).
+- Every section is wrapped in `<details ... open>`/`<summary>` — collapse
+  exists and defaults open.
+- The nav's click handler calls `scrollIntoView({ behavior: 'smooth',
+  block: 'center' })` and opens a collapsed `<details>` before scrolling to
+  it.
+- `renderComponentTree()`'s own body contains none of the new
+  wrapper/nav markup — the boundary the concurrent tree-grouping work
+  depends on.
+
+8 new assertions, all passing. Existing suites unaffected —
+`tests/test_next_curate_pane.py` and
+`tests/test_next_curate_selection_and_blueprints.py` still pass unmodified
+against the restructured `draw()` output (they assert on function bodies
+and literal strings that this addendum did not move outside their scanned
+ranges).
+
+Full suite: `uv run pytest tests/ -q` — **5021 passed, 103 skipped, 0
+failed**, read synchronously to completion from this branch.
+
+### tailwind-next.css
+
+Checked for staleness per the standing backlog item: `sticky`, `top-0` and
+`z-10` (used by the new nav) were **missing** from the compiled
+`tailwind-next.css` before this change. Rebuilt via
+`npm install && npm run build:css:next` from `frontend-build/` (had to
+`npm install` first — `node_modules` wasn't present in this worktree) and
+committed the regenerated file. `npm install` also touched
+`package-lock.json` (older local npm/Node re-resolving some transitive
+entries); that lockfile diff was reverted before committing since it is
+unrelated to this change and not needed for the CSS rebuild to take effect.
+
+### Live verification
+
+Throwaway dev server on port 8822 (`TRELLIS_ANONYMOUS_READ=true`, ports
+8810/8811/8817/8818/8819/8820/8821 already in use), Curate pane opened for
+`amundsen-io/amundsen` via "Continue without signing in" (no password
+entered at any point). Confirmed directly in the browser:
+
+- The nav renders at the top of the pane with all six labels, below the
+  resource header/population-rule text and above "what it is".
+- Clicking "blueprints" in the nav scrolled the page so the blueprints
+  section centered in view (classic's convention, reused).
+- Clicking the "blueprints" `<summary>` collapsed the section to just its
+  heading; clicking again re-expanded it with its content intact.
+- The nav itself stayed pinned at the top of the pane while scrolled deep
+  into later sections (the `sticky` positioning holds).
+
+**Limits:** verified as an anonymous-read session, not a fully signed-in
+one — the Catalogue action itself and the mermaid diagram render (a
+pre-existing, unrelated 401 on `/api/diagrams/mermaid` for anonymous
+sessions) were not exercised, since neither is part of this addendum.
+`node --check` passed on the touched file (via a temporary `.mjs` copy,
+since the file itself has no `.mjs` extension and Node's CommonJS loader
+otherwise rejects the `import` syntax the ES module uses).
