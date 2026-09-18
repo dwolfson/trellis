@@ -195,15 +195,22 @@
   </div>
 
   <div class="mine" style="margin-top:var(--s6)">
-    <div class="caps" style="color:var(--gap)">What this leaves open</div>
+    <div class="caps" style="color:var(--gap)">Answered by the code, after this was drawn</div>
     <p class="prov" style="margin:var(--s2) 0 0;max-width:84ch">
-      <strong style="font-weight:500;color:var(--ink)">Whether accepting a cluster means anything in
-      Egeria yet.</strong> Component acceptance catalogues; a blueprint's equivalent act is not
-      ruled, and I am not inventing one — the row above records a curator's judgement and says
-      nothing about publishing it. If a cluster should become a
-      <span class="mono">SolutionBlueprint</span>, that is a type decision for the project owner, and
-      the <span class="mono">SoftwareLibrary</span> mistake says not to name a type before anyone
-      has verified it.
+      This panel asked whether accepting a cluster means anything in Egeria yet, and said I would not
+      invent a type. <strong style="font-weight:500;color:var(--ink)">It does not need inventing.</strong>
+      <span class="mono">blueprint_materializer.py</span> already finds-or-creates a real
+      <span class="mono">SolutionBlueprint</span>, qualified
+      <span class="mono">SolutionBlueprint::{entity_type}::{entity_slug}::{perspective}::{cluster_name}</span>
+      — so the reading is in the identity all the way into Egeria, which confirms the asymmetry above
+      rather than merely asserting it.
+    </p>
+    <p class="prov" style="margin:var(--s2) 0 0;max-width:84ch">
+      What is genuinely unbuilt is the <strong style="font-weight:500;color:var(--ink)">wiring</strong>:
+      <span class="mono">materializer.py</span> says <em>&ldquo;no candidate blueprint to attach to yet
+      &mdash; wiring a materialized component into a blueprint is future work, not faked here.&rdquo;</em>
+      So an accepted blueprint must say its members are not yet linked, and name how many stand apart.
+      <span class="lnk">SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4 ›</span>
     </p>
   </div>
 
