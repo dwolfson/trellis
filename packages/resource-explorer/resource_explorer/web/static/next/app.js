@@ -28,16 +28,19 @@ import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetai
 import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
-// Only three stages have anything to import today (enrichment, understanding,
-// curate); the other six canonical stage ids — investigation, scouting,
-// discovery, assessment, analysis, automate — have a `next/stages/*.js`
-// module too, but it is a stub with nothing to call yet (they render through
-// the generic Questions-checklist engine below, or an honest placeholder).
-// Building one of them means adding real exports to its stub file and one
-// import line here — see docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
+// Enrichment, Understanding, Curate, Automate and (item 11) Analysis have
+// something to import; the remaining canonical stage ids — investigation,
+// scouting, discovery, assessment — have a `next/stages/*.js` module too,
+// but it is empty (Discovery and Assessment deliberately, item 11: the
+// generic Questions-checklist engine below reaches both correctly with no
+// stage-specific code; Investigation and Scouting for other reasons — see
+// each stub's own header comment). Building one of them means adding real
+// exports to its stub file and one import line here — see
+// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+import { renderAnalysisNote } from '/static/next/stages/analysis.js';
 // The RFA drawer (PLAN-FINISH-REPOS.md item 10) — chrome-level, like
 // worklist.js, not a per-resource stage; see next/rfa.js's own header
 // comment for why it lives at this level rather than under stages/.
@@ -155,9 +158,23 @@ export const state = {
 const STAGES = [
   { id: 'investigation', label: 'Investigation', frame: true },
   { id: 'scouting',      label: 'Scouting',      built: true },
-  { id: 'discovery',     label: 'Discovery' },
-  { id: 'assessment',    label: 'Assessment' },
-  { id: 'analysis',      label: 'Analysis' },
+  // Discovery, Assessment and Analysis were marked "not built" here.
+  // ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md verified all three
+  // have real catalogued questions (question_catalog.yaml: 10 Discovery, 15
+  // Assessment, 11 Analysis rows) and that the generic Questions-checklist
+  // engine (loadPane(), below) already reaches them correctly once `built`
+  // is true -- the same mechanism Scouting/Enrichment/Curate use, with no
+  // stage-specific rendering needed. Discovery's Disposition sub-tab was
+  // already wired to a real write path (`POST /api/discovery/disposition`,
+  // web/routes/discovery.py's set_repo_disposition) before this change; it
+  // only needed `built: true` to become reachable. Classic's
+  // org-import/repo-search/`/from-list`/CSV-export corpus-level Discovery
+  // features, and Analysis's "Sub-Resources" sub-view, are NOT ported --
+  // named, individually, as deliberate deferrals in that doc, not silently
+  // dropped.
+  { id: 'discovery',     label: 'Discovery',     built: true },
+  { id: 'assessment',    label: 'Assessment',    built: true },
+  { id: 'analysis',      label: 'Analysis',      built: true },
   // Enrichment was marked "not built" here. ITEM-1-ENRICHMENT-IMPLEMENTED.md
   // verified the judgement/observation fields, the save-and-revisit round
   // trip, and the evidence-moved perishability flag all work; the catalog
@@ -173,8 +190,11 @@ const STAGES = [
   // item 4): renderAutomate() (next/stages/automate.js) shows and toggles
   // real subscriptions and the real global Schedules overview. Creating a
   // subscription is NOT built -- it rides on an Assessment/Analysis card's
-  // "Notify me" action, and neither stage exists in /next yet -- and that one
-  // gap is named and linked out rather than the whole stage being deferred.
+  // "Notify me" action, and /next has no card grid there (item 11 built
+  // Assessment/Analysis through the generic Questions-checklist engine,
+  // question rows not cards) -- and that one gap is named and linked out
+  // rather than the whole stage being deferred (see automate.js's own
+  // header comment for the detail).
   { id: 'automate',      label: 'Automate',      built: true },
 ];
 
@@ -4794,6 +4814,11 @@ async function loadPane() {
   // Curate's screen is a review-and-commit, not a question list; it renders
   // whether or not the catalog has rows for the stage (today it has none).
   if (state.stage === 'curate') renderCurate(slug);
+  // Analysis has real catalog rows (unlike Curate), so it renders through
+  // the generic engine below like any other built stage; this only adds the
+  // one honest note about what classic's Analysis carries that /next does
+  // not (next/stages/analysis.js).
+  if (state.stage === 'analysis') renderAnalysisNote(slug);
   if (!state.questions.length) {
     rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.

@@ -1,15 +1,25 @@
 /* Discovery.
  *
- * PLAN-FINISH-REPOS.md Part 2 §1 asks for one module per canonical stage id.
- * Discovery is NOT marked `built` in app.js's `STAGES` array, so
- * `loadPane()`'s dispatch renders it as an honest "not in /next" placeholder
- * and never reaches the generic Questions-checklist engine for it. There is
- * no Discovery-specific rendering code anywhere in app.js today to move here.
+ * PLAN-FINISH-REPOS.md item 11: Discovery is now `built: true` in app.js's
+ * `STAGES` array. It needed no bespoke renderer -- the generic
+ * Questions-checklist engine (`loadPane()` in app.js) already reaches it
+ * correctly, the same as Scouting/Enrichment/Curate, because the catalog
+ * carries 10 real Discovery-tagged questions (question_catalog.yaml) backed
+ * by 10 `intent: discovery` analyses (analysis_catalog.yaml). Its
+ * Disposition sub-tab was already calling a real write path before this
+ * change -- `setDisposition()` (re-api.js) posts to
+ * `/api/discovery/disposition`, i.e. `web/routes/discovery.py`'s
+ * `set_repo_disposition` -- since that sub-tab is resource-scoped, not
+ * stage-specific code; it only needed `built: true` to be reachable.
  *
- * Building Discovery means adding its renderer(s) to this file, exporting
- * them, marking `{ id: 'discovery', ... built: true }` in app.js's `STAGES`
- * array, and adding one `import { ... } from '/static/next/stages/
- * discovery.js';` line to app.js — see
- * docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
+ * What is NOT ported: `discovery.py`'s corpus-level, not-resource-scoped
+ * endpoints -- org import (`_expand_org`), repo search (`/search`), the
+ * bulk `/from-list` loader, and `/inventory.csv` export. These predate this
+ * item as the sidebar's "Find repos" deferral (SPEC-ACTIONABLE-AND-HONEST.md
+ * point 2, app.js's `find-repos` action) and stay deferred there, named
+ * individually in docs/design-notes/
+ * ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md rather than silently
+ * dropped. This file has nothing to export because Discovery has no
+ * resource-scoped rendering of its own beyond the generic engine.
  */
 export {};
