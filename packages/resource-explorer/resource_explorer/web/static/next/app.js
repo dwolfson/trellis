@@ -4233,7 +4233,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
-              : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+              : `<span class="min-w-0 break-words font-mono text-chrome-ink">${esc(m.name)}</span>`}
             ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
           </li>`).join('')}
           ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
