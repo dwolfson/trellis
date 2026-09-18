@@ -56,7 +56,10 @@ class TestAllThreeStagesAreBuilt:
         entry = block[block.index("id: 'investigation'"):]
         entry = entry[:entry.index("},")]
         assert "built:" not in entry
-        assert "frame: true" in entry
+        # RULING-NAV-GROUPING.md replaced the separate `frame: true` flag
+        # with a single `class` field STAGES declares once and the renderer
+        # derives everything else from -- see NAV-GROUPING-IMPLEMENTED.md.
+        assert "class: 'frame'" in entry
 
 
 class TestTheGenericEngineNeededNoStageSpecificBranch:

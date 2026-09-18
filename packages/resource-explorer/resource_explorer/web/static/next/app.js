@@ -153,11 +153,39 @@ export const state = {
   workListIndex: false,        // showing the list OF work lists
 };
 
-/** The eight intents, in their canonical order, plus Investigation as the
- *  frame. `built` is about /next, not about the product. */
+/** Three classes of nav item — RULING-NAV-GROUPING.md, answering a peer
+ *  critique of the nine-item intent row. This replaces the old "eight
+ *  intents, in their canonical order, plus Investigation as the frame"
+ *  comment, which is wrong in its count: there are six ORDERED intents
+ *  ("the run"), not eight, plus two cross-cutting, plus the frame.
+ *
+ *  `class` is declared HERE and nowhere else — `renderIntentNav()` derives
+ *  grouping, numbering and separator style (chevron for `run`, middot
+ *  everywhere else) from this field rather than hardcoding a second list of
+ *  which ids go where. The ruling is explicit that regrouping in the
+ *  renderer while this array still called them "eight ordered intents"
+ *  would be the same class of bug as `unbuilt` (DEFECT-UNBUILT-STAGES-
+ *  RENDER-AS-BUILT.md — read in three places, set in none) and #130's
+ *  dashed-styling-independent-of-its-flag bug: declare the fact once,
+ *  derive appearance from it.
+ *
+ *  - `frame`        — Investigation (and, external to this array, Work
+ *                      lists): why this body of work exists, and which
+ *                      cohort you are working. Not a stage.
+ *  - `run`           — Scouting, Discovery, Assessment, Analysis,
+ *                      Enrichment, Curate: six ordered intents; sequence is
+ *                      real, so they are numbered 1-6 and chevron-joined.
+ *  - `cross-cutting` — Understanding, Automate: order does not apply.
+ *                      Decision (project owner, 2026-09-18): Understanding
+ *                      can be used at any time and will become a
+ *                      user-configured dashboard — a surface the user
+ *                      configures, not an operation on a corpus — so it is
+ *                      not a milder or later stage of the run.
+ *
+ *  `built` is about /next, not about the product. */
 const STAGES = [
-  { id: 'investigation', label: 'Investigation', frame: true },
-  { id: 'scouting',      label: 'Scouting',      built: true },
+  { id: 'investigation', label: 'Investigation', class: 'frame' },
+  { id: 'scouting',      label: 'Scouting',      class: 'run', built: true },
   // Discovery, Assessment and Analysis were marked "not built" here.
   // ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md verified all three
   // have real catalogued questions (question_catalog.yaml: 10 Discovery, 15
@@ -172,19 +200,22 @@ const STAGES = [
   // features, and Analysis's "Sub-Resources" sub-view, are NOT ported --
   // named, individually, as deliberate deferrals in that doc, not silently
   // dropped.
-  { id: 'discovery',     label: 'Discovery',     built: true },
-  { id: 'assessment',    label: 'Assessment',    built: true },
-  { id: 'analysis',      label: 'Analysis',      built: true },
+  { id: 'discovery',     label: 'Discovery',     class: 'run', built: true },
+  { id: 'assessment',    label: 'Assessment',    class: 'run', built: true },
+  { id: 'analysis',      label: 'Analysis',      class: 'run', built: true },
   // Enrichment was marked "not built" here. ITEM-1-ENRICHMENT-IMPLEMENTED.md
   // verified the judgement/observation fields, the save-and-revisit round
   // trip, and the evidence-moved perishability flag all work; the catalog
   // has 7 human-supplied questions tagged this phase, so the generic
   // Questions engine (loadPane()) reaches renderEnrichment() without a
   // special case, the same as any other built stage.
-  { id: 'enrichment',    label: 'Enrichment', built: true },
+  { id: 'enrichment',    label: 'Enrichment', class: 'run', built: true },
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
-  { id: 'understanding', label: 'Understanding', built: true },
+  // RULING-NAV-GROUPING.md §1: Understanding LEAVES the run — it is a
+  // surface the user configures (eventually, per-user dashboards), not an
+  // operation on a corpus, so it is cross-cutting rather than stage 6 of 6.
+  { id: 'understanding', label: 'Understanding', class: 'cross-cutting', built: true },
   // Curate was marked "not built" here. ITEM-3-CURATE-IMPLEMENTED.md
   // verified the component-tree review, the catalogue-depth offer, and now
   // multi-branch selection and the blueprint list all work end to end — the
@@ -193,7 +224,7 @@ const STAGES = [
   // its own renderCurate, see loadPane()'s explicit `state.stage === 'curate'`
   // branch), but the nav's dashed/clickable choice reads this flag exactly
   // the same as a Questions-engine stage would.
-  { id: 'curate',        label: 'Curate',        built: true },
+  { id: 'curate',        label: 'Curate',        class: 'run', built: true },
   // Automate is a real, deliberately partial port (PLAN-FINISH-REPOS.md
   // item 4): renderAutomate() (next/stages/automate.js) shows and toggles
   // real subscriptions and the real global Schedules overview. Creating a
@@ -202,9 +233,18 @@ const STAGES = [
   // Assessment/Analysis through the generic Questions-checklist engine,
   // question rows not cards) -- and that one gap is named and linked out
   // rather than the whole stage being deferred (see automate.js's own
-  // header comment for the detail).
-  { id: 'automate',      label: 'Automate',      built: true },
+  // header comment for the detail). Cross-cutting alongside Understanding
+  // (RULING-NAV-GROUPING.md §2): it makes the run repeat rather than being
+  // a step within it.
+  { id: 'automate',      label: 'Automate',      class: 'cross-cutting', built: true },
 ];
+
+/** The run's own order, 1-6 — derived from `STAGES`, never a second literal
+ *  list of ids. A `Map` from stage id to its 1-based position within the
+ *  run, used only for the nav's numbering. */
+const RUN_ORDER = new Map(
+  STAGES.filter((s) => s.class === 'run').map((s, i) => [s.id, i + 1]),
+);
 
 /** Sub-tab order is IDENTICAL across every stage, on purpose. A stage that
  *  lacks one greys it out rather than removing it, so the tab under the
@@ -585,6 +625,24 @@ function renderTopBar() {
   $('investigation-name').textContent = state.investigation
     ? (inv?.display_name || state.investigation)
     : 'No investigation';
+  // RULING-NAV-GROUPING.md §3: the ad-hoc/bound-to-a-Project distinction
+  // "deserves permanent visibility" — a fact about the investigation, read
+  // straight off `egeria_binding` (investigations.py/registry.py
+  // ProjectRegistry.BINDING_LOCAL/BINDING_EGERIA), never re-derived.
+  // Deliberately NOT gated on `egeria_project_guid` being non-empty:
+  // registry.py's own comment on this column says `egeria` "has one, or is
+  // meant to" -- a promotion that has not run yet and a purely local
+  // investigation look identical from a null GUID alone, and only the
+  // `egeria_binding` column records which one was actually chosen. Empty
+  // (not hidden) when there is no current investigation, so the badge does
+  // not read as stale leftover state.
+  const scopeEl = $('investigation-scope');
+  if (scopeEl) {
+    scopeEl.textContent = inv
+      ? (inv.egeria_binding === 'egeria' ? '· bound to Egeria Project' : '· ad hoc')
+      : '';
+    scopeEl.title = inv?.egeria_project_qualified_name || '';
+  }
   $('whoami').textContent =
     (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || 'not signed in';
   $('activity-count').textContent =
@@ -676,36 +734,72 @@ function wireSidebarDrawer() {
   });
 }
 
+/** A middot separator between groups whose relative order carries no
+ *  meaning (RULING-NAV-GROUPING.md §3: "chevrons inside the run, middots
+ *  outside it"). Muted and `aria-hidden` — it is a visual grouping cue, not
+ *  content a screen reader should announce as a word. */
+const NAV_MIDDOT = '<span class="px-1 text-chrome-muted" aria-hidden="true">·</span>';
+
+/** A chevron separator between two stages that ARE sequential — the run
+ *  only. Same visibility treatment as the middot above. */
+const NAV_CHEVRON = '<span class="px-1 text-chrome-muted" aria-hidden="true">›</span>';
+
+/** One nav item's markup. `number` is passed only for `run`-class stages —
+ *  it is what puts "1 " ahead of "Scouting", never a second, independently
+ *  maintained ordering. */
+function navItemHtml(s, { number } = {}) {
+  const active = s.id === state.stage;
+  const label = `${number ? `${number} ` : ''}${esc(s.label)}`;
+  if (s.class === 'frame') {
+    return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px] font-heading
+      text-accent-on-dark ${active ? 'border-b-2 border-accent' : 'border-b-2 border-transparent'}">${label}</button>`;
+  }
+  if (!s.built) {
+    // Marked, not dimmed: chrome-muted is a 6.7:1 role, not a fade.
+    // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: `unbuilt` was read here
+    // and set nowhere — every STAGES entry declares `built`, never
+    // `unbuilt`, so this branch was dead and six stages rendered as live.
+    // Inverted to read the flag that actually exists, so a stage added
+    // without `built` is honest by default.
+    return `<span${deferredAttrs(false, { title: 'Not implemented — zero rows in the analysis catalog and the activity log' })}
+      class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted">${label}</span>`;
+  }
+  return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px]
+    ${active ? 'border-b-2 border-accent text-chrome-ink' : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
+    >${label}</button>`;
+}
+
 function renderIntentNav() {
   const nav = $('intent-nav');
-  const items = STAGES.map((s) => {
-    const active = s.id === state.stage;
-    if (s.frame) {
-      return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px] font-heading
-        text-accent-on-dark ${active ? 'border-b-2 border-accent' : 'border-b-2 border-transparent'}">${esc(s.label)}</button>`;
-    }
-    if (!s.built && !s.frame) {
-      // Marked, not dimmed: chrome-muted is a 6.7:1 role, not a fade.
-      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: `unbuilt` was read here
-      // and set nowhere — every STAGES entry declares `built`, never
-      // `unbuilt`, so this branch was dead and six stages rendered as live.
-      // Inverted to read the flag that actually exists, so a stage added
-      // without `built` is honest by default.
-      return `<span${deferredAttrs(false, { title: 'Not implemented — zero rows in the analysis catalog and the activity log' })}
-        class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted">${esc(s.label)}</span>`;
-    }
-    return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px]
-      ${active ? 'border-b-2 border-accent text-chrome-ink' : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
-      >${esc(s.label)}</button>`;
-  }).join('');
 
-  nav.innerHTML = `${items}
+  // Three groups, read off `STAGES.class` — never a second hardcoded list of
+  // which ids go where (RULING-NAV-GROUPING.md §2). The run's relative order
+  // in `STAGES` is already correct (Scouting..Curate, in that order) even
+  // though Understanding's array position sits between Enrichment and
+  // Curate — filtering by class pulls it out of the run's sequence, which is
+  // the whole point: the run stays contiguous and numbered 1-6, and
+  // Understanding renders with the other cross-cutting item instead.
+  const frameItems = STAGES.filter((s) => s.class === 'frame');
+  const runItems = STAGES.filter((s) => s.class === 'run');
+  const crossItems = STAGES.filter((s) => s.class === 'cross-cutting');
+
+  const frameHtml = frameItems.map((s) => navItemHtml(s)).join('');
+  const runHtml = runItems
+    .map((s) => navItemHtml(s, { number: RUN_ORDER.get(s.id) }))
+    .join(NAV_CHEVRON);
+  const crossHtml = crossItems.map((s) => navItemHtml(s)).join(NAV_MIDDOT);
+
+  const items = `${frameHtml}${runHtml}${crossHtml ? `${NAV_MIDDOT}${crossHtml}` : ''}`;
+
+  nav.innerHTML = `${items}${NAV_MIDDOT}
     <!-- Work lists sit at the end of the frame row because, like
          Investigation, they are a FRAME around the stages rather than a stage:
          Investigation is why a body of work exists, a work list is which
          resources it covers. Fixed position, always present — the matrix had
          no front door before this, only a sidebar section and a crumb that
-         existed once you had already found it. -->
+         existed once you had already found it. A middot precedes it, same as
+         between the run and the cross-cutting group, since it too carries no
+         sequence relationship to what comes before it. -->
     <span id="worklist-nav" class="flex items-center"></span>
     <span class="ml-auto flex gap-s2 text-subtab">
       <button id="rfa-drawer-toggle" type="button"
@@ -4827,10 +4921,10 @@ async function loadPane() {
 
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
-  if (stageDef?.frame || !stageDef?.built) {
+  if (stageDef?.class === 'frame' || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
-      stageDef.frame
+      stageDef.class === 'frame'
         ? 'Investigations are the frame around a body of work, and /next does not '
           + 'implement them. They are live in the current UI.'
         : 'This stage has no rows in the analysis catalog or the activity log, so '
