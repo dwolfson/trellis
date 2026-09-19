@@ -588,6 +588,20 @@ rather than its behaviour.
 
 Grouped by area. Within a group, the most actionable entries come first.
 
+**Priority tiers (project owner, 2026-09-18)**, used going forward to sequence which open
+items get picked up next — not a re-tag of every entry below, but the lens for new ones and for
+choosing what to dispatch:
+
+1. **Bugs and backend infrastructure** — data-corrupting races, broken/unverified execution paths,
+   orchestration. Fix correctness before building on top of it.
+2. **UI, generic/structural** — screens and surfaces that are missing or a stub (Search/Discover),
+   admin surface shape, cross-cutting UI mechanics.
+3. **Design-gated** — anything that needs a designer decision before it's buildable. Tracked so it
+   doesn't silently sit; see the designer's own `DEFERRED-REGISTER.md` for what's already on their
+   desk.
+4. **Survey/analytics/results enhancements** — new or improved analyses, richer findings, cost and
+   dependency modelling. Valuable, but behind the tiers above.
+
 ### The outbox drain does not serialise, and its docstring says it does
 
 **Filed 2026-09-02, while a batch republish had the web server deliberately
@@ -628,6 +642,119 @@ operator with the app open is already two drainers.
 property holds by construction instead of by remembering to stop the server.
 Until then, stopping the web server is the mitigation, and it is a mitigation
 for one run rather than a fix.
+
+### TIER 1 — "Three execution modes" don't map onto one verified mechanism, and two of the paths are untested
+
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
+> corrections to this entry, found while planning against it: the global-override concern below
+> (`config.prefect.enabled` rerouting every `resource-explorer` step) is already fixed —
+> `survey_definition_executor.py:317-332` honours `executes_at`, and rerouting needs the separate
+> `prefect.route_local_steps`, pinned by `tests/test_prefect_dispatch.py:179/184`. And there *is* a
+> filesystem hybrid path — not a class, but `hybrid_filesystem_surveyor.py:12`'s
+> `run_hybrid_filesystem_survey()`, called from `web/routes/filesystems.py:271-272`. The core
+> finding survives both corrections. The plan recommends folding both hybrid entry points'
+> capabilities into `executes_at` routing as a new `egeria-hybrid` value, not retiring or
+> documenting them as legacy — they are live default-path code with capabilities (cache-or-run,
+> catalog-on-demand, engine provenance) the other two paths lack.
+
+Raised by the project owner, 2026-09-18: are all three of RE, Egeria, and Hybrid execution genuinely
+working? Investigated against the code rather than assumed, and the honest answer is that **"three
+modes" isn't one mechanism with three settings** — it's two unrelated things that both get called a
+"mode":
+
+1. **`executes_at` routing** (`survey_definition_executor.py:314-514`) — a per-step field on Survey
+   Definitions with exactly three legal values, `"resource-explorer"`, `"egeria"`, `"prefect"`
+   (anything else raises, `:513-514`). `Architecture.md:229-233` frames this correctly as **two
+   coordinators, neither of which is RE**: either Egeria coordinates and RE executes leaf steps, or
+   RE coordinates and hands work to Prefect.
+2. **`HybridDatabaseSurveyor`** (`surveyors/database/hybrid_database_surveyor.py:14`, docstring "uses
+   Egeria when available, falls back to custom") — a **separate, older class not wired into
+   `survey_definition_executor.py`'s dispatch loop at all**. Invoked directly from
+   `web/routes/databases.py:250-251` and `cli/main.py:1687-1697` via `run_hybrid_survey()`. CLAUDE.md
+   rule 15 constrains it (run the local scan immediately after triggering Egeria's async survey), but
+   it's database-only — there is no `HybridFilesystemSurveyor` or repo equivalent on the same
+   mechanism.
+
+**Verification status, checked directly rather than assumed:**
+
+- `executes_at: resource-explorer` / `executes_at: prefect` **routing logic is solidly unit-tested**
+  (`tests/test_prefect_dispatch.py` covers fallback, cancellation, exact routing predicates) — but
+  that is dispatch-logic testing, not a live end-to-end run through either path.
+- `executes_at: egeria` (the `other_engine_handlers` mechanism, `database/survey_definition_adapter.py:113`,
+  `filesystem/survey_definition_adapter.py:138`) has **no test coverage found**, matching the
+  codebase's own admission: `Architecture.md:246-247` states this route "is the intended route for
+  unifying database and filesystem survey launching... and it is **untested end to end on either
+  type**."
+- `HybridDatabaseSurveyor` / `run_hybrid_survey` has **no test coverage found at all** — not in any
+  file under `tests/` (grepped, came up empty except an unrelated baseline JSON fixture) — and it sits
+  architecturally disconnected from the `executes_at` system `Architecture.md` describes as canonical.
+
+**Net: one of the three has solid dispatch-logic tests (`resource-explorer`/`prefect` routing), one
+is self-admittedly untested end-to-end (`egeria`-triggered coordination), and the third
+(`HybridDatabaseSurveyor`) is an unrelated, untested, database-only code path that predates the
+`executes_at` design.** This needs closing before more work is built on any of the three assuming
+they're equivalent: at minimum, a real end-to-end test per path against a live Egeria/Prefect, and a
+decision on whether `HybridDatabaseSurveyor` should be folded into `executes_at` routing, replaced by
+it, or documented as a deliberately separate legacy path.
+
+### TIER 1 — Prefect: what's actually broken, concretely, for the project owner who wants to use it
+
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-PREFECT-OR-ALTERNATIVE.md`. Recommendation:
+> finish Prefect, ~2 days of work, not the multi-week commitment this entry's framing implied.**
+> Verified live on the machine that several of this entry's specifics were already stale: the
+> Prefect server container (`egeria-optional-prefect-server`) **is running and healthy**, answering
+> `/api/health` at the exact URL RE defaults to — not "isn't started". The Postgres
+> database/role gap is **closed** (`prefect` DB and `prefect_user` role both exist on the shared
+> instance). The work-pool mismatch is real but is a `.env` value (`PREFECT_WORK_POOL`), not a code
+> change. The `dr_egeria_survey_publisher.py` publishing path's renderer is complete and tested;
+> what's outstanding is running it once against dev Egeria. Dagster, Temporal and Airflow were
+> compared and lose (wrong execution model for an Egeria-defined step graph); a no-engine
+> alternative is the real challenger and loses only because it would mean rebuilding retries,
+> cancellation and per-step observability that Prefect already provides working today.
+
+Raised by the project owner, 2026-09-18: wants to actually use Prefect (or an equivalent) for the
+orchestration tooling, integration connectors and observability it provides, and asked what's
+actually wrong with it today rather than leaving "off by default" as an unexamined steady state.
+
+**Timeline** (full detail in this document's "Distributed survey orchestration via a flow tool
+(Prefect)" entries below): prototyped 2026-07-14, default-on
+2026-08-26, reverted to off-by-default 2026-09-04 after 13 orphaned
+`prefect.server.api.server:create_app` subprocess servers leaked (`config.py:319-331`,
+`PrefectConfig.enabled`'s docstring). **Root cause was Prefect's own client, not RE's fallback
+logic**: Prefect starts an ephemeral subprocess server when `PREFECT_SERVER_EPHEMERAL_ENABLED` is
+true (Prefect's own shipped default) and no API is reachable. Fixed by forcing
+`PREFECT_SERVER_EPHEMERAL_ENABLED=false` at package-import time (`resource_explorer/__init__.py:6-20`),
+covering all Prefect-importing modules including `prefect_status.py`, which imports
+`prefect.client.orchestration` independently of `prefect_adapter.py`.
+
+**Current defaults:** `PrefectConfig.enabled=False`, `route_local_steps=False` (`config.py:339-343`).
+`executes_at: prefect` steps do exist (`scripts/generate_repo_survey_definition.py`'s
+`PREFECT_ROUTED_STEPS`) but publishing the corresponding Egeria-side step requires a manual,
+human-in-the-loop Dr.Egeria run (`dr_egeria_survey_publisher.py`) — not yet done as part of any pass.
+
+**Not containerized, by explicit prior decision:** `scripts/prefect_up.sh`/`prefect_down.sh` are
+bare-host scripts only — no launchd/systemd unit, no container — because Trellis as a whole wasn't
+considered ready for containerization at the time.
+
+**A container already exists, but not here, and has three unresolved gaps if reused:** it lives in
+`egeria-workspaces-fs`'s `optional-associated-runtimes/prefect`, not Trellis. (1) work-pool name
+mismatch — `egeria-pool` vs. RE's default `default-agent-pool` — would leave steps `SCHEDULED`
+forever with no error surfaced; (2) that worker container has no access to the `resource_explorer`
+package/code, so it cannot actually execute RE's steps; (3) unconfirmed whether a separate `prefect`
+Postgres database/role is provisioned on the shared instance.
+
+**Also out of scope today, and worth naming:** `executes_at: egeria`-coordinated surveys get zero
+Prefect/RE visibility — no flow-run, no local thread, no activity_log update — a separate, undesigned
+observability gap from the one Prefect would otherwise close for local steps.
+
+**What production-viability would concretely take** (the docs already lay this out rather than
+leaving it open-ended): resolve the three container gaps above (or build a Trellis-native
+container); complete `dr_egeria_survey_publisher.py` publishing for `executes_at: prefect` steps;
+and decide/document whether `PREFECT_ROUTE_LOCAL_STEPS` should ever go default-on given the
+multiplied per-step overhead already noted elsewhere in this document. None of this has been
+scoped into a real plan yet — recorded here as the concrete starting point for one, including
+whether Prefect remains the right choice at all versus an equivalent tool, which this entry does
+not attempt to answer.
 
 ### Survey execution
 
