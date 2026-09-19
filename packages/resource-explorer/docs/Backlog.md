@@ -3733,6 +3733,63 @@ to say "optional, off by default" rather than implying it's the normal execution
 decision item, not a bug fix — record the review's outcome here once done, with a
 `**Decision (project owner, <date>):**` callout per this repo's convention.
 
+**Measured 2026-09-18 — Prefect per-step dispatch overhead (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5
+phase 4).** This section's headline (and the plan doc's own §6 risk item) called this "unmeasured."
+It no longer is.
+
+*Methodology:* `repo_arch_summary` against `egeria_python_git`, chosen instead of phase 2's
+`repo_arch_coupling` specifically to isolate the fixed dispatch cost from compute-time noise —
+`repo_arch_coupling`'s own `StepInfo` declares `compute_cost="high"` with p90 132s from 32 measured
+runs, which would swamp a ~1-10s overhead signal. `repo_arch_summary` has
+`requires_resources={}`/`fetch_cost="none"`/`compute_cost="low"` (`repo_survey_definition_adapter.py`):
+zero network, zero filesystem, reads findings `repo_arch_coupling` already persisted for
+`egeria_python_git` earlier in this session — a genuinely warm, deterministic, fast step. 8 trials
+per path, alternated (in-process, Prefect, in-process, Prefect, ...) so drift brackets both paths
+rather than separating them into two blocks, one untimed warm-up call per path first. In-process:
+`run_surveyor_step_task.fn(...)` directly, the same call `run_prefect_step`'s own fallback branch
+uses. Prefect: `run_prefect_step(...)` with `config.prefect.enabled=True` and `PREFECT_API_URL`
+exported as a real process env var — RE's own `.env` is read by pydantic-settings directly and does
+**not** populate `os.environ`, so Prefect's own client (which reads `os.environ`/its profile, not
+RE's config object) sees nothing unless the var is exported to the process; the first attempt
+without doing that silently exercised only the fallback branch on every trial and was discarded.
+Confirmed via the Prefect API (`flow_runs/filter`) that all 8 trials produced real, distinct,
+`COMPLETED` flow runs — this is not a stealth-fallback result.
+
+*Numbers (wall-clock, seconds, one process, `.venv` Python 3.13, Prefect 3.8.1 client /
+`prefecthq/prefect:3-python3.12` server, host worker on `resource-explorer-pool`):*
+
+| | median | p90 | all 8 trials |
+|---|---|---|---|
+| in-process (`run_surveyor_step_task.fn`) | 1.18s | 2.40s | 0.67, 0.51, 2.38, 1.13, 0.73, 1.52, 1.24, 2.45 |
+| via Prefect (`run_prefect_step`) | 9.23s | 12.26s | 7.23, 8.17, 10.23, 12.26, 12.28, 8.23, 8.23, 10.29 |
+| **delta (added dispatch overhead)** | **~8.05s** | **~9.86s** | — |
+
+Cross-checked against Prefect's own `total_run_time` for these same 8 flow runs (the API's own
+measure of time actually spent *running*, excluding queued/scheduled time): 1.2–3.5s, matching the
+in-process figures closely. That confirms the ~8-10s delta is essentially all **dispatch + worker
+pickup + poll latency**, not slower compute inside the Prefect task — `_run_prefect_step_api`
+polls `state.result()` on a bare 1.0s `asyncio.sleep` loop, and the dominant cost sits in the gap
+between `create_flow_run_from_deployment` and the process-type worker's own polling cycle actually
+claiming the run, which this pass did not instrument further (worker query interval was left at
+its default).
+
+*Confidence:* in-process variance (0.5–2.5s) is real but small relative to the ~8s signal; the
+Prefect-path variance (7.2–12.3s) is larger in absolute terms but still clearly separated from the
+in-process cluster in all 8 trials — no overlap. Environmental noise does not weaken confidence in
+"the overhead is on the order of 8-10 seconds, not milliseconds and not one second."
+
+**Recommendation, following from this number:** `PREFECT_ROUTED_STEPS` widening to
+`repo_secret_scan`/`repo_rag_ingestion` (both `compute_cost="high"`, realistically tens of seconds
+to minutes of real work) is worth doing — an 8-10s fixed tax is a small fraction of their own
+runtime, and buys real retries/cancellation/per-task logs neither has today. `PREFECT_ROUTE_LOCAL_STEPS`
+(routing every plain local step through Prefect, not just `executes_at: prefect` ones) is a bad
+idea at today's worker/polling configuration: RE's Discovery/Analysis tier is full of sub-second-
+to-few-second steps (`repo_arch_summary` itself included), and an 8-10x-to-many-times multiplier on
+each one would make routine surveys dramatically slower for no compute benefit. `route_local_steps`
+should stay off by default; if it's ever wanted, the worker's polling interval should be tuned down
+first and re-measured, since this number is a property of that interval as configured today, not a
+Prefect ceiling.
+
 #### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because

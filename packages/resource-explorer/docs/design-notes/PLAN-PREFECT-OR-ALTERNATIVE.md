@@ -289,11 +289,18 @@ Listed plainly, because each one could change the recommendation.
   worker heartbeat; it does not confirm that `re-survey-step-deployment` deploys cleanly against
   *this* server or that a run completes. Phase 1 is where that becomes known, and it is the most
   likely place for an unpleasant surprise.
-- **Prefect's running cost at RE's scale is unmeasured.** The claim that routing every local step
-  through Prefect "multiplies overhead" appears repeatedly in `Backlog.md` and is, as far as this
-  pass could tell, an estimate rather than a measurement. Phase 4 exists to fix that. If per-step
-  overhead turns out to be small, §4.1's challenger weakens further; if large, `route_local_steps`
-  should probably be deleted rather than left as a tempting switch.
+- **Prefect's running cost at RE's scale — measured 2026-09-18, no longer an open risk.** Phase 4
+  measured it directly: `repo_arch_summary` (a fast, deterministic, zero-fetch step, chosen over
+  `repo_arch_coupling` precisely because that step's own `compute_cost="high"` variance would have
+  swamped the signal) against `egeria_python_git`, 8 trials each way. In-process median 1.18s/p90
+  2.40s; via Prefect median 9.23s/p90 12.26s; **added dispatch overhead ~8.05s median, ~9.86s p90**
+  — confirmed via Prefect's own `total_run_time` to be dispatch/poll/worker-pickup latency, not
+  slower compute. Full methodology and numbers: `Backlog.md`'s "Distributed survey orchestration
+  via a flow tool (Prefect)" entry, 2026-09-18 addendum. This was large, not small: it confirms
+  `PREFECT_ROUTE_LOCAL_STEPS` should stay off (RE's local tier is full of sub-few-second steps an
+  8-10s tax would multiply badly) while supporting widening `PREFECT_ROUTED_STEPS` to genuinely
+  long-running steps (`repo_secret_scan`, `repo_rag_ingestion`) where the fixed cost is a small
+  fraction of the step's own runtime.
 - **Server maintenance is a single-contributor question.** The compose config has not been touched
   since 2026-07-14 (§1.3). It is the project owner's own repo, so this is a question about
   attention, not abandonment — but RE would be taking a dependency on a component in another repo
