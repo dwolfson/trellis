@@ -46,6 +46,30 @@ from resource_explorer.surveyors.survey_report import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_whole_definition_prefect_orchestration(monkeypatch):
+    """This file tests Path A's own per-step dispatch loop specifically — not
+    whether `SurveyDefinitionExecutor` can also hand a whole definition to
+    Prefect (`_run_via_prefect`), a completely different code path gated on
+    the ambient `PREFECT_ENABLED` this test has no business depending on.
+
+    Found 2026-09-19: with a real Prefect server reachable and
+    `PREFECT_ENABLED=true` (now the default), `_run_via_prefect` picked up
+    every step here and ran it via `prefect/flows.py`'s
+    `run_surveyor_step_task`, which constructs its own fresh
+    `ProjectRegistry()` rather than the tmp-path SQLite instance this test's
+    `registry` fixture builds — a real, distinct constraint of Prefect's
+    worker-process model (see the executor's own `_all_steps_prefect_runnable`
+    docstring), not something this test is set up to exercise. Forcing the
+    switch off here is the correct isolation, matching how a test of the
+    local loop should not depend on ambient orchestration config at all.
+    """
+    monkeypatch.setattr(
+        "resource_explorer.surveyors.survey_definition_executor._prefect_orchestration_enabled",
+        lambda: False,
+    )
+
+
 @pytest.fixture
 def repo_root(tmp_path):
     """A small, real repo-shaped directory tree — real files, really walked."""

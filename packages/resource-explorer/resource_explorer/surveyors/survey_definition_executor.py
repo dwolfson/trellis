@@ -210,7 +210,7 @@ class SurveyDefinitionExecutor:
         # the activity entry, the assembled result — is shared, so the two
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
-        if _prefect_orchestration_enabled():
+        if _prefect_orchestration_enabled() and _all_steps_prefect_runnable(survey_def):
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
@@ -629,6 +629,13 @@ class SurveyDefinitionExecutor:
         local loop instead of failing a survey the loop could have run. The
         reason is logged — a silent fallback would make "Prefect ran this" and
         "Prefect was never reachable" look identical in the report.
+
+        Only called when `_all_steps_prefect_runnable(survey_def)` is true —
+        every step here runs through `run_surveyor_step_task`, the plain
+        local-analysis-step runner, with no per-step engine check of its own.
+        A step tagged `executes_at="egeria"` (or anything else that isn't
+        "resource-explorer"/"prefect") has no business here; see that
+        function's docstring for the live incident this guard fixes.
         """
         from resource_explorer.surveyors.survey_execution_plan import (
             CyclicPlanError,
@@ -719,6 +726,41 @@ def run_survey_definition(entity_type: str, slug: str, registry=None, **kwargs: 
         registry = ProjectRegistry()
     executor = SurveyDefinitionExecutor(registry)
     return executor.run(entity_type, slug, **kwargs)
+
+
+def _all_steps_prefect_runnable(survey_def) -> bool:
+    """Whether every step in this definition can actually be run by
+    `run_surveyor_step_task` — the plain local-analysis-step runner Prefect's
+    flow calls for EVERY step in its plan, with no per-step engine check of
+    its own (`prefect/flows.py`'s `run_planned_step_task` -> `run_surveyor_
+    step_task.fn`).
+
+    Found 2026-09-19, live, the first time PREFECT_ENABLED defaulted to true
+    with a real reachable server on a mixed-engine definition:
+    `_run_via_prefect` handed the WHOLE plan to Prefect regardless of what
+    each step's `executes_at` said, so an `executes_at="egeria"` step never
+    reached its own `other_engine_handlers["egeria"]` handler at all — it
+    silently ran through the local-analysis-step path instead, which has no
+    `re_analysis_step` for it and fails with "Entity ... not found" (or worse,
+    for an entity type that DOES coincidentally have a same-named local step,
+    would have run the wrong thing under the right-looking status). Repo
+    Survey Definitions never hit this (repos have no Egeria-coordinated path
+    today), which is why phase 2's live verification — one step,
+    `repo_arch_coupling`, called directly via `run_prefect_step` rather than
+    through this whole-definition path — never exercised it.
+
+    The correct fix is per-step engine routing inside the Prefect flow
+    itself, matching what the local loop below already does correctly. Until
+    that's built, the safe answer is: don't send Prefect a definition it
+    cannot execute correctly — skip whole-definition orchestration entirely
+    for one that mixes engines, and let the local loop's existing, correct
+    per-step routing (which does call `run_prefect_step` for individual
+    `executes_at="prefect"` steps) handle it one step at a time instead.
+    """
+    return all(
+        getattr(step, "executes_at", "resource-explorer") in ("resource-explorer", "prefect")
+        for step in survey_def.steps
+    )
 
 
 def _prefect_orchestration_enabled() -> bool:
