@@ -130,7 +130,9 @@ class TestOrgImportRepoSearchFromListCsvExportStayDeferredAtTheSidebar:
         assert "'find-repos': () => {" in app
         body = app[app.index("'find-repos': () => {"):]
         body = body[:body.index("\n    },")]
-        assert "Repo discovery" in body
+        # PR #142 made the dialog title resource-type-aware (FIND_TITLE map) rather
+        # than the fixed "Repo discovery" string this test used to assert on.
+        assert "FIND_TITLE[state.resourceType]" in body
         assert "oldUiHref()" in body
 
     def test_discovery_py_still_declares_the_four_deferred_endpoints(self):
