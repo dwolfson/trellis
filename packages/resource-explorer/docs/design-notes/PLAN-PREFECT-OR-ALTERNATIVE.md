@@ -215,9 +215,32 @@ could displace it either fit RE's model worse or cost more than the work remaini
 | **5** | Widen `PREFECT_ROUTED_STEPS` beyond `repo_arch_coupling` only if phase 4's number justifies it. | ~0.5 d/step | 4 |
 | **6** | Revisit on containerization: worker into a Trellis image, deployment off `from_source(local path)`, gap 2 fixed properly (§3). | — | Trellis containerization |
 
-**Decisions needed (project owner):** (a) accept the container-server/host-worker split, or hold out
-for a fully containerized worker; (b) `PREFECT_ENABLED` default after phase 2; (c) whether phase 5
-is wanted at all, or `executes_at: prefect` stays a narrow opt-in for genuinely long-running steps.
+**Decisions needed (project owner):** ~~(a) accept the container-server/host-worker split, or hold
+out for a fully containerized worker~~; (b) `PREFECT_ENABLED` default after phase 2; (c) whether
+phase 5 is wanted at all, or `executes_at: prefect` stays a narrow opt-in for genuinely
+long-running steps.
+
+**Decision (project owner, 2026-09-19):** keep the container-server/host-worker split (option 1),
+including for development machines, not only demo ones. Raised while exploring why Trellis isn't
+fully containerized — that question is really two independent problems, and this decision answers
+only the Prefect-specific one:
+
+- **GPU passthrough (Ollama/embedding inference) is the reason full containerization is deferred
+  generally**, and does not apply here — `repo_arch_coupling` and RE's other survey steps do no
+  GPU work; the constraint that drove the dev/demo profile split
+  ([[trellis-target-environments]]) is irrelevant to this worker specifically.
+- **The actual blocker for a containerized worker is packaging**, not performance: the existing
+  container image (`egeria-workspaces-fs`'s, not RE's own) only installs `pyegeria`/`rich`/`pandas`.
+  Bind-mounting RE's checkout into it was considered and rejected — it would still require
+  installing RE's full dependency stack inside that container (drifts from what `uv sync`
+  maintains on the host) and couples two repos' compose configs awkwardly (a dependency change in
+  RE would require touching a container `egeria-workspaces-fs` owns).
+- **On a Mac dev machine specifically, a bind-mount would also be slower**, not just more work:
+  Docker Desktop for Mac's bind-mount filesystem (gRPC-FUSE/VirtioFS) has real I/O overhead, and
+  `repo_arch_coupling`'s git-history walk is exactly the kind of workload that pays for it.
+- The properly-fixed version (a Trellis-owned worker image with dependencies baked in at *build*
+  time) remains phase 6's answer, gated on Trellis containerizing more broadly for its own
+  reasons — not something a bind-mount shortcuts around.
 
 ---
 
