@@ -221,6 +221,43 @@ is wanted at all, or `executes_at: prefect` stays a narrow opt-in for genuinely 
 
 ---
 
+## 5a. Phases 1 and 2 — done, 2026-09-19
+
+**Phase 1.** `resource-explorer-pool` (process type) created on the running container server —
+kept separate from `egeria-workspaces-fs`'s own `egeria-pool`, per §3. `RE Survey Flow/re-survey-
+step-deployment` deployed against it. A host worker is running (`uv run --package
+resource-explorer`, so `resource_explorer` is importable — gap 2 from §1.2 avoided as planned, not
+fixed) and confirmed `ONLINE` and heartbeating via the API. `.env`'s `PREFECT_WORK_POOL` now points
+at it; `PREFECT_ENABLED` stays `false`, as this phase only makes "on" real. One thing worth naming
+now rather than waiting for phase 4: the worker logged a real version-mismatch warning (server
+3.7.8, client recommends 3.8.1+) — the §6 risk was not hypothetical, though phase 2 found no actual
+problem from it.
+
+Also done as part of this phase: the Egeria-side publish from §1.4/§2 phase 2, coordinated as a
+shared write with all three live peers first. Ran only the single `Create Governance Action
+Process Step` block for `repo_arch_coupling` (no link commands — zero duplication risk) via
+Dr.Egeria; it resolved as an **update** to an already-existing element (GUID
+`6406cf97-b46d-4c6d-b373-2970f74043ee`), confirming the outbox/`check_and_heal` mechanism had
+already published this document at least once before this session. Verified independently via
+`SurveyDefinitionReader.find_process_guid_by_name()` resolving the same GUID through a separate
+code path. `reconcile_survey_definition_links.py --dry-run` confirms all 10 Survey Definitions
+clean (42/42 edges correct on `RepoFullSurvey`) — nothing to reconcile.
+
+**Phase 2's live run — the plan's own named highest-risk item — passed cleanly.** Dispatched
+`run_prefect_step("repo", "egeria_python_git", "repo_arch_coupling", {})` with `PREFECT_ENABLED`
+scoped to that one process only (never written to `.env`, the shared live web server untouched).
+Result: a real flow run (`571cfe66-e636-4caf-ac92-acab06f075d5`) completed in ~25.6s, tagged
+correctly, `state.result()` returned the step's real annotation — no `Prefect API dispatch failed`
+fallback warning. **The crux check — no silent duplicate local execution — passed**: the worker's
+own log shows it executed the task, and the registry's `coupling_component_count` metric gained
+exactly one new row timestamped inside the flow run's execution window, not duplicated.
+
+**Phase 3 (`PREFECT_ENABLED`'s default) is now unblocked** — its gate ("once phase 2 passes") is
+satisfied. That decision, and the container-server/host-worker topology it depends on, still need
+the project owner's sign-off per the decisions list above.
+
+---
+
 ## 6. Risks and unknowns — what could not be verified from the code
 
 Listed plainly, because each one could change the recommendation.
