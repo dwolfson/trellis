@@ -113,8 +113,12 @@ def list_filesystems():
 @router.post("/", response_model=FileSystemSummary)
 def register_filesystem(registration: FileSystemRegistration):
     """Register a new filesystem connection."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(registration.egeria_user)
+
     registry = ProjectRegistry()
-    
+
     if registry.filesystem_exists(registration.slug):
         raise HTTPException(
             status_code=400,
@@ -211,6 +215,10 @@ def delete_filesystem(slug: str):
 @router.post("/{slug}/survey")
 def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
     """Run a local or hybrid survey on the filesystem, optionally publishing to Egeria."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user or "")
+
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
     if not fs_entity:
@@ -378,6 +386,10 @@ def get_filesystem_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
 @router.post("/{slug}/publish")
 def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
     """Manually publish the latest local filesystem survey details to Egeria."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user or "")
+
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
     if not fs_entity:

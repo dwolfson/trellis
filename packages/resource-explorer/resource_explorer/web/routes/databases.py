@@ -167,9 +167,12 @@ async def get_database(slug: str) -> DatabaseSummary:
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry, ProjectStatus
-    
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user)
+
     registry = ProjectRegistry()
-    
+
     # Check if slug already exists
     existing = registry.get_database(req.slug)
     if existing:
@@ -504,6 +507,9 @@ class PublishResult(BaseModel):
 async def publish_database_survey(slug: str, req: PublishRequest = PublishRequest()) -> PublishResult:
     """Publish the latest local database survey to Egeria."""
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user or "")
 
     registry = ProjectRegistry()
     database = registry.get_database(slug)
