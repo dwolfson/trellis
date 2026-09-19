@@ -645,6 +645,18 @@ for one run rather than a fix.
 
 ### TIER 1 — "Three execution modes" don't map onto one verified mechanism, and two of the paths are untested
 
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
+> corrections to this entry, found while planning against it: the global-override concern below
+> (`config.prefect.enabled` rerouting every `resource-explorer` step) is already fixed —
+> `survey_definition_executor.py:317-332` honours `executes_at`, and rerouting needs the separate
+> `prefect.route_local_steps`, pinned by `tests/test_prefect_dispatch.py:179/184`. And there *is* a
+> filesystem hybrid path — not a class, but `hybrid_filesystem_surveyor.py:12`'s
+> `run_hybrid_filesystem_survey()`, called from `web/routes/filesystems.py:271-272`. The core
+> finding survives both corrections. The plan recommends folding both hybrid entry points'
+> capabilities into `executes_at` routing as a new `egeria-hybrid` value, not retiring or
+> documenting them as legacy — they are live default-path code with capabilities (cache-or-run,
+> catalog-on-demand, engine provenance) the other two paths lack.
+
 Raised by the project owner, 2026-09-18: are all three of RE, Egeria, and Hybrid execution genuinely
 working? Investigated against the code rather than assumed, and the honest answer is that **"three
 modes" isn't one mechanism with three settings** — it's two unrelated things that both get called a
@@ -686,6 +698,19 @@ decision on whether `HybridDatabaseSurveyor` should be folded into `executes_at`
 it, or documented as a deliberately separate legacy path.
 
 ### TIER 1 — Prefect: what's actually broken, concretely, for the project owner who wants to use it
+
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-PREFECT-OR-ALTERNATIVE.md`. Recommendation:
+> finish Prefect, ~2 days of work, not the multi-week commitment this entry's framing implied.**
+> Verified live on the machine that several of this entry's specifics were already stale: the
+> Prefect server container (`egeria-optional-prefect-server`) **is running and healthy**, answering
+> `/api/health` at the exact URL RE defaults to — not "isn't started". The Postgres
+> database/role gap is **closed** (`prefect` DB and `prefect_user` role both exist on the shared
+> instance). The work-pool mismatch is real but is a `.env` value (`PREFECT_WORK_POOL`), not a code
+> change. The `dr_egeria_survey_publisher.py` publishing path's renderer is complete and tested;
+> what's outstanding is running it once against dev Egeria. Dagster, Temporal and Airflow were
+> compared and lose (wrong execution model for an Egeria-defined step graph); a no-engine
+> alternative is the real challenger and loses only because it would mean rebuilding retries,
+> cancellation and per-step observability that Prefect already provides working today.
 
 Raised by the project owner, 2026-09-18: wants to actually use Prefect (or an equivalent) for the
 orchestration tooling, integration connectors and observability it provides, and asked what's
