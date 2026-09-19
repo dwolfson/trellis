@@ -279,7 +279,7 @@
      context is what a 375px screen has least room for — the content is why
      anyone opened it. */
   @media (max-width: 780px) {
-    #investigation-name, #switch-ui { display: none; }
+    #investigation-name, #investigation-scope, #switch-ui { display: none; }
     #intent-nav { overflow-x: auto; white-space: nowrap; }
     #perspective-row { max-height: 2.4em; overflow: hidden; }
   }
@@ -366,14 +366,25 @@
     <span id="scope-slug"
           class="rounded-sm border border-accent-deep px-2 py-[2px] font-mono text-provenance text-accent-on-dark"></span>
     <span class="ml-auto flex items-center gap-s4 text-[12px] text-chrome-muted">
-      <a href="/" title="The activity log is not built in /next — opens the current UI"
-        class="text-chrome-muted no-underline hover:text-chrome-ink"
-        style="border-bottom:1px dashed currentColor">Activity
-        <span id="activity-count" class="tnum text-accent-on-dark">–</span> ↗</a>
-      <a href="/" title="Admin and feedback are not built in /next — opens the current UI"
-        class="text-chrome-muted no-underline hover:text-chrome-ink"
-        style="border-bottom:1px dashed currentColor">Admin ↗</a>
+      <button id="activity-open-btn" type="button" title="Recent activity — scouting, survey, catalog, publish, RFA"
+        class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">📋 Activity
+        <span id="activity-count" class="tnum text-accent-on-dark">–</span></button>
+      <button id="admin-open-btn" type="button" title="System/catalog configuration — annotation types, question catalog, logs, feedback, Prefect, plus links to the rest in the current UI"
+        class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">⚙ Admin</button>
       <span id="investigation-name">No investigation</span>
+      <!-- RULING-NAV-GROUPING.md §3: "Investigation additionally becomes a
+           scope control in the header row, showing the active investigation
+           and whether it is ad hoc or bound to an Egeria Project. That
+           binding deserves permanent visibility." This slice builds the
+           permanent-visibility half — the badge below, driven by the
+           investigation's own `egeria_binding`/`egeria_project_guid`, which
+           already exist on the row (investigations.py). Turning this into an
+           interactive control that itself switches or binds investigations
+           is a larger change (that already lives, partially, as the
+           sidebar's `#investigation-select` and the New Investigation form's
+           binding step) and is deliberately NOT built here — see
+           NAV-GROUPING-IMPLEMENTED.md for why it's deferred. -->
+      <span id="investigation-scope" class="text-chrome-muted"></span>
       <span id="whoami">–</span>
       <!-- Make switching one click, and say which UI you are in. Testers
            comparing one repo in both shells in one session is what produces

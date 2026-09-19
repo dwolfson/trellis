@@ -15,10 +15,11 @@ import {
   getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
+  getComponentBlueprints, postBlueprintVerdict,
 } from '/static/re-api.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
-  openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement,
+  openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
 } from '/static/next/app.js';
 
 
@@ -54,6 +55,56 @@ const CURATE_COLUMNS = [
   { key: 'made_of',       title: "what it's made of", sub: 'components, with ports and wires derived — review stays on Architecture verdicts' },
   { key: 'relates',       title: 'how it relates',  sub: '' },
 ];
+
+/* ── Page-level section nav (project owner's report after item 3 shipped:
+ * "one very long page with no table of contents at the top, the sections
+ * are not collapsible"). Six sections, each with a stable id the nav's
+ * anchors target and each wrapped in <details>/<summary> so a viewer can
+ * collapse what they are not using -- default open throughout, since the
+ * reported problem was missing structure, not too much visible at once.
+ * Anchor scrolling reuses classic's own convention (index.html's
+ * `_curateJumpTo`/`_curateComponentAnchorId` and the diagram/dialog jumps
+ * at index.html:4266/:4874): `scrollIntoView({ behavior: 'smooth',
+ * block: 'center' })`. This is a page-level table of contents, a narrower
+ * and separate thing from classic's component/blueprint cross-reference
+ * jump -- there was no existing page-nav pattern to port, so this is new. */
+const CURATE_SECTIONS = [
+  { id: 'curate-sec-what-it-is', label: 'what it is' },
+  { id: 'curate-sec-what-holds', label: "what's in it" },
+  { id: 'curate-sec-made-of', label: "what it's made of" },
+  { id: 'curate-sec-blueprints', label: 'blueprints' },
+  { id: 'curate-sec-relates', label: 'how it relates' },
+  { id: 'curate-sec-writes', label: 'what gets written' },
+];
+
+function curateSectionNavHtml() {
+  return `<nav aria-label="Curate sections" class="sticky top-0 z-10 -mx-s2 mb-s3 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] border-b border-rule bg-paper px-s2 py-s2 text-provenance">
+    ${CURATE_SECTIONS.map((s) => `<a href="#${s.id}" data-curate-nav="${s.id}" class="cursor-pointer text-accent-ink underline">${esc(s.label)}</a>`).join('')}
+  </nav>`;
+}
+
+function bindCurateSectionNav(host) {
+  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    const el = document.getElementById(a.dataset.curateNav);
+    if (!el) return;
+    if (el.tagName === 'DETAILS') el.open = true;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }));
+}
+
+/** Wraps a section's already-built inner HTML in the shared collapsible
+ *  shell -- <summary> is the section's existing heading text, `id` is what
+ *  the nav's anchors target, default open. */
+function curateSectionHtml(id, title, extraHeader, inner) {
+  return `<details id="${id}" open class="mt-s4">
+    <summary class="mb-s1 flex cursor-pointer items-baseline gap-s2 border-b border-rule pb-[3px]">
+      <span class="font-heading text-name font-normal text-ink">${esc(title)}</span>
+      ${extraHeader || ''}
+    </summary>
+    ${inner}
+  </details>`;
+}
 
 function curateRowHtml(r, selected, pick) {
   const g = factGlyph(r.state);
@@ -140,20 +191,24 @@ export async function renderCurate(slug) {
       ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
         sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
-      ${CURATE_COLUMNS.map((c) => `
-        <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-          <span class="font-heading text-name font-normal text-ink">${esc(c.title)}</span>
-          ${c.key === 'what_it_is' ? `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>` : ''}
-          ${c.sub ? `<span class="text-provenance text-ink-muted">${esc(c.sub)}</span>` : ''}
-        </div>
-        ${c.key === 'made_of'
-          ? `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`
-          : (plan[c.key] || []).map((r) => curateRowHtml(r, picks.has(r.kind), !!c.pick)).join('')}`).join('')}
-      <div class="mb-s1 mt-s4 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-        <span class="font-heading text-name font-normal text-ink">what gets written</span>
-        <span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>
-      </div>
-      ${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
+      ${curateSectionNavHtml()}
+      ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
+        `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
+         <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
+        (plan.what_it_is || []).map((r) => curateRowHtml(r, picks.has(r.kind), true)).join(''))}
+      ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
+        (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+      ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
+        `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
+      ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
+        `<div id="blueprint-list"></div>`)}
+      ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
+        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+      ${curateSectionHtml('curate-sec-writes', 'what gets written',
+        `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
+        `${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
       <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
         <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
@@ -164,8 +219,9 @@ export async function renderCurate(slug) {
         <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
       ${curateRecordHtml(latest)}
-      <div id="catalogue-depth-offer"></div>`;
+      <div id="catalogue-depth-offer"></div>`)}`;
 
+    bindCurateSectionNav(host);
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
@@ -206,6 +262,7 @@ export async function renderCurate(slug) {
   };
   draw();
   renderComponentTree(slug);
+  renderBlueprintList(slug);
   renderCatalogueDepthOffer(slug, host);
 }
 
@@ -326,13 +383,15 @@ function openPortsInRail(slug, key, ports) {
     </div>`).join('')}`, { sub: `${ports.length} declared` });
 }
 
-function branchRowHtml(b) {
+function branchRowHtml(b, selected) {
   // The branch's own type leads; the mix beneath it is the CHILDREN's, so
   // a branch whose only typed component is itself does not say it twice.
   const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
   const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
   return `<div class="border-b border-rule py-[5px]" data-branch="${esc(b.path)}">
     <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
+      <input type="checkbox" data-branch-select="${esc(b.path)}" ${selected ? 'checked' : ''}
+        aria-label="select ${esc(b.name)}" class="shrink-0 cursor-pointer">
       <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-caveat text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
       <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
       ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
@@ -381,6 +440,59 @@ function leafRowHtml(l) {
   </div>`;
 }
 
+/** A branch's leaves grouped by scope-hierarchy cluster (designer, 2026-09-17
+ *  — see the addendum in docs/design-notes/ITEM-3-CURATE-IMPLEMENTED.md).
+ *  `packages/` alone held 64 of 69 components as one flat list; the same
+ *  clustering that already groups the blueprints panel's "scope-hierarchy ·
+ *  collection" rows (`component_tree.group_leaves`, reading `scope_hierarchy.
+ *  derive()`) turns that into ~8 groups of ~10 here too. Default OPEN when
+ *  the group still has undecided work, default CLOSED once it is fully
+ *  decided — the depth-1 accepted signal a reader used to get from the flat
+ *  list is still here, just per-group instead of per-branch. */
+function leafGroupHtml(g) {
+  const open = g.undecided > 0;
+  return `<details class="border-b border-rule py-[3px]" ${open ? 'open' : ''}>
+    <summary class="cursor-pointer text-provenance">
+      <span class="font-mono text-ink">${esc(g.name)}/</span>
+      <span class="text-ink-muted">· <span class="tnum">${g.accepted}</span> accepted ·
+        <span class="tnum">${g.rejected}</span> rejected · <span class="tnum">${g.undecided}</span> undecided</span>
+    </summary>
+    <div class="pl-s3">${g.members.map(leafRowHtml).join('')}</div>
+  </details>`;
+}
+
+/** The tree's own checkbox selection (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md
+ *  §1). No select-mode toggle -- the spec is explicit that the tree's rows
+ *  are already a work queue, unlike the sidebar's navigation rows, so the
+ *  checkboxes are simply present. Keyed per-slug so switching resources does
+ *  not carry a stale selection into a different repository's tree. */
+function curateSelectionSet(slug) {
+  if (!state.curateSelection || state.curateSelection.slug !== slug) {
+    state.curateSelection = { slug, paths: new Set() };
+  }
+  return state.curateSelection.paths;
+}
+
+function selectionBarHtml(selected, shown, total) {
+  if (!total) return '';
+  const selectedShown = shown.filter((b) => selected.has(b.path)).length;
+  const overflow = selected.size > selectedShown ? selected.size - selectedShown : 0;
+  return `<div class="mb-s1 flex flex-wrap items-baseline gap-s3 text-provenance">
+    <label class="flex cursor-pointer items-baseline gap-[5px] text-ink-muted">
+      <input type="checkbox" data-select-all-shown ${shown.length && selectedShown === shown.length ? 'checked' : ''}>
+      select all shown</label>
+    ${total > shown.length ? `<button data-select-all-matching class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
+        >select all <span class="tnum">${total}</span> branches${icon('chevron-right', { size: 12 })}</button>` : ''}
+    <span class="text-ink-muted"><span class="tnum">${selectedShown}</span> of <span class="tnum">${shown.length}</span> shown selected${
+      overflow ? ` · <span class="tnum">${selected.size}</span> selected in total` : ''}</span>
+    ${selected.size ? `<button data-selection-verdict="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
+        >accept <span class="tnum">${selected.size}</span> selected</button>
+      <button data-selection-verdict="rejected" class="cursor-pointer bg-transparent p-0 text-ink-muted underline"
+        >reject <span class="tnum">${selected.size}</span></button>
+      <button data-selection-clear class="cursor-pointer bg-transparent p-0 text-ink-muted underline">clear</button>` : ''}
+  </div>`;
+}
+
 async function renderComponentTree(slug, prefix = '') {
   const host = $('component-tree');
   if (!host) return;
@@ -394,6 +506,7 @@ async function renderComponentTree(slug, prefix = '') {
       ${tree.topology ? `<div class="mt-s1 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}`;
     return;
   }
+  const selected = curateSelectionSet(slug);
   const sort = state.componentSort || 'size';
   const rows = [...tree.branches];
   // A sort, never a filter: the ⚠ count already rides on the branch, so
@@ -406,6 +519,7 @@ async function renderComponentTree(slug, prefix = '') {
   // only breaking ties within the same agreement count.
   if (sort === 'confidence') rows.sort((a, b) => (b.agreement_count || 0) - (a.agreement_count || 0)
     || (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
+  const shown = state.componentShowAll ? rows : rows.slice(0, 8);
   host.innerHTML = `
     <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> component paths accepted ·
       <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
@@ -413,7 +527,8 @@ async function renderComponentTree(slug, prefix = '') {
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
       / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
-    ${(state.componentShowAll ? rows : rows.slice(0, 8)).map(branchRowHtml).join('')}
+    ${selectionBarHtml(selected, shown, rows.length)}
+    ${shown.map((b) => branchRowHtml(b, selected.has(b.path))).join('')}
     ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
     ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
@@ -427,6 +542,35 @@ async function renderComponentTree(slug, prefix = '') {
   }));
   renderComponentDiagram(slug, $('component-diagram'));
 
+  host.querySelectorAll('[data-branch-select]').forEach((c) => c.addEventListener('change', () => {
+    if (c.checked) selected.add(c.dataset.branchSelect); else selected.delete(c.dataset.branchSelect);
+    renderComponentTree(slug, prefix);
+  }));
+  host.querySelector('[data-select-all-shown]')?.addEventListener('change', (ev) => {
+    shown.forEach((b) => { if (ev.target.checked) selected.add(b.path); else selected.delete(b.path); });
+    renderComponentTree(slug, prefix);
+  });
+  // "select all matching" acts on the FULL set at this level (`rows`), not
+  // just the 8 shown by default -- and the button already named the total
+  // before this click, so the act does not surprise (rule 4).
+  host.querySelector('[data-select-all-matching]')?.addEventListener('click', () => {
+    rows.forEach((b) => selected.add(b.path));
+    renderComponentTree(slug, prefix);
+  });
+  host.querySelector('[data-selection-clear]')?.addEventListener('click', () => { selected.clear(); renderComponentTree(slug, prefix); });
+  host.querySelector('[data-selection-verdict="accepted"]')?.addEventListener('click', () => {
+    const paths = [...selected];
+    const picked = tree.branches.filter((b) => paths.includes(b.path));
+    recordVerdicts(slug, paths, 'accepted', {
+      count: picked.reduce((n, b) => n + (b.components || 0), 0),
+      low: picked.reduce((n, b) => n + (b.low_confidence || 0), 0),
+      exists: picked.reduce((n, b) => n + (b.accepted || 0), 0),
+    }, () => { selected.clear(); });
+  });
+  host.querySelector('[data-selection-verdict="rejected"]')?.addEventListener('click', () => {
+    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0 }, () => { selected.clear(); });
+  });
+
   host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
     const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
     if (!box) return;
@@ -434,7 +578,15 @@ async function renderComponentTree(slug, prefix = '') {
     box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`;
     try {
       const out = await getComponentLeaves(slug, b.dataset.branchOpen);
-      box.innerHTML = out.leaves.map(leafRowHtml).join('') || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      // Grouped by scope-hierarchy cluster when the backend found groups
+      // worth having (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped
+      // leaves — a group of one collapses nothing — render plainly, same as
+      // before this restructuring. A branch with no groups at all (small
+      // branches, same as always) falls back to the flat list.
+      const groups = out.groups || [];
+      const ungrouped = out.ungrouped || out.leaves;
+      box.innerHTML = (groups.map(leafGroupHtml).join('') + ungrouped.map(leafRowHtml).join(''))
+        || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
@@ -449,6 +601,204 @@ async function renderComponentTree(slug, prefix = '') {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
     recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 });
   }));
+}
+
+/* ── Blueprints ───────────────────────────────────────────────────────────
+ *
+ * SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2/§3/§4. A candidate blueprint is
+ * clustering.py's proposal that a group of components forms a cohesive unit;
+ * accepting one materialises a real Egeria SolutionBlueprint
+ * (blueprint_materializer.py). "0 of 12 clusters in the logical reading
+ * reviewed" was already the coverage sentence on this pane -- this is the
+ * screen that count opens onto, since a count that opens nothing is the one
+ * thing this app does not do.
+ *
+ * A cluster is keyed `perspective::cluster_name` and exists in exactly one
+ * READING (RULING-WHAT-A-VERDICT-IS-ABOUT.md §0 renamed `Component.
+ * perspective` to "reading" precisely so this would not read as the same
+ * axis as the diagram's "found by" or the chrome's Perspective filter -- all
+ * three used to share the one word "perspective"). So this list is scoped to
+ * ONE reading at a time, says so at its head, and switching readings
+ * REPLACES the list outright rather than diffing it against the last one. */
+
+/** The blueprint's own verdict, rendered the same shape as a component's
+ *  `verdictBadge` -- but a blueprint verdict never inherits (it has no
+ *  ancestor scope the way a path does) and has no "retyped" outcome
+ *  (BLUEPRINT_VERDICTS has no equivalent free-text field to correct). */
+function blueprintVerdictBadge(v) {
+  if (!v) return `<span class="text-ink-muted">undecided</span>`;
+  return `<span class="text-ink">${esc(v.verdict)}</span>${v.decided_at ? ` <span class="text-ink-muted">· ${esc(ago(v.decided_at))}</span>` : ''}`;
+}
+
+/** SPEC §4, the hard requirement: accepting a blueprint materialises the
+ *  SolutionBlueprint element itself, but blueprint_materializer.py does NOT
+ *  attach members as a synchronous part of that write -- workflows/curate.py's
+ *  materialize_blueprint_if_accepted queues them onto the outbox instead
+ *  (egeria_outbox.enqueue_blueprint_members), which drains later, on its own
+ *  schedule, and this pane has no record of whether a given queue row has
+ *  actually landed as a real CollectionMembership by the time anyone reads
+ *  this screen again. So the honest claim is narrower than "linked" and
+ *  narrower than "not built" both: not-yet-confirmed-linked, counted.
+ *
+ *  "Accepted component" here means a member/child that itself has a
+ *  materialized Egeria element (`member_status[].materialized`) -- the same
+ *  fact `resolve_member_guids` requires before it will even attempt to
+ *  enqueue that member's attachment (Decision 2: accepting a blueprint does
+ *  NOT implicitly accept or materialize its members). A member with no
+ *  verdict of its own, or an accepted-but-unmaterialized one, is not counted
+ *  here -- it was never a membership candidate in the first place. */
+function membershipHonestyLine(bp) {
+  const materializedMembers = (bp.member_status || []).filter((m) => m.materialized).length;
+  const materializedChildren = (bp.child_status || []).filter((c) => c.materialized).length;
+  const total = materializedMembers + materializedChildren;
+  if (!total) {
+    return `<div class="text-caveat text-ink-muted">its members are not yet linked — none of its proposed members are catalogued as their own Egeria elements yet, so there is nothing to link</div>`;
+  }
+  const parts = [];
+  if (materializedMembers) parts.push(`<span class="tnum">${materializedMembers}</span> accepted component${materializedMembers === 1 ? '' : 's'}`);
+  if (materializedChildren) parts.push(`<span class="tnum">${materializedChildren}</span> child blueprint${materializedChildren === 1 ? '' : 's'}`);
+  return `<div class="text-caveat text-ink-muted">its members are not yet confirmed linked — <button data-blueprint-standapart="${esc(bp.perspective)}::${esc(bp.cluster_name)}"
+    class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${parts.join(' and ')} stand apart${icon('chevron-right', { size: 12 })}</button></div>`;
+}
+
+function blueprintRowHtml(bp) {
+  const v = bp.verdict;
+  const accepted = v?.verdict === 'accepted';
+  const rejected = v?.verdict === 'rejected';
+  const memberCount = (bp.members || []).length;
+  const acceptedMembers = (bp.member_status || []).filter((m) => (m.verdict || {}).verdict === 'accepted').length;
+  const why = [bp.signal, bp.carrier].filter(Boolean).join(' · ');
+  return `<div class="border-b border-rule py-s2" data-blueprint="${esc(bp.perspective)}::${esc(bp.cluster_name)}">
+    <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
+      <span class="font-mono text-answer text-ink">${esc(bp.cluster_name)}</span>
+      ${bp.oversized ? `<span class="text-provenance text-state-warn">· ⚠ oversized (target <span class="tnum">${bp.target_size ?? '?'}</span>)</span>` : ''}
+      ${why ? `<span class="text-provenance text-ink-muted">· ${esc(why)}</span>` : ''}
+      <span class="text-provenance text-ink-muted">· <button data-blueprint-members="${esc(bp.perspective)}::${esc(bp.cluster_name)}"
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline"><span class="tnum">${acceptedMembers}</span> of <span class="tnum">${memberCount}</span> members accepted${icon('chevron-right', { size: 12 })}</button></span>
+    </div>
+    <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
+      <span>${blueprintVerdictBadge(v)}</span>
+      <button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>
+      <button data-blueprint-verdict="rejected" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+    </div>
+    ${accepted
+      ? (bp.materialized
+          ? `<div class="mt-[2px] text-caveat text-ink">catalogued as a Solution Blueprint · <span class="font-mono">${esc((bp.materialized.guid || '').slice(0, 8))}…</span></div>
+             ${membershipHonestyLine(bp)}`
+          : `<div class="mt-[2px] text-caveat text-accent-ink">accepted, but not yet catalogued in Egeria — the write may not have completed; re-accepting will retry</div>`)
+      : rejected ? `<div class="mt-[2px] text-caveat text-ink-muted">rejected · nothing created</div>` : ''}
+  </div>`;
+}
+
+/** The rail: one cluster's members/children, each with its own verdict and
+ *  materialization state -- what "N members" or "N stand apart" opens onto,
+ *  the same "a count opens what it counted" rule every other rail here
+ *  follows. */
+function openBlueprintMembersInRail(slug, bp, { standApartOnly = false } = {}) {
+  ensureRailShowing();
+  railClaim();
+  let members = (bp.member_status || []).map((m) => ({ ...m, kind: 'component' }));
+  let children = (bp.child_status || []).map((c) => ({ ...c, kind: 'blueprint', slug: c.cluster_name }));
+  if (standApartOnly) {
+    members = members.filter((m) => m.materialized);
+    children = children.filter((c) => c.materialized);
+  }
+  const rows = [...members, ...children];
+  railFrame('Members', slug, `
+    <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · catalogued but not confirmed linked to the blueprint' : ''}</div>
+    ${rows.length ? rows.map((m) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
+      <span class="font-mono text-chrome-ink">${esc(m.slug)}</span>
+      <span class="text-chrome-muted">${m.kind === 'blueprint' ? 'child blueprint' : 'component'}</span>
+      <span class="text-chrome-muted">${m.verdict ? esc(m.verdict.verdict) : 'undecided'}</span>
+      <span class="text-chrome-muted">${m.materialized ? 'catalogued in Egeria' : 'not catalogued'}</span>
+    </div>`).join('') : `<div class="text-caps text-chrome-muted">nothing to show</div>`}`,
+    { sub: `${rows.length} of ${(bp.member_status || []).length + (bp.child_status || []).length}` });
+}
+
+function blueprintReadingKey(slug) {
+  if (!state.blueprintReading || state.blueprintReading.slug !== slug) {
+    state.blueprintReading = { slug, reading: null };
+  }
+  return state.blueprintReading;
+}
+
+async function renderBlueprintList(slug) {
+  const host = $('blueprint-list');
+  if (!host) return;
+  let data;
+  try { data = await getComponentBlueprints(slug); }
+  catch (err) { host.innerHTML = `<span class="text-accent-ink">The blueprints could not be read: ${esc(err.message)}</span>`; return; }
+  if (slug !== state.selectedSlug) return;
+  const { blueprints, perspectives } = data;
+  if (!perspectives.length) { host.innerHTML = ''; return; }
+  const rk = blueprintReadingKey(slug);
+  if (!rk.reading || !perspectives.includes(rk.reading)) rk.reading = perspectives[0];
+  const reading = rk.reading;
+  const inReading = blueprints.filter((bp) => bp.perspective === reading);
+  const others = perspectives.filter((p) => p !== reading)
+    .map((p) => ({ p, n: blueprints.filter((bp) => bp.perspective === p).length }));
+  // §3: replaced outright on every render, never diffed against the
+  // previous reading's rows -- this function is always called with a fresh
+  // innerHTML assignment, so there is no patch step to accidentally add.
+  host.innerHTML = `
+    <div class="mb-s1 mt-s3 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
+      <span class="font-heading text-name font-normal text-ink">blueprints</span>
+      <span class="text-provenance text-ink-muted">clusters clustering.py proposed as a cohesive unit, in the ${esc(reading)} reading</span>
+    </div>
+    <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">A verdict here is recorded against <span class="font-mono">${esc(reading)}::cluster name</span>
+      and applies in this reading only — switching readings shows a different set, not the same set re-judged.</p>
+    ${inReading.length ? inReading.map(blueprintRowHtml).join('') : `<div class="text-caveat text-ink-muted">No candidate blueprints proposed in the ${esc(reading)} reading.</div>`}
+    <div class="mt-s2 text-provenance text-ink-muted"><span class="tnum">${inReading.length}</span> of <span class="tnum">${inReading.length}</span> clusters shown · all in the <span class="text-ink">${esc(reading)}</span> reading
+      ${others.map((o) => ` · <button data-blueprint-reading="${esc(o.p)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">the ${esc(o.p)} reading has <span class="tnum">${o.n}</span>${icon('chevron-right', { size: 12 })}</button>`).join('')}</div>
+    <div id="blueprint-status" class="mt-s1 text-provenance text-ink-muted"></div>`;
+
+  host.querySelectorAll('[data-blueprint-reading]').forEach((b) => b.addEventListener('click', () => {
+    rk.reading = b.dataset.blueprintReading;
+    renderBlueprintList(slug);
+  }));
+  host.querySelectorAll('[data-blueprint-members]').forEach((b) => b.addEventListener('click', () => {
+    const bp = inReading.find((x) => `${x.perspective}::${x.cluster_name}` === b.dataset.blueprintMembers);
+    if (bp) openBlueprintMembersInRail(slug, bp);
+  }));
+  host.querySelectorAll('[data-blueprint-standapart]').forEach((b) => b.addEventListener('click', () => {
+    const bp = inReading.find((x) => `${x.perspective}::${x.cluster_name}` === b.dataset.blueprintStandapart);
+    if (bp) openBlueprintMembersInRail(slug, bp, { standApartOnly: true });
+  }));
+  host.querySelectorAll('[data-blueprint-verdict]').forEach((b) => b.addEventListener('click', () => {
+    const bp = inReading.find((x) => `${x.perspective}::${x.cluster_name}` === b.dataset.key);
+    if (bp) recordBlueprintVerdict(slug, bp, b.dataset.blueprintVerdict);
+  }));
+}
+
+/** Same shared-preview-dialog rule as `recordVerdicts` (rule 4): accepting a
+ *  cluster materialises a real Egeria SolutionBlueprint, so it names that
+ *  before it does it. Rejecting creates nothing, so it records at once. */
+function recordBlueprintVerdict(slug, bp, verdict) {
+  const status = $('blueprint-status');
+  const go = async () => {
+    if (status) status.textContent = 'recording…';
+    try {
+      await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict);
+      renderBlueprintList(slug);
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
+    }
+  };
+  if (verdict !== 'accepted') { go(); return; }
+  const el = openDialog('Accept a blueprint', `${bp.perspective}::${bp.cluster_name}`);
+  const body = el.querySelector('#wl-detail-body');
+  const memberCount = (bp.members || []).length;
+  body.innerHTML = `
+    <p class="text-caveat text-ink">Catalogues <span class="font-mono">${esc(bp.cluster_name)}</span> as a real Egeria <span class="font-mono">SolutionBlueprint</span> —
+      the type is pinned (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §0), unlike an individual component's.</p>
+    <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or materialize them —
+      only members already accepted and catalogued on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
+    <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
+    <div class="mt-s3 flex gap-s3">
+      <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept</button>
+      <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+    </div>`;
+  body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
 }
 
 /** The diagram beside the tree. It is already verdict-aware -- rendered
@@ -501,8 +851,16 @@ async function renderComponentDiagram(slug, host) {
 
 /** The shared preview dialog, because rule 4 makes it mandatory: the act
  *  names what it would do before it does it. Rejecting creates nothing in
- *  Egeria, so it records at once. */
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
+ *  Egeria, so it records at once.
+ *
+ *  `scopes` may be several branches at once (the tree's own multi-select,
+ *  SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §1) -- the confirmation states
+ *  the TOTAL scope count across every selected branch before acting ("two
+ *  branches selected — 20 scopes total"), not just that an action ran.
+ *  `onDone` (optional) fires once the verdicts are recorded -- the
+ *  selection-clearing callback, so a selection is not left checked against
+ *  branches that were just acted on. */
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDone) {
   const status = $('component-tree-status');
   const go = async () => {
     if (status) status.textContent = 'recording…';
@@ -511,13 +869,17 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }) {
       if (status) status.innerHTML = verdict === 'accepted'
         ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · <span class="tnum">${out.queued ?? 0}</span> component${out.queued === 1 ? '' : 's'} queued for Egeria — the pane does not wait</span>`
         : `<span class="text-state-ok">→ rejected · nothing created</span>`;
+      onDone?.();
       renderComponentTree(slug);
     } catch (err) {
       if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
     }
   };
   if (verdict !== 'accepted' || count <= 1) { go(); return; }
-  const el = openDialog('Accept at the branch', `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`);
+  const scopeLabel = scopes.length > 1
+    ? `${scopes.length} branches selected — ${count} scope${count === 1 ? '' : 's'} total`
+    : `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`;
+  const el = openDialog('Accept at the branch', scopeLabel);
   const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.

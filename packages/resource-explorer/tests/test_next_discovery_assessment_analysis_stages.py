@@ -1,0 +1,188 @@
+"""Item 11 (PLAN-FINISH-REPOS.md): Discovery, Assessment and Analysis as
+real, built stages in /next.
+
+The mechanism these three stages need already existed for Scouting/
+Enrichment/Curate before this item: the generic Questions-checklist engine
+in `loadPane()` (app.js), parameterised by `phase`. This item's whole change
+is (1) flipping `built: true` for the three, (2) adding one small honest
+note about what Analysis's classic Sub-Resources feature does not have a
+/next equivalent for, and (3) documentation-only staleness fixes to
+Automate's comment about what a card-less Assessment/Analysis stage means.
+
+No browser verification of a signed-in session happened for this file — see
+docs/design-notes/ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md for
+what was and was not checked live. These tests grep/slice function bodies
+out of the concatenated source, the established pattern for /next JS
+modules without a browser -- see test_next_curate_pane.py,
+test_next_understanding_pane.py and test_next_enrichment_fidelity.py's
+`_app()` helper, reproduced identically here.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
+CONFIGDATA = Path(__file__).resolve().parents[1] / "resource_explorer" / "configdata"
+
+
+def _app():
+    src = (NEXT / "app.js").read_text(encoding="utf-8")
+    for f in sorted((NEXT / "stages").glob("*.js")):
+        src += "\n" + f.read_text(encoding="utf-8")
+    return src
+
+
+def _stages_block():
+    app = (NEXT / "app.js").read_text(encoding="utf-8")
+    return app[app.index("const STAGES = ["):app.index("\n];\n", app.index("const STAGES = ["))]
+
+
+class TestAllThreeStagesAreBuilt:
+    def test_discovery_assessment_analysis_are_marked_built(self):
+        block = _stages_block()
+        for stage_id in ("discovery", "assessment", "analysis"):
+            entry = block[block.index(f"id: '{stage_id}'"):]
+            entry = entry[:entry.index("},")]
+            assert "built: true" in entry, f"{stage_id} must be built: true"
+
+    def test_investigation_stays_a_frame_not_a_built_stage(self):
+        # Regression guard: a careless find/replace across STAGES turning
+        # every entry into `built: true` would not fail any other test here,
+        # since none of them assert the frame entry's ABSENCE of `built`.
+        block = _stages_block()
+        entry = block[block.index("id: 'investigation'"):]
+        entry = entry[:entry.index("},")]
+        assert "built:" not in entry
+        # RULING-NAV-GROUPING.md replaced the separate `frame: true` flag
+        # with a single `class` field STAGES declares once and the renderer
+        # derives everything else from -- see NAV-GROUPING-IMPLEMENTED.md.
+        assert "class: 'frame'" in entry
+
+
+class TestTheGenericEngineNeededNoStageSpecificBranch:
+    """Unlike Understanding/Automate (which bypass the Questions engine
+    entirely) and Curate (which renders even with zero catalog rows),
+    Discovery and Assessment must NOT gain a bypass branch -- the whole
+    point of item 11 is that the generic path already reaches them."""
+
+    def test_loadpane_has_no_special_case_branch_for_discovery_or_assessment(self):
+        app = _app()
+        body = app[app.index("async function loadPane()"):app.index("function wireHumanAnswers(")]
+        assert "state.stage === 'discovery'" not in body
+        assert "state.stage === 'assessment'" not in body
+
+    def test_analysis_gets_exactly_one_note_call_not_a_bypass(self):
+        app = _app()
+        body = app[app.index("async function loadPane()"):app.index("function wireHumanAnswers(")]
+        assert "if (state.stage === 'analysis') renderAnalysisNote(slug);" in body
+        # It must run alongside the generic row rendering, not instead of it
+        # -- placed before the empty-question early return, same as Curate.
+        i = body.index("if (state.stage === 'analysis') renderAnalysisNote(slug);")
+        j = body.index("if (!state.questions.length) {")
+        assert i < j
+
+    def test_discovery_and_assessment_stage_modules_export_nothing(self):
+        # They genuinely have no bespoke rendering -- an export here would
+        # mean someone started building a bypass and this test would be the
+        # signal to write a real one for it instead of leaving it silent.
+        for name in ("discovery.js", "assessment.js"):
+            src = (NEXT / "stages" / name).read_text(encoding="utf-8")
+            assert src.strip().endswith("export {};")
+
+
+class TestDispositionSubTabAlreadyWritesThroughDiscoveryPy:
+    def test_next_setdisposition_posts_to_the_real_discovery_route(self):
+        api = (NEXT.parent / "re-api.js").read_text(encoding="utf-8")
+        assert "post('/api/discovery/disposition'" in api
+
+    def test_the_route_exists_in_discovery_py(self):
+        discovery_py = (NEXT.parent.parent.parent / "web" / "routes" / "discovery.py").read_text(encoding="utf-8")
+        assert '@router.post("/disposition"' in discovery_py
+        assert "async def set_repo_disposition(" in discovery_py
+
+
+class TestAnalysisSubResourcesIsNamedNotDropped:
+    def test_the_note_names_sub_resources_specifically_and_links_out(self):
+        src = (NEXT / "stages" / "analysis.js").read_text(encoding="utf-8")
+        assert "export function renderAnalysisNote(" in src
+        body = src[src.index("export function renderAnalysisNote("):]
+        assert "Sub-Resources" in body
+        assert "oldUiHref()" in body
+
+    def test_the_note_mounts_into_the_shared_per_stage_slot_curate_also_uses(self):
+        src = (NEXT / "stages" / "analysis.js").read_text(encoding="utf-8")
+        assert "$('enrichment-form')" in src
+        curate_src = (NEXT / "stages" / "curate.js").read_text(encoding="utf-8")
+        assert "$('enrichment-form')" in curate_src
+
+
+class TestOrgImportRepoSearchFromListCsvExportStayDeferredAtTheSidebar:
+    """Item 11's own scoping call: these four discovery.py endpoints are
+    corpus-level, not resource-scoped, and were already covered by the
+    sidebar's pre-existing 'Find repos' deferral -- this item must not
+    duplicate that deferral inside the Discovery stage pane."""
+
+    def test_find_repos_action_still_defers_and_links_out(self):
+        app = _app()
+        assert "'find-repos': () => {" in app
+        body = app[app.index("'find-repos': () => {"):]
+        body = body[:body.index("\n    },")]
+        assert "Repo discovery" in body
+        assert "oldUiHref()" in body
+
+    def test_discovery_py_still_declares_the_four_deferred_endpoints(self):
+        discovery_py = (NEXT.parent.parent.parent / "web" / "routes" / "discovery.py").read_text(encoding="utf-8")
+        assert '@router.get("/inventory.csv")' in discovery_py
+        assert '@router.post("/from-list"' in discovery_py
+        assert '@router.post("/search"' in discovery_py
+        assert "async def _expand_org(" in discovery_py
+
+
+class TestCatalogHasRealRowsForAllThreeStages:
+    """Pins the counts this item's whole argument rests on -- if these ever
+    drop to zero, Discovery/Assessment/Analysis would be `built: true` over
+    an empty checklist, the exact honesty violation the unbuilt marker
+    exists to prevent."""
+
+    def _question_stages(self):
+        raw = yaml.safe_load((CONFIGDATA / "question_catalog.yaml").read_text(encoding="utf-8"))
+        stages = []
+        for e in raw.get("repo_questions") or []:
+            stages.extend(part.strip().lower() for part in str(e.get("stage", "")).split("/"))
+        return stages
+
+    def test_discovery_has_catalogued_questions(self):
+        assert self._question_stages().count("discovery") > 0
+
+    def test_assessment_has_catalogued_questions(self):
+        assert self._question_stages().count("assessment") > 0
+
+    def test_analysis_has_catalogued_questions(self):
+        assert self._question_stages().count("analysis") > 0
+
+    def _analysis_intents(self):
+        raw = yaml.safe_load((CONFIGDATA / "analysis_catalog.yaml").read_text(encoding="utf-8"))
+        intents = []
+        # analysis_catalog.yaml's top-level shape mirrors question_catalog's
+        # repo_questions convention -- walk whatever list of dicts holds an
+        # `intent` key rather than assuming one exact top-level key name.
+        def walk(node):
+            if isinstance(node, dict):
+                if "intent" in node:
+                    intents.append(str(node["intent"]))
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+        walk(raw)
+        return intents
+
+    def test_discovery_assessment_analysis_all_have_catalog_entries(self):
+        intents = self._analysis_intents()
+        assert intents.count("discovery") > 0
+        assert intents.count("assessment") > 0
+        assert intents.count("analysis") > 0

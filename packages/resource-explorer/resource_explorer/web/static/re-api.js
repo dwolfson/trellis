@@ -317,6 +317,79 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
        compileId ? { query_hash: queryHash, vote, compile_id: compileId }
                  : { query_hash: queryHash, vote });
 
+/**
+ * Join a chat vote to the gaps loop (item 8 — ITEM-8-FEEDBACK-IMPLEMENTED.md).
+ *
+ * `sendFeedback` above records the vote for MetricsCollector's own tracing —
+ * a different consumer than the gaps collection, and not the mechanism
+ * `record_disagreement` (gaps.py) reads. This is the SAME endpoint the
+ * Questions-checklist "Was this right?" bar already posts to
+ * (`/api/feedback/answer`, feedback.js:313) — a chat vote is the same kind of
+ * claim about the same kind of answer, so it goes through the same door
+ * rather than a parallel one. Only `disagree` raises a gap; `agree`/`partly`
+ * still land in the feedback store (feedback.py's module note).
+ *
+ * Requires a resource in scope: the endpoint 404s on an unknown slug and a
+ * chat turn asked with nothing selected has no slug to attribute a gap to —
+ * that turn's vote still reaches `sendFeedback` above, it just cannot join
+ * the per-resource gaps collection. Callers should skip this call rather
+ * than let it throw when `slug` is empty.
+ */
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '' }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page });
+
+/**
+ * SSE variant of `ask()` — POST /api/query/stream, yielding one event per
+ * server line rather than one Promise for the whole answer.
+ *
+ * Async generator, not a callback pair: the caller drives it with `for await`
+ * and can stop consuming (e.g. the resource selection changed underneath it)
+ * without this module needing to know why. Events come back exactly as the
+ * server names them — `{t:'chunk', v}` while text is arriving, one
+ * `{t:'done', ...}` carrying intent/hash/chart/compiled/compile_id and
+ * whichever structured payload (symbol_table, compare_symbols,
+ * alias_suggestion) the done event carried.
+ *
+ * Falls back to nothing: a caller that cannot get a readable stream (an
+ * old browser, a proxy that buffers SSE) should catch and retry with the
+ * plain `ask()` above rather than this function pretending to stream.
+ */
+export async function* askStream(query, { resourceSlug, perspectives = [], sessionId } = {}) {
+  const res = await fetch('/api/query/stream', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      query,
+      project_slug: resourceSlug || null,
+      perspectives: [...perspectives],
+      session_id: sessionId || null,
+    }),
+  });
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+    throw new ApiError(res.status, detail, '/api/query/stream');
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line; a frame may arrive split
+    // across chunks, so only a complete "...\n\n" is safe to parse.
+    let sep;
+    while ((sep = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const line = frame.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      yield JSON.parse(line.slice(6));
+    }
+  }
+}
+
 /* ── Charts ──────────────────────────────────────────────────────────── */
 
 /** The chart kinds `/api/stats/{slug}/charts/{kind}` serves for a repo. */
@@ -573,6 +646,15 @@ export const getActivityEntry = (entryId) =>
 export const listActivity = (limit = 50) => get(`/api/activity/?limit=${limit}`);
 export const listRfas = () => get('/api/activity/rfas');
 
+/** Record a response action (defer | reassign | complete | reopen — "reopen"
+ *  is just `status: 'open'` again, the same endpoint) against one RFA.
+ *  `web/routes/activity.py:update_rfa_action` — local-only for now (see
+ *  next/rfa.js's own note on why), with a best-effort Egeria ToDo sync
+ *  attempted server-side, non-blocking of this call's result. */
+export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '', resolutionNote = '' } = {}) =>
+  patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`,
+        { status, assignee, defer_until: deferUntil, resolution_note: resolutionNote });
+
 /**
  * Poll one activity entry until it stops running.
  *
@@ -690,3 +772,97 @@ export const getComponentLeaves = (slug, branch) =>
 /** One verdict row per scope; accepted ones queue their materialisation. */
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
+
+/** SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2 — clustering.py's candidate
+ *  blueprints, each carrying its own verdict/materialization state and its
+ *  members'/children's, already resolved server-side. `perspectives` lists
+ *  every reading present, since a cluster only exists within one (§3). */
+export const getComponentBlueprints = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/blueprints`);
+
+/** Accept/reject one cluster. Accepting materialises a real Egeria
+ *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
+ *  members/children for CollectionMembership — the caller does not wait on
+ *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
+export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '') =>
+  post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
+       { perspective, cluster_name: clusterName, verdict, note });
+
+/* ── Automate ────────────────────────────────────────────────────────────
+ * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).
+ * Local-first: subscriptions and schedules live in RE's own registry, not
+ * as Egeria NotificationType elements yet — see notification_subscriptions'
+ * table docstring in registry.py. */
+
+/** Subscriptions, each carrying `has_schedule` — whether an enabled,
+ *  recurring schedule exists for the same (entity, analysis_id). Detection
+ *  only ever runs off a scheduled completion, so an active subscription
+ *  with no schedule can never fire; callers must show that, not hide it. */
+export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId = '', activeOnly = false } = {}) => {
+  const params = new URLSearchParams();
+  if (entityType) params.set('entity_type', entityType);
+  if (entitySlug) params.set('entity_slug', entitySlug);
+  if (analysisId) params.set('analysis_id', analysisId);
+  if (activeOnly) params.set('active_only', 'true');
+  const qs = params.toString();
+  return get(`/api/automate/subscriptions${qs ? `?${qs}` : ''}`);
+};
+
+export const setSubscriptionActive = (id, active) =>
+  post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
+
+/** Every scheduled analysis across every resource — what a subscription
+ *  actually needs to fire. Global by design; there is no per-resource
+ *  variant because the Automate pane's own filter checkbox does that
+ *  client-side, same as the current UI's Schedules overview. */
+export const listAllSchedules = () => get('/api/schedules/');
+
+export const deleteSchedule = (entityType, entitySlug, analysisId) =>
+  request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
+          { method: 'DELETE' });
+
+/** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
+ *  this does is exactly what the cadence would do, not a separate code
+ *  path that could diverge from it. Does NOT advance `next_run`; the
+ *  caller is expected to say so, the same distinction classic's
+ *  `runScheduleNow` draws (index.html). */
+export const runScheduleNow = (entityType, entitySlug, analysisId) =>
+  post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}/run`);
+
+/* ── Admin (PLAN-FINISH-REPOS.md item 5) ────────────────────────────────────
+ * Read-mostly system/catalog-configuration views, reachable from the header's
+ * own ⚙ Admin button — see next/admin/*.js. Every route here already backs
+ * classic's index.html Admin panes; nothing new was added on the server. */
+
+/** The Annotation Types registry — every schema RE knows how to publish as
+ *  an Egeria annotation, and its property/class bindings. */
+export const listAnnotationTypes = () => get('/api/analyses/annotation-types');
+export const getAnnotationType = (typeName) =>
+  get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
+
+/** The full, unscoped Question catalog — every authored question with its
+ *  funnel stage, perspectives and answering mechanism. Read-only browser;
+ *  the catalog itself is edited via the source CSV, not this route. */
+export const listQuestionCatalog = (resourceType = 'repo') =>
+  get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+
+/** The in-process log ring buffer (`observability/logging_setup.py`) —
+ *  bounded, in-memory, empty after a restart. The response carries buffer
+ *  metadata (held/capacity/full/note) alongside the records precisely so a
+ *  caller can tell "nothing logged", "buffer emptied by a restart" and "your
+ *  filter excluded everything" apart — collapsing them to one empty state is
+ *  the absence-as-answer failure this codebase keeps finding. */
+export const listLogs = ({ limit = 300, level = '', logger = '' } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) params.set('level', level);
+  if (logger) params.set('logger', logger);
+  return get(`/api/logs/?${params}`);
+};
+
+/** Prefect flow-run status for locally-dispatched (`executes_at: prefect`)
+ *  survey steps only — `executes_at: egeria` steps are coordinated by Egeria
+ *  itself and are not reflected here. */
+export const getPrefectStatus = () => get('/api/prefect/status');
+export const listPrefectFlowRuns = (limit = 50) => get(`/api/prefect/flow-runs?limit=${limit}`);
+export const cancelPrefectFlowRun = (flowRunId) =>
+  post(`/api/prefect/flow-runs/${encodeURIComponent(flowRunId)}/cancel`);

@@ -2993,6 +2993,170 @@ Two ways to close it, and they are not equivalent:
 
 ---
 
+#### MEDIUM — `/next` has no real Search/Discover screen; the sidebar's find action is a same-noun-for-every-type stub
+
+Raised by the project owner, 2026-09-18, live-testing `/next`: "did we lose Search? It used to be on
+the Scouting stage." It wasn't lost — `SPEC-ACTIONABLE-AND-HONEST.md` point 2 (2026-09-15, before
+this round of work) deliberately moved it from a mislabeled Scouting-stage "Search" stub to a
+corpus-level circle-plus icon beside the sidebar's Repos/DBs/FS switcher, since finding candidate
+resources isn't specific to one stage. But the thing that moved is itself just a stub: `'find-repos'`
+in `next/app.js` opens a dialog that says "not built in /next yet" and links to classic
+(`app.js:2017-2026`) — it has never had real functionality in `/next`.
+
+**Classic's real mechanism is not one screen — it's three genuinely different ones per resource
+type**, confirmed by reading the actual code, not assumed from the shared icon:
+- **Repos**: a real "Search GitHub" panel (org/language/topic filters, save-as-source, GitHub
+  base-URL override) plus a "From a list" CSV/URL-list importer, both routing into the same
+  review table (`index.html:15674-15708`, `_scoutSourceMode`).
+- **Databases**: server-side introspection, not a search box — connect to an already-registered DB
+  server and list what databases exist on it for one-click registration
+  (`POST /api/db-servers/{slug}/discover`, `index.html:6950-7008`).
+- **Filesystems**: not yet investigated in this pass — likely its own separate mechanism again, not
+  a text search; check before assuming it's closer to either of the above.
+
+A same-icon, same-label stub across all three tabs was actively wrong until PR #142 fixed the
+copy to at least name the right noun per tab (`FIND_TITLE`) — but the underlying screen still
+doesn't exist for any of the three. This needs a real design pass (probably three separate builds,
+not one generic "search" component, given how different the three mechanisms are) before it's
+buildable.
+
+---
+
+#### LOW — sidebar group collapse doesn't respond to clicks for roughly the first minute after app launch
+
+Raised by the project owner, 2026-09-18, live-testing: clicking a group `<summary>` does nothing at
+first launch; it starts working correctly after about a minute with no page reload. Investigated but
+**not root-caused** — recording what was ruled out rather than a guess dressed as a fix:
+
+- The click handler (`toggleGroupCollapsed`, wired in `bindSidebar()`) and the persistence mechanism
+  (`COLLAPSED_GROUPS_KEY` in `localStorage`) don't depend on any known 60-second timer.
+- `re-api.js`'s `CACHE_TTL_MS = 60_000` (used by `listGroups()` and a few other vocabulary calls) is
+  a suspicious timing coincidence but only feeds group *display names*
+  (`app.js:1726`'s `groupName()`), not the grouping-by-`group_slug` or the collapse toggle itself —
+  ruled out as the direct cause on inspection, though not proven unrelated.
+- The user confirmed clicking does **nothing visible** during the affected window (not a
+  collapse-then-immediately-reopen flicker), which argues against a rapid-re-render-undoing-the-click
+  theory and more toward the click listener not being live yet, or landing on a DOM node about to be
+  replaced by an in-flight startup render.
+
+**Next step, not yet done**: reproduce against a genuinely cold server start (this checkout serves
+the live app continuously, so a safe repro needs coordinating a restart) with the browser console
+and Network tab open, to see what's still in flight during the affected window and whether the click
+listener is actually attached to the node the click lands on.
+
+---
+
+#### MEDIUM — `tailwind-next.css` has no build-freshness check and will silently go stale again
+
+Found 2026-09-17/18, live: the RFA drawer (`next/rfa.js`) rendered as an unstyled block at the
+bottom of the page instead of a fixed right-hand panel — `inset-y-0`/`z-[80]`/`w-[26rem]` were
+absent from the compiled `next/tailwind-next.css`, which hadn't been rebuilt
+(`frontend-build`'s `npm run build:css:next`) since 2026-09-13, while `rfa.js` and other `/next`
+files kept changing through items 3/5/6/9/10/11. Any class introduced after the last build and
+not coincidentally already present was silently unstyled — no error, no visual cue beyond the
+broken layout itself. Rebuilt as an immediate fix; recording the process gap here since nothing
+stops it recurring for the next item that touches `/next`'s JS/HTML.
+
+Two ways to close it, not mutually exclusive:
+1. **A CI check** that rebuilds `tailwind-next.css` fresh and diffs it against the committed one
+   — fails loudly the moment someone forgets, the same shape as
+   `test_every_findings_producing_analysis_has_a_dashboard` elsewhere in this backlog.
+2. **Make it part of the item-completion checklist** alongside the already-required
+   `*-IMPLEMENTED.md` doc — a `/next` item isn't done until `build:css:next` has been re-run
+   against its own changes.
+
+---
+
+#### LOW — architecture recovery's primary-component pick should be best-evidenced, not most-recent
+
+Named by the designer, 2026-09-17, while specifying item 3 (Curate)'s build-ready spec
+(`SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md`) — out of that item's scope, recorded here rather than
+dropped.
+
+`repo_survey_definition_adapter.py:2951` picks the single overall "primary" component proposal for
+a scope with `max(comp_rows, key=lambda r: r["surveyed_at"])` — whichever extractor run happens to
+be newest wins, regardless of which proposal is better supported. `RULING-WHAT-A-VERDICT-IS-ABOUT.md`
+§2a/§2b already established that `detect` and `coupling` are independent proposers kept separately
+(grouped by `run_label`, not collapsed) precisely so one doesn't silently win over the other — this
+`latest` pick is the one place that principle doesn't reach, since it still exists as the single
+overall value anything not yet reading `proposals` depends on. Fixing it means defining "best
+evidenced" (more corroborating evidence rows? a higher-confidence extractor named as such?) before
+changing the selection — a design question, not a one-line swap.
+
+---
+
+#### MEDIUM — an optional, separate survey: resolve the transitive dependency tree and audit the full graph against OSV.dev
+
+Raised by the project owner, 2026-09-18, after confirming what `cve_scan` actually covers today.
+
+**Confirmed current state**: `cve_scan.py` genuinely queries OSV.dev live (`https://api.osv.dev/v1/querybatch`,
+`cve_scan.py:47/171`) — that part is real, not a proposal. But `DependencyParser`
+(`ingestion/dependency_parser.py`) only reads manifest files (`pyproject.toml`, `package.json`,
+`go.mod`, etc.) and never a lockfile (`package-lock.json`, `poetry.lock`, `uv.lock`, `go.sum`,
+`Cargo.lock`) — no transitive resolution happens anywhere in the pipeline. This is already flagged
+honestly in the code itself: `cve_scan.py` carries `"excludes_transitive": True` and states outright
+"declared dependencies only — transitive ones are not covered"; `members.py:124` says the same
+independently. So the OSV audit today only ever sees first-party declared dependencies — a
+vulnerability sitting two or three levels deep in a transitive dependency, which is where most
+real-world CVE exposure actually lives, is structurally invisible to the current scan.
+
+**Decision (project owner, 2026-09-18):** this should be built as an **optional, additional
+survey**, not folded into the standard `cve_scan`/first-party pipeline — full transitive resolution
+is a meaningfully heavier operation per ecosystem (each lockfile format is different: npm's
+`package-lock.json`, Python's `poetry.lock`/`uv.lock`, Go's `go.sum`, Rust's `Cargo.lock`, at
+minimum), and shouldn't become mandatory overhead on every routine scan.
+
+**Scope for a future design pass**: per-ecosystem lockfile parsers (probably one new parser per
+ecosystem rather than one generic one, given how different the formats are), a real dependency-graph
+data shape (parent/child, not `DependencyParser`'s current flat per-manifest rows), and either
+querying OSV.dev per resolved package+version or batching the full resolved set the same way
+`cve_scan` already batches direct dependencies.
+
+---
+
+#### LOW — consider ecosyste.ms as a source for additional surveys
+
+Raised by the project owner, 2026-09-18: [ecosyste.ms](https://ecosyste.ms) aggregates open-source
+package/repository metadata across many language ecosystems (dependency data, funding/sustainability
+signals, and more, per its own public description) and might be worth evaluating as a source for one
+or more additional, optional surveys — not yet investigated against this codebase's actual needs or
+API terms.
+
+**Not yet done, and explicitly not assumed**: no code in this repo references ecosyste.ms today: this
+is a fresh idea, not a half-built integration. Before scoping a real survey, a first pass should
+check (1) what ecosyste.ms's actual API offers and whether it duplicates or complements OSV.dev/GitHub/
+existing sub-surveyors, (2) its terms of use/rate limits for a tool that would query it per-repo across
+a large corpus, and (3) whether it could feed the transitive-dependency-resolution item above (if it
+already exposes resolved dependency graphs per package, that could be cheaper than building
+per-ecosystem lockfile parsers in-house) — worth investigating together rather than as two
+independent efforts.
+
+---
+
+#### MEDIUM — dependency analysis needs a required/optional/**selective** axis, not just manifest `dep_type`
+
+Raised by the project owner, 2026-09-17, testing `/next`'s dependency view live.
+
+`ingestion/dependency_parser.py` (`:111-222`) already tags each parsed dependency with a
+`dep_type` — `runtime` / `dev` / `test` / `optional` / `indirect` — but that vocabulary is
+entirely **manifest-declared**: Python's `[project.optional-dependencies]`, Maven's
+`provided`/`optional` scope, Go's `// indirect`. It has no concept of a dependency that is
+optional as a *capability* but becomes mandatory the moment a deployment turns that capability
+on — the project owner's example: Egeria's core runtime dependencies are unconditional (Java, its
+libraries, Kafka, Postgres), but DuckDB is not an "optional integration" in the same sense as
+those manifest-level optionals — if a given deployment uses the DuckDB integration, DuckDB *is* a
+required dependency **for that deployment**, and if it doesn't, DuckDB is irrelevant to it, not
+merely "nice to have."
+
+This is a real modeling gap, not a display bug: it needs a design decision on how a specific
+deployment's selected integrations get recorded (survey time? enrichment time? a separate
+deployment-profile concept?) before it's buildable — not yet scoped as a plan item. See also
+`PLAN-FINISH-REPOS.md`'s item 3 (Curate) and the un-built `analysis`/`assessment`/`discovery`
+stages in `/next`, any of which could end up being where deployment-level dependency
+classification lives once designed.
+
+---
+
 #### Advanced SQLGlot view analytics
 We can extend our SQL View static analyzer (`sql_analyzer.py`) with further advanced metadata analytics:
 1. **Dialect Compatibility Matrix**: Check query compatibility across target warehouses (e.g. Snowflake, BigQuery, Athena, Redshift) by transpiling view SQL and report compatibility scores.
@@ -3418,6 +3582,25 @@ brought this branch and `main` together (2026-08-26) rather than kept alongside 
 ---
 
 #### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
+
+**This heading is now stale and needs a review, not just a re-read.** Prefect was default-on for
+under two weeks: flipped on 2026-08-26 (this entry), then flipped back to **off by default**
+2026-09-04 after that default caused 13 orphaned `prefect.server.api.server:create_app`
+subprocess servers to leak on this machine (see `PrefectConfig.enabled`'s docstring in
+`config.py`, and `CLAUDE.md`'s Prefect setup section, which is the only place that revert is
+currently documented — not here). The project owner raised this 2026-09-18 after reading external
+project-description copy that described local survey execution as "orchestrated as microflows via
+Prefect," and didn't know it was optional/off — a sign the copy (and this Backlog section's own
+headline) is describing the aspirational integration rather than today's default, which is a plain
+`threading.Thread` with Prefect as an opt-in enhancement (`surveyors/prefect_adapter.py`'s
+`run_prefect_step` falls back to local in-process execution whenever no Prefect server answers).
+
+**Needs:** a review of whether default-on should be revisited now that the orphaned-subprocess
+leak is understood (was the leak itself ever root-caused and fixed, or only avoided by defaulting
+off?), and if not, whether `docs/Architecture.md`/external-facing descriptions should be corrected
+to say "optional, off by default" rather than implying it's the normal execution path. This is a
+decision item, not a bug fix — record the review's outcome here once done, with a
+`**Decision (project owner, <date>):**` callout per this repo's convention.
 
 #### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 

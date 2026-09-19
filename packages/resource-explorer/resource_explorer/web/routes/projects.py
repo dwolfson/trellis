@@ -2016,12 +2016,19 @@ def components_tree(slug: str, prefix: str = "") -> dict:
 
 @router.get("/{slug}/components/leaves")
 def components_leaves(slug: str, branch: str) -> dict:
-    from resource_explorer.component_tree import leaves
+    from resource_explorer.component_tree import group_leaves, leaves
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return {"branch": branch, "leaves": leaves(registry, slug, branch)}
+    rows = leaves(registry, slug, branch)
+    # `groups`/`ungrouped` (2026-09-17): the same flat rows, re-shaped by
+    # scope-hierarchy cluster (component_tree.group_leaves) so a curator
+    # opening a large branch sees ~10-row groups instead of one long list.
+    # `leaves` stays flat and unchanged for the one other caller that reads
+    # this function directly (branch_verdicts' materialization filter).
+    groups, ungrouped = group_leaves(rows)
+    return {"branch": branch, "leaves": rows, "groups": groups, "ungrouped": ungrouped}
 
 
 class BranchVerdicts(BaseModel):
@@ -2075,6 +2082,34 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
                                       result_ref=activity_id, requested_by=_requested_by())
         out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
     return out
+
+
+# ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────
+#
+# "A sibling reader, not a schema change" — verdict_target='blueprint' rows
+# already live in architecture_component_verdicts (registry.py), materialized
+# blueprints already have their own table, and _candidate_blueprints_results
+# already resolves a cluster's own verdict/materialization AND each member/
+# child's, keyed the same way curate.py's blueprint-verdict routes read and
+# write (f"{perspective}::{cluster_name}"). This route only exposes that
+# existing read, the way /components/tree exposes component_tree() — no new
+# table, no new join.
+@router.get("/{slug}/components/blueprints")
+def components_blueprints(slug: str) -> dict:
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        _candidate_blueprints_results,
+    )
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    blueprints = _candidate_blueprints_results(registry, slug)
+    # RULING-WHAT-A-VERDICT-IS-ABOUT.md §0/§2d: a cluster only exists WITHIN
+    # one Component.perspective (reading) — the perspectives present here are
+    # the readings a curator can switch between, distinct from the diagram's
+    # run_label preference and the chrome's unrelated Perspective filter.
+    perspectives = sorted({b["perspective"] for b in blueprints if b.get("perspective")})
+    return {"blueprints": blueprints, "perspectives": perspectives}
 
 
 @router.get("/{slug}/gaps")

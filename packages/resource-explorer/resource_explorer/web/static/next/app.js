@@ -28,21 +28,40 @@ import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetai
 import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
-// Only three stages have anything to import today (enrichment, understanding,
-// curate); the other six canonical stage ids — investigation, scouting,
-// discovery, assessment, analysis, automate — have a `next/stages/*.js`
-// module too, but it is a stub with nothing to call yet (they render through
-// the generic Questions-checklist engine below, or an honest placeholder).
-// Building one of them means adding real exports to its stub file and one
-// import line here — see docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
+// Enrichment, Understanding, Curate, Automate and (item 11) Analysis have
+// something to import; the remaining canonical stage ids — investigation,
+// scouting, discovery, assessment — have a `next/stages/*.js` module too,
+// but it is empty (Discovery and Assessment deliberately, item 11: the
+// generic Questions-checklist engine below reaches both correctly with no
+// stage-specific code; Investigation and Scouting for other reasons — see
+// each stub's own header comment). Building one of them means adding real
+// exports to its stub file and one import line here — see
+// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+import { renderAnalysisNote } from '/static/next/stages/analysis.js';
+// The RFA drawer (PLAN-FINISH-REPOS.md item 10) — chrome-level, like
+// worklist.js, not a per-resource stage; see next/rfa.js's own header
+// comment for why it lives at this level rather than under stages/.
+import { toggleRfaDrawer } from '/static/next/rfa.js';
+import { openActivityPanel } from '/static/next/stages/activity.js';
+import { renderAutomate } from '/static/next/stages/automate.js';
+// Admin (PLAN-FINISH-REPOS.md item 5) — chrome-level, same pattern as
+// Activity: reachable from the header's own ⚙ Admin button, decoupled from
+// #intent-nav/currentNavIntent, NOT a STAGES entry. See next/admin/index.js's
+// own header comment for scope (five real ports, six named deferrals).
+import { openAdminPanel } from '/static/next/admin/index.js';
+// Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
+// the "Ask" rail and the pane it promotes an answer into, beside whichever
+// stage is active rather than one of the eight itself. See next/chat.js's
+// own header comment for the placement rule this follows and why it (unlike
+// rfa.js) imports state/esc/$ back from app.js.
+import { renderRail, renderRailScope } from '/static/next/chat.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
   addInvestigationMember,
-  ask,
   CHART_MEASURE,
   REPO_CHARTS,
   getAnswer,
@@ -84,7 +103,6 @@ import {
   removeInvestigationMember,
   removeProject,
   runAnalysis,
-  sendFeedback,
   setDisposition,
   setWorkingSetHidden,
   getContext,
@@ -135,27 +153,98 @@ export const state = {
   workListIndex: false,        // showing the list OF work lists
 };
 
-/** The eight intents, in their canonical order, plus Investigation as the
- *  frame. `built` is about /next, not about the product. */
+/** Three classes of nav item — RULING-NAV-GROUPING.md, answering a peer
+ *  critique of the nine-item intent row. This replaces the old "eight
+ *  intents, in their canonical order, plus Investigation as the frame"
+ *  comment, which is wrong in its count: there are six ORDERED intents
+ *  ("the run"), not eight, plus two cross-cutting, plus the frame.
+ *
+ *  `class` is declared HERE and nowhere else — `renderIntentNav()` derives
+ *  grouping, numbering and separator style (chevron for `run`, middot
+ *  everywhere else) from this field rather than hardcoding a second list of
+ *  which ids go where. The ruling is explicit that regrouping in the
+ *  renderer while this array still called them "eight ordered intents"
+ *  would be the same class of bug as `unbuilt` (DEFECT-UNBUILT-STAGES-
+ *  RENDER-AS-BUILT.md — read in three places, set in none) and #130's
+ *  dashed-styling-independent-of-its-flag bug: declare the fact once,
+ *  derive appearance from it.
+ *
+ *  - `frame`        — Investigation (and, external to this array, Work
+ *                      lists): why this body of work exists, and which
+ *                      cohort you are working. Not a stage.
+ *  - `run`           — Scouting, Discovery, Assessment, Analysis,
+ *                      Enrichment, Curate: six ordered intents; sequence is
+ *                      real, so they are numbered 1-6 and chevron-joined.
+ *  - `cross-cutting` — Understanding, Automate: order does not apply.
+ *                      Decision (project owner, 2026-09-18): Understanding
+ *                      can be used at any time and will become a
+ *                      user-configured dashboard — a surface the user
+ *                      configures, not an operation on a corpus — so it is
+ *                      not a milder or later stage of the run.
+ *
+ *  `built` is about /next, not about the product. */
 const STAGES = [
-  { id: 'investigation', label: 'Investigation', frame: true },
-  { id: 'scouting',      label: 'Scouting',      built: true },
-  { id: 'discovery',     label: 'Discovery' },
-  { id: 'assessment',    label: 'Assessment' },
-  { id: 'analysis',      label: 'Analysis' },
+  { id: 'investigation', label: 'Investigation', class: 'frame' },
+  { id: 'scouting',      label: 'Scouting',      class: 'run', built: true },
+  // Discovery, Assessment and Analysis were marked "not built" here.
+  // ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md verified all three
+  // have real catalogued questions (question_catalog.yaml: 10 Discovery, 15
+  // Assessment, 11 Analysis rows) and that the generic Questions-checklist
+  // engine (loadPane(), below) already reaches them correctly once `built`
+  // is true -- the same mechanism Scouting/Enrichment/Curate use, with no
+  // stage-specific rendering needed. Discovery's Disposition sub-tab was
+  // already wired to a real write path (`POST /api/discovery/disposition`,
+  // web/routes/discovery.py's set_repo_disposition) before this change; it
+  // only needed `built: true` to become reachable. Classic's
+  // org-import/repo-search/`/from-list`/CSV-export corpus-level Discovery
+  // features, and Analysis's "Sub-Resources" sub-view, are NOT ported --
+  // named, individually, as deliberate deferrals in that doc, not silently
+  // dropped.
+  { id: 'discovery',     label: 'Discovery',     class: 'run', built: true },
+  { id: 'assessment',    label: 'Assessment',    class: 'run', built: true },
+  { id: 'analysis',      label: 'Analysis',      class: 'run', built: true },
   // Enrichment was marked "not built" here. ITEM-1-ENRICHMENT-IMPLEMENTED.md
   // verified the judgement/observation fields, the save-and-revisit round
   // trip, and the evidence-moved perishability flag all work; the catalog
   // has 7 human-supplied questions tagged this phase, so the generic
   // Questions engine (loadPane()) reaches renderEnrichment() without a
   // special case, the same as any other built stage.
-  { id: 'enrichment',    label: 'Enrichment', built: true },
+  { id: 'enrichment',    label: 'Enrichment', class: 'run', built: true },
   // Understanding was marked "not built" here. It renders charts now — see
   // loadChartsPane(); the catalog rows it lacks were never what fed it.
-  { id: 'understanding', label: 'Understanding', built: true },
-  { id: 'curate',        label: 'Curate' },
-  { id: 'automate',      label: 'Automate' },
+  // RULING-NAV-GROUPING.md §1: Understanding LEAVES the run — it is a
+  // surface the user configures (eventually, per-user dashboards), not an
+  // operation on a corpus, so it is cross-cutting rather than stage 6 of 6.
+  { id: 'understanding', label: 'Understanding', class: 'cross-cutting', built: true },
+  // Curate was marked "not built" here. ITEM-3-CURATE-IMPLEMENTED.md
+  // verified the component-tree review, the catalogue-depth offer, and now
+  // multi-branch selection and the blueprint list all work end to end — the
+  // same "flip the flag once the doc says so" pattern as every other stage
+  // above. Curate does not go through the generic Questions engine (it has
+  // its own renderCurate, see loadPane()'s explicit `state.stage === 'curate'`
+  // branch), but the nav's dashed/clickable choice reads this flag exactly
+  // the same as a Questions-engine stage would.
+  { id: 'curate',        label: 'Curate',        class: 'run', built: true },
+  // Automate is a real, deliberately partial port (PLAN-FINISH-REPOS.md
+  // item 4): renderAutomate() (next/stages/automate.js) shows and toggles
+  // real subscriptions and the real global Schedules overview. Creating a
+  // subscription is NOT built -- it rides on an Assessment/Analysis card's
+  // "Notify me" action, and /next has no card grid there (item 11 built
+  // Assessment/Analysis through the generic Questions-checklist engine,
+  // question rows not cards) -- and that one gap is named and linked out
+  // rather than the whole stage being deferred (see automate.js's own
+  // header comment for the detail). Cross-cutting alongside Understanding
+  // (RULING-NAV-GROUPING.md §2): it makes the run repeat rather than being
+  // a step within it.
+  { id: 'automate',      label: 'Automate',      class: 'cross-cutting', built: true },
 ];
+
+/** The run's own order, 1-6 — derived from `STAGES`, never a second literal
+ *  list of ids. A `Map` from stage id to its 1-based position within the
+ *  run, used only for the nav's numbering. */
+const RUN_ORDER = new Map(
+  STAGES.filter((s) => s.class === 'run').map((s, i) => [s.id, i + 1]),
+);
 
 /** Sub-tab order is IDENTICAL across every stage, on purpose. A stage that
  *  lacks one greys it out rather than removing it, so the tab under the
@@ -214,6 +303,30 @@ export function esc(s) {
     // "&#39;". Seen on screen as "Egeria&#39;s catalog". Named entities carry
     // no digits, so the two passes stop interfering.
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+/** The one place a control's dashed "not built" underline comes from.
+ *
+ * `#130` fixed two header buttons (Activity, Admin) that kept this styling
+ * after they were built, because it was written inline at each site —
+ * `style="border-bottom:1px dashed currentColor"` — independent of the flag
+ * that actually gates the behaviour, so a stage or control could become
+ * built and keep looking deferred with nobody the wiser.
+ * SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §5 names this as a rule that will
+ * recur (select-all, blueprint accept, the member-link affordance) and asks
+ * for one shared helper rather than a fourth, fifth, sixth inline copy — used
+ * here to also fix the two pre-existing inline copies (the stage nav's
+ * unbuilt span, the sub-tab rail's deferred button) it was already too late
+ * to catch in #130 itself.
+ *
+ * `isBuilt` is always read from the SAME flag the caller uses to decide
+ * behaviour — never a second, independent guess at whether something is
+ * "done". Returns an attribute string to splice into a template literal;
+ * '' when built, so a built control carries no extra markup at all. */
+export function deferredAttrs(isBuilt, { title = '', extraStyle = '' } = {}) {
+  if (isBuilt) return '';
+  const style = `border-bottom:1px dashed currentColor${extraStyle ? `;${extraStyle}` : ''}`;
+  return ` style="${style}"${title ? ` title="${esc(title)}"` : ''}`;
 }
 
 /** Wrap every run of digits in a tabular-figures span.
@@ -512,6 +625,24 @@ function renderTopBar() {
   $('investigation-name').textContent = state.investigation
     ? (inv?.display_name || state.investigation)
     : 'No investigation';
+  // RULING-NAV-GROUPING.md §3: the ad-hoc/bound-to-a-Project distinction
+  // "deserves permanent visibility" — a fact about the investigation, read
+  // straight off `egeria_binding` (investigations.py/registry.py
+  // ProjectRegistry.BINDING_LOCAL/BINDING_EGERIA), never re-derived.
+  // Deliberately NOT gated on `egeria_project_guid` being non-empty:
+  // registry.py's own comment on this column says `egeria` "has one, or is
+  // meant to" -- a promotion that has not run yet and a purely local
+  // investigation look identical from a null GUID alone, and only the
+  // `egeria_binding` column records which one was actually chosen. Empty
+  // (not hidden) when there is no current investigation, so the badge does
+  // not read as stale leftover state.
+  const scopeEl = $('investigation-scope');
+  if (scopeEl) {
+    scopeEl.textContent = inv
+      ? (inv.egeria_binding === 'egeria' ? '· bound to Egeria Project' : '· ad hoc')
+      : '';
+    scopeEl.title = inv?.egeria_project_qualified_name || '';
+  }
   $('whoami').textContent =
     (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || 'not signed in';
   $('activity-count').textContent =
@@ -523,6 +654,31 @@ function renderTopBar() {
   link.textContent = state.selectedSlug
     ? '/next · open current UI'
     : '/next · open current UI';
+  wireActivityButton();
+  wireAdminButton();
+}
+
+/** Activity is a persistent header surface, not a STAGES entry (see
+ *  activity.js's own top-of-file comment) — wired once, like the sidebar
+ *  drawer and text-size controls above, rather than per render. */
+let activityButtonWired = false;
+function wireActivityButton() {
+  if (activityButtonWired) return;
+  const btn = $('activity-open-btn');
+  if (!btn) return;
+  activityButtonWired = true;
+  btn.addEventListener('click', () => openActivityPanel());
+}
+
+/** Admin, same pattern as Activity above — chrome-level, wired once. See
+ *  next/admin/index.js's own header comment. */
+let adminButtonWired = false;
+function wireAdminButton() {
+  if (adminButtonWired) return;
+  const btn = $('admin-open-btn');
+  if (!btn) return;
+  adminButtonWired = true;
+  btn.addEventListener('click', () => openAdminPanel());
 }
 
 /** The app's own text-size control: 100 / 112 / 125%.
@@ -578,48 +734,84 @@ function wireSidebarDrawer() {
   });
 }
 
+/** A middot separator between groups whose relative order carries no
+ *  meaning (RULING-NAV-GROUPING.md §3: "chevrons inside the run, middots
+ *  outside it"). Muted and `aria-hidden` — it is a visual grouping cue, not
+ *  content a screen reader should announce as a word. */
+const NAV_MIDDOT = '<span class="px-1 text-chrome-muted" aria-hidden="true">·</span>';
+
+/** A chevron separator between two stages that ARE sequential — the run
+ *  only. Same visibility treatment as the middot above. */
+const NAV_CHEVRON = '<span class="px-1 text-chrome-muted" aria-hidden="true">›</span>';
+
+/** One nav item's markup. `number` is passed only for `run`-class stages —
+ *  it is what puts "1 " ahead of "Scouting", never a second, independently
+ *  maintained ordering. */
+function navItemHtml(s, { number } = {}) {
+  const active = s.id === state.stage;
+  const label = `${number ? `${number} ` : ''}${esc(s.label)}`;
+  if (s.class === 'frame') {
+    return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px] font-heading
+      text-accent-on-dark ${active ? 'border-b-2 border-accent' : 'border-b-2 border-transparent'}">${label}</button>`;
+  }
+  if (!s.built) {
+    // Marked, not dimmed: chrome-muted is a 6.7:1 role, not a fade.
+    // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: `unbuilt` was read here
+    // and set nowhere — every STAGES entry declares `built`, never
+    // `unbuilt`, so this branch was dead and six stages rendered as live.
+    // Inverted to read the flag that actually exists, so a stage added
+    // without `built` is honest by default.
+    return `<span${deferredAttrs(false, { title: 'Not implemented — zero rows in the analysis catalog and the activity log' })}
+      class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted">${label}</span>`;
+  }
+  return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px]
+    ${active ? 'border-b-2 border-accent text-chrome-ink' : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
+    >${label}</button>`;
+}
+
 function renderIntentNav() {
   const nav = $('intent-nav');
-  const items = STAGES.map((s) => {
-    const active = s.id === state.stage;
-    if (s.frame) {
-      return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px] font-heading
-        text-accent-on-dark ${active ? 'border-b-2 border-accent' : 'border-b-2 border-transparent'}">${esc(s.label)}</button>`;
-    }
-    if (!s.built && !s.frame) {
-      // Marked, not dimmed: chrome-muted is a 6.7:1 role, not a fade.
-      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: `unbuilt` was read here
-      // and set nowhere — every STAGES entry declares `built`, never
-      // `unbuilt`, so this branch was dead and six stages rendered as live.
-      // Inverted to read the flag that actually exists, so a stage added
-      // without `built` is honest by default.
-      return `<span title="Not implemented — zero rows in the analysis catalog and the activity log"
-        class="whitespace-nowrap px-3 pb-[1px] pt-[9px] text-chrome-muted"
-        style="border-bottom:1px dashed currentColor">${esc(s.label)}</span>`;
-    }
-    return `<button data-stage="${s.id}" class="cursor-pointer bg-transparent px-3 py-[9px]
-      ${active ? 'border-b-2 border-accent text-chrome-ink' : 'border-b-2 border-transparent text-chrome-muted hover:text-chrome-ink'}"
-      >${esc(s.label)}</button>`;
-  }).join('');
 
-  nav.innerHTML = `${items}
+  // Three groups, read off `STAGES.class` — never a second hardcoded list of
+  // which ids go where (RULING-NAV-GROUPING.md §2). The run's relative order
+  // in `STAGES` is already correct (Scouting..Curate, in that order) even
+  // though Understanding's array position sits between Enrichment and
+  // Curate — filtering by class pulls it out of the run's sequence, which is
+  // the whole point: the run stays contiguous and numbered 1-6, and
+  // Understanding renders with the other cross-cutting item instead.
+  const frameItems = STAGES.filter((s) => s.class === 'frame');
+  const runItems = STAGES.filter((s) => s.class === 'run');
+  const crossItems = STAGES.filter((s) => s.class === 'cross-cutting');
+
+  const frameHtml = frameItems.map((s) => navItemHtml(s)).join('');
+  const runHtml = runItems
+    .map((s) => navItemHtml(s, { number: RUN_ORDER.get(s.id) }))
+    .join(NAV_CHEVRON);
+  const crossHtml = crossItems.map((s) => navItemHtml(s)).join(NAV_MIDDOT);
+
+  const items = `${frameHtml}${runHtml}${crossHtml ? `${NAV_MIDDOT}${crossHtml}` : ''}`;
+
+  nav.innerHTML = `${items}${NAV_MIDDOT}
     <!-- Work lists sit at the end of the frame row because, like
          Investigation, they are a FRAME around the stages rather than a stage:
          Investigation is why a body of work exists, a work list is which
          resources it covers. Fixed position, always present — the matrix had
          no front door before this, only a sidebar section and a crumb that
-         existed once you had already found it. -->
+         existed once you had already found it. A middot precedes it, same as
+         between the run and the cross-cutting group, since it too carries no
+         sequence relationship to what comes before it. -->
     <span id="worklist-nav" class="flex items-center"></span>
     <span class="ml-auto flex gap-s2 text-subtab">
-      <a href="/" title="The RFA drawer is not built in /next — opens the current UI"
-        class="px-[10px] py-[9px] text-accent-on-dark no-underline"
-        style="border-bottom:1px dashed currentColor">RFAs <span id="rfa-count" class="tnum">${
-        state.counts.rfas === null ? '–' : state.counts.rfas}</span> ↗</a>
+      <button id="rfa-drawer-toggle" type="button"
+        class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">RFAs <span id="rfa-count" class="tnum">${
+        state.counts.rfas === null ? '–' : state.counts.rfas}</span></button>
       <button id="chat-toggle" aria-expanded="true"
         class="cursor-pointer bg-transparent px-[10px] py-[9px] text-accent-on-dark">Chat ×</button>
     </span>`;
 
   renderWorkListNav();
+
+  $('rfa-drawer-toggle').addEventListener('click', () => toggleRfaDrawer(state.selectedSlug || ''));
 
   $('chat-toggle').addEventListener('click', () => {
     const nowOpen = !$('app-grid').classList.contains('rail-closed');
@@ -870,7 +1062,7 @@ function loadScript(src) {
  * A diagram cannot live in the rail: it is at most 290px wide and a topology
  * graph there is unreadable. So the rail shows a marker and promotes.
  */
-function answerForm(turn) {
+export function answerForm(turn) {
   if (turn.mermaid) return 'diagram';
   if (turn.chart) return 'chart';
   if (turn.listSources && turn.listSources.length) return 'list';
@@ -1109,7 +1301,7 @@ function factMermaid(env) {
 }
 
 /** Render a promoted artefact in the content pane, at full width. */
-async function promoteToPane(turn) {
+export async function promoteToPane(turn) {
   const el = $('content');
   if (!el) return;
   state.promoted = turn;
@@ -1435,6 +1627,58 @@ function markKeyHtml() {
   </div>`;
 }
 
+// The find/discover action's stub (below, 'find-repos') is a single honest
+// placeholder for three genuinely different classic mechanisms -- GitHub
+// search + list-import for repos, server-side introspection
+// (POST /api/db-servers/{slug}/discover) for databases, and whatever
+// filesystem registration classic offers. Keeping one copy that always says
+// "repos" was quietly wrong on the DBs/FS tabs; this at least names the
+// right noun per tab until each gets its own real screen (see Backlog.md).
+const FIND_TITLE = {
+  repo: 'Find and import candidate repos',
+  db: 'Discover databases on a registered server',
+  filesystem: 'Register a filesystem path',
+};
+
+// Sidebar group collapse — persisted the same way classic's does (a JSON
+// array of collapsed group slugs in localStorage), but under its own key so
+// the two surfaces (classic's `index.html` and /next) never fight over one
+// entry with different shapes (SPEC-PARITY-INVENTORY-AND-GROUPS.md §3).
+const COLLAPSED_GROUPS_KEY = 're_next_collapsed_sidebar_groups';
+function collapsedGroups() {
+  try { return JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) || '[]'); }
+  catch { return []; }
+}
+// Ported from classic's `_toggleGroupCollapsed` (index.html). Deliberately
+// NOT wired off the native <details> 'toggle' event — that event can also
+// fire from the browser's own initial-state handling when the `open`
+// attribute is set during a render, which would silently overwrite a
+// reader's saved preference with whatever the force-expand-on-filter
+// render happened to show. Driving it from summary's click instead means
+// this only ever runs on a genuine user gesture.
+function toggleGroupCollapsed(slug) {
+  const current = collapsedGroups();
+  const next = current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug];
+  try { localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(next)); }
+  catch { /* per-viewer convenience only */ }
+  renderSidebar();
+}
+
+// Selecting a group selects what it counted — including members hidden
+// inside a currently-collapsed group, because the header's count already
+// includes them and a selection that silently skipped them would disagree
+// with the number the user just read. Ported from classic's
+// `_toggleGroupSelected` (index.html).
+function toggleGroupSelected(groupSlug) {
+  const members = visibleProjects()
+    .filter((p) => (p.group_slug || '') === groupSlug)
+    .map((p) => p.slug);
+  if (!members.length) return;
+  const allSelected = members.every((sl) => state.selected.has(sl));
+  members.forEach((sl) => (allSelected ? state.selected.delete(sl) : state.selected.add(sl)));
+  renderSidebar();
+}
+
 /** The repos passing every active filter, in list order. */
 function visibleProjects() {
   const f = state.filter.trim().toLowerCase();
@@ -1494,11 +1738,21 @@ function renderSidebar() {
   const groupName = (slug) =>
     slug ? (state.groups.find((g) => g.slug === slug)?.display_name || slug) : 'Ungrouped';
 
+  // A filter in effect force-expands every group regardless of its saved
+  // collapse state — otherwise a match sitting inside a collapsed group
+  // would silently disappear from the filtered results, which is worse than
+  // just showing it. Collapse state itself is untouched (still exactly what
+  // it was once the filter clears). `state.scope` defaults to 'working-set'
+  // rather than '', so this mirrors classic's `_projectLifecycleFilter`
+  // default the same way: active unless explicitly cleared to 'All'.
+  const filterActive = !!(state.filter.trim() || state.scope);
+  const collapsedSlugs = collapsedGroups();
+
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
-      <button data-act="find-repos" title="Find and import candidate repos"
-        aria-label="Find and import candidate repos"
+      <button data-act="find-repos" title="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
+        aria-label="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
         class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
         >${icon('circle-plus', { size: 14 })}</button>
       <button data-act="mark-key" title="What the marks in this list mean"
@@ -1583,30 +1837,43 @@ function renderSidebar() {
       </div>`
     : visible.length === 0 ? `
       <div class="text-chip text-chrome-ink">Nothing matches these filters.</div>`
-    : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => `
-      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
-        ${esc(groupName(g))} · <span class="tnum">${rows.length}</span>
-      </div>
-      <div class="mb-s4 flex flex-col gap-[1px]">
-        ${rows.map((p) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
-          p.slug === state.selectedSlug
-            ? 'border-l-2 border-accent bg-chrome-surface'
-            : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
-          ${state.selectMode ? `<input type="checkbox" data-sel="${esc(p.slug)}" ${
-            state.selected.has(p.slug) ? 'checked' : ''} class="shrink-0">` : ''}
-          ${lifecycleMark(p)}${dispositionMark(p)}
-          <button data-slug="${esc(p.slug)}"
-            class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
-            >${esc(p.display_name || p.slug)}</button>
-          ${p.working_set_hidden
-            ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
-            : ''}
-          ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
-            title="Open ${esc(p.display_name || p.slug)} on GitHub"
-            class="shrink-0 text-chrome-muted hover:text-accent-on-dark"
-            >${icon('external-link', { size: 13 })}</a>` : ''}
-        </div>`).join('')}
-      </div>`).join('')}
+    : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
+        const memberSlugs = rows.map((p) => p.slug);
+        const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
+        const collapsed = !filterActive && collapsedSlugs.includes(g);
+        const groupCb = state.selectMode
+          ? `<input type="checkbox" data-group-sel="${esc(g)}" class="shrink-0"
+               ${selectedHere === memberSlugs.length && memberSlugs.length ? 'checked' : ''}>`
+          : '';
+        return `<details class="mb-s4" data-group="${esc(g)}" ${collapsed ? '' : 'open'}>
+        <summary class="mb-[7px] flex cursor-pointer items-center gap-[6px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
+          ${groupCb}
+          <span class="min-w-0 truncate">${esc(groupName(g))}</span>
+          <span class="tnum">${rows.length}${
+            state.selectMode && selectedHere ? `, ${selectedHere} selected` : ''}</span>
+        </summary>
+        <div class="flex flex-col gap-[1px]">
+          ${rows.map((p) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
+            p.slug === state.selectedSlug
+              ? 'border-l-2 border-accent bg-chrome-surface'
+              : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
+            ${state.selectMode ? `<input type="checkbox" data-sel="${esc(p.slug)}" ${
+              state.selected.has(p.slug) ? 'checked' : ''} class="shrink-0">` : ''}
+            ${lifecycleMark(p)}${dispositionMark(p)}
+            <button data-slug="${esc(p.slug)}"
+              class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
+              >${esc(p.display_name || p.slug)}</button>
+            ${p.working_set_hidden
+              ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
+              : ''}
+            ${p.github_url ? `<a href="${esc(p.github_url)}" target="_blank" rel="noopener noreferrer"
+              title="Open ${esc(p.display_name || p.slug)} on GitHub"
+              class="shrink-0 text-chrome-muted hover:text-accent-on-dark"
+              >${icon('external-link', { size: 13 })}</a>` : ''}
+          </div>`).join('')}
+        </div>
+      </details>`;
+      }).join('')}
   `;
 
   bindSidebar();
@@ -1692,6 +1959,25 @@ function bindSidebar() {
     else state.selected.delete(cb.dataset.sel);
     renderSidebar();
   }));
+  // The group-select checkbox lives inside <summary>, whose own default
+  // click action is toggling the <details> open/closed — preventDefault()
+  // suppresses that (and the checkbox's own native check-toggle, which is
+  // fine since toggleGroupSelected's re-render redraws it either way).
+  el.querySelectorAll('input[data-group-sel]').forEach((cb) => cb.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleGroupSelected(cb.dataset.groupSel);
+  }));
+  // The rest of <summary> drives collapse/expand ourselves (preventDefault
+  // + our own toggle) rather than the native disclosure + a 'toggle'
+  // listener — see toggleGroupCollapsed's comment for why.
+  el.querySelectorAll('details[data-group] > summary').forEach((summary) => {
+    summary.addEventListener('click', (e) => {
+      if (e.target.closest('input[data-group-sel]')) return;
+      e.preventDefault();
+      toggleGroupCollapsed(summary.closest('details').dataset.group);
+    });
+  });
   el.querySelectorAll('button[data-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.workListSlug = b.dataset.worklist;
     renderSidebar();
@@ -1729,9 +2015,10 @@ function bindSidebar() {
     // point 2). Still not built in /next -- says so, same as the deferred
     // stage tabs did, just from here instead.
     'find-repos': () => {
-      const d = openDialog('Find repos', 'Repo discovery — find and import candidate repos');
+      const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
+      const d = openDialog(title, title);
       d.querySelector('#wl-detail-body').innerHTML = `
-        <p class="max-w-[60ch] text-answer text-ink">Repo discovery — find and import candidate repos.</p>
+        <p class="max-w-[60ch] text-answer text-ink">${esc(title)}.</p>
         <p class="max-w-[60ch] text-answer text-ink">
           <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
             >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
@@ -1945,373 +2232,13 @@ async function loadWorkingSet() {
 
 /* ════════════════════════════════════════════════════════════════════════
  * The right rail — Ask, scoped here
+ *
+ * Moved to next/chat.js (PLAN-FINISH-REPOS.md item 9). app.js still owns
+ * the shared pane-promotion machinery chat.js calls into
+ * (`promoteToPane`, `answerForm`, `copyAsEvidence`, `railFrame`/
+ * `railClaim`/`ensureRailShowing`, `openMembers`) — chat.js's own header
+ * comment says why that machinery stayed here rather than moving with it.
  * ════════════════════════════════════════════════════════════════════════ */
-
-
-/* A browser-generated id, so the agent can keep cross-turn memory.
- *
- * Computed on FIRST USE, not at module scope: `LS` is a `const` declared
- * further down this file, and a top-level IIFE up here runs inside its
- * temporal dead zone — which threw on load and rendered nothing at all. */
-let _sessionId = null;
-function sessionId() {
-  if (_sessionId) return _sessionId;
-  _sessionId = LS.get('re-next.sessionId', '');
-  if (!_sessionId) {
-    _sessionId = (crypto.randomUUID && crypto.randomUUID()) || `s-${Date.now()}-${Math.random()}`;
-    LS.set('re-next.sessionId', _sessionId);
-  }
-  return _sessionId;
-}
-
-/**
- * The rail is a chat DRAWER with a transcript, not a single question box.
- *
- * A first pass showed one question and one answer, because that is what the
- * static mock showed. History is not a nicety: the whole argument for the
- * sidecar is that a session accumulates — you ask, you narrow, you ask again
- * — and each answer is evidence you may want to cite later.
- *
- * Turns are labelled with the resource they were asked about, because the
- * transcript outlives the selection and an answer about a different repo
- * that is not marked as such is worse than no answer.
- */
-function railScopeText() {
-  return state.selectedSlug ? `scoped to ${esc(state.selectedSlug)}` : 'no resource selected';
-}
-
-/** The rail's scope line follows the selection. renderRail() runs at boot
- *  and on clear only -- re-running it on every selection would wipe the
- *  chat and the evidence slot -- so the line is updated on its own. It
- *  read "scoped to amundsen" under a pane showing egeria_python (owner's
- *  screenshots, 2026-09-13). */
-function renderRailScope() {
-  const el = $('rail-scope');
-  if (el) el.innerHTML = railScopeText();
-}
-
-function renderRail() {
-  $('rail').innerHTML = `
-    <div class="mb-s3 flex items-baseline gap-s2">
-      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Ask</span>
-      <span id="rail-scope" class="text-caps text-chrome-muted">${railScopeText()}</span>
-      ${state.chat.length ? `<span class="ml-auto flex items-center gap-s2">
-        <button data-act="copy-transcript" title="Copy the whole transcript as markdown, with each answer's source line"
-          class="cursor-pointer bg-transparent text-caps text-chrome-muted hover:text-chrome-ink"
-          >${icon('copy', { size: 13 })} transcript</button>
-        <button data-act="clear-chat"
-          class="cursor-pointer bg-transparent text-caps text-chrome-muted underline hover:text-chrome-ink"
-          >clear</button>
-      </span>` : ''}
-    </div>
-
-    <div id="rail-evidence" class="mb-s3"></div>
-    <div id="chat-log" class="mb-s3 flex flex-col gap-s3"></div>
-
-    <textarea id="ask-input" rows="3" placeholder="Ask about this resource…"
-      class="mb-s2 w-full rounded-sm border border-chrome-line bg-transparent p-s2 text-subtab
-             text-chrome-ink placeholder:text-chrome-muted"></textarea>
-    <div class="flex items-baseline gap-s2">
-      <button id="ask-submit"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
-               text-chip text-accent-on-dark">Ask</button>
-      <span class="text-caps text-chrome-muted">⌘/Ctrl + Enter</span>
-    </div>`;
-
-  $('ask-submit').addEventListener('click', submitAsk);
-  $('ask-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitAsk();
-  });
-  $('rail').querySelector('[data-act="clear-chat"]')?.addEventListener('click', () => {
-    state.chat = [];
-    renderRail();
-  });
-  $('rail').querySelector('[data-act="copy-transcript"]')?.addEventListener('click', (e) =>
-    copyAsEvidence(state.chat.map(turnAsMarkdown).join('\n\n---\n\n'), e.currentTarget));
-  renderChatLog();
-}
-
-/** One turn's source footer.
- *
- *  A REQUIREMENT, not decoration: an answer composed from survey metadata
- *  and an answer retrieved from embeddings must not look alike. When the
- *  response does not say which, this says THAT — it never guesses, and it
- *  never quietly implies retrieval. */
-function sourceLine(body) {
-  const manifest = body.compiled && body.compiled.manifest;
-  if (manifest && typeof manifest === 'object') {
-    const parts = Object.keys(manifest).filter((k) => {
-      const v = manifest[k];
-      return Array.isArray(v) ? v.length : v != null && v !== '';
-    });
-    return parts.length
-      ? `From compiled evidence · ${parts.join(', ')}`
-      : 'Compiled evidence was empty · answered from retrieval';
-  }
-  return 'No compiled evidence on this answer · source not reported';
-}
-
-/** Mermaid source fenced inside an answer, if there is any.
- *
- *  Several analyses carry their diagram source as text (architecture_recovery
- *  writes its Mermaid into the answer), so this is how a topology answer
- *  reaches the pane without a new endpoint. */
-function extractMermaid(text) {
-  const m = /```mermaid\s*\n([\s\S]*?)```/.exec(String(text || ''));
-  return m ? m[1].trim() : null;
-}
-
-/** The analyses an answer was compiled from that have a member list. The
- *  old "Open as candidates (N)" counted answer lines under 80 characters --
- *  it read 11 for a lead sentence and ten bullets about 32 dependencies and
- *  could deliver nothing, since dependency names match no registered
- *  resource (REPLY-BLANK-RAIL, 2026-09-12). Deleted. What an answer can
- *  honestly offer is the list it was answered FROM: the member tree of a
- *  packed evidence section, which the pane already renders in full. */
-const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_profiling', 'api_structure',
-  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse']);
-function listSources(body) {
-  const packed = body?.compiled?.manifest?.packed;
-  if (!Array.isArray(packed)) return [];
-  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
-}
-
-/** The lists an answer was compiled from, with their TOTAL and what the
- *  model was shown -- one sentence each, the whole count, and a way out.
- *  The compiler records `manifest.lists[section][field] = {total, shown:
- *  {FULL, SUMMARY}}` for every packed reader-derived section, and the
- *  section's packed rung says which `shown` applies. The prose channel
- *  laundered "... and 22 more" into "here are some of them" with 32 in the
- *  sentence and 10 on the page and nothing saying which was the list
- *  (REPLY-BLANK-RAIL §2); this is the total said out loud beside the
- *  answer, from the manifest rather than recounted, so the pane's member
- *  tree and the rail agree by construction. */
-function listSentences(body) {
-  const m = body?.compiled?.manifest;
-  const lists = m?.lists;
-  if (!lists || typeof lists !== 'object' || !Array.isArray(m.packed)) return [];
-  const out = [];
-  for (const p of m.packed) {
-    if (!p || p.role !== 'evidence' || !lists[p.key]) continue;
-    const rung = String(p.rung || 'FULL').toUpperCase();
-    // One sentence per SECTION. Nested lists arrive one per sub-key
-    // (by_ecosystem.java, .javascript, .python); a person asked about the
-    // dependencies, not about Java's, so they are summed and the sub-keys
-    // counted -- "68 dependencies · in 3 ecosystems".
-    const byParent = new Map();
-    for (const [field, ext] of Object.entries(lists[p.key])) {
-      if (!ext || typeof ext.total !== 'number') continue;
-      const shown = ext.shown && typeof ext.shown === 'object'
-        ? (ext.shown[rung] ?? ext.shown.FULL ?? ext.total) : ext.total;
-      const dot = field.indexOf('.');
-      const parent = dot > 0 ? field.slice(0, dot) : field;
-      const cur = byParent.get(parent) || { total: 0, shown: 0, parts: 0 };
-      cur.total += ext.total; cur.shown += shown; cur.parts += dot > 0 ? 1 : 0;
-      byParent.set(parent, cur);
-    }
-    for (const [field, agg] of byParent) {
-      out.push({ key: p.key, field, total: agg.total, shown: agg.shown, parts: agg.parts, rung,
-                 members: MEMBER_LISTED.has(p.key) });
-    }
-  }
-  return out;
-}
-
-/** "32 dependencies · by ecosystem · 10 shown to the model · the full list
- *  is in the pane". A field like `by_ecosystem.python` reads as "by
- *  ecosystem · python". */
-const LIST_NOUNS = {
-  dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
-  api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
-  sub_resource_survey: 'sub-resources', manifest_parse: 'manifest entries',
-};
-function listSentenceHtml(l, i) {
-  const mapped = LIST_NOUNS[l.key];
-  // "68 dependencies · in 3 ecosystems" when the noun is known and the list
-  // was grouped; "3 findings · security scan" when it is not.
-  const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');
-  const head = mapped
-    ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
-    : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
-  const partial = l.shown < l.total;
-  // Three things the designer's read of #60 fixed: the packer's rung is
-  // internal and "at full" read as "shown fully"; a section with no member
-  // reader rendered nothing where the link would be (the silent-omission
-  // rule); and › was a text glyph doing an icon's job.
-  return `<div class="mt-s2 text-chip text-chrome-ink">
-    ${head}${
-      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
-      l.members
-        // The control says what pressing it does; it is the only clickable
-        // part of the line, and the middot before it does the sentence
-        // break's work.
-        ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
-            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`
-        // Case four on the sheet: metadata, not a control, in the slot the
-        // link would occupy -- the absence becomes a fact about that
-        // analysis, and a list of which readers to write next.
-        : ` · <span class="text-chrome-muted">No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.</span>`}
-  </div>`;
-}
-
-function renderChatLog() {
-  const log = $('chat-log');
-  if (!log) return;
-  log.innerHTML = state.chat.map((t, i) => {
-    const offScope = t.slug && t.slug !== state.selectedSlug;
-    return `
-    <div class="border-l-2 ${offScope ? 'border-chrome-line' : 'border-accent'} pl-s2">
-      <div class="text-caps uppercase tracking-caps text-chrome-muted">
-        You${t.slug ? ` · ${esc(t.slug)}` : ''}${offScope ? ' · not the current resource' : ''}
-      </div>
-      <div class="mb-s2 text-subtab text-chrome-ink">${esc(t.question)}</div>
-
-      ${t.pending ? `<div class="text-chip text-chrome-muted">Asking…</div>` : ''}
-      ${t.error ? `<div class="text-chip text-accent-on-dark">${esc(t.error)}</div>` : ''}
-      ${t.answer ? `
-        <div class="rounded-sm border border-chrome-line p-s3 text-subtab">
-          <div class="whitespace-pre-wrap text-chrome-ink">${tnum(esc(t.answer))}</div>
-          ${(t.lists || []).map((l) => listSentenceHtml(l, t.slug || '')).join('')}
-          ${(() => {
-            const form = answerForm(t);
-            const bits = [];
-            if (form === 'chart' || form === 'diagram') {
-              // A diagram cannot live in a 290px rail. The rail says what it
-              // is and promotes; the pane is where it becomes readable.
-              bits.push(`<button data-promote="${i}"
-                class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
-                       text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })}
-                Open ${form === 'chart' ? 'chart' : 'diagram'} in pane</button>`);
-            }
-            const said = new Set((t.lists || []).map((l) => l.key));
-            for (const src of (t.listSources || [])) {
-              if (said.has(src)) continue;     // the sentence below carries the link
-              // The list this was answered from, whole, in the pane's own
-              // member tree -- counts open what they counted.
-              bits.push(`<button data-list-source="${esc(src)}" data-list-slug="${esc(t.slug || '')}"
-                class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-[10px] py-[4px]
-                       text-chip text-chrome-ink">Open the list · <span class="font-mono">${esc(src)}</span> ›</button>`);
-            }
-            return bits.length ? `<div class="mt-s3 flex flex-wrap gap-s2">${bits.join('')}</div>` : '';
-          })()}
-          <div class="mt-[10px] border-t border-chrome-line-soft pt-[9px] text-caps text-chrome-muted">
-            ${esc(t.source)}${t.intent ? ` · intent ${esc(t.intent)}` : ''}${t.cached ? ' · cached' : ''}
-          </div>
-          ${t.queryHash ? feedbackHtml(t, i) : ''}
-          <div class="mt-s2">
-            <button data-copy-turn="${i}" title="Copy this answer and its source line as markdown"
-              class="cursor-pointer bg-transparent text-caps text-chrome-muted opacity-100
-                     hover:text-chrome-ink focus-visible:text-chrome-ink"
-              >${icon('copy', { size: 13 })} copy as evidence</button>
-          </div>
-        </div>` : ''}
-    </div>`;
-  }).join('');
-
-  log.querySelectorAll('[data-vote]').forEach((b) => b.addEventListener('click', () => {
-    vote(Number(b.dataset.turn), Number(b.dataset.vote));
-  }));
-  log.querySelectorAll('[data-list-source]').forEach((b) => b.addEventListener('click', () => {
-    const slug = b.dataset.listSlug || state.selectedSlug;
-    if (!slug) return;
-    openMembers({ slug, analysisId: b.dataset.listSource, title: b.dataset.listSource.replace(/_/g, ' ') });
-  }));
-  log.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', () => {
-    promoteToPane(state.chat[Number(b.dataset.promote)]);
-  }));
-  log.querySelectorAll('[data-copy-turn]').forEach((b) => b.addEventListener('click', () =>
-    copyAsEvidence(turnAsMarkdown(state.chat[Number(b.dataset.copyTurn)]), b)));
-  log.scrollTop = log.scrollHeight;
-}
-
-/** Three states, not a thumb pair.
- *
- *  The endpoint records +1 / 0 / -1 as three explicit outcomes, and "partly
- *  right" is the one that actually distinguishes a routing problem from a
- *  content problem. Folding it into either neighbour loses the signal the
- *  vote exists to collect. Words rather than emoji, since emoji is not this
- *  UI's icon system. */
-const VOTES = [
-  [1, 'thumbs-up', 'Helpful', 'text-state-ok-on-dark'],
-  // "Partly right" is the value that separates a routing problem from a
-  // content problem. It is a real third state, not a midpoint.
-  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'text-state-warn-on-dark'],
-  [-1, 'thumbs-down', 'Not helpful', 'text-state-warn-on-dark'],
-];
-
-function feedbackHtml(turn, i) {
-  if (turn.voted !== undefined) {
-    const said = { 1: 'Marked helpful.', 0: 'Marked partly right.', '-1': 'Marked not helpful.' };
-    return `<div class="mt-s2 text-caps text-chrome-muted">${esc(said[String(turn.voted)])}</div>`;
-  }
-  if (turn.voteError) {
-    return `<div class="mt-s2 text-caps text-state-warn-on-dark">Vote not recorded: ${esc(turn.voteError)}</div>`;
-  }
-  // Thumbs, not the words `yes / partly / no`. Substituting words for a
-  // conventional pictogram turned a one-glance control into reading; the
-  // objection to emoji was platform variance and non-recolourability, which
-  // a Lucide glyph inheriting currentColor does not have.
-  return `<div class="mt-s2 flex flex-wrap items-center gap-s3 text-caps">
-    <span class="text-chrome-muted">Was this right?</span>
-    ${VOTES.map(([v, ic, title, cls]) => `<button data-turn="${i}" data-vote="${v}"
-      title="${esc(title)}" aria-label="${esc(title)}"
-      class="cursor-pointer bg-transparent text-chrome-muted hover:${cls}"
-      >${icon(ic, { size: 16 })}</button>`).join('')}
-  </div>`;
-}
-
-async function vote(i, value) {
-  const turn = state.chat[i];
-  if (!turn || !turn.queryHash) return;
-  try {
-    await sendFeedback(turn.queryHash, value, turn.compileId || null);
-    turn.voted = value;
-  } catch (err) {
-    // Say it failed. A vote that silently did not record is worse than no
-    // vote control, because the person believes they have reported it.
-    turn.voteError = err.message;
-  }
-  renderChatLog();
-}
-
-/** Narrow the sidebar to the resources an answer named. */
-async function submitAsk() {
-  const input = $('ask-input');
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-
-  const turn = { question: q, slug: state.selectedSlug, pending: true };
-  state.chat.push(turn);
-  renderChatLog();
-
-  try {
-    const body = await ask(q, {
-      resourceSlug: state.selectedSlug,
-      perspectives: state.activePerspectives,
-      sessionId: sessionId(),
-    });
-    turn.pending = false;
-    turn.answer = body.response || '';
-    turn.intent = body.intent || '';
-    turn.cached = Boolean(body.cached);
-    turn.source = sourceLine(body);
-    // Never computed here — the hash always comes off a server response, so
-    // a vote lands under the same key however the answer was produced.
-    turn.queryHash = body.query_hash || '';
-    turn.compileId = body.compiled?.manifest?.compile_id || null;
-    turn.listSources = listSources(body);
-    turn.lists = listSentences(body);
-    // The chart the server chose to attach (statistical/health/comparison
-    // intents produce one). A Plotly figure, and far too wide for the rail.
-    turn.chart = body.chart || null;
-    turn.mermaid = extractMermaid(turn.answer);
-  } catch (err) {
-    turn.pending = false;
-    turn.error = `The question could not be asked: ${err.message}`;
-  }
-  renderChatLog();
-}
 
 /* ════════════════════════════════════════════════════════════════════════
  * The content pane
@@ -2916,9 +2843,8 @@ function subTabsHtml() {
       if (stageDef?.built && (t.id === 'questions' || t.built)) {
         return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
       }
-      return `<button data-deferred="${t.id}" title="${esc(t.does)} — not built in /next"
-        class="cursor-pointer bg-transparent text-ink-muted"
-        style="border-bottom:1px dashed currentColor;padding-bottom:1px">${t.label}</button>`;
+      return `<button data-deferred="${t.id}"${deferredAttrs(false, { title: `${t.does} — not built in /next`, extraStyle: 'padding-bottom:1px' })}
+        class="cursor-pointer bg-transparent text-ink-muted">${t.label}</button>`;
     }).join('')}
   </div>`;
 }
@@ -3658,8 +3584,28 @@ async function renderAnalysesIndexSection(slug, stage) {
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      await runAnalysis(slug, aid);
-      b.textContent = 'Queued — reload to see it';
+      const started = await runAnalysis(slug, aid);
+      // Watch it rather than tell the user to reload — pollActivity is the
+      // same mechanism the Questions checklist's run button already uses
+      // (rerun(), above). A five-minute timeout still redraws the section
+      // once so a slow run's real state (whatever it reaches) is on screen
+      // instead of the stale pre-run row.
+      b.textContent = 'Running…';
+      try {
+        await pollActivity(started.activity_id, {
+          onTick: (e) => {
+            const s = (e?.status || '').toLowerCase();
+            b.textContent = s === 'queued' || s === 'pending' ? 'Queued…' : 'Running…';
+          },
+        });
+      } catch (err) {
+        if (err.name !== 'PollTimeout') throw err;
+        // Not a failure — this browser stopped watching, the run itself
+        // has not failed (same distinction rerun() draws for questions).
+      }
+      if (slug === state.selectedSlug && state.subTab === 'survey') {
+        await renderAnalysesIndexSection(slug, stage);
+      }
     } catch (err) {
       b.disabled = false;
       b.textContent = original;
@@ -4476,7 +4422,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
-              : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+              : `<span class="min-w-0 break-words font-mono text-chrome-ink">${esc(m.name)}</span>`}
             ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
           </li>`).join('')}
           ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
@@ -4780,7 +4726,7 @@ function fmtBytes(n) {
  *  of any kind, so "links out preserving the resource" was not satisfiable
  *  without adding one. Additive: an unrecognised slug selects nothing and
  *  the app starts exactly as before. */
-function oldUiHref() {
+export function oldUiHref() {
   return state.selectedSlug
     ? `/?resource=${encodeURIComponent(state.selectedSlug)}`
     : '/';
@@ -4976,12 +4922,23 @@ async function loadPane() {
     return;
   }
 
+  // Automate is subscriptions/schedules, not questions -- its own two-tab
+  // subnav (renderAutomate(), next/stages/automate.js), same bypass shape as
+  // Understanding just above. Global by default, like the current UI's
+  // Schedules overview: it works with no resource selected, and filters to
+  // one via its own "Just <slug>" checkbox rather than requiring a selection.
+  if (state.stage === 'automate') {
+    await renderAutomate();
+    renderPerspectiveRow();
+    return;
+  }
+
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
-  if (stageDef?.frame || !stageDef?.built) {
+  if (stageDef?.class === 'frame' || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
-      stageDef.frame
+      stageDef.class === 'frame'
         ? 'Investigations are the frame around a body of work, and /next does not '
           + 'implement them. They are live in the current UI.'
         : 'This stage has no rows in the analysis catalog or the activity log, so '
@@ -5096,6 +5053,11 @@ async function loadPane() {
   // Curate's screen is a review-and-commit, not a question list; it renders
   // whether or not the catalog has rows for the stage (today it has none).
   if (state.stage === 'curate') renderCurate(slug);
+  // Analysis has real catalog rows (unlike Curate), so it renders through
+  // the generic engine below like any other built stage; this only adds the
+  // one honest note about what classic's Analysis carries that /next does
+  // not (next/stages/analysis.js).
+  if (state.stage === 'analysis') renderAnalysisNote(slug);
   if (!state.questions.length) {
     rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.
@@ -5780,7 +5742,7 @@ function measureHtml(key, v) {
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** Put text on the clipboard, and say so on the button that asked. */
-async function copyAsEvidence(markdown, btn) {
+export async function copyAsEvidence(markdown, btn) {
   const done = (msg, ok = true) => {
     if (!btn) return;
     const prev = btn.innerHTML;
@@ -5840,15 +5802,8 @@ function rowAsMarkdown(entry, i) {
   return out.join('\n');
 }
 
-/** One chat turn, as markdown with its source line. */
-function turnAsMarkdown(t) {
-  const out = [`**${t.question}**`, ''];
-  out.push(t.answer || `_${t.error || 'No answer.'}_`, '');
-  const bits = [t.slug, t.source].filter(Boolean);
-  if (t.intent) bits.push(`intent ${t.intent}`);
-  out.push(`— ${bits.join(' · ')}`);
-  return out.join('\n');
-}
+// `turnAsMarkdown` moved to next/chat.js (item 9) — it was chat-only and
+// every call site went with it.
 
 const STATE_LABEL = {
   answered: 'answered', automatic: 'automatic', unrun: 'not run',

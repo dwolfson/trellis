@@ -14,13 +14,19 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 
 
 def _app():
-    """app.js plus every stages/*.js module, concatenated -- see the
-    identical helper's docstring in test_next_component_review.py.
+    """app.js plus every stages/*.js module plus chat.js, concatenated --
+    see the identical helper's docstring in test_next_component_review.py.
     `renderEnrichmentEvidence` moved to stages/enrichment.js in the
-    PLAN-FINISH-REPOS.md Part 2 §1 split."""
+    PLAN-FINISH-REPOS.md Part 2 §1 split; the chat-turn-list rendering,
+    `listSources`/`listSentences`, and the rail-scope helpers moved to
+    next/chat.js in the item 9 extraction (ASSESSMENT-CHAT.md /
+    ITEM-9-CHAT-IMPLEMENTED.md) -- `openMembers`/`showEvidence`/
+    `railFrame` stayed in app.js (shared with the Questions-checklist's own
+    row-promotion path), so a test that spans both must read both files."""
     src = (NEXT / "app.js").read_text(encoding="utf-8")
     for f in sorted((NEXT / "stages").glob("*.js")):
         src += "\n" + f.read_text(encoding="utf-8")
+    src += "\n" + (NEXT / "chat.js").read_text(encoding="utf-8")
     return src
 
 
@@ -82,9 +88,11 @@ class TestTheListSentence:
         import pytest
         if shutil.which("node") is None:
             pytest.skip("node not installed")
-        app = (NEXT / "app.js").read_text(encoding="utf-8")
+        # listSources/listSentences/listSentenceHtml moved to next/chat.js in
+        # the item 9 extraction (ITEM-9-CHAT-IMPLEMENTED.md) -- was app.js.
+        app = (NEXT / "chat.js").read_text(encoding="utf-8")
         start = app.index("const MEMBER_LISTED = new Set(")
-        end = app.index("function renderChatLog(")
+        end = app.index("function renderTurnList(")
         src = app[start:end]
         mod = tmp_path / "lists.mjs"
         mod.write_text("const esc = (s) => String(s); const icon = (n) => `<svg data-icon='${n}'/>`;\n" + src + "\nexport { listSources, listSentences, listSentenceHtml };\n")
