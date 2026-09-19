@@ -671,9 +671,13 @@ modes" isn't one mechanism with three settings** — it's two unrelated things t
    Egeria when available, falls back to custom") — a **separate, older class not wired into
    `survey_definition_executor.py`'s dispatch loop at all**. Invoked directly from
    `web/routes/databases.py:250-251` and `cli/main.py:1687-1697` via `run_hybrid_survey()`. CLAUDE.md
-   rule 15 constrains it (run the local scan immediately after triggering Egeria's async survey), but
-   it's database-only — there is no `HybridFilesystemSurveyor` or repo equivalent on the same
-   mechanism.
+   rule 15 constrains it (run the local scan immediately after triggering Egeria's async survey).
+   **Correction, 2026-09-18 planning pass:** there is no *class* equivalent for filesystems, but
+   there is a function doing the same job — `filesystem/hybrid_filesystem_surveyor.py:12`'s
+   `run_hybrid_filesystem_survey()`, called from `web/routes/filesystems.py:271-272` and
+   `cli/main.py:2104-2105`. So the hybrid idea is two implementations on two resource types with no
+   shared abstraction, not one orphan class — a different, slightly worse version of the same
+   problem. There is still no repo hybrid path.
 
 **Verification status, checked directly rather than assumed:**
 
@@ -3785,7 +3789,7 @@ one here" and made `executes_at: prefect` redundant. Now gated on a separate, of
 `PREFECT_ROUTE_LOCAL_STEPS`: routing RE's own steps through Prefect for retries/telemetry is
 a legitimate deployment choice, it just has to be asked for by name.
 
-**Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired — `_use_prefect` at `survey_definition_executor.py:162-167`. Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
+**Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired.** ~~Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.~~ **Answered — see "Routing fixed at the same time" immediately above: gated on the separate `PREFECT_ROUTE_LOCAL_STEPS`, off by default, so `executes_at` is honoured unless rerouting is asked for by name.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against **as of that pass — since re-verified live and largely closed, see `docs/design-notes/PLAN-PREFECT-OR-ALTERNATIVE.md` §1.3, 2026-09-18**. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
 
 Related/overlapping: "Periodic / triggered survey scheduling" below (this may be the eventual replacement for the daemon thread it says is only a short-term fix), "Coherent selective-cataloging model" below (the staging-registry funnel is a concrete proposal for it), and "Unify survey launching" above once a launcher needs to route to a third execution engine, not just two.
 
