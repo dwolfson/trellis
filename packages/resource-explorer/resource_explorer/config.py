@@ -316,7 +316,14 @@ class KrokiConfig(BaseSettings):
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
-    # Default False as of 2026-09-04 (was True 2026-08-26 – 2026-09-04). The
+    # True as of 2026-09-19 (project owner decision, PLAN-PREFECT-OR-ALTERNATIVE.md
+    # §5 phase 3) — the gate for this default ("once phase 2 passes") is
+    # satisfied: a live end-to-end repo_arch_coupling run through Prefect
+    # completed cleanly, with a real result via state.result() and no silent
+    # duplicate local execution (see PLAN-PREFECT-OR-ALTERNATIVE.md §5a).
+    #
+    # Was False 2026-09-04 – 2026-09-19 (and briefly True 2026-08-26 –
+    # 2026-09-04, before the root cause below was understood). That earlier
     # True default leaked: 13 orphaned `prefect.server.api.server:create_app`
     # subprocess servers were found on this machine, reparented to launchd,
     # days old. Cause was NOT run_prefect_step's own fallback (that path is
@@ -326,17 +333,21 @@ class PrefectConfig(BaseSettings):
     # itself starts an ephemeral subprocess server rather than raising —
     # and nothing in RE ever shuts that subprocess down, so every process
     # that ever dispatched a `prefect step` with Prefect enabled and no real
-    # server up left one behind. See prefect_adapter.py, which additionally
-    # forces `PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process as a second,
-    # independent guard against this regardless of this default.
+    # server up left one behind. Fixed at the root (prefect_adapter.py forces
+    # `PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process, independent of
+    # this default) before this default was flipped back on — the earlier
+    # incident was a reason to fix the leak, not a permanent reason to leave
+    # Prefect off.
     #
-    # Enable this only in a deployment where a compose service actually
-    # provides Prefect — egeria-workspaces'
-    # optional-associated-runtimes/prefect — and set both PREFECT_ENABLED=true
-    # and PREFECT_API_URL explicitly to that service's address. Steps that
-    # don't declare executes_at: prefect are unaffected regardless of this
-    # setting (see route_local_steps).
-    enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
+    # This default assumes a deployment where a compose service actually
+    # provides Prefect — egeria-workspaces' optional-associated-runtimes/
+    # prefect, or an equivalent — is reachable at PREFECT_API_URL. Without
+    # one, `run_prefect_step` still degrades to running the step locally
+    # (see the fallback branch's own comment), so a checkout with no Prefect
+    # server at all keeps working, just without Prefect's retries/telemetry.
+    # Steps that don't declare executes_at: prefect are unaffected regardless
+    # of this setting (see route_local_steps).
+    enabled: bool = Field(default=True, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
     # Route steps that explicitly declare executes_at="resource-explorer" through
     # Prefect as well. Off by default, and deliberately its own setting rather
