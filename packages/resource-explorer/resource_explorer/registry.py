@@ -5048,41 +5048,39 @@ class ProjectRegistry:
         they hang off, so a partial drain leaves a coherent prefix rather than
         orphans.
 
+        **This is a real claim.** Select and status transition happen in ONE
+        transaction (`self._conn()` below), so two drainers cannot both take
+        the same row — fixed 2026-09-19, see
+        `docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`. A claimed row moves to
+        `status='running'` with `claimed_at` set to `now`; on Postgres the
+        `SELECT` additionally carries `FOR UPDATE SKIP LOCKED`, so a second,
+        concurrent transaction skips rows the first is mid-claim on rather
+        than blocking or re-reading them once the first commits. SQLite has no
+        `SKIP LOCKED`, but needs none: it serialises writers itself, so the
+        single transaction already gives the same guarantee there.
+
+        This docstring used to say the opposite ("despite the name, it does
+        not claim") — accurate when written (2026-09-02), stale from the
+        moment the fix above landed a few hours later, and left uncorrected
+        until now. A `claim_` function that performs no claim, *documented* as
+        not claiming, is exactly the kind of doc a later reader trusts over
+        the code; the failure mode this repeats is the same shape as the
+        original bug it described, just inverted.
+
+        A row can still be stranded in `running` if its claimer dies before
+        marking it done/failed/pending — `CLAIM_LEASE_SECONDS` bounds that:
+        once `claimed_at` is older than the lease, the row is due again (see
+        the `status = 'running' AND claimed_at <= ?` clause below). A caller
+        that claims rows and then cannot even attempt them (no Egeria client
+        reachable) should call `release_outbox_claim()` immediately rather
+        than wait out the lease — see `drain_outbox`'s no-client branch.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
         table, which could be another resource's backlog entirely — leaving
         the caller believing it had published when it had in fact drained
         someone else's queue.
-
-        **Reads only, and despite the name it does not claim.** There is no
-        locking, no status transition, and no in-flight marking: `drain_outbox`
-        marks a row `done` only AFTER its create succeeds. Two drainers running
-        at once therefore select the same rows and both call `apply_element` on
-        them.
-
-        This docstring used to say "the drain marks each row in flight as it
-        takes it". It does not, and believing it is how you conclude that
-        concurrent drains are safe. They are not uniformly safe:
-
-        - Annotations survive it. The second create is rejected as a duplicate
-          qualifiedName and `apply_element` adopts the existing GUID, so the
-          outcome is one element and two rows marked done.
-        - Annotation LINKS do not. They go through a multi-link attach that
-          duplicates silently rather than upserting, and no reconciler exists
-          for annotation-level duplicates the way one does for survey-definition
-          step links.
-
-        So a second drainer is a real hazard, and the usual second drainer is
-        not another operator — it is `scheduler.py`'s own loop inside a running
-        `resource-explorer web`, firing every _CHECK_INTERVAL_SECONDS whether
-        anyone is at the keyboard or not. Stop the web server before a batch
-        republish, or accept that any duplicated link is permanent and silent.
-
-        Serialising this properly (SELECT ... FOR UPDATE SKIP LOCKED, or a
-        status='running' transition in the same transaction as the select)
-        would remove the hazard rather than documenting it, and is the right
-        fix when this stops being a single-operator dev environment.
         """
         now = now or datetime.utcnow().isoformat()
         lease_cutoff = (
