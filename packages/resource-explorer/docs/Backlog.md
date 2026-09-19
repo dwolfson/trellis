@@ -602,6 +602,49 @@ choosing what to dispatch:
 4. **Survey/analytics/results enhancements** — new or improved analyses, richer findings, cost and
    dependency modelling. Valuable, but behind the tiers above.
 
+### TIER 1 — FIXED 2026-09-19: whole-definition Prefect orchestration bypassed per-step `executes_at` routing
+
+**Found live, the day `PREFECT_ENABLED` defaulted to `true` for the first time with a real
+reachable server** (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5 phase 3): CI failed on a database Survey
+Definition fixture, tracing back to `SurveyDefinitionExecutor.run()`'s `_run_via_prefect` path —
+gated only on `_prefect_orchestration_enabled()` (i.e. `config.prefect.enabled`), with **no check
+on what any individual step's `executes_at` actually said**. `prefect/flows.py`'s
+`re_survey_definition_flow` → `run_planned_step_task` calls `run_surveyor_step_task.fn(...)` — the
+plain local-analysis-step runner — for **every step in the plan**, including ones tagged
+`executes_at="egeria"`. Confirmed directly: an `executes_at="egeria"` step that should have raised
+`_trigger_egeria_native_survey`'s "no stored Egeria asset guid" instead surfaced
+`run_surveyor_step_task`'s own "Entity ... not found in registry" — proof the step never reached
+its real handler at all.
+
+**Repo Survey Definitions never exposed this** — repos have no Egeria-coordinated path today (see
+the "three execution modes" Tier 1 entry above) — **so it would have silently broken every
+database and filesystem Survey Definition** the moment a real Prefect server was reachable, which
+is now the default topology on this machine. Phase 2's live verification called `run_prefect_step`
+directly for one step (`repo_arch_coupling`) rather than through `SurveyDefinitionExecutor.run()`'s
+whole-definition path — a real gap in what "verified live" actually covered, worth naming plainly
+rather than letting the phrase imply more than it checked.
+
+**Fixed** by `_all_steps_prefect_runnable()` (`survey_definition_executor.py`) — gates
+`_run_via_prefect` off entirely for any definition mixing engines, falling through to the existing
+local loop, which already routes each step correctly one at a time (repo/analysis-step definitions,
+which never mix engines, are unaffected and still get whole-definition orchestration). Regression
+test: `test_prefect_orchestration_respects_engine_routing.py`, proving the egeria step reaches its
+real handler with orchestration forced on, independent of whether a server happens to be reachable.
+
+**Left as a known, non-bug constraint, not fixed:** `run_surveyor_step_task` always constructs a
+fresh `ProjectRegistry()` rather than reusing the executor's own registry instance — correct for a
+real distributed worker (which must have its own DB connection to the same shared Postgres
+regardless), but it means anything exercising this Prefect path needs data that exists in the real
+default registry, not an isolated/throwaway one. Broke two new tests
+(`test_execution_modes_path_a_end_to_end.py`) that used a tmp-path SQLite registry; fixed by
+disabling whole-definition orchestration for those tests specifically (they test the local loop,
+not this boundary), not by changing the production code.
+
+**The real fix, not yet built:** per-step engine routing *inside* the Prefect flow itself, matching
+what the local loop already does — so a mixed-engine definition could still get Prefect's
+observability for its Prefect-eligible steps instead of falling back to the local loop entirely.
+Not scoped here; the guard above is the safe, correct behavior until it is.
+
 ### The outbox drain does not serialise, and its docstring says it does — FIXED 2026-09-19
 
 **Resolved:** `claim_due_outbox_elements()` (`resource_explorer/registry.py`)

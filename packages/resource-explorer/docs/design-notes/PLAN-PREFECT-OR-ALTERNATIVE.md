@@ -279,6 +279,17 @@ exactly one new row timestamped inside the flow run's execution window, not dupl
 satisfied. That decision, and the container-server/host-worker topology it depends on, still need
 the project owner's sign-off per the decisions list above.
 
+**Correction, 2026-09-19 — "verified live" above covered less than it implied.** Phase 2's live run
+called `run_prefect_step` directly for one step; it never exercised
+`SurveyDefinitionExecutor.run()`'s separate whole-definition orchestration path
+(`_run_via_prefect`), which turned out to have a real bug — it routed every step through the local
+analysis runner regardless of `executes_at`, silently bypassing `executes_at="egeria"` steps
+entirely. Found and fixed the same day the default actually went live and CI exercised a
+mixed-engine definition for the first time. See `Backlog.md`'s "TIER 1 — whole-definition Prefect
+orchestration bypassed per-step `executes_at` routing" entry for the full account. Recorded here
+as the honest scope of what "verified" meant at the time, not to relitigate the phase 2 result
+itself, which stands for what it actually tested.
+
 ---
 
 ## 6. Risks and unknowns — what could not be verified from the code
