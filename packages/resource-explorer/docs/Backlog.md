@@ -645,6 +645,39 @@ what the local loop already does — so a mixed-engine definition could still ge
 observability for its Prefect-eligible steps instead of falling back to the local loop entirely.
 Not scoped here; the guard above is the safe, correct behavior until it is.
 
+### The outbox drain does not serialise, and its docstring says it does — FIXED 2026-09-19
+
+**Resolved:** `claim_due_outbox_elements()` (`resource_explorer/registry.py`)
+now performs the select and the `status='running'` transition in one
+transaction, with `FOR UPDATE SKIP LOCKED` added to the `SELECT` on Postgres —
+so two concurrent drainers provably cannot claim the same row (see
+`docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`). A stranded claim (drainer
+died before marking the row done/failed) self-heals via `CLAIM_LEASE_SECONDS`;
+a claim that could not even be attempted (no Egeria client reachable) is
+released immediately by `drain_outbox`'s no-client branch calling
+`release_outbox_claim()`. Regression coverage lives in
+`tests/test_egeria_outbox.py`'s `TestTheClaimActuallyClaims` (two claimers
+never get the same row, a killed drainer's rows are reclaimable after the
+lease, an outage hands the claim back rather than holding it) and
+`TestTheClaimSqlIsValidOnPostgres` (pins the exact SQL shape — no `FOR UPDATE`
+combined with an outer join, which SQLite's test tier cannot itself catch).
+
+**This fix landed in the code on 2026-09-02 itself** (commit `472f83c5d`, a
+few hours after the entry below was filed and the docstring was first
+corrected to describe the then-still-broken behaviour) — but the docstring
+correction was never revisited once the real fix landed, so it kept
+describing the bug as unsolved, and this backlog entry was never marked
+fixed. Caught 2026-09-19 while auditing this entry to write a regression
+test: the "fix" the entry called for already existed in `registry.py`, just
+undocumented as done. Corrected the docstring in the same pass (see
+`claim_due_outbox_elements`'s current docstring) — a second instance of
+this exact failure mode (a docstring asserting the opposite of what the code
+does) is precisely what this entry itself warned "is worse than an
+undocumented race."
+
+*Original entry below, kept for the reasoning behind why the hazard is
+asymmetric — annotations survive a double-apply, annotation links do not.*
+
 ### The outbox drain does not serialise, and its docstring says it does
 
 **Filed 2026-09-02, while a batch republish had the web server deliberately
