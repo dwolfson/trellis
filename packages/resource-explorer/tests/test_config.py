@@ -34,6 +34,19 @@ def _write_env(tmp_path, monkeypatch, contents: str):
     failures here that had nothing to do with their change; it also made the
     tests unusable as a check on CI, where the environment is not the
     developer's. Found while dry-running the CI environment on 2026-08-23.
+
+    A second, longer-lived override sits beside the shell one: `_ENV_FILES`
+    in config.py is `(_PACKAGE_ENV, ".env")` — an ABSOLUTE path to this
+    package's real `.env`, not just the relative one `chdir` redirects. Any
+    developer with a real `.env` present (the common case — it's the normal
+    local-dev config mechanism) had every key it sets silently override
+    whatever this helper wrote to the tmp `.env`, regardless of `chdir`.
+    Found 2026-09-19 when TestPrefectEnabledDefault's `enabled is True`
+    assertion passed locally for the wrong reason (the developer's own real
+    `.env` still had `PREFECT_ENABLED=false`) and would have failed in CI,
+    where no such file exists — the inverse of the GITHUB_TOKEN bug above,
+    same root cause, and just as invisible without deliberately checking
+    against a clean environment first.
     """
     for line in contents.splitlines():
         key = line.split("=", 1)[0].strip()
@@ -42,6 +55,30 @@ def _write_env(tmp_path, monkeypatch, contents: str):
     env_file = tmp_path / ".env"
     env_file.write_text(contents)
     monkeypatch.chdir(tmp_path)
+    # `_ENV_FILE_CONFIG`'s `env_file` bakes in `_PACKAGE_ENV` — an ABSOLUTE
+    # path to this package's real `.env` — so a developer with one present
+    # (the common case) had every key it sets silently override whatever
+    # this helper wrote to the tmp `.env`, regardless of `chdir`. Patching
+    # `_ENV_FILE_CONFIG` itself doesn't reach this: pydantic's metaclass
+    # resolves `model_config` into its OWN dict per class at class-creation
+    # time (verified — `PrefectConfig.model_config is _ENV_FILE_CONFIG` is
+    # False), so each nested config class needs its own `model_config`
+    # patched directly. Found 2026-09-19 when TestPrefectEnabledDefault's
+    # `enabled is True` assertion passed locally for the wrong reason (the
+    # developer's own real `.env` still had `PREFECT_ENABLED=false`) and
+    # would have failed in CI, where no such file exists — the inverse of
+    # the GITHUB_TOKEN bug above, same root cause, just as invisible without
+    # deliberately checking against a clean environment first.
+    import resource_explorer.config as _config_module
+    from pydantic_settings import BaseSettings
+    for name in dir(_config_module):
+        obj = getattr(_config_module, name)
+        if (
+            isinstance(obj, type)
+            and issubclass(obj, BaseSettings)
+            and obj.model_config.get("env_file") == _config_module._ENV_FILES
+        ):
+            monkeypatch.setitem(obj.model_config, "env_file", (env_file,))
     return env_file
 
 
@@ -97,19 +134,28 @@ class TestNestedConfigsReadDotEnv:
         assert FeedbackConfig().admin_token == "from-real-env"
 
 
-class TestPrefectDisabledByDefault:
-    """Regression guard for the 2026-09-04 ephemeral-server leak: 13 orphaned
+class TestPrefectEnabledDefault:
+    """True as of 2026-09-19 (project owner decision, PLAN-PREFECT-OR-ALTERNATIVE.md
+    §5 phase 3) — was False 2026-09-04 – 2026-09-19 as a mitigation for the
+    2026-08-26 – 2026-09-04 ephemeral-server leak: 13 orphaned
     `prefect.server.api.server:create_app` subprocess servers were found on
-    this machine, reparented to launchd, days old — caused by
+    this machine, reparented to launchd, days old, caused by
     PrefectConfig.enabled defaulting to True with no reachable
     PREFECT_API_URL, which makes Prefect's own client start an ephemeral
-    subprocess server that nothing ever shuts down. See PrefectConfig.enabled's
-    docstring in config.py and resource_explorer/__init__.py /
-    surveyors/prefect_adapter.py for the two independent guards."""
+    subprocess server that nothing ever shuts down.
 
-    def test_prefect_enabled_defaults_to_false(self, tmp_path, monkeypatch):
+    That mitigation was papering over the real bug rather than fixing it —
+    the actual fix is the independent, `enabled`-value-agnostic guard in
+    resource_explorer/__init__.py / surveyors/prefect_adapter.py that forces
+    `PREFECT_SERVER_EPHEMERAL_ENABLED=false` at import time, verified by
+    test_ephemeral_start_env_var_is_forced_off_on_package_import below. Once
+    that guard existed and a live end-to-end run through Prefect verified
+    cleanly (PLAN-PREFECT-OR-ALTERNATIVE.md §5a), there was no remaining
+    reason for `enabled` itself to default off."""
+
+    def test_prefect_enabled_defaults_to_true(self, tmp_path, monkeypatch):
         _write_env(tmp_path, monkeypatch, "")
-        assert PrefectConfig().enabled is False
+        assert PrefectConfig().enabled is True
 
     def test_ephemeral_start_env_var_is_forced_off_on_package_import(self, monkeypatch):
         """resource_explorer/__init__.py sets this via os.environ.setdefault
