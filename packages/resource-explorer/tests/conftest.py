@@ -125,6 +125,13 @@ def _egeria_reachable() -> bool:
 
 _EGERIA_AVAILABLE = _egeria_reachable()
 
+# Load the phase-4 live-write fixtures (`live_egeria_write_target` and
+# friends) as a plugin so `tests/` doesn't have to import them per-module.
+# `tests/` is a package (has __init__.py), so this resolves the same way any
+# other `tests.*` import does. See tests/live_egeria_write_fixtures.py for
+# what it provides and its own coordination-note docstring.
+pytest_plugins = ["tests.live_egeria_write_fixtures"]
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -132,6 +139,15 @@ def pytest_addoption(parser):
         help="run tests that assert over the live shared registry's actual "
              "contents (skipped by default — a concurrent survey in another "
              "session can turn them red in files nobody touched)",
+    )
+    parser.addoption(
+        "--live-egeria-writes", action="store_true", default=False,
+        help="run tests marked live_egeria_writes, which perform real "
+             "catalogue/delete writes against the shared dev Egeria platform "
+             "(skipped by default even when Egeria is reachable — this is a "
+             "bigger commitment than requires_egeria's read-only reachability "
+             "check, and needs live-peer coordination before every run; see "
+             "tests/live_egeria_write_fixtures.py)",
     )
 
 
@@ -144,13 +160,52 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "requires_egeria: needs a live reachable Egeria platform "
-        "(auto-skipped when one isn't available)",
+        "(auto-skipped when one isn't available). Read-only-safe: this only "
+        "certifies reachability, never that the test writes anything. A test "
+        "that writes to dev Egeria — even throwaway writes — must additionally "
+        "carry live_egeria_writes below; requires_egeria alone is not enough "
+        "of a gate for that.",
     )
     config.addinivalue_line(
         "markers",
         "corpus: asserts over whatever the LIVE shared registry happens to "
         "contain (skipped by default; --corpus to run)",
     )
+    config.addinivalue_line(
+        "markers",
+        "live_egeria_writes: performs REAL writes (catalogue, then delete) "
+        "against the shared dev Egeria platform. Skipped by default even when "
+        "Egeria is reachable — pass --live-egeria-writes to opt in, and get "
+        "live-peer coordination first (see tests/live_egeria_write_fixtures.py "
+        "and the coordinate-shared-writes skill). Deliberately separate from, "
+        "and stricter than, requires_egeria — see that marker's own docstring.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "live_egeria: pre-existing, narrower marker used only by "
+        "test_dependency_support.py::TestAgainstLiveEgeria — read-only "
+        "(queries Egeria technology types), and does its own manual "
+        "pytest.skip() rather than being wired into the auto-skip mechanism "
+        "below. Registered here only to silence the unknown-marker warning; "
+        "left as-is by the phase-4 harness work as a pre-existing, out-of-scope "
+        "inconsistency (see PHASE-4-LIVE-HARNESS-IMPLEMENTED.md) rather than "
+        "folded into requires_egeria or live_egeria_writes without a separate "
+        "decision to do so.",
+    )
+
+
+def _live_egeria_writes_should_skip(egeria_available: bool, flag_enabled: bool) -> bool:
+    """Pure gate logic for the `live_egeria_writes` marker — pulled out of
+    `pytest_collection_modifyitems` so it can be unit-tested directly (with
+    both inputs mocked) without needing a real Egeria or a real pytest run.
+
+    Skip whenever EITHER input says no: unreachable Egeria must never be
+    papered over by the flag (that would turn --live-egeria-writes into "try
+    to write and get a connection error" instead of a clean skip), and a
+    reachable Egeria must never be enough **by itself** (that is exactly the
+    gap requires_egeria leaves open — see its docstring in pytest_configure).
+    """
+    return not (egeria_available and flag_enabled)
 
 
 #: Set in CI. Auto-skipping is right on a developer laptop with no services
@@ -198,6 +253,17 @@ def pytest_collection_modifyitems(config, items):
 
     skip_pgvector = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
     skip_egeria = pytest.mark.skip(reason="Egeria platform not reachable at the configured platform_url")
+
+    run_live_egeria_writes = config.getoption("--live-egeria-writes")
+    skip_live_writes = pytest.mark.skip(
+        reason="performs real writes against shared dev Egeria — needs both a "
+               "reachable platform AND --live-egeria-writes (plus live-peer "
+               "coordination before you pass that flag); requires_egeria's "
+               "reachability check alone is not enough of a gate for a "
+               "write-capable test"
+    )
+    should_skip_live_writes = _live_egeria_writes_should_skip(_EGERIA_AVAILABLE, run_live_egeria_writes)
+
     for item in items:
         if not _PGVECTOR_AVAILABLE and "requires_pgvector" in item.keywords:
             item.add_marker(skip_pgvector)
@@ -205,6 +271,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_egeria)
         if not run_corpus and "corpus" in item.keywords:
             item.add_marker(skip_corpus)
+        if should_skip_live_writes and "live_egeria_writes" in item.keywords:
+            item.add_marker(skip_live_writes)
 
 
 @pytest.fixture(scope="session")
