@@ -278,6 +278,23 @@ export const removeProject = (slug) =>
 
 export const listGroups = () => cached('groups', () => get('/api/projects/groups'));
 
+/** Ungrouped repos sharing a GitHub org, suggested (never auto-applied) as
+ * candidate groupings — see projects.py's `suggest_groups()` docstring. */
+export const groupSuggestions = () => get('/api/projects/groups/suggestions');
+
+export const createGroup = (slug, displayName, description = '') =>
+  post('/api/projects/groups', { slug, display_name: displayName, description });
+
+/**
+ * Delete a group. Does NOT delete its member resources — they return to
+ * Ungrouped (`resources_unassigned` in the response is the count that did).
+ * The route takes no confirmation flag of any kind, so the only
+ * confirmation that will ever exist is the caller's — same rule as
+ * `removeProject` above.
+ */
+export const deleteGroup = (slug) =>
+  request(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
 export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
   post(`/api/projects/${encodeURIComponent(slug)}/group`,
        { resource_type: resourceType, group_slug: groupSlug });
@@ -758,7 +775,8 @@ export async function pollActivity(entryId, {
 
 /* ── Investigations ──────────────────────────────────────────────────── */
 
-export const listInvestigations = () => get('/api/investigations/');
+export const listInvestigations = ({ includeClosed = false } = {}) =>
+  get(`/api/investigations/?include_closed=${includeClosed}`);
 
 /* ── Curate ─────────────────────────────────────────────────────────────── */
 
@@ -958,3 +976,45 @@ export const getPrefectStatus = () => get('/api/prefect/status');
 export const listPrefectFlowRuns = (limit = 50) => get(`/api/prefect/flow-runs?limit=${limit}`);
 export const cancelPrefectFlowRun = (flowRunId) =>
   post(`/api/prefect/flow-runs/${encodeURIComponent(flowRunId)}/cancel`);
+
+/* ── Egeria Alignment (Resync) — resource_explorer/egeria_resync.py ────────
+ * Scanning never writes; apply() runs only the step names it is given, in
+ * the module's own dependency order regardless of the order sent. */
+
+/** Four states on purpose (see admin/resync.js): enforced, settling, not
+ *  enforced, and "could not tell" all read differently — a private-zone
+ *  check that failed must never render the same as one that passed. */
+export const getPrivateZone = () => get('/api/egeria/private-zone');
+
+/** Read-only. `reachable: false` must never be presented as "no drift" — an
+ *  unread catalog is not a catalog known to be fine. */
+export const getResyncScan = () => get('/api/egeria/resync/scan');
+
+/** Runs exactly the named repair steps — nothing runs unless asked for by
+ *  name. `steps` is a plain array of `Finding.repair_step` values. */
+export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { steps });
+
+/* ── Repair — per-repository correction (resource_explorer/repair.py) ──────
+ * A different job from Resync: fixing one repo that was registered wrong,
+ * not reconciling the store against Egeria. Every mutation below is a real
+ * write and its caller is expected to confirm first, naming the blast
+ * radius from the response fields these routes already return. */
+
+export const repairRename = (slug, newSlug) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/rename`, { new_slug: newSlug });
+export const repairGithubUrl = (slug, newUrl, confirm = false) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/github-url`,
+       { new_url: newUrl, confirm });
+export const repairEnableCollection = (slug, collectionType) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/collections/enable`,
+       { collection_type: collectionType });
+export const getRepairDrift = (slug) =>
+  get(`/api/admin/repair/repos/${encodeURIComponent(slug)}/drift`);
+export const getRepairMemberships = (slug) =>
+  get(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships`);
+export const repairRepointMembership = (slug, fromInvestigation, toInvestigation) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/repoint`,
+       { from_investigation: fromInvestigation, to_investigation: toInvestigation });
+export const repairDropMembership = (slug, investigationSlug) =>
+  request(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/`
+          + `${encodeURIComponent(investigationSlug)}`, { method: 'DELETE' });

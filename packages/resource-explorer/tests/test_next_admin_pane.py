@@ -1,14 +1,17 @@
 """Admin's own /next surface (PLAN-FINISH-REPOS.md item 5): pinning that the
 header's ⚙ Admin button opens a real overlay panel — chrome-level, decoupled
-from #intent-nav, the same pattern as Activity — with six real ports
+from #intent-nav, the same pattern as Activity — with nine real ports
 (Annotation Types browse, Question Catalog, Logs, Feedback, Prefect,
-Discovery Sources) and five named, specific deferrals (Groups, Egeria
-Alignment, Egeria Links, Publish Queue, Repair), each linking out to classic
+Discovery Sources, Groups, Egeria Alignment, Repair) and two named, specific
+deferrals (Egeria Links, Publish Queue), each linking out to classic
 via the shared `oldUiHref()` helper.
 
 Discovery Sources was ported from a deferral to a full build under
 SPEC-ADMIN-THE-FOUR-GAPS.md §3 — see TestDiscoverySourcesPane below and
-docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md.
+docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Groups was ported
+under §2 — see TestGroupsPane below and docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md.
+Egeria Alignment (Resync) and Repair were ported under §1 — see
+TestResyncPane/TestRepairPane below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
 
 No browser verification of a signed-in session happened for this file — see
 docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
@@ -24,18 +27,18 @@ from pathlib import Path
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
 DEFERRED_TAB_IDS = [
-    "admin-groups",
-    "admin-resync",
     "admin-egeria-links",
     "admin-outbox",
-    "admin-repair",
 ]
 BUILT_TAB_IDS = [
     "annotations",
+    "admin-groups",
     "admin-question-catalog",
     "admin-prefect",
     "admin-feedback",
     "admin-logs",
+    "admin-resync",
+    "admin-repair",
     "admin-discovery-sources",
 ]
 
@@ -120,7 +123,7 @@ class TestGroupsAndTabsMatchClassic:
         for tab_id in BUILT_TAB_IDS + DEFERRED_TAB_IDS:
             assert f"id: '{tab_id}'" in src, f"missing tab id {tab_id!r}"
 
-    def test_exactly_five_tabs_are_wired_to_a_real_renderer(self):
+    def test_exactly_built_tab_ids_are_wired_to_a_real_renderer(self):
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
@@ -269,6 +272,177 @@ class TestPrefectPane:
     def test_cancel_is_confirmed_before_the_write(self):
         src = _admin_module("prefect.js")
         assert "window.confirm(" in src
+
+
+class TestGroupsPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §2: create/delete/assign/suggestions, all
+    ports of classic's createAdminGroup/deleteAdminGroup/
+    openAssignGroupModal+submitAssignGroup/applyGroupSuggestion against the
+    existing /api/projects/groups* routes. See groups.js's own header for
+    what's a straight port versus a deliberate departure (assignment lives
+    in this pane, not behind a per-resource button, since /next has none
+    yet)."""
+
+    def test_the_tab_is_wired_to_a_real_renderer_not_deferred(self):
+        src = _admin_index_src()
+        assert "{ id: 'admin-groups', label: '🗂 Groups', render: renderGroups }" in src
+
+    def test_reapi_exposes_create_delete_and_suggestions(self):
+        api = _reapi_src()
+        assert "export const groupSuggestions = ()" in api
+        assert "/api/projects/groups/suggestions" in api
+        assert "export const createGroup = (" in api
+        assert "export const deleteGroup = (" in api
+
+    def test_delete_has_no_confirmation_flag_on_the_route_itself(self):
+        # Mirrors removeProject's own comment: the DELETE route takes no
+        # confirm parameter, so the caller's window.confirm is the only
+        # confirmation that will ever exist.
+        api = _reapi_src()
+        i = api.index("export const deleteGroup = (")
+        body = api[max(0, i - 400):i + 100]
+        assert "confirmation" in body.lower()
+
+    def test_delete_confirms_and_names_where_members_go_not_that_they_vanish(self):
+        # SPEC-ADMIN-THE-FOUR-GAPS.md §0/§2: a group delete reads as
+        # destructive and is not -- the confirmation must say members return
+        # to Ungrouped, not merely warn generically. Classic's own pane has
+        # no confirm here at all (checked directly against index.html) --
+        # this is the fix, not a copy.
+        src = _admin_module("groups.js")
+        i = src.index("async function onDeleteGroup(")
+        body = src[i:src.index("\n}\n", i)]
+        assert "window.confirm(" in body
+        assert "return to Ungrouped" in body
+        assert "nothing is deleted" in body
+
+    def test_suggestions_are_rendered_and_applied_via_the_real_routes(self):
+        src = _admin_module("groups.js")
+        assert "groupSuggestions()" in src
+        assert "async function onApplySuggestion(" in src
+        assert "createGroup(" in src
+        assert "assignGroup(" in src
+
+    def test_assignment_uses_the_real_route_and_all_three_resource_types(self):
+        api = _reapi_src()
+        assert "export const assignGroup = (" in api
+        assert "/api/projects/${encodeURIComponent(slug)}/group" in api
+        src = _admin_module("groups.js")
+        assert "kind === 'database' ? 'database' : kind === 'filesystem' ? 'filesystem' : 'repo'" in src
+
+    def test_a_mutation_refreshes_the_sidebars_own_copy_of_groups(self):
+        # state.groups/state.projects are otherwise only populated once, in
+        # app.js's start() -- without this, the sidebar would show stale
+        # groupings until a full page reload.
+        app = _app()
+        assert "export async function refreshGroupsAndSidebar()" in app
+        src = _admin_module("groups.js")
+        assert "refreshGroupsAndSidebar" in src
+
+
+class TestResyncPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §1 — Resync is global drift reconciliation,
+    a different job from Repair (per-repo correction). The whole design is:
+    do not flatten a Finding's `repair_step`/`needs_decision` into "a row with
+    a button" — three distinct shapes, not one generic list item."""
+
+    def test_reads_the_real_scan_and_apply_routes(self):
+        api = _reapi_src()
+        assert "export const getResyncScan = ()" in api
+        assert "/api/egeria/resync/scan" in api
+        assert "export const applyResyncSteps = (" in api
+        assert "/api/egeria/resync/apply" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("resync.js")
+        assert "export async function renderResync(host)" in src
+
+    def test_unreachable_is_never_rendered_as_no_drift(self):
+        src = _admin_module("resync.js")
+        assert "d.reachable" in src
+        assert "Deliberately not reported as" in src
+
+    def test_scheduled_steps_get_a_state_row_not_a_fix_button(self):
+        src = _admin_module("resync.js")
+        assert "clear_stale_assets" in src
+        assert "clear_orphan_publish_claims" in src
+        assert "flag_vanished_publishes" in src
+        assert "function scheduledRowHtml" in src
+        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 1400]
+        assert "Run now" in body
+        # A scheduled row must not carry the same tick-a-box affordance as a
+        # repairable one -- it is a status report with a "run now" action,
+        # not a selectable fix.
+        assert "data-resync-step" not in body
+
+    def test_no_button_when_repair_step_is_empty(self):
+        src = _admin_module("resync.js")
+        assert "function decisionRowHtml" in src
+        body = src[src.index("function decisionRowHtml"):src.index("function decisionRowHtml") + 900]
+        assert "checkbox" not in body
+        assert "<button" not in body
+
+    def test_needs_decision_is_framed_as_a_question_not_an_action(self):
+        src = _admin_module("resync.js")
+        body = src[src.index("function decisionRowHtml"):src.index("function decisionRowHtml") + 900]
+        assert "your call" in body
+
+    def test_clear_stale_investigations_names_the_binding_it_unbinds(self):
+        """The most dangerous control in the product per egeria_resync.py's
+        own comment above SAFE_SCHEDULED_STEPS -- its confirmation must say
+        what it unbinds and how many, not just "clears N records"."""
+        src = _admin_module("resync.js")
+        i = src.index("clear_stale_investigations:")
+        block = src[i:i + 700]
+        assert "UNBIND" in block.upper()
+        assert "Project" in block
+
+    def test_apply_selected_confirms_before_writing(self):
+        src = _admin_module("resync.js")
+        assert "window.confirm(" in src
+        assert "async function applySelected" in src
+
+    def test_expensive_steps_default_unticked(self):
+        src = _admin_module("resync.js")
+        assert "f.expensive ? '' : 'checked'" in src
+
+
+class TestRepairPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §1 -- Repair is per-repository correction,
+    NOT drift reconciliation; it needs no design beyond §0's blast-radius
+    rule, including naming what an action does NOT do."""
+
+    def test_reads_the_real_repair_routes(self):
+        api = _reapi_src()
+        for fn in (
+            "repairRename", "repairGithubUrl", "repairEnableCollection",
+            "getRepairDrift", "getRepairMemberships",
+            "repairRepointMembership", "repairDropMembership",
+        ):
+            assert f"export const {fn} = " in api
+        assert "/api/admin/repair/repos/" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("repair.js")
+        assert "export async function renderRepair(host)" in src
+
+    def test_destructive_actions_are_confirmed(self):
+        src = _admin_module("repair.js")
+        assert src.count("window.confirm(") >= 3  # rename, github-url change, drop membership
+
+    def test_names_what_it_does_not_do(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §0's sharpest example -- classic's
+        "this does not delete your files on disk" -- ported here for the
+        repair actions whose names sound more destructive than they are."""
+        src = _admin_module("repair.js")
+        assert "does not touch GitHub" in src
+        assert "does not remove the repo from RE" in src or "does not remove it from RE" in src
+
+    def test_is_distinct_from_resync_not_folded_together(self):
+        src = _admin_module("repair.js")
+        assert "NOT Resync" in src
+        resync_src = _admin_module("resync.js")
+        assert "NOT Repair" in resync_src
 
 
 class TestDiscoverySourcesPane:
