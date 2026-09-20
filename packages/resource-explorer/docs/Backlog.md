@@ -3866,6 +3866,30 @@ should stay off by default; if it's ever wanted, the worker's polling interval s
 first and re-measured, since this number is a property of that interval as configured today, not a
 Prefect ceiling.
 
+**DONE 2026-09-19 — phase 5 widening shipped.** `PREFECT_ROUTED_STEPS`
+(`scripts/generate_repo_survey_definition.py`) now also includes `repo_secret_scan` and
+`repo_rag_ingestion` alongside `repo_arch_coupling` — both confirmed `compute_cost="high"` in
+`repo_survey_definition_adapter.py` before widening. Docs regenerated
+(`repo-survey-definition-full.md`, `-analysis.md`, `-compliance.md`, `-refresh.md` — the four
+generated docs that reference either step — all show `executes_at: prefect` for both). Published
+live to dev Egeria (`qs-view-server`) after coordinating with all live peers per
+`coordinate-shared-writes`: two "Create Governance Action Process Step" blocks extracted directly
+from the regenerated `repo-survey-definition-full.md` (split on `___`, matched by Qualified Name),
+run once via `dr_egeria_run_block` against `https://host.docker.internal:9443` (confirmed the MCP
+egeria server's own network context — `localhost:9443` does not resolve from there, verified by a
+failed `validate` call against it). Both landed as **Update** Governance Action Process Step
+(upsert, not create — the elements already existed): `repo_secret_scan` GUID
+`c902a5dc-6ad5-4e22-9311-a003b5e69419`, `repo_rag_ingestion` GUID
+`818bae1c-b808-423b-9681-2461f169906a`, both with `executes_at: prefect` in the returned Additional
+Properties. Verified independently afterward via `SurveyDefinitionReader`'s
+`GovernanceOfficer.get_governance_definitions_by_name()` (a separate read path from the publisher's
+own tool, against `localhost:9443` from the host) — same two GUIDs, same `executes_at: prefect`.
+`scripts/reconcile_survey_definition_links.py --dry-run` reported clean before and after (all ten
+Survey Definitions, including `RepoFullSurvey`'s 42 edges) — the property-only update touched no
+step links, so no duplication risk to begin with, confirmed rather than assumed. No link commands
+were run. Test coverage (`tests/test_generate_repo_survey_definition.py`) updated to assert the
+widened three-step set.
+
 #### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because

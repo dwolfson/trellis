@@ -210,6 +210,14 @@ class TestBuildSteps:
         steps = script.build_steps(["repo_arch_coupling"])
         assert steps[0].executes_at == "prefect"
 
+    def test_secret_scan_is_routed_to_prefect(self, script):
+        steps = script.build_steps(["repo_secret_scan"])
+        assert steps[0].executes_at == "prefect"
+
+    def test_rag_ingestion_is_routed_to_prefect(self, script):
+        steps = script.build_steps(["repo_rag_ingestion"])
+        assert steps[0].executes_at == "prefect"
+
     def test_an_ordinary_step_stays_local(self, script):
         steps = script.build_steps(["repo_health"])
         assert steps[0].executes_at == "resource-explorer"
@@ -217,5 +225,12 @@ class TestBuildSteps:
     def test_the_opt_in_list_is_exactly_what_this_test_expects(self, script):
         """Guards against the opt-in silently growing (paying Prefect
         overhead on more steps than anyone decided to) or shrinking (this
-        test passing for the wrong reason)."""
-        assert script.PREFECT_ROUTED_STEPS == {"repo_arch_coupling"}
+        test passing for the wrong reason). Widened 2026-09-19 per
+        PLAN-PREFECT-OR-ALTERNATIVE.md §5 phase 5 after phase 4 measured
+        Prefect's fixed dispatch overhead (~8-10s) as small relative to
+        these compute_cost="high" steps' own runtime."""
+        assert script.PREFECT_ROUTED_STEPS == {
+            "repo_arch_coupling",
+            "repo_secret_scan",
+            "repo_rag_ingestion",
+        }
