@@ -510,14 +510,21 @@ async function renderComponentTree(slug, prefix = '') {
   const sort = state.componentSort || 'size';
   const rows = [...tree.branches];
   // A sort, never a filter: the ⚠ count already rides on the branch, so
-  // ordering by confidence puts the weakest clusters first without hiding
+  // ordering by evidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.
   //
-  // Agreement outranks a single high confidence (RULING-WHAT-A-VERDICT-IS-
-  // ABOUT.md §2b) — two independent extractors landing on the same path is
-  // a better bet than one extractor at 90%, so it sorts first, confidence
-  // only breaking ties within the same agreement count.
-  if (sort === 'confidence') rows.sort((a, b) => (b.agreement_count || 0) - (a.agreement_count || 0)
+  // Agreement RAISES a branch's effective evidence (RULING-WHAT-A-VERDICT-
+  // IS-ABOUT.md §2b) — two independent extractors landing on the same path
+  // is a better bet than one extractor at 90%. In a weakest-first queue
+  // that means agreement must SINK a branch, the same direction lower
+  // confidence already does — not outrank confidence by sorting to the
+  // top. (Fixed 2026-09-20: the original comparator ran agreement
+  // descending and confidence ascending against each other, so the
+  // best-evidenced branches surfaced first in a queue meant to open on
+  // what needs the most attention — see SORT-DIRECTION-FIX-IMPLEMENTED.md.)
+  // Less agreement and lower confidence both sort first; agreement is the
+  // primary key, confidence breaks ties within the same agreement count.
+  if (sort === 'confidence') rows.sort((a, b) => (a.agreement_count || 0) - (b.agreement_count || 0)
     || (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
   const shown = state.componentShowAll ? rows : rows.slice(0, 8);
   host.innerHTML = `
@@ -526,7 +533,7 @@ async function renderComponentTree(slug, prefix = '') {
       ports and wires read from the deployment artifacts; the diagram shows those belonging to accepted components
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
-      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
+      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by evidence</button></div>
     ${selectionBarHtml(selected, shown, rows.length)}
     ${shown.map((b) => branchRowHtml(b, selected.has(b.path))).join('')}
     ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}

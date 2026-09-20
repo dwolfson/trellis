@@ -10,6 +10,24 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Classic panel: primary component pick is still `latest`, not best-evidenced
+
+`RULING-CLASSIC-AND-NEXT.md` §3 (2026-09-17) also called for the classic panel's
+*primary* component reading — the `type`/`confidence` `_archRow` shows before any
+"also proposed by" clause — to become the best-evidenced proposal (agreed first,
+then highest confidence), not `repo_survey_definition_adapter.py:2951`'s
+`max(comp_rows, key=lambda r: r["surveyed_at"])`. The 2026-09-20 pass
+(`HONEST-CLASSIC-ROW-IMPLEMENTED.md`) shipped the honesty clause naming the other
+current proposer(s) but deliberately left `latest` as the server-side pick —
+changing it touches the shared `_architecture_recovery_results` payload every
+caller of `components[]` reads (both classic and `/next`), which is a wider
+blast radius than a one-clause client-side addition, and `/next` already has its
+own best-evidenced logic (the branch tree's `agreement`/`proposals` sort) so
+nothing was left un-honest by deferring this. Still open: swap `latest`'s
+selection rule to agreement-first-then-confidence, consistent with what `/next`
+already does, and update the one component-level test that pins `latest`'s
+current selection if one exists.
+
 ## Path B3 — repo `executes_at: egeria` handler built (2026-09-20)
 
 **Decision (project owner, 2026-09-20):** build the repo-side `executes_at: "egeria"`
