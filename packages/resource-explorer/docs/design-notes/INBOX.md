@@ -19,11 +19,31 @@ because the reason matters more than the list.
 | | take this | read | verified |
 |---|---|---|---|
 | **Parity inventory** | *First pass done — classify it* | `INVENTORY-CLASSIC-TO-NEXT.md` | **Sixteen candidate gaps, one of them decided.** Ten absent entirely (the whole Admin section, repair, outbox, resync, Prefect, discovery sources, question catalog, group admin, scout source mode, persisted sidebar width); five partly present (group collapse, per-answer feedback, perspective persistence, chat, bulk); one deferred on record (databases and filesystems). **What is left needs the project owner:** marking each *deferred* (a decision exists) vs *undiscussed*. I can only cite the one decision that came through these notes. Half an hour with the table. |
-| **Stale publish** | *Publish state after a redeploy* — publish rows name created elements that a wipe destroyed, and nothing ever checks | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | **Defect confirmed by me** at `342e0ca3`: `registry.py` ~1015/~1052/~1109 store `egeria_report_guid`; no function resolves one. Fix is one `ClassificationExplorer.get_element_by_guid` per connection. §5 is a short survey to do first. |
-| **Sort direction** | *The review queue opens on the branches needing least attention* | `REVIEW-VERDICT-RULING.md` §2 | `app.js:5880` runs agreement descending and confidence ascending, so best-evidenced branches head a weakest-first queue. Agreement should **raise effective evidence** and therefore sink a branch; one ordering, one direction. Label becomes *by evidence*. My §2b wording caused this — *outranks* read as *sorts above*. Small. |
-| **Honest classic row** | *The classic panel still shows one of two proposals as the answer* | `RULING-CLASSIC-AND-NEXT.md` §3 | **Required, not optional** — the project owner ruled 09-17 that classic retires only if `/next` earns it, so there is no timeline. `repo_survey_definition_adapter.py:2951` keeps `max(comp_rows, key=surveyed_at)` and `_archRow` renders it. One clause (*also proposed by coupling ›*), **not** parity; plus the primary becomes best-evidenced rather than most recent. |
 
 ### Just landed, and reviewed
+
+**Stale publish shipped** in `8758f248` ("RE: publish state resolves against
+Egeria and flags, never deletes, what vanished"), Sep 16 — **before** this
+board or its "Stale publish" row were even written (2026-09-17). No
+`*-IMPLEMENTED.md` existed for it, which is the exact mechanism this board's
+own "Why this kept happening" section names — a `*-IMPLEMENTED.md` written
+2026-09-20, `PUBLISH-STATE-AFTER-REDEPLOY-IMPLEMENTED.md`, closes that gap.
+`egeria_resync.py`'s `_scan_vanished_publishes` resolves each project's
+newest `project_egeria_surveys.egeria_report_guid` against Egeria (reusing
+the existing `_resolves()` tri-state check), `_do_flag_vanished_publishes`
+flags via `egeria_linkage_status` (never deletes), and the 4th publish state
+is wired into every surface — `next/app.js` and three `index.html` sites.
+
+**Sort direction and the classic row fixed** 2026-09-20 —
+`VERDICT-QUEUE-AND-CLASSIC-ROW-IMPLEMENTED.md`. The comparator in
+`next/stages/curate.js` now runs agreement and confidence the same
+direction (both ascending, weakest-first), the toggle reads *by evidence*,
+and `_archRow` (`index.html`) gains the required *"also proposed by ‹run
+label(s)› ›"* clause when `c.proposals` has more than one current entry.
+The primary-selection swap (best-evidenced rather than most-recent) is
+deliberately deferred — filed in `docs/Backlog.md` ("Classic panel: primary
+component pick is still `latest`, not best-evidenced") rather than silently
+skipped, since the honesty clause required here doesn't depend on it.
 
 **Verdict subject shipped** in PR #107 (`1b370cbe`), with
 `VERDICT-RULING-IMPLEMENTED.md` as its reply. Reviewed in
@@ -112,7 +132,9 @@ can now read the repo directly, so there is no excuse left.
 
 | written | designer reply | subject | state |
 |---|---|---|---|
-| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` | Publish state is stored locally and never reconciled; one resolve per connection; created vs archive GUIDs; the fourth publish state | **ready to start — Stale publish** |
+| 09-17 | `RULING-CLASSIC-AND-NEXT.md` | Classic retires only if `/next` earns it; capability may diverge, honesty may not; the one-clause fix for the classic component row | answered — `VERDICT-QUEUE-AND-CLASSIC-ROW-IMPLEMENTED.md` (honesty clause; primary-selection swap deferred to `docs/Backlog.md`) |
+| 09-17 | `REVIEW-VERDICT-RULING.md` | Review of `#107`; the sort-comparator defect; the classic-row defect | answered — `VERDICT-QUEUE-AND-CLASSIC-ROW-IMPLEMENTED.md` |
+| 09-17 | `SPEC-PUBLISH-STATE-AFTER-REDEPLOY.md` + `PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md` + `REPLY-PUBLISH-STATE-GO-AHEAD.md` | Publish state is stored locally and never reconciled; one resolve per connection; created vs archive GUIDs; the fourth publish state | answered — shipped `8758f248` (before this board existed); `PUBLISH-STATE-AFTER-REDEPLOY-IMPLEMENTED.md` written 09-20 to close the missing-reply gap |
 | 09-17 | `ComponentTree.dc.html` (canvas page 7) | The branch tree: type evidence in words, agreement in the sort, absence in both columns, accept as the catalogue act | drawn; spec follows **Verdict subject** |
 | 09-17 | `REPLY-RETRACTION-WITHDRAWN.md` | Withdrawing §4; two kinds of correction under one word; the gaps-list seed | needs no build; its §4 question is answered by the spec above |
 | 09-16 | `RULING-WHAT-A-VERDICT-IS-ABOUT.md` + `VerdictSubject` | What a verdict is *about*; the three meanings of "perspective"; the withdrawal asymmetry | **ready to start — Verdict subject** |

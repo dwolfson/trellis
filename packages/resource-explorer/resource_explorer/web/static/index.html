@@ -4236,6 +4236,25 @@ function _archRow(c, slug, rowUid) {
       </div>`
     : '';
   const anchorId = (_archInteractiveMode && c.path) ? ` id="${_curateComponentAnchorId(c.path)}"` : '';
+  // Honesty clause (RULING-CLASSIC-AND-NEXT.md §3 — classic shows type/
+  // confidence, so it must not show them falsely when a different extractor
+  // is currently proposing this same path with a different reading).
+  // `c.proposals` (repo_survey_definition_adapter.py's
+  // _architecture_recovery_results) carries one entry per extractor
+  // CURRENTLY proposing this path; more than one means the type/confidence
+  // shown above came from only one of them. The primary shown is `latest`
+  // (max by surveyed_at) server-side, which this client-side clause
+  // approximates as the proposal with the newest `surveyed_at` — good
+  // enough to name the OTHER extractor(s), not to reproduce the pick.
+  // Deliberately not the full /next two-column display, which the ruling
+  // says may stay /next-only; naming who else proposed it is the one
+  // clause required for honesty.
+  const otherProposals = (c.proposals && c.proposals.length > 1)
+    ? c.proposals.slice().sort((a, b) => (b.surveyed_at || '').localeCompare(a.surveyed_at || '')).slice(1)
+    : [];
+  const alsoProposedHtml = otherProposals.length
+    ? `<div class="text-slate-500">also proposed by ${otherProposals.map(p => _esc(p.run_label || '(unlabeled)')).join(', ')} ›</div>`
+    : '';
   return `
         <div class="text-xs text-slate-300 mb-1"${anchorId}>
           <div class="flex justify-between gap-2">
@@ -4244,6 +4263,7 @@ function _archRow(c, slug, rowUid) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
+          ${alsoProposedHtml}
           ${evidenceHtml}
           ${blueprintLinksHtml}
           ${noScopeNote}
