@@ -88,7 +88,7 @@ function render() {
   const rows = questions.map((q) => {
     const st = statusOf(q.answering.kind);
     const life = LIFECYCLE[q.retired ? 'retired' : 'active'];
-    return `<tr class="border-b border-rule align-top hover:bg-paper-raised ${q.retired ? 'opacity-60' : ''}">
+    return `<tr class="border-b border-rule align-top hover:bg-paper-surface ${q.retired ? 'opacity-60' : ''}">
       <td class="whitespace-nowrap py-s2 pr-s3 text-caveat ${life.tone}" title="${esc(life.label)}">${life.icon}</td>
       <td class="max-w-[32ch] py-s2 pr-s3 text-caveat text-ink">${esc(q.question)}</td>
       <td class="whitespace-nowrap py-s2 pr-s3 text-provenance text-ink-muted" title="Funnel stage">${esc(q.stage)}</td>
@@ -114,7 +114,7 @@ function render() {
           hidden.</p>
       </div>
       <button type="button" data-add
-        class="whitespace-nowrap rounded-sm border border-accent px-s2 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">
+        class="whitespace-nowrap rounded-sm border border-accent px-s2 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">
         + Add question
       </button>
     </div>
@@ -244,7 +244,7 @@ async function openAddModal() {
         <p data-error class="text-caveat text-state-warn"></p>
         <div class="flex justify-end gap-s2 pt-s2">
           <button type="button" data-cancel class="rounded-sm border border-rule-strong px-s3 py-[3px] text-caveat text-ink-muted hover:text-ink">Cancel</button>
-          <button type="submit" class="rounded-sm border border-accent px-s3 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">Add question</button>
+          <button type="submit" class="rounded-sm border border-accent px-s3 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">Add question</button>
         </div>
       </form>
     </div>`;

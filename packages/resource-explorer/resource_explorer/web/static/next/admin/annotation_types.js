@@ -32,7 +32,7 @@ let _host = null;
 
 function listHtml() {
   const rows = (_types || []).map((a) => `
-    <tr data-select-type="${esc(a.type)}" class="cursor-pointer border-b border-rule hover:bg-paper-raised">
+    <tr data-select-type="${esc(a.type)}" class="cursor-pointer border-b border-rule hover:bg-paper-surface">
       <td class="py-s2 pr-s3 text-answer text-ink">${esc(a.display_name || a.type)}</td>
       <td class="py-s2 pr-s3 font-mono text-caveat text-accent-ink">${esc(a.type)}</td>
       <td class="max-w-[28ch] truncate py-s2 pr-s3 text-caveat text-ink-muted" title="${esc(a.description || '')}">${esc(a.description || '—')}</td>
@@ -47,7 +47,7 @@ function listHtml() {
           their mapping to Egeria framework properties.</p>
       </div>
       <button type="button" data-register
-        class="whitespace-nowrap rounded-sm border border-accent px-s2 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">
+        class="whitespace-nowrap rounded-sm border border-accent px-s2 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">
         + Register annotation type
       </button>
     </div>
@@ -77,11 +77,11 @@ function detailHtml(a) {
       </div>
       <div class="flex shrink-0 gap-s2">
         <button type="button" data-edit="${esc(a.type)}"
-          class="whitespace-nowrap rounded-sm border border-rule-strong px-s2 py-[3px] text-caveat text-ink hover:bg-paper-raised">
+          class="whitespace-nowrap rounded-sm border border-rule-strong px-s2 py-[3px] text-caveat text-ink hover:bg-paper-surface">
           ✏ Edit
         </button>
         <button type="button" data-delete="${esc(a.type)}"
-          class="whitespace-nowrap rounded-sm border border-state-warn px-s2 py-[3px] text-caveat text-state-warn hover:bg-paper-raised">
+          class="whitespace-nowrap rounded-sm border border-state-warn px-s2 py-[3px] text-caveat text-state-warn hover:bg-paper-surface">
           🗑 Delete
         </button>
       </div>
@@ -155,7 +155,7 @@ function openFormModal(existing /* null for register */) {
         <p data-error class="text-caveat text-state-warn"></p>
         <div class="flex justify-end gap-s2 pt-s2">
           <button type="button" data-cancel class="rounded-sm border border-rule-strong px-s3 py-[3px] text-caveat text-ink-muted hover:text-ink">Cancel</button>
-          <button type="submit" class="rounded-sm border border-accent px-s3 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">${isEdit ? 'Save changes' : 'Register'}</button>
+          <button type="submit" class="rounded-sm border border-accent px-s3 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">${isEdit ? 'Save changes' : 'Register'}</button>
         </div>
       </form>
     </div>`;

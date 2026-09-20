@@ -20,23 +20,25 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Five panes are real ports here — Logs, Feedback and Prefect are
- * read-only/bounded read+status-action surfaces; **Annotation Types and
- * Question Catalog gained real write UI on 2026-09-20**
+ * Six panes are real ports here — Logs, Feedback and Prefect are
+ * read-only/bounded read+status-action surfaces; Discovery Sources gained
+ * full CRUD + preview-then-apply refresh + preview-then-import run (see
+ * discovery_sources.js's own header and
+ * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md); **Annotation
+ * Types and Question Catalog gained real write UI on 2026-09-20**
  * (SPEC-ADMIN-THE-FOUR-GAPS.md §4 — "the two registries"): Annotation Types
  * now creates/edits/deletes against routes that already existed
  * (annotation_types.js), and Question Catalog gained a new, append-only
  * add/retire backend (question_catalog_writer.py) alongside its UI — see
  * that spec and ADMIN-REGISTRIES-IMPLEMENTED.md for what changed and why
- * editing a question's own text is refused rather than offered. Six are
- * DELIBERATE, NAMED deferrals: Groups,
- * Discovery Sources, Egeria Alignment, Egeria Links, Publish Queue and
- * Repair are all reconciliation/config-mutation surfaces whose classic
- * implementations run 200-1000+ lines each (bulk GitHub-org import and
- * drag-drop membership for Groups; multi-step guided repair flows for
- * Egeria Alignment/Links/Repair; retry semantics tied to outbox internals
- * for Publish Queue) — see DEFERRED_TABS below for the per-pane reason,
- * each linking out to classic via the shared `oldUiHref()` helper.
+ * editing a question's own text is refused rather than offered. Five are
+ * DELIBERATE, NAMED deferrals: Groups, Egeria Alignment, Egeria Links,
+ * Publish Queue and Repair are all reconciliation/config-mutation surfaces
+ * whose classic implementations run 200-1000+ lines each (bulk GitHub-org
+ * import and drag-drop membership for Groups; multi-step guided repair
+ * flows for Egeria Alignment/Links/Repair; retry semantics tied to outbox
+ * internals for Publish Queue) — see DEFERRED_TABS below for the per-pane
+ * reason, each linking out to classic via the shared `oldUiHref()` helper.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
@@ -44,6 +46,7 @@ import { renderQuestionCatalog } from '/static/next/admin/question_catalog.js';
 import { renderLogs } from '/static/next/admin/logs.js';
 import { renderFeedback } from '/static/next/admin/feedback.js';
 import { renderPrefect } from '/static/next/admin/prefect.js';
+import { renderDiscoverySources } from '/static/next/admin/discovery_sources.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -62,14 +65,7 @@ const GROUPS = [
         + 'import) that would each need their own design pass here rather than a '
         + 'straight port; see next/admin/index.js',
     } },
-    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', defer: {
-      does: 'Register, refresh and remove named discovery sources (e.g. a GitHub '
-        + 'org or search query RE re-scans on a cadence)',
-      why: 'create/refresh/delete each trigger a real scan against an external '
-        + 'source rather than only editing local config, and — like Groups — this '
-        + 'shares state with GitHub-org discovery, which is deferred above for the '
-        + 'same reason',
-    } },
+    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', render: renderDiscoverySources },
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
   ]},
   { name: 'Reconcile', tabs: [
