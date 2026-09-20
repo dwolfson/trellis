@@ -9,18 +9,25 @@ narrow publish path — does not catalog or trigger a native Egeria survey).
 
 A step tagged executes_at="egeria" is handled separately, via
 other_engine_handlers: it actively triggers Egeria's own native PostgreSQL
-survey (EgeriaDatabaseSurveyor.trigger_survey_by_guid) rather than being
-silently skipped — the Survey Definition's author explicitly declared this
-step should run in Egeria, so doing so on request is fulfilling that intent,
-not an unwanted side effect (unlike auto-cataloging, which publish_step_
-annotations deliberately avoids).
+survey (EgeriaDatabaseSurveyor.trigger_survey_by_guid), waits for it to reach
+a terminal status, and reads back its real result — rather than being
+silently skipped (unlike auto-cataloging, which publish_step_annotations
+deliberately avoids). See egeria_async_survey_result.py for the poll/resolve/
+convert machinery this shares with the filesystem adapter, and
+docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md for the
+report-attribution design.
 """
 from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
 
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _run_postgres_schema_and_stats(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
@@ -52,11 +59,27 @@ def _get_database_entity(registry, slug: str):
 
 def _trigger_egeria_native_survey(db_entity, registry, step, **_) -> dict:
     """Trigger Egeria's own native PostgreSQL database survey for a step tagged
-    executes_at="egeria". Requires the database to already be cataloged in
+    executes_at="egeria", then wait for it to reach a terminal status and read
+    back its real result. Requires the database to already be cataloged in
     Egeria (has a stored asset guid) — this does not catalog it as a side
-    effect. The native survey is async; this only returns the triggered engine
-    action's guid, not a completed result."""
+    effect.
+
+    Synchronous by necessity: the caller (survey_definition_executor's
+    other_engine_handlers dispatch) needs a real status/output to report, and
+    there is no cheaper way to get one than to poll. See
+    egeria_async_survey_result.poll_trigger_and_retrieve_annotations for the
+    poll-then-resolve-then-convert logic, shared with the filesystem adapter's
+    identical function below.
+
+    Raises on timeout (EgeriaEngineActionTimeoutError) or on an unresolvable
+    report attribution (SurveyReportAttributionError) — both propagate to the
+    executor's own per-step except clause, which reports them as a specific
+    error rather than a silent "triggered" success.
+    """
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    from resource_explorer.surveyors.egeria_async_survey_result import (
+        poll_trigger_and_retrieve_annotations,
+    )
 
     db_guid = db_entity.egeria_asset_guid
     if not db_guid:
@@ -65,8 +88,20 @@ def _trigger_egeria_native_survey(db_entity, registry, step, **_) -> dict:
             "cannot trigger Egeria's native survey for an uncataloged database."
         )
     surveyor = EgeriaDatabaseSurveyor()
+    triggered_at = datetime.now(timezone.utc)
     engine_action_guid = surveyor.trigger_survey_by_guid(db_guid)
-    return {"engine_action_guid": engine_action_guid}
+    log.info(
+        "Triggered Egeria native survey for database %r: engine_action_guid=%s",
+        db_entity.slug, engine_action_guid,
+    )
+    result = poll_trigger_and_retrieve_annotations(
+        surveyor=surveyor,
+        engine_action_guid=engine_action_guid,
+        resource_guid=db_guid,
+        triggered_at=triggered_at,
+        analysis_step=step.re_analysis_step,
+    )
+    return {"status": "ok", **result}
 
 
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:

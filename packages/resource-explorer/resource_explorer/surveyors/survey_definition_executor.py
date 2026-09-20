@@ -529,11 +529,38 @@ class SurveyDefinitionExecutor:
                 handler = adapter.other_engine_handlers[step.executes_at]
                 try:
                     outcome = handler(entity, self.registry, step, **runner_kwargs)
+                    # Handlers that only trigger-and-forget (no waiting, e.g. an
+                    # engine with no synchronous result to read back yet) return
+                    # a dict with no "status" key, which keeps the historic
+                    # "triggered" wording rather than implying completion.
+                    # Handlers that wait for a real terminal result (e.g.
+                    # database/filesystem's _trigger_egeria_native_survey, which
+                    # polls to completion and reads back real annotations via
+                    # egeria_async_survey_result.py) set status="ok" themselves —
+                    # reported here as-is instead of overwritten, so a genuinely
+                    # completed step is never misreported as merely "triggered".
+                    if isinstance(outcome, dict):
+                        _stamp_definition_provenance(outcome)
+                        step_outputs.append(outcome)
+                    status = outcome.get("status", "triggered") if isinstance(outcome, dict) else "triggered"
+                    # `detail` feeds a json.dumps() call below (the activity-log
+                    # summary), so it must stay JSON-safe — outcome's own
+                    # "annotations" key (when present) carries real Annotation
+                    # dataclass instances, not plain dicts, so it is summarized
+                    # as a count here rather than embedded whole. The instances
+                    # themselves still flow to publish() via step_outputs above.
+                    detail = None
+                    if isinstance(outcome, dict):
+                        detail = {k: v for k, v in outcome.items() if k != "annotations"}
+                        if "annotations" in outcome:
+                            detail["annotation_count"] = len(outcome["annotations"] or [])
                     steps_report.append({
                         "step": step.qualified_name,
-                        "status": "triggered",
-                        **({"detail": outcome} if isinstance(outcome, dict) else {}),
+                        "status": status,
+                        **({"detail": detail} if detail is not None else {}),
                     })
+                    if isinstance(outcome, dict):
+                        produced_guard[_step_key(step)] = outcome.get("guard")
                 except Exception as exc:
                     msg = f"Failed to trigger {step.executes_at} for step '{step.qualified_name}': {exc}"
                     log.exception(msg)
