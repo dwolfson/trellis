@@ -20,17 +20,20 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Five panes are real, read-mostly ports here — Annotation Types (browse),
- * Question Catalog (browse), Logs, Feedback and Prefect — because each is
- * either read-only against an already-existing route or a bounded read
- * +status-action surface. Six are DELIBERATE, NAMED deferrals: Groups,
- * Discovery Sources, Egeria Alignment, Egeria Links, Publish Queue and
- * Repair are all reconciliation/config-mutation surfaces whose classic
- * implementations run 200-1000+ lines each (bulk GitHub-org import and
- * drag-drop membership for Groups; multi-step guided repair flows for
- * Egeria Alignment/Links/Repair; retry semantics tied to outbox internals
- * for Publish Queue) — see DEFERRED_TABS below for the per-pane reason,
- * each linking out to classic via the shared `oldUiHref()` helper.
+ * Six panes are real ports here — Annotation Types (browse), Question
+ * Catalog (browse), Logs, Feedback, Prefect, and Groups (create/delete/
+ * assign/suggestions, SPEC-ADMIN-THE-FOUR-GAPS.md §2 — see
+ * next/admin/groups.js and GROUPS-ADMIN-IMPLEMENTED.md) — each either
+ * read-only, a bounded read+status-action surface, or (Groups) a full port
+ * of an already-existing, already-working set of routes. Five are
+ * DELIBERATE, NAMED deferrals: Discovery Sources, Egeria Alignment, Egeria
+ * Links, Publish Queue and Repair are all reconciliation/config-mutation
+ * surfaces whose classic implementations run 200-1000+ lines each
+ * (bulk GitHub-org import for Discovery Sources; multi-step guided repair
+ * flows for Egeria Alignment/Links/Repair; retry semantics tied to outbox
+ * internals for Publish Queue) — see each tab's own `defer` block below for
+ * the per-pane reason, linking out to classic via the shared `oldUiHref()`
+ * helper.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
@@ -38,6 +41,7 @@ import { renderQuestionCatalog } from '/static/next/admin/question_catalog.js';
 import { renderLogs } from '/static/next/admin/logs.js';
 import { renderFeedback } from '/static/next/admin/feedback.js';
 import { renderPrefect } from '/static/next/admin/prefect.js';
+import { renderGroups } from '/static/next/admin/groups.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -48,14 +52,7 @@ const PANEL_ID = 'admin-panel';
 const GROUPS = [
   { name: 'Configure', tabs: [
     { id: 'annotations', label: '📝 Annotation Types', render: renderAnnotationTypes },
-    { id: 'admin-groups', label: '🗂 Groups', defer: {
-      does: 'Create/rename/delete resource Groups, assign members by drag-and-drop, '
-        + 'and bulk-register a whole GitHub org into the catalog',
-      why: "classic's Groups pane is ~900 lines and covers three separable jobs "
-        + '(group CRUD, per-repo group assignment, and org-wide GitHub discovery/'
-        + 'import) that would each need their own design pass here rather than a '
-        + 'straight port; see next/admin/index.js',
-    } },
+    { id: 'admin-groups', label: '🗂 Groups', render: renderGroups },
     { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', defer: {
       does: 'Register, refresh and remove named discovery sources (e.g. a GitHub '
         + 'org or search query RE re-scans on a cadence)',
