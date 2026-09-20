@@ -62,7 +62,7 @@ function render() {
 
   const rows = questions.map((q) => {
     const st = statusOf(q.answering.kind);
-    return `<tr class="border-b border-rule align-top hover:bg-paper-raised">
+    return `<tr class="border-b border-rule align-top hover:bg-paper-surface">
       <td class="max-w-[36ch] py-s2 pr-s3 text-caveat text-ink">${esc(q.question)}</td>
       <td class="whitespace-nowrap py-s2 pr-s3 text-provenance text-ink-muted" title="Funnel stage">${esc(q.stage)}</td>
       <td class="py-s2 pr-s3 text-provenance text-ink-muted">${(q.perspectives || []).map((p) => esc(p)).join(' · ') || '—'}</td>
