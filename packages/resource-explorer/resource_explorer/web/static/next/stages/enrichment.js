@@ -170,6 +170,21 @@ export async function renderEnrichment(slug) {
     state.enrichmentFacts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
   } catch { state.enrichmentFacts = {}; }
   if (slug !== state.selectedSlug) return;
+  renderEnrichmentForm(slug);
+}
+
+/** Re-render the form in place from already-fetched `state.enrichmentFacts`
+ *  — no evidence re-fetch, no "Reading the evidence…" wipe. A save changes
+ *  one field's value, not the survey evidence behind it, so re-running the
+ *  full fetch-then-blank-then-rebuild `renderEnrichment` after every save
+ *  was flashing the *entire* form to a loading placeholder and back for the
+ *  ~2s the fetch took — every field, not just the one just saved. Call this
+ *  from the save handlers below instead; `renderEnrichment` (the fetching
+ *  one) stays for the initial pane load, where there is nothing on screen
+ *  yet to flicker. */
+function renderEnrichmentForm(slug) {
+  const host = $('enrichment-form');
+  if (!host) return;
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
@@ -203,7 +218,7 @@ export async function renderEnrichment(slug) {
         source: kind === 'observation' ? 'user' : '',
       });
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
-      renderEnrichment(slug);
+      renderEnrichmentForm(slug);
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not saved: ${err.message}`;
@@ -216,7 +231,7 @@ export async function renderEnrichment(slug) {
         value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
       });
       state.enrichment = { ...(state.enrichment || {}), owner: out.field };
-      renderEnrichment(slug);
+      renderEnrichmentForm(slug);
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
@@ -229,7 +244,7 @@ export async function renderEnrichment(slug) {
         value: b.dataset.value, kind: 'observation', source: b.dataset.source,
       });
       state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
-      renderEnrichment(slug);
+      renderEnrichmentForm(slug);
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not confirmed: ${err.message}`;
