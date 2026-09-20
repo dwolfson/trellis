@@ -8257,6 +8257,12 @@ async function loadSurveyDefinitionsPanel() {
 function _surveyDefEngineBadge(executesAt) {
   if (executesAt === 'resource-explorer') return '<span class="analysis-tag tag-egeria">🏠 Runs in Resource Explorer</span>';
   if (executesAt === 'egeria')            return '<span class="analysis-tag tag-egeria">☁ Runs in Egeria</span>';
+  if (executesAt === 'prefect')           return '<span class="analysis-tag tag-egeria">⚡ Runs via Prefect</span>';
+  // egeria-adaptive is being added concurrently (branch re/egeria-adaptive) —
+  // named explicitly here for a clearer label/icon than the generic fallback
+  // below would give it, but the fallback already covers it (and any other
+  // future executes_at value) if this lands before that value exists.
+  if (executesAt === 'egeria-adaptive')   return '<span class="analysis-tag tag-egeria">🔄 Runs in Egeria (adaptive)</span>';
   return `<span class="analysis-tag">⚙ Runs in ${_esc(executesAt)}</span>`;
 }
 
@@ -9035,12 +9041,29 @@ async function submitSurveyDefinitionRun() {
       // slate-500 "nothing to see here" treatment.
       not_executed_no_egeria_handler: 'text-red-400', unrecognized_engine: 'text-amber-400',
     };
+    // steps_report entries don't consistently carry their own engine — only
+    // the Prefect path sets s.engine today (survey_definition_executor.py).
+    // The Survey Definition's own step list (candidate.steps, already
+    // fetched for this modal) declares executes_at per step by
+    // qualified_name, which is what steps_report's "step" field is — use
+    // that as the fallback so every step gets a badge, not just Prefect's.
+    const stepsExecutesAtByQn = Object.fromEntries(
+      (candidate.steps || []).map(st => [st.qualified_name, st.executes_at]));
     const stepsHtml = (data.steps || []).map(s => {
       const color = _statusColor[s.status] || 'text-red-400';
       const actionGuid = s.detail && s.detail.engine_action_guid
         ? `<div class="text-slate-600 pl-3">Egeria engine action: ${_esc(s.detail.engine_action_guid)} (async — check Egeria's Asset Catalog for results)</div>`
         : '';
-      return `<div>${_esc(s.step)}: <span class="${color}">${_esc(s.status)}</span></div>${actionGuid}`;
+      const engineForBadge = s.engine || stepsExecutesAtByQn[s.step] || '';
+      const engineBadge = engineForBadge ? ` ${_surveyDefEngineBadge(engineForBadge)}` : '';
+      // egeria-adaptive's planned provenance sub-field (which engine/path
+      // actually produced this step's result — egeria / egeria-custom /
+      // custom / error) — surfaced as secondary text if a concurrent change
+      // has already added it to this step's detail; harmless no-op until then.
+      const sourceNote = (s.detail && s.detail.source)
+        ? `<span class="text-slate-600 text-xs" title="Provenance"> (${_esc(s.detail.source)})</span>`
+        : '';
+      return `<div>${_esc(s.step)}: <span class="${color}">${_esc(s.status)}</span>${engineBadge}${sourceNote}</div>${actionGuid}`;
     }).join('');
     const guidHtml = data.egeria_report_guid ? `<div class="mt-1 text-slate-500">Report GUID: ${_esc(data.egeria_report_guid)}${
       data.egeria_portal_report_url
