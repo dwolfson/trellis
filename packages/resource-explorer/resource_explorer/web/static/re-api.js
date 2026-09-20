@@ -292,6 +292,63 @@ export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
   post(`/api/projects/${encodeURIComponent(slug)}/group`,
        { resource_type: resourceType, group_slug: groupSlug });
 
+/* ── Discovery sources ───────────────────────────────────────────────────
+ *
+ * Named, reusable "where do we scout" configs (routes/discovery.py). Two
+ * shapes share one create/list/delete surface: `source_type: 'search'`
+ * (saved GitHub search filters) and `'list'` (a curated URL list, optionally
+ * bound to a `fetch_kind` auto-fetcher like a foundation's landscape.yml).
+ *
+ * `run` is READ-ONLY — it returns candidate repos for review, exactly like
+ * a live search, and imports NOTHING on its own (checked against the route:
+ * web/routes/discovery.py's run_discovery_source calls the same search/
+ * list-enrichment helpers as /search and returns DiscoveredRepo rows).
+ * Turning those candidates into registered projects is the separate
+ * `importDiscoveredRepos` call below — the admin UI must show the run's
+ * results and let a person choose what (and where) to import rather than
+ * treating "run" as if it already wrote anything.
+ *
+ * `previewSourceRefresh`/`applySourceRefresh` split the same way, but the
+ * server enforces it: refresh (GET-shaped POST) never persists, and apply
+ * re-fetches rather than trusting a client-held diff, so the applied state
+ * always matches a fetch that just happened.
+ */
+export const listDiscoverySources = () => get('/api/discovery/sources');
+
+export const createDiscoverySource = (slug, displayName, sourceType, config) =>
+  post('/api/discovery/sources', { slug, display_name: displayName, source_type: sourceType, config });
+
+export const deleteDiscoverySource = (slug) =>
+  request(`/api/discovery/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+export const runDiscoverySource = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/run`);
+
+export const previewSourceRefresh = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh`);
+
+export const applySourceRefresh = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`);
+
+/** A live, unsaved GitHub search — used both by a plain preview and by the
+ *  "save this search as a source" flow, so what you saved is provably what
+ *  you saw. */
+export const searchDiscoveryRepos = (filters) => post('/api/discovery/search', filters);
+
+export const listQuickListSources = () => cached('discovery-quick-list-sources', () => get('/api/discovery/quick-list-sources'));
+
+/** Queues a background import of the given DiscoveredRepo-shaped candidates.
+ *  Returns immediately (`{queued, skipped}`); progress lands in the activity
+ *  log, not in this response. */
+export const importDiscoveredRepos = (repos, { groupSlug = '', sourceLabel = 'search' } = {}) =>
+  post('/api/discovery/import', {
+    repos: repos.map((r) => ({
+      github_url: r.html_url, display_name: r.full_name, description: r.description || '',
+    })),
+    group_slug: groupSlug,
+    source_label: sourceLabel,
+  });
+
 /* ── Investigations ──────────────────────────────────────────────────── */
 
 export const listInvestigationMembers = (slug) =>

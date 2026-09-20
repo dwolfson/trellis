@@ -20,17 +20,19 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Six panes are real ports here — Annotation Types (browse), Question
- * Catalog (browse), Logs, Feedback, Prefect, and Groups (create/delete/
- * assign/suggestions, SPEC-ADMIN-THE-FOUR-GAPS.md §2 — see
- * next/admin/groups.js and GROUPS-ADMIN-IMPLEMENTED.md) — each either
- * read-only, a bounded read+status-action surface, or (Groups) a full port
- * of an already-existing, already-working set of routes. Five are
- * DELIBERATE, NAMED deferrals: Discovery Sources, Egeria Alignment, Egeria
- * Links, Publish Queue and Repair are all reconciliation/config-mutation
- * surfaces whose classic implementations run 200-1000+ lines each
- * (bulk GitHub-org import for Discovery Sources; multi-step guided repair
- * flows for Egeria Alignment/Links/Repair; retry semantics tied to outbox
+ * Seven panes are real ports here — Annotation Types (browse), Question
+ * Catalog (browse), Logs, Feedback, Prefect, Groups (create/delete/assign/
+ * suggestions, SPEC-ADMIN-THE-FOUR-GAPS.md §2 — see next/admin/groups.js and
+ * GROUPS-ADMIN-IMPLEMENTED.md), and Discovery Sources (full CRUD +
+ * preview-then-apply refresh + preview-then-import run — see
+ * discovery_sources.js's own header and
+ * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md) — each either
+ * read-only, a bounded read+status-action surface, or a full port of an
+ * already-existing, already-working set of routes. Four remain DELIBERATE,
+ * NAMED deferrals: Egeria Alignment, Egeria Links, Publish Queue and Repair
+ * are all reconciliation/config-mutation surfaces whose classic
+ * implementations run 200-1000+ lines each (multi-step guided repair flows
+ * for Egeria Alignment/Links/Repair; retry semantics tied to outbox
  * internals for Publish Queue) — see each tab's own `defer` block below for
  * the per-pane reason, linking out to classic via the shared `oldUiHref()`
  * helper.
@@ -42,6 +44,7 @@ import { renderLogs } from '/static/next/admin/logs.js';
 import { renderFeedback } from '/static/next/admin/feedback.js';
 import { renderPrefect } from '/static/next/admin/prefect.js';
 import { renderGroups } from '/static/next/admin/groups.js';
+import { renderDiscoverySources } from '/static/next/admin/discovery_sources.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -53,14 +56,7 @@ const GROUPS = [
   { name: 'Configure', tabs: [
     { id: 'annotations', label: '📝 Annotation Types', render: renderAnnotationTypes },
     { id: 'admin-groups', label: '🗂 Groups', render: renderGroups },
-    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', defer: {
-      does: 'Register, refresh and remove named discovery sources (e.g. a GitHub '
-        + 'org or search query RE re-scans on a cadence)',
-      why: 'create/refresh/delete each trigger a real scan against an external '
-        + 'source rather than only editing local config, and — like Groups — this '
-        + 'shares state with GitHub-org discovery, which is deferred above for the '
-        + 'same reason',
-    } },
+    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', render: renderDiscoverySources },
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
   ]},
   { name: 'Reconcile', tabs: [
