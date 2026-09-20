@@ -103,6 +103,12 @@ KNOWN_PURPOSES = [
 NON_PERSPECTIVE_COLUMNS = (
     "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
     "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History",
+    # "Status" (added 2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4) carries the
+    # append-only catalog's retirement marker ("Retired", or empty for
+    # active) — see question_catalog_writer.py. Must stay in this list for
+    # the same by-elimination reason as its neighbors: any column missing
+    # here silently becomes a phantom Perspective on every question.
+    "Status",
 )
 
 _CHECK_REGISTRY_PATH = (
@@ -262,6 +268,7 @@ def generate(rows: list[dict]) -> str:
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
             "rationale": (row.get("Rationale/Source") or "").strip(),
             "catalog_history": (row.get("Catalog History") or "").strip(),
+            "retired": (row.get("Status") or "").strip().lower() == "retired",
         })
 
     header = (
@@ -327,7 +334,13 @@ def generate(rows: list[dict]) -> str:
         "#                   generator could not parse. Past tense, for whoever\n"
         "#                   maintains the catalog; split out of Rationale/Source on\n"
         "#                   2026-09-11 so the limit and the changelog stop sharing\n"
-        "#                   one sentence and one colour on screen.\n\n"
+        "#                   one sentence and one colour on screen.\n"
+        "#   retired     - true if the CSV's Status column reads \"Retired\" (added\n"
+        "#                   2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4, alongside\n"
+        "#                   question_catalog_writer.py's add/retire write path).\n"
+        "#                   The catalog is append-only: a retired question is never\n"
+        "#                   removed or reworded, only flagged, since a past survey\n"
+        "#                   answer still refers to it exactly as it was asked.\n\n"
     )
     body = yaml.safe_dump({"repo_questions": entries}, sort_keys=False, allow_unicode=True, width=100)
     return header + body

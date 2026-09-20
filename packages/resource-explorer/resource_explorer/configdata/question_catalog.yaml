@@ -61,6 +61,12 @@
 #                   maintains the catalog; split out of Rationale/Source on
 #                   2026-09-11 so the limit and the changelog stop sharing
 #                   one sentence and one colour on screen.
+#   retired     - true if the CSV's Status column reads "Retired" (added
+#                   2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4, alongside
+#                   question_catalog_writer.py's add/retire write path).
+#                   The catalog is append-only: a retired question is never
+#                   removed or reworded, only flagged, since a past survey
+#                   answer still refers to it exactly as it was asked.
 
 repo_questions:
 - question: Is this repository actively maintained?
@@ -84,6 +90,7 @@ repo_questions:
   rationale: Recency/frequency signal — last-pushed date, commit cadence — answerable from GitHub API
     metadata alone (RE's HealthSurveyor), no zipball needed.
   catalog_history: ''
+  retired: false
 - question: What does this repository do?
   stage: Scouting
   perspectives:
@@ -102,6 +109,7 @@ repo_questions:
   answering_mechanism: Direct Field
   rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
   catalog_history: ''
+  retired: false
 - question: Who maintains this repository?
   stage: Scouting
   perspectives:
@@ -122,6 +130,7 @@ repo_questions:
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
   catalog_history: ''
+  retired: false
 - question: How widely adopted and active is the community around this repository?
   stage: Scouting
   perspectives:
@@ -144,6 +153,7 @@ repo_questions:
     names the weakest rather than averaging, so 'popular but unsupported' stays visible instead of averaging
     out.
   catalog_history: ''
+  retired: false
 - question: Has this repository already been catalogued in Egeria and when?
   stage: Discovery
   perspectives:
@@ -163,6 +173,7 @@ repo_questions:
     whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
     data" search work.'
   catalog_history: ''
+  retired: false
 - question: Are there outstanding CVEs?
   stage: Analysis
   perspectives:
@@ -183,6 +194,7 @@ repo_questions:
   rationale: Covers advisories against DECLARED dependencies only, queried from OSV.dev, with coverage
     reported as prominently as the count — so a zero is 'none found in what we can see', not 'none exist'.
   catalog_history: Closed 2026-08-26 by cve_scan, reading the dependencies manifest_parse recorded.
+  retired: false
 - question: Is there any existing use within our organization?
   stage: Discovery
   perspectives:
@@ -206,6 +218,7 @@ repo_questions:
   rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
     — no external API needed.
   catalog_history: ''
+  retired: false
 - question: Any known feedback?
   stage: Discovery
   perspectives:
@@ -227,6 +240,7 @@ repo_questions:
   answering_mechanism: Local Registry Query + Egeria Queries
   rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
   catalog_history: ''
+  retired: false
 - question: Does it replace or extend something we already have?
   stage: Discovery
   perspectives:
@@ -243,6 +257,7 @@ repo_questions:
   answering_mechanism: Local Registry Query + RAG Queries
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
+  retired: false
 - question: What are similar repos/projects? How does this differ?
   stage: Analysis
   perspectives:
@@ -259,6 +274,7 @@ repo_questions:
   answering_mechanism: Agent-Based Analysis
   rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
   catalog_history: ''
+  retired: false
 - question: Are there any restrictions for use?
   stage: Analysis
   perspectives:
@@ -280,6 +296,7 @@ repo_questions:
   rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
     is Assessment-tier (see the license-specifics row below).
   catalog_history: ''
+  retired: false
 - question: What dependencies does this require?
   stage: Analysis
   perspectives:
@@ -300,6 +317,7 @@ repo_questions:
   answering_mechanism: Code Analysis
   rationale: The declared dependency list, per ecosystem, from the manifests present.
   catalog_history: Answered by DependencySurveyor (Analysis tier).
+  retired: false
 - question: Do we already support these dependencies?
   stage: Analysis/Enrichment
   perspectives:
@@ -327,6 +345,7 @@ repo_questions:
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-12: answering
     became MIXED — dependency_support added as the machine starting point (project owner: ''A now, shaped
     to seed B''); the human corroboration stays.'
+  retired: false
 - question: What deployment styles does this support?
   stage: Analysis
   perspectives:
@@ -349,6 +368,7 @@ repo_questions:
     actually say is not read.
   catalog_history: Presence became a cheap Discovery-tier signal through repo_conventions' deployment_docker
     check; a content read of Dockerfiles and deployment docs remains a RAG-tier gap.
+  retired: false
 - question: Do we know what the cost to run it is?
   stage: Analysis/Enrichment
   perspectives:
@@ -367,6 +387,7 @@ repo_questions:
   catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person.'
+  retired: false
 - question: Is there a validation / deployment test for it?
   stage: Analysis
   perspectives:
@@ -392,6 +413,7 @@ repo_questions:
     test is not detected.
   catalog_history: ci_quality replaced a CI-config-presence check with one that reads whether workflows
     run tests; repo_conventions' deployment_docker added the deployment-evidence signal.
+  retired: false
 - question: What is the upgrade process?
   stage: Analysis
   perspectives:
@@ -410,6 +432,7 @@ repo_questions:
   answering_mechanism: RAG Queries
   rationale: Needs content read (CHANGELOG, release notes) — RAG-tier, real gap.
   catalog_history: ''
+  retired: false
 - question: Does it fit into our monitoring infrastructure?
   stage: Analysis/Enrichment
   perspectives:
@@ -429,6 +452,7 @@ repo_questions:
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
   catalog_history: ''
+  retired: false
 - question: Does it fit into our security infrastructure?
   stage: Analysis/Enrichment
   perspectives:
@@ -453,6 +477,7 @@ repo_questions:
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
   catalog_history: ''
+  retired: false
 - question: Is there any reliability or availability aspects?
   stage: Analysis
   perspectives:
@@ -472,6 +497,7 @@ repo_questions:
   rationale: Trend/uptime signal, if available — Understanding-tier chart, or Analysis if content-derived
     (SLA docs).
   catalog_history: ''
+  retired: false
 - question: What kinds of integrations does it support?
   stage: Analysis
   perspectives:
@@ -496,6 +522,7 @@ repo_questions:
     it integrates with is not read.
   catalog_history: interface_surface answers the structural half; the content read for named systems has
     no surveyor.
+  retired: false
 - question: Does this fit within or need to extend our existing infrastructure estate?
   stage: Analysis/Enrichment
   perspectives:
@@ -514,6 +541,7 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org-internal cross-reference — human-supplied.
   catalog_history: ''
+  retired: false
 - question: How mature is it?
   stage: Assessment
   perspectives:
@@ -537,6 +565,7 @@ repo_questions:
     CHAOSS-informed (the maturity analysis) — a more direct answer than the age/release-cadence trend
     chart alone, which remains a secondary Understanding-tier view of the same underlying signal.
   catalog_history: ''
+  retired: false
 - question: Do we have the skills to support its use?
   stage: Analysis/Enrichment
   perspectives:
@@ -554,6 +583,7 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
   catalog_history: ''
+  retired: false
 - question: How well documented is it?
   stage: Analysis
   perspectives:
@@ -582,6 +612,7 @@ repo_questions:
     density — README count, a docs folder, .md/.txt count.
   catalog_history: documentation_coverage checks the root; repo_conventions' doc_breadth added the tree-wide
     density signal the root-only check missed.
+  retired: false
 - question: How is it supported?
   stage: Analysis
   perspectives:
@@ -606,6 +637,7 @@ repo_questions:
   rationale: Combines community responsiveness, documentation quality and any formal support documents.
   catalog_history: 'Mixed across tiers: responsiveness from Scouting, documentation from Assessment, support
     docs from Analysis/RAG.'
+  retired: false
 - question: Is there a current, published, security analysis?
   stage: Analysis
   perspectives:
@@ -635,6 +667,7 @@ repo_questions:
   catalog_history: The GAP note named OpenSSF Scorecard and CHAOSS as candidate tooling; both landed 2026-08-26
     as foss_scorecard and chaoss_metrics, and cii_badge reads the published badge. The question stays
     MIXED rather than answered.
+  retired: false
 - question: Does it fit into our governance frameworks?
   stage: Analysis/Enrichment
   perspectives:
@@ -654,6 +687,7 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
   catalog_history: ''
+  retired: false
 - question: What explicit license does the repository use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
@@ -678,6 +712,7 @@ repo_questions:
     LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
     5962) is the standard schema this conforms to.'
   catalog_history: ''
+  retired: false
 - question: Is intellectual property (IP) provenance managed via CLA or DCO?
   stage: Analysis
   perspectives:
@@ -699,6 +734,7 @@ repo_questions:
   rationale: Reports which mechanism is in use — DCO sign-off in commit trailers, a CLA bot configuration,
     or a CONTRIBUTING.md statement — rather than a yes/no.
   catalog_history: contribution_provenance shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
   stage: Analysis
   perspectives:
@@ -720,6 +756,7 @@ repo_questions:
     checks whether each match is disclosed in the repo's own docs. An undisclosed match is the finding,
     not the presence of telemetry.
   catalog_history: telemetry_scan shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
   stage: Analysis
   perspectives:
@@ -738,6 +775,7 @@ repo_questions:
   answering_mechanism: Gap
   rationale: Needs model-card/dataset-file detection — real gap, AI Governance tooling category.
   catalog_history: ''
+  retired: false
 - question: How does the repository handle secrets, credentials, and sensitive configurations?
   stage: Analysis
   perspectives:
@@ -758,6 +796,7 @@ repo_questions:
     and commit. Never claims 'no secrets' — only 'no matches against this ruleset, in this snapshot' —
     and says nothing about git history, where a removed secret still lives.
   catalog_history: secret_scan shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: Does the repository publish a clear process for reporting security vulnerabilities?
   stage: Analysis
   perspectives:
@@ -778,6 +817,7 @@ repo_questions:
     — which is reported separately.
   catalog_history: The row once read 'repo_conventions - RAG read?', which the generator could not parse
     into a kind, so the question was unanswerable despite being correctly wired.
+  retired: false
 - question: Does the repository have automated build tooling in place?
   stage: Analysis
   perspectives:
@@ -799,6 +839,7 @@ repo_questions:
     and gates.
   catalog_history: 'Same parser problem as the vulnerability-reporting row: a trailing ''- RAG read?''
     left the kind unknown and the question unanswerable.'
+  retired: false
 - question: Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
   stage: Assessment
   perspectives:
@@ -818,6 +859,7 @@ repo_questions:
   rationale: repo_conventions detects catalog-info.yaml and equivalent self-description files. Same parser
     problem — the row was wired correctly and phrased in a way the generator read as unknown.
   catalog_history: ''
+  retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
   perspectives:
@@ -836,6 +878,7 @@ repo_questions:
   rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
     findings/metrics history already surfaced by the resource's own analysis cards.
   catalog_history: ''
+  retired: false
 - question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
   stage: Discovery
   perspectives:
@@ -854,6 +897,7 @@ repo_questions:
   rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
     candidates list surfaces exactly this per-step breakdown before committing to run one.
   catalog_history: ''
+  retired: false
 - question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
   stage: Discovery
   perspectives:
@@ -873,6 +917,7 @@ repo_questions:
   rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
     repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
   catalog_history: ''
+  retired: false
 - question: How much has changed since the last time this was surveyed — is it worth re-running now?
   stage: Automate
   perspectives:
@@ -890,6 +935,7 @@ repo_questions:
     once a schedule exists for the analysis — real today, but only reachable once that subscription is
     set up.
   catalog_history: ''
+  retired: false
 - question: Is there a Survey Definition authored for this resource's technology type at all, or is that
     a catalog gap?
   stage: Discovery
@@ -908,6 +954,7 @@ repo_questions:
   rationale: Direct field — the candidates list itself; an empty result for a technology type with real
     registered resources is the signal.
   catalog_history: ''
+  retired: false
 - question: What kind of thing is this repository — a library, an application, a tool, or samples?
   stage: Discovery
   perspectives:
@@ -927,6 +974,7 @@ repo_questions:
   rationale: repo_classification exists and nothing asked for it. It also decides whether architecture
     recovery is worth running, so it gates later tiers.
   catalog_history: ''
+  retired: false
 - question: What components exist in this repository, and what kind is each?
   stage: Discovery
   perspectives:
@@ -950,6 +998,7 @@ repo_questions:
     referenced any of them. The doc lens specifically compares documented architecture against recovered
     architecture.
   catalog_history: ''
+  retired: false
 - question: How do its components relate to each other?
   stage: Discovery
   perspectives:
@@ -973,6 +1022,7 @@ repo_questions:
     is the Mermaid diagram + caption rendered from architecture_recovery/architecture_summary at survey
     time -- previously computed and persisted, never read back by anything.'
   catalog_history: ''
+  retired: false
 - question: What languages and file types make up this repository?
   stage: Scouting
   perspectives:
@@ -993,6 +1043,7 @@ repo_questions:
     docstrings across the source files; no fetch beyond the inventory Scouting already holds.
   catalog_history: language_file_classification is one of the oldest analyses here and no question referenced
     it until this row was added.
+  retired: false
 - question: What data files does it ship, and what shape are they?
   stage: Analysis
   perspectives:
@@ -1011,6 +1062,7 @@ repo_questions:
   answering_mechanism: Code Analysis
   rationale: An inventory and shape profile of the data files shipped in the repository.
   catalog_history: data_file_profiling existed before any question referenced it.
+  retired: false
 - question: What APIs and code symbols does it expose to callers?
   stage: Analysis
   perspectives:
@@ -1033,6 +1085,7 @@ repo_questions:
   rationale: Covers the extracted code symbols and the interfaces implied by dependencies; a published
     contract is detected only where a specification file exists.
   catalog_history: api_structure and interface_surface both existed before any question referenced them.
+  retired: false
 - question: How does it score against OpenSSF Scorecard-style criteria?
   stage: Assessment
   perspectives:
@@ -1054,6 +1107,7 @@ repo_questions:
     upstream OpenSSF tool's own run, and a check it cannot evaluate is reported as not-established rather
     than as a failure.
   catalog_history: ''
+  retired: false
 - question: Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment
     behind it?
   stage: Assessment
@@ -1076,6 +1130,7 @@ repo_questions:
   rationale: cii_badge reads the real badge from bestpractices.dev rather than estimating one, and reports
     level together with the age of the self-assessment. No question referenced it.
   catalog_history: ''
+  retired: false
 - question: How concentrated is authorship — would the project survive losing its top contributors?
   stage: Assessment
   perspectives:
@@ -1095,6 +1150,7 @@ repo_questions:
   rationale: chaoss_metrics reports the elephant factor and related CHAOSS metrics on their own terms,
     never averaged into a score. No question referenced it.
   catalog_history: ''
+  retired: false
 - question: How much code is there? How complex?
   stage: Assessment
   perspectives:
@@ -1123,6 +1179,7 @@ repo_questions:
     never compute it, so they are excluded and named rather than averaged in (0.32 vs 2.69 on milvus).
     A repo with no census reports no line counts rather than zero: not counted is not the same as no code.'
   catalog_history: ''
+  retired: false
 - question: What are the public interfaces?
   stage: Discovery
   perspectives:
@@ -1149,3 +1206,4 @@ repo_questions:
     the Analysis-stage question ''What APIs and code symbols does it expose to callers?'' (api_structure
     + interface_surface).'
   catalog_history: ''
+  retired: false

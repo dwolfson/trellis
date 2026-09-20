@@ -20,24 +20,29 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Nine panes are real ports here — Annotation Types (browse), Question
- * Catalog (browse), Logs, Feedback, Prefect, Groups (create/delete/assign/
- * suggestions, SPEC-ADMIN-THE-FOUR-GAPS.md §2 — see next/admin/groups.js and
- * GROUPS-ADMIN-IMPLEMENTED.md), Discovery Sources (full CRUD +
- * preview-then-apply refresh + preview-then-import run — see
- * discovery_sources.js's own header and
- * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md), and (2026-09-20,
- * SPEC-ADMIN-THE-FOUR-GAPS.md §1) Egeria Alignment and Repair, built as TWO
- * separate panes because classic has them as two separate screens doing
- * different jobs — see admin/resync.js and admin/repair.js's own header
- * comments for why folding them together would be wrong. Two remain
- * DELIBERATE, NAMED deferrals: Egeria Links and Publish Queue are
+ * Nine panes are real ports here — Logs, Feedback and Prefect are
+ * read-only/bounded read+status-action surfaces; Groups gained
+ * create/delete/assign/suggestions (SPEC-ADMIN-THE-FOUR-GAPS.md §2 — see
+ * next/admin/groups.js and GROUPS-ADMIN-IMPLEMENTED.md); Discovery Sources
+ * gained full CRUD + preview-then-apply refresh + preview-then-import run
+ * (see discovery_sources.js's own header and
+ * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md); Egeria
+ * Alignment and Repair (§1) are built as TWO separate panes because classic
+ * has them as two separate screens doing different jobs — see
+ * admin/resync.js and admin/repair.js's own header comments for why folding
+ * them together would be wrong; and **Annotation Types and Question Catalog
+ * gained real write UI on 2026-09-20** (§4 — "the two registries"):
+ * Annotation Types now creates/edits/deletes against routes that already
+ * existed (annotation_types.js), and Question Catalog gained a new,
+ * append-only add/retire backend (question_catalog_writer.py) alongside its
+ * UI — see that spec and ADMIN-REGISTRIES-IMPLEMENTED.md for what changed
+ * and why editing a question's own text is refused rather than offered.
+ * Two remain DELIBERATE, NAMED deferrals: Egeria Links and Publish Queue are
  * reconciliation/config-mutation surfaces whose classic implementations run
  * 200-1000+ lines each (a divergence-repair flow for Egeria Links; retry
  * semantics tied to outbox internals for Publish Queue) — see each tab's
  * own `defer` block below for the per-pane reason, linking out to classic
- * via the shared `oldUiHref()`
- * helper.
+ * via the shared `oldUiHref()` helper.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
