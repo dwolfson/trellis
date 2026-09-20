@@ -276,22 +276,42 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
             }
             
         elif req.mode in ("hybrid", "egeria"):
-            from resource_explorer.surveyors.filesystem.hybrid_filesystem_surveyor import run_hybrid_filesystem_survey
-            res = run_hybrid_filesystem_survey(
-                filesystem_slug=slug,
-                registry=registry,
+            # Routed through executes_at="egeria-adaptive" (the folded-in
+            # run_hybrid_filesystem_survey strategy) via a one-step synthetic
+            # Survey Definition, rather than calling
+            # run_hybrid_filesystem_survey directly — see
+            # docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+            from resource_explorer.surveyors.survey_definition_executor import (
+                SurveyDefinitionExecutor,
+            )
+
+            executor = SurveyDefinitionExecutor(registry)
+            exec_result = executor.run_synthetic_step(
+                entity_type="filesystem",
+                slug=slug,
+                re_analysis_step="filesystem_inventory",
+                executes_at="egeria-adaptive",
                 egeria_url=req.egeria_url,
                 egeria_server=req.egeria_server,
                 egeria_user=req.egeria_user,
                 egeria_password=req.egeria_password,
                 force_egeria_publish=req.force_publish or (req.mode == "egeria"),
             )
-            
+            step_report = (exec_result.get("steps") or [{}])[0]
+            # Reconstruct run_hybrid_filesystem_survey's historic flat
+            # response shape: the handler nests the Egeria publish result
+            # under "result" so the executor's own generic publish step
+            # doesn't attempt to re-publish it a second time.
+            detail = dict(step_report.get("detail") or {})
+            nested = detail.pop("result", None) or {}
+            res = {**detail, **nested}
+
             publish_info = res.get("egeria_publish") or {}
-            
+
             return {
                 "status": "ok",
                 "mode": req.mode,
+                "source": res.get("source", "custom"),
                 "total_files": res["total_files"],
                 "total_data_files": res["total_data_files"],
                 "total_size": res["total_size"],

@@ -243,9 +243,29 @@ to running in-process — safe, one connection attempt slower.
 A step marked `executes_at: egeria` is **not skipped** while RE coordinates. The adapter's
 `other_engine_handlers` lets RE actively trigger Egeria's own native survey engine for that one
 step and carry on coordinating the rest of the graph locally — both the database and filesystem
-adapters do this. That mechanism is the intended route for unifying database and filesystem
-survey launching (see `Backlog.md`, "Unify survey launching"), and it is untested end to end on
-either type.
+adapters do this. That mechanism is also the extension point a fourth `executes_at` value,
+`egeria-adaptive`, is registered under (2026-09-20 — folded in per
+`docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md`, superseding the original plan's
+`egeria-hybrid` name, which collided with this codebase's existing, different sense of "hybrid":
+one Survey Definition whose *steps* run on a mix of engines, already covered by the paragraph
+above). `egeria-adaptive`'s handler (`_run_egeria_adaptive` in both the database and filesystem
+`survey_definition_adapter.py`) is a strategy selector, not a step runner: it reuses an existing
+Egeria survey when one exists (cache-or-run, database only — there is no equivalent cache lookup
+for filesystems yet), otherwise runs the local scan and publishes it into Egeria, falling through
+to triggering Egeria's own native survey (with catalog-on-demand, unlike the plain `egeria`
+handler above) when there is no usable local result, and degrading to a local-only survey on any
+failure. Unlike `egeria`, its `source` (`egeria` / `egeria-custom` / `custom` / `error`) is a
+first-class field on the step's own `steps_report` entry, not only inside the handler's own
+return value. The web/CLI "survey this database/filesystem" routes now build a one-step synthetic
+Survey Definition tagged `executes_at: egeria-adaptive` and run it through
+`SurveyDefinitionExecutor.run_synthetic_step` instead of calling `HybridDatabaseSurveyor`/
+`run_hybrid_filesystem_survey` directly — those two still exist and still do the actual work (the
+new handlers delegate to them; see their own docstrings for why they were not rewritten into
+shims calling back into the new handler — their characterization tests pin private instance state
+a rewrite would sever), but are no longer reachable from a web/CLI request except through this
+path. This closes only the backend-routing half of `Backlog.md`'s "Unify survey launching" — the
+legacy per-resource-type UI buttons/modals it also names are untouched here (out of scope; a
+concurrent UI task on a separate branch covers `executes_at` visibility).
 
 ### Publishing
 

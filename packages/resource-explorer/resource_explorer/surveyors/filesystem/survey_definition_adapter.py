@@ -18,6 +18,12 @@ to reach a terminal status and reads back its real result — see
 egeria_async_survey_result.py, shared with the database adapter's identical
 function above it, and
 docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md.
+
+A step tagged executes_at="egeria-adaptive" is a third, separate
+other_engine_handlers entry: the folded-in run_hybrid_filesystem_survey
+strategy (always local-scan-first, then best-effort publish) — see
+`_run_egeria_adaptive` below and docs/design-notes/
+EXECUTION-MODES-HYBRID-CLARIFICATION.md.
 """
 from __future__ import annotations
 
@@ -122,6 +128,89 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
     return {"status": "ok", **result}
 
 
+def _run_egeria_adaptive(
+    fs_entity, registry, step, force_egeria_publish: bool = False,
+    egeria_url: str | None = None, egeria_server: str | None = None,
+    egeria_user: str | None = None, egeria_password: str | None = None,
+    **_,
+) -> dict:
+    """Strategy selector for a step tagged executes_at="egeria-adaptive".
+
+    Folds in `run_hybrid_filesystem_survey`
+    (surveyors/filesystem/hybrid_filesystem_surveyor.py) — the default
+    web/CLI filesystem-survey path before this build — as a legal
+    `executes_at` value, per docs/design-notes/
+    EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+
+    The filesystem hybrid path is simpler than the database one: there is no
+    cache-or-run (EgeriaFileSystemSurveyor has no `get_latest_survey`
+    equivalent yet), so this always runs the local scan first — CLAUDE.md
+    rule 15's "local scan immediately, Egeria's result is async" constraint
+    is trivially satisfied here, since the local scan IS the synchronous
+    result and Egeria's cataloging/publish is the side channel — then
+    attempts to publish it into Egeria when credentials are configured (or
+    `force_egeria_publish` is set). A publish failure is non-fatal: the
+    local survey is still the real result, with the failure recorded on the
+    entity's status rather than losing the survey (see
+    `run_hybrid_filesystem_survey`'s own docstring).
+
+    `source` follows the same three-way vocabulary as the database handler,
+    minus "egeria" (there being no cache-or-run to ever produce a plain
+    reused-from-Egeria result here): "egeria-custom" (local scan published to
+    Egeria successfully), "custom" (local-only — either no Egeria
+    credentials were configured, or a publish was attempted and failed), or
+    "error" (the local scan itself raised).
+
+    Delegates to `run_hybrid_filesystem_survey` rather than reimplementing
+    its logic — `tests/test_execution_modes_path_c_hybrid.py` characterizes
+    that function's behavior directly (call ordering, non-fatal publish
+    failure, local-only-when-no-credentials), and this handler's job is to
+    make it reachable via `executes_at` routing and label its `source`, not
+    to duplicate the logic a second time. Not deleted here; see
+    docs/Backlog.md for the fast-follow once nothing but this handler and
+    its own tests reference it directly.
+    """
+    from resource_explorer.surveyors.filesystem.hybrid_filesystem_surveyor import (
+        run_hybrid_filesystem_survey,
+    )
+
+    has_creds = bool(
+        (egeria_url or fs_entity.egeria_url) and (egeria_server or fs_entity.egeria_server)
+        and (egeria_user or fs_entity.egeria_user) and (egeria_password or fs_entity.egeria_password)
+    )
+
+    try:
+        survey_data = run_hybrid_filesystem_survey(
+            fs_entity.slug, registry=registry, force_egeria_publish=force_egeria_publish,
+            egeria_url=egeria_url, egeria_server=egeria_server,
+            egeria_user=egeria_user, egeria_password=egeria_password,
+        )
+    except Exception as exc:
+        log.error("egeria-adaptive: filesystem survey failed for %s: %s", fs_entity.slug, exc)
+        return {
+            "source": "error",
+            "status": "error",
+            "filesystem_slug": fs_entity.slug,
+            "surveyed_at": datetime.now(timezone.utc).isoformat(),
+            "errors": [f"Filesystem survey failed: {exc}"],
+        }
+
+    egeria_publish = survey_data.pop("egeria_publish", None)
+    source = "egeria-custom" if egeria_publish is not None else "custom"
+
+    outcome = {"source": source, "status": "ok", **survey_data}
+    # Kept out of any top-level key `_publish` below recognizes (it looks
+    # for "survey_data", which this handler's local-scan fields are not, so
+    # they're actually safe at the top level as-is) — nested under "result"
+    # anyway, for the same reason the database handler relocates
+    # "schema_info"/"statistics": the Egeria publish outcome, when this
+    # handler already published it itself, must never look like fresh input
+    # for a second, generic publish pass to pick up.
+    if egeria_publish is not None:
+        outcome["result"] = {"egeria_publish": egeria_publish}
+    return outcome
+
+
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
@@ -162,7 +251,10 @@ _ADAPTER = ResourceTypeAdapter(
             ],
         },
     },
-    other_engine_handlers={"egeria": _trigger_egeria_native_survey},
+    other_engine_handlers={
+        "egeria": _trigger_egeria_native_survey,
+        "egeria-adaptive": _run_egeria_adaptive,
+    },
     egeria_technology_type_name="File System Directory",
 )
 

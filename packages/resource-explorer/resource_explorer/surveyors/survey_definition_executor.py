@@ -161,7 +161,6 @@ class SurveyDefinitionExecutor:
                 f"got {engine_override!r}"
             )
 
-        surveyed_at = datetime.utcnow().isoformat()
         adapter = get_adapter(entity_type)
         tech_type = technology_type or adapter.technology_type
 
@@ -195,6 +194,42 @@ class SurveyDefinitionExecutor:
                 "this is the one part of the reader not yet validated against a live "
                 "server (see docs/survey-definitions.md, Current Limitations)."
             )
+
+        return self._execute(
+            entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
+            process_guid=process_guid, process_qn=process_qn,
+            publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
+        )
+
+    def _execute(
+        self,
+        *,
+        entity_type: str,
+        slug: str,
+        entity,
+        survey_def,
+        process_guid: str,
+        process_qn: str,
+        publish: str | None,
+        engine_override: str | None,
+        runner_kwargs: dict,
+    ) -> dict:
+        """Run an already-resolved Survey Definition's steps.
+
+        This is the shared body behind both `run()` (a real, Egeria-hosted
+        process fetched via `_resolve_process_guid`/`SurveyDefinitionReader.
+        fetch`) and `run_synthetic_step()` (a one-step, in-process-only
+        `SurveyDefinition` that never touches Egeria to be constructed).
+
+        Extracted 2026-09-20 for the `egeria-adaptive` fold-in
+        (EXECUTION-MODES-HYBRID-CLARIFICATION.md): its web/CLI call sites
+        need the same steps_report/publish-gating/activity-logging machinery
+        `run()` already has, for a single ad hoc step, without first having
+        to author (or look up) a real Egeria Survey Definition process just
+        to run one step.
+        """
+        adapter = get_adapter(entity_type)
+        surveyed_at = datetime.utcnow().isoformat()
 
         steps_report: list = []
         step_outputs: list = []
@@ -554,11 +589,24 @@ class SurveyDefinitionExecutor:
                         detail = {k: v for k, v in outcome.items() if k != "annotations"}
                         if "annotations" in outcome:
                             detail["annotation_count"] = len(outcome["annotations"] or [])
-                    steps_report.append({
-                        "step": step.qualified_name,
-                        "status": status,
-                        **({"detail": detail} if detail is not None else {}),
-                    })
+                    # `source` — which engine's numbers these actually are
+                    # ("egeria" / "egeria-custom" / "custom" / "error", the
+                    # egeria-adaptive handler's vocabulary — see
+                    # database/survey_definition_adapter.py's
+                    # `_run_egeria_adaptive`) — is promoted to a top-level
+                    # field on the step's own steps_report entry, not left
+                    # nested only inside `detail`. This is what makes a run's
+                    # provenance visible in the run report itself rather than
+                    # only in the handler's own return value: before this, a
+                    # step's engine was directly observable but WHICH of
+                    # several strategies an adaptive handler actually took
+                    # was not, without reading raw `detail`.
+                    entry = {"step": step.qualified_name, "status": status}
+                    if isinstance(outcome, dict) and "source" in outcome:
+                        entry["source"] = outcome["source"]
+                    if detail is not None:
+                        entry["detail"] = detail
+                    steps_report.append(entry)
                     if isinstance(outcome, dict):
                         produced_guard[_step_key(step)] = outcome.get("guard")
                 except Exception as exc:
@@ -593,8 +641,10 @@ class SurveyDefinitionExecutor:
             else:
                 msg = (
                     f"Skipping step {step.qualified_name}: unrecognized executes_at="
-                    f"{step.executes_at!r} (only 'resource-explorer' and 'egeria' are "
-                    "understood today)"
+                    f"{step.executes_at!r} (recognized values are 'resource-explorer', "
+                    "'prefect', 'egeria', and any key an adapter registers in its own "
+                    "other_engine_handlers — e.g. 'egeria-adaptive' for database/"
+                    "filesystem, see EXECUTION-MODES-HYBRID-CLARIFICATION.md)"
                 )
                 log.warning(msg)
                 errors.append(msg)
@@ -702,6 +752,77 @@ class SurveyDefinitionExecutor:
             # activity log — the card will say "Never run" and be wrong.
             "run_recorded": run_recorded,
         }
+
+    def run_synthetic_step(
+        self,
+        entity_type: str,
+        slug: str,
+        re_analysis_step: str,
+        executes_at: str,
+        display_name: str | None = None,
+        publish: str | None = None,
+        **runner_kwargs: Any,
+    ) -> dict:
+        """Run ONE step through the same dispatch loop `run()` uses, without
+        first fetching (or authoring) a real Egeria-hosted Survey Definition
+        process — a one-step, in-process-only `SurveyDefinition`/`SurveyStep`
+        pair, never written to or read from Egeria.
+
+        Built for the `egeria-adaptive` fold-in
+        (docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md): the
+        web/CLI "survey this database/filesystem" routes used to call
+        `HybridDatabaseSurveyor`/`run_hybrid_filesystem_survey` directly,
+        bypassing `executes_at` routing entirely. They now build a synthetic
+        single-step definition tagged `executes_at="egeria-adaptive"` and run
+        it through here, so the strategy-selector logic lives in
+        `other_engine_handlers["egeria-adaptive"]` like any other engine, and
+        its `source` provenance is visible in `steps_report` the same way a
+        real Survey Definition's steps are — one mechanism, not two.
+
+        `executes_at` is deliberately a parameter rather than hardcoded to
+        "egeria-adaptive": this is a general "run a single ad hoc step
+        through the executor" primitive, and a future caller wanting
+        "resource-explorer" or "egeria" for one step needs no separate
+        method.
+        """
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinition,
+            SurveyStep,
+        )
+
+        adapter = get_adapter(entity_type)
+        entity = adapter.get_entity(self.registry, slug)
+        if entity is None:
+            raise SurveyDefinitionExecutorError(
+                f"{entity_type} '{slug}' not found in registry"
+            )
+
+        qualified_name = f"synthetic::{entity_type}::{slug}::{re_analysis_step}"
+        step = SurveyStep(
+            guid="",
+            display_name=display_name or re_analysis_step,
+            qualified_name=qualified_name,
+            executes_at=executes_at,
+            re_analysis_step=re_analysis_step,
+        )
+        survey_def = SurveyDefinition(
+            process_guid="",
+            display_name=display_name or re_analysis_step,
+            qualified_name=qualified_name,
+            supported_technology_type=None,
+            steps=[step],
+        )
+        return self._execute(
+            entity_type=entity_type,
+            slug=slug,
+            entity=entity,
+            survey_def=survey_def,
+            process_guid="",
+            process_qn=survey_def.qualified_name,
+            publish=publish,
+            engine_override=None,
+            runner_kwargs=runner_kwargs,
+        )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
         """(steps_report, step_outputs, errors) from one Prefect flow, or None.
