@@ -32,6 +32,60 @@ sub-surveyor units — each one is exposed as its own re_analysis_step key,
 the most granular and natural fit for Survey Definition steps. Publishing
 reuses the existing EgeriaPublisher.publish unmodified — it's already
 narrow (no native-survey side effect).
+
+A step tagged executes_at="egeria" is handled via other_engine_handlers,
+added 2026-09-20 to close Backlog "Path B3": until this build, repos had
+*no* "egeria" handler at all, so a step tagged executes_at="egeria" hit
+survey_definition_executor.py's not_executed_no_egeria_handler branch (an
+honest "this isn't wired up" state, not a crash — see
+tests/test_execution_modes_path_b1_failure_modes.py's
+TestUnregisteredEngineHandlerYieldsNotExecuted, which pinned that exact
+premise for repos and is updated alongside this change). Built now on an
+explicit project-owner decision even though no live repo survey action
+service may exist in Egeria yet ("we will probably have some surveys that
+execute there at some point") — the plumbing should activate the moment
+such a service exists, rather than waiting for Egeria's side first.
+
+`_trigger_egeria_native_survey` below follows the database/filesystem
+"egeria" handlers' contract exactly: requires the repo to already carry a
+stored Egeria asset guid (`Project.egeria_asset_guid`) — raises RuntimeError
+rather than cataloging as a side effect — then calls
+EgeriaPublisher.trigger_survey_by_guid (added alongside this handler,
+mirroring EgeriaDatabaseSurveyor.trigger_survey_by_guid's *dynamic*
+discovery mechanism: `_initiate_survey`/`_find_survey_process_name`,
+generic over a technology-type string, rather than
+EgeriaFileSystemSurveyor's hardcoded-qualifiedName shortcut) and the same
+shared egeria_async_survey_result.poll_trigger_and_retrieve_annotations
+poll/resolve/attribute/convert machinery the other two resource types use
+— nothing resource-type-specific was found in that function, so it is
+reused unmodified rather than forked.
+
+Repos are not registered under any real Egeria Technology Type (they are
+cataloged as a plain generic `Asset` — see egeria_publisher.py's own module
+docstring, "Element type, corrected 2026-09-14"), so there is no formally
+"confirmed" Technology Type name the way "PostgreSQL Relational Database"
+or "File System Directory" are. `EgeriaPublisher.trigger_survey_by_guid`
+uses "GitHub Repository" — the one repo-specific string this codebase
+already sends to Egeria (`additionalProperties.deployed_implementation_type`
+in `_find_or_create_asset`) — as its technology-type key for discovery.
+
+**Expected, honest outcome until Egeria's side exists:** with no live repo
+survey action service registered in Egeria, and no entry for
+(entity_type="repo", "GitHub Repository") in
+configdata/technology_type_processes.yaml, both the dynamic-discovery and
+fallback lookups inside `_initiate_survey` will find zero candidates, and
+the handler surfaces a specific RuntimeError ("No native survey process
+configured for technology_type='GitHub Repository' (entity_type='repo')")
+rather than crashing unhelpfully or silently no-oping. That error is
+reported through the executor's normal per-step error path (an "error"
+step status, not a crash) — see
+tests/test_repo_egeria_native_survey_handler.py's
+TestNoMatchingSurveyProcess. Once a real repo survey action service is
+authored in Egeria, add its qualifiedName to
+configdata/technology_type_processes.yaml (or author a discoverable
+user Survey Definition tagged with the same technology-type string) and
+this handler starts working with no further code change — see
+docs/Backlog.md for the tracking entry.
 """
 from __future__ import annotations
 
@@ -39,6 +93,7 @@ import json
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 from trellis_microflow import ResourceProvider
@@ -4932,6 +4987,57 @@ def _get_project_entity(registry, slug: str):
     return registry.get(slug)
 
 
+def _trigger_egeria_native_survey(project, registry, step, **_) -> dict:
+    """Trigger Egeria's own native repository survey for a step tagged
+    executes_at="egeria", then wait for it to reach a terminal status and
+    read back its real result. Requires the repo to already be cataloged in
+    Egeria (has a stored asset guid) — this does not catalog it as a side
+    effect. See this module's own docstring for the full design and the
+    honest-failure behavior while no live repo survey action service exists.
+
+    Synchronous by necessity, same as the database/filesystem handlers this
+    mirrors: the caller (survey_definition_executor's other_engine_handlers
+    dispatch) needs a real status/output to report, and there is no cheaper
+    way to get one than to poll.
+
+    Raises on: no stored Egeria asset guid (RuntimeError, this function);
+    no matching Egeria survey process found (RuntimeError, propagated from
+    EgeriaPublisher.trigger_survey_by_guid -> EgeriaPublisherError, which
+    wraps _initiate_survey's "No native survey process configured" message
+    — expected until Egeria's side exists, not a bug); poll timeout
+    (EgeriaEngineActionTimeoutError); or an unresolvable report attribution
+    (SurveyReportAttributionError). All propagate to the executor's own
+    per-step except clause, which reports them as a specific error rather
+    than a silent "triggered" success.
+    """
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+    from resource_explorer.surveyors.egeria_async_survey_result import (
+        poll_trigger_and_retrieve_annotations,
+    )
+
+    repo_guid = project.egeria_asset_guid
+    if not repo_guid:
+        raise RuntimeError(
+            f"Repository '{project.slug}' has no stored Egeria asset guid — "
+            "cannot trigger Egeria's native survey for an uncataloged repository."
+        )
+    publisher = EgeriaPublisher(registry=registry)
+    triggered_at = datetime.now(timezone.utc)
+    engine_action_guid = publisher.trigger_survey_by_guid(repo_guid)
+    log.info(
+        "Triggered Egeria native survey for repo %r: engine_action_guid=%s",
+        project.slug, engine_action_guid,
+    )
+    result = poll_trigger_and_retrieve_annotations(
+        surveyor=publisher,
+        engine_action_guid=engine_action_guid,
+        resource_guid=repo_guid,
+        triggered_at=triggered_at,
+        analysis_step=step.re_analysis_step,
+    )
+    return {"status": "ok", **result}
+
+
 def _publish(project, step_outputs: list, surveyed_at: str, registry, *,
             defer_drain: bool = False) -> str:
     """`defer_drain` is the run-in-background choice (see
@@ -4963,6 +5069,10 @@ _ADAPTER = ResourceTypeAdapter(
     publish=_publish,
     re_analysis_step_info=_RE_ANALYSIS_STEP_INFO,
     run_batch=_run_batch,
+    other_engine_handlers={
+        "egeria": _trigger_egeria_native_survey,
+    },
+    egeria_technology_type_name="GitHub Repository",
 )
 
 register_adapter(_ADAPTER)
