@@ -708,3 +708,190 @@ def test_annotations_from_two_definitions_sharing_a_step_get_distinct_provenance
 
     # The actual publish-time guard: must not raise on the merged set.
     assert_unique_qualified_names("egeria_python_git", all_annotations)
+
+
+class TestEngineOverride:
+    """SurveyDefinitionExecutor.run(engine_override=...) — the per-RUN choice
+    of which engine runs this definition's 'resource-explorer'-tagged steps,
+    independent of (and taking precedence over, for this run only) the global
+    `config.prefect.enabled`/`route_local_steps` config. See `run`'s own
+    docstring for the full contract.
+
+    `_prefect_orchestration_enabled` is forced False in every test here
+    (same technique `TestGuardEvaluationInTheLocalLoop` already uses) so
+    these exercise the per-step `_use_prefect` predicate in the local loop
+    specifically, deterministically — whole-definition Prefect orchestration
+    is a separate mechanism with its own gate, tested in
+    TestEngineOverrideAndWholeDefinitionOrchestration below.
+    """
+
+    @staticmethod
+    def _adapter_with_one_step(entity_type, runner, other_engine_handlers=None):
+        adapter = ResourceTypeAdapter(
+            entity_type=entity_type,
+            technology_type="Fake Tech",
+            re_analysis_steps={"known_step": runner},
+            get_entity=lambda registry, slug: MagicMock(slug=slug, display_name="", github_url=""),
+            publish=MagicMock(return_value="report-guid"),
+            other_engine_handlers=other_engine_handlers or {},
+        )
+        register_adapter(adapter)
+        return adapter
+
+    @staticmethod
+    def _one_step_def(entity_type, executes_at="resource-explorer", step_key="known_step"):
+        return SurveyDefinition(
+            process_guid=f"proc-{entity_type}",
+            display_name="One Step Survey",
+            qualified_name=f"GovActionProcess::{entity_type}",
+            supported_technology_type="Fake Tech",
+            steps=[
+                SurveyStep(
+                    guid="s1", display_name="Known", qualified_name="Step::Known",
+                    executes_at=executes_at, re_analysis_step=step_key,
+                ),
+            ],
+        )
+
+    def _run(self, entity_type, adapter_kwargs=None, engine_override=None,
+              config_enabled=False, config_route_local=False, executes_at="resource-explorer"):
+        runner = MagicMock(return_value={"ok": True})
+        adapter = self._adapter_with_one_step(entity_type, runner, **(adapter_kwargs or {}))
+        survey_def = self._one_step_def(entity_type, executes_at=executes_at)
+        registry = _fake_registry()
+        registry.has_assigned_egeria_project.return_value = False
+        reader = _fake_reader(survey_def, candidates=[
+            {"guid": f"proc-{entity_type}", "qualified_name": f"GovActionProcess::{entity_type}",
+             "display_name": "One Step Survey"},
+        ])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        fake_cfg = MagicMock()
+        fake_cfg.prefect.enabled = config_enabled
+        fake_cfg.prefect.route_local_steps = config_route_local
+
+        import resource_explorer.config as config_module
+        import resource_explorer.surveyors.prefect_adapter as prefect_adapter_module
+
+        with patch.object(sde_module, "_prefect_orchestration_enabled", return_value=False), \
+             patch.object(config_module, "get_config", return_value=fake_cfg), \
+             patch.object(prefect_adapter_module, "run_prefect_step",
+                          return_value={"ok": True, "via": "prefect"}) as fake_run_prefect_step:
+            result = executor.run(
+                entity_type=entity_type, slug="my-thing", engine_override=engine_override,
+            )
+        return result, runner, fake_run_prefect_step
+
+    def test_prefect_override_forces_a_resource_explorer_step_to_prefect_regardless_of_config(self):
+        """(a) engine_override='prefect' on a step tagged
+        executes_at='resource-explorer' routes it to Prefect even though the
+        global config (enabled=False) would never have routed it there."""
+        result, local_runner, fake_run_prefect_step = self._run(
+            "override-a", engine_override="prefect",
+            config_enabled=False, config_route_local=False,
+        )
+        fake_run_prefect_step.assert_called_once()
+        local_runner.assert_not_called()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Known"]["status"] == "ok"
+        assert statuses["Step::Known"]["engine"] == "prefect"
+
+    def test_resource_explorer_override_forces_a_step_local_regardless_of_config(self):
+        """(b) engine_override='resource-explorer' keeps a step local even
+        though the global config (enabled=True, route_local_steps=True) would
+        otherwise have routed it to Prefect."""
+        result, local_runner, fake_run_prefect_step = self._run(
+            "override-b", engine_override="resource-explorer",
+            config_enabled=True, config_route_local=True,
+        )
+        local_runner.assert_called_once()
+        fake_run_prefect_step.assert_not_called()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Known"]["status"] == "ok"
+        assert "engine" not in statuses["Step::Known"]
+
+    def test_none_preserves_existing_config_driven_behavior_prefect_side(self):
+        """(c) Regression guard: with no override, a 'resource-explorer' step
+        still goes to Prefect exactly when the existing config says so
+        (enabled AND route_local_steps) — unchanged from before this feature
+        existed."""
+        result, local_runner, fake_run_prefect_step = self._run(
+            "override-c1", engine_override=None,
+            config_enabled=True, config_route_local=True,
+        )
+        fake_run_prefect_step.assert_called_once()
+        local_runner.assert_not_called()
+
+    def test_none_preserves_existing_config_driven_behavior_local_side(self):
+        """(c) continued: and still stays local when the config says so —
+        either flag off is enough, same as before."""
+        result, local_runner, fake_run_prefect_step = self._run(
+            "override-c2", engine_override=None,
+            config_enabled=True, config_route_local=False,
+        )
+        local_runner.assert_called_once()
+        fake_run_prefect_step.assert_not_called()
+
+    def test_invalid_engine_override_raises_value_error(self):
+        """(d) A typo'd or stale engine_override value fails loudly, before
+        touching the adapter/registry/reader at all — not by falling back to
+        the default silently."""
+        executor = SurveyDefinitionExecutor(registry=MagicMock(), reader=MagicMock())
+        try:
+            executor.run(entity_type="whatever", slug="whatever", engine_override="airflow")
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "airflow" in str(exc)
+
+    def test_egeria_step_is_never_forced_through_either_override_value(self):
+        """(e) The boundary with Part B: an executes_at='egeria' step must
+        never be routed to Prefect OR forced to run locally by
+        engine_override, in either direction — it stays exactly what it was
+        before this feature existed (triggered via other_engine_handlers, or
+        counted as not_executed_no_egeria_handler if none is registered)."""
+        for override in ("prefect", "resource-explorer"):
+            result, local_runner, fake_run_prefect_step = self._run(
+                f"override-egeria-{override}", engine_override=override,
+                config_enabled=True, config_route_local=True,
+                executes_at="egeria",
+            )
+            fake_run_prefect_step.assert_not_called()
+            local_runner.assert_not_called()
+            statuses = {s["step"]: s for s in result["steps"]}
+            assert statuses["Step::Known"]["status"] == "not_executed_no_egeria_handler"
+            assert "Step::Known was not executed" in result["errors"][0]
+
+
+class TestEngineOverrideAndWholeDefinitionOrchestration:
+    """`engine_override` also has to reach `_prefect_orchestration_enabled`
+    (the gate for handing the WHOLE definition to Prefect, a separate
+    mechanism from the per-step `_use_prefect` predicate tested above) —
+    otherwise a run with engine_override='resource-explorer' could still be
+    swept into Prefect's whole-definition path if `config.prefect.enabled`
+    happened to be True, defeating the override entirely."""
+
+    def test_resource_explorer_override_disables_whole_definition_prefect_orchestration(self):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            _prefect_orchestration_enabled,
+        )
+
+        import resource_explorer.config as config_module
+
+        fake_cfg = MagicMock()
+        fake_cfg.prefect.enabled = True
+        with patch.object(config_module, "get_config", return_value=fake_cfg):
+            assert _prefect_orchestration_enabled(None) is True
+            assert _prefect_orchestration_enabled("resource-explorer") is False
+
+    def test_prefect_override_enables_whole_definition_prefect_orchestration_even_if_config_off(self):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            _prefect_orchestration_enabled,
+        )
+
+        import resource_explorer.config as config_module
+
+        fake_cfg = MagicMock()
+        fake_cfg.prefect.enabled = False
+        with patch.object(config_module, "get_config", return_value=fake_cfg):
+            assert _prefect_orchestration_enabled(None) is False
+            assert _prefect_orchestration_enabled("prefect") is True

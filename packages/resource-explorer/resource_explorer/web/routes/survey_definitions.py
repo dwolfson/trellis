@@ -48,6 +48,17 @@ class SurveyDefinitionRunRequest(BaseModel):
     #: Analyses-card path. None/omitted keeps RunsConfig.publish_inline's
     #: default, unchanged behaviour for every caller that does not ask.
     publish: str | None = None
+    #: The per-run engine choice for this definition's 'resource-explorer'-
+    #: tagged steps — "resource-explorer" (force local), "prefect" (force
+    #: Prefect), or None/omitted (unchanged, config-driven behaviour). See
+    #: SurveyDefinitionExecutor.run's own docstring for the full contract;
+    #: this only ever reaches steps eligible for either engine — an
+    #: executes_at="egeria" step is never affected. Only meaningful when
+    #: Prefect is actually enabled and reachable (GET /api/prefect/status) —
+    #: the UI hides the control otherwise — but an invalid value here still
+    #: raises a clear 400 rather than silently degrading, since a stale
+    #: client sending an unrecognized engine name should fail loudly.
+    engine: str | None = None
 
 
 def _map_reader_executor_errors(exc: Exception) -> HTTPException:
@@ -605,6 +616,7 @@ def _params(body: "SurveyDefinitionRunRequest") -> SurveyDefinitionRunParams:
         db_user=body.db_user,
         db_pwd=body.db_pwd,
         publish=body.publish,
+        engine_override=body.engine,
     )
 
 
@@ -643,6 +655,12 @@ async def run_survey_definition_route(entity_type: str, slug: str,
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.run_queue import requested_by
+
+    if body.engine is not None and body.engine not in ("resource-explorer", "prefect"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"engine must be 'resource-explorer', 'prefect', or omitted — got {body.engine!r}",
+        )
 
     registry = ProjectRegistry()
     activity_id = log_survey(

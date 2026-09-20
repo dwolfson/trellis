@@ -66,7 +66,11 @@ def _no_whole_definition_prefect_orchestration(monkeypatch):
     """
     monkeypatch.setattr(
         "resource_explorer.surveyors.survey_definition_executor._prefect_orchestration_enabled",
-        lambda: False,
+        # Takes an (unused) engine_override positional arg since 2026-09-19's
+        # per-run engine choice — every call site passes it now, override or
+        # not, so a zero-arg stand-in raises TypeError even when this fixture
+        # has nothing to do with that feature.
+        lambda engine_override=None: False,
     )
 
 
