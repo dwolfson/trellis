@@ -1695,26 +1695,52 @@ def database_survey(
     
     # Determine survey mode
     if use_egeria or (not force_custom and not user):
-        # Use hybrid approach
-        from resource_explorer.surveyors.database.hybrid_database_surveyor import run_hybrid_survey
-        
+        # Routed through executes_at="egeria-adaptive" (the folded-in
+        # HybridDatabaseSurveyor strategy selector) via a one-step synthetic
+        # Survey Definition, rather than calling run_hybrid_survey directly
+        # — see docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutor,
+        )
+
         console.print(f"[cyan]Surveying database '{slug}' (hybrid mode)...[/cyan]")
-        
+
         # Prepare credentials if provided
         credentials = None
         if user and password:
             credentials = {"user": user, "password": password}
-        
+
         try:
-            results = run_hybrid_survey(
-                slug,
-                credentials=credentials,
-                registry=registry,
+            executor = SurveyDefinitionExecutor(registry)
+            exec_result = executor.run_synthetic_step(
+                entity_type="database",
+                slug=slug,
+                re_analysis_step="postgres_schema_and_stats",
+                executes_at="egeria-adaptive",
+                db_user=(credentials or {}).get("user", ""),
+                db_pwd=(credentials or {}).get("password", ""),
+                # No --refresh CLI option exists for this command — matches
+                # run_hybrid_survey's own default (refresh=False) exactly.
+                refresh=False,
                 force_custom=force_custom,
                 platform_url=egeria_url,
                 view_server=egeria_server,
                 secrets_path=secrets_path,
             )
+            step_report = (exec_result.get("steps") or [{}])[0]
+            # Reconstruct run_hybrid_survey's historic flat response shape
+            # (see web/routes/databases.py's identical unnesting — the
+            # handler nests "schema_info"/"statistics" under "result" so
+            # the executor's own generic publish step doesn't re-publish
+            # them a second time).
+            detail = dict(step_report.get("detail") or {})
+            nested = detail.pop("result", None) or {}
+            results = {**detail, **nested}
+            results.setdefault("source", step_report.get("source", "custom"))
+            results.setdefault("errors", [])
+            results["errors"] = list(results["errors"]) + [
+                e for e in exec_result.get("errors", []) if e not in results["errors"]
+            ]
         except Exception as e:
             console.print(f"[red]✗ Survey failed: {e}[/red]")
             raise typer.Exit(1)
@@ -2125,16 +2151,32 @@ def filesystem_survey(
     
     try:
         if use_egeria:
-            from resource_explorer.surveyors.filesystem.hybrid_filesystem_surveyor import run_hybrid_filesystem_survey
-            results = run_hybrid_filesystem_survey(
-                slug,
-                registry=registry,
+            # Routed through executes_at="egeria-adaptive" (the folded-in
+            # run_hybrid_filesystem_survey strategy) via a one-step
+            # synthetic Survey Definition, rather than calling
+            # run_hybrid_filesystem_survey directly — see
+            # docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+            from resource_explorer.surveyors.survey_definition_executor import (
+                SurveyDefinitionExecutor,
+            )
+
+            executor = SurveyDefinitionExecutor(registry)
+            exec_result = executor.run_synthetic_step(
+                entity_type="filesystem",
+                slug=slug,
+                re_analysis_step="filesystem_inventory",
+                executes_at="egeria-adaptive",
                 egeria_url=egeria_url,
                 egeria_server=egeria_server,
                 egeria_user=egeria_user,
                 egeria_password=egeria_password,
                 force_egeria_publish=True,
             )
+            step_report = (exec_result.get("steps") or [{}])[0]
+            detail = dict(step_report.get("detail") or {})
+            nested = detail.pop("result", None) or {}
+            results = {**detail, **nested}
+            results.setdefault("source", step_report.get("source", "custom"))
         else:
             from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
             local_surveyor = LocalFileSystemSurveyor(fs_entity, registry)

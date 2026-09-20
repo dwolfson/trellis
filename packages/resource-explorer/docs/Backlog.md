@@ -4148,6 +4148,51 @@ show beyond repo until database/filesystem Survey Definitions exist (by the nati
 above) *and* the tab's resource selector is generalized to match. Two separate small pieces once
 the native-survey path is proven, not one.
 
+**Backend-routing half done (2026-09-20) — `egeria-adaptive` fold-in.** Per
+`docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md` and
+`PLAN-EXECUTION-MODES-VERIFICATION.md` §3, `HybridDatabaseSurveyor`
+(`surveyors/database/hybrid_database_surveyor.py`) and
+`run_hybrid_filesystem_survey` (`surveyors/filesystem/hybrid_filesystem_surveyor.py`) — the
+strategy-selector logic that had been the default web/CLI survey path but was unreachable from
+`executes_at` routing — are now reachable as a fourth `executes_at` value, `egeria-adaptive`,
+registered in `other_engine_handlers` on both `database/survey_definition_adapter.py` and
+`filesystem/survey_definition_adapter.py` (`_run_egeria_adaptive` in each). `web/routes/
+databases.py`, `web/routes/filesystems.py`, and both `cli/main.py` database/filesystem survey
+commands now route through `SurveyDefinitionExecutor.run_synthetic_step` (new — a one-step,
+in-process-only `SurveyDefinition` that never touches Egeria to be constructed) with
+`executes_at="egeria-adaptive"`, instead of calling `HybridDatabaseSurveyor`/
+`run_hybrid_filesystem_survey` directly. `source` (`egeria` / `egeria-custom` / `custom` /
+`error`) is now a first-class field on the step's own `steps_report` entry (`survey_definition_
+executor.py`'s `other_engine_handlers` dispatch branch), not only inside the handler's return
+value.
+
+**Deliberately NOT done, and left as fast-follows:**
+- `HybridDatabaseSurveyor`/`run_hybrid_filesystem_survey` were NOT rewritten into shims that
+  delegate to the new handlers — the new handlers delegate to THEM instead, the reverse of what
+  the original plan described. `tests/test_execution_modes_path_c_hybrid.py` characterizes those
+  two by mocking private instance state directly (`surveyor._check_egeria_available`,
+  `surveyor._egeria_surveyor`), which only means anything if the real strategy logic still lives
+  on the class/function itself; rewriting them into thin callers of the new handler would sever
+  that mocking path and require rewriting the characterization tests the fold-in was explicitly
+  told to keep passing unchanged. Once nothing outside those two modules and their own tests
+  references them directly (true as of this change, confirmed by grep), a follow-up can finish
+  the retirement properly: move the logic itself into the handlers and delete the old modules,
+  updating the characterization tests to target the handlers instead.
+- No live-Egeria verification was done for `egeria-adaptive` (unit/mock tests only, per this
+  task's explicit scope — live writes need the coordinate-shared-writes protocol). A live
+  end-to-end run per resource type (as `PLAN-EXECUTION-MODES-VERIFICATION.md` §2's Path C
+  recommends: "one live run per resource type against dev Egeria, asserting `source` is what
+  actually happened") is still open — this is the one check that would catch "correct number,
+  wrong label" for the new handler's `source` field, which no mock can catch.
+- The legacy per-resource-type UI buttons/modals this backlog item's top half describes
+  (`showSurveyDbModal`, `showSurveyFsModal`, etc.) are untouched — out of scope for the backend
+  fold-in, and being tracked separately by the concurrent `executes_at`-visibility UI task
+  (`re/execution-mode-ui`).
+- Filesystem's `egeria-adaptive` handler has no cache-or-run (no `get_latest_survey` equivalent
+  exists on `EgeriaFileSystemSurveyor` yet) — it always runs the local scan fresh, matching
+  `run_hybrid_filesystem_survey`'s actual existing behavior rather than inventing a new Egeria API
+  surface this task wasn't scoped to build.
+
 ---
 
 #### MEDIUM (was HIGH) — Filesystem local survey: silent-failure causes fixed, true "hang" UX still open

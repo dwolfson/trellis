@@ -221,9 +221,12 @@ def test_predicate_matches_production():
 
     from resource_explorer.surveyors import survey_definition_executor as ex
 
-    # _use_prefect is nested inside SurveyDefinitionExecutor.run, not the
-    # module-level run_survey_definition wrapper.
-    src = inspect.getsource(ex.SurveyDefinitionExecutor.run)
+    # _use_prefect is nested inside SurveyDefinitionExecutor._execute (the
+    # dispatch loop extracted out of `run` on 2026-09-20 so
+    # `run_synthetic_step` — the egeria-adaptive fold-in's one-step,
+    # non-Egeria-hosted entry point — could share it), not `run` itself and
+    # not the module-level run_survey_definition wrapper.
+    src = inspect.getsource(ex.SurveyDefinitionExecutor._execute)
     assert "route_local_steps" in src, (
         "production no longer consults route_local_steps — the mirror in this test "
         "file is stale and its assertions no longer mean anything")

@@ -250,17 +250,47 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
             return {"source": "custom", "schema_count": sc, "table_count": tc, "column_count": cc,
                     "errors": result.get("errors", [])}
         else:
-            from resource_explorer.surveyors.database.hybrid_database_surveyor import run_hybrid_survey
-            result = run_hybrid_survey(
-                db_slug=slug,
-                credentials=credentials,
-                registry=registry,
-                force_custom=False,
+            # Routed through executes_at="egeria-adaptive" (the folded-in
+            # HybridDatabaseSurveyor strategy selector — see
+            # docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md)
+            # rather than calling run_hybrid_survey directly, via a one-step
+            # synthetic Survey Definition that never touches Egeria to be
+            # constructed. `run_hybrid_survey` still exists and still works
+            # (it's what the handler delegates to) — this only moves the
+            # call site onto `executes_at` routing so the run's `source`
+            # provenance is visible in a run report the same way a real
+            # Survey Definition's steps are.
+            from resource_explorer.surveyors.survey_definition_executor import (
+                SurveyDefinitionExecutor,
+            )
+
+            executor = SurveyDefinitionExecutor(registry)
+            exec_result = executor.run_synthetic_step(
+                entity_type="database",
+                slug=slug,
+                re_analysis_step="postgres_schema_and_stats",
+                executes_at="egeria-adaptive",
+                db_user=resolved_user,
+                db_pwd=resolved_pwd,
+                refresh=req.refresh,
                 platform_url=req.egeria_url,
                 view_server=req.egeria_server,
                 secrets_path=req.secrets_path,
-                refresh=req.refresh,
             )
+            step_report = (exec_result.get("steps") or [{}])[0]
+            # Reconstruct run_hybrid_survey's historic flat response shape:
+            # the handler nests "schema_info"/"statistics" under "result" to
+            # keep the executor's generic publish step from re-publishing
+            # them a second time (see _run_egeria_adaptive's own docstring)
+            # — unnest them again here, for this route's own response only.
+            detail = dict(step_report.get("detail") or {})
+            nested = detail.pop("result", None) or {}
+            result = {**detail, **nested}
+            result.setdefault("source", step_report.get("source", "custom"))
+            result.setdefault("errors", [])
+            result["errors"] = list(result["errors"]) + [
+                e for e in exec_result.get("errors", []) if e not in result["errors"]
+            ]
             sc, tc, cc = _extract_counts(result)
             return {"source": result.get("source", "hybrid"),
                     "schema_count": sc, "table_count": tc, "column_count": cc,
