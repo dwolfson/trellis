@@ -120,8 +120,47 @@ class SurveyDefinitionExecutor:
         survey_definition_ref: str | None = None,
         refresh_definition: bool = False,
         publish: str | None = None,
+        engine_override: str | None = None,
         **runner_kwargs: Any,
     ) -> dict:
+        """
+        engine_override: per-RUN choice of which engine runs this definition's
+        `resource-explorer`-tagged steps, taking precedence over
+        `config.prefect.enabled`/`route_local_steps` for the duration of THIS
+        call only — a local parameter, never a global mutation, so it cannot
+        leak into a concurrent request.
+
+          - None (default): unchanged, config-driven behaviour (see
+            `_use_prefect` below).
+          - "resource-explorer": force every `resource-explorer`-tagged step
+            to run locally for this run, and skip whole-definition Prefect
+            orchestration (`_run_via_prefect`) entirely.
+          - "prefect": force every `resource-explorer`-tagged step to run via
+            Prefect for this run (`run_prefect_step` already degrades to
+            running the step locally if no Prefect server is actually
+            reachable — see its own docstring — so this is safe to select
+            even when Prefect isn't configured; it just won't do anything
+            useful).
+
+        This is genuinely a choice between two runners for the SAME function
+        and the SAME result — it is deliberately narrower than `executes_at`
+        itself: a step already declared `executes_at="egeria"` (coordinated by
+        Egeria's own engine host, not RE) is never forced through either value
+        of this override, and a step that exists ONLY as a Prefect flow (see
+        PREFECT_ONLY_STEPS below — it has no local implementation to force it
+        onto) is likewise left alone by "resource-explorer". See
+        `docs/design-notes/ENGINE-CHOICE-IMPLEMENTED.md` for the full
+        reasoning.
+
+        Raises ValueError for any other value, so a typo or a stale UI/API
+        param fails loudly rather than silently falling back to the default.
+        """
+        if engine_override not in (None, "resource-explorer", "prefect"):
+            raise ValueError(
+                f"engine_override must be one of None, 'resource-explorer', 'prefect' — "
+                f"got {engine_override!r}"
+            )
+
         surveyed_at = datetime.utcnow().isoformat()
         adapter = get_adapter(entity_type)
         tech_type = technology_type or adapter.technology_type
@@ -210,7 +249,7 @@ class SurveyDefinitionExecutor:
         # the activity entry, the assembled result — is shared, so the two
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
-        if _prefect_orchestration_enabled() and _all_steps_prefect_runnable(survey_def):
+        if _prefect_orchestration_enabled(engine_override) and _all_steps_prefect_runnable(survey_def):
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
@@ -322,10 +361,26 @@ class SurveyDefinitionExecutor:
             step that named a different engine; `prefect.route_local_steps` is
             the explicit opt-in for that, because taking RE's own steps to
             Prefect is a real deployment choice but not one to make silently.
+
+            `engine_override` (this run's local parameter — see `run`'s own
+            docstring) takes precedence over both config values, but ONLY for
+            a step tagged `executes_at="resource-explorer"` — the one case
+            where "run this the other way" is a genuine, safe choice between
+            two runners of the same function. A step already forced to
+            Prefect (`executes_at="prefect"`, or a PREFECT_ONLY_STEPS entry
+            with no local implementation at all) is left alone by
+            engine_override="resource-explorer": there is nothing local to
+            force it onto. `executes_at="egeria"` steps never reach this
+            function's True branches at all — they fall through to `return
+            False` below regardless of engine_override, same as today.
             """
             if step.executes_at == "prefect" or step.re_analysis_step in PREFECT_ONLY_STEPS:
                 return True
             if step.executes_at == "resource-explorer":
+                if engine_override == "prefect":
+                    return True
+                if engine_override == "resource-explorer":
+                    return False
                 try:
                     cfg = get_config().prefect
                     return bool(cfg.enabled and getattr(cfg, "route_local_steps", False))
@@ -719,13 +774,22 @@ class SurveyDefinitionExecutor:
         return chosen["guid"], chosen["qualified_name"]
 
 
-def run_survey_definition(entity_type: str, slug: str, registry=None, **kwargs: Any) -> dict:
-    """Convenience function mirroring run_hybrid_survey's shape."""
+def run_survey_definition(
+    entity_type: str, slug: str, registry=None,
+    engine_override: str | None = None, **kwargs: Any,
+) -> dict:
+    """Convenience function mirroring run_hybrid_survey's shape.
+
+    `engine_override` is spelled out explicitly (rather than left to flow
+    through **kwargs implicitly) so callers — the CLI, the web route — see it
+    in this function's own signature. See SurveyDefinitionExecutor.run's
+    docstring for what the three legal values do.
+    """
     if registry is None:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
     executor = SurveyDefinitionExecutor(registry)
-    return executor.run(entity_type, slug, **kwargs)
+    return executor.run(entity_type, slug, engine_override=engine_override, **kwargs)
 
 
 def _all_steps_prefect_runnable(survey_def) -> bool:
@@ -763,13 +827,25 @@ def _all_steps_prefect_runnable(survey_def) -> bool:
     )
 
 
-def _prefect_orchestration_enabled() -> bool:
+def _prefect_orchestration_enabled(engine_override: str | None = None) -> bool:
     """Whether Prefect should sequence a whole Survey Definition.
 
     Reads the same `prefect.enabled` switch the per-step dispatch already
     honours, so there is one answer to "is Prefect available here" rather than
-    two that can disagree.
+    two that can disagree — except when `engine_override` names a choice for
+    THIS run, which takes precedence over the global config either way:
+    "resource-explorer" always answers False (whole-definition orchestration
+    is skipped, so the local loop's own per-step `_use_prefect` — which also
+    honours the same override — is what actually runs each step); "prefect"
+    always answers True (if no server is actually reachable,
+    `_run_via_prefect`'s existing try/except already falls back to the local
+    loop, same as it does today when `prefect.enabled` is True but Prefect is
+    down).
     """
+    if engine_override == "resource-explorer":
+        return False
+    if engine_override == "prefect":
+        return True
     try:
         from resource_explorer.config import get_config
 

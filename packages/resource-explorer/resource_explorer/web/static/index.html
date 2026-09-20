@@ -1233,6 +1233,17 @@
           Remember for this session <span class="text-slate-600">(kept in memory only — cleared on page reload)</span>
         </label>
       </div>
+      <!-- Only shown when GET /api/prefect/status reports enabled+reachable
+           (see showSurveyDefinitionRunModal) — a choice between two engines
+           that only exists when there IS a second engine to choose. -->
+      <div id="survey-def-run-engine" class="hidden">
+        <label class="modal-label">Engine <span class="text-slate-500">(this run only — 'resource-explorer'-tagged steps)</span></label>
+        <select id="survey-def-run-engine-select" class="modal-input">
+          <option value="">Use configured default</option>
+          <option value="resource-explorer">Local (resource-explorer)</option>
+          <option value="prefect">Prefect (retries, logs, cancellation)</option>
+        </select>
+      </div>
       <div id="survey-def-run-error" class="text-red-400 text-xs hidden"></div>
       <div id="survey-def-run-progress" class="text-slate-400 text-xs hidden">Running… this may take a while</div>
       <div id="survey-def-run-result" class="hidden text-xs bg-slate-800/60 rounded p-2 space-y-1"></div>
@@ -8882,6 +8893,21 @@ function showSurveyDefinitionRunModal(entityType, slug, viewElId, qualifiedName)
   document.getElementById('survey-def-run-user').value = saved?.dbUser || '';
   document.getElementById('survey-def-run-pwd').value = saved?.dbPwd || '';
   document.getElementById('survey-def-run-remember').checked = !!saved;
+
+  // The engine choice is only meaningful — and only shown — when Prefect is
+  // actually configured and reachable; otherwise it's a control for a
+  // non-existent second engine. Reuses the same GET /api/prefect/status the
+  // Admin "⚡ Prefect" panel already calls, rather than inventing a second
+  // reachability check.
+  const engineWrap = document.getElementById('survey-def-run-engine');
+  const engineSelect = document.getElementById('survey-def-run-engine-select');
+  engineSelect.value = '';
+  engineWrap.classList.add('hidden');
+  fetch('/api/prefect/status').then(r => r.ok ? r.json() : null).then(status => {
+    if (status && status.enabled && status.reachable) {
+      engineWrap.classList.remove('hidden');
+    }
+  }).catch(() => { /* leave hidden — degrade to "no choice offered" */ });
 }
 
 function hideSurveyDefinitionRunModal() {
@@ -8945,12 +8971,14 @@ async function submitSurveyDefinitionRun() {
     // a 17-step Repo Full Survey, used to leave this exact spinner sitting
     // for however long the whole thing took, with zero feedback that
     // anything was actually progressing).
+    const engineChoice = document.getElementById('survey-def-run-engine-select').value || null;
     const startRes = await fetch(`/api/survey-definitions/${entityType}/${slug}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         survey_definition_ref: candidate.qualified_name,
         db_user: dbUser, db_pwd: dbPwd,
+        engine: engineChoice,
       }),
     });
     const started = await startRes.json();

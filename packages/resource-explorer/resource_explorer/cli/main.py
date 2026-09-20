@@ -1325,6 +1325,13 @@ def survey_definition(
     ),
     egeria_url: Optional[str] = typer.Option(None, "--egeria-url", help="Egeria platform URL override"),
     egeria_server: Optional[str] = typer.Option(None, "--egeria-server", help="Egeria view server name override"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="Force which engine runs this definition's 'resource-explorer'-tagged "
+             "steps for THIS run only: 'resource-explorer' (local) or 'prefect'. "
+             "Omit to use the configured behaviour (PREFECT_ROUTE_LOCAL_STEPS). "
+             "Does not affect executes_at='egeria' steps.",
+    ),
 ):
     """Execute a Survey Definition authored in Egeria against a registered project.
 
@@ -1349,6 +1356,10 @@ def survey_definition(
         console.print(f"[red]Project '{slug}' not found.[/red]")
         raise typer.Exit(1)
 
+    if engine is not None and engine not in ("resource-explorer", "prefect"):
+        console.print(f"[red]✗ --engine must be 'resource-explorer' or 'prefect' — got {engine!r}[/red]")
+        raise typer.Exit(1)
+
     console.print(f"[cyan]Running Survey Definition for '{slug}'...[/cyan]")
     try:
         results = run_survey_definition(
@@ -1357,6 +1368,7 @@ def survey_definition(
             registry=registry,
             survey_definition_ref=survey_def,
             refresh_definition=refresh_definition,
+            engine_override=engine,
         )
     except UnsupportedSurveyDefinitionError as exc:
         console.print(f"[red]✗ Unsupported Survey Definition: {exc}[/red]")
@@ -1834,6 +1846,13 @@ def database_survey_definition(
     ),
     egeria_url: Optional[str] = typer.Option(None, "--egeria-url", help="Egeria platform URL override"),
     egeria_server: Optional[str] = typer.Option(None, "--egeria-server", help="Egeria view server name override"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="Force which engine runs this definition's 'resource-explorer'-tagged "
+             "steps for THIS run only: 'resource-explorer' (local) or 'prefect'. "
+             "Omit to use the configured behaviour (PREFECT_ROUTE_LOCAL_STEPS). "
+             "Does not affect executes_at='egeria' steps.",
+    ),
 ):
     """Execute a Survey Definition authored in Egeria against a registered database.
 
@@ -1861,6 +1880,10 @@ def database_survey_definition(
         console.print(f"[red]Database '{slug}' not found. Register it first with 'database register'.[/red]")
         raise typer.Exit(1)
 
+    if engine is not None and engine not in ("resource-explorer", "prefect"):
+        console.print(f"[red]✗ --engine must be 'resource-explorer' or 'prefect' — got {engine!r}[/red]")
+        raise typer.Exit(1)
+
     console.print(f"[cyan]Running Survey Definition for database '{slug}'...[/cyan]")
     try:
         results = run_survey_definition(
@@ -1871,6 +1894,7 @@ def database_survey_definition(
             refresh_definition=refresh_definition,
             db_user=user or "",
             db_pwd=password or "",
+            engine_override=engine,
         )
     except UnsupportedSurveyDefinitionError as exc:
         console.print(f"[red]✗ Unsupported Survey Definition: {exc}[/red]")
@@ -2169,6 +2193,13 @@ def filesystem_survey_definition(
     ),
     egeria_url: Optional[str] = typer.Option(None, "--egeria-url", help="Egeria platform URL override"),
     egeria_server: Optional[str] = typer.Option(None, "--egeria-server", help="Egeria view server name override"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="Force which engine runs this definition's 'resource-explorer'-tagged "
+             "steps for THIS run only: 'resource-explorer' (local) or 'prefect'. "
+             "Omit to use the configured behaviour (PREFECT_ROUTE_LOCAL_STEPS). "
+             "Does not affect executes_at='egeria' steps.",
+    ),
 ):
     """Execute a Survey Definition authored in Egeria against a registered filesystem.
 
@@ -2191,6 +2222,10 @@ def filesystem_survey_definition(
         console.print(f"[red]FileSystem '{slug}' not found. Register it first with 'filesystem register'.[/red]")
         raise typer.Exit(1)
 
+    if engine is not None and engine not in ("resource-explorer", "prefect"):
+        console.print(f"[red]✗ --engine must be 'resource-explorer' or 'prefect' — got {engine!r}[/red]")
+        raise typer.Exit(1)
+
     console.print(f"[cyan]Running Survey Definition for filesystem '{slug}'...[/cyan]")
     try:
         results = run_survey_definition(
@@ -2199,6 +2234,7 @@ def filesystem_survey_definition(
             registry=registry,
             survey_definition_ref=survey_definition,
             refresh_definition=refresh_definition,
+            engine_override=engine,
         )
     except UnsupportedSurveyDefinitionError as exc:
         console.print(f"[red]✗ Unsupported Survey Definition: {exc}[/red]")
