@@ -215,6 +215,19 @@ could displace it either fit RE's model worse or cost more than the work remaini
 | **5** | Widen `PREFECT_ROUTED_STEPS` beyond `repo_arch_coupling` only if phase 4's number justifies it. | ~0.5 d/step | 4 |
 | **6** | Revisit on containerization: worker into a Trellis image, deployment off `from_source(local path)`, gap 2 fixed properly (§3). | — | Trellis containerization |
 
+**Phase 5 — DONE 2026-09-19.** Phase 4's measurement (~8-10s fixed dispatch overhead) justified
+widening: `PREFECT_ROUTED_STEPS` now also covers `repo_secret_scan` and `repo_rag_ingestion`
+(both `compute_cost="high"` in `repo_survey_definition_adapter.py`, confirmed before widening),
+alongside `repo_arch_coupling`. Docs regenerated and published live to dev Egeria
+(`qs-view-server`) after coordinating with all live peers — both landed as **Update** Governance
+Action Process Step (upsert, not create): `repo_secret_scan` GUID
+`c902a5dc-6ad5-4e22-9311-a003b5e69419`, `repo_rag_ingestion` GUID `818bae1c-b808-423b-9681-2461f169906a`,
+`executes_at: prefect` confirmed both in the publisher's own response and independently via
+`SurveyDefinitionReader`'s `GovernanceOfficer.get_governance_definitions_by_name()` against a
+separate connection. `scripts/reconcile_survey_definition_links.py --dry-run` reported clean
+before and after (no link commands were run — only the two steps' Additional Properties changed).
+Full details: `Backlog.md`'s Prefect entry, "DONE 2026-09-19 — phase 5 widening shipped."
+
 **Decisions needed (project owner):** ~~(a) accept the container-server/host-worker split, or hold
 out for a fully containerized worker~~; (b) `PREFECT_ENABLED` default after phase 2; (c) whether
 phase 5 is wanted at all, or `executes_at: prefect` stays a narrow opt-in for genuinely

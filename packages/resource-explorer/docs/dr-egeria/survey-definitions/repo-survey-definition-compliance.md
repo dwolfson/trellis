@@ -163,7 +163,7 @@ Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_secret_scan |
 
