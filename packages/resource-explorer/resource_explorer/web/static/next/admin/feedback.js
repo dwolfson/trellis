@@ -128,7 +128,7 @@ async function reload() {
       const status = isPage
         ? esc(r.triage_status || 'new')
         : '<span class="italic text-ink-muted" title="resource_feedback has no triage workflow">n/a</span>';
-      return `<tr class="border-b border-rule hover:bg-paper-raised">
+      return `<tr class="border-b border-rule hover:bg-paper-surface">
         <td class="whitespace-nowrap py-s2 pr-s3 font-mono text-provenance text-ink-muted">${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${sourceBadge(r.source)}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${context}</td>

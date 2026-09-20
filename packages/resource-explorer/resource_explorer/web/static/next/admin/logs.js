@@ -35,7 +35,7 @@ function emptyHtml(buf, filtered) {
 
 function rowsHtml(rows) {
   return `<table class="w-full font-mono text-provenance">
-    <tbody>${rows.map((r) => `<tr class="border-b border-rule align-top hover:bg-paper-raised">
+    <tbody>${rows.map((r) => `<tr class="border-b border-rule align-top hover:bg-paper-surface">
       <td class="whitespace-nowrap px-[6px] py-[3px] text-ink-muted">${esc(r.ts || '')}</td>
       <td class="whitespace-nowrap px-[6px] py-[3px] ${LEVEL_TONE[r.level] || 'text-ink-muted'}">${esc(r.level || '')}</td>
       <td class="whitespace-nowrap px-[6px] py-[3px] text-accent-ink">${esc(r.logger || '')}</td>

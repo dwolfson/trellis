@@ -49,7 +49,7 @@ async function reload() {
       ? `<button type="button" data-cancel="${esc(r.id)}"
           class="cursor-pointer rounded-sm border border-state-warn bg-transparent px-2 py-[2px] text-caveat text-state-warn">⏹ Cancel</button>`
       : '';
-    return `<tr class="border-b border-rule hover:bg-paper-raised">
+    return `<tr class="border-b border-rule hover:bg-paper-surface">
       <td class="py-s2 pr-s3 text-caveat text-ink">${esc(r.slug || '—')}</td>
       <td class="py-s2 pr-s3 font-mono text-caveat text-accent-ink">${esc(r.step || '—')}</td>
       <td class="py-s2 pr-s3 text-caveat ${tone}">${esc(r.state)}</td>
