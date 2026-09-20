@@ -17,6 +17,25 @@ class EgeriaFileSystemSurveyorError(RuntimeError):
     """Raised when Egeria filesystem operations fail."""
 
 
+# Investigated 2026-09-20 alongside the database-side "catalog_and_survey never
+# refreshes an existing element's connection" fix (docs/design-notes/
+# CATALOG-AND-SURVEY-REFRESH-FIX.md) — this surveyor does NOT have the same
+# bug, verified rather than assumed symmetric:
+#
+# catalog_and_survey() below takes no db_user/db_pwd (or any credential) at
+# all, and create_folder_element_from_template() doesn't accept any — a local
+# filesystem mount has nothing to authenticate with. There is no credentials-
+# carrying create call being skipped on repeat runs the way the PostgreSQL
+# create_postgres_*_element_from_template calls are, so "corrected credentials
+# never get applied" cannot happen here. It also creates no Connection at
+# all — the DataFolder/DataFile templates it uses have no attached Connection
+# subgraph the way the PostgreSQL templates do, so the deepCopy gap fixed on
+# the database side doesn't apply either. See trigger_survey_by_guid's own
+# docstring below for the separate, still-open question of whether the
+# *native* FileDirectory survey needs a Connection on the FileFolder asset —
+# that's a different, unverified concern from the one this fix addresses.
+
+
 class EgeriaFileSystemSurveyor:
     """Catalog filesystems and files in Egeria and publish survey reports."""
 

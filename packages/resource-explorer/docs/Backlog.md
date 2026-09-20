@@ -721,6 +721,50 @@ for one run rather than a fix.
 
 ### TIER 1 — `catalog_and_survey` never refreshes an existing element's credentials/connection
 
+> **Fixed for fresh catalogs, 2026-09-20 — see
+> `docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md` for the full investigation.**
+> The root cause was not the guard this entry originally suspected: Egeria's
+> create-from-template calls ARE upsert-safe by qualifiedName (confirmed live —
+> re-issuing one for an existing element returns the same GUID, not a
+> duplicate), so removing the `if not <guid>` guard alone would not have
+> helped. The real defect is that pyegeria's `create_postgres_server_element_
+> from_template`/`create_postgres_database_element_from_template` never set
+> `"deepCopy": True` on the template request, so Egeria never copies the
+> template's attached Connection subgraph — confirmed live that a first-time
+> catalog run can end up with no Connection too, not just a repeat one.
+> `EgeriaDatabaseSurveyor._create_postgres_element_from_template` now bypasses
+> those two wrappers and adds `deepCopy: True`, fixing this for **fresh
+> catalog runs**.
+>
+> **This does NOT repair `coco_ods` itself, or any other already-broken
+> existing element**, and `coco_ods` was deliberately left in its current
+> state. Confirmed live: Egeria's by-qualifiedName reuse path (what fires for
+> an element that already exists) never re-runs deepCopy's child-copying, no
+> matter how many times it's called. The template's attached Connection is
+> also not a simple Connection — it's a `VirtualConnection` embedding a
+> `SecretsStoreConnection` wired to a YAML-file secrets connector, plus its own
+> `Endpoint`/`ConnectorType` — so hand-assembling it via generic
+> `ConnectionMaker` calls was judged (project owner decision, 2026-09-20) an
+> unsupported-path workaround, not a fix, and was not attempted. The only
+> confirmed-correct repair is **delete-and-recatalog**, which fixes the
+> connection but changes the asset's GUID and orphans its existing Survey
+> Reports/annotations — a real fix with a real cost that needs its own
+> decision before it's built, not something to slip in as a side effect of
+> this bug fix. `EgeriaDatabaseSurveyor._warn_if_database_has_no_connection`
+> makes this state visible (WARNING-level log) the next time it's hit, instead
+> of only surfacing downstream as an opaque `OPEN-SURVEY-0009`.
+>
+> Also confirmed, per the task's explicit ask not to assume symmetry:
+> `EgeriaFileSystemSurveyor`'s `catalog_and_survey` does **not** have this bug
+> — it takes no credentials at all and its templates have no attached
+> Connection subgraph, so neither the guard nor the `deepCopy` gap applies
+> there. No code change was needed on the filesystem side.
+>
+> Still open: a pyegeria gap (`deepCopy` never set) should be logged in
+> `PYEGERIA_ISSUES.md` per this repo's pyegeria-gaps-tracking convention — not
+> done as part of this change since that file is in the `egeria-python`
+> checkout, outside this fix's `trellis`-only scope.
+
 **Found live, 2026-09-19/20**, while testing Egeria-native survey result retrieval against a real
 database (`coco_ods`, part of the Coco Pharmaceuticals sample data). The native PostgreSQL survey
 engine rejected the triggered engine action as `INVALID` with:
