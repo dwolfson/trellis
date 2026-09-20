@@ -1,16 +1,17 @@
 """Admin's own /next surface (PLAN-FINISH-REPOS.md item 5): pinning that the
 header's ⚙ Admin button opens a real overlay panel — chrome-level, decoupled
-from #intent-nav, the same pattern as Activity — with eight real ports
+from #intent-nav, the same pattern as Activity — with nine real ports
 (Annotation Types browse, Question Catalog, Logs, Feedback, Prefect,
-Discovery Sources, Egeria Alignment, Repair) and three named, specific
-deferrals (Groups, Egeria Links, Publish Queue), each linking out to classic
+Discovery Sources, Groups, Egeria Alignment, Repair) and two named, specific
+deferrals (Egeria Links, Publish Queue), each linking out to classic
 via the shared `oldUiHref()` helper.
 
 Discovery Sources was ported from a deferral to a full build under
 SPEC-ADMIN-THE-FOUR-GAPS.md §3 — see TestDiscoverySourcesPane below and
-docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Egeria Alignment
-(Resync) and Repair were ported under §1 — see TestResyncPane/TestRepairPane
-below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
+docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Groups was ported
+under §2 — see TestGroupsPane below and docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md.
+Egeria Alignment (Resync) and Repair were ported under §1 — see
+TestResyncPane/TestRepairPane below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
 
 No browser verification of a signed-in session happened for this file — see
 docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
@@ -26,12 +27,12 @@ from pathlib import Path
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
 DEFERRED_TAB_IDS = [
-    "admin-groups",
     "admin-egeria-links",
     "admin-outbox",
 ]
 BUILT_TAB_IDS = [
     "annotations",
+    "admin-groups",
     "admin-question-catalog",
     "admin-prefect",
     "admin-feedback",
@@ -122,7 +123,7 @@ class TestGroupsAndTabsMatchClassic:
         for tab_id in BUILT_TAB_IDS + DEFERRED_TAB_IDS:
             assert f"id: '{tab_id}'" in src, f"missing tab id {tab_id!r}"
 
-    def test_exactly_five_tabs_are_wired_to_a_real_renderer(self):
+    def test_exactly_built_tab_ids_are_wired_to_a_real_renderer(self):
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
@@ -237,6 +238,72 @@ class TestPrefectPane:
     def test_cancel_is_confirmed_before_the_write(self):
         src = _admin_module("prefect.js")
         assert "window.confirm(" in src
+
+
+class TestGroupsPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §2: create/delete/assign/suggestions, all
+    ports of classic's createAdminGroup/deleteAdminGroup/
+    openAssignGroupModal+submitAssignGroup/applyGroupSuggestion against the
+    existing /api/projects/groups* routes. See groups.js's own header for
+    what's a straight port versus a deliberate departure (assignment lives
+    in this pane, not behind a per-resource button, since /next has none
+    yet)."""
+
+    def test_the_tab_is_wired_to_a_real_renderer_not_deferred(self):
+        src = _admin_index_src()
+        assert "{ id: 'admin-groups', label: '🗂 Groups', render: renderGroups }" in src
+
+    def test_reapi_exposes_create_delete_and_suggestions(self):
+        api = _reapi_src()
+        assert "export const groupSuggestions = ()" in api
+        assert "/api/projects/groups/suggestions" in api
+        assert "export const createGroup = (" in api
+        assert "export const deleteGroup = (" in api
+
+    def test_delete_has_no_confirmation_flag_on_the_route_itself(self):
+        # Mirrors removeProject's own comment: the DELETE route takes no
+        # confirm parameter, so the caller's window.confirm is the only
+        # confirmation that will ever exist.
+        api = _reapi_src()
+        i = api.index("export const deleteGroup = (")
+        body = api[max(0, i - 400):i + 100]
+        assert "confirmation" in body.lower()
+
+    def test_delete_confirms_and_names_where_members_go_not_that_they_vanish(self):
+        # SPEC-ADMIN-THE-FOUR-GAPS.md §0/§2: a group delete reads as
+        # destructive and is not -- the confirmation must say members return
+        # to Ungrouped, not merely warn generically. Classic's own pane has
+        # no confirm here at all (checked directly against index.html) --
+        # this is the fix, not a copy.
+        src = _admin_module("groups.js")
+        i = src.index("async function onDeleteGroup(")
+        body = src[i:src.index("\n}\n", i)]
+        assert "window.confirm(" in body
+        assert "return to Ungrouped" in body
+        assert "nothing is deleted" in body
+
+    def test_suggestions_are_rendered_and_applied_via_the_real_routes(self):
+        src = _admin_module("groups.js")
+        assert "groupSuggestions()" in src
+        assert "async function onApplySuggestion(" in src
+        assert "createGroup(" in src
+        assert "assignGroup(" in src
+
+    def test_assignment_uses_the_real_route_and_all_three_resource_types(self):
+        api = _reapi_src()
+        assert "export const assignGroup = (" in api
+        assert "/api/projects/${encodeURIComponent(slug)}/group" in api
+        src = _admin_module("groups.js")
+        assert "kind === 'database' ? 'database' : kind === 'filesystem' ? 'filesystem' : 'repo'" in src
+
+    def test_a_mutation_refreshes_the_sidebars_own_copy_of_groups(self):
+        # state.groups/state.projects are otherwise only populated once, in
+        # app.js's start() -- without this, the sidebar would show stale
+        # groupings until a full page reload.
+        app = _app()
+        assert "export async function refreshGroupsAndSidebar()" in app
+        src = _admin_module("groups.js")
+        assert "refreshGroupsAndSidebar" in src
 
 
 class TestResyncPane:

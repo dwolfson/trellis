@@ -271,6 +271,23 @@ export const removeProject = (slug) =>
 
 export const listGroups = () => cached('groups', () => get('/api/projects/groups'));
 
+/** Ungrouped repos sharing a GitHub org, suggested (never auto-applied) as
+ * candidate groupings — see projects.py's `suggest_groups()` docstring. */
+export const groupSuggestions = () => get('/api/projects/groups/suggestions');
+
+export const createGroup = (slug, displayName, description = '') =>
+  post('/api/projects/groups', { slug, display_name: displayName, description });
+
+/**
+ * Delete a group. Does NOT delete its member resources — they return to
+ * Ungrouped (`resources_unassigned` in the response is the count that did).
+ * The route takes no confirmation flag of any kind, so the only
+ * confirmation that will ever exist is the caller's — same rule as
+ * `removeProject` above.
+ */
+export const deleteGroup = (slug) =>
+  request(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
 export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
   post(`/api/projects/${encodeURIComponent(slug)}/group`,
        { resource_type: resourceType, group_slug: groupSlug });

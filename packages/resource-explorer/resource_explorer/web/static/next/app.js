@@ -99,6 +99,7 @@ import {
   listAllPerspectives,
   listProjects,
   listRfas,
+  clearCache,
   pollActivity,
   removeInvestigationMember,
   removeProject,
@@ -1877,6 +1878,25 @@ function renderSidebar() {
   `;
 
   bindSidebar();
+}
+
+/** Re-fetch groups and the project list and re-render the sidebar.
+ *
+ * state.groups/state.projects are otherwise only ever populated once, in
+ * start() — nothing re-fetches them on its own. Admin → Groups (group
+ * create/delete/assign, all real writes to group_slug) needs the sidebar's
+ * grouping to reflect what it just changed rather than staying stale until
+ * a full page reload, so it imports and calls this after each write. See
+ * docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md. */
+export async function refreshGroupsAndSidebar() {
+  clearCache();
+  const [groups, projects] = await Promise.allSettled([
+    listGroups(),
+    listProjects({ includeIgnored: true, includeHidden: true }),
+  ]);
+  if (groups.status === 'fulfilled') state.groups = groups.value || [];
+  if (projects.status === 'fulfilled') state.projects = projects.value || [];
+  renderSidebar();
 }
 
 /** The Select-mode action bar. Every action here is a bulk write, so each
