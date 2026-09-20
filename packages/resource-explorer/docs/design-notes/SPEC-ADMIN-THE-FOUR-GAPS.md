@@ -24,6 +24,18 @@ its admin form:
 That is the spine of all four sections. It is also why Admin is the right place
 for them and the resource panes are not.
 
+**Classic already does this, and one of its lines is better than mine.** Its
+confirmations name the radius — *"Clear all cached Egeria GUIDs and survey
+history for X?"*, *"Apply N repair step(s)"* — and one names the **opposite**:
+
+> *"Remove filesystem X from the registry? This does not delete your files on
+> disk."*
+
+**A destructive-sounding action naming what it does not touch** is the sharper
+half of the rule, and it is already written. Port that sentence's shape wherever
+a name frightens more than the act warrants — §2's group deletion is exactly
+that case.
+
 **One asymmetry, checked rather than assumed:** annotation types have write
 routes and a read-only pane; the question catalog has **no write route at all**.
 The first is a UI gap. The second is a backend gap as well, and sizing them the
@@ -31,7 +43,26 @@ same would be wrong.
 
 ---
 
-## 1 · Reconcile — the backend is complete and already classifies
+## 1 · Reconcile is **two** panels in classic, not one
+
+**Correction.** I wrote this section as one surface. Classic has two, and they
+do different jobs:
+
+- **Resync** (`loadAdminResyncPanel`, `_applyResync`) — global drift, the
+  `egeria_resync.py` machinery below.
+- **Repair** (`loadAdminRepairPanel`) — **per-repository correction**, which is
+  not drift at all: `submitRepairRename`, `submitRepairRepoint`,
+  `submitRepairGithubUrl`, `submitRepairEnableCollection`,
+  `submitRepairDropMembership`, with `selectRepairRepo` and
+  `renderRepairRepoDetail` for picking one. Fixing a repository that was
+  registered with the wrong URL or name is a different act from reconciling the
+  store against Egeria, and folding them into one screen would put a data-entry
+  correction beside an irreversible bulk clear.
+
+**Build them as two.** Everything below is Resync. Repair is a port of classic's
+per-repo detail view and needs no design from me beyond §0's blast-radius rule.
+
+### Resync — the backend is complete and already classifies
 
 `egeria_resync.py` has **twelve scanners** (`_scan_assets` … `_scan_specification_gap`,
 `:226-237`) and **nine repair actions** (`_do_reauthor_survey_definitions` …
@@ -80,9 +111,13 @@ reader make for themselves.
 **`GET /groups/suggestions`** returning `GroupSuggestion` (`:135`), which nothing
 in `/next` surfaces.
 
-**Build:** create, rename, delete, assign; and **surface the suggestions**, since
-an app that can propose groupings and does not offer them is hiding work it
-already did.
+**Build:** create, rename, delete, assign, and surface the suggestions — **all
+four are ports.** Classic has `createAdminGroup`, `deleteAdminGroup`,
+`openAssignGroupModal`/`closeAssignGroupModal`, and **`applyGroupSuggestion`**.
+
+*Correction: I first wrote that an app which can propose groupings and does not
+offer them is hiding work it already did. That is true of `/next` and false of
+classic, which surfaces them. It is a port, not an idea of mine.*
 
 **Blast radius:** deleting a group does not delete resources, and the
 confirmation must say so plainly — *N resources return to Ungrouped* — because
@@ -107,6 +142,13 @@ confirm.
 `run` imports repositories, so its confirmation names the count and where they
 land. `delete` says whether already-imported repositories are affected — from the
 route's behaviour, not from a guess; **check it before writing the copy.**
+
+**And classic has three ways to add a source, one of which I would not have
+thought of:** `_saveGithubSource`, `_quickAddListSource`, and
+**`_saveCurrentSearchAsSource`** — you search for repositories, like what comes
+back, and keep the query as a recurring source. That turns a one-off search into
+a standing one at the moment the user already knows it is good, which is the
+cheapest possible moment to ask. Port all three; that one first.
 
 ## 4 · The two registries, which are not the same size
 
@@ -167,3 +209,37 @@ project's own provenance rules untrue, which is the one thing it does not do.
 settled and in `SAFE_SCHEDULED_STEPS`); the classic admin views, which stay as
 they are under `RULING-CLASSIC-AND-NEXT.md`; and bulk group assignment, which
 wants the sidebar's selection and belongs with §2's collapse round.
+
+
+---
+
+## 6 · How this spec was wrong, and the rule it earns
+
+The project owner had to tell me to look at the classic interface. I had read
+the **routes** and the **dataclasses** — the layers that grep cleanly — and
+inferred the UI from them. Classic has all four of these built and in daily use,
+and reading it changed three sections:
+
+- Reconcile is two panels, not one, and the second is per-repository data
+  correction rather than drift.
+- Group suggestions are already surfaced in classic; my line about an app hiding
+  work it had already done was true of `/next` and false of the product.
+- Discovery sources have three add paths, including saving a live search as a
+  recurring source — an affordance I would not have invented.
+
+And classic's *"This does not delete your files on disk"* is a better instance of
+this spec's own rule than the one I wrote.
+
+**Fourth instance of the same method failure**, after the resolver, the
+stale-flag state, and `members.py`: I specified against the layer that was easy
+to read instead of the one that had the answer. The standing rule was *search for
+the existing implementation before designing the mechanism.* It needs its
+missing half:
+
+> **The classic interface is an existing implementation.** For anything `/next`
+> is porting rather than inventing, read classic's version before speccing it —
+> not the routes it calls, the surface itself.
+
+This is cheap to follow and I did not follow it. Recorded here rather than in the
+deferred register, because it is not a deferral — it is a spec that was written
+with half the evidence available.
