@@ -1,10 +1,16 @@
 """Admin's own /next surface (PLAN-FINISH-REPOS.md item 5): pinning that the
 header's ⚙ Admin button opens a real overlay panel — chrome-level, decoupled
-from #intent-nav, the same pattern as Activity — with five real ports
-(Annotation Types browse, Question Catalog, Logs, Feedback, Prefect) and six
-named, specific deferrals (Groups, Discovery Sources, Egeria Alignment,
-Egeria Links, Publish Queue, Repair), each linking out to classic via the
-shared `oldUiHref()` helper.
+from #intent-nav, the same pattern as Activity — with eight real ports
+(Annotation Types browse, Question Catalog, Logs, Feedback, Prefect,
+Discovery Sources, Egeria Alignment, Repair) and three named, specific
+deferrals (Groups, Egeria Links, Publish Queue), each linking out to classic
+via the shared `oldUiHref()` helper.
+
+Discovery Sources was ported from a deferral to a full build under
+SPEC-ADMIN-THE-FOUR-GAPS.md §3 — see TestDiscoverySourcesPane below and
+docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Egeria Alignment
+(Resync) and Repair were ported under §1 — see TestResyncPane/TestRepairPane
+below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
 
 No browser verification of a signed-in session happened for this file — see
 docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
@@ -21,7 +27,6 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 
 DEFERRED_TAB_IDS = [
     "admin-groups",
-    "admin-discovery-sources",
     "admin-egeria-links",
     "admin-outbox",
 ]
@@ -33,6 +38,7 @@ BUILT_TAB_IDS = [
     "admin-logs",
     "admin-resync",
     "admin-repair",
+    "admin-discovery-sources",
 ]
 
 
@@ -336,3 +342,84 @@ class TestRepairPane:
         assert "NOT Resync" in src
         resync_src = _admin_module("resync.js")
         assert "NOT Repair" in resync_src
+
+
+class TestDiscoverySourcesPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §3: run's own route is read-only (returns
+    candidates, imports nothing), so this pane must preview before either of
+    its two effectful actions — importing from a run, and applying a
+    refresh — never fire-and-hope. Delete's confirmation must be worded from
+    the registry's actual (no-FK) behaviour, not a guess."""
+
+    def test_reads_and_writes_against_the_real_routes(self):
+        api = _reapi_src()
+        assert "export const listDiscoverySources = ()" in api
+        assert "export const createDiscoverySource = (" in api
+        assert "export const deleteDiscoverySource = (" in api
+        assert "export const runDiscoverySource = (" in api
+        assert "export const previewSourceRefresh = (" in api
+        assert "export const applySourceRefresh = (" in api
+        assert "export const searchDiscoveryRepos = (" in api
+        assert "export const importDiscoveredRepos = (" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("discovery_sources.js")
+        assert "export async function renderDiscoverySources(host)" in src
+
+    def test_run_shows_candidates_before_any_import_is_possible(self):
+        """The route itself never imports (checked against
+        run_discovery_source in web/routes/discovery.py) -- the module's
+        own header must say so, and importing must be a distinct,
+        confirmed follow-up action, not something doRun triggers itself."""
+        src = _admin_module("discovery_sources.js")
+        assert "READ-ONLY" in src
+        assert "no import" in src.lower()
+        i = src.index("async function doRun(")
+        run_body = src[i:src.index("\n}", i)]
+        assert "importDiscoveredRepos" not in run_body
+
+    def test_import_confirmation_names_the_count_and_destination(self):
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doImportSelected(")
+        body = src[i:src.index("\n}", i)]
+        assert "window.confirm(" in body
+        assert "picked.length" in body
+        assert "dest" in body  # names the destination group (or "no group")
+
+    def test_refresh_previews_before_it_applies(self):
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doRefresh(")
+        body = src[i:src.index("\n}", i)]
+        assert "previewSourceRefresh(" in body
+        assert "window.confirm(" in body
+        confirm_pos = body.index("window.confirm(")
+        apply_pos = body.index("applySourceRefresh(")
+        assert confirm_pos < apply_pos
+
+    def test_delete_confirmation_says_imported_repos_are_unaffected(self):
+        """registry.py's discovery_sources table has no foreign key into
+        projects -- deleting a source cannot touch anything already
+        imported from it, and the confirmation must say so rather than
+        reading as a generic destructive warning."""
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doDelete(")
+        body = src[i:src.index("\n}", i)]
+        assert "window.confirm(" in body
+        assert "does not affect any repositories already imported" in body
+
+    def test_three_add_paths_are_present(self):
+        src = _admin_module("discovery_sources.js")
+        assert "'search'" in src and "searchFormHtml" in src
+        assert "listFormHtml" in src
+        assert "quickAddHtml" in src
+
+    def test_save_github_source_is_not_treated_as_an_add_source_path(self):
+        """Checked against classic's actual code before porting (spec's own
+        §6 lesson): _saveGithubSource posts to /api/discovery/github-base-url
+        (the GitHub API endpoint override), not a discovery source create --
+        it must not appear here as if it were a third source-creation path."""
+        src = _admin_module("discovery_sources.js")
+        # The comment discussing why it's excluded may mention the route by
+        # name; what must never appear is an actual call to it.
+        assert "'/api/discovery/github-base-url'" not in src
+        assert "not create a discovery source" in src.lower()

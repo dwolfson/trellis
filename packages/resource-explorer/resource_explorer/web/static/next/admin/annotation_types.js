@@ -20,7 +20,7 @@ let _selected = null;
 
 function listHtml() {
   const rows = (_types || []).map((a) => `
-    <tr data-select-type="${esc(a.type)}" class="cursor-pointer border-b border-rule hover:bg-paper-raised">
+    <tr data-select-type="${esc(a.type)}" class="cursor-pointer border-b border-rule hover:bg-paper-surface">
       <td class="py-s2 pr-s3 text-answer text-ink">${esc(a.display_name || a.type)}</td>
       <td class="py-s2 pr-s3 font-mono text-caveat text-accent-ink">${esc(a.type)}</td>
       <td class="max-w-[28ch] truncate py-s2 pr-s3 text-caveat text-ink-muted" title="${esc(a.description || '')}">${esc(a.description || '—')}</td>

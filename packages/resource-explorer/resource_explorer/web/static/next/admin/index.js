@@ -20,19 +20,22 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Seven panes are real ports here — Annotation Types (browse), Question
- * Catalog (browse), Logs, Feedback, Prefect, and (2026-09-20,
+ * Eight panes are real ports here — Annotation Types (browse), Question
+ * Catalog (browse), Logs, Feedback, Prefect, Discovery Sources (full CRUD +
+ * preview-then-apply refresh + preview-then-import run — see
+ * discovery_sources.js's own header and
+ * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md), and (2026-09-20,
  * SPEC-ADMIN-THE-FOUR-GAPS.md §1) Egeria Alignment and Repair, built as TWO
  * separate panes because classic has them as two separate screens doing
  * different jobs — see admin/resync.js and admin/repair.js's own header
- * comments for why folding them together would be wrong. Four remain
- * DELIBERATE, NAMED deferrals: Groups, Discovery Sources, Egeria Links and
- * Publish Queue are reconciliation/config-mutation surfaces whose classic
- * implementations run 200-1000+ lines each (bulk GitHub-org import and
- * drag-drop membership for Groups; a divergence-repair flow for Egeria
- * Links; retry semantics tied to outbox internals for Publish Queue) — see
- * DEFERRED_TABS below for the per-pane reason, each linking out to classic
- * via the shared `oldUiHref()` helper.
+ * comments for why folding them together would be wrong. Three remain
+ * DELIBERATE, NAMED deferrals: Groups, Egeria Links and Publish Queue are
+ * reconciliation/config-mutation surfaces whose classic implementations run
+ * 200-1000+ lines each (bulk GitHub-org import and drag-drop membership for
+ * Groups; a divergence-repair flow for Egeria Links; retry semantics tied
+ * to outbox internals for Publish Queue) — see DEFERRED_TABS below for the
+ * per-pane reason, each linking out to classic via the shared `oldUiHref()`
+ * helper.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
@@ -42,6 +45,7 @@ import { renderFeedback } from '/static/next/admin/feedback.js';
 import { renderPrefect } from '/static/next/admin/prefect.js';
 import { renderResync } from '/static/next/admin/resync.js';
 import { renderRepair } from '/static/next/admin/repair.js';
+import { renderDiscoverySources } from '/static/next/admin/discovery_sources.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -60,14 +64,7 @@ const GROUPS = [
         + 'import) that would each need their own design pass here rather than a '
         + 'straight port; see next/admin/index.js',
     } },
-    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', defer: {
-      does: 'Register, refresh and remove named discovery sources (e.g. a GitHub '
-        + 'org or search query RE re-scans on a cadence)',
-      why: 'create/refresh/delete each trigger a real scan against an external '
-        + 'source rather than only editing local config, and — like Groups — this '
-        + 'shares state with GitHub-org discovery, which is deferred above for the '
-        + 'same reason',
-    } },
+    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', render: renderDiscoverySources },
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
   ]},
   { name: 'Reconcile', tabs: [
