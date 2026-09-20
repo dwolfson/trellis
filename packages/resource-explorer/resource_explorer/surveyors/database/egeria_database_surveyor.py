@@ -24,6 +24,26 @@ log = logging.getLogger(__name__)
 # recognized") against any correctly-registered server (real qualifiedNames
 # use "::"). That's why _initiate_native_survey below calls the private
 # _async_initiate_survey directly instead of those two SDK methods.
+#
+# Second pyegeria gap, found live 2026-09-20 while fixing the "catalog_and_
+# survey never refreshes an existing element's connection" bug (docs/Backlog.md
+# "TIER 1 — catalog_and_survey never refreshes..."): AutomatedCuration.
+# create_postgres_server_element_from_template/create_postgres_database_
+# element_from_template build their TemplateRequestBody by hand and never set
+# "deepCopy": True. Confirmed live against qs-view-server: without deepCopy,
+# Egeria's templated cataloguing instantiates only the anchor element (the
+# server/database asset itself) and never copies the template's attached
+# Connection subgraph (a VirtualConnection embedding a SecretsStoreConnection,
+# plus Endpoint and ConnectorType) — which is exactly why a freshly-cataloged
+# asset can still end up with "no connection" (OPEN-SURVEY-0009) once a native
+# survey tries to use it. _create_postgres_element_from_template below
+# bypasses the two broken wrappers the same way _initiate_native_survey
+# bypasses initiate_postgres_*_survey, adding "deepCopy": True to the raw
+# request body. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for
+# the full investigation, including why this only helps *fresh* catalog runs
+# and not an already-broken existing asset (Egeria's own "reuse by
+# qualifiedName" match path never triggers deepCopy's child-copying at all —
+# confirmed live, see that doc).
 
 
 class EgeriaDatabaseSurveyorError(RuntimeError):
@@ -135,6 +155,72 @@ class EgeriaDatabaseSurveyor:
         note_divergence(registry, "database", db_entity.slug,
                         db_entity.display_name or db_entity.slug, guid, exc)
 
+    def _create_postgres_element_from_template(self, technology_type: str, placeholder_values: dict) -> str:
+        """Create a PostgreSQL Server/Database element from Egeria's own template,
+        bypassing AutomatedCuration.create_postgres_server_element_from_template/
+        create_postgres_database_element_from_template — see the pyegeria-gap
+        note near the top of this module for why. The only difference from what
+        those two wrappers send is one extra body key: "deepCopy": True, which is
+        what actually causes Egeria to also instantiate the template's attached
+        Connection subgraph rather than just the bare server/database element.
+
+        Only fixes the *fresh catalog* case. Confirmed live 2026-09-20: calling
+        this again for an element that already exists by qualifiedName returns
+        the SAME guid (Egeria's template engine matches and reuses it) rather
+        than creating a duplicate — so this is safe to call unconditionally —
+        but that reuse path does NOT re-run deepCopy's child-copying, so it
+        cannot repair an existing element that is already missing its
+        connection. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md.
+        """
+        template_guid = self._automated_curation.get_template_guid_for_technology_type(technology_type)
+        body = {
+            "class": "TemplateRequestBody",
+            "templateGUID": template_guid,
+            "isOwnAnchor": True,
+            "deepCopy": True,
+            "placeholderPropertyValues": placeholder_values,
+        }
+        return self._automated_curation.create_elem_from_template(body)
+
+    def _warn_if_database_has_no_connection(self, db_entity: "DatabaseEntity", server_name: str, db_guid: str) -> None:
+        """Non-fatal visibility check: does this database element actually have
+        a Connection attached?
+
+        Not a fix — deliberately. Repairing an already-broken element (one
+        cataloged before this module added deepCopy, or one Egeria's own
+        by-qualifiedName reuse path skipped past) needs delete-and-recatalog,
+        which changes the asset's GUID and orphans its existing Survey Reports/
+        annotations. That is a real, bigger decision than this bug fix's scope —
+        see docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md and the Backlog
+        entry — so it is not automated here. This only makes the absence
+        visible (at WARNING level) instead of letting it surface later as an
+        opaque OPEN-SURVEY-0009 from the native survey engine, the same
+        "non-fatal must not mean invisible" principle _note_stale_guid_if_any
+        already applies to stale GUIDs.
+
+        The qualifiedName pattern checked (f"{qualifiedName}::Connection")
+        matches what Egeria's own PostgreSQL templates use for their attached
+        Connection template today (confirmed live) — a heuristic tied to this
+        content pack's naming convention, not a guaranteed-stable Egeria API.
+        """
+        qualified_name = f"PostgreSQL Relational Database::{server_name}::{db_entity.database_name}"
+        connection_qn = f"{qualified_name}::Connection"
+        try:
+            has_connection = bool(self._find_element_guid(connection_qn))
+        except Exception as exc:
+            log.debug(f"Could not check for a Connection on {qualified_name!r} (non-fatal): {exc}")
+            return
+        if not has_connection:
+            log.warning(
+                f"Database element {qualified_name!r} (guid={db_guid}) has no Connection "
+                "attached — a native Egeria survey against it will fail with "
+                "OPEN-SURVEY-0009. This element was cataloged before this fix, or via "
+                "Egeria's by-qualifiedName reuse path, which does not create one. Fixing "
+                "it requires delete-and-recatalog (changes the GUID, orphans existing "
+                "Survey Reports/annotations) — see "
+                "docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md."
+            )
+
     def _catalog_and_survey(
         self,
         db_entity: "DatabaseEntity",
@@ -147,7 +233,9 @@ class EgeriaDatabaseSurveyor:
 
         Egeria's template-based creation stores the connection details (including
         credentials) so that subsequent surveys can be initiated without supplying
-        credentials again.
+        credentials again — for a *freshly-cataloged* element. See
+        docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for what this does and
+        does not fix for an already-cataloged element.
 
         Returns dict with keys: server_guid, database_guid, survey_action_guid.
         """
@@ -165,13 +253,16 @@ class EgeriaDatabaseSurveyor:
 
         if not server_guid:
             try:
-                server_guid = self._automated_curation.create_postgres_server_element_from_template(
-                    postgres_server=server_name,
-                    host_name=egeria_host,
-                    port=str(db_entity.port),
-                    db_user=db_user,
-                    db_pwd=db_pwd,
-                    description=db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                server_guid = self._create_postgres_element_from_template(
+                    "PostgreSQL Server",
+                    {
+                        "serverName": server_name,
+                        "hostIdentifier": egeria_host,
+                        "portNumber": str(db_entity.port),
+                        "databaseUserId": db_user,
+                        "description": db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                        "databasePassword": db_pwd,
+                    },
                 )
                 log.info(f"Created PostgreSQL server element: {server_guid}")
             except Exception as exc:
@@ -184,20 +275,27 @@ class EgeriaDatabaseSurveyor:
 
         if not db_guid:
             try:
-                db_guid = self._automated_curation.create_postgres_database_element_from_template(
-                    postgres_database=db_entity.database_name,
-                    server_name=server_name,
-                    host_identifier=egeria_host,
-                    port=str(db_entity.port),
-                    db_user=db_user,
-                    db_pwd=db_pwd,
-                    description=db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                db_guid = self._create_postgres_element_from_template(
+                    "PostgreSQL Relational Database",
+                    {
+                        "databaseName": db_entity.database_name,
+                        "serverName": server_name,
+                        "hostIdentifier": egeria_host,
+                        "portNumber": str(db_entity.port),
+                        "databaseUserId": db_user,
+                        "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        "databasePassword": db_pwd,
+                    },
                 )
                 log.info(f"Created PostgreSQL database element: {db_guid}")
             except Exception as exc:
                 raise EgeriaDatabaseSurveyorError(
                     f"Could not create PostgreSQL database element for {db_entity.database_name}: {exc}"
                 ) from exc
+        elif db_guid:
+            # Found by name rather than just created — this is exactly the case
+            # that can't be repaired by this fix (see docstring above).
+            self._warn_if_database_has_no_connection(db_entity, server_name, db_guid)
 
         # Persist database GUID to registry
         if registry and db_guid:
