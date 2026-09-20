@@ -5810,6 +5810,36 @@ class ProjectRegistry:
             ).fetchall()
         return {r["annotation_type"] if isinstance(r, dict) else r[0] for r in rows}
 
+    def count_projects_published_annotation_type(self, annotation_type: str) -> int:
+        """How many distinct projects have a local record of publishing this
+        annotation type at least once — the blast-radius number Admin's
+        Annotation Types registry shows before a rename/delete
+        (SPEC-ADMIN-THE-FOUR-GAPS.md §4/§0).
+
+        **This is a lower bound, not the true annotation count.** RE keeps no
+        durable local table of individual annotation instances by type — the
+        actual AnnotationType value only ever lives inside `egeria_outbox`'s
+        `payload_json` (purged once a write completes) or in Egeria itself.
+        `project_published_annotation_types` is the cheapest thing that is
+        both indexed and real: one row per (project, type) per publish. It
+        answers "how many projects have published this type at least once",
+        which undercounts if the same project holds several annotations of
+        the type, or if a project's real annotations were never bookkept
+        here (a publish that predates this table, or a best-effort insert
+        that silently failed — record_published_annotation_types() wraps its
+        own insert in the caller's try/except by design). Callers must
+        present this as a lower bound / "at least N", never as an exact
+        count — and a result of 0 must not be presented as "unused", since
+        it means "no local publish record", not "no annotations exist"."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT COUNT(DISTINCT project_slug) AS n
+                   FROM project_published_annotation_types
+                   WHERE annotation_type = ?""",
+                (annotation_type,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     def get_latest_project_stats(self, slug: str) -> dict | None:
         """Return the most recent project_stats row as a dict, or None."""
         slug = self._normalize_slug(slug)

@@ -77,6 +77,13 @@ class QuestionCatalogEntry:
     # so a reader deciding how far to trust an answer is not handed the
     # build's history in the same breath.
     catalog_history: str = ""
+    # True once the CSV's Status column reads "Retired" (2026-09-20,
+    # SPEC-ADMIN-THE-FOUR-GAPS.md §4). The catalog is append-only — a
+    # retired question is flagged, never removed or reworded, since a past
+    # survey answer still refers to it exactly as it was asked. Consumers
+    # must show retired questions distinctly, not hide them: hiding would
+    # make an old answer's question untraceable from this browser.
+    retired: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +95,7 @@ class QuestionCatalogEntry:
             "answering_mechanism": self.answering_mechanism,
             "rationale": self.rationale,
             "catalog_history": self.catalog_history,
+            "retired": self.retired,
         }
 
 
@@ -107,6 +115,7 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
         answering_mechanism=raw.get("answering_mechanism", ""),
         rationale=raw.get("rationale", ""),
         catalog_history=raw.get("catalog_history", ""),
+        retired=bool(raw.get("retired", False)),
     )
 
 

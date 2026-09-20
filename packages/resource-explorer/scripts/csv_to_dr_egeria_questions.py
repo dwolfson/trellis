@@ -101,7 +101,12 @@ REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
 # Question -> Perspective::Catalog History" blocks — the phantom the sentence
 # above warns about, caught before any heal executed them (the Perspective
 # does not exist on the platform, so each would have failed).
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History"]
+# "Status" (added 2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4) is the
+# append-only catalog's retirement marker ("Retired"/empty) — RE-internal,
+# consumed only by question_catalog_writer.py and question_catalog_reader.py,
+# never sent to Egeria. Same phantom-Perspective risk as every column above,
+# added here for the same reason.
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History", "Status"]
 
 
 def _block(command: str, **fields: str) -> str:

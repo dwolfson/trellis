@@ -56,6 +56,13 @@ const patch = (path, body) =>
     headers: JSON_HEADERS,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+const put = (path, body) =>
+  request(path, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+const del = (path) => request(path, { method: 'DELETE' });
 
 /* ────────────────────────────────────────────────────────────────────────
  * A small TTL cache.
@@ -840,11 +847,39 @@ export const listAnnotationTypes = () => get('/api/analyses/annotation-types');
 export const getAnnotationType = (typeName) =>
   get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
 
+/** Register/edit/delete an annotation type (SPEC-ADMIN-THE-FOUR-GAPS.md §4 —
+ *  the routes already existed; next/admin/annotation_types.js made zero
+ *  write calls until this pass). `type` is immutable once registered —
+ *  editing sends only the mutable fields, matching classic's own
+ *  disabled-Type-Key-on-edit behaviour. */
+export const registerAnnotationType = (body) => post('/api/analyses/annotation-types', body);
+export const updateAnnotationType = (typeName, body) =>
+  put(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`, body);
+export const deleteAnnotationType = (typeName) =>
+  del(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
+
+/** Blast-radius number for a delete/rename confirmation — a LOWER BOUND on
+ *  how many projects have a local record of publishing this type, never a
+ *  full annotation count (see the route's own docstring in analyses.py).
+ *  `exact` is always false; callers must not read `projects_published: 0`
+ *  as "unused". */
+export const getAnnotationTypeUsage = (typeName) =>
+  get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}/usage`);
+
 /** The full, unscoped Question catalog — every authored question with its
- *  funnel stage, perspectives and answering mechanism. Read-only browser;
- *  the catalog itself is edited via the source CSV, not this route. */
+ *  funnel stage, perspectives and answering mechanism. Includes retired
+ *  entries (flagged via `retired`, never hidden — see question_catalog.js). */
 export const listQuestionCatalog = (resourceType = 'repo') =>
   get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+
+/** Append-only writes (SPEC-ADMIN-THE-FOUR-GAPS.md §4, project owner
+ *  decision 2026-09-20): add a new question, or retire an existing one.
+ *  There is deliberately no "edit" call — question_catalog_writer.py
+ *  refuses a reworded add (same question text, different fields) as a
+ *  duplicate rather than upserting it. */
+export const addQuestionCatalogEntry = (body) => post('/api/analyses/question-catalog/questions', body);
+export const retireQuestionCatalogEntry = (question) =>
+  post('/api/analyses/question-catalog/questions/retire', { question });
 
 /** The in-process log ring buffer (`observability/logging_setup.py`) —
  *  bounded, in-memory, empty after a restart. The response carries buffer

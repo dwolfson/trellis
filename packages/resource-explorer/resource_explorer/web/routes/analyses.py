@@ -116,6 +116,39 @@ def delete_annotation_type(type_name: str) -> dict:
     return {"status": "success"}
 
 
+@router.get("/annotation-types/{type_name}/usage")
+def get_annotation_type_usage(type_name: str) -> dict:
+    """Blast-radius number for Admin's delete/rename confirmation
+    (SPEC-ADMIN-THE-FOUR-GAPS.md §4/§0): "an annotation type is referenced
+    by recorded annotations — the confirmation must say how many, and say
+    unknown rather than imply zero if that count is not cheap."
+
+    `projects_published` is `ProjectRegistry.count_projects_published_annotation_type` —
+    a real, cheap, indexed number, but a lower bound on distinct *projects*
+    that have a local record of publishing this type, not a count of
+    annotation *records* (RE keeps no durable local table of individual
+    annotation instances — see that method's docstring). `exact` is always
+    False here, on purpose: a caller (or a future test) that only checks
+    `projects_published > 0` would otherwise be tempted to treat 0 as "safe
+    to delete", which the docstring above explicitly says it is not."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get_annotation_type(type_name):
+        raise HTTPException(status_code=404, detail="Annotation type not found")
+    n = registry.count_projects_published_annotation_type(type_name)
+    return {
+        "type": type_name,
+        "projects_published": n,
+        "exact": False,
+        "note": (
+            f"Locally recorded as published for {n} project(s) — a lower bound, "
+            "not a full annotation count. RE does not keep a durable per-annotation "
+            "record of AnnotationType, so this cannot say the true number, and 0 "
+            "here means 'no local publish record', not 'unused'."
+        ),
+    }
+
+
 @router.get("/perspectives")
 def list_perspectives_route(scope: str = "catalog") -> list[str]:
     """Distinct perspective values actually in the catalog — backs the UI's
@@ -146,6 +179,73 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     return get_questions(resource_type)
+
+
+class QuestionCatalogAddRequest(BaseModel):
+    question: str
+    stage: str = ""
+    perspectives: list[str] = []
+    purposes: list[str] = []
+    why_important: str = Field("", alias="whyImportant")
+    rationale: str = ""
+    answering_mechanism: str = Field("", alias="answeringMechanism")
+
+    class Config:
+        populate_by_name = True
+
+
+class QuestionCatalogRetireRequest(BaseModel):
+    question: str
+
+
+@router.post("/question-catalog/questions")
+def add_question_catalog_entry(body: QuestionCatalogAddRequest) -> dict:
+    """Append one new question to docs/dr-egeria/resource_questions.csv and
+    regenerate configdata/question_catalog.yaml from it — the write half of
+    the append-only decision recorded in question_catalog_writer.py and
+    SPEC-ADMIN-THE-FOUR-GAPS.md §4.
+
+    **Decision (project owner, 2026-09-20):** append-only — this route ADDS,
+    it never edits. It 400s if `question` already exists in the CSV (active
+    or retired), rather than silently updating that row, which is the
+    backend half of "editing is not offered anywhere" — the UI not offering
+    an edit form is not enough on its own; this route refuses one even if
+    called directly."""
+    from resource_explorer.surveyors.question_catalog_writer import (
+        QuestionCatalogWriteError, add_question,
+    )
+    try:
+        add_question(
+            body.question,
+            stage=body.stage,
+            perspectives=body.perspectives,
+            purposes=body.purposes,
+            why_important=body.why_important,
+            rationale=body.rationale,
+            answering_mechanism=body.answering_mechanism,
+        )
+    except QuestionCatalogWriteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success"}
+
+
+@router.post("/question-catalog/questions/retire")
+def retire_question_catalog_entry(body: QuestionCatalogRetireRequest) -> dict:
+    """Flag an existing question retired — a status change, never a rewrite
+    of its text, stage, or history. Retired questions stay in the catalog
+    (and in the CSV) so a past survey answer's question is still readable
+    exactly as it was asked; the UI shows them distinctly rather than
+    hiding them (see next/admin/question_catalog.js's STATUS handling)."""
+    from resource_explorer.surveyors.question_catalog_writer import (
+        QuestionCatalogWriteError, QuestionNotFoundError, retire_question,
+    )
+    try:
+        retire_question(body.question)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except QuestionCatalogWriteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success"}
 
 
 @router.get("/{analysis_id}/cost")

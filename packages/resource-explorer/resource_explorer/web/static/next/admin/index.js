@@ -20,10 +20,16 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Five panes are real, read-mostly ports here — Annotation Types (browse),
- * Question Catalog (browse), Logs, Feedback and Prefect — because each is
- * either read-only against an already-existing route or a bounded read
- * +status-action surface. Six are DELIBERATE, NAMED deferrals: Groups,
+ * Five panes are real ports here — Logs, Feedback and Prefect are
+ * read-only/bounded read+status-action surfaces; **Annotation Types and
+ * Question Catalog gained real write UI on 2026-09-20**
+ * (SPEC-ADMIN-THE-FOUR-GAPS.md §4 — "the two registries"): Annotation Types
+ * now creates/edits/deletes against routes that already existed
+ * (annotation_types.js), and Question Catalog gained a new, append-only
+ * add/retire backend (question_catalog_writer.py) alongside its UI — see
+ * that spec and ADMIN-REGISTRIES-IMPLEMENTED.md for what changed and why
+ * editing a question's own text is refused rather than offered. Six are
+ * DELIBERATE, NAMED deferrals: Groups,
  * Discovery Sources, Egeria Alignment, Egeria Links, Publish Queue and
  * Repair are all reconciliation/config-mutation surfaces whose classic
  * implementations run 200-1000+ lines each (bulk GitHub-org import and

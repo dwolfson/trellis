@@ -159,11 +159,29 @@ class TestAnnotationTypesBrowse:
         api = _reapi_src()
         assert "export const listAnnotationTypes = () => get('/api/analyses/annotation-types');" in api
 
-    def test_renders_a_detail_view_and_names_the_deferred_mutations(self):
+    def test_renders_a_detail_view_with_edit_and_delete(self):
         src = _admin_module("annotation_types.js")
         assert "export async function renderAnnotationTypes(host)" in src
-        assert "Register" in src or "Edit/Delete in current UI" in src
-        assert "oldUiHref" in src
+        assert "data-edit" in src
+        assert "data-delete" in src
+
+    def test_mutations_are_no_longer_deferred_to_classic(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §4 (2026-09-20): register/edit/delete
+        against the routes that already existed — this pane used to punt
+        every write to classic via `oldUiHref()`; it doesn't anymore."""
+        src = _admin_module("annotation_types.js")
+        assert "oldUiHref" not in src
+        api = _reapi_src()
+        assert "registerAnnotationType" in api
+        assert "updateAnnotationType" in api
+        assert "deleteAnnotationType" in api
+
+    def test_delete_confirmation_names_blast_radius_or_says_unknown(self):
+        """§0/§4: a destructive confirmation must say how many annotations
+        are affected, or say the count is unknown — never imply zero."""
+        src = _admin_module("annotation_types.js")
+        assert "getAnnotationTypeUsage" in src
+        assert "UNKNOWN" in src or "unknown" in src
 
 
 class TestQuestionCatalogBrowse:
@@ -179,6 +197,22 @@ class TestQuestionCatalogBrowse:
     def test_export_render_function_exists(self):
         src = _admin_module("question_catalog.js")
         assert "export async function renderQuestionCatalog(host)" in src
+
+    def test_add_and_retire_are_offered_but_no_edit_form_exists(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §4 (2026-09-20, project owner decision):
+        append-only — add and retire are real UI actions here; there is no
+        third path that reworks an existing question's own text."""
+        src = _admin_module("question_catalog.js")
+        assert "addQuestionCatalogEntry" in src
+        assert "retireQuestionCatalogEntry" in src
+        assert "data-retire" in src
+        assert "updateQuestionCatalogEntry" not in src
+        assert "editQuestionCatalogEntry" not in src
+
+    def test_retired_questions_are_shown_distinctly_not_hidden(self):
+        src = _admin_module("question_catalog.js")
+        assert "retired" in src
+        assert "LIFECYCLE" in src
 
 
 class TestLogsPane:
