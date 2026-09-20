@@ -61,7 +61,14 @@ class TestUncataloguedAssetRaises:
 
     def test_a_guid_present_does_not_raise_and_triggers_the_native_survey(self):
         """Sanity check on the other side of the same branch — a cataloged
-        database does not hit this failure mode at all."""
+        database does not hit this failure mode at all. Since the async
+        result-retrieval build, this now also polls to a terminal status and
+        reads back the produced report's annotations — both pyegeria clients
+        (trigger/poll) and the report/annotation reads are mocked here; the
+        happy-path detail (report attribution, annotation conversion) is
+        covered by test_egeria_async_survey_result.py instead of duplicated."""
+        from datetime import datetime, timedelta, timezone
+
         db_entity = DatabaseEntity(
             slug="catalogued-db", display_name="Catalogued", db_type="postgresql",
             host="localhost", port=5432, database_name="mydb",
@@ -69,13 +76,35 @@ class TestUncataloguedAssetRaises:
         )
         fake_surveyor = MagicMock()
         fake_surveyor.trigger_survey_by_guid.return_value = "engine-action-guid-1"
+        fake_surveyor.get_survey_reports_by_guid.return_value = [
+            # Comfortably after whatever wall-clock instant the handler
+            # records as its trigger time during the test.
+            {"guid": "report-guid-1", "qualified_name": "SurveyReport::x",
+             "surveyed_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()},
+        ]
+        fake_surveyor.get_annotations_by_report_guid.return_value = []
+
+        metadata_expert = MagicMock()
+        metadata_expert.get_metadata_element_by_guid.return_value = {
+            "elementProperties": {"propertyValueMap": {
+                "activityStatus": {"symbolicName": "COMPLETED"},
+            }}
+        }
+
         with patch(
             "resource_explorer.surveyors.database.egeria_database_surveyor.EgeriaDatabaseSurveyor",
             return_value=fake_surveyor,
+        ), patch(
+            "resource_explorer.surveyors.egeria_async_survey_result._get_clients",
+            return_value=(MagicMock(), metadata_expert),
         ):
             result = db_adapter._trigger_egeria_native_survey(db_entity, MagicMock(), step=MagicMock())
 
-        assert result == {"engine_action_guid": "engine-action-guid-1"}
+        assert result["status"] == "ok"
+        assert result["engine_action_guid"] == "engine-action-guid-1"
+        assert result["final_status"] == "COMPLETED"
+        assert result["report_guid"] == "report-guid-1"
+        assert result["annotations"] == []
         fake_surveyor.trigger_survey_by_guid.assert_called_once_with("asset-guid-123")
 
     def test_through_the_full_executor_the_raise_becomes_a_reported_error_not_a_crash(self):

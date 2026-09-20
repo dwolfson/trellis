@@ -193,13 +193,31 @@ Separate catalog and survey actions: cataloging (registering an asset in Egeria)
 
 ---
 
-### D5 — Async Survey Result Retrieval [Proposed]
+### D5 — Async Survey Result Retrieval [Partially Implemented, 2026-09-19]
 
-Egeria native surveys are asynchronous. We receive a `survey_action_guid` when the survey is triggered; annotations appear later. Egeria has a notification framework but no webhook capability today.
+Egeria native surveys are asynchronous. We receive a `survey_action_guid` (engine action guid) when the survey is triggered; annotations appear later. Egeria has a notification framework but no webhook capability today.
 
-**Approach for now:** Polling. Each pending activity log entry shows a "Check for results" button; the UI also polls automatically every 30 seconds for any entries with `status='pending'` when the Activity panel is open.
+**What's built (2026-09-19):** for a Survey Definition step tagged `executes_at="egeria"`, the database and filesystem adapters' `_trigger_egeria_native_survey` handlers (`resource_explorer/surveyors/database/survey_definition_adapter.py`, `.../filesystem/survey_definition_adapter.py`) no longer fire-and-forget. Each now:
 
-**To investigate:** Egeria's notification/event framework and whether it can be used to push completion events to us without polling.
+1. records the wall-clock time just before triggering,
+2. triggers Egeria's native survey (`trigger_survey_by_guid`),
+3. **synchronously polls** the resulting engine action to a terminal `activityStatus`, reusing `egeria_delegated_step._poll_action_status`'s live-verified polling logic (interval/timeout, terminal-state detection),
+4. identifies the *specific* new `SurveyReport` this trigger produced (see the attribution mechanism below), and
+5. reads back that report's real annotations and converts them into RE's own `Annotation` dataclass shape.
+
+The step now reports `"status": "ok"` with real output, or a specific error (`EgeriaEngineActionTimeoutError` on poll timeout, `SurveyReportAttributionError` on an unresolvable report) — never the previous unconditional `"triggered"` regardless of outcome. `survey_definition_executor.py`'s `other_engine_handlers` dispatch (~line 473) now reports the handler's own `status` when it sets one, rather than hardcoding `"triggered"`; a handler that still only fires-and-forgets (no `status` key) keeps the old wording.
+
+The shared poll/resolve/convert logic lives in `resource_explorer/surveyors/egeria_async_survey_result.py`, used identically by both the database and filesystem adapters.
+
+**The report-attribution problem, and how it's solved:** after triggering, a resource's asset can have multiple `SurveyReport`s linked via `ReportSubject` (an old run, a concurrent unrelated survey, this trigger's own). No direct EngineAction→SurveyReport relationship was found in Egeria's metadata graph during this build (investigated via `AssetMaker.get_asset_by_guid` graph-walk output on a completed engine action) — if one is found later, querying it directly would be simpler and should replace the mechanism below.
+
+In its absence, the report this trigger produced is identified by timestamp: take the single `SurveyReport` whose `surveyed_at` is strictly after the recorded pre-trigger time. Not "the newest report" (a concurrent unrelated survey could be newer) and not "the first result" (ordering isn't guaranteed). If that narrows to zero or more than one candidate, `SurveyReportAttributionError` is raised — reported as an explicit ambiguity, never guessed past. See `resource_explorer/surveyors/egeria_async_survey_result.py`'s module docstring and `docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md` for the full design and open questions (including whether these converted annotations should also be re-published to Egeria under RE's own SurveyReport, which this build deliberately left undecided).
+
+**Not changed by this build:** the general activity-log "pending" / "Check for results" polling UI described below, which is a different, broader mechanism (any survey trigger, not just `executes_at="egeria"` steps) and is unaffected by this work.
+
+**Approach for the general activity-log case:** Polling. Each pending activity log entry shows a "Check for results" button; the UI also polls automatically every 30 seconds for any entries with `status='pending'` when the Activity panel is open.
+
+**To investigate:** Egeria's notification/event framework and whether it can be used to push completion events to us without polling. Also open: whether a direct EngineAction→SurveyReport relationship exists that this build didn't find, and whether the `other_engine_handlers["egeria"]` step's now-synchronous multi-minute wait should route through Prefect for cancellation/visibility the way `executes_at="resource-explorer"`/`"prefect"` steps already can (investigated during this build: `other_engine_handlers` steps are never routed to Prefect today — `survey_definition_executor._use_prefect` only recognizes `"prefect"` and `"resource-explorer"` — so this wait now runs synchronously in whatever thread executes the Survey Definition, with no separate cancellation/visibility beyond the poll's own internal timeout; no changes made here since no problem from this was confirmed, but see the design-notes doc).
 
 ---
 

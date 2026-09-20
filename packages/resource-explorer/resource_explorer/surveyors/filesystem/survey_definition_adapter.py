@@ -12,11 +12,17 @@ other_engine_handlers (added 2026-08-24, closing survey_definition_executor.py's
 Egeria-trigger stub for this resource type — see EgeriaFileSystemSurveyor.
 trigger_survey_by_guid's own docstring for the live-confirmed process/target
 names and the one real caveat: not yet exercised end-to-end, since this
-environment has no cataloged filesystem to test against).
+environment has no cataloged filesystem to test against). As of the async
+result-retrieval build, this now also waits for the triggered engine action
+to reach a terminal status and reads back its real result — see
+egeria_async_survey_result.py, shared with the database adapter's identical
+function above it, and
+docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
@@ -77,11 +83,20 @@ def _get_filesystem_entity(registry, slug: str):
 
 def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
     """Trigger Egeria's own native FileDirectory survey for a step tagged
-    executes_at="egeria". Requires the filesystem to already be cataloged in
+    executes_at="egeria", then wait for it to reach a terminal status and read
+    back its real result. Requires the filesystem to already be cataloged in
     Egeria (has a stored asset guid) — this does not catalog it as a side
     effect (mirrors database/survey_definition_adapter.py's identical
-    function). The native survey is async; this only returns the triggered
-    engine action's guid, not a completed result."""
+    function, sharing the same poll/resolve/convert helper).
+
+    Raises on timeout (EgeriaEngineActionTimeoutError) or on an unresolvable
+    report attribution (SurveyReportAttributionError) — both propagate to the
+    executor's own per-step except clause, which reports them as a specific
+    error rather than a silent "triggered" success.
+    """
+    from resource_explorer.surveyors.egeria_async_survey_result import (
+        poll_trigger_and_retrieve_annotations,
+    )
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
     fs_guid = fs_entity.egeria_asset_guid
@@ -91,8 +106,20 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
             "cannot trigger Egeria's native survey for an uncataloged filesystem."
         )
     surveyor = EgeriaFileSystemSurveyor()
+    triggered_at = datetime.now(timezone.utc)
     engine_action_guid = surveyor.trigger_survey_by_guid(fs_guid)
-    return {"engine_action_guid": engine_action_guid}
+    log.info(
+        "Triggered Egeria native survey for filesystem %r: engine_action_guid=%s",
+        fs_entity.slug, engine_action_guid,
+    )
+    result = poll_trigger_and_retrieve_annotations(
+        surveyor=surveyor,
+        engine_action_guid=engine_action_guid,
+        resource_guid=fs_guid,
+        triggered_at=triggered_at,
+        analysis_step=step.re_analysis_step,
+    )
+    return {"status": "ok", **result}
 
 
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
