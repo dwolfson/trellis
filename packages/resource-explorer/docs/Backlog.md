@@ -10,6 +10,53 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Path B3 — repo `executes_at: egeria` handler built (2026-09-20)
+
+**Decision (project owner, 2026-09-20):** build the repo-side `executes_at: "egeria"`
+plumbing now, even though no live repo survey action service may exist in Egeria
+yet ("we will probably have some surveys that execute there at some point") —
+close `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md` §1 Path B /
+item 8 (Path B3) rather than waiting for Egeria's side to be ready first.
+
+Built: `EgeriaPublisher.trigger_survey_by_guid` (+ `_initiate_survey`/
+`_find_survey_process_name`, `resource_explorer/surveyors/egeria_publisher.py`)
+mirrors `EgeriaDatabaseSurveyor`'s dynamic-discovery mechanism — generic over a
+technology-type string — rather than `EgeriaFileSystemSurveyor`'s hardcoded-
+qualifiedName shortcut, since no confirmed-live repo survey process exists to
+hardcode against. `repo_survey_definition_adapter._trigger_egeria_native_survey`
+registers as `other_engine_handlers={"egeria": ...}` on the repo `_ADAPTER`,
+following the database/filesystem handlers' contract exactly (requires a
+stored `Project.egeria_asset_guid`, reuses the shared
+`egeria_async_survey_result.poll_trigger_and_retrieve_annotations` poll/
+resolve/attribute/convert machinery unmodified — nothing resource-type-
+specific was found in it).
+
+Repos have no registered Egeria Technology Type (cataloged as a plain generic
+`Asset`, not a typed one) — `"GitHub Repository"` is used as the discovery key,
+since it's the one repo-specific string this codebase already sends to Egeria
+(`additionalProperties.deployed_implementation_type` in
+`EgeriaPublisher._find_or_create_asset`).
+
+**Expected, honest current state:** with no live repo survey action service
+registered in Egeria, and no `(entity_type="repo", "GitHub Repository")` entry
+in `configdata/technology_type_processes.yaml`, a repo Survey Definition step
+tagged `executes_at: "egeria"` now reaches a specific, clear RuntimeError
+("No native survey process configured for technology_type='GitHub Repository'
+(entity_type='repo')") instead of the old `not_executed_no_egeria_handler`
+skip — reported through the executor's normal per-step error path, not a
+crash. This is correct and expected, not a regression to fix; it self-resolves
+the moment a real repo survey action service is authored in Egeria and either
+registered as a discoverable user Survey Definition or added to
+`technology_type_processes.yaml` — no further RE code change needed.
+
+Tests: `tests/test_repo_egeria_native_survey_handler.py` (uncataloged raise,
+happy-path trigger+poll+resolve, no-matching-process error, both direct and
+through the full executor). `tests/test_execution_modes_path_b1_failure_modes.py`'s
+`TestUnregisteredEngineHandlerYieldsNotExecuted` — which had pinned "repos have
+no egeria handler at all" as its live example — is updated to exercise that
+generic failure mode against a synthetic adapter instead, since it's no longer
+true of repos.
+
 ## Cataloguing in layers — layer 1 evidence and consumed-Egeria-interfaces built
 
 **Decision (project owner, 2026-09-14):** catalogue in layers — coarse top-level

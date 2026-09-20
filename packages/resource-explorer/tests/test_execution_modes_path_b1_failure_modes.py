@@ -149,31 +149,35 @@ class TestUncataloguedAssetRaises:
 
 class TestUnregisteredEngineHandlerYieldsNotExecuted:
     """survey_definition_executor.py:487-510 — an entity type with no
-    `other_engine_handlers["egeria"]` registered at all. Repos are the real,
-    live example (plan §1 Path B / §0(a)): `repo_survey_definition_adapter.py`
-    registers no `other_engine_handlers`, so a repo Survey Definition step
-    tagged executes_at="egeria" genuinely never runs anywhere."""
+    `other_engine_handlers["egeria"]` registered at all.
 
-    def test_repo_adapter_has_no_egeria_handler_registered(self):
-        """Confirms the premise directly against the real adapter, so the
-        next test's result isn't just an artifact of a stale import."""
-        import resource_explorer.surveyors.repo_survey_definition_adapter  # noqa: F401
+    Repos used to be the real, live example of this (plan §1 Path B / §0(a)):
+    `repo_survey_definition_adapter.py` registered no `other_engine_handlers`,
+    so a repo Survey Definition step tagged executes_at="egeria" genuinely
+    never ran anywhere. That gap was closed 2026-09-20 (Backlog "Path B3") —
+    repos now have a real "egeria" handler
+    (`repo_survey_definition_adapter._trigger_egeria_native_survey`), so this
+    class's tests are exercised below via `ResourceTypeAdapter` test doubles
+    instead, and repos' own current "egeria" behavior (an honest
+    RuntimeError while no live repo survey action service exists in Egeria
+    yet) is covered by
+    tests/test_repo_egeria_native_survey_handler.py instead."""
 
-        adapter = get_adapter("repo")
-        assert "egeria" not in adapter.other_engine_handlers
-
-    def test_repo_egeria_step_is_not_executed_no_egeria_handler_and_counted_as_an_error(self):
-        import resource_explorer.surveyors.repo_survey_definition_adapter  # noqa: F401
-
-        adapter = get_adapter("repo")
-        registry = _fake_registry()
-        registry.get.return_value = MagicMock(display_name="Fixture Repo", github_url="")
+    def test_an_entity_type_with_no_egeria_handler_is_not_executed_and_counted_as_an_error(self):
+        adapter = ResourceTypeAdapter(
+            entity_type="fake_no_egeria_handler",
+            technology_type="Fake Tech No Egeria Handler",
+            re_analysis_steps={},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(),
+        )
+        register_adapter(adapter)
 
         survey_def = SurveyDefinition(
-            process_guid="proc-repo-egeria",
-            display_name="Repo Egeria-side Survey",
-            qualified_name="GovActionProcess::RepoEgeriaSide",
-            supported_technology_type=adapter.technology_type,
+            process_guid="proc-no-handler",
+            display_name="No Egeria Handler Survey",
+            qualified_name="GovActionProcess::NoEgeriaHandler",
+            supported_technology_type="Fake Tech No Egeria Handler",
             steps=[
                 SurveyStep(
                     guid="s1", display_name="EgeriaNative", qualified_name="Step::EgeriaNative",
@@ -181,13 +185,14 @@ class TestUnregisteredEngineHandlerYieldsNotExecuted:
                 ),
             ],
         )
+        registry = _fake_registry()
         reader = _fake_reader(survey_def, candidates=[
-            {"guid": "proc-repo-egeria", "qualified_name": "GovActionProcess::RepoEgeriaSide",
-             "display_name": "RepoEgeriaSide"},
+            {"guid": "proc-no-handler", "qualified_name": "GovActionProcess::NoEgeriaHandler",
+             "display_name": "NoEgeriaHandler"},
         ])
         executor = SurveyDefinitionExecutor(registry, reader=reader)
 
-        result = executor.run(entity_type="repo", slug="fixture-repo")
+        result = executor.run(entity_type="fake_no_egeria_handler", slug="whatever")
 
         statuses = {s["step"]: s["status"] for s in result["steps"]}
         assert statuses["Step::EgeriaNative"] == "not_executed_no_egeria_handler"
