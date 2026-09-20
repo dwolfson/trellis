@@ -719,6 +719,50 @@ property holds by construction instead of by remembering to stop the server.
 Until then, stopping the web server is the mitigation, and it is a mitigation
 for one run rather than a fix.
 
+### TIER 1 — `catalog_and_survey` never refreshes an existing element's credentials/connection
+
+**Found live, 2026-09-19/20**, while testing Egeria-native survey result retrieval against a real
+database (`coco_ods`, part of the Coco Pharmaceuticals sample data). The native PostgreSQL survey
+engine rejected the triggered engine action as `INVALID` with:
+
+> `OPEN-SURVEY-0009 The postgres-database-survey-service Survey Action Service has been supplied
+> with asset 8f239316-8773-44da-9e8e-760243226a10 which has no connection, so there is no way to
+> reach the resource it describes`
+
+**Root cause, confirmed by reading the code, not guessed:**
+`EgeriaDatabaseSurveyor._catalog_and_survey()` (`surveyors/database/egeria_database_surveyor.py`)
+looks up the server/database elements by name first (`_find_element_guid`) and only calls
+`create_postgres_server_element_from_template`/`create_postgres_database_element_from_template` —
+the calls that actually carry `db_user`/`db_pwd` and presumably attach a `Connection` — **when no
+element is found by that name**. Once an element exists, re-running `catalog_and_survey` (even
+with corrected credentials) reuses the existing element unchanged and never re-creates or updates
+its connection. Live-verified directly: re-ran `catalog_and_survey` for `coco_ods` with corrected
+`db_user`/`db_pwd` (see the `egeria_user` validation entry above — this asset was originally
+catalogued using bad credentials before that fix) and got the *identical* `OPEN-SURVEY-0009`
+error on the new engine action, proving the re-run changed nothing about the stored connection.
+
+**Impact:** any database or filesystem asset first catalogued with wrong/incomplete
+credentials is permanently stuck with no working native survey path — there is no way to correct
+it short-of manual intervention, since the one function that would normally be expected to "fix
+it, just re-run the catalog step" silently no-ops on the part that matters.
+
+**Not yet investigated:** whether pyegeria exposes an "update connection on an existing asset"
+call distinct from the create-from-template ones, or whether the only real fix is delete-and-
+recatalog. Also unconfirmed: whether `create_postgres_server_element_from_template`/
+`create_postgres_database_element_from_template` themselves are upsert-safe (would update in
+place if called again) — if so, the simpler fix is just removing the `if not <guid>` guard and
+always calling them, letting the template call itself decide create-vs-update. Investigate
+before assuming either fix is correct.
+
+**Explicitly not a bug in the Egeria-async-result-retrieval work done the same day** (see
+`EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md`) — that work's poll/attribution/parse mechanism was
+validated live against this exact failure: it correctly polled to the real terminal status
+(`INVALID`, not a timeout), correctly surfaced the real completion message, and correctly refused
+to guess when two survey reports (server-level and database-level, triggered together) landed in
+the same time window, raising `SurveyReportAttributionError` rather than picking one at random.
+The `0` annotation counts read back were independently confirmed accurate given the underlying
+`INVALID` survey — a real absence, not a miscount.
+
 ### TIER 1 — "Three execution modes" don't map onto one verified mechanism, and two of the paths are untested
 
 > **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
