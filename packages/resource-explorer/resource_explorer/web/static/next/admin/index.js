@@ -20,17 +20,19 @@
  * total today, not the "ten classic admin views" PLAN-FINISH-REPOS.md
  * expected; see ITEM-5-ADMIN-IMPLEMENTED.md for the reconciliation.)
  *
- * Five panes are real, read-mostly ports here — Annotation Types (browse),
- * Question Catalog (browse), Logs, Feedback and Prefect — because each is
- * either read-only against an already-existing route or a bounded read
- * +status-action surface. Six are DELIBERATE, NAMED deferrals: Groups,
- * Discovery Sources, Egeria Alignment, Egeria Links, Publish Queue and
- * Repair are all reconciliation/config-mutation surfaces whose classic
+ * Seven panes are real ports here — Annotation Types (browse), Question
+ * Catalog (browse), Logs, Feedback, Prefect, and (2026-09-20,
+ * SPEC-ADMIN-THE-FOUR-GAPS.md §1) Egeria Alignment and Repair, built as TWO
+ * separate panes because classic has them as two separate screens doing
+ * different jobs — see admin/resync.js and admin/repair.js's own header
+ * comments for why folding them together would be wrong. Four remain
+ * DELIBERATE, NAMED deferrals: Groups, Discovery Sources, Egeria Links and
+ * Publish Queue are reconciliation/config-mutation surfaces whose classic
  * implementations run 200-1000+ lines each (bulk GitHub-org import and
- * drag-drop membership for Groups; multi-step guided repair flows for
- * Egeria Alignment/Links/Repair; retry semantics tied to outbox internals
- * for Publish Queue) — see DEFERRED_TABS below for the per-pane reason,
- * each linking out to classic via the shared `oldUiHref()` helper.
+ * drag-drop membership for Groups; a divergence-repair flow for Egeria
+ * Links; retry semantics tied to outbox internals for Publish Queue) — see
+ * DEFERRED_TABS below for the per-pane reason, each linking out to classic
+ * via the shared `oldUiHref()` helper.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
@@ -38,12 +40,14 @@ import { renderQuestionCatalog } from '/static/next/admin/question_catalog.js';
 import { renderLogs } from '/static/next/admin/logs.js';
 import { renderFeedback } from '/static/next/admin/feedback.js';
 import { renderPrefect } from '/static/next/admin/prefect.js';
+import { renderResync } from '/static/next/admin/resync.js';
+import { renderRepair } from '/static/next/admin/repair.js';
 
 const PANEL_ID = 'admin-panel';
 
 /** Same grouping and order as classic's `_ADMIN_GROUPS` — a person who knows
  *  the current UI should find the same three groups here, not a reshuffled
- *  version of them. `render` is set only for the five built panes; a
+ *  version of them. `render` is set only for the seven built panes; a
  *  deferred one carries `defer` naming exactly what and why instead. */
 const GROUPS = [
   { name: 'Configure', tabs: [
@@ -67,15 +71,7 @@ const GROUPS = [
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
   ]},
   { name: 'Reconcile', tabs: [
-    { id: 'admin-resync', label: '🔄 Egeria Alignment', defer: {
-      does: 'Scan RE\'s registry against Egeria for drift (an Egeria reset that '
-        + 'left RE holding pointers into a catalog that no longer contains them) '
-        + 'and run the one-correct-answer repairs for it',
-      why: 'this is the largest single pane in classic Admin (~1000 lines) and '
-        + 'every repair it offers is a real write to shared Egeria/registry '
-        + 'state — exactly the kind of operation this item\'s own instructions '
-        + 'say never to build unverified against a live signed-in session',
-    } },
+    { id: 'admin-resync', label: '🔄 Egeria Alignment', render: renderResync },
     { id: 'admin-egeria-links', label: '🔗 Egeria Links', defer: {
       does: "Reconcile a resource's local record against the Egeria asset(s) it "
         + 'should be linked to, and repair a missing or wrong link',
@@ -89,15 +85,7 @@ const GROUPS = [
         + 'queue view that cannot retry is not the pane, and one that can needs '
         + 'the same live-write caution as the two panes above',
     } },
-    { id: 'admin-repair', label: '🔧 Repair', defer: {
-      does: 'Repo repair operations — rename, fix a wrong github_url, and similar '
-        + 'one-off corrections to a resource\'s catalog record',
-      why: 'every action here is a destructive, resource-identity-changing write; '
-        + "classic's own version (~270 lines) gates each behind its own confirm, "
-        + "and this item's verification could not exercise a live write path at "
-        + 'all (see ITEM-5-ADMIN-IMPLEMENTED.md), so it stays a named defer rather '
-        + 'than an unverified port',
-    } },
+    { id: 'admin-repair', label: '🔧 Repair', render: renderRepair },
   ]},
   { name: 'Observe', tabs: [
     { id: 'admin-prefect', label: '⚡ Prefect', render: renderPrefect },
