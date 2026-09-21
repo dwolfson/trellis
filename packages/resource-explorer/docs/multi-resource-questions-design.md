@@ -1127,8 +1127,8 @@ Agreed on review (project owner, 2026-09-20), as proposed:
   is always explicit.
 **Amended 2026-09-21 — how a survey proposes an element.** The project owner
 reviewed `docs/egeria-support-for-multi-resource.md` and pointed at two
-mechanisms Egeria already has, both confirmed in the Java source (relayed by
-the coordinating session; the decision callouts land in that document): an
+mechanisms Egeria already has, both confirmed in the Java source (the seven
+decision callouts are in that document as of dwolfson/trellis#189): an
 `Annotation` carries `contentStatus`, which can be `DRAFT`
 (`ContentStatus.java:37`), and `AssociatedAnnotation`
 (`OpenMetadataType.java:6039`) links any element to an annotation directly,
