@@ -656,10 +656,23 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
 async def get_database_diff(slug: str) -> dict:
     """Compare the two most recent database survey runs.
 
-    Returns empty dict when fewer than two runs exist.
+    Reads the structured `database_tables` rows (design §5.7), not the
+    `survey_data` JSON blob. Until 2026-09-20 this function re-parsed the blob
+    on every call — the design doc cites this very line as why the structured
+    tables were needed.
+
+    Returns an empty dict when fewer than two runs exist.
+
+    **Absence is reported, not silently rendered as "no change".** The old
+    implementation caught every exception from blob parsing and returned an
+    empty set, so an unparseable blob, a blob in an older shape and a database
+    with genuinely no tables all produced the same answer: "±0 tables, none
+    added, none removed". A run with no structured rows now says so via
+    `table_diff_state`, rather than claiming nothing changed.
     """
-    import json as _json
-    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.registry import (
+        ProjectRegistry, STATE_MEASURED, STATE_EMPTY, STATES_WITHOUT_A_MEASUREMENT,
+    )
     registry = ProjectRegistry()
     surveys = registry.get_database_surveys(slug)
     if len(surveys) < 2:
@@ -668,19 +681,56 @@ async def get_database_diff(slug: str) -> dict:
     curr = surveys[0]
     prev = surveys[1]
 
-    def _table_set(survey: dict) -> set[str]:
-        try:
-            data = _json.loads(survey.get("survey_data") or "{}")
-            schemas = data.get("schema_info", data).get("schemas", [])
-            return {f"{s['name']}.{t['name']}"
-                    for s in schemas for t in s.get("tables", [])}
-        except Exception:
-            return set()
+    def _tables_for(survey: dict) -> tuple[set[str], str, str]:
+        """Qualified table names for one run, plus how well we know them.
 
-    curr_tables = _table_set(curr)
-    prev_tables = _table_set(prev)
+        Returns (names, state, note). `state` is STATE_MEASURED only when
+        this run actually has structured rows; anything else means the set is
+        not a usable basis for a diff, and the caller must not present it as
+        one.
+        """
+        surveyed_at = survey.get("surveyed_at") or ""
+        source = survey.get("source") or None
+        rows = registry.query_detail_rows(
+            "database_tables", slug, surveyed_at, source
+        )
+        coverage = registry.get_section_coverage(
+            "database", slug, surveyed_at, source
+        ).get("tables")
 
-    return {
+        names = {
+            f"{r.get('schema_name') or ''}.{r.get('table_name') or ''}"
+            for r in rows
+        }
+        if rows:
+            return names, STATE_MEASURED, ""
+        if coverage is None:
+            # No rows and no coverage record: this run predates the
+            # structured tables and has not been back-filled. Distinct from
+            # "surveyed and found nothing", and actionable.
+            return names, "not_materialized", (
+                "This run has no structured rows yet — run "
+                "scripts/backfill_structured_tables.py to convert its stored "
+                "survey_data."
+            )
+        state = coverage.get("state") or STATE_EMPTY
+        if state in STATES_WITHOUT_A_MEASUREMENT:
+            return names, state, coverage.get("detail") or ""
+        return names, STATE_EMPTY, coverage.get("detail") or ""
+
+    curr_tables, curr_state, curr_note = _tables_for(curr)
+    prev_tables, prev_state, prev_note = _tables_for(prev)
+
+    # Only diff two sides that were both genuinely measured. Subtracting a set
+    # we do not have from one we do would report every table in the measured
+    # run as newly added — a confident wrong answer, and the exact failure the
+    # blob version produced whenever a parse failed.
+    comparable = curr_state in (STATE_MEASURED, STATE_EMPTY) and prev_state in (
+        STATE_MEASURED, STATE_EMPTY
+    )
+    table_diff_state = STATE_MEASURED if comparable else "not_comparable"
+
+    result = {
         "prev_date":       prev["surveyed_at"],
         "curr_date":       curr["surveyed_at"],
         "deltas": {
@@ -688,6 +738,13 @@ async def get_database_diff(slug: str) -> dict:
             "tables":  (curr.get("table_count")  or 0) - (prev.get("table_count")  or 0),
             "columns": (curr.get("column_count") or 0) - (prev.get("column_count") or 0),
         },
-        "new_tables":     sorted(curr_tables - prev_tables),
-        "removed_tables": sorted(prev_tables - curr_tables),
+        "new_tables":     sorted(curr_tables - prev_tables) if comparable else [],
+        "removed_tables": sorted(prev_tables - curr_tables) if comparable else [],
+        "table_diff_state": table_diff_state,
+        "curr_table_state": curr_state,
+        "prev_table_state": prev_state,
     }
+    note = curr_note or prev_note
+    if not comparable and note:
+        result["table_diff_note"] = note
+    return result

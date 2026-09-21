@@ -77,12 +77,37 @@ def get_annotations_by_report_guid(asset_maker, report_guid: str) -> list[dict]:
             annotations.append({
                 "guid": header.get("guid", ""),
                 "annotation_type": annotation_type,
+                "type_name": header.get("type", {}).get("typeName", ""),
+                "qualified_name": props.get("qualifiedName", ""),
+                "display_name": props.get("displayName", ""),
                 "summary": props.get("summary", ""),
                 "confidence": _safe_int(props.get("confidence", 100)),
                 "analysis_step": props.get("analysisStep", ""),
                 "explanation": props.get("explanation", ""),
                 "expression": props.get("expression", ""),
                 "json_properties": props.get("jsonProperties", {}),
+                # The measurement payload itself. Until 2026-09-20 this reader
+                # dropped every one of these, so a native survey's numbers
+                # were read back as prose in `summary` and nothing else — the
+                # reason native results could not be queried like local ones.
+                #
+                # `resourceProperties` is what ResourceMeasureAnnotation
+                # carries (Map<String,String> — every value arrives as a
+                # string, including the numbers), and the profile* fields are
+                # ResourceProfileAnnotation's. Names are taken verbatim from
+                # the Java property classes; see result_materializer.py.
+                "resource_properties": props.get("resourceProperties") or {},
+                "profile_properties": props.get("profileProperties") or {},
+                "profile_counts": props.get("profileCounts") or {},
+                "profile_doubles": props.get("profileDoubles") or {},
+                "profile_flags": props.get("profileFlags") or {},
+                "profile_dates": props.get("profileDates") or {},
+                "value_list": props.get("valueList") or [],
+                "value_count": props.get("valueCount") or {},
+                "value_range_from": props.get("valueRangeFrom", ""),
+                "value_range_to": props.get("valueRangeTo", ""),
+                "average_value": props.get("averageValue", ""),
+                "inferred_data_type": props.get("inferredDataType", ""),
             })
     except Exception as exc:
         log.debug(f"get_annotations_by_report_guid failed for {report_guid}: {exc}")
