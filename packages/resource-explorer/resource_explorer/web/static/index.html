@@ -13056,6 +13056,9 @@ async function loadDbDiffBanner(slug) {
         ${(d.new_tables||[]).length ? `<span class="diff-add">+${d.new_tables.length} new: ${listItems(d.new_tables,'diff-add')}</span>` : ''}
         ${(d.removed_tables||[]).length ? `<span class="diff-del">-${d.removed_tables.length} removed: ${listItems(d.removed_tables,'diff-del')}</span>` : ''}
       </div>
+      ${d.table_diff_state === 'not_comparable'
+        ? `<div class="diff-banner-note text-xs mt-1 opacity-70">Per-table changes not available for these two runs${d.table_diff_note ? ` — ${_esc(d.table_diff_note)}` : ''}</div>`
+        : ''}
     </div>`;
   } catch { /* no diff — silently skip */ }
 }
