@@ -563,7 +563,9 @@ def test_maintainers_merge_one_person_committing_under_two_addresses(pg_registry
                 "author_name, author_email, committed_at) VALUES (?,?,?,?,?,?)",
                 ("w", f"k{i}", "x", "Karth", "k@example.com", "2026-08-01T00:00:00"))
 
-    value, _ = RESOURCE_STATE_SOURCES["Who maintains this repository?"][0](reg, reg.get("w"))
+    value, _ = RESOURCE_STATE_SOURCES[
+        "Who owns this resource (accountable owner), and who administers it?"
+    ][0](reg, reg.get("w"))
     assert value["people"] == 2, "two humans, not three commit identities"
     assert value["commit_identities"] == 3, "the split is reported, not hidden"
     top = value["top_authors"][0]

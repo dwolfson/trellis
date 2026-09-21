@@ -1378,7 +1378,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
@@ -1459,7 +1459,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 

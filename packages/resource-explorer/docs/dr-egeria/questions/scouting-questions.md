@@ -84,7 +84,7 @@ ___
 User Questions
 
 ### Display Name
-What does this repository do?
+What is this resource, and what is it for?
 
 ### Description
 Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
@@ -100,7 +100,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-What does this repository do?
+What is this resource, and what is it for?
 
 ___
 
@@ -110,7 +110,7 @@ ___
 Perspective::Consumer
 
 ### Question Name
-What does this repository do?
+What is this resource, and what is it for?
 
 ___
 
@@ -120,7 +120,7 @@ ___
 Perspective::Data Expert
 
 ### Question Name
-What does this repository do?
+What is this resource, and what is it for?
 
 ___
 
@@ -130,14 +130,14 @@ ___
 Perspective::Architecture
 
 ### Question Name
-What does this repository do?
+What is this resource, and what is it for?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-What does this repository do?
+What is this resource, and what is it for?
 
 ### Scope Reference
 Scouting
@@ -153,7 +153,7 @@ ___
 User Questions
 
 ### Display Name
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ### Description
 repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned the same text until chaoss_metrics, built on project_commits, gave this one its own source.
@@ -169,7 +169,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
@@ -179,7 +179,7 @@ ___
 Perspective::Steward
 
 ### Question Name
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
@@ -189,7 +189,7 @@ ___
 Perspective::Data Owner
 
 ### Question Name
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
@@ -199,14 +199,14 @@ ___
 Perspective::Security
 
 ### Question Name
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ### Scope Reference
 Scouting
@@ -281,7 +281,7 @@ ___
 User Questions
 
 ### Display Name
-Has this repository already been catalogued in Egeria and when?
+Has this resource already been catalogued in Egeria, and when?
 
 ### Description
 "Known inventory" check — is there already a catalog asset for this repo, independent of whether it's registered in Resource Explorer's own local registry. Ties to the Scouting "shop for data" search work.
@@ -297,7 +297,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Has this repository already been catalogued in Egeria and when?
+Has this resource already been catalogued in Egeria, and when?
 
 ___
 
@@ -307,7 +307,7 @@ ___
 Perspective::Governance
 
 ### Question Name
-Has this repository already been catalogued in Egeria and when?
+Has this resource already been catalogued in Egeria, and when?
 
 ___
 
@@ -317,14 +317,14 @@ ___
 Perspective::Steward
 
 ### Question Name
-Has this repository already been catalogued in Egeria and when?
+Has this resource already been catalogued in Egeria, and when?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Has this repository already been catalogued in Egeria and when?
+Has this resource already been catalogued in Egeria, and when?
 
 ### Scope Reference
 Discovery
@@ -696,7 +696,7 @@ ___
 User Questions
 
 ### Display Name
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ### Description
 Needs similarity search over content (RAG/embeddings) — real gap, not built.
@@ -712,7 +712,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ___
 
@@ -722,7 +722,7 @@ ___
 Perspective::Community
 
 ### Question Name
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ___
 
@@ -732,7 +732,7 @@ ___
 Perspective::Security
 
 ### Question Name
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ___
 
@@ -742,14 +742,14 @@ ___
 Perspective::Admin
 
 ### Question Name
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-What are similar repos/projects? How does this differ?
+What are similar resources, and how does this differ?
 
 ### Scope Reference
 Analysis
@@ -765,7 +765,7 @@ ___
 User Questions
 
 ### Display Name
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ### Description
 License field is cheaply available from the GitHub API — deeper copyleft-risk categorization is Assessment-tier (see the license-specifics row below).
@@ -774,14 +774,14 @@ License field is cheaply available from the GitHub API — deeper copyleft-risk 
 Is this appropriate?
 
 ### Usage
-Typically asked and answerable during Analysis.
+Typically asked and answerable during Scouting.
 
 ___
 
 ## Classify Term as Question
 
 ### Term Name
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ___
 
@@ -791,7 +791,7 @@ ___
 Perspective::Security
 
 ### Question Name
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ___
 
@@ -801,7 +801,7 @@ ___
 Perspective::Architecture
 
 ### Question Name
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ___
 
@@ -811,17 +811,17 @@ ___
 Perspective::Admin
 
 ### Question Name
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Are there any restrictions for use?
+Under what licence or agreement may this resource be used?
 
 ### Scope Reference
-Analysis
+Scouting
 
 ### Scope Category
 Asked At
@@ -1064,7 +1064,7 @@ ___
 User Questions
 
 ### Display Name
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ### Description
 Human-supplied/derived — not resource-derivable.
@@ -1080,7 +1080,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ___
 
@@ -1090,7 +1090,7 @@ ___
 Perspective::Financial
 
 ### Question Name
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ___
 
@@ -1100,14 +1100,14 @@ ___
 Perspective::Admin
 
 ### Question Name
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ### Scope Reference
 Analysis
@@ -1120,7 +1120,7 @@ ___
 ## Link Element To Scope
 
 ### Target Element
-Do we know what the cost to run it is?
+What does this resource cost to run, host or license?
 
 ### Scope Reference
 Enrichment
@@ -2248,7 +2248,7 @@ ___
 User Questions
 
 ### Display Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ### Description
 GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment) categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown) — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace), LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC 5962) is the standard schema this conforms to.
@@ -2264,7 +2264,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2274,7 +2274,7 @@ ___
 Perspective::Financial
 
 ### Question Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2284,7 +2284,7 @@ ___
 Perspective::Data Owner
 
 ### Question Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2294,7 +2294,7 @@ ___
 Perspective::App/AI Builder
 
 ### Question Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2304,14 +2304,14 @@ ___
 Perspective::Security
 
 ### Question Name
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ### Scope Reference
 Assessment
@@ -3962,6 +3962,2443 @@ What are the public interfaces?
 
 ### Scope Reference
 Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+### Description
+Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET from the engine host; efficiency is a separate axis (data locality, latency to first result, load on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable resource falls back to a Resource Explorer local mirror published under the native annotation shapes, plus an RFA recording that Egeria could not reach it.
+
+### Summary
+Whether a survey can run at all, and where it runs, decides the cost and the provenance of every answer that follows.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+### Description
+Two halves. The machine half reads host and region from the connection endpoint, cloud instance metadata, or the mount and file path. The human half — legal controller, residency rule — comes through Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements {jurisdiction, region, controller}.
+
+### Summary
+Data sovereignty decides whether we may hold or process this at all, independently of what the licence permits.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Where is this resource physically located, under which jurisdiction, and are there residency or transfer constraints?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is the scope of the data in time — collection period, validity and coverage?
+
+### Description
+The other half of DataScope, and machine-proposable for most types: minimum and maximum of date columns for a database, modification-time range and in-file date ranges for a filesystem, DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.
+
+### Summary
+A consumer needs to know which period the data actually covers before trusting any answer drawn from it.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is the scope of the data in time — collection period, validity and coverage?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+What is the scope of the data in time — collection period, validity and coverage?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+What is the scope of the data in time — collection period, validity and coverage?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is the scope of the data in time — collection period, validity and coverage?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is the scope of the data in time — collection period, validity and coverage?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+### Description
+Separated from the licence question itself when that one became cross-type and moved to Scouting. Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment for anything contractual that is not written down machine-readably.
+
+### Summary
+A permissive licence does not mean an internal classification, a governance zone or a contractual term allows the use I have in mind.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+### Description
+A composite over facts other questions already establish — Egeria Ownership, a description, License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4 requires this and the demand question to hold together before a DigitalProduct is proposed.
+
+### Summary
+The supply half of a data product: one with no accountable owner, no licence and no stated scope cannot responsibly be offered.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+### Description
+Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback, similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this and the readiness question to hold together before a DigitalProduct is proposed.
+
+### Summary
+The demand half: building a data product nobody asked for costs more than it returns.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is there a defined need or market for this resource — subscriptions, requests, existing use, feedback or open requests for this kind of data?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+### Description
+Whole-database catalog reads only, no row data: information_schema and pg_catalog give the structural counts, and relation sizes plus row counts give the volume. Design §5.1 — extract everything the catalog already knows before reading a row.
+
+### Summary
+Size sets the cost of every later tier, and is the first thing that says whether this is a toy or a production estate.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How big is this database — schemas, tables, views, columns, rows and bytes?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which schemas carry the data, and which are system, empty or staging?
+
+### Description
+Derived from the same catalog read as the size question — object counts and sizes per schema, plus name conventions. Cheap, whole-database, no row data.
+
+### Summary
+Knowing which schemas matter stops every later analysis from paying to profile scratch and system objects.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which schemas carry the data, and which are system, empty or staging?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which schemas carry the data, and which are system, empty or staging?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Which schemas carry the data, and which are system, empty or staging?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which schemas carry the data, and which are system, empty or staging?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+### Description
+pg_stat_user_tables carries n_tup_ins/upd/del, n_live_tup, n_dead_tup, last_vacuum/autovacuum/analyze, seq_scan and idx_scan; pg_stat_database carries the transaction and block counters. All of it is a catalog read. Note the two absence modes design §5.1 calls out: a counter the engine does not support is not_established, and statistics that were never collected must render as "run ANALYZE", not as "no activity".
+
+### Summary
+A database nobody writes to and nobody reads is a retirement candidate, not a survey candidate.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this database alive — writes since the statistics were reset, last vacuum or analyse, and is anything reading it?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this database documented — what fraction of its tables and columns carry comments?
+
+### Description
+pg_description via obj_description and col_description gives comments per table and per column; the measure is coverage, not presence. Note rule 13 in the package CLAUDE.md — these need the schema-qualified (schema.table)::regclass form.
+
+### Summary
+Undocumented tables are the single biggest obstacle to anyone reusing a database they did not build.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this database documented — what fraction of its tables and columns carry comments?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is this database documented — what fraction of its tables and columns carry comments?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Is this database documented — what fraction of its tables and columns carry comments?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this database documented — what fraction of its tables and columns carry comments?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+### Description
+Server-level rather than database-level — design §5 makes server, database, schema and table each addressable, and this row belongs to the server subset. Sources: version(), pg_settings, pg_extension, and the upstream support window for the major version.
+
+### Summary
+An unsupported engine version is a security and upgrade liability before anything about the data matters.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What engine and version is this, which extensions are installed, and is the version still supported?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+
+### Description
+Catalog-observable: pg_is_in_recovery() for the primary/standby role, pg_stat_replication for standbys and replay lag, pg_settings.archive_mode with pg_stat_archiver for WAL archiving, pg_extension and roles for backup tooling such as pgBackRest, barman or wal-g, Citus catalogs for clustering. Design §5.5 — last successful backup and tested restore are NOT observable and are asked separately.
+
+### Summary
+Whether the data survives a failure is a property of the deployment, not of the schema, and nothing else in a survey reveals it.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+When was this database last backed up successfully, and has a restore ever been tested?
+
+### Description
+Design §5.5 draws the line explicitly: primary/standby role, replicas, WAL archiving and extension-based backup tooling are catalog-observable, while last successful backup, tested restore and RPO/RTO are not. They come from an Enrichment "Backup and recovery" section, and the answer envelope must say which half answered.
+
+### Summary
+These are the two resilience questions a data owner actually asks, and the two that nothing inside the database can answer.
+
+### Usage
+Typically relevant during Analysis and Enrichment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+When was this database last backed up successfully, and has a restore ever been tested?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+When was this database last backed up successfully, and has a restore ever been tested?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+When was this database last backed up successfully, and has a restore ever been tested?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+When was this database last backed up successfully, and has a restore ever been tested?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+When was this database last backed up successfully, and has a restore ever been tested?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Link Element To Scope
+
+### Target Element
+When was this database last backed up successfully, and has a restore ever been tested?
+
+### Scope Reference
+Enrichment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What kind of database is this — transactional, analytical, reference data, staging or a copy?
+
+### Description
+Zero new fetch — reasons over what Scouting already stored: table shapes, foreign-key density, naming conventions, read/write ratios from the tuple counters, and the query mix if pg_stat_statements is installed.
+
+### Summary
+The kind of database decides which later analyses are worth paying for at all.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What kind of database is this — transactional, analytical, reference data, staging or a copy?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What kind of database is this — transactional, analytical, reference data, staging or a copy?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What kind of database is this — transactional, analytical, reference data, staging or a copy?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What kind of database is this — transactional, analytical, reference data, staging or a copy?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is there a data model here — do the tables relate through foreign keys, or is this a bag of tables?
+
+### Description
+Zero new fetch: the foreign-key constraints Scouting already read become a graph, and the measure is connectivity — orphan tables, components, in-degree.
+
+### Summary
+A database with no declared relationships needs a very different kind of attention from one with a real model.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is there a data model here — do the tables relate through foreign keys, or is this a bag of tables?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Is there a data model here — do the tables relate through foreign keys, or is this a bag of tables?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Is there a data model here — do the tables relate through foreign keys, or is this a bag of tables?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is there a data model here — do the tables relate through foreign keys, or is this a bag of tables?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is the grain of each table — one row per what?
+
+### Description
+Inferred from primary-key composition, column names, n_distinct approaching the row count, and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence. Shared with the filesystem path, where the same inference runs over a data file's columns.
+
+### Summary
+Grain is the first thing a consumer has to know and the last thing most databases write down.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is the grain of each table — one row per what?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+What is the grain of each table — one row per what?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What is the grain of each table — one row per what?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is the grain of each table — one row per what?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is the grain of each table — one row per what?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Does this look like a copy or a subset of a database we already know?
+
+### Description
+A schema signature — table and column names, types, key structure — hashed into a fingerprint and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation is the publication shape.
+
+### Summary
+Paying to survey, host and govern the third copy of the same database is a cost nobody decided to take on.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Does this look like a copy or a subset of a database we already know?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Does this look like a copy or a subset of a database we already know?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Does this look like a copy or a subset of a database we already know?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Does this look like a copy or a subset of a database we already know?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Does this look like a copy or a subset of a database we already know?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Are there views, materialised views, functions or triggers that encode business logic?
+
+### Description
+The DDL is already in the catalog (pg_views, pg_matviews, pg_proc, pg_trigger) and Resource Explorer already parses view DDL with SQLGlot for dependencies, column lineage and complexity. What is missing is the link from that step's output back to the question layer.
+
+### Summary
+Logic hidden in views and triggers is logic no application-level survey will ever find.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Are there views, materialised views, functions or triggers that encode business logic?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+Are there views, materialised views, functions or triggers that encode business logic?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Are there views, materialised views, functions or triggers that encode business logic?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Are there views, materialised views, functions or triggers that encode business logic?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Are there views, materialised views, functions or triggers that encode business logic?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which tables would a consumer start with?
+
+### Description
+A ranking rather than a measure: foreign-key in-degree, row counts, presence of comments and read activity from the scan counters, combined into a short starting list. Zero new fetch.
+
+### Summary
+A hundred-table database with no entry point is functionally undiscoverable, however well it is catalogued.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which tables would a consumer start with?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Which tables would a consumer start with?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+Which tables would a consumer start with?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which tables would a consumer start with?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which tables would a consumer start with?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+
+### Description
+Zero new fetch — the column types are already in the catalog read; what is derived is which columns are semi-structured and what share of the stored bytes they account for. The contents themselves are a separate, more expensive Analysis question.
+
+### Summary
+Data hidden inside JSON columns is invisible to every schema-level question, and is often where the interesting fields live.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is the full schema — tables, columns, types, keys, constraints and indexes?
+
+### Description
+The complete catalog read: information_schema and pg_catalog for schemas, tables, columns and types; pg_constraint for primary, foreign, unique and check constraints; pg_index for indexes. Published under Egeria's own Relational* metric keys so a native and a local run are comparable (design §2.2).
+
+### Summary
+The schema is the contract, and every structural question downstream is asked against it.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is the full schema — tables, columns, types, keys, constraints and indexes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is the full schema — tables, columns, types, keys, constraints and indexes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What is the full schema — tables, columns, types, keys, constraints and indexes?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is the full schema — tables, columns, types, keys, constraints and indexes?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+### Description
+pg_stats, populated by ANALYZE, already carries null_frac, n_distinct, most_common_vals, most_common_freqs, histogram_bounds, avg_width and correlation — column profiling with no sampling at all. Value sampling is the fallback for columns whose statistics are stale or missing. Design §5.8: the answer envelope must state which route ran and, when sampled, the strategy, bound and seed.
+
+### Summary
+Types say what a column may hold; only the values say what it does hold.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+### Description
+Generalises the existing PII matching: column name, type and sampled value patterns matched against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence. Columns that show a clear pattern but match nothing raise an RFA proposing a new Data Class, carrying the observed pattern. Per design §5.8 the confidence is always stated against the sample, never as an unqualified "conforms".
+
+### Summary
+Knowing where the sensitive data actually sits is the precondition for every privacy and access question after it.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+### Description
+Columns whose n_distinct falls under a threshold have their distinct values compared against every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises an RFA listing the unmatched values; no match at all raises an RFA proposing a new ValidValueSet carrying the values.
+
+### Summary
+Uncontrolled code columns are where data quality quietly fails, and they are cheap to find.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which low-cardinality columns conform to a known reference-data set, and which should become one?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+
+### Description
+JSONB via jsonb_object_keys and jsonb_typeof over a bounded sample, giving key frequency, nesting depth and type consistency across rows; XML via the root element and xpath key sampling. The result is a SchemaAnalysisAnnotation carrying an inferred nested schema, sharing its inference core with the filesystem path's JSON and XML file profiling.
+
+### Summary
+A schema that stops at "jsonb" describes the column and says nothing about the data.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+### Description
+Check-granular in the same shape as the repository conventions analysis: each defect is its own named check so an assessment can cite it and a subscription can watch it. All of it reads the catalog, including pg_stat_user_indexes for indexes nothing uses.
+
+### Summary
+These are the specific, fixable defects behind a vague sense that a database is badly kept.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which tables have no primary key, no foreign key, no comment, unused indexes, or names that break the convention?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+### Description
+pg_foreign_server and pg_foreign_table for FDWs, pg_extension for extensions including dblink, pg_publication and pg_subscription for logical replication. A catalog read, no row data.
+
+### Summary
+An external dependency is a reachability, security and upgrade constraint that the schema alone never shows.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What does this database depend on outside itself — foreign data wrappers, dblink, extensions or publications?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+### Description
+pg_roles, role_table_grants and pg_default_acl give the access half and already have an analysis. The sensitivity half needs column-level Data Class matching, and the question is the cross of the two — which is why a broad PUBLIC grant on an unremarkable table and the same grant on a table of personal data read identically today.
+
+### Summary
+Access is only half an answer; access crossed with sensitivity is the half anyone acts on.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+### Description
+Deltas of the n_tup_ins/upd/del counters and of relation sizes between two stored snapshots, per table, producing a series the Understanding tier can chart and the change detectors in design §9 can threshold. Depends on the structured per-snapshot tables, not on re-parsing the survey JSON blob.
+
+### Summary
+A point-in-time survey cannot distinguish a busy table from an abandoned one; the deltas can.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How is this database changing — rows inserted, updated and deleted per table per period, size drift and schema churn?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which glossary terms do these columns probably mean?
+
+### Description
+Suggestions rather than assignments, drawn from column names, any matched Data Classes and any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept or reject.
+
+### Summary
+Columns bound to agreed terms are the difference between a catalogued database and an understandable one.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which glossary terms do these columns probably mean?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which glossary terms do these columns probably mean?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Which glossary terms do these columns probably mean?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which glossary terms do these columns probably mean?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which glossary terms do these columns probably mean?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How complete and consistent is this database's documentation?
+
+### Description
+Scores the coverage measure against criteria and adds the convention checks — a database where every table has a comment but half of them repeat the table name is not well documented.
+
+### Summary
+Documentation coverage is the scored version of the Scouting comment question, and the one a steward is measured on.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How complete and consistent is this database's documentation?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How complete and consistent is this database's documentation?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+How complete and consistent is this database's documentation?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How complete and consistent is this database's documentation?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+### Description
+The scored form of the access-and-sensitivity question in Analysis: sensitive columns identified by Data Class matching, crossed with who holds read access to them, weighted by the breadth of the grant. A PUBLIC grant on a column of personal data is the finding this exists to surface.
+
+### Summary
+This is the question a privacy review actually asks, and it is a cross of two analyses rather than either one.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is the sensitive-data exposure — which sensitive columns can which roles read?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+### Description
+Scores the convention checks together with grain clarity: a table whose grain cannot be stated is a modelling defect even when its constraints are all present.
+
+### Summary
+Modelling quality predicts how expensive this database will be to integrate with anything else.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables and grain clarity?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+### Description
+The denominator is the columns whose cardinality makes them reference-data candidates; the numerator is those bound to an Egeria ValidValueSet. Both come from the reference-data matching analysis.
+
+### Summary
+Reference-data governance is measurable as a share, which makes it one of the few governance claims that can be tracked over time.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+
+### Description
+Scores the activity signals against thresholds: how long since the last vacuum or analyse, the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1's absence rule — statistics that were never collected must not read as a healthy zero.
+
+### Summary
+Operational neglect shows up in the statistics long before it shows up as an outage.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+### Description
+Design §5.5 makes this deliberately two-sided: the catalog facts (role, replicas, archiving, backup tooling) and the Enrichment facts (last successful backup, tested restore, RPO and RTO). The envelope must say which half answered, because a green score drawn only from the catalog half would claim something nobody verified.
+
+### Summary
+A data owner signing off on a database is signing off on its recovery, not its schema.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+
+### Scope Reference
+Assessment
 
 ### Scope Category
 Asked At

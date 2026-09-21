@@ -225,11 +225,18 @@ class TestListCandidates:
         assert resp.json()["candidates"][0]["qualified_name"] == "GovActionProcess::FullScan"
 
     def test_no_phase_param_falls_back_to_full_scan_when_no_cataloged_questions(self, client):
-        # entity_type=database has zero cataloged questions today
-        # (question_catalog.yaml only has "repo" entries) — falls back to
-        # the full scan, but because get_questions() genuinely returns
-        # nothing for this entity type, not because phase was omitted.
+        # Originally exploited entity_type=database having zero cataloged
+        # questions in the real packaged catalog. The 2026-09-21 multi-type
+        # authoring stream (re/db-questions-csv) gave database real
+        # questions, so this now mocks get_questions() directly to return
+        # nothing -- the scenario being tested (a resource type genuinely
+        # has no cataloged questions) has to exist regardless of what the
+        # production CSV currently contains, same fix as elsewhere in this
+        # reconciliation.
         with patch(
+            "resource_explorer.surveyors.question_catalog_reader.get_questions",
+            return_value=[],
+        ), patch(
             "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
         ) as mock_scoped, patch(
             "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",

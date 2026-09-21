@@ -479,7 +479,7 @@ ___
 Compliance Survey
 
 ### Scope Reference
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 

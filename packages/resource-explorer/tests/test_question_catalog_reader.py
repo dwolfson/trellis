@@ -15,6 +15,12 @@ import pytest
 
 from resource_explorer.surveyors import question_catalog_reader as qcr
 
+# Captured before any test monkeypatches qcr._load, so a test that swaps in
+# its own fixture catalog (via monkeypatch.setattr(qcr, "_load", ...)) can
+# still load a DIFFERENT fixture file for its own purposes without calling
+# through its own patched, argument-less stand-in.
+_REAL_LOAD = qcr._load
+
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
@@ -146,21 +152,42 @@ class TestLoadAndGetQuestions:
 class TestNotAuthoredIsNotTheSameAsEmpty:
     """docs/multi-resource-questions-design.md §1.1 item 3.
 
-    `get_questions("database")` returned `[]` and so did
-    `get_questions("repo", perspectives=["NoSuchPerspective"])`. One means
-    "nobody has written database questions yet"; the other means "there are
-    52 repo questions and none of them are tagged that". Same length,
-    opposite answers -- the shape this codebase keeps finding in new places.
+    Originally written when `get_questions("database")` on the real packaged
+    catalog returned `[]` for the same reason `get_questions("repo",
+    perspectives=["NoSuchPerspective"])` did. One meant "nobody has written
+    database questions yet"; the other meant "there are 52 repo questions and
+    none of them are tagged that". Same length, opposite answers -- the shape
+    this codebase keeps finding in new places.
+
+    Stream 4 (re/db-questions-csv, 2026-09-21) has since authored real
+    database questions, so the tests that need "database" to be NOT_AUTHORED
+    now install a repo-only fixture catalog (`_use_repo_only_catalog`) rather
+    than relying on the real packaged one lacking a section -- that state has
+    to exist somewhere regardless of what the production CSV now contains.
     """
 
-    def test_a_type_with_no_section_is_not_authored(self):
+    @staticmethod
+    def _use_repo_only_catalog(tmp_path, monkeypatch):
+        """Not autouse: `test_an_authored_but_empty_section_is_its_own_state`
+        installs its own, different fake catalog and must not have this one
+        applied first -- two independent overrides on the same monkeypatch
+        fixture are fine, but only one should run per test."""
+        path = _write_fixture(tmp_path)  # repo_questions only, no database_questions
+        loaded = _REAL_LOAD(path)
+        fake = lambda: loaded          # noqa: E731
+        fake.cache_clear = lambda: None  # the autouse clear_cache fixture calls this
+        monkeypatch.setattr(qcr, "_load", fake)
+
+    def test_a_type_with_no_section_is_not_authored(self, tmp_path, monkeypatch):
+        self._use_repo_only_catalog(tmp_path, monkeypatch)
         result = qcr.get_questions("database")
         assert result == []                              # still a list, for every existing caller
         assert result.authored is False
         assert result.absence == qcr.NOT_AUTHORED
         assert "authored" in result.absence_reason.lower()
 
-    def test_a_real_type_filtered_to_nothing_looks_different(self):
+    def test_a_real_type_filtered_to_nothing_looks_different(self, tmp_path, monkeypatch):
+        self._use_repo_only_catalog(tmp_path, monkeypatch)
         result = qcr.get_questions("repo", perspectives=["NoSuchPerspectiveExists"])
         assert result == []                              # the same emptiness on the surface
         assert result.authored is True                   # and a different answer underneath
@@ -169,10 +196,12 @@ class TestNotAuthoredIsNotTheSameAsEmpty:
 
     def test_an_authored_but_empty_section_is_its_own_state(self, tmp_path, monkeypatch):
         # `_load`'s config_path default is bound at def time, so the fixture
-        # goes in by replacing the loader, not the path constant.
+        # goes in by replacing the loader, not the path constant. Overrides
+        # the class fixture's repo-only catalog with an explicitly-empty
+        # database section instead.
         path = tmp_path / "question_catalog.yaml"
         path.write_text("database_questions: []\n")
-        loaded = qcr._load(path)
+        loaded = _REAL_LOAD(path)
         fake = lambda: loaded          # noqa: E731
         fake.cache_clear = lambda: None  # the autouse clear_cache fixture calls this
         monkeypatch.setattr(qcr, "_load", fake)
@@ -187,7 +216,8 @@ class TestNotAuthoredIsNotTheSameAsEmpty:
         assert result.absence == qcr.AUTHORED
         assert result.absence_reason == ""
 
-    def test_the_envelope_carries_the_state_for_a_ui_caller(self):
+    def test_the_envelope_carries_the_state_for_a_ui_caller(self, tmp_path, monkeypatch):
+        self._use_repo_only_catalog(tmp_path, monkeypatch)
         env = qcr.get_questions("database").as_envelope()
         assert env["resource_type"] == "database"
         assert env["count"] == 0
@@ -235,8 +265,12 @@ class TestRealPackagedCatalog:
     resource_questions.csv -> question_catalog.yaml regeneration)."""
 
     def test_license_question_is_now_a_closed_analysis_not_a_gap(self):
+        # Reworded 2026-09-21 (re/db-questions-csv, design §4) from "What
+        # explicit license does the repository use...?" to the cross-type,
+        # British-spelling wording below -- update this text again if it's
+        # reworded further, not the assertions.
         entries = qcr.get_questions("repo")
-        license_q = next(e for e in entries if e["question"].startswith("What explicit license"))
+        license_q = next(e for e in entries if e["question"].startswith("What explicit licence"))
         assert license_q["answering"]["kind"] == "analysis"
         assert "license_classification" in license_q["answering"]["analysis_ids"]
 

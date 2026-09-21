@@ -598,11 +598,9 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #: it was never able to answer. Design §1.1 item 5 / §13 Phase 0 item 3.
 #: Another resource type's table lives with that type's own adapter.
 #:
-#: **Four of these keys are known to be going stale** (verified 2026-09-20
-#: against `origin/re/db-questions-csv`, the question-authoring stream, by
-#: reading that branch's CSV rather than taking the report on trust). That
-#: branch rewords four of the questions below to cross-type wording, and these
-#: keys match on EXACT text, so they will match nothing once it lands:
+#: **Four of these keys were reworded to cross-type wording 2026-09-21**, in
+#: the same commit that reconciled `re/db-questions-csv` (the
+#: question-authoring stream) against this table:
 #:
 #:   _r_description  "What does this repository do?"
 #:                -> "What is this resource, and what is it for?"
@@ -613,12 +611,7 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #:   _r_license      "Are there any restrictions for use?"
 #:                -> "Under what licence or agreement may this resource be used?"
 #:
-#: The keys are NOT updated here, deliberately. This branch's CSV still
-#: carries the old wording, so swapping them would break this branch and would
-#: break `main` for the window between this stream's merge and the authoring
-#: stream's. They are updated in the SAME commit as the rewording.
-#:
-#: `_r_license`'s row SPLITS into two. It maps to the licence row above, which
+#: `_r_license`'s row SPLIT into two. It maps to the licence row above, which
 #: is what the resolver actually does (it reads `stats["license"]`). The other
 #: half — "Are there any restrictions for use beyond the licence —
 #: classification, zone or terms of use?" — is a new, unbuilt question and
@@ -630,23 +623,24 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #: of these, which is the point: a key matching nothing is a resolver that
 #: never runs, and it looks exactly like a question we chose not to answer.
 RESOURCE_STATE_SOURCES = {
-    "What does this repository do?": (_r_description, "description"),
+    "What is this resource, and what is it for?": (_r_description, "description"),
     "Is this repository actively maintained?": (_r_maintained, "foss_scorecard"),
-    "Who maintains this repository?": (_r_maintainers, "project_commits"),
+    "Who owns this resource (accountable owner), and who administers it?":
+        (_r_maintainers, "project_commits"),
     "How widely adopted and active is the community around this repository?":
         (_r_community, "community_support"),
     "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
         (_r_which_survey, "survey_definitions"),
     "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
         (_r_survey_definition_exists, "survey_definitions"),
-    "Has this repository already been catalogued in Egeria and when?":
+    "Has this resource already been catalogued in Egeria, and when?":
         (_r_catalogued, "egeria_catalogue_state"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
         (_r_surveyed, "survey_history"),
     "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
         (_r_disposition, "disposition"),
     "Any known feedback?": (_r_feedback, "resource_feedback"),
-    "Are there any restrictions for use?": (_r_license, "license"),
+    "Under what licence or agreement may this resource be used?": (_r_license, "license"),
     "Is there any existing use within our organization?":
         (_r_existing_use, "catalog_presence"),
     "Does it replace or extend something we already have?":

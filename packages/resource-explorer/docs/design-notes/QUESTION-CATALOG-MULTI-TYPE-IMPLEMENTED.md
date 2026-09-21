@@ -87,6 +87,44 @@ This does not fail silently. `test_every_declared_question_is_in_the_real_catalo
 (`tests/test_facts.py`) already asserts every key is a real catalog question;
 its failure message now names this handover and points here.
 
+**Resolved 2026-09-21, in the same commit that merged `re/db-questions-csv`
+into this stream's branch.** All four keys in `RESOURCE_STATE_SOURCES` were
+updated to the new wording exactly as tabled above; the split-off "beyond the
+licence" question got no entry, as planned. The generator's `Resource Types`
+vocabulary check also caught a real mismatch while reconciling: five CSV rows
+used a literal `file` resource type that was never part of `RESOURCE_TYPES`
+(`repo`/`database`/`filesystem`/`dataset`/`model` — `filesystem` already
+covers it, per this design doc's own title "database, filesystem/file, open
+dataset, AI model"); fixed by dropping `file` from those rows' `Resource
+Types` cells. `docs/dr-egeria/resource_questions.csv` also needed its own
+merge (Stream 2's own branch had inserted a placeholder `Resource Types`
+column at a different position, filled `repo` on every row, as a generator
+test fixture) — resolved in favor of the authoring stream's real content,
+since the generator reads by header name (`csv.DictReader`), not position.
+`resource_explorer/configdata/question_catalog.yaml`,
+`docs/dr-egeria/questions/scouting-questions.md` and the repo Survey
+Definition documents under `docs/dr-egeria/survey-definitions/` were all
+regenerated from the reconciled CSV; `test_question_catalog_multi_type.py`'s
+and `test_question_catalog_reader.py`'s tests that hardcoded pre-authoring
+assumptions (52 repo-only questions, `database` being unauthored) were
+updated to test the same invariants without depending on the CSV staying
+`repo`-only. The seven reworded rows and the one stage-moved row each got a
+dated entry in the CSV's own `Catalog History` column, per the guide's
+audit-trail convention for this exact kind of change.
+
+**This PR does NOT retire the seven old Question terms' `ScopedBy` links on
+the live Egeria platform, and nobody should assume it did.** The CSV's
+`Question` text is the case- and punctuation-sensitive join key back to the
+Egeria `Question` GlossaryTerm (see the guide); rewording it here authors a
+*new* term the next time the questions batch runs, and does not touch
+whatever Survey Definitions are still `ScopedBy` the *old* term on a live
+platform. This is the same shape as the 2026-09-13 incident
+`scripts/reconcile_survey_definition_scopes.py`'s own module docstring
+documents (a Question term split, old `ScopedBy` links never removed) --
+that script is the tool for the retirement step, run report-only first, and
+it is a separate, deliberate action for whoever next publishes this CSV to
+Egeria, not something this PR does for them.
+
 ---
 
 ## What shipped

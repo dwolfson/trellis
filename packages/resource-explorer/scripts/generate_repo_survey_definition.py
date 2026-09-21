@@ -275,7 +275,7 @@ def _answered_questions(step_keys: list[str], step_key_to_questions: dict[str, l
 MANUAL_EXTRA_SCOPE_QUESTIONS: dict[str, list[str]] = {
     "RepoCoarseProfile": [
         "Is this repository actively maintained?",
-        "What does this repository do?",
+        "What is this resource, and what is it for?",
     ],
 }
 
