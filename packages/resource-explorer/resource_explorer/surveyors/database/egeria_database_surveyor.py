@@ -50,6 +50,50 @@ class EgeriaDatabaseSurveyorError(RuntimeError):
     """Raised when Egeria survey operations fail."""
 
 
+# The YAML File Secrets Store Connector's provider class name -- see
+# https://egeria-project.org/connectors/secrets/yaml-file-secrets-store-connector/.
+# RE registers one Connection using this provider (found-or-created once, see
+# EgeriaDatabaseSurveyor._ensure_own_secrets_store_guid) and writes every
+# database's credentials into it as a separate named collection, rather than
+# ever pointing at Egeria's own bundled *.omsecrets files -- those hold
+# Egeria's own bootstrap credentials for unrelated purposes (server NPAs, the
+# user directory), not RE's survey targets. See
+# docs/design-notes/PROBES-2026-09-21.md for the investigation that found
+# this gap.
+_YAML_SECRETS_STORE_PROVIDER_CLASS = (
+    "org.odpi.openmetadata.adapters.connectors.secretsstore.yaml.YAMLSecretsStoreProvider"
+)
+_OWN_SECRETS_STORE_QUALIFIED_NAME = "Resource Explorer:SecretsStoreConnector:YAML File Connection"
+
+
+def _secrets_collection_name(db_slug: str) -> str:
+    """The per-database secrets collection name written to RE's own secrets
+    store and referenced back via the "secretsCollectionName" placeholder --
+    one collection per database, named for its slug so it's unambiguous which
+    database a collection belongs to inside the shared file."""
+    return f"{db_slug}::PostgreSQL Secret"
+
+
+def _build_secrets_collection_body(collection_name: str, db_user: str, db_pwd: str) -> dict:
+    """Build the SecretsCollectionRequestBody for
+    AutomatedCuration.save_client_side_secret -- see that method's docstring
+    for the shape this mirrors. Key names ("userId"/"clearPassword") are
+    fixed by the YAML secrets store connector's own convention (confirmed
+    live 2026-07-09), not a choice made here."""
+    return {
+        "class": "SecretsCollectionRequestBody",
+        "secretsCollection": {
+            "collectionName": collection_name,
+            "displayName": collection_name,
+            "refreshTimeInterval": 60,
+            "secrets": {
+                "userId": db_user,
+                "clearPassword": db_pwd,
+            },
+        },
+    }
+
+
 class EgeriaDatabaseSurveyor:
     """Trigger and retrieve PostgreSQL surveys using Egeria's native capabilities.
     
@@ -78,6 +122,7 @@ class EgeriaDatabaseSurveyor:
         self._automated_curation = None
         self._asset_maker = None
         self._discovery = None
+        self._secrets_store_guid = ""
 
     def connect(self) -> None:
         """Establish pyegeria client connections."""
@@ -182,6 +227,104 @@ class EgeriaDatabaseSurveyor:
         }
         return self._automated_curation.create_elem_from_template(body)
 
+    def _ensure_own_secrets_store_guid(self) -> str:
+        """Find or create RE's own YAML-file SecretsStore Connection, and
+        cache its GUID for the lifetime of this surveyor instance.
+
+        Mirrors _create_postgres_element_from_template's find-by-qualifiedName
+        -then-create idiom, but this is a plain Connection/Endpoint/
+        ConnectorType graph (ConnectionMaker), not a template instantiation --
+        Egeria ships no reusable template for "a client's own secrets store,"
+        and there is exactly one of these per RE deployment, so hand-building
+        the three elements once is simpler than inventing one.
+
+        An explicit EGERIA_SECRETS_STORE_GUID always wins, for a deployment
+        that already has one it wants reused (e.g. shared across RE and
+        another tool) rather than one RE creates for itself.
+        """
+        if self._secrets_store_guid:
+            return self._secrets_store_guid
+
+        from resource_explorer.config import get_config
+
+        cfg = get_config().egeria
+        if cfg.secrets_store_guid:
+            self._secrets_store_guid = cfg.secrets_store_guid
+            return self._secrets_store_guid
+
+        existing = self._find_element_guid(_OWN_SECRETS_STORE_QUALIFIED_NAME)
+        if existing:
+            self._secrets_store_guid = existing
+            return existing
+
+        from pyegeria import ConnectionMaker
+
+        maker = ConnectionMaker(self.view_server, self.platform_url, self.user_id, self.user_password)
+        maker.create_egeria_bearer_token(self.user_id, self.user_password)
+
+        connector_type_guid = maker.create_connector_type({
+            "class": "NewElementRequestBody",
+            "isOwnAnchor": True,
+            "properties": {
+                "class": "ConnectorTypeProperties",
+                "qualifiedName": f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType",
+                "displayName": "Resource Explorer YAML secrets store connector type",
+                "connectorProviderClassName": _YAML_SECRETS_STORE_PROVIDER_CLASS,
+            },
+        })
+        endpoint_guid = maker.create_endpoint({
+            "class": "NewElementRequestBody",
+            "isOwnAnchor": True,
+            "properties": {
+                "class": "EndpointProperties",
+                "qualifiedName": f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Endpoint",
+                "displayName": "Resource Explorer secrets store endpoint",
+                "networkAddress": cfg.secrets_store_path_name,
+            },
+        })
+        connection_guid = maker.create_connection({
+            "class": "NewElementRequestBody",
+            "isOwnAnchor": True,
+            "properties": {
+                "class": "ConnectionProperties",
+                "qualifiedName": _OWN_SECRETS_STORE_QUALIFIED_NAME,
+                "displayName": "Resource Explorer secrets store connection",
+            },
+        })
+        maker.link_connection_connector_type(connection_guid, connector_type_guid)
+        maker.link_connection_endpoint(connection_guid, endpoint_guid)
+
+        log.info(f"Created Resource Explorer's own SecretsStore connection: {connection_guid}")
+        self._secrets_store_guid = connection_guid
+        return connection_guid
+
+    def _save_database_secret(self, db_slug: str, db_user: str, db_pwd: str) -> tuple[str, str]:
+        """Write this database's credentials into RE's own secrets store as a
+        named collection, and return the two placeholder values
+        ("secretsCollectionName", "secretsStorePathName") the PostgreSQL
+        template's embedded SecretsStoreConnection needs bound -- see
+        docs/design-notes/PROBES-2026-09-21.md for why both were previously
+        left as Egeria's own unsubstituted template placeholders.
+
+        Non-fatal by design, matching this method's siblings in
+        _catalog_and_survey (server/database survey initiation): a database
+        can still be cataloged and locally scanned without a working native
+        survey, and a secrets-write failure must not block that. Returns
+        ("", "") on failure so the caller omits both placeholders rather than
+        passing empty strings Egeria would still try to bind.
+        """
+        from resource_explorer.config import get_config
+
+        collection_name = _secrets_collection_name(db_slug)
+        try:
+            secrets_store_guid = self._ensure_own_secrets_store_guid()
+            body = _build_secrets_collection_body(collection_name, db_user, db_pwd)
+            self._automated_curation.save_client_side_secret(secrets_store_guid, body)
+        except Exception as exc:
+            log.warning(f"Could not save secrets for database {db_slug!r} (non-fatal): {exc}")
+            return "", ""
+        return collection_name, get_config().egeria.secrets_store_path_name
+
     def _warn_if_database_has_no_connection(self, db_entity: "DatabaseEntity", server_name: str, db_guid: str) -> None:
         """Non-fatal visibility check: does this database element actually have
         a Connection attached?
@@ -251,6 +394,25 @@ class EgeriaDatabaseSurveyor:
         if not server_guid:
             server_guid = self._find_element_guid(server_name)
 
+        # Look up the database element before deciding whether a secrets
+        # write is needed at all: reusing both existing elements by name is
+        # the common re-survey path, and a reused element's deepCopy already
+        # ran (or didn't) long before this call, so writing a fresh secret for
+        # it here would be a wasted live write, not a fix -- see
+        # _create_postgres_element_from_template's own docstring on why reuse
+        # never re-runs deepCopy.
+        db_guid_lookup = self._find_element_guid(db_entity.database_name)
+        secret_placeholders: dict = {}
+        if not server_guid or not db_guid_lookup:
+            secrets_collection_name, secrets_store_path = self._save_database_secret(
+                db_entity.slug, db_user, db_pwd
+            )
+            if secrets_collection_name:
+                secret_placeholders = {
+                    "secretsCollectionName": secrets_collection_name,
+                    "secretsStorePathName": secrets_store_path,
+                }
+
         if not server_guid:
             try:
                 server_guid = self._create_postgres_element_from_template(
@@ -262,6 +424,7 @@ class EgeriaDatabaseSurveyor:
                         "databaseUserId": db_user,
                         "description": db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
                         "databasePassword": db_pwd,
+                        **secret_placeholders,
                     },
                 )
                 log.info(f"Created PostgreSQL server element: {server_guid}")
@@ -271,7 +434,7 @@ class EgeriaDatabaseSurveyor:
                 ) from exc
 
         # ── 2. Create / find PostgreSQL Database element ───────────────────────
-        db_guid = self._find_element_guid(db_entity.database_name)
+        db_guid = db_guid_lookup
 
         if not db_guid:
             try:
@@ -285,6 +448,7 @@ class EgeriaDatabaseSurveyor:
                         "databaseUserId": db_user,
                         "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
                         "databasePassword": db_pwd,
+                        **secret_placeholders,
                     },
                 )
                 log.info(f"Created PostgreSQL database element: {db_guid}")
