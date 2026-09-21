@@ -110,6 +110,9 @@ Report FormatSets `Notification-Type-DrE-Basic/-Advanced`
   ("let Egeria detect") is closer than it looked: RE publishes the change
   finding, Egeria delivers it.
 
+**Decision (project owner, 2026-09-21):** confirmed — nothing needed. No
+extension request for notifications.
+
 ---
 
 ## 2. AI models and the model card
@@ -207,6 +210,10 @@ is a conversation to open, not a request to file. Filesystems and databases
 come first, so this is not on the critical path (project owner, 2026-09-20:
 review the model-card proposal separately; there is time).
 
+**Decision (project owner, 2026-09-21):** in design — matches this
+section's own recommendation (Tier 1 ask waits for three real cards from
+Phase 4; Tier 2 stays a conversation, not a request).
+
 ---
 
 ## 3. Proposals from surveys — new data classes, reference sets, grains, scopes
@@ -289,6 +296,56 @@ survey-report command.
   command pair, so the Purpose set (§4) and proposed reference sets can be
   authored the same way as everything else.
 
+
+**Decision (project owner, 2026-09-21):** not clear anything is missing —
+under consideration by the Egeria team. Two existing mechanisms this
+section's "type ask" tier did not account for:
+
+- **`Annotation.contentStatus` can itself be `DRAFT`**
+  (`ContentStatus.java:37`, `"The content is incomplete"` —
+  `AnnotationProperties extends AuthoredReferenceableProperties`, which
+  carries `contentStatus`/`userDefinedContentStatus`,
+  `AuthoredReferenceableProperties.java:58-59`). A proposal annotation can
+  be published as incomplete/unconfirmed without inventing a
+  `candidateDataClassSpecification`/`ReferenceDataAnnotation` field to carry
+  that meaning.
+- **`AssociatedAnnotation`** (`OpenMetadataType.java:6039-6044`,
+  `AssociatedAnnotationProperties.java`) — a relationship distinct from
+  `ReportedAnnotation` (report → its annotations): "link between an element
+  and an Annotation that describes a characteristic of its associated
+  real-world counterpart." This is the direct element↔annotation link the
+  `candidate…GUIDs` fields were working around with a plain property list.
+
+**Revised reading, pending probe 4** (does `create_data_class`/equivalent
+accept `initialStatus: DRAFT`?): if it does, a survey can create the
+*actual* candidate element (DataClass/DataGrain/ValidValueSet) in `DRAFT`
+status directly and link it to its originating evidence via
+`AssociatedAnnotation`, rather than encoding the proposal as
+`RequestForAction` properties or a new annotation subtype. That would drop
+the §3 "type ask" tier entirely — only the RFA convention needed as a
+near-term stand-in (already the "now, no extension" plan) and probe 4/probe
+5 need to run to confirm.
+
+**Open question the RFA path didn't have to answer: is a DRAFT element
+visible to ordinary search/consumer queries before it's accepted?**
+Checked `QueryOptions.limitResultsByStatus`
+(`open-metadata-framework/.../search/QueryOptions.java:26,162-183`): its
+own doc comment is explicit — `null` (the default) "means all" statuses,
+not just `ACTIVE`. So **Egeria's default `findMetadataElements`/`find_*`
+calls do not exclude `DRAFT` elements** — a freshly-created draft
+DataClass is visible to any caller that doesn't itself pass
+`limitResultsByStatus: [ACTIVE]`. This is real exposure the RFA convention
+never had (an RFA is not a searchable governance element in the same
+sense). Two independent ways to close it, neither built yet: (a) RE's own
+query/read layer always filters `limitResultsByStatus` to `[ACTIVE]`
+unless a caller explicitly asks for drafts, or (b) governance-zone gating —
+don't assign a draft element to any consumer-visible zone until it's
+accepted (separate mechanism from status, and this repo's own zone
+patterns already exist for exactly this kind of staged visibility).
+Probe 4 should include one `find_data_classes`/equivalent call right after
+creating the draft, with no status filter passed, to confirm this
+empirically rather than resting on the doc comment alone.
+
 ---
 
 ## 4. `ReferenceValueAssignment` and the Purpose spec
@@ -328,6 +385,8 @@ is right. **Dr.Egeria.** `Link Reference Value Assignment` / `Detach`
 — not the same semantics, but it shows the Question-term-to-valid-value path
 has been thought about.
 
+
+
 ### Gap and ask
 
 - **Probe 2 first** (§9): call `link_reference_value_assignment` against the
@@ -341,6 +400,11 @@ has been thought about.
 - **Dr.Egeria:** the missing `Create Valid Value Set` command (§3) is what
   would let `foundations.md` create the Purpose set the way it creates
   Perspectives.
+
+**Decision (project owner, 2026-09-21):** verified as a real bug — being
+fixed on the Egeria side. Until it lands, follow this section's own
+fallback (tag via `ValidValuesAssignment` with the semantic mismatch noted,
+or keep Purposes RE-side) rather than waiting.
 
 ---
 
@@ -393,6 +457,10 @@ below has two outcome kinds to distinguish, `no_connection` and
   already the analysis step that answers the question. Not worth filing
   until rule B has run for a while and the value is demonstrated.
 
+
+**Decision (project owner, 2026-09-21):** defer the `resource_reachability`
+table until further tests — do not build it yet.
+
 ---
 
 ## 6. DuckDB via folder survey
@@ -438,6 +506,12 @@ and `initiate_gov_action_type` routes apply.
   suggests it reads attached databases, which is a finding RE's
   `db_external_dependencies` should match in shape (rule A).
 
+
+**Decision (project owner, 2026-09-21):** planned for Egeria — the
+`.duckdb` file type + folder-survey chaining ask is already on Egeria's own
+roadmap. No RE-side filing needed; use the interim local-classification
+path in the meantime.
+
 ---
 
 ## 7. `DataScope` — declared exists, measured needs a convention
@@ -480,6 +554,17 @@ all *declaring* on the asset. **No `DataScopeAnnotation`** exists.
   `candidateScope` flag, parallel to `DataClassAnnotation`. Bundle with the
   §3 proposal annotations as one request: "annotations that propose
   governance elements".
+
+
+**Decision (project owner, 2026-09-21):** under consideration — again, the
+`ContentStatus.DRAFT` state on an `Annotation` (see §3's decision above)
+may be sufficient on its own, without a dedicated `DataScopeAnnotation`
+type: a measured-scope proposal could be a plain `ResourceMeasureAnnotation`
+(using the `DataScopeProperties` key names, as already planned) published
+with `contentStatus: DRAFT`, rather than needing its own annotation
+subtype's `candidateScope` flag. Worth re-checking against probe 5's actual
+`create_annotation` results before deciding whether the "small type ask" in
+this section is still needed.
 
 ---
 
@@ -534,12 +619,12 @@ with the response, so the result is evidence and not a recollection.
 
 | Target | Item | Priority | Blocked on |
 |---|---|---|---|
-| Egeria server | `linkReferenceValueAssignment` dispatches as ValidValuesAssignment (§4) | high — blocks Purpose | probe 2 |
-| Egeria types | model Tier 1: properties on `DeployedAnalyticsModel`, `DerivedFromModel`, `TrainedOn`, evaluation-run properties (§2) | medium | three real cards from Phase 4 |
-| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | medium | the RFA convention having run once |
-| Egeria content pack | `.duckdb` file type + folder → DuckDB survey process (§6) | medium | nothing; self-contained |
+| Egeria server | `linkReferenceValueAssignment` dispatches as ValidValuesAssignment (§4) | **being fixed on Egeria's side (2026-09-21)** — no filing needed | probe 2, to unblock/confirm before relying on it |
+| Egeria types | model Tier 1: properties on `DeployedAnalyticsModel`, `DerivedFromModel`, `TrainedOn`, evaluation-run properties (§2) | medium — **in design (2026-09-21)** | three real cards from Phase 4 |
+| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **likely unneeded (2026-09-21)** — `Annotation.contentStatus: DRAFT` + `AssociatedAnnotation` may already cover this; re-decide after probes 4/5 | the RFA convention having run once; probe 4 (`initialStatus: DRAFT`) |
+| Egeria content pack | `.duckdb` file type + folder → DuckDB survey process (§6) | **already planned for Egeria (2026-09-21)** — no filing needed | nothing; self-contained |
 | Egeria types | model Tier 2 `ModelCard` (§2) | discuss | Tier 1 |
-| Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | low | rule B in use |
+| Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | **deferred (2026-09-21)** — do not build `resource_reachability` yet either | rule B in use, further tests |
 | pyegeria | `_async_initiate_survey` drops request parameters (§8.1) | high for rule B | none — log now |
 | pyegeria | `create_notification_type`, `create_valid_value_set`, typed annotation helpers | low | probes 3, 5 |
 | Dr.Egeria | `Create Valid Value Set` / `Create Valid Value Definition` commands | medium | none |
