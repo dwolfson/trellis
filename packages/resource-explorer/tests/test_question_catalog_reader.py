@@ -81,10 +81,12 @@ class TestLoadAndGetQuestions:
         # fixture path directly through _load() for the isolated cases below.
         assert isinstance(entries, list)
 
-    def test_missing_config_returns_empty_repo_list(self, tmp_path):
+    def test_missing_config_authors_no_resource_type_at_all(self, tmp_path):
+        # Used to return {"repo": []}, which claimed repo questions had been
+        # authored and had come to nothing. With no catalog file, no resource
+        # type is authored -- which is what {} says.
         missing = tmp_path / "nope.yaml"
-        data = qcr._load(missing)
-        assert data == {"repo": []}
+        assert qcr._load(missing) == {}
 
     def test_phase_filter_matches_single_stage(self, tmp_path):
         path = _write_fixture(tmp_path)
@@ -139,6 +141,92 @@ class TestLoadAndGetQuestions:
 
     def test_unknown_resource_type_returns_empty(self):
         assert qcr.get_questions("nonexistent") == []
+
+
+class TestNotAuthoredIsNotTheSameAsEmpty:
+    """docs/multi-resource-questions-design.md §1.1 item 3.
+
+    `get_questions("database")` returned `[]` and so did
+    `get_questions("repo", perspectives=["NoSuchPerspective"])`. One means
+    "nobody has written database questions yet"; the other means "there are
+    52 repo questions and none of them are tagged that". Same length,
+    opposite answers -- the shape this codebase keeps finding in new places.
+    """
+
+    def test_a_type_with_no_section_is_not_authored(self):
+        result = qcr.get_questions("database")
+        assert result == []                              # still a list, for every existing caller
+        assert result.authored is False
+        assert result.absence == qcr.NOT_AUTHORED
+        assert "authored" in result.absence_reason.lower()
+
+    def test_a_real_type_filtered_to_nothing_looks_different(self):
+        result = qcr.get_questions("repo", perspectives=["NoSuchPerspectiveExists"])
+        assert result == []                              # the same emptiness on the surface
+        assert result.authored is True                   # and a different answer underneath
+        assert result.absence == qcr.FILTERED_TO_NOTHING
+        assert result.absence != qcr.get_questions("database").absence
+
+    def test_an_authored_but_empty_section_is_its_own_state(self, tmp_path, monkeypatch):
+        # `_load`'s config_path default is bound at def time, so the fixture
+        # goes in by replacing the loader, not the path constant.
+        path = tmp_path / "question_catalog.yaml"
+        path.write_text("database_questions: []\n")
+        loaded = qcr._load(path)
+        fake = lambda: loaded          # noqa: E731
+        fake.cache_clear = lambda: None  # the autouse clear_cache fixture calls this
+        monkeypatch.setattr(qcr, "_load", fake)
+        result = qcr.get_questions("database")
+        assert result.authored is True
+        assert result.absence == qcr.AUTHORED_BUT_EMPTY
+
+    def test_a_populated_type_reports_authored(self):
+        result = qcr.get_questions("repo")
+        assert result
+        assert result.authored is True
+        assert result.absence == qcr.AUTHORED
+        assert result.absence_reason == ""
+
+    def test_the_envelope_carries_the_state_for_a_ui_caller(self):
+        env = qcr.get_questions("database").as_envelope()
+        assert env["resource_type"] == "database"
+        assert env["count"] == 0
+        assert env["authored"] is False
+        assert env["absence"] == qcr.NOT_AUTHORED
+        assert env["absence_reason"]
+
+    def test_is_authored_and_authored_resource_types_agree(self):
+        types = qcr.authored_resource_types()
+        assert "repo" in types
+        assert qcr.is_authored("repo") is True
+        assert qcr.is_authored("database") is ("database" in types)
+
+
+class TestMultiTypeLoading:
+    def test_every_questions_section_becomes_a_resource_type(self, tmp_path):
+        path = tmp_path / "question_catalog.yaml"
+        path.write_text(textwrap.dedent("""
+            repo_questions:
+              - question: "Is this repo alive?"
+                stage: Scouting
+                perspectives: [Steward]
+                answering: {kind: analysis, analysis_ids: [repository_health]}
+            database_questions:
+              - question: "How big is it?"
+                stage: Scouting
+                perspectives: [Data Expert]
+                answering: {kind: analysis, analysis_ids: [schema_inventory]}
+            dataset_questions: []
+        """))
+        data = qcr._load(path)
+        assert set(data) == {"repo", "database", "dataset"}
+        assert [e.question for e in data["database"]] == ["How big is it?"]
+        assert data["dataset"] == []
+
+    def test_non_questions_keys_are_ignored(self, tmp_path):
+        path = tmp_path / "question_catalog.yaml"
+        path.write_text("repo_questions: []\nsome_other_config: {a: 1}\n")
+        assert set(qcr._load(path)) == {"repo"}
 
 
 class TestRealPackagedCatalog:

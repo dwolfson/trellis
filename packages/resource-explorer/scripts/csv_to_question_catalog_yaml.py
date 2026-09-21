@@ -28,19 +28,44 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import re
+import sys
 from pathlib import Path
 
 import yaml
+
+# The resource-type vocabulary is the package's, not a copy — the whole point
+# of resource_explorer/resource_types.py (design §13 Phase 0 item 4) is that
+# there is one list. This script is normally run under the package's own
+# interpreter (`uv run --package resource-explorer`), and the sys.path nudge
+# covers the standalone case so the constant is never re-declared here.
+if __package__ in (None, ""):  # running as a script, not imported as a module
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from resource_explorer.resource_types import (
+    RESOURCE_TYPES,
+    parse_resource_types,
+)
 
 _ANALYSIS_CATALOG_PATH = (
     Path(__file__).parent.parent / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
 )
 
 
+_ANALYSES_KEY_SUFFIX = "_analyses"
+
+
 def _load_known_analysis_ids() -> list[str]:
-    """Valid repo analysis ids, read live from configdata/analysis_catalog.yaml.
+    """Valid analysis ids, read live from configdata/analysis_catalog.yaml.
+
+    **Every `*_analyses` section, not just `repo_analyses`** (2026-09-20,
+    design §1.1 item 1). Reading only the repo section meant a database
+    question naming `schema_inventory` — a real entry in `database_analyses`
+    — produced no `analysis_ids` and `kind: unknown`, which reads as "nobody
+    has classified this question" rather than "answered, by an analysis this
+    generator declined to look for". Sections are discovered rather than
+    named, so a `dataset_analyses` section added later needs no change here.
 
     This was a hand-synced literal of 15 ids until 2026-08-28, when the real
     catalog had 29. The 14 it had never been re-synced with — `cve_scan`,
@@ -52,8 +77,10 @@ def _load_known_analysis_ids() -> list[str]:
 
     Read live for the same reason `_load_known_checks` below is: a stale copy
     drops refs silently, where reading the real file fails loudly if it moves.
-    Still no import dependency on the resource_explorer package — this parses
-    the YAML directly.
+    The catalog is still parsed as YAML rather than imported through the
+    package's own reader (the module-level import of
+    `resource_explorer.resource_types` is the one exception, and it is a
+    vocabulary constant, not a loader).
     """
     if not _ANALYSIS_CATALOG_PATH.exists():
         raise FileNotFoundError(
@@ -71,8 +98,20 @@ def _load_known_analysis_ids() -> list[str]:
     #
     # `profile` and `ingest` actions stay: they refresh real stored results.
     # Only `publish` is write-only.
-    return [a["id"] for a in (cat.get("repo_analyses") or [])
-            if a.get("id") and a.get("action") != "publish"]
+    #
+    # Deduped across sections while preserving first-seen order: the same
+    # analysis id legitimately appears under more than one resource type
+    # (`sql_analysis`, `data_class_match` and the rest are shared by design —
+    # see design §5.4 and §6.3), and `_is_pure_analysis_list` does whole-string
+    # membership tests that must not care which section an id came from.
+    ids: list[str] = []
+    for key, section in cat.items():
+        if not key.endswith(_ANALYSES_KEY_SUFFIX) or key == _ANALYSES_KEY_SUFFIX:
+            continue
+        for a in section or []:
+            if a.get("id") and a.get("action") != "publish" and a["id"] not in ids:
+                ids.append(a["id"])
+    return ids
 
 
 KNOWN_ANALYSIS_IDS = _load_known_analysis_ids()
@@ -109,6 +148,15 @@ NON_PERSPECTIVE_COLUMNS = (
     # the same by-elimination reason as its neighbors: any column missing
     # here silently becomes a phantom Perspective on every question.
     "Status",
+    # "Resource Types" (added 2026-09-20, docs/multi-resource-questions-design.md
+    # §1.1's **Decision (project owner, 2026-09-20)**) carries the
+    # `;`-separated resource types a question applies to, `*` for all. Same
+    # by-elimination trap as every other name in this tuple — and the trap has
+    # fired before: "Catalog History" was added to the CSV without being added
+    # here and the next regeneration emitted 17 links to a Perspective that
+    # does not exist (see tests/test_question_catalog_generator_guard.py's
+    # test_every_perspective_the_document_links_exists_in_the_foundations).
+    "Resource Types",
 )
 
 _CHECK_REGISTRY_PATH = (
@@ -251,15 +299,21 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
 
 def generate(rows: list[dict]) -> str:
     known_checks = _load_known_checks()
-    entries = []
+    # resource_type -> entries, in first-seen order. A type appears as a key
+    # ONLY if a CSV row named it: question_catalog_reader treats a missing key
+    # as "not authored for this type", which is the distinction design §1.1
+    # item 3 asks for, so emitting an empty list for every known type would
+    # reinstate exactly the bug this generator change exists to fix.
+    by_type: dict[str, list[dict]] = {}
     for row in rows:
         question = (row.get("Question") or "").strip()
         if not question:
             continue
         perspective_cols = [c for c in row if c not in NON_PERSPECTIVE_COLUMNS]
         perspectives = [c for c in perspective_cols if (row.get(c) or "").strip()]
+        resource_types = parse_resource_types(row.get("Resource Types", ""))
 
-        entries.append({
+        entry = {
             "question": question,
             "stage": (row.get("Funnel Stage") or "").strip(),
             "perspectives": perspectives,
@@ -269,7 +323,18 @@ def generate(rows: list[dict]) -> str:
             "rationale": (row.get("Rationale/Source") or "").strip(),
             "catalog_history": (row.get("Catalog History") or "").strip(),
             "retired": (row.get("Status") or "").strip().lower() == "retired",
-        })
+        }
+        for resource_type in resource_types:
+            # A DEEP copy per type, not one shared object and not a shallow
+            # copy: yaml.safe_dump emits a `&id001` anchor and an `*id001`
+            # alias for any repeated object, and a shallow copy still shares
+            # the nested `perspectives`/`purposes`/`answering` objects — which
+            # is exactly what the first version of this loop did, caught by
+            # test_a_cross_type_row_is_not_a_shared_yaml_anchor. Two resource
+            # types would then hand their readers the same mutable entry. A
+            # cross-type question is authored once and rendered per type; the
+            # YAML should read that way too.
+            by_type.setdefault(resource_type, []).append(copy.deepcopy(entry))
 
     header = (
         "# Question checklist catalog — generated by\n"
@@ -277,6 +342,15 @@ def generate(rows: list[dict]) -> str:
         "# docs/dr-egeria/resource_questions.csv (the source of truth — edit that\n"
         "# CSV, then regenerate this file, don't hand-edit it directly). Backs the\n"
         "# Scouting \"Questions\" checklist tab (question_catalog_reader.py).\n"
+        "#\n"
+        "# One `<resource_type>_questions` key per resource type the CSV's\n"
+        "# `Resource Types` column names (`;`-separated, `*` for all — see\n"
+        "# docs/multi-resource-questions-design.md §1.1). A resource type with NO\n"
+        "# key here has no authored questions, which question_catalog_reader.py\n"
+        "# reports as `not_authored` rather than as an empty list: \"nobody has\n"
+        "# written database questions yet\" and \"there are database questions and\n"
+        "# your filters excluded them all\" are the same length and opposite\n"
+        "# answers. Do not add empty sections to make the file look complete.\n"
         "#\n"
         "# Each entry:\n"
         "#   question      - display text; matches the Egeria GlossaryTerm Display\n"
@@ -302,7 +376,8 @@ def generate(rows: list[dict]) -> str:
         "#     kind        - \"analysis\" | \"direct\" | \"registry\" | \"human\" |\n"
         "#                   \"chart\" | \"gap\" | \"partial\" | \"mixed\" | \"unknown\" —\n"
         "#                   how (or whether) RE can answer this today.\n"
-        "#     analysis_ids - analysis_catalog.yaml repo_analyses ids that answer\n"
+        "#     analysis_ids - analysis_catalog.yaml ids (from ANY `*_analyses`\n"
+        "#                   section, not just repo_analyses) that answer\n"
         "#                   (fully or partially) this question; may be empty.\n"
         "#     checks       - finer `analysis_id:check_name` refs, validated against\n"
         "#                   configdata/check_registry.yaml. Added 2026-08-24 because\n"
@@ -342,7 +417,22 @@ def generate(rows: list[dict]) -> str:
         "#                   removed or reworded, only flagged, since a past survey\n"
         "#                   answer still refers to it exactly as it was asked.\n\n"
     )
-    body = yaml.safe_dump({"repo_questions": entries}, sort_keys=False, allow_unicode=True, width=100)
+    # One `<resource_type>_questions` key per type the CSV actually names,
+    # ordered by the RESOURCE_TYPES vocabulary so the file's shape does not
+    # depend on which row happened to be authored first.
+    ordered = {
+        f"{rt}_questions": by_type[rt]
+        for rt in RESOURCE_TYPES
+        if rt in by_type
+    }
+    # Any type outside the vocabulary cannot reach here — parse_resource_types
+    # raises on an unknown value — but keep the assertion rather than silently
+    # dropping a key if that ever stops being true.
+    assert set(ordered) == {f"{rt}_questions" for rt in by_type}, (
+        f"resource types {sorted(set(by_type) - set(RESOURCE_TYPES))} are not in "
+        f"the RESOURCE_TYPES vocabulary and would be dropped from the catalog"
+    )
+    body = yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True, width=100)
     return header + body
 
 

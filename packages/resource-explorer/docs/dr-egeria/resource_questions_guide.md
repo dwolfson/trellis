@@ -1,10 +1,28 @@
 # `resource_questions.csv` — user guide
 
 `docs/dr-egeria/resource_questions.csv` is the **single source of truth**
-for the questions users can ask about a resource (currently: a repo) as
-they move it through the Trellis funnel — Scouting, Discovery, Analysis,
-Assessment, Enrichment, Automate. Two generated outputs are built from it,
-never the other way around:
+for the questions users can ask about a resource as they move it through
+the Trellis funnel — Scouting, Discovery, Analysis, Assessment,
+Enrichment. Two generated outputs are built from it, never the other way
+around:
+
+**`Automate` is no longer a funnel stage** (2026-09-20). *Decision (project
+owner, 2026-09-20)*, `docs/multi-resource-questions-design.md` §2.1:
+automation is a property of any survey — anything can be scheduled and
+subscribed to — not a phase a resource passes through. The one row that used
+it ("How much has changed since the last time this was surveyed…") is now
+`Discovery`, because it is asked *before* deciding to spend on a re-run. The
+`Automate` **intent tab** in the UI is unaffected: that is where schedules and
+subscriptions are managed, which is a different thing from a stage. This
+ruling is **contested** as of 2026-09-20 — a designer review raised
+`RULING-NAV-GROUPING.md`, which places Automate in the navigation; see
+`docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md` for the open
+question and exactly what would be reverted.
+
+**The CSV is no longer repo-only** (2026-09-20). A `Resource Types` column
+says which resource types each question applies to; the generator emits one
+`<resource_type>_questions` section per type named. See the column reference
+below.
 
 1. **`resource_explorer/configdata/question_catalog.yaml`** — via
    `scripts/csv_to_question_catalog_yaml.py`. Backs Resource Explorer's
@@ -47,17 +65,30 @@ script runs.
 | Column | Required? | Meaning |
 |---|---|---|
 | `Question` | Yes | The question text, verbatim. This becomes the Egeria GlossaryTerm's **Display Name** — case- and punctuation-sensitive, since it's also the join key back to Egeria's own `Question` elements. Keep it phrased as an actual question a user would ask. |
-| `Funnel Stage` | Yes | Which funnel stage(s) this question belongs to: `Scouting`, `Discovery`, `Analysis`, `Assessment`, `Enrichment`, or `Automate`. May be **slash-combined** (e.g. `Analysis/Enrichment`) to signal an Analysis-first, Enrichment-fallback pattern (see `docs/repo-analysis-funnel.md (§14)`) — the question then shows up under both stages' checklists. |
+| `Funnel Stage` | Yes | Which funnel stage(s) this question belongs to: `Scouting`, `Discovery`, `Analysis`, `Assessment`, or `Enrichment`. **`Automate` is not one of them** as of 2026-09-20 — see the note at the top of this guide. May be **slash-combined** (e.g. `Analysis/Enrichment`) to signal an Analysis-first, Enrichment-fallback pattern (see `docs/repo-analysis-funnel.md (§14)`) — the question then shows up under both stages' checklists. |
+| `Resource Types` | Yes | Which resource types this question applies to: `;`-separated values from `repo`, `database`, `filesystem`, `dataset`, `model`, or `*` for all of them. *Decision (project owner, 2026-09-20)*: one CSV, one column, rather than a CSV per type — a question like "who owns this data?" is the same question whichever resource asks it, and authoring it five times is five chances to drift. The vocabulary lives in `resource_explorer/resource_types.py`; an unrecognized value **fails the generator loudly** rather than silently producing no catalog section, because a typo'd `databse` and a resource type nobody has authored for would otherwise look identical. Not published to Egeria — the Egeria side of the question model is resource-type-agnostic by design (one *User Questions* glossary, one *Funnel Stages* glossary, twelve Perspectives). Rows authored before this column existed were backfilled to `repo`; a blank cell means `repo` so a new row cannot vanish from every catalog. |
 | `Why is this important?` | Optional but expected | One sentence on why a user would care. Becomes the term's **Summary**. |
 | `Rationale/Source` | Optional but expected | Longer explanation: where the answer comes from, what tooling/signal is involved, any caveats. Becomes the term's **Description** (falls back to the question text itself if left blank). This is the column most worth writing carefully — it's what someone reads to understand *why* the answer works the way it does. |
 | `Answering Analysis` | Optional, RE-internal | Free text describing how RE answers this today. Parsed by the generator into a structured `kind` — see **Answering Analysis conventions** below. Not published to Egeria. |
 | `Answering Mechanism` | Optional, RE-internal | Which engine answers the question — one of: `Git Statistics`, `Code Analysis`, `RAG Queries`, `Agent-Based Analysis`, `Egeria Queries`, `Local Registry Query`, `Human-Supplied`, `Direct Field`, `Trend Chart`, `Gap`, `Automate Change Detection`, or a `+`-joined combination (e.g. `Code Analysis + Egeria Queries`). Orthogonal to `Answering Analysis`'s `kind` — this says *which system* answers it, not *how confidently*. Not published to Egeria. |
 | **Perspective columns** (everything after `Answering Mechanism`) | Optional per question | One column per Perspective: `Financial`, `Governance`, `Steward`, `Data Owner`, `Consumer`, `App/AI Builder`, `Privacy`, `Community`, `Data Expert`, `Security`, `Architecture`, `Admin`. Put an `X` (any non-empty value works, but use `X` for consistency) in every column that applies to this question. Leave the cell blank if the perspective doesn't apply. A question can — and often should — have several perspectives marked. |
 
-The generator treats **every column that isn't one of the six named lead
-columns** (`Question`, `Funnel Stage`, `Why is this important?`,
-`Rationale/Source`, `Answering Analysis`, `Answering Mechanism`) as a
-perspective column, so column order for the perspectives doesn't matter —
+The generator treats **every column that isn't one of the named lead
+columns** (`Question`, `Funnel Stage`, `Resource Types`, `Why is this
+important?`, `Rationale/Source`, `Answering Analysis`, `Answering
+Mechanism`, `Purposes`, `Catalog History`, `Status`) as a perspective
+column, so column order for the perspectives doesn't matter —
+
+**Adding a non-perspective column is a two-file change.** It must go into
+`NON_PERSPECTIVE_COLUMNS` in `scripts/csv_to_question_catalog_yaml.py` *and*
+`OPTIONAL_LEAD_COLUMNS` in `scripts/csv_to_dr_egeria_questions.py`. Both
+identify perspectives by elimination, so a column missing from either list
+becomes a phantom Perspective on every row. This has happened: "Catalog
+History" was added in 2026-09 without the second edit, and the next
+regeneration emitted 17 `Link Perspective to Question` blocks for a
+Perspective that does not exist — caught two days later by reading a diff.
+`tests/test_question_catalog_generator_guard.py` is now that test.
+
 but don't rename the six lead columns, and don't add a new perspective
 column without also creating that Perspective in
 `docs/dr-egeria/foundations/foundations.md` first (Perspectives are

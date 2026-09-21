@@ -4,6 +4,15 @@
 # CSV, then regenerate this file, don't hand-edit it directly). Backs the
 # Scouting "Questions" checklist tab (question_catalog_reader.py).
 #
+# One `<resource_type>_questions` key per resource type the CSV's
+# `Resource Types` column names (`;`-separated, `*` for all — see
+# docs/multi-resource-questions-design.md §1.1). A resource type with NO
+# key here has no authored questions, which question_catalog_reader.py
+# reports as `not_authored` rather than as an empty list: "nobody has
+# written database questions yet" and "there are database questions and
+# your filters excluded them all" are the same length and opposite
+# answers. Do not add empty sections to make the file look complete.
+#
 # Each entry:
 #   question      - display text; matches the Egeria GlossaryTerm Display
 #                   Name exactly (case+punctuation-sensitive) since it's
@@ -28,7 +37,8 @@
 #     kind        - "analysis" | "direct" | "registry" | "human" |
 #                   "chart" | "gap" | "partial" | "mixed" | "unknown" —
 #                   how (or whether) RE can answer this today.
-#     analysis_ids - analysis_catalog.yaml repo_analyses ids that answer
+#     analysis_ids - analysis_catalog.yaml ids (from ANY `*_analyses`
+#                   section, not just repo_analyses) that answer
 #                   (fully or partially) this question; may be empty.
 #     checks       - finer `analysis_id:check_name` refs, validated against
 #                   configdata/check_registry.yaml. Added 2026-08-24 because
@@ -919,7 +929,7 @@ repo_questions:
   catalog_history: ''
   retired: false
 - question: How much has changed since the last time this was surveyed — is it worth re-running now?
-  stage: Automate
+  stage: Discovery
   perspectives:
   - Steward
   - Data Expert
@@ -934,7 +944,9 @@ repo_questions:
   rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
     once a schedule exists for the analysis — real today, but only reachable once that subscription is
     set up.
-  catalog_history: ''
+  catalog_history: Funnel Stage was Automate until 2026-09-20; the project owner ruled that automation
+    is a property of any survey, not a funnel stage (docs/multi-resource-questions-design.md §2.1), and
+    this question is asked at Discovery — before deciding to spend on a re-run.
   retired: false
 - question: Is there a Survey Definition authored for this resource's technology type at all, or is that
     a catalog gap?

@@ -362,7 +362,15 @@ class TestResourceStateSources:
 
         catalog = {q["question"] for q in get_questions()}
         missing = [q for q in RESOURCE_STATE_SOURCES if q not in catalog]
-        assert missing == [], f"declared for questions not in the catalog: {missing}"
+        assert missing == [], (
+            f"declared for questions not in the catalog: {missing}\n"
+            "If a question was REWORDED in docs/dr-egeria/resource_questions.csv, "
+            "update its key in facts.py's RESOURCE_STATE_SOURCES in the SAME "
+            "commit -- these keys match on exact text. Four such rewordings are "
+            "expected from the multi-resource question-authoring stream; the "
+            "old -> new mapping is in RESOURCE_STATE_SOURCES' own docstring and "
+            "in docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md."
+        )
 
     def test_an_absent_value_is_a_measured_zero_not_an_unrun_analysis(self):
         """`feedback_count: 0` means nobody left feedback -- a real answer.

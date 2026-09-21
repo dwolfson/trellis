@@ -5073,6 +5073,22 @@ _ADAPTER = ResourceTypeAdapter(
         "egeria": _trigger_egeria_native_survey,
     },
     egeria_technology_type_name="GitHub Repository",
+    # What FactLayer reads to answer "what is known about this repository"
+    # (2026-09-20, design §1.1 item 5). These were unconditional imports in
+    # facts.py, which is what made the fact layer repo-only; declaring them
+    # here makes the repo one resource type among several rather than the
+    # default everything falls back to.
+    #
+    # `state_sources` resolves facts.py's own table lazily: its resolver
+    # functions live there beside the rest of the layer, and calling the
+    # provider at read time (not at import time) keeps this module free of an
+    # import cycle with facts.py.
+    analysis_results_map=lambda: REPO_ANALYSIS_RESULTS_MAP,
+    analysis_source_steps=lambda: REPO_ANALYSIS_SOURCE_STEPS,
+    analysis_kinds=lambda: ANALYSIS_KINDS,
+    state_sources=lambda: __import__(
+        "resource_explorer.facts", fromlist=["RESOURCE_STATE_SOURCES"],
+    ).RESOURCE_STATE_SOURCES,
 )
 
 register_adapter(_ADAPTER)
