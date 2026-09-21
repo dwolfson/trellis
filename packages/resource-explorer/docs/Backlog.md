@@ -6089,3 +6089,42 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
   price (Egeria writes: 1.5s median, p90 2.3s, post-redeploy) rather than DepthOffer's own "not yet
   measured" placeholder. Outcome (accepted/declined/chose) recorded on the catalogue record, same
   as a depth-offer decline.
+
+### `materialize_database_report`/`materialize_filesystem_report` don't distinguish an engine-action failure from a genuine empty result — not yet wired to a live caller
+
+Found 2026-09-21 while live-verifying Stream 3's structured-tables back-fill
+(`COORDINATOR-BRIEF-MULTI-RESOURCE.md`). A design review raised the concern
+that the coco_ods back-filled row (`table_count=0`, `state='measured'`) might
+be confidently-wrong data from the known `OPEN-SURVEY-0009` connection
+failure rather than a real absence. **Checked directly, not guessed**: a
+live, read-only `psycopg2` query against `coco_ods` confirms it genuinely has
+zero tables outside `pg_catalog`/`information_schema` right now — the
+back-filled row is correct, and no data correction was needed.
+
+The concern is still real for a different, forward-looking reason.
+`surveyors/result_materializer.py`'s `materialize_database_report`/
+`materialize_filesystem_report` take `annotations: list[dict]` — already
+resolved poll output — and correctly record an honest ambiguity note via
+`database_survey_coverage`'s `coverage_detail` when a section comes back
+empty (citing Egeria's own Postgres connector docs: missing may mean
+"permission", not "none exist"). But this conflates two different things
+into one ambiguity note: "the engine action completed and genuinely found
+nothing" and "the engine action itself failed (`final_status` != a success
+status, e.g. `INVALID`)" — the second is a stronger, more specific signal
+than the first, and `poll_trigger_and_retrieve_annotations`'s own result
+already carries `final_status`/`completion_message`, which never reaches
+either materializer function today.
+
+**Not yet causing wrong data**: grepped for call sites of both functions —
+neither has one. This is Phase 0 plumbing built ahead of Phase 1's live
+wiring, not a live bug.
+
+**Before wiring either function into a live caller (Phase 1)**: thread
+`final_status`/`completion_message` through, and give a failed engine action
+its own, more specific coverage note/state than a merely-empty-but-successful
+one — a curator reading "native survey reported none" should be able to tell
+"it ran and found nothing" from "it never actually ran" (this is exactly the
+distinction the `catalog_and_survey` no-refresh bug's own OPEN-SURVEY-0009
+failures would otherwise render as, if a curator ever re-triggers a broken
+asset's native survey and then reads the result back through these
+functions).
