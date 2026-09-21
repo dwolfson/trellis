@@ -148,9 +148,16 @@ produced 222 annotations, **all `ResourceMeasureAnnotation`**, in four
 annotation types — database, schema, table (×38) and column (×182)
 measurements — every one under analysis step *Profiling Associated
 Resources*, with 37 distinct `resourceProperties` keys across the four
-levels. **No `ResourceProfileAnnotation` ("Frequent Values for Column")
-appeared in that report**, so until the probes note says otherwise, frequent
-values are rule C for RE's column-profile step, not something to read back.
+levels. **No `ResourceProfileAnnotation` appeared, and none ever will from
+this service**: `PostgresDatabaseStatsExtractor.java` has exactly four
+`ResourceMeasureAnnotation` call sites and never builds a profile
+annotation. "Frequent Values for Column" is real but lives as two
+`resourceProperties` keys on the column-level measure (*Most Common Values*
+and *Most Common Values Frequency*, sourced from `pg_stats.most_common_vals`
+/ `most_common_freqs`), present with real content in the dump. So frequent
+values are **native, rule A**, with one precondition RE's envelope must
+report: Postgres's own `ANALYZE` has to have run on the table, or the keys
+are absent — absent meaning "no statistics", not "no common values".
 Rule A's key set for databases is that dump, not this table. The run also
 bound the endpoint as `host.docker.internal:5442`, which works only because
 the quickstart is a single container; a multi-host deployment needs the
