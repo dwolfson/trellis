@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from sqlalchemy import create_engine
 
 log = logging.getLogger(__name__)
@@ -392,6 +392,588 @@ TARGET_SURVEY = "survey"
 #: them, and `query_findings_all_runs` is untouched — the provenance view must
 #: keep answering "who proposed what, ever" after the current answer changes.
 WITHDRAWN_LABEL = "withdrawn"
+
+
+# ── Structured DB/FS detail tables: provenance and measurement state ────────
+
+#: `source` values for the structured DB/FS detail tables. Rows are keyed by
+#: (slug, surveyed_at, source) so a native Egeria survey and an RE-local
+#: survey of the same resource on the same day coexist rather than overwrite
+#: (multi-resource-questions-design.md §3 rule D).
+SOURCE_LOCAL = "local"      #: RE's own surveyors computed this row.
+SOURCE_EGERIA = "egeria"    #: materialised from a native Egeria survey report.
+
+#: `state` values carried by every structured DB/FS detail row, and by
+#: the coverage tables.
+#:
+#: These exist to keep "we could not measure this" separate from "we measured
+#: it and there was nothing". Collapsing the two is the bug the
+#: `find-absence-as-answer` skill is about, and both Egeria's Postgres
+#: connector docs and this design doc (§5.1) call it out specifically: a
+#: native Postgres survey that returns no schemas means the survey userId
+#: lacked permission, NOT that the database has no schemas; an empty
+#: `pg_stats` means ANALYZE has never run, NOT that the column holds no
+#: values. A consumer that sees STATE_MEASURED with a zero count may say
+#: "none"; for every other state it must say why instead.
+STATE_MEASURED = "measured"
+#: Measured successfully, and the answer is genuinely empty. Distinct from
+#: every state below: this one, and only this one, licenses rendering "none".
+STATE_EMPTY = "empty"
+#: The survey user lacked permission to see this. Postgres reports it as
+#: absence, which is why it must be recorded explicitly at capture time —
+#: nothing downstream can recover the distinction later.
+STATE_NOT_PERMITTED = "not_permitted"
+#: The source of the measurement exists but has never been populated —
+#: `pg_stats` before any ANALYZE, tuple counters after a stats reset.
+#: Renders as "run ANALYZE", never as "no values".
+STATE_NOT_COLLECTED = "not_collected"
+#: The engine cannot provide this at all (design §5.1's capability
+#: declaration): a DuckDB connection asked for `pg_stat_replication`.
+STATE_NOT_SUPPORTED = "not_supported"
+#: The step that would have measured this did not run in this survey — the
+#: commonest case for a back-filled row, where the old blob simply never
+#: carried the field.
+STATE_NOT_MEASURED = "not_measured"
+
+#: Every state other than STATE_MEASURED/STATE_EMPTY means the number beside
+#: it is absent rather than zero.
+STATES_WITHOUT_A_MEASUREMENT = frozenset({
+    STATE_NOT_PERMITTED,
+    STATE_NOT_COLLECTED,
+    STATE_NOT_SUPPORTED,
+    STATE_NOT_MEASURED,
+})
+
+# ── whose statistics, and as of when ───────────────────────────────────────
+#
+# `stats_source` on `database_column_profiles` / `filesystem_data_files`.
+# Added on designer review, 2026-09-20. `source` says who ran the *survey*;
+# `stats_source` says who computed the *numbers*, which is a different
+# question and often a different answer — a native Egeria survey and an RE
+# local survey can both report a column's frequent values straight out of the
+# database's own pg_stats, in which case neither of them computed anything.
+#
+# `stats_computed_at` is the companion: when those numbers were computed, as
+# opposed to when the survey that reports them ran. NULL means unknown, and
+# for STATS_SOURCE_DATABASE specifically it is the "ANALYZE has never run"
+# signal — which is why it is a nullable timestamp rather than a flag.
+
+#: The database computed these (Postgres `pg_stats`, populated by ANALYZE).
+#: Covers the whole table, was not computed by us, and may be far older than
+#: the survey reporting it. `stats_computed_at` should carry `last_analyze`;
+#: NULL means ANALYZE has never run and the answer is "run ANALYZE", not
+#: "this column has no values".
+STATS_SOURCE_DATABASE = "database"
+#: Resource Explorer computed these at survey time, by reading values —
+#: bounded by the sampling settings in the same row (design §5.8).
+STATS_SOURCE_RESOURCE_EXPLORER = "resource_explorer"
+
+#: Sections named by the per-type coverage tables. One row per section per
+#: (slug, surveyed_at, source), so "this survey never looked at grants" is a
+#: stored fact rather than an inference from an empty `database_grants`.
+SECTION_SCHEMAS = "schemas"
+SECTION_TABLES = "tables"
+SECTION_COLUMNS = "columns"
+SECTION_COLUMN_PROFILES = "column_profiles"
+SECTION_TABLE_ACTIVITY = "table_activity"
+SECTION_GRANTS = "grants"
+SECTION_SQL_OBJECTS = "sql_objects"
+SECTION_SETTINGS = "settings"
+SECTION_ENTRIES = "entries"
+SECTION_DATA_FILES = "data_files"
+
+
+#: DDL for the structured DB/FS detail tables (design §5.7, §6).
+#:
+#: Written in SQLite dialect like every other statement in this file;
+#: `PostgresCursorWrapper._translate_sql` rewrites `INTEGER PRIMARY KEY
+#: AUTOINCREMENT` to `SERIAL PRIMARY KEY` and `?` to `%s` on the way out.
+#: JSON is TEXT, timestamps are ISO-8601 TEXT, booleans are INTEGER — all
+#: three per this file's existing convention.
+#:
+#: Nullable numeric columns are deliberate: NULL means "not measured", and the
+#: row's `state` says why. A 0 in these columns is a real measured zero.
+_DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
+    # ── databases ──────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS database_schemas (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        schema_name           TEXT NOT NULL,
+        qualified_schema_name TEXT DEFAULT '',
+        description           TEXT DEFAULT '',
+        table_count           INTEGER DEFAULT NULL,
+        view_count            INTEGER DEFAULT NULL,
+        mat_view_count        INTEGER DEFAULT NULL,
+        column_count          INTEGER DEFAULT NULL,
+        total_table_size_bytes INTEGER DEFAULT NULL,
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_tables (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug        TEXT NOT NULL,
+        surveyed_at          TEXT NOT NULL,
+        source               TEXT NOT NULL DEFAULT 'local',
+        schema_name          TEXT NOT NULL,
+        table_name           TEXT NOT NULL,
+        qualified_table_name TEXT DEFAULT '',
+        table_type           TEXT DEFAULT '',
+        table_owner          TEXT DEFAULT '',
+        description          TEXT DEFAULT '',
+        column_count         INTEGER DEFAULT NULL,
+        row_count            INTEGER DEFAULT NULL,
+        size_bytes           INTEGER DEFAULT NULL,
+        is_populated         INTEGER DEFAULT NULL,
+        has_indexes          INTEGER DEFAULT NULL,
+        has_rules            INTEGER DEFAULT NULL,
+        has_triggers         INTEGER DEFAULT NULL,
+        has_row_security     INTEGER DEFAULT NULL,
+        query_definition     TEXT DEFAULT '',
+        state                TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_columns (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        schema_name           TEXT NOT NULL,
+        table_name            TEXT NOT NULL,
+        column_name           TEXT NOT NULL,
+        qualified_column_name TEXT DEFAULT '',
+        ordinal_position      INTEGER DEFAULT NULL,
+        data_type             TEXT DEFAULT '',
+        base_type             TEXT DEFAULT '',
+        column_size           INTEGER DEFAULT NULL,
+        is_nullable           INTEGER DEFAULT NULL,
+        column_default        TEXT DEFAULT '',
+        description           TEXT DEFAULT '',
+        is_primary_key        INTEGER DEFAULT 0,
+        foreign_key_json      TEXT DEFAULT NULL,
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Separate from database_columns because a profile is a different
+    # measurement with a different cost and a different absence mode: the
+    # column exists (catalog read) while its profile may be missing because
+    # ANALYZE never ran (STATE_NOT_COLLECTED). Folding them into one table
+    # would make "column present, stats absent" unrepresentable.
+    """
+    CREATE TABLE IF NOT EXISTS database_column_profiles (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug             TEXT NOT NULL,
+        surveyed_at               TEXT NOT NULL,
+        source                    TEXT NOT NULL DEFAULT 'local',
+        schema_name               TEXT NOT NULL,
+        table_name                TEXT NOT NULL,
+        column_name               TEXT NOT NULL,
+        null_fraction             REAL DEFAULT NULL,
+        distinct_count            REAL DEFAULT NULL,
+        average_width             INTEGER DEFAULT NULL,
+        correlation               REAL DEFAULT NULL,
+        most_common_values_json   TEXT DEFAULT NULL,
+        most_common_freqs_json    TEXT DEFAULT NULL,
+        histogram_bounds_json     TEXT DEFAULT NULL,
+        min_value                 TEXT DEFAULT '',
+        max_value                 TEXT DEFAULT '',
+        -- Whose numbers these are, and as of when. Designer review,
+        -- 2026-09-20: `sample_strategy` answers how much was looked at; it
+        -- does not answer whose statistics these are or when they were
+        -- computed. A Postgres profile can come from the database's own
+        -- pg_stats — whole table, not ours, possibly months older than the
+        -- survey reporting it. A file profile is computed by RE at survey
+        -- time. Without these two a card shows a null fraction computed
+        -- three months ago beside a row count from two minutes ago and says
+        -- nothing about the difference.
+        --
+        -- This also makes the "no statistics collected, run ANALYZE" state
+        -- exact rather than special-cased: it is simply
+        -- stats_source = STATS_SOURCE_DATABASE with stats_computed_at NULL.
+        stats_source              TEXT DEFAULT '',
+        stats_computed_at         TEXT DEFAULT NULL,
+        sample_strategy           TEXT DEFAULT '',
+        sample_rows               INTEGER DEFAULT NULL,
+        sample_seed               INTEGER DEFAULT NULL,
+        state                     TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_table_activity (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug     TEXT NOT NULL,
+        surveyed_at       TEXT NOT NULL,
+        source            TEXT NOT NULL DEFAULT 'local',
+        schema_name       TEXT NOT NULL,
+        table_name        TEXT NOT NULL,
+        rows_inserted     INTEGER DEFAULT NULL,
+        rows_updated      INTEGER DEFAULT NULL,
+        rows_deleted      INTEGER DEFAULT NULL,
+        hot_updates       INTEGER DEFAULT NULL,
+        live_tuples       INTEGER DEFAULT NULL,
+        dead_tuples       INTEGER DEFAULT NULL,
+        seq_scan          INTEGER DEFAULT NULL,
+        idx_scan          INTEGER DEFAULT NULL,
+        last_vacuum       TEXT DEFAULT '',
+        last_autovacuum   TEXT DEFAULT '',
+        last_analyze      TEXT DEFAULT '',
+        last_autoanalyze  TEXT DEFAULT '',
+        pending_changes   INTEGER DEFAULT NULL,
+        -- When Postgres last reset the counters above. Designer review,
+        -- 2026-09-20: `pg_stat_user_tables` counters are cumulative since
+        -- the last stats reset, and a change *rate* is the difference
+        -- between two snapshots. A reset, failover or restore between
+        -- snapshots makes that difference negative, and a small-multiples
+        -- chart would faithfully draw "−40,000 inserts" — a wrong number
+        -- rendered confidently.
+        --
+        -- Storing the reset timestamp per snapshot lets a comparator see
+        -- that it moved and report the interval as "counters reset, no rate
+        -- available" instead of as a rate. That check belongs to the change
+        -- comparators (design §9.1); this column is the evidence they need,
+        -- and without it the information is gone by the time they run.
+        stats_reset       TEXT DEFAULT NULL,
+        state             TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_grants (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug  TEXT NOT NULL,
+        surveyed_at    TEXT NOT NULL,
+        source         TEXT NOT NULL DEFAULT 'local',
+        schema_name    TEXT DEFAULT '',
+        object_name    TEXT DEFAULT '',
+        object_type    TEXT DEFAULT '',
+        grantee        TEXT NOT NULL,
+        grantor        TEXT DEFAULT '',
+        privilege_type TEXT NOT NULL,
+        is_grantable   INTEGER DEFAULT 0,
+        state          TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, object_name,
+               grantee, privilege_type),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_sql_objects (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug       TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        schema_name         TEXT NOT NULL,
+        object_name         TEXT NOT NULL,
+        object_type         TEXT NOT NULL DEFAULT 'view',
+        definition          TEXT DEFAULT '',
+        depends_on_json     TEXT DEFAULT NULL,
+        column_lineage_json TEXT DEFAULT NULL,
+        complexity          INTEGER DEFAULT NULL,
+        state               TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, object_name, object_type),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_settings (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug TEXT NOT NULL,
+        surveyed_at   TEXT NOT NULL,
+        source        TEXT NOT NULL DEFAULT 'local',
+        setting_name  TEXT NOT NULL,
+        setting_value TEXT DEFAULT '',
+        unit          TEXT DEFAULT '',
+        category      TEXT DEFAULT '',
+        setting_source TEXT DEFAULT '',
+        state         TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, setting_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # ── file systems ───────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_entries (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug     TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        entry_path          TEXT NOT NULL,
+        entry_name          TEXT DEFAULT '',
+        entry_type          TEXT NOT NULL DEFAULT 'file',
+        size_bytes          INTEGER DEFAULT NULL,
+        file_extension      TEXT DEFAULT '',
+        file_type           TEXT DEFAULT '',
+        asset_type          TEXT DEFAULT '',
+        deployed_impl_type  TEXT DEFAULT '',
+        is_hidden           INTEGER DEFAULT NULL,
+        is_symlink          INTEGER DEFAULT NULL,
+        is_executable       INTEGER DEFAULT NULL,
+        is_writable         INTEGER DEFAULT NULL,
+        is_readable         INTEGER DEFAULT NULL,
+        created_at          TEXT DEFAULT '',
+        modified_at         TEXT DEFAULT '',
+        accessed_at         TEXT DEFAULT '',
+        record_count        INTEGER DEFAULT NULL,
+        state               TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, surveyed_at, source, entry_path),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_data_files (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug TEXT NOT NULL,
+        surveyed_at     TEXT NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'local',
+        file_path       TEXT NOT NULL,
+        format          TEXT DEFAULT '',
+        row_count       INTEGER DEFAULT NULL,
+        column_count    INTEGER DEFAULT NULL,
+        schema_json     TEXT DEFAULT NULL,
+        null_summary    TEXT DEFAULT '',
+        file_size_bytes INTEGER DEFAULT NULL,
+        -- Same pair as database_column_profiles, for the same reason. A file
+        -- profile is normally computed by RE at survey time
+        -- (STATS_SOURCE_RESOURCE_EXPLORER), so stats_computed_at is usually
+        -- the survey time — but not always: a profile carried over from an
+        -- earlier run, or read from a sidecar manifest the publisher wrote,
+        -- is a different age from the walk that found the file, and the card
+        -- shows them side by side.
+        stats_source      TEXT DEFAULT '',
+        stats_computed_at TEXT DEFAULT NULL,
+        state           TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, surveyed_at, source, file_path),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    # ── coverage ───────────────────────────────────────────────────────────
+    # Not in the design doc's table list, added because rule "absence is a
+    # result" is otherwise unimplementable: an empty `database_grants` for a
+    # given (slug, surveyed_at, source) is ambiguous between "this survey did
+    # not look at grants", "the survey user could not read pg_roles" and
+    # "there genuinely are no grants". Per-row `state` cannot express any of
+    # those, because in each case there is no row to carry it. One row per
+    # section per survey run makes the distinction a stored fact.
+    #
+    # One table per resource type rather than one polymorphic table keyed
+    # (resource_type, resource_slug). The polymorphic form was written first
+    # and replaced: a slug column that cannot carry a foreign key is exactly
+    # the shape `tests/test_no_orphaned_slugs.py` exists to catch, and it is
+    # right to catch it here — coverage describes a survey *of* a resource,
+    # so when the resource is deleted these rows are debris, not history
+    # that outlives it. Two typed tables get a real FK and need no exemption.
+    """
+    CREATE TABLE IF NOT EXISTS database_survey_coverage (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug TEXT NOT NULL,
+        surveyed_at   TEXT NOT NULL,
+        source        TEXT NOT NULL DEFAULT 'local',
+        section       TEXT NOT NULL,
+        state         TEXT NOT NULL DEFAULT 'measured',
+        row_count     INTEGER DEFAULT NULL,
+        detail        TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, section),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_survey_coverage (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug TEXT NOT NULL,
+        surveyed_at     TEXT NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'local',
+        section         TEXT NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'measured',
+        row_count       INTEGER DEFAULT NULL,
+        detail          TEXT DEFAULT '',
+        UNIQUE(filesystem_slug, surveyed_at, source, section),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+)
+
+#: Coverage table and slug column per resource type. Separate from
+#: `_DETAIL_TABLE_SPECS` because a coverage row is keyed by section rather
+#: than by a surveyed object, so it does not use the generic reader/writer.
+_COVERAGE_TABLES: dict[str, tuple[str, str]] = {
+    "database": ("database_survey_coverage", "database_slug"),
+    "filesystem": ("filesystem_survey_coverage", "filesystem_slug"),
+}
+
+#: Lookup indexes. The UNIQUE constraints above already cover the
+#: (slug, surveyed_at, source) prefix for point lookups; these serve the
+#: "latest run for this slug" and cross-run trend queries.
+_DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_db_schemas_slug ON database_schemas(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_tables_slug ON database_tables(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_columns_slug ON database_columns(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
+    "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_grants_slug ON database_grants(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_grants_grantee ON database_grants(database_slug, grantee)",
+    "CREATE INDEX IF NOT EXISTS idx_db_sql_objects_slug ON database_sql_objects(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_settings_slug ON database_settings(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_entries_slug ON filesystem_entries(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_data_files_slug ON filesystem_data_files(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_coverage_slug ON database_survey_coverage(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_coverage_slug ON filesystem_survey_coverage(filesystem_slug, surveyed_at)",
+)
+
+#: Columns added after the tables above first shipped. Empty at introduction;
+#: this is the seam so a later column lands on existing checkouts the same way
+#: `database_surveys.source` and the `file_systems` columns did, rather than
+#: being silently absent on any registry created before it.
+_DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("database_schemas", ()),
+    ("database_tables", ()),
+    ("database_columns", ()),
+    # stats_source/stats_computed_at (designer review, 2026-09-20) were added
+    # to this table's CREATE TABLE after it had already been created against
+    # the shared registry Postgres during this stream's own development —
+    # CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a
+    # pre-existing database_column_profiles was silently missing both columns
+    # until this migration entry existed. Found live, running the back-fill
+    # against the real shared registry.
+    ("database_column_profiles", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+    )),
+    # stats_reset: same story, same designer-review addition, same gap.
+    ("database_table_activity", (
+        ("stats_reset", "TEXT DEFAULT NULL"),
+    )),
+    ("database_grants", ()),
+    ("database_sql_objects", ()),
+    ("database_settings", ()),
+    ("filesystem_entries", ()),
+    # Same gap as database_column_profiles above, confirmed live against the
+    # same pre-existing shared-registry table.
+    ("filesystem_data_files", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+    )),
+    ("database_survey_coverage", ()),
+    ("filesystem_survey_coverage", ()),
+)
+
+
+class _DetailTableSpec(NamedTuple):
+    """Everything the generic detail-row reader/writer needs about one table.
+
+    Derived from the DDL rather than restated, so a column added to a CREATE
+    TABLE above is picked up here with no second edit. The alternative — a
+    hand-maintained column list per table — is the shape that goes stale
+    silently: the INSERT keeps working, the new column just never receives a
+    value, and nothing fails.
+    """
+    table: str
+    slug_column: str
+    resource_type: str
+    value_columns: tuple[str, ...]
+    insert_columns: tuple[str, ...]
+    json_columns: frozenset[str]
+    order_by: str
+
+
+#: Ordering for each detail table's rows: the order a person reads them in,
+#: not insertion order. Anything not named here falls back to its slug column.
+_DETAIL_TABLE_ORDER: dict[str, str] = {
+    "database_schemas": "schema_name",
+    "database_tables": "schema_name, table_name",
+    "database_columns": "schema_name, table_name, ordinal_position, column_name",
+    "database_column_profiles": "schema_name, table_name, column_name",
+    "database_table_activity": "schema_name, table_name",
+    "database_grants": "schema_name, object_name, grantee, privilege_type",
+    "database_sql_objects": "schema_name, object_type, object_name",
+    "database_settings": "setting_name",
+    "filesystem_entries": "entry_path",
+    "filesystem_data_files": "file_path",
+}
+
+_DETAIL_COLUMN_RE = re.compile(r"^\s*([a-z_][a-z0-9_]*)\s+[A-Z]", re.MULTILINE)
+_DETAIL_TABLE_NAME_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+([a-z_]+)")
+
+
+def _parse_detail_table_spec(ddl: str) -> _DetailTableSpec | None:
+    """Build a spec from one CREATE TABLE statement, or None if it is not one
+    of the per-object detail tables (the coverage table is keyed differently
+    and is handled by its own methods)."""
+    name_match = _DETAIL_TABLE_NAME_RE.search(ddl)
+    if not name_match:
+        return None
+    table = name_match.group(1)
+    if table in ("database_survey_coverage", "filesystem_survey_coverage"):
+        return None
+
+    # Column lines only: a constraint line starts with UNIQUE/FOREIGN/PRIMARY,
+    # which the [a-z_] anchor already excludes.
+    columns = [c for c in _DETAIL_COLUMN_RE.findall(ddl) if c != "id"]
+    slug_candidates = [c for c in columns if c.endswith("_slug")]
+    if not slug_candidates:
+        return None
+    slug_column = slug_candidates[0]
+    value_columns = tuple(
+        c for c in columns if c not in (slug_column, "surveyed_at", "source")
+    )
+    return _DetailTableSpec(
+        table=table,
+        slug_column=slug_column,
+        resource_type="database" if slug_column == "database_slug" else "filesystem",
+        value_columns=value_columns,
+        insert_columns=(slug_column, "surveyed_at", "source") + value_columns,
+        json_columns=frozenset(c for c in value_columns if c.endswith("_json")),
+        order_by=_DETAIL_TABLE_ORDER.get(table, slug_column),
+    )
+
+
+_DETAIL_TABLE_SPECS: dict[str, _DetailTableSpec] = {
+    spec.table: spec
+    for spec in (_parse_detail_table_spec(ddl) for ddl in _DB_FS_DETAIL_TABLE_DDL)
+    if spec is not None
+}
+
+
+def _detail_value(value):
+    """Coerce one caller-supplied cell to something both backends store.
+
+    dicts and lists become JSON text; bools become 0/1 (SQLite has no boolean
+    and Postgres will not accept a Python bool into an INTEGER column); None
+    stays None, which is the whole point — NULL means "not measured", and the
+    row's `state` says why. Callers must not substitute 0 for it.
+    """
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(_json_sanitize(list(value) if isinstance(value, tuple) else value))
+    return value
+
+
+def _decode_detail_row(row: dict) -> dict:
+    """Decode `*_json` columns back to Python on the way out."""
+    for key, value in list(row.items()):
+        if key.endswith("_json") and isinstance(value, str) and value:
+            try:
+                row[key] = json.loads(value)
+            except (ValueError, TypeError):
+                # Leave the raw text rather than dropping it: a value that
+                # will not parse is evidence of a bug worth seeing, and
+                # silently turning it into None would read as "not measured".
+                pass
+    return row
 
 
 class ProjectRegistry:
@@ -1433,6 +2015,45 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_filesystem_surveys_slug "
                 "ON filesystem_surveys(filesystem_slug)"
             )
+
+            # ── Structured DB/FS detail tables ──────────────────────────────
+            #
+            # multi-resource-questions-design.md §5.7 (database) and §6 (file
+            # system). Until these existed, every per-object question ("which
+            # tables have no primary key?"), every diff and every change
+            # detector had to re-parse the `survey_data` JSON blob — which
+            # `web/routes/databases.py`'s get_database_diff did literally.
+            # The blob stays as the raw record; these are the queryable form.
+            #
+            # Every row is keyed by (slug, surveyed_at, source) per the design
+            # doc's rule D: RE keeps a local copy of every result whoever ran
+            # the survey, so a native Egeria run and an RE-local run of the
+            # same day must not overwrite each other. `source` is 'local' for
+            # RE's own surveyors (matching database_surveys.source's existing
+            # default) and 'egeria' for rows materialised back out of a native
+            # survey report by surveyors/result_materializer.py.
+            #
+            # `state` on every row, and the per-type coverage tables
+            # below, exist because absence is a result. The Java connector
+            # docs are explicit that MISSING schemas/tables/columns in a
+            # native Postgres survey mean the survey userId lacks permission,
+            # not that there are none; an empty pg_stats means ANALYZE never
+            # ran, not that the column has no values. Those must never render
+            # as "measured, and there was nothing" — see STATE_* below.
+            for _ddl in _DB_FS_DETAIL_TABLE_DDL:
+                conn.execute(_ddl)
+            for _idx in _DB_FS_DETAIL_TABLE_INDEXES:
+                conn.execute(_idx)
+            # Migrations: these tables were added together, so a checkout that
+            # already has them from an earlier point in this branch's life
+            # gets any later-added column here rather than silently missing
+            # it. Same (col, defn) shape as the projects/file_systems blocks.
+            for _table, _cols in _DB_FS_DETAIL_TABLE_MIGRATIONS:
+                _existing = self._get_table_columns(conn, _table)
+                for _col, _defn in _cols:
+                    if _col not in _existing:
+                        conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_defn}")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
                     id               TEXT PRIMARY KEY,
@@ -7456,6 +8077,22 @@ class ProjectRegistry:
             # databases.slug; SQLite silently allows the reverse order
             # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            # The structured detail tables are children too, and every one of
+            # them has a real FK. Missing them here does not strand rows — it
+            # makes the parent delete fail outright, on Postgres and on
+            # SQLite alike (this connection sets foreign_keys=ON). Driven off
+            # the spec map so a table added later is covered without a second
+            # edit here.
+            for _table, _spec in _DETAIL_TABLE_SPECS.items():
+                if _spec.resource_type == "database":
+                    conn.execute(
+                        f"DELETE FROM {_table} WHERE {_spec.slug_column} = ?",
+                        (normalized,),
+                    )
+            conn.execute(
+                "DELETE FROM database_survey_coverage WHERE database_slug = ?",
+                (normalized,),
+            )
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
@@ -7488,6 +8125,31 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
+        # Materialise the structured detail rows from the same blob, so a
+        # survey run today is queryable without waiting for a back-fill
+        # (design §5.7). Done here rather than in each surveyor because every
+        # database survey path — local, hybrid and the Egeria-adaptive
+        # handler — already funnels through this one method, so one seam
+        # covers all three and no surveyor has to remember.
+        #
+        # Deliberately not fatal: a conversion bug must not cost the survey
+        # result that was just recorded above. The blob is still the raw
+        # record, so a failure here is recoverable by re-running the back-fill
+        # script — but it is logged loudly rather than swallowed, because a
+        # silently empty detail table is exactly the absence this design is
+        # trying to stop rendering as "nothing found".
+        try:
+            from resource_explorer.surveyors.result_materializer import (
+                backfill_database_survey,
+            )
+            backfill_database_survey(self, slug, surveyed_at, survey_data, source=source)
+        except Exception as exc:
+            log.warning(
+                "Structured detail rows not written for database %s @ %s (%s): %s. "
+                "The survey_data blob was stored; re-run "
+                "scripts/backfill_structured_tables.py to recover the rows.",
+                slug, surveyed_at, source, exc,
+            )
 
     def get_database_surveys(self, slug: str) -> list[dict]:
         """Return all survey records for a database, newest first."""
@@ -7507,6 +8169,245 @@ class ProjectRegistry:
         """Return the most recent survey record for a database, or None."""
         surveys = self.get_database_surveys(slug)
         return surveys[0] if surveys else None
+
+    # ── structured DB/FS detail rows (design §5.7, §6) ────────────────────────
+    #
+    # One generic writer and one generic reader, rather than ten near-identical
+    # pairs. The tables differ only in their columns and their slug column, and
+    # both of those are derived from the DDL above, so adding a column to a
+    # CREATE TABLE is enough — there is no second list to keep in step. That
+    # matters here because these ten tables were written at once and would
+    # otherwise drift silently the first time one of them gained a column.
+
+    def write_detail_rows(
+        self,
+        table: str,
+        slug: str,
+        surveyed_at: str,
+        source: str = SOURCE_LOCAL,
+        rows: list[dict] | None = None,
+        *,
+        state: str = STATE_MEASURED,
+        coverage_section: str | None = None,
+        coverage_state: str | None = None,
+        coverage_detail: str = "",
+    ) -> int:
+        """Replace this (slug, surveyed_at, source)'s rows in `table`.
+
+        Returns the number of rows written. Replace rather than append, so
+        re-materialising the same survey report is idempotent — a native
+        survey that is read back twice must not double its rows.
+
+        `coverage_section`, when given, also records a coverage
+        row. Pass it for every section a survey *attempted*, including the ones
+        that came back empty: an empty section with no coverage row is
+        indistinguishable from a section the survey never looked at, which is
+        exactly the collapse `STATE_*` exists to prevent. When
+        `coverage_state` is omitted it is inferred as STATE_MEASURED for a
+        non-empty result and STATE_EMPTY for an empty one — an inference that
+        is only correct because the caller has asserted, by passing
+        `coverage_section` at all, that the attempt was made.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(
+                f"{table!r} is not a structured detail table; known: "
+                f"{sorted(_DETAIL_TABLE_SPECS)}"
+            )
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+        rows = rows or []
+
+        with self._conn() as conn:
+            conn.execute(
+                f"DELETE FROM {table} WHERE {spec.slug_column} = ? "
+                f"AND surveyed_at = ? AND source = ?",
+                (slug, surveyed_at, source),
+            )
+            if rows:
+                payload = []
+                for row in rows:
+                    values = [slug, surveyed_at, source]
+                    for col in spec.value_columns:
+                        if col == "state":
+                            values.append(row.get("state", state))
+                        else:
+                            values.append(_detail_value(row.get(col)))
+                    payload.append(tuple(values))
+                placeholders = ", ".join("?" for _ in spec.insert_columns)
+                conn.executemany(
+                    f"INSERT INTO {table} ({', '.join(spec.insert_columns)}) "
+                    f"VALUES ({placeholders})",
+                    payload,
+                )
+
+        if coverage_section is not None:
+            if coverage_state is None:
+                coverage_state = STATE_MEASURED if rows else STATE_EMPTY
+            self.record_section_coverage(
+                resource_type=spec.resource_type,
+                slug=slug,
+                surveyed_at=surveyed_at,
+                source=source,
+                section=coverage_section,
+                state=coverage_state,
+                row_count=len(rows),
+                detail=coverage_detail,
+            )
+        return len(rows)
+
+    def query_detail_rows(
+        self,
+        table: str,
+        slug: str,
+        surveyed_at: str | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
+        """Rows from `table` for a slug.
+
+        With no `surveyed_at`, returns the most recent run's rows — and
+        `source` narrows *which* run that is, so a caller asking for the
+        latest native run does not get a later local one. With neither, the
+        latest run of any source wins, which is the "what do we currently
+        know" question the UI asks.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+
+        where = [f"{spec.slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        if surveyed_at is None:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT MAX(surveyed_at) AS latest FROM {table} "
+                    f"WHERE {' AND '.join(where)}",
+                    tuple(params),
+                ).fetchone()
+            surveyed_at = (dict(row).get("latest") if row else None) or None
+            if surveyed_at is None:
+                return []
+        where.append("surveyed_at = ?")
+        params.append(surveyed_at)
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {' AND '.join(where)} "
+                f"ORDER BY {spec.order_by}",
+                tuple(params),
+            ).fetchall()
+        return [_decode_detail_row(dict(r)) for r in rows]
+
+    def record_section_coverage(
+        self,
+        resource_type: str,
+        slug: str,
+        surveyed_at: str,
+        section: str,
+        state: str,
+        source: str = SOURCE_LOCAL,
+        row_count: int | None = None,
+        detail: str = "",
+    ) -> None:
+        """Record that a survey run did (or could not) measure one section.
+
+        This is the row that lets a consumer tell "no grants exist" from "we
+        never read pg_roles" from "the survey user could not". Without it the
+        only evidence is an empty table, which says all three at once.
+        """
+        table, slug_column = self._coverage_table(resource_type)
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                f"""INSERT INTO {table}
+                   ({slug_column}, surveyed_at, source, section,
+                    state, row_count, detail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT({slug_column}, surveyed_at, source, section)
+                   DO UPDATE SET state=excluded.state,
+                                 row_count=excluded.row_count,
+                                 detail=excluded.detail""",
+                (slug, surveyed_at, source, section, state, row_count, detail),
+            )
+
+    @staticmethod
+    def _coverage_table(resource_type: str) -> tuple[str, str]:
+        try:
+            return _COVERAGE_TABLES[resource_type]
+        except KeyError:
+            raise ValueError(
+                f"no coverage table for resource type {resource_type!r}; "
+                f"known: {sorted(_COVERAGE_TABLES)}"
+            ) from None
+
+    def get_section_coverage(
+        self,
+        resource_type: str,
+        slug: str,
+        surveyed_at: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, dict]:
+        """Coverage rows for a run, keyed by section name.
+
+        A section absent from this mapping was never recorded at all, which is
+        weaker than STATE_NOT_MEASURED: it means nothing claimed to have
+        tried. Callers should render that as unknown, not as none.
+        """
+        table, slug_column = self._coverage_table(resource_type)
+        slug = self._normalize_slug(slug)
+        where = [f"{slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        if surveyed_at is None:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT MAX(surveyed_at) AS latest FROM {table} "
+                    f"WHERE {' AND '.join(where)}",
+                    tuple(params),
+                ).fetchone()
+            surveyed_at = (dict(row).get("latest") if row else None) or None
+            if surveyed_at is None:
+                return {}
+        where.append("surveyed_at = ?")
+        params.append(surveyed_at)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {' AND '.join(where)}",
+                tuple(params),
+            ).fetchall()
+        return {dict(r)["section"]: dict(r) for r in rows}
+
+    def get_detail_run_timestamps(
+        self, table: str, slug: str, source: str | None = None
+    ) -> list[str]:
+        """Distinct `surveyed_at` values present in `table`, newest first.
+
+        The seam the diff and trend consumers need: "which runs do I have
+        structured rows for", which is not the same as which rows
+        `database_surveys` has, since a run that predates these tables has a
+        blob and no rows until the back-fill runs.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+        where = [f"{spec.slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT surveyed_at FROM {table} "
+                f"WHERE {' AND '.join(where)} ORDER BY surveyed_at DESC",
+                tuple(params),
+            ).fetchall()
+        return [dict(r)["surveyed_at"] for r in rows]
 
     def database_exists(self, slug: str) -> bool:
         """Check if a database entity exists."""
@@ -7625,6 +8526,19 @@ class ProjectRegistry:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute("DELETE FROM filesystem_surveys WHERE filesystem_slug = ?", (normalized,))
+            # Same reason as remove_database: these carry real FKs, so
+            # skipping them fails the parent delete rather than stranding
+            # rows.
+            for _table, _spec in _DETAIL_TABLE_SPECS.items():
+                if _spec.resource_type == "filesystem":
+                    conn.execute(
+                        f"DELETE FROM {_table} WHERE {_spec.slug_column} = ?",
+                        (normalized,),
+                    )
+            conn.execute(
+                "DELETE FROM filesystem_survey_coverage WHERE filesystem_slug = ?",
+                (normalized,),
+            )
             conn.execute("DELETE FROM file_systems WHERE slug = ?", (normalized,))
 
     def update_filesystem_status(self, slug: str, status: ProjectStatus, error_message: str = "") -> None:
@@ -7689,6 +8603,23 @@ class ProjectRegistry:
                    SET file_count = ?, data_file_count = ?, last_surveyed_at = ?
                    WHERE slug = ?""",
                 (file_count, data_file_count, surveyed_at, normalized),
+            )
+        # Structured detail rows from the same blob — see the equivalent note
+        # in record_database_survey for why this lives here and why a failure
+        # is logged rather than raised.
+        try:
+            from resource_explorer.surveyors.result_materializer import (
+                backfill_filesystem_survey,
+            )
+            backfill_filesystem_survey(
+                self, normalized, surveyed_at, survey_data, source=source
+            )
+        except Exception as exc:
+            log.warning(
+                "Structured detail rows not written for filesystem %s @ %s (%s): %s. "
+                "The survey_data blob was stored; re-run "
+                "scripts/backfill_structured_tables.py to recover the rows.",
+                normalized, surveyed_at, source, exc,
             )
 
     def get_latest_filesystem_survey(self, fs_slug: str) -> dict | None:

@@ -40,6 +40,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from resource_explorer.resource_types import DEFAULT_RESOURCE_TYPE
 from resource_explorer.surveyors.result_status import (
     MEASURED,
     NEVER_RUN,
@@ -586,6 +587,48 @@ def _r_changed_since_survey(reg, p) -> tuple:
 
 #: question text -> (resolver, subject). The subject is what the fact is
 #: ABOUT, used as the analysis_id slot so the envelope reads sensibly.
+#:
+#: **This is the REPOSITORY table**, and its keys say so — every one of them
+#: is the exact text of a repo question ("Is this repository actively
+#: maintained?"). It is registered on the repo `ResourceTypeAdapter`
+#: (`analysis_results_map`/`state_sources`, 2026-09-20) and reached through
+#: `get_adapter(resource_type).state_sources()`, never imported directly by
+#: the fact layer any more: consulting it for a database would have matched
+#: nothing and reported "nothing is recorded for this yet" about a question
+#: it was never able to answer. Design §1.1 item 5 / §13 Phase 0 item 3.
+#: Another resource type's table lives with that type's own adapter.
+#:
+#: **Four of these keys are known to be going stale** (verified 2026-09-20
+#: against `origin/re/db-questions-csv`, the question-authoring stream, by
+#: reading that branch's CSV rather than taking the report on trust). That
+#: branch rewords four of the questions below to cross-type wording, and these
+#: keys match on EXACT text, so they will match nothing once it lands:
+#:
+#:   _r_description  "What does this repository do?"
+#:                -> "What is this resource, and what is it for?"
+#:   _r_maintainers  "Who maintains this repository?"
+#:                -> "Who owns this resource (accountable owner), and who administers it?"
+#:   _r_catalogued   "Has this repository already been catalogued in Egeria and when?"
+#:                -> "Has this resource already been catalogued in Egeria, and when?"
+#:   _r_license      "Are there any restrictions for use?"
+#:                -> "Under what licence or agreement may this resource be used?"
+#:
+#: The keys are NOT updated here, deliberately. This branch's CSV still
+#: carries the old wording, so swapping them would break this branch and would
+#: break `main` for the window between this stream's merge and the authoring
+#: stream's. They are updated in the SAME commit as the rewording.
+#:
+#: `_r_license`'s row SPLITS into two. It maps to the licence row above, which
+#: is what the resolver actually does (it reads `stats["license"]`). The other
+#: half — "Are there any restrictions for use beyond the licence —
+#: classification, zone or terms of use?" — is a new, unbuilt question and
+#: gets NO entry here. A question with no state source is a normal state, and
+#: pointing a licence-field read at it would answer a governance question with
+#: a licence string.
+#:
+#: `test_every_declared_question_is_in_the_real_catalog` fails loudly on each
+#: of these, which is the point: a key matching nothing is a resolver that
+#: never runs, and it looks exactly like a question we chose not to answer.
 RESOURCE_STATE_SOURCES = {
     "What does this repository do?": (_r_description, "description"),
     "Is this repository actively maintained?": (_r_maintained, "foss_scorecard"),
@@ -637,26 +680,79 @@ UNDECLARED_KINDS = {
 class FactLayer:
     """Reads what is known about a resource. Never writes, never runs anything."""
 
-    def __init__(self, registry: "ProjectRegistry | None" = None) -> None:
+    def __init__(
+        self,
+        registry: "ProjectRegistry | None" = None,
+        resource_type: str = DEFAULT_RESOURCE_TYPE,
+    ) -> None:
         from resource_explorer.registry import ProjectRegistry
 
         self._registry = registry or ProjectRegistry()
         self._run_cache: dict = {}
+        #: Which resource type's maps this layer reads. Defaults to "repo" —
+        #: every caller before 2026-09-20 was implicitly repo-only, because
+        #: the maps were imported rather than looked up (design §1.1 item 5).
+        self.resource_type = resource_type
+        self._maps_cache: dict = {}
+
+    # ── per-resource-type maps, via the adapter ─────────────────────────────
+    def _map(self, name: str) -> dict | None:
+        """One of the adapter's declared fact maps, or None if this resource
+        type does not declare it.
+
+        None and `{}` are different answers and both reach callers: a type
+        that declares no results map cannot have facts read from it at all,
+        where a type that declares an empty one has a map and nothing in it.
+        Conflating them is the bug this whole stream is about.
+        """
+        if name in self._maps_cache:
+            return self._maps_cache[name]
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+            get_adapter,
+        )
+
+        try:
+            provider = getattr(get_adapter(self.resource_type), name, None)
+        except SurveyDefinitionExecutorError:
+            # No adapter registered for this resource type at all. Recorded,
+            # not swallowed — and reported to the caller as "not declared",
+            # which is true, rather than as an empty map, which would claim
+            # we looked.
+            log.debug("no survey-definition adapter for resource type %r",
+                      self.resource_type, exc_info=True)
+            provider = None
+        result = provider() if callable(provider) else None
+        self._maps_cache[name] = result
+        return result
+
+    @property
+    def _undeclared_note(self) -> str:
+        return (
+            f"No analysis results are registered for resource type "
+            f"{self.resource_type!r}, so nothing can be read about it here yet "
+            f"— a gap in this resource type's fact layer, not a measured "
+            f"absence."
+        )
 
     # ── one analysis ────────────────────────────────────────────────────────
     def fact(self, slug: str, analysis_id: str) -> Fact:
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            REPO_ANALYSIS_RESULTS_MAP,
-            REPO_ANALYSIS_SOURCE_STEPS,
-        )
+        results_map = self._map("analysis_results_map")
+        source_steps = self._map("analysis_source_steps") or {}
+
+        if results_map is None:
+            return Fact(
+                analysis_id=analysis_id, state=NOT_ESTABLISHED,
+                note=self._undeclared_note,
+            )
 
         # SOURCE steps, not owned ones. `can_run` answers "what would you run to
         # get this answered", which for a derives-from analysis is its source's
         # steps — `architecture_diagram` owns none, and naming none would tell a
         # user with no diagram that nothing can produce one.
-        can_run = list(REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []))
+        can_run = list(source_steps.get(analysis_id, []))
         run = self._last_run(slug).get(analysis_id, {})
-        entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+        entry = results_map.get(analysis_id)
 
         if entry is None:
             # An id with no results reader cannot be read from, whatever it did.
@@ -673,16 +769,13 @@ class FactLayer:
         # the table — measured 2026-09-02, api_structure said not_established
         # for a repo with 8,654 symbols. Read first, and only fall through to
         # the run gate if there is genuinely nothing there.
-        # NOT `getattr(entry, "live_read")` — REPO_ANALYSIS_RESULTS_MAP is a
-        # DERIVED VIEW holding a (results_reader, trend_reader) tuple, not the
+        # NOT `getattr(entry, "live_read")` — the results map is a DERIVED
+        # VIEW holding a (results_reader, trend_reader) tuple, not the
         # AnalysisKindResults object. Reading the flag off `entry` silently
         # returned False for everything, so the branch below never ran and the
         # first version of this fix did nothing at all. Read it from the
         # registry that actually carries it.
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            ANALYSIS_KINDS)
-
-        _kind = ANALYSIS_KINDS.get(analysis_id)
+        _kind = (self._map("analysis_kinds") or {}).get(analysis_id)
         live = bool(getattr(getattr(_kind, "results", None), "live_read", False))
         if live and not run.get("last_run_at"):
             try:
@@ -740,10 +833,7 @@ class FactLayer:
         Best-effort by design: this layer must never fail to report a fact
         because the sentence describing it could not be built.
         """
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            ANALYSIS_KINDS)
-
-        kind = ANALYSIS_KINDS.get(analysis_id)
+        kind = (self._map("analysis_kinds") or {}).get(analysis_id)
         reader = getattr(getattr(kind, "results", None), "headline_reader", None)
         if reader is None:
             return ""
@@ -847,7 +937,7 @@ class FactLayer:
         # A declared resource-state source answers before the kind is
         # consulted: `direct` describes where the answer lives, and once that
         # is declared the question is answerable regardless of the label.
-        declared = RESOURCE_STATE_SOURCES.get(question.get("question", ""))
+        declared = (self._map("state_sources") or {}).get(question.get("question", ""))
         if declared:
             env.facts = [self._resource_state_fact(slug, *declared)]
             if not env.answerable:
@@ -913,7 +1003,13 @@ class FactLayer:
         """
         if slug in self._run_cache:
             return self._run_cache[slug]
-        raw = self._registry.get_analysis_last_run("repo", slug)
+        # `self.resource_type`, not a literal "repo". `get_analysis_last_run`
+        # has always taken an entity_type; passing "repo" for a database
+        # looked up activity rows for a repository with the database's slug
+        # and found none, so every database analysis reported never-run.
+        # Sixth `repo` hardcode, found by a test rather than by the design's
+        # §1.1 sweep.
+        raw = self._registry.get_analysis_last_run(self.resource_type, slug)
         unattributed = raw.pop("__unattributed_surveys__", {}).get("count", 0)
         out = {
             k: {

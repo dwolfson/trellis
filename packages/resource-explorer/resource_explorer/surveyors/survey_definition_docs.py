@@ -28,6 +28,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 log = logging.getLogger(__name__)
 
 #: Command headings, matched on the whole stripped line. `## Create Governance
@@ -231,7 +233,7 @@ def definition_docs_dir() -> Path:
 #: _resource_type_from_filename falls back to "repo" for it (the codebase's
 #: only resource type before this field existed at all) rather than
 #: inventing a new value silently.
-_KNOWN_RESOURCE_TYPES = {"repo", "database", "filesystem"}
+_KNOWN_RESOURCE_TYPES = set(SURVEYED_RESOURCE_TYPES)
 
 
 def _resource_type_from_filename(path: Path) -> str:

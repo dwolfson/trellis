@@ -78,6 +78,49 @@ class ResourceTypeAdapter:
     # existed) keeps the exact prior one-call-per-step behavior.
     run_batch: Callable | None = None
 
+    # ── what is KNOWN about a resource of this type (2026-09-20) ────────────
+    #
+    # docs/multi-resource-questions-design.md §1.1 item 5 / §13 Phase 0 item 3.
+    # `facts.py` used to import `REPO_ANALYSIS_RESULTS_MAP` and consult a
+    # `RESOURCE_STATE_SOURCES` table keyed by REPO question text, both
+    # unconditionally — so `FactLayer` answered every question about every
+    # resource type out of the repository's maps. These four fields are the
+    # per-type instances of that pattern (design §2, "carries over as a
+    # pattern, needs a per-type instance"), and `FactLayer` now dispatches
+    # through them.
+    #
+    # Each is a PROVIDER — a zero-argument callable returning the map — not
+    # the map itself. A resource type's maps are built at the bottom of a
+    # module that imports its whole surveyor stack, and this dataclass is
+    # constructed in that same module; a provider lets a type whose maps live
+    # elsewhere (repo's state sources live in facts.py, where their resolver
+    # functions are) declare them without an import cycle, and costs nothing
+    # for a type whose maps are local.
+    #
+    # None means NOT DECLARED, which is not the same as empty: a resource type
+    # with no results map cannot have facts read from it at all, and FactLayer
+    # says so in those words rather than reporting every analysis as
+    # never-run. Same distinction the question catalog draws between "not
+    # authored" and "filtered to nothing".
+
+    #: () -> {analysis_id: (results_reader, trend_reader)}
+    analysis_results_map: Callable | None = None
+    #: () -> {analysis_id: [step_key, ...]} — the SOURCE steps that would
+    #: establish an analysis, which for a derives-from analysis is its
+    #: source's steps rather than its own (see FactLayer.fact's `can_run`).
+    analysis_source_steps: Callable | None = None
+    #: () -> {analysis_id: AnalysisKind} — carries `results.live_read` and
+    #: `results.headline_reader`, which FactLayer reads off the kind rather
+    #: than off the derived results map (the derived map holds a tuple, and
+    #: `getattr(tuple, "live_read")` silently returned False for everything
+    #: the first time that was tried).
+    analysis_kinds: Callable | None = None
+    #: () -> {question_text: (resolver, subject)} — questions answerable from
+    #: the resource's own recorded state rather than from an analysis result.
+    #: Keyed by question text, so this map is per resource type by
+    #: construction: a database's questions are different strings.
+    state_sources: Callable | None = None
+
 
 _ADAPTERS: dict = {}
 

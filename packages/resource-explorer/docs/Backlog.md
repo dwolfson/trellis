@@ -6089,3 +6089,136 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
   price (Egeria writes: 1.5s median, p90 2.3s, post-redeploy) rather than DepthOffer's own "not yet
   measured" placeholder. Outcome (accepted/declined/chose) recorded on the catalogue record, same
   as a depth-offer decline.
+
+### `egeria_host` defaults to `database.host`, silently reproducing OPEN-SURVEY-0009 for the next database anyone registers
+
+Found 2026-09-21, flagged by a peer while catalogueing coco_pharma for the
+first time as part of the multi-resource plan's probe 9. The
+`localhost` → `host.docker.internal` fix for `coco_ods`/`coco_pharma`
+(Backlog.md, "catalog_and_survey never refreshes...") was applied as a
+direct SQL correction to those two registry rows' `egeria_host` column, not
+to the registration code path. `web/routes/databases.py:603`:
+
+```python
+egeria_host = database.egeria_host or database.host
+```
+
+`egeria_host` defaults to `""` (`registry.py:107`), so any database
+registered without an explicit `egeria_host` falls back to `database.host`
+— typically `localhost`, since that is how RE's own bare-host process
+reaches a Docker-hosted Postgres. Egeria's engine host runs inside Docker
+and cannot reach the RE host's `localhost`; the result is the identical
+`OPEN-SURVEY-0009 ... has no connection` failure, silently, for the next
+person who registers a database and doesn't think to pass `--egeria-host
+host.docker.internal` explicitly.
+
+**Not fixed here** — this is a repair keyed on the damage (two rows patched)
+rather than the cause (the registration default), so the fix survivors are
+invisible until the next new registration hits it. The real fix is a
+project-owner decision on what the right default actually is (a config
+value, a documented required field at registration time, or an explicit
+`--egeria-host` prompt) — filed rather than guessed.
+
+### Native Postgres survey fails with SCRAM auth error even on a freshly-catalogued asset with a real connection — second distinct connection-shaped failure, same secrets architecture
+
+Found 2026-09-21, triggering a native `survey-postgres-database` engine action
+against `coco_pharma`'s freshly-catalogued asset (guid
+`4dd8d5ee-eb5a-4fe3-8a52-7f304043a749`, catalogued via the fixed
+`deepCopy=True` path — PR #181/earlier work, so this asset genuinely has a
+`Connection`, unlike `coco_ods`'s broken existing asset). The engine action
+reached `final_status: FAILED` (not `INVALID` — a different terminal state
+than `coco_ods`'s `OPEN-SURVEY-0009`), with:
+
+> `OPEN-SURVEY-500-001 Unexpected exception in survey action service
+> postgres-database-survey-service of type
+> com.zaxxer.hikari.pool.HikariPool$PoolInitializationException detected by
+> method start. The error message was Failed to initialize pool: The server
+> requested SCRAM-based authentication, but no password was provided.`
+
+**This is a different failure than `OPEN-SURVEY-0009`** — that one meant "no
+connection at all"; this one means a `Connection` exists and Egeria's engine
+found it, but the password it resolved (or tried to resolve) was empty. This
+matches exactly the suspicion raised during the earlier `catalog_and_survey`
+investigation
+(`CATALOG-AND-SURVEY-REFRESH-FIX.md`): the template's attached `Connection`
+is a `VirtualConnection` embedding a `SecretsStoreConnection` (a YAML-file
+secrets-store connector), not a plain `Connection` with an inline
+`userId`/`password`. `deepCopy=True` correctly instantiates that subgraph
+structurally, but nothing in RE's registration path populates whatever the
+secrets-store connector actually reads from — the password never reaches
+the pool.
+
+**Not investigated further here** — this needs someone who knows how this
+deployment's Egeria engine host resolves a `SecretsStoreConnection` (a YAML
+file path on the engine host's filesystem, presumably) to say what RE would
+need to write, and where. Two live databases (`coco_ods`, `coco_pharma`) now
+have two different connection-shaped native-survey failures, both tracing
+back to the same underlying secrets architecture — this is the actual
+blocker for probe 9 (a genuine native annotation-type/metric-key dump) and
+for Phase 1 more broadly, not a one-off.
+
+**Root-caused and fixed for fresh catalog runs, same day (PR #185,
+`docs/design-notes/PROBES-2026-09-21.md`):** the templated
+`SecretsStoreConnection`'s `secretsCollectionName`/`secretsStorePathName`
+configuration properties were themselves left as Egeria's own literal,
+unsubstituted placeholder text — nothing had ever supplied real values.
+`EgeriaDatabaseSurveyor` now finds-or-creates its own Egeria secrets store
+(the documented client-side-secret pattern, project owner decision
+2026-09-21: Egeria does not share secrets across clients) and binds both
+placeholders at catalog time. **`coco_ods`/`coco_pharma` themselves are still
+broken** — both already exist by qualifiedName, so they stay on the reuse
+path forever and never get the new placeholders; fixing either needs the
+delete-and-recatalog GAP process, a separate deliberately-deferred decision.
+
+### `materialize_database_report`/`materialize_filesystem_report` don't distinguish an engine-action failure from a genuine empty result — not yet wired to a live caller
+
+Found 2026-09-21 while live-verifying Stream 3's structured-tables back-fill
+(`COORDINATOR-BRIEF-MULTI-RESOURCE.md`). A design review raised the concern
+that the coco_ods back-filled row (`table_count=0`, `state='measured'`) might
+be confidently-wrong data from the known `OPEN-SURVEY-0009` connection
+failure rather than a real absence. **Checked directly, not guessed**: a
+live, read-only `psycopg2` query against `coco_ods` confirms it genuinely has
+zero tables outside `pg_catalog`/`information_schema` right now — the
+back-filled row is correct, and no data correction was needed.
+
+The concern is still real for a different, forward-looking reason.
+`surveyors/result_materializer.py`'s `materialize_database_report`/
+`materialize_filesystem_report` take `annotations: list[dict]` — already
+resolved poll output — and correctly record an honest ambiguity note via
+`database_survey_coverage`'s `coverage_detail` when a section comes back
+empty (citing Egeria's own Postgres connector docs: missing may mean
+"permission", not "none exist"). But this conflates two different things
+into one ambiguity note: "the engine action completed and genuinely found
+nothing" and "the engine action itself failed (`final_status` != a success
+status, e.g. `INVALID`)" — the second is a stronger, more specific signal
+than the first, and `poll_trigger_and_retrieve_annotations`'s own result
+already carries `final_status`/`completion_message`, which never reaches
+either materializer function today.
+
+**Not yet causing wrong data**: grepped for call sites of both functions —
+neither has one. This is Phase 0 plumbing built ahead of Phase 1's live
+wiring, not a live bug.
+
+**Before wiring either function into a live caller (Phase 1)**: thread
+`final_status`/`completion_message` through, and give a failed engine action
+its own, more specific coverage note/state than a merely-empty-but-successful
+one — a curator reading "native survey reported none" should be able to tell
+"it ran and found nothing" from "it never actually ran" (this is exactly the
+distinction the `catalog_and_survey` no-refresh bug's own OPEN-SURVEY-0009
+failures would otherwise render as, if a curator ever re-triggers a broken
+asset's native survey and then reads the result back through these
+functions).
+
+**One more nuance, caught by a peer review after the ground-truth check
+above:** for coco_ods's specific back-filled rows, the *number* (0 tables)
+is correct, but the *label* (`state='measured'`) still overclaims for the
+runs whose blob carries no status signal — `measured` asserts that run
+established the count, and a blob with no success/failure field cannot
+support that claim, even when the number happens to match reality. This is
+the "correct number, wrong label" failure shape: re-measuring never catches
+it, because re-measuring returns the same number. The historical back-fill
+does not attempt to fix this (not worth reopening that PR for it, per the
+same review) — it is accepted as-is here, in writing, rather than silently.
+Any future rework of the historical-blob back-fill path should consider a
+weaker state than `STATE_MEASURED` (e.g. "stored, no run status recorded")
+for rows whose source blob genuinely carries no success/failure signal.

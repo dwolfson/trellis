@@ -364,11 +364,29 @@ it. `ConnectorActivityReport` (model 0457, `:4232`) records a connector's
 start, refresh and disconnect times and element counts, but **no outcome or
 error field**. `IntegrationReport` no longer exists.
 
+**Learned from probe 9 (2026-09-21, `design-notes/PROBES-2026-09-21.md`):**
+a connection's existence says nothing about whether its secret resolves on
+the engine host. `coco_pharma`'s asset had a real `VirtualConnection` whose
+embedded `SecretsStoreConnection` still carried the literal
+`~{secretsCollectionName}~` placeholder, and the native survey failed on
+SCRAM authentication. The quickstart's own surveys resolve secrets from
+`/deployments/secrets/*.omsecrets` inside the engine host container; none of
+the three collections there is named for a Postgres survey. **Decision
+(project owner, 2026-09-21):** RE keeps its own client-side secret store
+(Egeria's client-side-secret structure, own YAML file under
+`/deployments/secrets/`, one collection per resource, written via
+`save_client_side_secret` at registration) rather than writing into Egeria's
+bundled files — dwolfson/trellis#185 (branch `re/own-secrets-store`). So the reachability record
+below has two outcome kinds to distinguish, `no_connection` and
+`unresolvable_secret`, plus the network failures.
+
 ### Gap and ask
 
 - **Keep it in RE for now.** A `resource_reachability` table `(slug,
   probed_from, probed_at, outcome, error_code, latency_ms)` is a day's work
-  and serves rule B and the launcher sentence in design §11.
+  and serves rule B and the launcher sentence in design §11. `outcome`
+  values: `reachable`, `no_connection`, `unresolvable_secret`,
+  `network_unreachable`, `auth_rejected`, `unknown`.
 - **Ask later, small:** an `outcome` + `errorMessage` pair on
   `ConnectorActivityReport`, or a `ReachabilityAnnotation` produced by
   `CHECK_ASSET`. The second is more natural given that `CHECK_ASSET` is

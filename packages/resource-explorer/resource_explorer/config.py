@@ -266,13 +266,35 @@ class EgeriaConfig(BaseSettings):
     default_catalog_zones: list[str] = Field(default_factory=list)
     default_survey_zones: list[str] = Field(default_factory=list)
     # Secrets store used when Egeria's own native "catalog and survey" processes
-    # need credentials — these are deployment-specific (the GUID identifies a
-    # SecretsStore asset already configured on your Egeria server; there is no
-    # sensible default). Confirmed live 2026-07-09: secrets are written via
+    # need credentials. Confirmed live 2026-07-09: secrets are written via
     # AutomatedCuration.save_client_side_secret(secrets_store_guid, body) with
-    # secret key names "userId"/"clearPassword" for Postgres resources.
+    # secret key names "userId"/"clearPassword" for Postgres resources — but
+    # this was never wired into a caller until docs/design-notes/
+    # PROBES-2026-09-21.md's investigation (2026-09-21) found the reason a
+    # freshly-cataloged coco_pharma asset still failed its native survey with
+    # a SCRAM/no-password error: its embedded SecretsStoreConnection carried
+    # the literal unsubstituted template placeholders "~{secretsCollectionName}~"
+    # / "~{secretsStorePathName}~" — nothing had ever supplied real values for
+    # either. **Decision (project owner, 2026-09-21):** Egeria does not share
+    # secrets across clients — RE must keep its own secrets store (a YAML file
+    # via Egeria's own client-side-secret structure, see
+    # https://egeria-project.org/concepts/client-side-secret) rather than
+    # pointing at Egeria's bundled egeria-servers.omsecrets/integration
+    # .omsecrets/coco-user-directory.omsecrets, none of which are ever named
+    # for a database RE surveys. secrets_store_guid is left blank by default —
+    # EgeriaDatabaseSurveyor._ensure_own_secrets_store_guid() finds-or-creates
+    # RE's own SecretsStore Connection/Endpoint/ConnectorType graph on first
+    # use (same find-by-qualifiedName-then-create idiom as
+    # _create_postgres_element_from_template) and caches the guid — set this
+    # explicitly only to point at a pre-existing one instead. The path name
+    # default now points at RE's own file rather than reusing one of Egeria's,
+    # under the same bind-mounted directory (/deployments/secrets) every
+    # deployment profile already gives the engine host container.
     secrets_store_guid: str = Field(default="", alias="EGERIA_SECRETS_STORE_GUID")
-    secrets_store_path_name: str = Field(default="integration.omsecrets", alias="EGERIA_SECRETS_STORE_PATH_NAME")
+    secrets_store_path_name: str = Field(
+        default="/deployments/secrets/resource-explorer.omsecrets",
+        alias="EGERIA_SECRETS_STORE_PATH_NAME",
+    )
 
     model_config = _ENV_FILE_CONFIG
 

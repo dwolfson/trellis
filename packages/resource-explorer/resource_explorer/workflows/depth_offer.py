@@ -17,6 +17,7 @@ the app, same reasoning as `workflows/analysis.py`'s split from
 """
 from __future__ import annotations
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
 from resource_explorer.workflows.analysis import RunCost, _humanise_duration, estimate_run_cost
 
 #: The three outcomes the designer's shape allows for the depth-offer POST.
@@ -52,11 +53,14 @@ def run_cost_as_dict(cost: RunCost) -> dict:
     }
 
 
-#: Every resource_type analysis_catalog_reader knows about — kept here
-#: rather than imported from that module (which has no such constant) so
+#: Every resource_type analysis_catalog_reader knows about, so
 #: `find_cost_for_analysis` can search all of them without hardcoding "repo"
 #: the way the depth-offer proper (a repo-only offer, per the design) does.
-_ALL_RESOURCE_TYPES = ("repo", "database", "filesystem")
+#: The SURVEYED subset of resource_explorer/resource_types.py's vocabulary —
+#: a type with no analysis catalog section has no costs to find. This used to
+#: be its own literal tuple, one of six such re-declarations (design
+#: §1.3 / §13 Phase 0 item 4).
+_ALL_RESOURCE_TYPES = SURVEYED_RESOURCE_TYPES
 
 
 def find_cost_for_analysis(registry, analysis_id: str) -> dict | None:

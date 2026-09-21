@@ -119,16 +119,120 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
     )
 
 
+#: Reasons a returned question list is the length it is. `NOT_AUTHORED` is
+#: the one this vocabulary exists for: before 2026-09-20 a resource type with
+#: no authored questions and a resource type whose filters excluded everything
+#: both returned `[]`, and a caller could not tell "nobody has written
+#: questions for databases yet" from "there are database questions, none of
+#: them are Scouting/Privacy ones" (design §1.1 item 3).
+AUTHORED = "authored"                       #: entries were authored AND survived the filters
+NOT_AUTHORED = "not_authored"               #: the catalog has no section for this resource type at all
+AUTHORED_BUT_EMPTY = "authored_but_empty"   #: a section exists and is empty — a catalog in progress
+FILTERED_TO_NOTHING = "filtered_to_nothing" #: questions exist; this phase/perspective combination has none
+
+_ABSENCE_NOTES = {
+    AUTHORED: "",
+    NOT_AUTHORED: (
+        "No questions have been authored for this resource type yet — this is "
+        "a gap in the catalog, not a measured absence."
+    ),
+    AUTHORED_BUT_EMPTY: (
+        "This resource type has a question catalog section, but it is empty — "
+        "authoring has started and no question has landed yet."
+    ),
+    FILTERED_TO_NOTHING: (
+        "Questions are authored for this resource type; none of them match "
+        "this stage and Perspective combination."
+    ),
+}
+
+
+class QuestionList(list):
+    """The list of question dicts `get_questions()` has always returned, which
+    now also knows *why* it is the length it is.
+
+    A `list` subclass rather than a wrapper object on purpose. Every existing
+    caller — the API routes, `context_compile`, `survey_definition_reader`,
+    the stage pages — iterates, slices, `len()`s and JSON-serialises this
+    value, and a real list keeps all of that working untouched. The honesty
+    the design asks for rides along as attributes, so a caller that wants to
+    distinguish "not authored" from "filtered to nothing" can, and one that
+    does not is not broken to make the point.
+
+    `absence` is `AUTHORED` whenever there is at least one entry; the three
+    other values are the distinct ways of being empty.
+    """
+
+    resource_type: str = ""
+    absence: str = AUTHORED
+    #: True when the catalog has a section for this resource type at all,
+    #: regardless of whether anything survived the filters.
+    authored: bool = False
+
+    @property
+    def absence_reason(self) -> str:
+        """Prose for the empty case, or "" when there are entries. Safe to
+        render directly: it never claims a measurement that did not happen."""
+        return _ABSENCE_NOTES.get(self.absence, "")
+
+    def as_envelope(self) -> dict:
+        """The list plus its state, for an API or UI caller that must render
+        the difference rather than an empty table."""
+        return {
+            "resource_type": self.resource_type,
+            "questions": list(self),
+            "count": len(self),
+            "authored": self.authored,
+            "absence": self.absence,
+            "absence_reason": self.absence_reason,
+        }
+
+
+#: The YAML key suffix each resource type's questions live under —
+#: `repo_questions`, `database_questions`, and so on. The generator
+#: (scripts/csv_to_question_catalog_yaml.py) emits one key per resource type
+#: named in the CSV's `Resource Types` column; this reader discovers them
+#: rather than naming them, so a newly authored type needs no change here.
+_QUESTIONS_KEY_SUFFIX = "_questions"
+
+
 @functools.lru_cache(maxsize=1)
 def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[QuestionCatalogEntry]]:
+    """Every `<resource_type>_questions` section in the catalog, keyed by type.
+
+    A resource type is present here IF AND ONLY IF the YAML has a section for
+    it. That is the whole point: a missing key means "not authored", which
+    `get_questions()` reports as such instead of as an empty list. Returning a
+    fabricated `{"repo": []}` for every type would put the bug back.
+
+    A missing config file yields `{}` — no type is authored, because there is
+    no catalog. It used to yield `{"repo": []}`, which claimed repo questions
+    had been authored and had come to nothing.
+    """
     if not config_path.exists():
-        return {"repo": []}
+        return {}
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
 
     return {
-        "repo": [_entry_from_yaml(e) for e in raw.get("repo_questions") or []],
+        key[: -len(_QUESTIONS_KEY_SUFFIX)]: [_entry_from_yaml(e) for e in (value or [])]
+        for key, value in raw.items()
+        if key.endswith(_QUESTIONS_KEY_SUFFIX) and key != _QUESTIONS_KEY_SUFFIX
     }
+
+
+def authored_resource_types() -> list[str]:
+    """Resource types the catalog has a section for, in catalog order."""
+    return list(_load())
+
+
+def is_authored(resource_type: str) -> bool:
+    """Whether ANY question has been authored for this resource type.
+
+    The cheap form of the distinction, for a caller that only needs to decide
+    whether to offer a Questions tab at all.
+    """
+    return resource_type in _load()
 
 
 def clear_cache() -> None:
@@ -141,7 +245,7 @@ def get_questions(
     phase: str | None = None,
     perspectives: list[str] | None = None,
     purposes: list[str] | None = None,
-) -> list[dict]:
+) -> QuestionList:
     """Return question catalog entries for a resource type, optionally
     filtered by funnel-stage phase and/or Perspective set, and optionally
     ORDERED by Purpose.
@@ -173,8 +277,20 @@ def get_questions(
     analysis_ids) is the explanation a user actually asks for, and it is
     already implicit in this function; `derivation` just stops discarding
     it. See docs/context-compilation-design.md §11.
+
+    **The return value is a `QuestionList`, not a bare list** (2026-09-20,
+    design §1.1 item 3 / §13 Phase 0 item 1). It behaves as the list it
+    always was, and carries `.authored` / `.absence` / `.absence_reason` so
+    an empty result can say which kind of empty it is. `get_questions("database")`
+    on a catalog with no database section is `NOT_AUTHORED` — a gap in the
+    catalog — where `get_questions("repo", perspectives=["Privacy"])` finding
+    nothing is `FILTERED_TO_NOTHING`. Those are the same length and opposite
+    answers, and before this they were the same value.
     """
-    entries = [e.to_dict() for e in _load().get(resource_type, [])]
+    catalog = _load()
+    authored = resource_type in catalog
+    entries = [e.to_dict() for e in catalog.get(resource_type, [])]
+    authored_count = len(entries)
 
     if phase:
         phase_lower = phase.lower()
@@ -210,4 +326,15 @@ def get_questions(
         # so does everything else. Nothing is dropped.
         entries.sort(key=lambda e: not e["derivation"]["purpose_ranked"])
 
-    return entries
+    result = QuestionList(entries)
+    result.resource_type = resource_type
+    result.authored = authored
+    if entries:
+        result.absence = AUTHORED
+    elif not authored:
+        result.absence = NOT_AUTHORED
+    elif authored_count == 0:
+        result.absence = AUTHORED_BUT_EMPTY
+    else:
+        result.absence = FILTERED_TO_NOTHING
+    return result

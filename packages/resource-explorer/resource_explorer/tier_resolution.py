@@ -44,6 +44,8 @@ import logging
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 log = logging.getLogger(__name__)
 
 
@@ -58,7 +60,7 @@ def current_tier_of_analysis() -> dict[str, str]:
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
     out: dict[str, str] = {}
-    for resource_type in ("repo", "database", "filesystem"):
+    for resource_type in SURVEYED_RESOURCE_TYPES:
         try:
             entries = get_analyses(resource_type, include_egeria_live=False)
         except Exception:       # a resource type with no catalog of its own

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
 
 router = APIRouter()
 
@@ -552,7 +553,7 @@ async def resolve_stale_linkage(
     this deployment to verify such a path against. Clearing is the part that is
     genuinely generic; pretending the rest was would be worse than saying so.
     """
-    if entity_type not in ("repo", "database", "filesystem"):
+    if entity_type not in SURVEYED_RESOURCE_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown entity type '{entity_type}'")
     if req.action not in ("republish", "resurvey", "discard"):
         raise HTTPException(

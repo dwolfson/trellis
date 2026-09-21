@@ -25,12 +25,17 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 FORMAT_VERSION = 1
 
 # Kinds of resource in the inventory. `entity_type` elsewhere carries these same
 # values -- "repo" is a KIND of resource, not an older word for one, which is why
 # the rename does not touch those rows.
-RESOURCE_KINDS = ("repo", "database", "filesystem")
+#
+# The SURVEYED subset, not the full vocabulary: an inventory row exists only for
+# a type with a registry table behind it. See resource_explorer/resource_types.py.
+RESOURCE_KINDS = SURVEYED_RESOURCE_TYPES
 
 
 def _plain(obj: Any) -> Any:
