@@ -263,6 +263,38 @@ a database behind a VPN is out of reach permanently. `coco_ods` failing with
 3. Not reachable → RE local mirror, published under native shapes, plus an
    RFA "Egeria cannot reach this resource" so the gap is visible.
 
+**Amended 2026-09-21 — reachable means network *and* a resolvable secret.**
+Probe 9 (`design-notes/PROBES-2026-09-21.md`) showed that "has a connection"
+is not "can open it". `coco_pharma` was catalogued with a real
+`VirtualConnection`, the existence check passed, and the native survey still
+failed with a SCRAM authentication error, because the embedded
+`SecretsStoreConnection`'s `secretsCollectionName` was the literal template
+placeholder — RE's catalogue path bound the user id and password placeholders
+and never that one (`egeria_database_surveyor.py:254-265`, `:277-288`). Two
+failure signatures now exist and both must render as "Egeria cannot reach
+this", never as an empty survey:
+
+| Signature | Meaning | Where it is caught |
+|---|---|---|
+| `OPEN-SURVEY-0009 NO_ASSET_CONNECTOR` | no connection on the asset at all | step 1's existence check |
+| `HikariPool … SCRAM-based authentication, but no password was provided` | connection exists; its secret does not resolve on the engine host | only by running `CHECK_ASSET` (step 1's second half), or by RE checking the collection name it bound |
+
+**Decision (project owner, 2026-09-21):** Egeria does not share its bundled
+secrets, so **RE keeps its own secrets store** using Egeria's client-side-secret
+structure — one RE-owned secrets-store Connection (YAML provider, file under
+`/deployments/secrets/`, readable by the engine host), one collection per
+registered resource, written through `save_client_side_secret` at
+registration, and the collection name bound into the template placeholder on
+the fresh-create path. Implemented in dwolfson/trellis#185 (branch `re/own-secrets-store`). Two
+consequences:
+
+- The reuse-by-qualified-name path never re-runs the template, so assets
+  catalogued before the fix (`coco_ods`, `coco_pharma`) keep the literal
+  placeholder until they are deleted and re-created.
+- Step 1 gains a third check RE can do without an engine action: does the
+  collection RE bound for this resource exist in RE's store? Missing means
+  not reachable, and the RFA should say "no secret", not "no connection".
+
 *Efficiency*, when both can run. The axes that decide it, all measurable:
 
 | Axis | Favours Egeria native | Favours RE local |
