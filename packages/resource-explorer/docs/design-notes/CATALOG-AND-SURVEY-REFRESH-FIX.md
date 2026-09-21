@@ -223,3 +223,31 @@ at the end of this work.
 3. **The `deepCopy` fix's actual effect on a fresh catalog was not observed
    live** (see "Live verification" above) — worth confirming the next time a
    genuinely new database is cataloged through this path.
+
+4. **Resolved 2026-09-21** — `docs/design-notes/PROBES-2026-09-21.md` found
+   why even a fresh, deepCopy'd catalog run still failed its native survey
+   with a SCRAM/no-password error: the templated `SecretsStoreConnection`'s
+   `secretsCollectionName`/`secretsStorePathName` configuration properties
+   were themselves left as Egeria's own literal, unsubstituted placeholder
+   text (`~{secretsCollectionName}~` / `~{secretsStorePathName}~`) — nothing
+   had ever supplied real values for either at template-instantiation time.
+   `EgeriaDatabaseSurveyor._catalog_and_survey` now passes both as
+   `placeholderPropertyValues`, sourced from a new
+   `_save_database_secret`/`_ensure_own_secrets_store_guid` pair.
+
+   **This does not revisit finding #4's "unsupported workaround" ruling.**
+   That ruling was specifically about hand-assembling *the database asset's
+   own* `VirtualConnection`/`SecretsStoreConnection`/`Endpoint`/`ConnectorType`
+   subgraph via generic `ConnectionMaker` calls — Egeria's `deepCopy` template
+   instantiation already builds that graph correctly; the gap was only that
+   two of its placeholders were never bound. The new code uses
+   `ConnectionMaker` for something else entirely: a single, generic,
+   RE-owned `Connection`/`Endpoint`/`ConnectorType` graph representing RE's
+   *own* secrets store (found-or-created once, independent of any
+   individual database) — the documented, supported "client-side secret"
+   pattern (https://egeria-project.org/concepts/client-side-secret), not a
+   per-database workaround. **Decision (project owner, 2026-09-21):** Egeria
+   does not share secrets across clients, so RE keeps its own secrets store
+   rather than writing into Egeria's bundled `*.omsecrets` files (those hold
+   Egeria's own bootstrap credentials for unrelated purposes — see the
+   PROBES doc's item 2).
