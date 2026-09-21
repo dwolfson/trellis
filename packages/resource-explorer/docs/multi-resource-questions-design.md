@@ -1125,6 +1125,27 @@ Agreed on review (project owner, 2026-09-20), as proposed:
   `resilience_change`, `scope_change`). A person subscribes as themselves; a
   team subscribes as a `Team`. The preset is a convenience, the subscription
   is always explicit.
+**Amended 2026-09-21 — how a survey proposes an element.** The project owner
+reviewed `docs/egeria-support-for-multi-resource.md` and pointed at two
+mechanisms Egeria already has, both confirmed in the Java source (relayed by
+the coordinating session; the decision callouts land in that document): an
+`Annotation` carries `contentStatus`, which can be `DRAFT`
+(`ContentStatus.java:37`), and `AssociatedAnnotation`
+(`OpenMetadataType.java:6039`) links any element to an annotation directly,
+distinct from `ReportedAnnotation`. So the proposal path in §5.4 and §6.3
+changes from "an RFA carrying a spec in a string map" to: **the survey
+creates the real candidate element — `DataClass`, `ValidValueSet`,
+`DataGrain`, `DataScope` values — in `DRAFT` status, and links it by
+`AssociatedAnnotation` to the evidence annotation on the report.** The
+curator's accept is a status change to `ACTIVE`; dismiss deletes the draft.
+This keeps measured-vs-declared intact — `DRAFT` *is* the measured state,
+`ACTIVE` is the declaration — and makes the "annotations that propose"
+type ask in the support doc's §3 and §7 likely unnecessary. Conditional on
+probe 4 confirming that the create calls accept `initialStatus: DRAFT`; the
+RFA convention stays as the fallback if they do not. The review queue below
+is unchanged in purpose: it lists `DRAFT` elements with their evidence
+instead of RFAs.
+
 - **Proposal acceptance surface.** Proposed Data Classes, reference sets,
   grains and scopes need a review queue (§11) before Phase 1 step 4 is worth
   building; otherwise proposals accumulate as unread RFAs.
