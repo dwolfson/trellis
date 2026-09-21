@@ -140,6 +140,30 @@ locally; the connector code is authoritative for behaviour):
 | `postgres-server-survey-service` / `survey-postgres-server` | PostgreSQL Server | + PRODUCE_INVENTORY | server-level subset |
 | DuckDB, Oracle, MSSQL, Kafka, Unity Catalog (server / catalog / schema / volume), Apache Atlas | — | same shape | — |
 
+**Ground truth from a live run (2026-09-21, `design-notes/PROBES-2026-09-21.md`).**
+The table above was read from the annotation-type enums. The first native
+`survey-postgres-database` that completed end to end (against the Prefect
+server's own database, 36 tables, engine action COMPLETED in about 225 s)
+produced 222 annotations, **all `ResourceMeasureAnnotation`**, in four
+annotation types — database, schema, table (×38) and column (×182)
+measurements — every one under analysis step *Profiling Associated
+Resources*, with 37 distinct `resourceProperties` keys across the four
+levels. **No `ResourceProfileAnnotation` appeared, and none ever will from
+this service**: `PostgresDatabaseStatsExtractor.java` has exactly four
+`ResourceMeasureAnnotation` call sites and never builds a profile
+annotation. "Frequent Values for Column" is real but lives as two
+`resourceProperties` keys on the column-level measure (*Most Common Values*
+and *Most Common Values Frequency*, sourced from `pg_stats.most_common_vals`
+/ `most_common_freqs`), present with real content in the dump. So frequent
+values are **native, rule A**, with one precondition RE's envelope must
+report: Postgres's own `ANALYZE` has to have run on the table, or the keys
+are absent — absent meaning "no statistics", not "no common values".
+Rule A's key set for databases is that dump, not this table. The run also
+bound the endpoint as `host.docker.internal:5442`, which works only because
+the quickstart is a single container; a multi-host deployment needs the
+container-network name, the `network_unreachable` case rule B still has to
+handle.
+
 Universal request parameters: `finalAnalysisStep`, `ignoreAnalysisSteps`;
 folder surveys take `analysisLevel`. Completion guards: `survey-completed`,
 `survey-invalid`, `data-certified`, `data-not-certified`,
@@ -1101,6 +1125,39 @@ Agreed on review (project owner, 2026-09-20), as proposed:
   `resilience_change`, `scope_change`). A person subscribes as themselves; a
   team subscribes as a `Team`. The preset is a convenience, the subscription
   is always explicit.
+**Amended 2026-09-21 — how a survey proposes an element.** The project owner
+reviewed `docs/egeria-support-for-multi-resource.md` and pointed at two
+mechanisms Egeria already has, both confirmed in the Java source (relayed by
+the coordinating session; the decision callouts land in that document): an
+`Annotation` carries `contentStatus`, which can be `DRAFT`
+(`ContentStatus.java:37`), and `AssociatedAnnotation`
+(`OpenMetadataType.java:6039`) links any element to an annotation directly,
+distinct from `ReportedAnnotation`. So the proposal path in §5.4 and §6.3
+changes from "an RFA carrying a spec in a string map" to: **the survey
+creates the real candidate element — `DataClass`, `ValidValueSet`,
+`DataGrain`, `DataScope` values — in `DRAFT` status, and links it by
+`AssociatedAnnotation` to the evidence annotation on the report.** The
+curator's accept is a status change to `ACTIVE`; dismiss deletes the draft.
+This keeps measured-vs-declared intact — `DRAFT` *is* the measured state,
+`ACTIVE` is the declaration — and makes the "annotations that propose"
+type ask in the support doc's §3 and §7 likely unnecessary. Conditional on
+probe 4 confirming that the create calls accept `initialStatus: DRAFT`; the
+RFA convention stays as the fallback if they do not. The review queue below
+is unchanged in purpose: it lists `DRAFT` elements with their evidence
+instead of RFAs.
+
+- **Draft visibility (open, needs the project owner).** A `DRAFT` element is
+  a real element. Egeria's `QueryOptions.limitResultsByStatus` defaults to
+  null, which its own doc comment says means *all* statuses
+  (`QueryOptions.java:26,162-183`), so default find calls return drafts
+  unless a caller passes `[ACTIVE]`. The RFA path never had this exposure.
+  Two independent fixes, not mutually exclusive: RE's own query layer
+  defaults to `ACTIVE` only wherever it reads governance elements for
+  consumers; and drafts are placed in a governance zone consumers do not
+  see, independent of status. Recommendation: do both, because the second
+  also covers consumers that are not RE. Probe 4 should include one
+  unfiltered find immediately after creating a draft, to confirm the
+  behaviour empirically rather than from the doc comment.
 - **Proposal acceptance surface.** Proposed Data Classes, reference sets,
   grains and scopes need a review queue (§11) before Phase 1 step 4 is worth
   building; otherwise proposals accumulate as unread RFAs.
