@@ -1146,6 +1146,18 @@ RFA convention stays as the fallback if they do not. The review queue below
 is unchanged in purpose: it lists `DRAFT` elements with their evidence
 instead of RFAs.
 
+- **Draft visibility (open, needs the project owner).** A `DRAFT` element is
+  a real element. Egeria's `QueryOptions.limitResultsByStatus` defaults to
+  null, which its own doc comment says means *all* statuses
+  (`QueryOptions.java:26,162-183`), so default find calls return drafts
+  unless a caller passes `[ACTIVE]`. The RFA path never had this exposure.
+  Two independent fixes, not mutually exclusive: RE's own query layer
+  defaults to `ACTIVE` only wherever it reads governance elements for
+  consumers; and drafts are placed in a governance zone consumers do not
+  see, independent of status. Recommendation: do both, because the second
+  also covers consumers that are not RE. Probe 4 should include one
+  unfiltered find immediately after creating a draft, to confirm the
+  behaviour empirically rather than from the doc comment.
 - **Proposal acceptance surface.** Proposed Data Classes, reference sets,
   grains and scopes need a review queue (§11) before Phase 1 step 4 is worth
   building; otherwise proposals accumulate as unread RFAs.
