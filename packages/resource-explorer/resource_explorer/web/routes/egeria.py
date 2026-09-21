@@ -881,6 +881,23 @@ async def materialize_annotations(slug: str, report_guid: str | None = None) -> 
 # a literal path after a path-param catch-all at the same position is never
 # reached — "resync" would be read as a slug.
 
+@router.get("/resync/scheduler-status")
+async def resync_status() -> dict:
+    """Scheduled scan-and-clear status — same shape convention and cheap,
+    in-process-state-only contract as bootstrap.py's /status route (see
+    bootstrap.py's own bootstrap_status() above): reads
+    egeria_resync.get_status(), never calls Egeria itself, so the Resync
+    pane can poll it alongside its scan without adding load.
+
+    Distinguishes "the scheduler ran and correctly found nothing to fix"
+    from "the scheduler hasn't run in days" -- both otherwise look like an
+    identical clean row.
+    """
+    from resource_explorer.egeria_resync import get_status
+
+    return get_status()
+
+
 @router.get("/resync/scan")
 async def resync_scan() -> dict:
     """What has drifted between RE and Egeria. Read-only.

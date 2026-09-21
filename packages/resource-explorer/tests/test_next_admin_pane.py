@@ -368,7 +368,7 @@ class TestResyncPane:
         assert "clear_orphan_publish_claims" in src
         assert "flag_vanished_publishes" in src
         assert "function scheduledRowHtml" in src
-        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 1400]
+        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 2200]
         assert "Run now" in body
         # A scheduled row must not carry the same tick-a-box affordance as a
         # repairable one -- it is a status report with a "run now" action,
@@ -401,6 +401,41 @@ class TestResyncPane:
         src = _admin_module("resync.js")
         assert "window.confirm(" in src
         assert "async function applySelected" in src
+
+    def test_scheduled_flag_comes_from_finding_data_not_a_hardcoded_list(self):
+        """RESYNC-STATUS-ROUTE-IMPLEMENTED.md item 2 -- this file used to
+        keep its own `SCHEDULED_STEPS` Set mirroring egeria_resync.py's
+        SAFE_SCHEDULED_STEPS by hand. That duplication must be gone: the
+        pane now reads `finding.scheduled`, a field the backend computes."""
+        src = _admin_module("resync.js")
+        # The old hand-maintained copy declared its own `SCHEDULED_STEPS`
+        # constant -- checked as a standalone identifier (not a substring)
+        # so this doesn't false-positive on `SAFE_SCHEDULED_STEPS`, which is
+        # legitimately still named in comments referencing egeria_resync.py.
+        assert "const SCHEDULED_STEPS" not in src
+        assert "new Set([" not in src
+        assert "f.scheduled" in src
+        assert "f.repair_step && f.scheduled" in src
+        assert "f.repair_step && !f.scheduled" in src
+
+    def test_reads_the_real_status_route(self):
+        api = _reapi_src()
+        assert "export const getResyncStatus = ()" in api
+        assert "/api/egeria/resync/scheduler-status" in api
+        src = _admin_module("resync.js")
+        assert "getResyncStatus" in src
+
+    def test_consecutive_failures_flag_shows_when_nonzero_silent_when_zero(self):
+        """Design reviewer's exact requirement: a consecutive-failure count
+        earns a flag when non-zero, silence otherwise."""
+        src = _admin_module("resync.js")
+        assert "function scheduledRowHtml" in src
+        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 2200]
+        # Gated on failures > 0 -- nothing rendered unconditionally.
+        assert "failures > 0" in body
+        assert "consecutive failure" in body
+        # last_run_at is surfaced too, for recency at a glance.
+        assert "last_run_at" in body
 
     def test_expensive_steps_default_unticked(self):
         src = _admin_module("resync.js")

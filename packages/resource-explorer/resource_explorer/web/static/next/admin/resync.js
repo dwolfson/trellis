@@ -14,10 +14,11 @@
  * every finding falls into exactly one of three shapes, rendered
  * differently on purpose —
  *
- *   1. Already scheduled  — `repair_step` is one of SAFE_SCHEDULED_STEPS
- *      (egeria_resync.py). Runs unattended every ~600s already; the row
- *      reports current STATE (how many are drifted right now) and offers
- *      "run now", not a "here's a button to fix something broken" framing.
+ *   1. Already scheduled  — `finding.scheduled` is true (backend-computed
+ *      from SAFE_SCHEDULED_STEPS, egeria_resync.py's `Finding.as_dict()`).
+ *      Runs unattended every ~600s already; the row reports current STATE
+ *      (how many are drifted right now) and offers "run now", not a
+ *      "here's a button to fix something broken" framing.
  *   2. Repairable, not scheduled — a checkbox + Apply button, and the
  *      confirmation before applying NAMES THE BLAST RADIUS: what it
  *      touches, how many (from the finding's own count), and whether it
@@ -29,28 +30,19 @@
  *      HONEST.md's "a judgement is not a task" — the destination is a
  *      person's call, not an automatic fix), not an inert list item.
  *
- * KNOWN GAP, noted rather than built (task instructions: don't add backend
- * surface without asking): SAFE_SCHEDULED_STEPS itself has no HTTP-exposed
- * form — egeria_resync.get_status() (last scheduler run time/outcome) is
- * never routed. SCHEDULED_STEPS below is hardcoded from the backend
- * constant's current value + the 600s interval CLAUDE.md/the spec both
- * document; "current state" for a scheduled row is drawn from live scan
- * data (this pane's own `count`), never from a run-history field that does
- * not exist yet. If SAFE_SCHEDULED_STEPS changes, this list must be updated
- * by hand — a `Finding.as_dict()` `"scheduled": bool` field, mirroring the
- * existing `"expensive"` field, would remove that duplication; flagged in
- * RECONCILE-ADMIN-IMPLEMENTED.md rather than added here.
+ * `finding.scheduled` (added alongside the existing `finding.expensive`)
+ * is the single source of truth for "is this one of SAFE_SCHEDULED_STEPS" —
+ * this file used to keep its own hand-maintained copy (`SCHEDULED_STEPS`)
+ * that had to be updated by hand whenever the Python set changed; see
+ * docs/design-notes/RESYNC-STATUS-ROUTE-IMPLEMENTED.md for the history.
+ * The scheduler's own run history (last_run_at/consecutive_failures/etc.)
+ * comes from `/api/egeria/resync/scheduler-status` (egeria_resync.get_status()),
+ * modeled on bootstrap.py's `/status` route — see loadStatus()/render()
+ * below for how a non-zero consecutive_failures earns a flag.
  */
-import { getPrivateZone, getResyncScan, applyResyncSteps } from '/static/re-api.js';
+import { getPrivateZone, getResyncScan, getResyncStatus, applyResyncSteps } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 
-/** Mirrors egeria_resync.py's SAFE_SCHEDULED_STEPS exactly — see the module
- *  comment above for why this can't be read from the API yet. */
-const SCHEDULED_STEPS = new Set([
-  'clear_stale_assets',
-  'clear_orphan_publish_claims',
-  'flag_vanished_publishes',
-]);
 const SCHEDULE_INTERVAL_TEXT = 'every ~600s';
 
 /** What each repairable step DOES, for the pre-apply confirmation — one
@@ -104,6 +96,7 @@ const BLAST_RADIUS = {
 
 let _scan = null;
 let _zone = null;
+let _status = null;
 let _busy = false;
 let _host = null;
 
@@ -121,9 +114,19 @@ function itemsHtml(f) {
   </details>`;
 }
 
-/** Shape 1 — already scheduled. Reports STATE, offers "run now". */
-function scheduledRowHtml(f) {
+/** Shape 1 — already scheduled. Reports STATE, offers "run now".
+ *
+ *  `status` is egeria_resync.get_status()'s response (or null if it could
+ *  not be fetched). Per the design review: a consecutive-failure count
+ *  earns a flag when non-zero, and is silent otherwise — a clean scheduler
+ *  history adds no extra text to the row. `last_run_at` is shown alongside
+ *  so a curator can tell recency at a glance, distinguishing "the scheduler
+ *  ran and correctly found nothing" from "it hasn't run in days", which
+ *  otherwise look like the identical clean row. */
+function scheduledRowHtml(f, status) {
   const clean = f.count === 0;
+  const failures = status ? (status.consecutive_failures || 0) : 0;
+  const lastRunAt = status ? status.last_run_at : '';
   return `<div class="rounded-sm border border-rule p-s3" data-scheduled-row="${esc(f.repair_step)}">
     <div class="flex items-start justify-between gap-s3">
       <div class="min-w-0">
@@ -135,7 +138,11 @@ function scheduledRowHtml(f) {
         <div class="mt-[4px] text-provenance text-ink-muted">
           Runs unattended ${SCHEDULE_INTERVAL_TEXT} — this reports what a pass would find right now
           (${f.count} currently), not something waiting on you to fix.
+          ${lastRunAt ? ` Last run: ${esc(lastRunAt)}.` : ''}
         </div>
+        ${failures > 0 ? `<div class="mt-[4px] text-caveat text-state-warn">
+          ⚠ ${failures} consecutive failure(s)${status && status.last_error ? ` — last error: ${esc(status.last_error)}` : ''}
+        </div>` : ''}
       </div>
       <button type="button" data-run-now="${esc(f.repair_step)}" ${clean ? 'disabled' : ''}
         class="shrink-0 cursor-pointer rounded-sm border px-2 py-[2px] text-caveat
@@ -231,8 +238,8 @@ function render() {
   }
 
   const findings = d.findings || [];
-  const scheduled = findings.filter((f) => f.repair_step && SCHEDULED_STEPS.has(f.repair_step));
-  const repairable = findings.filter((f) => f.repair_step && !SCHEDULED_STEPS.has(f.repair_step));
+  const scheduled = findings.filter((f) => f.repair_step && f.scheduled);
+  const repairable = findings.filter((f) => f.repair_step && !f.scheduled);
   const decisions = findings.filter((f) => !f.repair_step);
 
   const expensiveCount = repairable.filter((f) => f.expensive)
@@ -267,7 +274,7 @@ function render() {
 
     ${scheduled.length ? `<div class="mb-s4">
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Already scheduled — runs ${SCHEDULE_INTERVAL_TEXT}</div>
-      <div class="space-y-s2">${scheduled.map(scheduledRowHtml).join('')}</div>
+      <div class="space-y-s2">${scheduled.map((f) => scheduledRowHtml(f, _status)).join('')}</div>
     </div>` : ''}
 
     ${repairable.length ? `<div class="mb-s4">
@@ -363,6 +370,11 @@ async function load() {
   // zone's state is useful even when the scan fails, and a scan failure
   // must not hide it.
   getPrivateZone().then((z) => { _zone = z; if (_scan) render(); }).catch(() => { _zone = null; });
+  // Same treatment: the scheduler's run history is useful even if this
+  // particular scan fails, and a status fetch failing must not hide the
+  // scan -- the scheduled rows just render without the extra recency/
+  // failure detail (status is optional in scheduledRowHtml).
+  getResyncStatus().then((s) => { _status = s; if (_scan) render(); }).catch(() => { _status = null; });
   try {
     _scan = await getResyncScan();
   } catch (err) {

@@ -990,6 +990,13 @@ export const getPrivateZone = () => get('/api/egeria/private-zone');
  *  unread catalog is not a catalog known to be fine. */
 export const getResyncScan = () => get('/api/egeria/resync/scan');
 
+/** The scheduled scan-and-clear loop's own status — last_run_at,
+ *  consecutive_failures, etc. Cheap: reads in-process state, same contract
+ *  as getBootstrapStatus(), never calls Egeria itself. Lets the "already
+ *  scheduled" rows distinguish "ran and found nothing" from "hasn't run in
+ *  days" — otherwise identical clean rows. */
+export const getResyncStatus = () => get('/api/egeria/resync/scheduler-status');
+
 /** Runs exactly the named repair steps — nothing runs unless asked for by
  *  name. `steps` is a plain array of `Finding.repair_step` values. */
 export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { steps });
