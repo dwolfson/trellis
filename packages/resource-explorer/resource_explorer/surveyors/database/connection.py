@@ -3,9 +3,50 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from resource_explorer.registry import DatabaseEntity
+
+
+@dataclass(frozen=True)
+class EngineCapabilities:
+    """What this connection's engine can report, declared per capability
+    rather than as one blanket "native support" flag.
+
+    Design doc §5.1: "the connection layer gains a capability declaration per
+    engine (`supports: {column_stats, tuple_counters, replication_status,
+    query_stats, ...}`), and each catalog-fed analysis states which capability
+    it needs. A finding whose capability is absent is `not_established`, not
+    `nothing_found`."
+
+    Only the capabilities a build actually extracts are declared True.
+    `replication_status`, `query_stats`, `resilience` and
+    `external_dependencies` stay False on every engine as of this slice — no
+    step reads `pg_stat_replication`, `pg_stat_statements`, backup evidence or
+    FDWs/publications yet (Phase 1 slices 8/9 in
+    `COORDINATOR-BRIEF-MULTI-RESOURCE.md` add those). Declaring them True here
+    ahead of any code that reads them would make "not yet implemented"
+    indistinguishable from "measured, and there was nothing" — the exact
+    collapse this field exists to prevent.
+    """
+
+    column_stats: bool = False
+    tuple_counters: bool = False
+    index_stats: bool = False
+    replication_status: bool = False
+    query_stats: bool = False
+    resilience: bool = False
+    external_dependencies: bool = False
+
+    def as_dict(self) -> dict[str, bool]:
+        return asdict(self)
+
+
+#: No capability beyond the generic information_schema reads every
+#: DatabaseConnection subclass already does via get_schema_info(). The
+#: default for any engine that has not declared otherwise.
+NO_CAPABILITIES = EngineCapabilities()
 
 
 class DatabaseConnection(ABC):
@@ -30,6 +71,17 @@ class DatabaseConnection(ABC):
     @abstractmethod
     def close(self) -> None:
         """Close the connection."""
+
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        """This engine's capability declaration (design §5.1).
+
+        Not abstract: an engine that adds no capability beyond the schema
+        read needs no boilerplate override, and a caller that has not been
+        taught about a given engine gets an honest "nothing declared" rather
+        than an AttributeError.
+        """
+        return NO_CAPABILITIES
 
 
 class PostgreSQLConnection(DatabaseConnection):
@@ -266,12 +318,153 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception as e:
             raise RuntimeError(f"Could not list databases: {e}") from e
 
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        """Postgres declares the three capabilities this slice extracts.
+
+        `replication_status`/`query_stats`/`resilience`/`external_dependencies`
+        stay False deliberately — see EngineCapabilities' docstring. Postgres
+        genuinely has `pg_stat_replication` etc. available, but nothing in
+        this class reads them yet, so declaring True would be a promise this
+        code does not keep.
+        """
+        return EngineCapabilities(
+            column_stats=True,
+            tuple_counters=True,
+            index_stats=True,
+        )
+
+    def get_column_stats(self) -> list[dict]:
+        """Per-column `pg_stats` — populated only after `ANALYZE` has run.
+
+        Design §5.1: null_frac, n_distinct, most_common_vals,
+        most_common_freqs, histogram_bounds, avg_width, correlation — column
+        profiling without sampling.
+
+        A column with no matching row here has not been measured as "having
+        no values" — it has never been analyzed. That distinction is made by
+        the caller, which knows the full column catalog from
+        `get_schema_info()` and can tell "in the catalog, absent from
+        pg_stats" from "genuinely profiled". This method only reports what
+        pg_stats has; it never fabricates a row for a column ANALYZE has not
+        reached.
+        """
+        query = """
+            SELECT
+                schemaname, tablename, attname,
+                null_frac, n_distinct, avg_width, correlation,
+                most_common_vals::text  AS most_common_vals,
+                most_common_freqs::text AS most_common_freqs,
+                histogram_bounds::text  AS histogram_bounds
+            FROM pg_stats
+            WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY schemaname, tablename, attname
+        """
+        try:
+            return self.execute_query(query)
+        except Exception:
+            return []
+
+    def get_table_activity(self) -> list[dict]:
+        """Per-table tuple counters, live/dead rows, scan counts and
+        vacuum/analyze recency from `pg_stat_user_tables` (design §5.1) —
+        the full set `database_table_activity` has columns for, not just the
+        row-count/last-analyzed subset `_get_table_row_stats` already feeds
+        into `schema_info` for display.
+
+        A table absent from this result (present in the catalog but missing
+        here) has not been reported as inactive — Postgres has not
+        accumulated a statistics-collector row for it yet, which is rare but
+        distinct from "zero activity" (a real row with all-zero counters).
+        """
+        query = """
+            SELECT
+                schemaname, relname AS tablename,
+                n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+                n_live_tup, n_dead_tup,
+                seq_scan, idx_scan,
+                last_vacuum, last_autovacuum, last_analyze, last_autoanalyze,
+                n_mod_since_analyze AS pending_changes
+            FROM pg_stat_user_tables
+            ORDER BY schemaname, relname
+        """
+        try:
+            rows = self.execute_query(query)
+        except Exception:
+            return []
+        result = []
+        for r in rows:
+            result.append({
+                "schemaname": r.get("schemaname", ""),
+                "tablename": r.get("tablename", ""),
+                "rows_inserted": r.get("n_tup_ins"),
+                "rows_updated": r.get("n_tup_upd"),
+                "rows_deleted": r.get("n_tup_del"),
+                "hot_updates": r.get("n_tup_hot_upd"),
+                "live_tuples": r.get("n_live_tup"),
+                "dead_tuples": r.get("n_dead_tup"),
+                "seq_scan": r.get("seq_scan"),
+                "idx_scan": r.get("idx_scan"),
+                "last_vacuum": str(r["last_vacuum"]) if r.get("last_vacuum") else "",
+                "last_autovacuum": str(r["last_autovacuum"]) if r.get("last_autovacuum") else "",
+                "last_analyze": str(r["last_analyze"]) if r.get("last_analyze") else "",
+                "last_autoanalyze": str(r["last_autoanalyze"]) if r.get("last_autoanalyze") else "",
+                "pending_changes": r.get("pending_changes"),
+            })
+        return result
+
+    def get_stats_reset(self) -> str:
+        """When `pg_stat_database` last reset this database's counters.
+
+        The evidence `database_table_activity.stats_reset` exists to carry
+        (see `result_materializer.py`'s identical comment on the native
+        path) — a change comparator (design §9.1, Phase 1 slice 14) needs
+        this to tell a real rate from the negative delta a reset produces.
+        """
+        try:
+            rows = self.execute_query(
+                "SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()"
+            )
+            value = rows[0].get("stats_reset") if rows else None
+            return str(value) if value else ""
+        except Exception:
+            return ""
+
+    def get_index_stats(self) -> list[dict]:
+        """Per-index usage from `pg_stat_user_indexes`, joined to `pg_index`
+        for uniqueness/primary-key — design §5.1's "index usage and
+        unused-index detection".
+
+        `idx_scan == 0` is the unused-index signal, with the same staleness
+        caveat as the tuple counters: it is a count since the last stats
+        reset (`get_stats_reset()`), not since the index was created.
+        """
+        query = """
+            SELECT
+                s.schemaname, s.relname AS tablename, s.indexrelname,
+                s.idx_scan, s.idx_tup_read, s.idx_tup_fetch,
+                i.indisunique  AS is_unique,
+                i.indisprimary AS is_primary,
+                pg_relation_size(s.indexrelid) AS index_size_bytes
+            FROM pg_stat_user_indexes s
+            JOIN pg_index i ON i.indexrelid = s.indexrelid
+            ORDER BY s.schemaname, s.relname, s.indexrelname
+        """
+        try:
+            return self.execute_query(query)
+        except Exception:
+            return []
+
     def get_statistics(self) -> dict:
         """Get database statistics."""
         stats = {
             "database_size": self._get_database_size(),
             "table_stats": self._get_table_statistics(),
             "row_stats": self._get_table_row_stats(),
+            "column_stats": self.get_column_stats(),
+            "table_activity": self.get_table_activity(),
+            "index_stats": self.get_index_stats(),
+            "stats_reset": self.get_stats_reset(),
         }
         return stats
 

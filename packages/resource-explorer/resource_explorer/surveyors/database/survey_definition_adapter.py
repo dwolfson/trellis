@@ -46,6 +46,11 @@ def _run_postgres_schema_and_stats(db_entity, registry, db_user: str = "", db_pw
     return {
         "schema_info": result.get("schema_info", {}),
         "statistics": result.get("statistics", {}),
+        # design §5.1's capability declaration, surfaced so a caller of this
+        # step (e.g. a future postgres_operations step, or the UI) can tell
+        # "this engine cannot report X" from "X was measured as empty"
+        # without re-opening a connection of its own.
+        "engine_capabilities": result.get("engine_capabilities", {}),
     }
 
 
@@ -224,8 +229,16 @@ _ADAPTER = ResourceTypeAdapter(
     publish=_publish,
     re_analysis_step_info={
         "postgres_schema_and_stats": {
-            "description": "Schema, table, and column inventory plus row-count/size statistics.",
-            "annotation_types": ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
+            "description": (
+                "Schema, table, and column inventory plus row-count/size statistics, "
+                "pg_stats column profiling, pg_stat_user_tables tuple counters/scan "
+                "activity, and index usage/unused-index detection."
+            ),
+            "annotation_types": [
+                "SchemaAnalysisAnnotation",
+                "ResourceMeasureAnnotation",
+                "RequestForAction",
+            ],
         },
         "sql_analysis": {
             "description": "SQL views parsed dependencies, static column-level lineage and complexity scores.",
