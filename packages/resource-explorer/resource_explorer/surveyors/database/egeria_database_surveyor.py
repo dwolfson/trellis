@@ -50,18 +50,27 @@ class EgeriaDatabaseSurveyorError(RuntimeError):
     """Raised when Egeria survey operations fail."""
 
 
-# The YAML File Secrets Store Connector's provider class name -- see
+# The connector provider RE's OWN secrets-store Connection must use --
+# NOT the one Egeria's own documentation page and content-pack templates
+# show (YAMLSecretsStoreProvider). Confirmed live 2026-09-21, tracing Egeria's
+# own server source (AutomatedCurationRESTServices.saveClientSideSecret):
+# that endpoint only calls saveSecretsCollection() when the resolved
+# connector is an `instanceof YAMLSecretsFileConnector`; YAMLSecretsStoreProvider
+# instantiates the READ-ONLY base class YAMLSecretsStoreConnector, so the
+# `instanceof` check silently fails and the endpoint returns a plain success
+# VoidResponse having done nothing -- no exception, no file write, no
+# indication anything was skipped. YAMLSecretsFileProvider is the sibling
+# provider that instantiates YAMLSecretsFileConnector, the subclass that
+# actually implements saveSecretsCollection() (creates the file if missing,
+# then writes it via Jackson's YAML ObjectMapper). This distinction only
+# matters for a connector RE itself WRITES through; the per-database
+# SecretsStoreConnection embedded via deepCopy templates (read-only, at
+# native-survey time) correctly keeps YAMLSecretsStoreProvider, matching
+# Egeria's own documented pattern -- see
 # https://egeria-project.org/connectors/secrets/yaml-file-secrets-store-connector/.
-# RE registers one Connection using this provider (found-or-created once, see
-# EgeriaDatabaseSurveyor._ensure_own_secrets_store_guid) and writes every
-# database's credentials into it as a separate named collection, rather than
-# ever pointing at Egeria's own bundled *.omsecrets files -- those hold
-# Egeria's own bootstrap credentials for unrelated purposes (server NPAs, the
-# user directory), not RE's survey targets. See
-# docs/design-notes/PROBES-2026-09-21.md for the investigation that found
-# this gap.
-_YAML_SECRETS_STORE_PROVIDER_CLASS = (
-    "org.odpi.openmetadata.adapters.connectors.secretsstore.yaml.YAMLSecretsStoreProvider"
+# See docs/design-notes/PROBES-2026-09-21.md for the full investigation.
+_YAML_SECRETS_FILE_PROVIDER_CLASS = (
+    "org.odpi.openmetadata.adapters.connectors.secretsstore.yaml.YAMLSecretsFileProvider"
 )
 _OWN_SECRETS_STORE_QUALIFIED_NAME = "Resource Explorer:SecretsStoreConnector:YAML File Connection"
 
@@ -228,15 +237,35 @@ class EgeriaDatabaseSurveyor:
         return self._automated_curation.create_elem_from_template(body)
 
     def _ensure_own_secrets_store_guid(self) -> str:
-        """Find or create RE's own YAML-file SecretsStore Connection, and
-        cache its GUID for the lifetime of this surveyor instance.
+        """Find or create RE's own YAML-file SecretsStore Asset, and cache its
+        GUID for the lifetime of this surveyor instance.
 
         Mirrors _create_postgres_element_from_template's find-by-qualifiedName
-        -then-create idiom, but this is a plain Connection/Endpoint/
+        -then-create idiom, but this is a plain Asset/Connection/Endpoint/
         ConnectorType graph (ConnectionMaker), not a template instantiation --
         Egeria ships no reusable template for "a client's own secrets store,"
         and there is exactly one of these per RE deployment, so hand-building
-        the three elements once is simpler than inventing one.
+        the four elements once is simpler than inventing one.
+
+        **Returns an Asset guid, not the Connection's.** Confirmed live
+        2026-09-21: `AutomatedCuration.save_client_side_secret` ultimately
+        calls Egeria's `ConnectedAssetClient.getConnectorForAsset`, which
+        requires an Asset (it resolves the Asset's attached Connection
+        itself) -- passing the bare Connection's own guid fails with
+        `OMAG-REPOSITORY-HANDLER-404-001 ... retrieved an object ... of type
+        Connection rather than type Asset`. The "secrets store asset" language
+        in Egeria's own client-side-secret docs and this method's docstring
+        is literal, not loose.
+
+        **Every relationship link below passes an explicit body.** Also
+        confirmed live: `ConnectionMaker.link_connection_connector_type`/
+        `link_connection_endpoint`/`link_asset_to_connection` all default
+        `body=None`, and passing that default does not raise -- it silently
+        creates no relationship at all. The first version of this method hit
+        exactly this: `save_client_side_secret` later failed with `Null
+        connectorType property passed in connection`, and separately with a
+        generic 400 on the asset link, because none of the three links had
+        actually been made despite no earlier call reporting an error.
 
         An explicit EGERIA_SECRETS_STORE_GUID always wins, for a deployment
         that already has one it wants reused (e.g. shared across RE and
@@ -252,7 +281,8 @@ class EgeriaDatabaseSurveyor:
             self._secrets_store_guid = cfg.secrets_store_guid
             return self._secrets_store_guid
 
-        existing = self._find_element_guid(_OWN_SECRETS_STORE_QUALIFIED_NAME)
+        asset_qualified_name = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Asset"
+        existing = self._find_element_guid(asset_qualified_name)
         if existing:
             self._secrets_store_guid = existing
             return existing
@@ -261,6 +291,7 @@ class EgeriaDatabaseSurveyor:
 
         maker = ConnectionMaker(self.view_server, self.platform_url, self.user_id, self.user_password)
         maker.create_egeria_bearer_token(self.user_id, self.user_password)
+        relationship_body = {"class": "NewRelationshipRequestBody"}
 
         connector_type_guid = maker.create_connector_type({
             "class": "NewElementRequestBody",
@@ -269,7 +300,7 @@ class EgeriaDatabaseSurveyor:
                 "class": "ConnectorTypeProperties",
                 "qualifiedName": f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType",
                 "displayName": "Resource Explorer YAML secrets store connector type",
-                "connectorProviderClassName": _YAML_SECRETS_STORE_PROVIDER_CLASS,
+                "connectorProviderClassName": _YAML_SECRETS_FILE_PROVIDER_CLASS,
             },
         })
         endpoint_guid = maker.create_endpoint({
@@ -289,14 +320,42 @@ class EgeriaDatabaseSurveyor:
                 "class": "ConnectionProperties",
                 "qualifiedName": _OWN_SECRETS_STORE_QUALIFIED_NAME,
                 "displayName": "Resource Explorer secrets store connection",
+                # The OCF secrets-store connector framework's own start()
+                # requires SOME non-null secretsCollectionName configuration
+                # property before it will initialize at all (confirmed live
+                # 2026-09-21: "OCF-CONNECTOR-400-009 ... secretsCollectionName
+                # was not supplied" otherwise). YAMLSecretsFileConnector's own
+                # start() override immediately nulls this back out after the
+                # framework's check passes -- every real save call supplies
+                # its own collectionName as a method argument -- so this
+                # value is never actually read; it exists purely to satisfy
+                # that startup validation.
+                "configurationProperties": {"secretsCollectionName": "resource-explorer-admin"},
             },
         })
-        maker.link_connection_connector_type(connection_guid, connector_type_guid)
-        maker.link_connection_endpoint(connection_guid, endpoint_guid)
+        maker.link_connection_connector_type(connection_guid, connector_type_guid, body=relationship_body)
+        maker.link_connection_endpoint(connection_guid, endpoint_guid, body=relationship_body)
 
-        log.info(f"Created Resource Explorer's own SecretsStore connection: {connection_guid}")
-        self._secrets_store_guid = connection_guid
-        return connection_guid
+        asset_guid = maker.create_asset(asset_type=["AssetProperties"], body={
+            "class": "NewElementRequestBody",
+            "isOwnAnchor": True,
+            "properties": {
+                "class": "AssetProperties",
+                "qualifiedName": asset_qualified_name,
+                "displayName": "Resource Explorer secrets store",
+                "description": (
+                    "Wraps RE's own YAML secrets store Connection so "
+                    "AutomatedCuration.save_client_side_secret -- which "
+                    "resolves a connector from an Asset, not a bare "
+                    "Connection -- can reach it."
+                ),
+            },
+        })
+        maker.link_asset_to_connection(asset_guid, connection_guid, body=relationship_body)
+
+        log.info(f"Created Resource Explorer's own SecretsStore asset: {asset_guid}")
+        self._secrets_store_guid = asset_guid
+        return asset_guid
 
     def _save_database_secret(self, db_slug: str, db_user: str, db_pwd: str) -> tuple[str, str]:
         """Write this database's credentials into RE's own secrets store as a

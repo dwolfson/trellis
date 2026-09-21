@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 from resource_explorer.surveyors.database.egeria_database_surveyor import (
     EgeriaDatabaseSurveyor,
     _OWN_SECRETS_STORE_QUALIFIED_NAME,
-    _YAML_SECRETS_STORE_PROVIDER_CLASS,
+    _YAML_SECRETS_FILE_PROVIDER_CLASS,
     _build_secrets_collection_body,
     _secrets_collection_name,
 )
@@ -76,17 +76,21 @@ class TestEnsureOwnSecretsStoreGuid:
                 guid = surveyor._ensure_own_secrets_store_guid()
         assert guid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         mock_maker_cls.assert_not_called()
+        # Looks up the ASSET's qualifiedName, not the Connection's -- the
+        # guid this method returns must be an Asset's (see its docstring:
+        # save_client_side_secret resolves a connector from an Asset).
         surveyor._automated_curation.get_guid_for_name.assert_called_once_with(
-            _OWN_SECRETS_STORE_QUALIFIED_NAME
+            f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Asset"
         )
 
-    def test_creates_connection_endpoint_connector_type_graph_when_absent(self):
+    def test_creates_connection_endpoint_connector_type_asset_graph_when_absent(self):
         surveyor = self._surveyor()
         surveyor._automated_curation.get_guid_for_name.side_effect = Exception("not found")
         mock_maker = MagicMock()
         mock_maker.create_connector_type.return_value = "connector-type-guid"
         mock_maker.create_endpoint.return_value = "endpoint-guid"
         mock_maker.create_connection.return_value = "connection-guid"
+        mock_maker.create_asset.return_value = "asset-guid"
         with patch("resource_explorer.config.get_config") as mock_get_config:
             mock_get_config.return_value.egeria.secrets_store_guid = ""
             mock_get_config.return_value.egeria.secrets_store_path_name = (
@@ -95,22 +99,42 @@ class TestEnsureOwnSecretsStoreGuid:
             with patch("pyegeria.ConnectionMaker", return_value=mock_maker):
                 guid = surveyor._ensure_own_secrets_store_guid()
 
-        assert guid == "connection-guid"
+        # The returned guid is the ASSET's, not the Connection's -- confirmed
+        # live 2026-09-21 that save_client_side_secret needs an Asset guid.
+        assert guid == "asset-guid"
         connector_body = mock_maker.create_connector_type.call_args[0][0]
         assert (
             connector_body["properties"]["connectorProviderClassName"]
-            == _YAML_SECRETS_STORE_PROVIDER_CLASS
+            == _YAML_SECRETS_FILE_PROVIDER_CLASS
         )
         endpoint_body = mock_maker.create_endpoint.call_args[0][0]
         assert (
             endpoint_body["properties"]["networkAddress"]
             == "/deployments/secrets/resource-explorer.omsecrets"
         )
+        # The connection itself needs a non-null secretsCollectionName
+        # configuration property or the OCF secrets-store connector
+        # framework's own start() refuses to initialize at all -- confirmed
+        # live 2026-09-21 ("OCF-CONNECTOR-400-009 ... secretsCollectionName
+        # was not supplied"), even though YAMLSecretsFileConnector's own
+        # start() immediately nulls it back out and every real save call
+        # supplies its own collection name as an argument.
+        connection_body = mock_maker.create_connection.call_args[0][0]
+        assert connection_body["properties"]["configurationProperties"] == {
+            "secretsCollectionName": "resource-explorer-admin"
+        }
+        # Every relationship link must pass an explicit body -- confirmed
+        # live that ConnectionMaker's link_* calls silently create no
+        # relationship at all when body defaults to None.
+        relationship_body = {"class": "NewRelationshipRequestBody"}
         mock_maker.link_connection_connector_type.assert_called_once_with(
-            "connection-guid", "connector-type-guid"
+            "connection-guid", "connector-type-guid", body=relationship_body
         )
         mock_maker.link_connection_endpoint.assert_called_once_with(
-            "connection-guid", "endpoint-guid"
+            "connection-guid", "endpoint-guid", body=relationship_body
+        )
+        mock_maker.link_asset_to_connection.assert_called_once_with(
+            "asset-guid", "connection-guid", body=relationship_body
         )
 
     def test_caches_guid_across_calls(self):
