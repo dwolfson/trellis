@@ -175,12 +175,27 @@ def _resurvey_plan(registry: ProjectRegistry, slug: str) -> tuple[list[str] | No
 
     step_keys = sorted({key for aid in stale_ids for key in REPO_ANALYSIS_SOURCE_STEPS.get(aid, [])})
 
+    # Designer review, 2026-09-20: the never-run set was previously invisible
+    # in this message -- reported as absence rather than as a state. They are
+    # correctly never started (that is the ruling above), but a curator
+    # reading "N of M already fresh" has no way to tell "a new analysis has
+    # never reached this repo" from "everything relevant already ran". Named
+    # explicitly so it stays a visible state, not a silent one -- the default
+    # (don't start it for them) is unchanged.
+    known_ids = set(REPO_ANALYSIS_SOURCE_STEPS)
+    never_run = sorted(known_ids - set(history))
+    never_run_clause = (
+        f" · {len(never_run)} analys{'is' if len(never_run) == 1 else 'es'} "
+        f"never run here and not started"
+        if never_run else ""
+    )
+
     plural = "is" if len(history) == 1 else "es"
     if stale_ids:
         note = (f"{len(fresh_ids)} of {len(history)} previously-run analys{plural} already fresh "
-                f"and skipped; re-surveying {len(stale_ids)} stale one(s)")
+                f"and skipped; re-surveying {len(stale_ids)} stale one(s){never_run_clause}")
     else:
-        note = f"all {len(history)} previously-run analys{plural} already fresh — nothing to re-survey"
+        note = f"all {len(history)} previously-run analys{plural} already fresh — nothing to re-survey{never_run_clause}"
     return step_keys, note
 
 

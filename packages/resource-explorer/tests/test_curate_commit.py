@@ -90,6 +90,24 @@ class TestResurveyPlan:
         assert "fresh_step" not in (steps or [])
         assert "1 of 2" in note or "1" in note  # 1 fresh, 1 stale, out of 2 with history
 
+    def test_never_run_analyses_are_named_in_the_note_not_silently_dropped(self, registry, monkeypatch):
+        """Designer review, 2026-09-20: the never-run set must be a visible
+        state in the message, not rendered as absence -- otherwise a newly
+        added analysis silently never reaches an existing, already-catalogued
+        repository through Catalogue. Still never started (the ruling is
+        unchanged); only the reporting was the gap."""
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.repo_survey_definition_adapter.REPO_ANALYSIS_SOURCE_STEPS",
+            {"fresh_one": ["fresh_step"], "never_run": ["never_run_step"]},
+        )
+        _seed_run(registry, "fresh_one", ago_seconds=FRESH_SECONDS)
+
+        steps, note = _resurvey_plan(registry, "p")
+
+        assert steps == []
+        assert "never_run_step" not in steps
+        assert "1 analysis never run here and not started" in note
+
     def test_all_fresh_returns_empty_step_list(self, registry, monkeypatch):
         monkeypatch.setattr(
             "resource_explorer.surveyors.repo_survey_definition_adapter.REPO_ANALYSIS_SOURCE_STEPS",
