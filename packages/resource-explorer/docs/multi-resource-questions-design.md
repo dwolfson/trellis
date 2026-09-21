@@ -140,6 +140,23 @@ locally; the connector code is authoritative for behaviour):
 | `postgres-server-survey-service` / `survey-postgres-server` | PostgreSQL Server | + PRODUCE_INVENTORY | server-level subset |
 | DuckDB, Oracle, MSSQL, Kafka, Unity Catalog (server / catalog / schema / volume), Apache Atlas | — | same shape | — |
 
+**Ground truth from a live run (2026-09-21, `design-notes/PROBES-2026-09-21.md`).**
+The table above was read from the annotation-type enums. The first native
+`survey-postgres-database` that completed end to end (against the Prefect
+server's own database, 36 tables, engine action COMPLETED in about 225 s)
+produced 222 annotations, **all `ResourceMeasureAnnotation`**, in four
+annotation types — database, schema, table (×38) and column (×182)
+measurements — every one under analysis step *Profiling Associated
+Resources*, with 37 distinct `resourceProperties` keys across the four
+levels. **No `ResourceProfileAnnotation` ("Frequent Values for Column")
+appeared in that report**, so until the probes note says otherwise, frequent
+values are rule C for RE's column-profile step, not something to read back.
+Rule A's key set for databases is that dump, not this table. The run also
+bound the endpoint as `host.docker.internal:5442`, which works only because
+the quickstart is a single container; a multi-host deployment needs the
+container-network name, the `network_unreachable` case rule B still has to
+handle.
+
 Universal request parameters: `finalAnalysisStep`, `ignoreAnalysisSteps`;
 folder surveys take `analysisLevel`. Completion guards: `survey-completed`,
 `survey-invalid`, `data-certified`, `data-not-certified`,
