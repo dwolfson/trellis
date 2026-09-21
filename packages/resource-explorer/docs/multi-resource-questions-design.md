@@ -285,7 +285,7 @@ structure — one RE-owned secrets-store Connection (YAML provider, file under
 `/deployments/secrets/`, readable by the engine host), one collection per
 registered resource, written through `save_client_side_secret` at
 registration, and the collection name bound into the template placeholder on
-the fresh-create path. Implemented on branch `re/own-secrets-store`. Two
+the fresh-create path. Implemented in dwolfson/trellis#185 (branch `re/own-secrets-store`). Two
 consequences:
 
 - The reuse-by-qualified-name path never re-runs the template, so assets

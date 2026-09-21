@@ -376,7 +376,7 @@ the three collections there is named for a Postgres survey. **Decision
 (Egeria's client-side-secret structure, own YAML file under
 `/deployments/secrets/`, one collection per resource, written via
 `save_client_side_secret` at registration) rather than writing into Egeria's
-bundled files — branch `re/own-secrets-store`. So the reachability record
+bundled files — dwolfson/trellis#185 (branch `re/own-secrets-store`). So the reachability record
 below has two outcome kinds to distinguish, `no_connection` and
 `unresolvable_secret`, plus the network failures.
 
