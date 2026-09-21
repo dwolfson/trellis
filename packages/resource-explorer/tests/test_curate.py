@@ -206,7 +206,16 @@ class TestTheCommitSteps:
                                          manifest={}, steps=list(wf.STEPS))
         out = wf.execute_curation(registry, rec["id"])
         by = {s["name"]: s for s in out["steps"]}
-        assert by["publish_asset"]["state"] == "done" and "report-9" in by["publish_asset"]["detail"]
+        # _seed() stamps 7 analyses as having JUST run (log_analysis_run,
+        # status "success") and get_egeria_asset_guid is mocked to already
+        # return "asset-1" -- so the 2026-09-20 freshness gate
+        # (curate_commit.py's module docstring) finds nothing stale and an
+        # asset that already exists, and correctly skips re-surveying and
+        # re-publishing altogether rather than manufacturing "report-9".
+        assert by["publish_asset"]["state"] == "done"
+        assert "asset-1" in by["publish_asset"]["detail"]
+        assert "already fresh" in by["publish_asset"]["detail"]
+        assert "already published" in by["publish_asset"]["detail"]
         assert by["classifications"]["state"] == "done" and "Confidentiality · internal" in by["classifications"]["detail"]
         assert by["sub_resources"]["state"] == "done"
         assert by["sub_resources"]["detail"] == "1 of 1 published · plus 1 ancestor folder"   # not "2 of 1"
