@@ -1927,7 +1927,8 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_activity_signals
     checks: []
     note: 'GAP: db_activity_signals (proposed) — the tuple and scan counters are not read by any analysis
       today.'
@@ -1993,7 +1994,8 @@ database_questions:
   - Maintain
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_resilience
     checks: []
     note: 'GAP: db_resilience (proposed) — none of the replication, archiving or clustering catalog reads
       exists today.'
@@ -2016,7 +2018,8 @@ database_questions:
   - Maintain
   answering:
     kind: human
-    analysis_ids: []
+    analysis_ids:
+    - db_resilience
     checks: []
     note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
       analysis).
@@ -2321,7 +2324,8 @@ database_questions:
   - Deploy
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_external_dependencies
     checks: []
     note: 'GAP: db_external_dependencies (proposed) — none of these catalogs is read today.'
   answering_mechanism: Database Catalog Query
@@ -2491,7 +2495,8 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_activity_signals
     checks: []
     note: 'GAP: db_activity_signals (proposed) — vacuum recency and dead-tuple ratios sit in pg_stat_user_tables
       and are not read.'
@@ -2512,7 +2517,8 @@ database_questions:
   - Attest
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_resilience
     checks: []
     note: 'GAP: db_resilience (proposed) combines catalog facts with an Enrichment "Backup and recovery"
       section; neither half is built.'
@@ -3067,7 +3073,8 @@ filesystem_questions:
   - Maintain
   answering:
     kind: human
-    analysis_ids: []
+    analysis_ids:
+    - db_resilience
     checks: []
     note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
       analysis).

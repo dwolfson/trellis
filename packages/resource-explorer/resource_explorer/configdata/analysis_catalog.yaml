@@ -903,11 +903,59 @@ database_analyses:
 
   - id: privilege_audit
     name: "Privilege Audit"
-    description: "Review database roles, grants, and superuser accounts for security hygiene."
+    description: "Roles, table grants and default ACLs from pg_roles/role_table_grants/pg_default_acl; raises a Request For Action on any PUBLIC grant. Backed by the postgres_operations step (design §5.4, §5.7) as of Phase 1 slice 8 — previously database-only/aspirational with no dedicated queries."
     resource_types: ["database"]
     intent: assessment  # scores grant/role hygiene — unchanged
     perspectives: ["Security", "Admin"]
-    annotation_types: ["DataClassAnnotation", "RequestForActionAnnotation"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_activity_signals
+    name: "Activity Signals"
+    description: "Database-wide roll-up of pg_stat_user_tables tuple counters and scan counts: is anything reading or writing at all, database-wide, since the last statistics reset. Reuses postgres_schema_and_stats' per-table figures rather than re-querying them (design §5.2, §5.7)."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_resilience
+    name: "Operational Resilience"
+    description: "MIXED analysis (design §5.5): catalog half — primary/standby, replicas and lag, WAL archiving status, backup-tool/Citus-clustering signals — measured directly; Enrichment half (last backup date, restore-test date, RPO/RTO) is not machine-observable and stays explicitly pending, never silently omitted."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Data Owner"]
+    annotation_types: ["ResourcePhysicalStatusAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_external_dependencies
+    name: "External Dependencies"
+    description: "What this database depends on outside itself: extensions, foreign data wrappers/servers/tables, logical replication publications/subscriptions (design §5.4)."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Architecture", "Admin"]
+    annotation_types: ["SchemaAnalysisAnnotation"]
     source: local
     run_time: fast
     action: survey

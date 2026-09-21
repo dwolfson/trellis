@@ -560,6 +560,7 @@ class EgeriaDatabaseSurveyor:
         surveyed_at: str,
         registry=None,
         views: list | None = None,
+        operations: dict | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the database
         or triggering Egeria's own native survey as a side effect.
@@ -590,6 +591,8 @@ class EgeriaDatabaseSurveyor:
             annotations.extend(local_surveyor._create_statistics_annotations(statistics))
         if views:
             annotations.extend(local_surveyor._create_views_annotations(views))
+        if operations:
+            annotations.extend(local_surveyor._create_operations_annotations(operations))
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -632,6 +635,7 @@ class EgeriaDatabaseSurveyor:
                     "schema_info": schema_info,
                     "statistics": statistics or {},
                     "views": views or [],
+                    "operations": operations or {},
                 },
                 egeria_report_guid=report_guid,
                 source="egeria-published",

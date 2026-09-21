@@ -102,10 +102,22 @@ class TestStepsFiltered:
 
 
 class TestDatabaseAnalysisStepMap:
-    def test_maps_all_three_local_survey_ids(self):
-        assert set(DATABASE_ANALYSIS_STEP_MAP) == {"schema_inventory", "row_count_snapshot", "privilege_audit"}
+    def test_maps_all_local_survey_ids(self):
+        # Phase 1 slice 8 (postgres_operations) added db_activity_signals/
+        # db_resilience/db_external_dependencies and gave privilege_audit its
+        # own dedicated "operations" step — see the next test.
+        assert set(DATABASE_ANALYSIS_STEP_MAP) == {
+            "schema_inventory", "row_count_snapshot", "privilege_audit",
+            "db_activity_signals", "db_resilience", "db_external_dependencies",
+        }
 
-    def test_privilege_audit_still_runs_full_survey(self):
-        # No dedicated check exists yet — must run every step, matching the
-        # pre-dispatch-fix behavior exactly (D5's documented aspirational status).
-        assert set(DATABASE_ANALYSIS_STEP_MAP["privilege_audit"]) == {"schema", "statistics", "views"}
+    def test_privilege_audit_now_runs_the_dedicated_operations_step(self):
+        # Superseded Phase 1 slice 8 (postgres_operations, design §5.4/§5.7):
+        # privilege_audit is no longer "aspirational" — it has a real,
+        # dedicated check (pg_roles/role_table_grants/pg_default_acl, RFA on
+        # PUBLIC grants) and no longer needs to run the full survey.
+        assert set(DATABASE_ANALYSIS_STEP_MAP["privilege_audit"]) == {"schema", "operations"}
+
+    def test_new_operations_backed_ids_map_to_schema_and_operations(self):
+        for analysis_id in ("db_activity_signals", "db_resilience", "db_external_dependencies"):
+            assert set(DATABASE_ANALYSIS_STEP_MAP[analysis_id]) == {"schema", "operations"}

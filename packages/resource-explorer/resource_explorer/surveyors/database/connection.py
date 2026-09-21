@@ -21,14 +21,25 @@ class EngineCapabilities:
     `nothing_found`."
 
     Only the capabilities a build actually extracts are declared True.
-    `replication_status`, `query_stats`, `resilience` and
-    `external_dependencies` stay False on every engine as of this slice — no
-    step reads `pg_stat_replication`, `pg_stat_statements`, backup evidence or
-    FDWs/publications yet (Phase 1 slices 8/9 in
-    `COORDINATOR-BRIEF-MULTI-RESOURCE.md` add those). Declaring them True here
-    ahead of any code that reads them would make "not yet implemented"
+    `query_stats` stays False on every engine as of this slice — nothing
+    reads `pg_stat_statements` yet (design §5.1 lists it as a later input to
+    `db_classification`, Phase 1 slice 9). Declaring a capability True ahead
+    of any code that reads it would make "not yet implemented"
     indistinguishable from "measured, and there was nothing" — the exact
     collapse this field exists to prevent.
+
+    `replication_status`, `resilience` and `external_dependencies` were
+    False through Phase 1 slice 7; slice 8's `postgres_operations` step
+    (design §5.5, §5.7) is what reads `pg_is_in_recovery()`,
+    `pg_stat_replication`, `pg_settings.archive_mode`, `pg_stat_archiver`,
+    `pg_extension`, `pg_foreign_server`/`pg_foreign_table` and
+    `pg_publication`/`pg_subscription`, so Postgres declares them True from
+    this slice on (see `PostgreSQLConnection.capabilities` below).
+    `privileges` (`pg_roles`, `role_table_grants`, `pg_default_acl`) is new
+    in this slice too, for the same reason — `privilege_audit` existed as a
+    catalog analysis id before this slice but had no dedicated capability
+    or step backing it (confirmed "aspirational" per
+    `COORDINATOR-BRIEF-MULTI-RESOURCE.md`'s Phase 0 target-shape audit).
     """
 
     column_stats: bool = False
@@ -38,6 +49,10 @@ class EngineCapabilities:
     query_stats: bool = False
     resilience: bool = False
     external_dependencies: bool = False
+    #: `pg_roles` / `information_schema.role_table_grants` / `pg_default_acl`
+    #: — added Phase 1 slice 8 alongside the others above, not part of the
+    #: original PR #191 declaration.
+    privileges: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return asdict(self)
@@ -320,18 +335,20 @@ class PostgreSQLConnection(DatabaseConnection):
 
     @property
     def capabilities(self) -> EngineCapabilities:
-        """Postgres declares the three capabilities this slice extracts.
-
-        `replication_status`/`query_stats`/`resilience`/`external_dependencies`
-        stay False deliberately — see EngineCapabilities' docstring. Postgres
-        genuinely has `pg_stat_replication` etc. available, but nothing in
-        this class reads them yet, so declaring True would be a promise this
-        code does not keep.
+        """Postgres declares the capabilities this and the prior slice
+        extract: `query_stats` (`pg_stat_statements`) stays False
+        deliberately — see EngineCapabilities' docstring; nothing in this
+        class reads it yet, so declaring True would be a promise this code
+        does not keep.
         """
         return EngineCapabilities(
             column_stats=True,
             tuple_counters=True,
             index_stats=True,
+            replication_status=True,
+            resilience=True,
+            external_dependencies=True,
+            privileges=True,
         )
 
     def get_column_stats(self) -> list[dict]:
@@ -454,6 +471,256 @@ class PostgreSQLConnection(DatabaseConnection):
             return self.execute_query(query)
         except Exception:
             return []
+
+    # ── Phase 1 slice 8: postgres_operations (design §5.1, §5.4, §5.5, §5.7) ──
+    # Six new reads backing `privilege_audit`, `db_activity_signals` (which
+    # reuses get_table_activity()/get_stats_reset() above rather than
+    # querying pg_stat_user_tables a second way), `db_resilience` and
+    # `db_external_dependencies`. Each method never raises — a query
+    # failure (missing catalog view, insufficient privilege) yields an
+    # empty result, and it is the CALLER (gated on `capabilities` above)
+    # that says whether "empty" here means "measured, none" or "could not
+    # be measured" — same division of responsibility as get_column_stats()
+    # and get_table_activity() already establish.
+
+    def get_privilege_audit(self) -> dict:
+        """Roles, table grants and default ACLs (design §5.1's catalog-source
+        table; §5.4's `privilege_audit` row) — "who can read and write
+        what", including the PUBLIC grants `postgres_operations` raises an
+        RFA on.
+        """
+        # Each field below is an independent read: a failure on one (e.g.
+        # insufficient privilege on pg_default_acl) must not take out the
+        # other two, so each gets its own try/except with an explicit
+        # fallback re-assignment in the except body (never a bare `pass`) —
+        # that fallback keeps the failure's default visible in the code, in
+        # the shape `tests/test_no_silent_success.py`'s ratchet expects of a
+        # handler in a value-returning function.
+        roles: list[dict] = []
+        try:
+            roles = self.execute_query("""
+                SELECT rolname, rolsuper, rolcreaterole, rolcreatedb,
+                       rolcanlogin, rolreplication, rolbypassrls
+                FROM pg_roles
+                WHERE rolname NOT LIKE 'pg\\_%'
+                ORDER BY rolname
+            """)
+        except Exception:
+            roles = []
+
+        table_grants: list[dict] = []
+        try:
+            table_grants = self.execute_query("""
+                SELECT table_schema, table_name, grantee, privilege_type, is_grantable
+                FROM information_schema.role_table_grants
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY table_schema, table_name, grantee, privilege_type
+            """)
+        except Exception:
+            table_grants = []
+
+        default_acl: list[dict] = []
+        try:
+            default_acl = self.execute_query("""
+                SELECT
+                    n.nspname                    AS schema_name,
+                    a.defaclrole::regrole::text  AS role_name,
+                    a.defaclobjtype              AS object_type,
+                    a.defaclacl::text            AS acl
+                FROM pg_default_acl a
+                LEFT JOIN pg_namespace n ON n.oid = a.defaclnamespace
+                ORDER BY schema_name NULLS FIRST, role_name
+            """)
+        except Exception:
+            default_acl = []
+
+        return {"roles": roles, "table_grants": table_grants, "default_acl": default_acl}
+
+    def get_replication_status(self) -> dict:
+        """Whether this connection is a standby, and — if it is a primary —
+        which replicas are attached and how far behind (design §5.5).
+
+        `is_in_recovery` is `None` only if `pg_is_in_recovery()` itself could
+        not be queried (should not happen on a reachable Postgres server);
+        that is a genuinely different, worse case than "queried and it said
+        false", so the two are kept distinguishable rather than both
+        defaulting to `False`.
+        """
+        is_in_recovery: bool | None = None
+        try:
+            rows = self.execute_query("SELECT pg_is_in_recovery() AS in_recovery")
+            is_in_recovery = bool(rows[0]["in_recovery"]) if rows else None
+        except Exception:
+            is_in_recovery = None
+
+        replicas: list[dict] = []
+        try:
+            rows = self.execute_query("""
+                SELECT
+                    application_name,
+                    client_addr::text AS client_addr,
+                    state,
+                    sync_state,
+                    EXTRACT(EPOCH FROM replay_lag) AS replay_lag_seconds
+                FROM pg_stat_replication
+                ORDER BY application_name
+            """)
+            for r in rows:
+                replicas.append({
+                    "application_name": r.get("application_name") or "",
+                    "client_addr": r.get("client_addr") or "",
+                    "state": r.get("state") or "",
+                    "sync_state": r.get("sync_state") or "",
+                    "replay_lag_seconds": (
+                        float(r["replay_lag_seconds"])
+                        if r.get("replay_lag_seconds") is not None else None
+                    ),
+                })
+        except Exception:
+            replicas = []
+
+        return {"is_in_recovery": is_in_recovery, "replicas": replicas}
+
+    def get_wal_archiving_status(self) -> dict:
+        """Is WAL archiving on, and is it succeeding (design §5.5)."""
+        archive_mode = ""
+        try:
+            rows = self.execute_query("SHOW archive_mode")
+            archive_mode = str(rows[0].get("archive_mode", "")) if rows else ""
+        except Exception:
+            archive_mode = ""
+
+        archived_count = None
+        failed_count = None
+        last_archived_time = ""
+        last_failed_time = ""
+        try:
+            rows = self.execute_query("""
+                SELECT archived_count, failed_count,
+                       last_archived_time::text AS last_archived_time,
+                       last_failed_time::text   AS last_failed_time
+                FROM pg_stat_archiver
+            """)
+            if rows:
+                r = rows[0]
+                archived_count = r.get("archived_count")
+                failed_count = r.get("failed_count")
+                last_archived_time = r.get("last_archived_time") or ""
+                last_failed_time = r.get("last_failed_time") or ""
+        except Exception:
+            archived_count, failed_count = None, None
+            last_archived_time, last_failed_time = "", ""
+
+        return {
+            "archive_mode": archive_mode,
+            "archived_count": archived_count,
+            "failed_count": failed_count,
+            "last_archived_time": last_archived_time,
+            "last_failed_time": last_failed_time,
+        }
+
+    def get_backup_tool_signals(self) -> dict:
+        """Presence of a known backup-tool extension (design §5.5: "partly"
+        observable). Detecting the extension does not prove a backup is
+        configured or succeeding — only that the tooling is installed —
+        which is exactly the "partial signal" design §5.5 says this is, not
+        the last-backup-date/restore-test-date questions it explicitly
+        marks as not machine-observable at all.
+        """
+        known_tool_markers = ("pgbackrest", "pg_backrest", "wal-g", "wal_g", "barman")
+        detected: list[str] = []
+        try:
+            rows = self.execute_query("SELECT extname FROM pg_extension ORDER BY extname")
+            for r in rows:
+                name = (r.get("extname") or "")
+                if any(marker in name.lower() for marker in known_tool_markers):
+                    detected.append(name)
+        except Exception:
+            detected = []
+        return {"detected_extensions": detected}
+
+    def get_clustering_info(self) -> dict:
+        """Citus clustering catalogs, when the extension is present (design
+        §5.5: "partly" observable). Patroni-via-REST and managed-service HA
+        are deliberately out of scope for a connection-layer catalog read —
+        see `DB-OPERATIONS-STEP-IMPLEMENTED.md`'s scoped-out section.
+        """
+        citus_detected = False
+        citus_version = None
+        try:
+            rows = self.execute_query(
+                "SELECT extversion FROM pg_extension WHERE extname = 'citus'"
+            )
+            if rows:
+                citus_detected = True
+                citus_version = rows[0].get("extversion")
+        except Exception:
+            citus_detected, citus_version = False, None
+        return {"citus_detected": citus_detected, "citus_version": citus_version}
+
+    def get_external_dependencies(self) -> dict:
+        """What this database depends on outside itself (design §5.4):
+        extensions, foreign data wrappers/servers/tables, and logical
+        replication publications/subscriptions.
+        """
+        extensions: list[dict] = []
+        foreign_servers: list[dict] = []
+        foreign_tables: list[dict] = []
+        publications: list[dict] = []
+        subscriptions: list[dict] = []
+        try:
+            extensions = self.execute_query(
+                "SELECT extname, extversion FROM pg_extension ORDER BY extname"
+            )
+        except Exception:
+            extensions = []
+        try:
+            foreign_servers = self.execute_query("""
+                SELECT fs.srvname, fdw.fdwname
+                FROM pg_foreign_server fs
+                JOIN pg_foreign_data_wrapper fdw ON fdw.oid = fs.srvfdw
+                ORDER BY fs.srvname
+            """)
+        except Exception:
+            foreign_servers = []
+        try:
+            foreign_tables = self.execute_query("""
+                SELECT n.nspname AS schema_name, c.relname AS table_name, fs.srvname
+                FROM pg_foreign_table ft
+                JOIN pg_class c ON c.oid = ft.ftrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_foreign_server fs ON fs.oid = ft.ftserver
+                ORDER BY schema_name, table_name
+            """)
+        except Exception:
+            foreign_tables = []
+        try:
+            publications = self.execute_query(
+                "SELECT pubname FROM pg_publication ORDER BY pubname"
+            )
+        except Exception:
+            publications = []
+        try:
+            # Only visible to a superuser/subscription-owning role on the
+            # subscriber database — a permission error here is swallowed to
+            # empty by the same try/except as every other read in this
+            # method, which means "no subscriptions" and "not permitted to
+            # see pg_subscription" are not distinguished per-item. That is a
+            # known simplification (see DB-OPERATIONS-STEP-IMPLEMENTED.md);
+            # the whole-method `external_dependencies` capability gate is
+            # what distinguishes "this engine can't do this at all".
+            subscriptions = self.execute_query(
+                "SELECT subname FROM pg_subscription ORDER BY subname"
+            )
+        except Exception:
+            subscriptions = []
+        return {
+            "extensions": extensions,
+            "foreign_servers": foreign_servers,
+            "foreign_tables": foreign_tables,
+            "publications": publications,
+            "subscriptions": subscriptions,
+        }
 
     def get_statistics(self) -> dict:
         """Get database statistics."""

@@ -117,6 +117,7 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
         AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
         AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
+        AnnotationType.RESOURCE_PHYSICAL_STATUS: "ResourcePhysicalStatusAnnotationProperties",
     }
     egeria_class = _class_map.get(atype, "AnnotationProperties")
 
@@ -180,6 +181,16 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["relatedEntityName"] = ren
         if rtn:
             props["relationshipTypeName"] = rtn
+
+    elif atype == AnnotationType.RESOURCE_PHYSICAL_STATUS:
+        # No native typed field is registered for this subtype's payload yet
+        # (see ResourcePhysicalStatusAnnotation's docstring — its real fixed
+        # fields describe a filesystem resource, not this finding), so the
+        # bag travels as additionalProperties, same as any other
+        # not-yet-natively-typed field on a registered subtype.
+        pp = getattr(ann, "physical_properties", {})
+        if pp:
+            props["additionalProperties"] = to_string_map(pp)
 
     return props
 

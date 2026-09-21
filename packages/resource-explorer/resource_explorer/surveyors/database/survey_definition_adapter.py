@@ -54,6 +54,24 @@ def _run_postgres_schema_and_stats(db_entity, registry, db_user: str = "", db_pw
     }
 
 
+def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+    """postgres_operations (Phase 1 slice 8, design §5.5/§5.7): privilege_audit,
+    db_activity_signals, db_resilience, db_external_dependencies. Runs
+    DatabaseSurveyor.survey(steps=["operations"]) — "schema" runs alongside
+    unconditionally (DatabaseSurveyor's own invariant), "statistics"/"views"
+    do not, so this step stays at the "api / low" cost design §5.7
+    describes rather than paying for the full survey.
+    """
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
+    result = surveyor.survey(steps=["operations"])
+    return {
+        "schema_info": result.get("schema_info", {}),
+        "operations": result.get("operations", {}),
+    }
+
+
 def _run_postgres_sql_analysis(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
@@ -208,13 +226,18 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     schema_info: dict = {}
     statistics: dict = {}
     views: list = []
+    operations: dict = {}
     for output in step_outputs:
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
         views = output.get("views") or views
+        operations = output.get("operations") or operations
 
     surveyor = EgeriaDatabaseSurveyor()
-    result = surveyor.publish_step_annotations(entity, schema_info, statistics, surveyed_at, registry, views=views)
+    result = surveyor.publish_step_annotations(
+        entity, schema_info, statistics, surveyed_at, registry,
+        views=views, operations=operations,
+    )
     return result.get("report_guid", "")
 
 
@@ -223,6 +246,7 @@ _ADAPTER = ResourceTypeAdapter(
     technology_type="PostgreSQL Database",
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
+        "postgres_operations": _run_postgres_operations,
         "sql_analysis": _run_postgres_sql_analysis,
     },
     get_entity=_get_database_entity,
@@ -237,6 +261,21 @@ _ADAPTER = ResourceTypeAdapter(
             "annotation_types": [
                 "SchemaAnalysisAnnotation",
                 "ResourceMeasureAnnotation",
+                "RequestForAction",
+            ],
+        },
+        "postgres_operations": {
+            "description": (
+                "Folds privilege_audit (roles/grants/default ACLs, RFA on PUBLIC "
+                "grants), db_activity_signals (database-wide activity roll-up), "
+                "db_resilience (replication/WAL archiving/backup-tool/clustering "
+                "signals — a MIXED analysis, design §5.5) and db_external_dependencies "
+                "(extensions/FDWs/publications) into one step (design §5.7)."
+            ),
+            "annotation_types": [
+                "ResourceMeasureAnnotation",
+                "ResourcePhysicalStatusAnnotation",
+                "SchemaAnalysisAnnotation",
                 "RequestForAction",
             ],
         },
