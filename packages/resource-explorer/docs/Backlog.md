@@ -6128,3 +6128,17 @@ distinction the `catalog_and_survey` no-refresh bug's own OPEN-SURVEY-0009
 failures would otherwise render as, if a curator ever re-triggers a broken
 asset's native survey and then reads the result back through these
 functions).
+
+**One more nuance, caught by a peer review after the ground-truth check
+above:** for coco_ods's specific back-filled rows, the *number* (0 tables)
+is correct, but the *label* (`state='measured'`) still overclaims for the
+runs whose blob carries no status signal — `measured` asserts that run
+established the count, and a blob with no success/failure field cannot
+support that claim, even when the number happens to match reality. This is
+the "correct number, wrong label" failure shape: re-measuring never catches
+it, because re-measuring returns the same number. The historical back-fill
+does not attempt to fix this (not worth reopening that PR for it, per the
+same review) — it is accepted as-is here, in writing, rather than silently.
+Any future rework of the historical-blob back-fill path should consider a
+weaker state than `STATE_MEASURED` (e.g. "stored, no run status recorded")
+for rows whose source blob genuinely carries no success/failure signal.
