@@ -1063,7 +1063,33 @@ class TestAnAllStopwordQuestionStillMatchesItself:
         assert _question_relevance("what does this repository do",
                                    "What does this repository do?", []) == 1.0
 
-    def test_coverage_is_found_for_it(self):
+    def test_coverage_is_found_for_it(self, monkeypatch):
+        # "What does this repository do?" was the real catalog question this
+        # regression was found against, but the 2026-09-21 cross-type
+        # rewording (re/db-questions-csv) replaced it with "What is this
+        # resource, and what is it for?" -- which contains "resource", a
+        # real content token, and no longer strips to nothing. No question
+        # in the current catalog does. Rather than assert this edge case
+        # against whatever real content happens to exist right now (which is
+        # exactly the coupling that broke this test once already), inject a
+        # synthetic single-question catalog that still is all-stopword, so
+        # the integration path (compile_context -> get_questions -> a real
+        # catalog lookup) keeps covering the original bug regardless of what
+        # production's CSV contains.
+        from resource_explorer.surveyors import question_catalog_reader as qcr
+
+        entry = {
+            "question": "What does this repository do?",
+            "stage": "Scouting",
+            "perspectives": [],
+            "answering": {"kind": "direct", "analysis_ids": [], "checks": [], "note": "N/A"},
+            "answering_mechanism": "Direct Field",
+        }
+        loaded = {"repo": [qcr._entry_from_yaml(entry)]}
+        fake = lambda: loaded          # noqa: E731
+        fake.cache_clear = lambda: None
+        monkeypatch.setattr(qcr, "_load", fake)
+
         c = compile_context(_registry({}), "x", "What does this repository do?", budget=6000)
         assert c.manifest["coverage"]["kind"] == "direct"
         assert c.text.startswith("Coverage:")

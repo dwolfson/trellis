@@ -120,7 +120,7 @@ ___
 Repo Scouting Scan
 
 ### Scope Reference
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 

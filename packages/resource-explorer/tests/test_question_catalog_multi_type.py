@@ -68,11 +68,19 @@ class TestTheCsvGainedItsColumn:
         blank = [r["Question"] for r in rows if not (r.get("Resource Types") or "").strip()]
         assert blank == []
 
-    def test_the_existing_rows_are_all_repo_questions(self):
-        # Stream 2 backfills; rewording rows to be cross-type (`*`) is the
-        # authoring stream's job (design §4), not this one's.
+    def test_every_row_declares_a_real_resource_type_combination(self):
+        # Stream 4 (re/db-questions-csv, 2026-09-21) landed the real
+        # cross-type rewording and the database rows this class's own
+        # docstring anticipated -- "repo" is no longer the only value, and
+        # asserting it still is would be asserting the authoring stream never
+        # happened. What still has to hold: every value parses under the
+        # real vocabulary (parse_resource_types raises loudly otherwise, so
+        # this is a smoke check, not a duplicate of that raise).
+        from resource_explorer.resource_types import parse_resource_types
+
         _, rows = _rows()
-        assert {r["Resource Types"] for r in rows} == {"repo"}
+        for r in rows:
+            parse_resource_types(r["Resource Types"])
 
     def test_the_column_is_excluded_from_both_generators_perspective_scan(self, generator):
         """The by-elimination trap that produced 17 phantom Perspectives when
@@ -115,10 +123,32 @@ class TestFunnelStageDroppedAutomate:
 
 
 class TestRepoRoundTripsUnchanged:
-    def test_the_committed_catalog_still_has_exactly_the_52_repo_questions(self):
+    def test_the_committed_catalog_now_has_every_resource_type_section(self):
+        # Before Stream 4 (re/db-questions-csv), the committed CSV was
+        # 100% "repo" and this asserted exactly one section, exactly 52
+        # entries. Stream 4 landed the real cross-type (`*`) rewording and
+        # the database rows -- every declared resource type now has real,
+        # non-empty authored content, which is the thing worth pinning now.
+        from resource_explorer.resource_types import RESOURCE_TYPES
+
         raw = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
-        assert list(raw) == ["repo_questions"]
-        assert len(raw["repo_questions"]) == 52
+        for rt in RESOURCE_TYPES:
+            key = f"{rt}_questions"
+            assert key in raw, f"{key} missing -- no row declared this resource type"
+            assert raw[key], f"{key} is empty"
+
+    def test_a_repo_only_question_still_lands_only_in_repo(self):
+        # Spot-checks that a question never touched by the cross-type
+        # rewording (design §4 only reworded specific rows) still resolves
+        # as repo-exclusive, not swept into every section by the split.
+        raw = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
+        from resource_explorer.resource_types import RESOURCE_TYPES
+
+        target = "Is this repository actively maintained?"
+        for rt in RESOURCE_TYPES:
+            entries = raw.get(f"{rt}_questions", [])
+            present = any(e["question"] == target for e in entries)
+            assert present == (rt == "repo"), f"{rt}_questions: {present}"
 
     def test_generating_from_the_committed_csv_is_byte_identical(self, tmp_path):
         # The same guard test_question_catalog_generator_guard.py runs; kept
@@ -134,42 +164,50 @@ class TestRepoRoundTripsUnchanged:
 
 
 class TestAHypotheticalDatabaseRow:
-    """Stream 4 authors the real database rows; these fixtures stand in for
-    them so the plumbing is tested before they land."""
+    """Stream 4 (re/db-questions-csv) has since authored the real database
+    rows -- these fixtures no longer stand in ahead of them, but stay as
+    regression coverage for the generator's multi-type plumbing itself,
+    independent of whatever the CSV's real row content happens to be. Each
+    test appends its own synthetic row with distinctive question text and
+    locates it by that text, rather than assuming it lands at any particular
+    index or that its resource type's section is otherwise empty -- both
+    became false the moment real rows existed."""
 
     def _generated(self, generator, extra: dict):
         fieldnames, rows = _rows()
         row = {c: "" for c in fieldnames}
         row.update(extra)
-        return yaml.safe_load(generator.generate(rows + [row]))
+        return yaml.safe_load(generator.generate(rows + [row])), rows
 
     def test_a_database_row_gets_its_own_yaml_key(self, generator):
-        raw = self._generated(generator, {
-            "Question": "Which schemas carry the data?",
+        raw, rows = self._generated(generator, {
+            "Question": "Which schemas carry the data (hypothetical)?",
             "Funnel Stage": "Scouting",
             "Resource Types": "database",
             "Answering Analysis": "schema_inventory",
             "Data Expert": "X",
         })
         assert "database_questions" in raw
-        assert len(raw["repo_questions"]) == 52          # repo is untouched
-        entry = raw["database_questions"][0]
-        assert entry["question"] == "Which schemas carry the data?"
+        real_repo_count = sum(1 for r in rows if "repo" in r["Resource Types"].split(";") or r["Resource Types"] == "*")
+        assert len(raw["repo_questions"]) == real_repo_count  # repo is untouched by this row
+        entry = next(e for e in raw["database_questions"]
+                     if e["question"] == "Which schemas carry the data (hypothetical)?")
         assert entry["perspectives"] == ["Data Expert"]
 
     def test_a_database_analysis_id_is_recognised_not_unknown(self, generator):
         """Design §1.1 item 1, the whole point: `schema_inventory` lives in
         `database_analyses`, and reading only `repo_analyses` made this row
         `kind: unknown` with no analysis_ids."""
-        raw = self._generated(generator, {
-            "Question": "Which schemas carry the data?",
+        raw, _ = self._generated(generator, {
+            "Question": "Which schemas carry the data (hypothetical)?",
             "Funnel Stage": "Scouting",
             "Resource Types": "database",
             "Answering Analysis": "schema_inventory",
         })
-        answering = raw["database_questions"][0]["answering"]
-        assert answering["kind"] == "analysis"
-        assert answering["analysis_ids"] == ["schema_inventory"]
+        entry = next(e for e in raw["database_questions"]
+                     if e["question"] == "Which schemas carry the data (hypothetical)?")
+        assert entry["answering"]["kind"] == "analysis"
+        assert entry["answering"]["analysis_ids"] == ["schema_inventory"]
 
     def test_schema_inventory_really_is_a_database_only_analysis(self):
         """Pins the premise of the test above -- if `schema_inventory` were
@@ -185,29 +223,30 @@ class TestAHypotheticalDatabaseRow:
     def test_a_star_row_lands_in_every_resource_type(self, generator):
         from resource_explorer.resource_types import RESOURCE_TYPES
 
-        raw = self._generated(generator, {
-            "Question": "Who owns this data?",
+        raw, _ = self._generated(generator, {
+            "Question": "Who owns this data (hypothetical)?",
             "Funnel Stage": "Scouting",
             "Resource Types": "*",
             "Answering Analysis": "GAP: Egeria Ownership read not built",
         })
         for rt in RESOURCE_TYPES:
             entries = raw[f"{rt}_questions"]
-            assert any(e["question"] == "Who owns this data?" for e in entries), rt
+            assert any(e["question"] == "Who owns this data (hypothetical)?" for e in entries), rt
 
     def test_a_multi_type_row_lands_in_exactly_those_types(self, generator):
-        raw = self._generated(generator, {
-            "Question": "What is the grain of each table?",
+        raw, _ = self._generated(generator, {
+            "Question": "What is the grain of each table (hypothetical)?",
             "Funnel Stage": "Discovery",
             "Resource Types": "database;filesystem",
             "Answering Analysis": "GAP: grain_determination not built",
         })
-        assert "database_questions" in raw and "filesystem_questions" in raw
-        assert "dataset_questions" not in raw
-        assert not any(
-            e["question"] == "What is the grain of each table?"
-            for e in raw["repo_questions"]
-        )
+        target = "What is the grain of each table (hypothetical)?"
+        assert any(e["question"] == target for e in raw["database_questions"])
+        assert any(e["question"] == target for e in raw["filesystem_questions"])
+        # Real rows may already populate dataset_questions/repo_questions --
+        # what must hold is that THIS row didn't land in either.
+        assert not any(e["question"] == target for e in raw.get("dataset_questions", []))
+        assert not any(e["question"] == target for e in raw["repo_questions"])
 
     def test_a_cross_type_row_is_not_a_shared_yaml_anchor(self, generator):
         """`yaml.safe_dump` emits `&id001`/`*id001` for a repeated object, and
@@ -238,7 +277,7 @@ class TestAHypotheticalDatabaseRow:
         fieldnames, rows = _rows()
         row = {c: "" for c in fieldnames}
         row.update({
-            "Question": "Which schemas carry the data?",
+            "Question": "Which schemas carry the data (hypothetical)?",
             "Funnel Stage": "Scouting",
             "Resource Types": "database",
             "Answering Analysis": "schema_inventory",
@@ -247,8 +286,10 @@ class TestAHypotheticalDatabaseRow:
         out.write_text(generator.generate(rows + [row]), encoding="utf-8")
 
         loaded = qcr._load(out)
-        assert set(loaded) == {"repo", "database"}
-        assert [e.question for e in loaded["database"]] == ["Which schemas carry the data?"]
+        assert "database" in loaded
+        assert "Which schemas carry the data (hypothetical)?" in [
+            e.question for e in loaded["database"]
+        ]
 
 
 class TestKnownAnalysisIdsSpanEverySection:

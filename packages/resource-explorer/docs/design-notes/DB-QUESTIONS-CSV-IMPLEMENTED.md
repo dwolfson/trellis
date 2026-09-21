@@ -168,6 +168,11 @@ anything consumes the YAML.
 
 ## Two things the coordinator should decide, not me
 
+**Both resolved 2026-09-21**, when this branch was merged with `main`
+(Stream 2, `re/question-catalog-multi-type`, had landed by then) — recorded
+here rather than rewritten out, since the decisions and their reasoning are
+still the record worth keeping.
+
 ### The `facts.py` collision
 
 `RESOURCE_STATE_SOURCES` (`facts.py`) keys **fourteen resolvers on exact question
@@ -190,6 +195,11 @@ merge window as the rewording rather than after it.
 This is also why eleven rows were left verbatim. Every additional cosmetic
 reword would have cost another resolver for no gain in type-neutrality.
 
+**Resolution:** all four keys updated to the new wording in the same commit
+that merged this branch with Stream 2's. See
+`docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md`'s "HANDOVER"
+section for the full before/after table and its own "Resolved" note.
+
 ### The Egeria join key
 
 The guide is explicit that `Question` text is the case- and
@@ -199,6 +209,16 @@ existing one. Seven rows are reworded here. If those terms are already published
 in a live Egeria, someone has to decide between re-linking them and accepting
 seven orphans — the design's §1.1 decision authorises the rewording but does not
 say which.
+
+**Resolution:** each reworded row (and the one stage-moved row) got a dated
+`Catalog History` entry recording the change, per the guide's own audit-trail
+convention. **Retiring the seven old terms' `ScopedBy` links on a live Egeria
+platform is explicitly NOT done here** — that only matters once this CSV is
+next published, and is a separate, deliberate step for whoever does that
+(`scripts/reconcile_survey_definition_scopes.py`, report-only by default;
+the exact tool its own module docstring names for this exact incident shape —
+a Question term changing text, old `ScopedBy` links left dangling). Nobody
+should read this merge as having already done that.
 
 ---
 
