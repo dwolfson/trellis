@@ -135,6 +135,12 @@ class Finding:
             # and the failure mode of forgetting is silent: a slow, catalog-
             # writing repair that runs because it defaulted to on.
             "expensive": self.repair_step in EXPENSIVE_STEPS,
+            # Same reasoning as `expensive` above, for the other frontend
+            # duplication resync.js's own header comment flagged: whether this
+            # finding's repair already runs unattended (SAFE_SCHEDULED_STEPS)
+            # is a fact about the backend's schedule, not something the UI
+            # should keep a second, hand-maintained copy of.
+            "scheduled": self.repair_step in SAFE_SCHEDULED_STEPS,
         }
 
 
