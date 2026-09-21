@@ -43,9 +43,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 log = logging.getLogger(__name__)
 
-RESOURCE_TYPES = ("repo", "database", "filesystem")
+#: Resource types a batch intent file may name. The SURVEYED subset, not the
+#: full vocabulary (resource_explorer/resource_types.py) — a batch row registers
+#: a resource, and only these have somewhere to be registered.
+RESOURCE_TYPES = SURVEYED_RESOURCE_TYPES
 
 # Columns a human fills in. Only `resource_type` and `address` are required.
 INTENT_COLUMNS = (

@@ -3056,7 +3056,7 @@ notification_detector.py's latest-two-runs comparison, surfaced via an Automate 
 Re-surveying on a blind schedule wastes cycles; knowing whether anything material actually changed first is the real Discovery-tier judgment.
 
 ### Usage
-Typically asked and answerable during Automate.
+Typically asked and answerable during Discovery.
 
 ___
 
@@ -3093,7 +3093,7 @@ ___
 How much has changed since the last time this was surveyed — is it worth re-running now?
 
 ### Scope Reference
-Automate
+Discovery
 
 ### Scope Category
 Asked At
