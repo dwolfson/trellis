@@ -841,13 +841,31 @@ _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], .
     ("database_schemas", ()),
     ("database_tables", ()),
     ("database_columns", ()),
-    ("database_column_profiles", ()),
-    ("database_table_activity", ()),
+    # stats_source/stats_computed_at (designer review, 2026-09-20) were added
+    # to this table's CREATE TABLE after it had already been created against
+    # the shared registry Postgres during this stream's own development —
+    # CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a
+    # pre-existing database_column_profiles was silently missing both columns
+    # until this migration entry existed. Found live, running the back-fill
+    # against the real shared registry.
+    ("database_column_profiles", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+    )),
+    # stats_reset: same story, same designer-review addition, same gap.
+    ("database_table_activity", (
+        ("stats_reset", "TEXT DEFAULT NULL"),
+    )),
     ("database_grants", ()),
     ("database_sql_objects", ()),
     ("database_settings", ()),
     ("filesystem_entries", ()),
-    ("filesystem_data_files", ()),
+    # Same gap as database_column_profiles above, confirmed live against the
+    # same pre-existing shared-registry table.
+    ("filesystem_data_files", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+    )),
     ("database_survey_coverage", ()),
     ("filesystem_survey_coverage", ()),
 )

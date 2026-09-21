@@ -118,6 +118,28 @@ a native survey's numbers were read back as prose in `summary` and nothing
 else, which is precisely why native results could not be queried like local
 ones.
 
+**How a failed engine action is represented — added 2026-09-21, after live
+verification surfaced the question.** `materialize_database_report`/
+`materialize_filesystem_report` take resolved `annotations`, not the raw poll
+result — `poll_trigger_and_retrieve_annotations`'s `final_status`/
+`completion_message` never reach either function. When a native survey
+section comes back empty, `_native_absence_note` already writes an honest,
+generic ambiguity note onto `database_survey_coverage` (citing Egeria's own
+Postgres connector docs: missing may mean "no permission", not "none exist").
+**What this does NOT yet do** is distinguish that generic ambiguity from a
+more specific, stronger signal: the engine action itself terminating as
+`INVALID`/failed rather than completing and finding nothing. Both currently
+collapse into the same coverage note if a caller passed empty annotations
+either way.
+
+This is filed as a Backlog item ("native-result materializers conflate
+engine-action failure with genuine empty result") rather than fixed here,
+because **neither function has a call site yet** — confirmed by grep,
+2026-09-21 — so it is not live-wrong today. It becomes load-bearing the
+moment Phase 1 wires a real native-survey caller into either function; that
+caller should thread `final_status` through and give a failed engine action
+its own coverage note, distinct from "ran fine, found nothing."
+
 ### 4. The back-fill — a script, not a migration step
 
 `scripts/backfill_structured_tables.py`. The brief left the choice open; the
@@ -288,18 +310,31 @@ All mutations reverted; suite green.
 
 ## For the coordinator
 
-**I believe live Egeria verification is needed before this is truly done, and
-I have not done it.** Specifically:
+**Update, 2026-09-21 — item 2 done, item 1 still open.**
 
-1. **Probe 9's dump against the materialiser.** The metric keys and annotation
-   type strings come from the Java source, which is authoritative for what the
-   connector *can* emit but not for what a given deployment *does*. The two
-   things most worth checking against a real dump: whether `resourceProperties`
-   arrives keyed exactly as the `displayName` strings above, and whether
-   `tableQualifiedName` really nests as `database.schema.table` in the live
-   payload. If either differs, the fix is confined to the `M_*` constants and
-   `_split_qualified`.
-2. **Running the back-fill against the real registry.** A shared write, and the
-   first thing that would surface a blob shape the converter has not seen.
-
-Neither should be done without the peer check. Both are cheap once they are.
+1. **Probe 9's dump against the materialiser — still open.** Checked directly:
+   neither `coco_ods` nor `coco_pharma` currently has a stored *successful*
+   native (`source='egeria'`) survey report to dump — `coco_ods`'s one native
+   attempt terminated `INVALID` (`OPEN-SURVEY-0009`, Backlog.md), and
+   `coco_pharma` has none on record at all. Triggering a fresh native survey
+   to get a real dump is a new live write beyond the peer clearance already
+   obtained for the read + back-fill; needs its own round with the project
+   owner before it happens.
+2. **Running the back-fill against the real registry — done.** Peer-checked
+   (five sessions cleared, `coordinate-shared-writes`), run once against the
+   live shared registry: 24 surveys processed, 4912 rows written for
+   `coco_ods`/`coco_pharma`. Verified independently by querying the written
+   rows directly, not by trusting the script's own report. Surfaced and fixed
+   a real migration gap along the way (see `re/backfill-migration-fix`):
+   `database_column_profiles`/`database_table_activity`/`filesystem_data_files`
+   had already been created in the shared Postgres before the designer's
+   `stats_source`/`stats_computed_at`/`stats_reset` columns existed, and
+   `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table — the
+   migration list had entries for all three but with empty column tuples.
+   Also chased a design-review concern about `coco_ods`'s back-filled
+   `table_count=0` row all the way to ground truth (a live, read-only
+   `psycopg2` query confirms it genuinely has zero tables) — the row is
+   correct; see Backlog.md for the real, forward-looking gap that
+   investigation did surface (the materialiser's `final_status` handling,
+   documented above in §3), and the follow-up "correct number, wrong label"
+   note on the historical back-fill's state labelling.
