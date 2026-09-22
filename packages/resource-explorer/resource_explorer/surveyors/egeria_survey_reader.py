@@ -86,6 +86,27 @@ def get_annotations_by_report_guid(asset_maker, report_guid: str) -> list[dict]:
                 "explanation": props.get("explanation", ""),
                 "expression": props.get("expression", ""),
                 "json_properties": props.get("jsonProperties", {}),
+                # Egeria's `contentStatus` — whether the annotation's CONTENT
+                # is complete. `DRAFT` means it is a PROPOSAL: a candidate
+                # Data Class or reference-data set that no curator has
+                # confirmed (Phase 1 slice 10, design §5.4; the mechanism is
+                # `docs/egeria-support-for-multi-resource.md` §3 as settled by
+                # the corrected probe 4).
+                #
+                # Added 2026-09-21 because nothing in RE read this field —
+                # measured, not assumed: every occurrence of `contentStatus`
+                # in the package was an outbound write (the two arch-recovery
+                # materializers) or a comment. A DRAFT proposal was therefore
+                # rendered identically to confirmed content, which would have
+                # made slice 10's whole proposal mechanism invisible. This
+                # reader is the first of the four hops that had to change; see
+                # POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md for the chain.
+                #
+                # Empty string is NOT "confirmed": it is "no contentStatus
+                # stated", which is what every annotation published before
+                # slice 10 carries. A renderer must not draw a badge for "".
+                "content_status": props.get("contentStatus", "") or "",
+                "user_defined_content_status": props.get("userDefinedContentStatus", "") or "",
                 # The measurement payload itself. Until 2026-09-20 this reader
                 # dropped every one of these, so a native survey's numbers
                 # were read back as prose in `summary` and nothing else — the

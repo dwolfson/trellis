@@ -6651,7 +6651,21 @@ function renderAnnotations(annotations) {
     for (const a of items) {
       const isRfa = type === 'RequestForAction';
       const conf  = a.confidence != null ? ` <span class="text-slate-500">[${a.confidence}]</span>` : '';
-      html += `<div class="${isRfa ? 'ann-row ann-rfa' : 'ann-row'}">• ${_esc(a.summary)}${conf}`;
+      // Egeria's contentStatus, surfaced 2026-09-21 (Phase 1 slice 10).
+      // DRAFT means this annotation is a PROPOSAL nobody has confirmed — a
+      // candidate Data Class or reference-data set. Before this, nothing in
+      // RE read the field at all, so a draft proposal rendered here exactly
+      // like a confirmed finding.
+      //
+      // Only a non-empty status draws a badge. An empty contentStatus is
+      // "not stated" — which is what every annotation published before slice
+      // 10 carries — and is NOT the same as "confirmed", so it must not get
+      // a badge of its own.
+      const cs = (a.content_status || '').toUpperCase();
+      const status = cs
+        ? ` <span class="text-[10px] uppercase font-semibold px-1 rounded ${cs === 'DRAFT' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400'}" title="Egeria contentStatus: ${_esc(cs)}${cs === 'DRAFT' ? ' — an unconfirmed proposal, not a confirmed finding' : ''}">${_esc(cs)}</span>`
+        : '';
+      html += `<div class="${isRfa ? 'ann-row ann-rfa' : 'ann-row'}">• ${_esc(a.summary)}${conf}${status}`;
       if (a.explanation) html += `<div class="text-slate-500 pl-3">${_esc(a.explanation)}</div>`;
       const sub = a.subtype_data || {};
       if (sub.actionRequested) html += `<div class="text-amber-500 pl-3">→ ${_esc(sub.actionRequested)}</div>`;

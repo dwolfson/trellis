@@ -94,6 +94,80 @@ def _run_db_derived(db_entity, registry, **_) -> dict:
     }
 
 
+def _run_postgres_column_profile(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    sampling: dict | None = None, read_egeria_catalog: bool = True, **_,
+) -> dict:
+    """postgres_column_profile (Phase 1 slice 10, design §5.4/§5.7/§5.8):
+    bounded value sampling, `data_class_match`, `reference_data_match`.
+
+    The only step in the database family that reads actual table data — design
+    §5.7 prices it "api_heavy / medium" — so it runs only when a Survey
+    Definition asks for it, never as part of a default survey.
+
+    `sampling` is §5.8's configuration, resolved at the run scope: any of
+    `strategy`, `max_rows`, `max_bytes`, `max_values`, `seed`, `time_budget`,
+    `strata_column`. Omitted, the step's default is `random` with
+    `TABLESAMPLE`, seeded per resource so two runs differ only when the data
+    did.
+
+    `read_egeria_catalog` reads the platform's Data Classes and Valid Value
+    Sets up front. When it is off, or the read fails, every column's verdict
+    is `no_candidates` rather than "no match" — a run that never asked the
+    platform what exists has established nothing about whether a column
+    matches something, and the two must not render alike.
+    """
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    from resource_explorer.surveyors.database.egeria_reference_catalog import (
+        ReferenceCatalog,
+        build_reference_clients,
+        load_reference_catalog,
+    )
+
+    catalog: ReferenceCatalog | None = None
+    catalog_error = ""
+    if read_egeria_catalog:
+        try:
+            designer, ref_manager = build_reference_clients()
+            catalog = load_reference_catalog(designer, ref_manager)
+        except Exception as exc:
+            # Non-fatal, and deliberately NOT swallowed into an empty
+            # catalogue. The failure becomes a `ReferenceCatalog` that is
+            # explicitly unavailable and carries the reason, so it reaches
+            # three observable places rather than only a log line: every
+            # column's verdict (`no_candidates`, never "no match"), the
+            # confidence-0 annotation that names the failure, and this step's
+            # own `reference_catalog_error` output field, which a caller can
+            # branch on.
+            catalog_error = str(exc)
+            log.warning(
+                "Could not read Egeria's Data Classes / Valid Value Sets for "
+                "%s — every column's match verdict will be 'no_candidates': %s",
+                db_entity.slug, exc,
+            )
+            catalog = ReferenceCatalog(
+                available=False,
+                unavailable_reason=(
+                    f"the Egeria platform's Data Classes and Valid Value Sets "
+                    f"could not be read: {exc}"
+                ),
+            )
+
+    surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
+    result = surveyor.survey(
+        steps=["column_profile"], sampling_overrides=sampling, reference_catalog=catalog,
+    )
+    return {
+        "schema_info": result.get("schema_info", {}),
+        "column_profile": result.get("column_profile", {}),
+        # "" when the catalogue read succeeded or was not attempted; the
+        # failure's message otherwise. A caller that only looks at the step's
+        # status would otherwise see an ordinary success.
+        "reference_catalog_error": catalog_error,
+    }
+
+
 def _run_postgres_sql_analysis(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
@@ -270,6 +344,7 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,
         "db_derived": _run_db_derived,
+        "postgres_column_profile": _run_postgres_column_profile,
         "sql_analysis": _run_postgres_sql_analysis,
     },
     get_entity=_get_database_entity,
@@ -320,6 +395,27 @@ _ADAPTER = ResourceTypeAdapter(
                 "DataGrainAnnotation",
                 "FingerprintAnnotation",
                 "ResourceMeasureAnnotation",
+            ],
+        },
+        "postgres_column_profile": {
+            "description": (
+                "Bounded value sampling (design §5.8: catalog_stats_only / head / "
+                "random via TABLESAMPLE SYSTEM|BERNOULLI / systematic / stratified / "
+                "full, with max_rows, max_bytes, max_values, a per-resource seed and "
+                "a time budget), then data_class_match (column name + type + "
+                "value-pattern conformance against every Egeria DataClass) and "
+                "reference_data_match (low-cardinality distinct values against every "
+                "ValidValueSet). Unmatched-but-patterned columns are proposed as new "
+                "DataClasses / ValidValueSets with contentStatus: DRAFT, linked to "
+                "their evidence via AssociatedAnnotation; a partial reference-data "
+                "match raises an RFA naming the unmatched values. Every threshold is "
+                "stated against the sample that produced it."
+            ),
+            "annotation_types": [
+                "ResourceMeasureAnnotation",
+                "DataClassAnnotation",
+                "RelationshipAnnotation",
+                "RequestForAction",
             ],
         },
         "sql_analysis": {

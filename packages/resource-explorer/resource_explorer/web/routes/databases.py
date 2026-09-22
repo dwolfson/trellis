@@ -108,6 +108,11 @@ class EgeriaAnnotationItem(BaseModel):
     explanation: str
     expression: str
     json_properties: dict
+    #: Egeria's `contentStatus` — "DRAFT" marks an unconfirmed PROPOSAL
+    #: (Phase 1 slice 10, and the surface that matters most for it: this is
+    #: the model behind the database tab's annotation list). Empty means "no
+    #: contentStatus stated", not "confirmed".
+    content_status: str = ""
 
 
 def _to_summary(db) -> DatabaseSummary:

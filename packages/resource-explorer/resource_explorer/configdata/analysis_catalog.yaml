@@ -1090,6 +1090,28 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: data_class_match
+    name: "Data Class Match"
+    description: "Which columns conform to a known Egeria Data Class (PII and otherwise), with what confidence — and which look like a class we do not have yet. Matches column name, type and bounded value sampling against every DataClass in the platform, producing a DataClassAnnotation per column. An unmatched-but-patterned column is proposed as a new DataClass with contentStatus: DRAFT, linked to its evidence via AssociatedAnnotation (design §5.4; support doc §3 as settled by the corrected probe 4). Every confidence is stated against the sample that produced it, never as an unqualified \"conforms\" (design §5.8). A column no value was sampled from is not_established, never \"no match found\"."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Privacy", "Steward", "Security"]
+    annotation_types: ["DataClassAnnotation", "ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    # api_heavy per design §5.7 — the only step in the database family that
+    # reads actual table data. `queued`, not inline, for the same reason
+    # `architecture_recovery` is: cheap to compute once the sample is in hand,
+    # and the sample itself is a real fetch (CLAUDE.md rule 17's
+    # availability-is-not-run_time ruling).
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: db_change_rates
     name: "Change Rates"
     description: >
@@ -1108,6 +1130,23 @@ database_analyses:
     availability: inline
     action: survey
     target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: reference_data_match
+    name: "Reference Data Match"
+    description: "Which low-cardinality columns conform to a known Egeria ValidValueSet, and which should become one. Columns whose n_distinct (from the stored pg_stats profile, sign convention resolved) falls under the reference-data gate have their sampled distinct values compared against every set in the platform: a full match becomes ValidValuesAssignment advice, a partial match raises an RFA listing the values outside the set, and no match at all proposes a new set with contentStatus: DRAFT (design §5.4). A truncated distinct-value list is inconclusive rather than a partial match, since a coverage fraction from an incomplete list is wrong in an unknown direction."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Data Expert", "Governance"]
+    annotation_types: ["RelationshipAnnotation", "ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false

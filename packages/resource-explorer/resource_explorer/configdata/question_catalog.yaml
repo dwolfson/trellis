@@ -2238,7 +2238,8 @@ database_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - data_class_match
     checks: []
     note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
       never base tables, and no RFA proposes a new class.'
@@ -2262,7 +2263,8 @@ database_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - reference_data_match
     checks: []
     note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
       or proposes a new set.'
@@ -2354,6 +2356,7 @@ database_questions:
     kind: partial
     analysis_ids:
     - privilege_audit
+    - data_class_match
     checks: []
     note: 'PARTIAL: privilege_audit answers the roles, grants, superuser and PUBLIC-grant half; the sensitive-column
       half needs the proposed data_class_match and the join between the two, neither of which is built.'
@@ -2445,6 +2448,7 @@ database_questions:
     kind: partial
     analysis_ids:
     - privilege_audit
+    - data_class_match
     checks: []
     note: 'PARTIAL: privilege_audit supplies who can read what; the sensitive-column half needs the proposed
       data_class_match, and nothing crosses the two today.'
@@ -2486,7 +2490,8 @@ database_questions:
   - Certify
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - reference_data_match
     checks: []
     note: 'GAP: reference_data_match (proposed) supplies the checks, and nothing measures the bound share.'
   answering_mechanism: Egeria Queries
@@ -3131,7 +3136,8 @@ filesystem_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - data_class_match
     checks: []
     note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
       never base tables, and no RFA proposes a new class.'
@@ -3155,7 +3161,8 @@ filesystem_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - reference_data_match
     checks: []
     note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
       or proposes a new set.'
@@ -3733,7 +3740,8 @@ dataset_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - data_class_match
     checks: []
     note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
       never base tables, and no RFA proposes a new class.'

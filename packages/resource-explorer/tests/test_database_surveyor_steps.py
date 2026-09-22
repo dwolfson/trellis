@@ -106,9 +106,13 @@ class TestDatabaseAnalysisStepMap:
         # Phase 1 slice 8 (postgres_operations) added db_activity_signals/
         # db_resilience/db_external_dependencies and gave privilege_audit its
         # own dedicated "operations" step — see the next test.
+        # Phase 1 slice 10 (postgres_column_profile) added data_class_match/
+        # reference_data_match and the "column_profile" step they map to —
+        # see test_column_profile_backed_ids_also_need_statistics below.
         assert set(DATABASE_ANALYSIS_STEP_MAP) == {
             "schema_inventory", "row_count_snapshot", "privilege_audit",
             "db_activity_signals", "db_resilience", "db_external_dependencies",
+            "data_class_match", "reference_data_match",
         }
 
     def test_privilege_audit_now_runs_the_dedicated_operations_step(self):
@@ -121,3 +125,14 @@ class TestDatabaseAnalysisStepMap:
     def test_new_operations_backed_ids_map_to_schema_and_operations(self):
         for analysis_id in ("db_activity_signals", "db_resilience", "db_external_dependencies"):
             assert set(DATABASE_ANALYSIS_STEP_MAP[analysis_id]) == {"schema", "operations"}
+
+    def test_column_profile_backed_ids_also_need_statistics(self):
+        # Phase 1 slice 10. "statistics" is not optional for these two:
+        # reference_data_match's low-cardinality gate reads slice 7's stored
+        # pg_stats n_distinct, and every sample's provenance is stated against
+        # the per-table row counts "statistics" collects (design §5.8's "of
+        # 4.2M rows"). Without it the step runs and establishes nothing.
+        for analysis_id in ("data_class_match", "reference_data_match"):
+            assert set(DATABASE_ANALYSIS_STEP_MAP[analysis_id]) == {
+                "schema", "statistics", "column_profile",
+            }

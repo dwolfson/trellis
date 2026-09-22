@@ -127,25 +127,42 @@ class Annotation:
     #: run that produces it. Consumed by Phase 2 (not implemented yet); Phase 1
     #: only adds the field so sub-surveyors can start setting it.
     evidence_of: int | None = None
-    #: Egeria's `contentStatus` (`ContentStatus.java`) — whether the CONTENT
-    #: of this annotation is complete, as opposed to whether the entity
-    #: persists (`ElementStatus`, a different field entirely). Empty means
-    #: "say nothing", which is every pre-existing annotation's behaviour.
+    #: Egeria's `contentStatus` — whether the annotation's CONTENT is complete,
+    #: which is a different field from the element's own lifecycle status
+    #: (`ElementStatus`). A domain property on
+    #: `AuthoredReferenceableProperties`, which `AnnotationProperties` extends.
     #:
-    #: Set to "DRAFT" for a PROPOSAL: a finding that asks a curator to
-    #: declare a governance element that does not exist yet (a DataGrain, a
-    #: DataScope). This is the mechanism the project owner's 2026-09-21
-    #: decision in `docs/egeria-support-for-multi-resource.md` §3 settled on,
-    #: after the corrected probe 4 showed `contentStatus: DRAFT` round-trips
-    #: cleanly on both an element and an annotation — replacing the earlier
-    #: plan to carry proposals as an RFA convention or to ask Egeria for new
-    #: `candidate…Specification` fields.
+    #: Added 2026-09-21 (Phase 1 slices 9/10). `"DRAFT"` marks a PROPOSAL — a
+    #: finding that asks a curator to declare a governance element that does
+    #: not exist yet (a DataGrain, a DataScope, a candidate Data Class or
+    #: reference-data set). This is the mechanism the project owner's
+    #: 2026-09-21 decision in `docs/egeria-support-for-multi-resource.md` §3
+    #: settled on, after the corrected probe 4 showed `contentStatus: DRAFT`
+    #: round-trips cleanly on both an element and an annotation — replacing
+    #: the earlier plan to carry proposals as an RFA convention or to ask
+    #: Egeria for new `candidate…Specification` fields. Verified live the same
+    #: day (probes 4/5, `docs/design-notes/PROBES-2026-09-21.md`):
+    #: `contentStatus: DRAFT` inside `properties` round-trips as `DRAFT` on
+    #: read-back, while the element's `ElementStatus` stays `ACTIVE`
+    #: throughout — the two are independent.
     #:
-    #: Known open question, recorded rather than assumed away (§3's own
-    #: closing paragraph): it is NOT established that an ordinary read path
-    #: surfaces `contentStatus` at all, so a DRAFT proposal may render
-    #: identically to a confirmed finding to a naive consumer. That needs its
-    #: own probe; RE's own rendering of it is not built here.
+    #: NOT `initialStatus`: that sets `ElementStatus`, means something else
+    #: entirely, and is silently dropped by pyegeria's `NewElementRequestBody`
+    #: (pyegeria ISSUE-113). Probe 4's first pass tested it by mistake.
+    #:
+    #: §3's own closing paragraph flagged an open question — whether an
+    #: ordinary read path surfaces `contentStatus` at all, or whether a DRAFT
+    #: proposal renders identically to a confirmed finding — as something that
+    #: "needs its own probe" before this field is safe to rely on. Phase 1
+    #: slice 10 checked: nothing did. It added the surfacing (the survey
+    #: reader, all three `EgeriaAnnotationItem` copies, and `renderAnnotations`,
+    #: which draws an amber DRAFT badge and deliberately draws nothing for an
+    #: empty status). The older `/{slug}/annotations` read path still does not
+    #: carry it (`docs/Backlog.md`, slice 10 follow-up #3).
+    #:
+    #: Empty (the default) means "no contentStatus stated", which is what every
+    #: annotation published before this slice carries and is NOT the same as
+    #: confirmed content — a renderer must not draw a badge for "".
     content_status: str = ""
 
 

@@ -53,6 +53,20 @@ class EngineCapabilities:
     #: — added Phase 1 slice 8 alongside the others above, not part of the
     #: original PR #191 declaration.
     privileges: bool = False
+    #: Whether this engine can take a BOUNDED sample of a column's actual
+    #: values — Phase 1 slice 10's `postgres_column_profile` (design §5.7,
+    #: §5.8). Its own capability rather than a corollary of `column_stats`,
+    #: because the two are genuinely independent: `pg_stats` gives a profile
+    #: with no rows read, while data-class and reference-data matching need
+    #: real values (design §5.1: "the only route for data-class and
+    #: reference-data matching, which need actual values"). An engine could
+    #: have either without the other.
+    #:
+    #: When False, `data_class_match`/`reference_data_match` are
+    #: `not_established` for every column — never "no match found". That
+    #: distinction is the reason this is a declared capability rather than an
+    #: empty result set.
+    value_sampling: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return asdict(self)
@@ -349,6 +363,11 @@ class PostgreSQLConnection(DatabaseConnection):
             resilience=True,
             external_dependencies=True,
             privileges=True,
+            # Phase 1 slice 10: `TABLESAMPLE SYSTEM`/`BERNOULLI` with
+            # `REPEATABLE (seed)`, which is what `sampling.py` builds and what
+            # design §5.8 names specifically in preference to
+            # `ORDER BY random() LIMIT n`.
+            value_sampling=True,
         )
 
     def get_column_stats(self) -> list[dict]:

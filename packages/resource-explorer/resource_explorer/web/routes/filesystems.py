@@ -78,6 +78,13 @@ class EgeriaAnnotationItem(BaseModel):
     explanation: str
     expression: str
     json_properties: dict
+    #: Egeria's `contentStatus` — "DRAFT" marks an unconfirmed PROPOSAL
+    #: (Phase 1 slice 10). Declared here too even though no filesystem
+    #: analysis proposes anything yet: the three copies of this model are read
+    #: by ONE frontend renderer, so a field present in two of them and absent
+    #: from the third shows a badge on two tabs and silently not on the
+    #: third — the exact failure this whole chain exists to avoid.
+    content_status: str = ""
 
 
 @router.get("/", response_model=list[FileSystemSummary])
