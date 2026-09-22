@@ -5025,12 +5025,20 @@ async function loadPane() {
 
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
-  if (!stageDef?.built) {
+  // The `class === 'frame'` half is unreachable today (Investigation, the
+  // only frame-class entry, returns above before this line is ever
+  // reached) — kept as the fallback for a FUTURE frame-class stage added
+  // without its own dedicated branch, same defensive shape as `!built`
+  // covering a stage nobody has written a renderer for yet.
+  if (stageDef?.class === 'frame' || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
-      'This stage has no rows in the analysis catalog or the activity log, so '
-      + 'there is nothing for a questions pane to show. It is marked here '
-      + 'rather than hidden, which is the point.');
+      stageDef.class === 'frame'
+        ? 'This is a frame, not a built pane, and has no dedicated renderer of '
+          + 'its own in /next yet.'
+        : 'This stage has no rows in the analysis catalog or the activity log, so '
+          + 'there is nothing for a questions pane to show. It is marked here '
+          + 'rather than hidden, which is the point.');
     bindSubTabs();
     renderPerspectiveRow();
     return;
