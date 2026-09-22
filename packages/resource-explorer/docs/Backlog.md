@@ -6077,10 +6077,11 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
 
 **Catalogue-in-layers round (`REPLY-CATALOGUE-IN-LAYERS.md`, 2026-09-14):**
 - `SoftwareLibrary`/package type error — **fixed**, this session (see the entry above).
-- `SourceControlLibrary`-per-repo type error — **still open**. Must land before the next Egeria
-  redeploy (owner's decision: wipe and redeploy fresh rather than migrate/retract existing
-  elements — see the entry above), or the fresh database is repopulated with the same wrong
-  structure.
+- `SourceControlLibrary`-per-repo type error — **fixed**, same day (`d514c884`, 16:33, 35 minutes
+  after this line was written at 15:58 — the line was never flipped when the fix landed). One
+  singleton `SourceControlLibrary` for GitHub (`_find_or_create_github_scl`, cached), each
+  repository its own `Asset` linked via `CapabilityAssetUse` (`egeria_publisher.py:702-917`).
+  Verified live in the code 2026-09-21, ahead of that night's Egeria redeploy.
 - Bulk-accept dialog copy — must not name `DeployedSoftwareComponent` (or any component-family
   type) before it is verified; say "software components" in plain words instead until pinned.
 - The layer-2 catalogue-depth offer — `DepthOffer`'s three rules verbatim (not a nag: once per
