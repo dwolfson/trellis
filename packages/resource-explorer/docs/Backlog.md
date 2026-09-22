@@ -6910,3 +6910,43 @@ change** — coordinating with other live sessions first, since the
 questions batch's perspective links have no reconciler and a duplicate
 there is permanent (see `coordinate-shared-writes` skill). Do the
 authoring as a separate, single, coordinated run once clear.
+
+## Phase 1 done-test verification (2026-09-22): NOT satisfied — Phase 2 held
+
+`COORDINATOR-BRIEF-MULTI-RESOURCE.md`'s own gate for starting Phase 2
+(filesystems) is its done-test: "`coco_ods` answers 'which columns conform
+to a Data Class?' and 'how is it changing?' from stored rows; the Egeria
+asset carries both a native and an RE report with same-typed column
+annotations; a new column and a new PUBLIC grant each raise an RFA." This
+had never been re-verified end-to-end since slices 6-14 merged. Ran all
+four clauses live against `coco_ods` (scratch table, real inserts, real
+`ALTER TABLE`/`GRANT`, real scheduler dispatch — all cleaned up after):
+
+- **"How is it changing?" — PASS.** `db_change_rates` correctly reported
+  `state=measured, deltas.rows_inserted=50` against a real 50-row insert.
+- **Native + RE reports share annotation types — PASS.** Confirmed 3
+  existing native `SurveyReport`s plus a freshly-published RE report on
+  the same asset, both using `ResourceMeasureAnnotation`.
+- **"Which columns conform to a Data Class?" — FAIL, two layered causes.**
+  (1) The live "Run" path (`DATABASE_ANALYSIS_STEP_MAP["data_class_match"]`
+  → `DatabaseSurveyor.survey()`) never passes a `ReferenceCatalog`, so
+  every column reports "not established" regardless of platform state.
+  (2) Even if wired, there is nothing to match against: Egeria currently
+  holds **0 Data Classes and 0 Valid Value Sets**. `bootstrap_data_
+  classes.py` is itself broken — it treats pyegeria's `"No elements
+  found"` miss-sentinel from `get_guid_for_name` as a valid GUID, so it
+  reports "6 skipped" while creating none. `resource_questions.csv` row
+  76 also still reads `GAP: data_class_match (proposed)`, so even a fixed
+  backend wouldn't surface as answered on the Questions tab yet.
+- **New column / PUBLIC grant → RFA — FAIL, architectural gap.**
+  `db_change_comparator.py`'s `DATABASE_CHANGE_COMPARATORS` only wires up
+  `db_change_rates`. Its own docstring already says `grant_change` and a
+  column-level `schema_diff` aren't built. Confirmed live: added a real
+  column and a real `GRANT SELECT ... TO PUBLIC`, ran the actual scheduler
+  dispatch path twice, zero RFAs either time.
+
+**Decision (this session, 2026-09-22):** Phase 2 stays held. Two fixes
+needed to actually close Phase 1, tracked as separate slices: (a) fix the
+`bootstrap_data_classes.py` sentinel bug, seed real Data Classes, wire
+`ReferenceCatalog` into the live survey path, fix the CSV row; (b) build
+`grant_change` and a column-level `schema_diff` comparator.
