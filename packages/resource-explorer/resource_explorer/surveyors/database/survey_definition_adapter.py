@@ -168,6 +168,38 @@ def _run_postgres_column_profile(
     }
 
 
+def _run_postgres_nested_columns(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    sampling: dict | None = None, **_,
+) -> dict:
+    """postgres_nested_columns (Phase 1 slice 11, design §5.4/§5.7): bounded
+    JSON/JSONB/XML value sampling and nested-schema inference.
+
+    Gated on slice 10 ("shares the inference core", per the coordinator
+    brief) — this reuses `postgres_column_profile`'s exact sampling
+    machinery (`sampling.py`, `column_profile_step.sample_column_values`/
+    `SamplingBudget`) and `column_matching.type_family` to find the JSON/XML
+    columns in the first place. The actual "given these values, what's the
+    schema" logic lives in `nested_schema_inference.py`, which imports
+    neither pyegeria nor psycopg2 so it can be reused by §6's
+    `nested_schema_profile` (files/folders, Phase 2, not this slice).
+
+    Like `postgres_column_profile`, this is the only other step in the
+    database family that reads actual table data (design §5.7: "api_heavy /
+    medium") — it runs only when a Survey Definition asks for it, never as
+    part of a default survey. `sampling` is the same §5.8 configuration
+    surface, resolved at the run scope.
+    """
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
+    result = surveyor.survey(steps=["nested_columns"], sampling_overrides=sampling)
+    return {
+        "schema_info": result.get("schema_info", {}),
+        "nested_columns": result.get("nested_columns", {}),
+    }
+
+
 def _run_postgres_sql_analysis(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
@@ -345,6 +377,7 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_operations": _run_postgres_operations,
         "db_derived": _run_db_derived,
         "postgres_column_profile": _run_postgres_column_profile,
+        "postgres_nested_columns": _run_postgres_nested_columns,
         "sql_analysis": _run_postgres_sql_analysis,
     },
     get_entity=_get_database_entity,
@@ -416,6 +449,24 @@ _ADAPTER = ResourceTypeAdapter(
                 "DataClassAnnotation",
                 "RelationshipAnnotation",
                 "RequestForAction",
+            ],
+        },
+        "postgres_nested_columns": {
+            "description": (
+                "Bounded value sampling of JSONB/JSON/XML columns (design §5.8's "
+                "same configuration surface as postgres_column_profile, "
+                "purpose='matching'), then nested-schema inference: JSON key "
+                "presence frequency, observed-type consistency and nesting "
+                "depth; XML root-element and element/attribute name frequency. "
+                "Produces a SchemaAnalysisAnnotation per column carrying the "
+                "inferred schema — including for a column where every sampled "
+                "value was a JSON scalar or unparseable XML, which is a real "
+                "finding (design §5.4), not an absence. Shares its inference "
+                "core with the (not-yet-built) filesystem nested_schema_profile."
+            ),
+            "annotation_types": [
+                "ResourceMeasureAnnotation",
+                "SchemaAnalysisAnnotation",
             ],
         },
         "sql_analysis": {
