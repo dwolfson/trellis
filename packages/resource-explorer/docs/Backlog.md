@@ -7048,3 +7048,60 @@ above, not present on this branch) is reportedly tracking 18 rows in this
 same "`GAP: ... (proposed)` for a now-built analysis" shape — row 76 may be
 one of them, so whoever merges next should check for an overlapping edit to
 the same CSV row rather than assume this change is the only one in flight.
+
+## grant_change and column-level schema_diff comparators, plus two real
+## bugs found live-verifying them (2026-09-22)
+
+Phase 1 slice 14 follow-up (design §9.1). Built `grant_change` and the
+column/constraint-level half of `schema_diff` in
+`db_change_comparator.py`/`db_derived.py` — each its own `analysis_id`
+(design §9.1's Perspective presets subscribe to them separately from
+`db_change_rates`), same two-snapshot/`established` shape as
+`_compare_change_rates`. `schema_diff` is deliberately scoped to tables
+present in both snapshots, so a whole new/dropped table's columns stay
+`db_change_rates`'s schema-churn story rather than being double-reported.
+
+Live-verifying the coordinator brief's own done-test ("a new column and a
+new PUBLIC grant each raise an RFA") against the real `coco_ods` database
+surfaced two pre-existing bugs neither comparator's own logic could paper
+over, both confirmed by direct query against the shared registry/database
+rather than assumed:
+
+1. **`database_grants` was written by NO survey path at all**, local or
+   native. `database_surveyor.py`'s local blob already carried
+   `results["operations"]` (privilege_audit's own output), but
+   `result_materializer.py`'s `database_rows_from_survey_data()` never read
+   it back out, so `backfill_database_survey()` unconditionally marked
+   every local survey's grants `STATE_NOT_MEASURED` via
+   `_DATABASE_BLOB_UNMEASURED` — even for a survey that genuinely ran
+   privilege_audit. Fixed: grants are now extracted from
+   `operations["privilege_audit"]["table_grants"]` when that key is
+   present, and the NOT_MEASURED fallback loop skips any table the main
+   loop already wrote for real.
+2. **`information_schema.role_table_grants` cannot see PUBLIC's own
+   grants**, or another role's, from a non-privileged connecting role — by
+   that view's own Postgres documentation, it shows only grants where the
+   *current* role is the grantor or grantee. RE's stored survey credential
+   (`egeria_user`, an ordinary role, not a special case) surveyed a table
+   with a real `GRANT SELECT ... TO PUBLIC` on it and saw only its own
+   grant — the exact case design §9.1 names first ("a new grant,
+   *especially to PUBLIC*"). Fixed in `connection.py`'s
+   `get_privilege_audit()`: reads `pg_class.relacl` via `aclexplode()`
+   instead, which is catalog metadata visible to any connected role
+   regardless of what that role itself was granted.
+
+With both fixed, live-verified end to end through the real scheduler path
+(`scheduler._run_due` → `_execute` → `_check_subscriptions` →
+`detect_database_change`) on a scratch table in `coco_ods`: adding a column
+and a `GRANT INSERT ... TO PUBLIC`, then re-surveying, raised two RFAs
+(`activity_log` ids `887db284-153e-4d5c-9736-d78020d3b0b6` — "1 column(s)
+added: public.scratch_verify_slice14.phone_number" — and
+`404a93b9-9fa4-4ad0-b753-d7e0b7912659` — "1 new grant(s) to PUBLIC: INSERT
+on public.scratch_verify_slice14 to PUBLIC") with the PUBLIC grant named
+unambiguously in the RFA's own text, not buried in a generic "grants
+changed" message. Scratch table, grant, schedules and subscriptions were
+all removed afterward; the two fixes above are real and stay.
+
+Still open per design §9.1's full comparator table: `class_change`,
+`reference_set_change`, `scope_change`, `resilience_change` — logged
+already in `db_change_comparator.py`'s own module docstring.

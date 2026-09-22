@@ -31,12 +31,27 @@ purely the bridge: read that already-computed result and turn it into a
 the repo side, so `_check_subscriptions` does not need two different
 result shapes.
 
+**What this module adds now (Phase 1 slice 14 follow-up).** `grant_change`
+and the column/constraint-level half of `schema_diff` — the two comparators
+the 2026-09-22 live done-test verification found missing (`docs/Backlog.md`,
+"Phase 1 done-test verification (2026-09-22)"). Both follow
+`_compare_change_rates`'s exact bridge shape, but over their own new
+`db_derived.derive_schema_diff`/`derive_grant_change` computations rather
+than `derive_change_rates`'s — see those functions' own docstrings in
+`db_derived.py` (§7/§8) for the two-snapshot diff itself. Each is its own
+`analysis_id`, distinct from `db_change_rates`: design §9.1's Perspective
+presets subscribe to `schema_diff` and `grant_change` separately from
+`db_change_rates` (Steward: `schema_diff`; Security/Privacy: `grant_change`),
+and `scheduler._check_subscriptions` dispatches by `analysis_id` matched to
+whichever schedule just completed — a subscription to `schema_diff` is only
+ever checked after a `schema_diff` schedule run, so it needs its own
+schedulable id, not a subscription against `db_change_rates`'s.
+
 **What is still not built**, and stays open per design §9.1's full
-comparator table: `grant_change`, `class_change`, `reference_set_change`,
-`scope_change`, `resilience_change`, and the column/constraint-level half of
-`schema_diff`. Each needs a two-snapshot diff over data this codebase
-already collects elsewhere (`postgres_operations`'s `privilege_audit`/
-`db_resilience`, `data_class_match`, `reference_data_match`, proposed
+comparator table: `class_change`, `reference_set_change`, `scope_change`,
+`resilience_change`. Each needs a two-snapshot diff over data this codebase
+already collects elsewhere (`postgres_column_profile`'s `data_class_match`/
+`reference_data_match`, `postgres_operations`'s `db_resilience`, proposed
 `DataScope`) but none of those checks is differenced across runs today —
 that is a comparator apiece, not a re-run of this one. Logged to
 `docs/Backlog.md`.
@@ -108,6 +123,55 @@ def _compare_change_rates(registry, slug: str) -> ChangeResult:
     return ChangeResult(changed=True, established=True, summary="; ".join(parts))
 
 
+def _compare_schema_diff(registry, slug: str) -> ChangeResult:
+    """`schema_diff` (column/constraint half) → a `ChangeResult`, bridging
+    `derive_schema_diff`'s own two-snapshot diff verbatim.
+
+    Same `established` discipline as `_compare_change_rates`:
+    `insufficient_history` is `changed=False, established=False`, a measured
+    diff with nothing added/dropped/retyped is `changed=False,
+    established=True`.
+    """
+    from resource_explorer.surveyors.database.db_derived import derive_schema_diff
+
+    result = derive_schema_diff(registry, slug)
+
+    if result["state"] != STATE_MEASURED:
+        return ChangeResult(
+            changed=False,
+            established=False,
+            summary=result.get("explanation", result.get("reason", "")),
+        )
+
+    changed = bool(result["columns_added"] or result["columns_dropped"] or result["columns_retyped"])
+    return ChangeResult(changed=changed, established=True, summary=result["explanation"])
+
+
+def _compare_grant_change(registry, slug: str) -> ChangeResult:
+    """`grant_change` → a `ChangeResult`, bridging `derive_grant_change`'s own
+    two-snapshot diff verbatim.
+
+    A new grant to PUBLIC is a real change like any other new grant — the
+    `established`/`changed` split does not special-case it, since
+    `derive_grant_change`'s `public_grants_added` already makes it
+    unambiguous in the summary text a subscriber reads (design §9.1's own
+    wording: "new grant, especially to PUBLIC").
+    """
+    from resource_explorer.surveyors.database.db_derived import derive_grant_change
+
+    result = derive_grant_change(registry, slug)
+
+    if result["state"] != STATE_MEASURED:
+        return ChangeResult(
+            changed=False,
+            established=False,
+            summary=result.get("explanation", result.get("reason", "")),
+        )
+
+    changed = bool(result["grants_added"] or result["grants_revoked"])
+    return ChangeResult(changed=changed, established=True, summary=result["explanation"])
+
+
 #: One entry per database analysis_id this module can compare. The single
 #: place both the scheduler and any future caller (a manual "check now",
 #: the Automate UI) read — mirrors `db_derived.DB_DERIVED_ANALYSES`'s own
@@ -115,6 +179,8 @@ def _compare_change_rates(registry, slug: str) -> ChangeResult:
 #: checks.
 DATABASE_CHANGE_COMPARATORS: dict[str, Callable[[object, str], ChangeResult]] = {
     "db_change_rates": _compare_change_rates,
+    "schema_diff": _compare_schema_diff,
+    "grant_change": _compare_grant_change,
 }
 
 
@@ -138,8 +204,8 @@ def detect_database_change(registry, slug: str, analysis_id: str) -> ChangeResul
             summary=(
                 f"No change comparator is implemented yet for '{analysis_id}'. "
                 "This is not a measurement of 'no change' — design §9.1 lists "
-                "further database comparators (schema_diff, grant_change, "
-                "class_change, reference_set_change, scope_change, "
+                "further database comparators (class_change, "
+                "reference_set_change, scope_change, "
                 "resilience_change) that are not yet wired to the local "
                 "delivery path."
             ),

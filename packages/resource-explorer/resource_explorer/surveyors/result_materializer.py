@@ -65,6 +65,7 @@ from resource_explorer.registry import (
     SECTION_COLUMN_PROFILES,
     SECTION_DATA_FILES,
     SECTION_ENTRIES,
+    SECTION_GRANTS,
     SECTION_SCHEMAS,
     SECTION_SQL_OBJECTS,
     SECTION_TABLE_ACTIVITY,
@@ -666,6 +667,7 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
     """
     schema_info = (survey_data or {}).get("schema_info") or {}
     statistics = (survey_data or {}).get("statistics") or {}
+    operations = (survey_data or {}).get("operations") or {}
 
     schemas: list[dict] = []
     tables: list[dict] = []
@@ -764,13 +766,55 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
     # not-measured through coverage — see backfill_database_survey.
     _ = statistics
 
-    return {
+    result = {
         "database_schemas": schemas,
         "database_tables": tables,
         "database_columns": columns,
         "database_table_activity": activity,
         "database_sql_objects": sql_objects,
     }
+
+    # `database_grants` — found missing while building the grant_change
+    # comparator (Phase 1 slice 14 follow-up, 2026-09-22): `record_database_
+    # survey`'s caller already stores `results["operations"]` in the blob
+    # (database_surveyor.py, postgres_operations/privilege_audit), but this
+    # function never read it back out, so `_DATABASE_BLOB_UNMEASURED` marked
+    # every local survey's grants as never-measured even when privilege_audit
+    # genuinely ran and had grants to report — a database_grants row was
+    # written by NO code path at all, native or local, confirmed by a live
+    # query against the shared registry rather than assumed. Only added to
+    # the result dict when this survey actually ran privilege_audit
+    # (`operations["privilege_audit"]` present) — a survey that only ran
+    # schema_inventory must still fall through to the NOT_MEASURED marker
+    # below, not report an empty grants list as "measured, none".
+    privilege_audit = operations.get("privilege_audit")
+    if privilege_audit is not None:
+        grants: list[dict] = []
+        for g in privilege_audit.get("table_grants") or []:
+            object_name = g.get("table_name") or ""
+            if not object_name:
+                continue
+            grants.append({
+                "schema_name": g.get("table_schema") or "",
+                "object_name": object_name,
+                "object_type": "table",
+                "grantee": g.get("grantee") or "",
+                # information_schema.role_table_grants carries a `grantor`
+                # column, but connection.py's get_privilege_audit() query
+                # does not select it — left blank rather than guessed.
+                "grantor": "",
+                "privilege_type": g.get("privilege_type") or "",
+                # connection.py's get_privilege_audit() query (pg_class ACLs
+                # via aclexplode) returns a real boolean; a stale/cached blob
+                # from before that fix, or a native survey's own shape,
+                # could still carry the information_schema-style 'YES'/'NO'
+                # text — accept either rather than assuming one.
+                "is_grantable": 1 if g.get("is_grantable") in (True, "YES", "yes") else 0,
+                "state": STATE_MEASURED,
+            })
+        result["database_grants"] = grants
+
+    return result
 
 
 def filesystem_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
@@ -879,8 +923,13 @@ _DATABASE_BLOB_UNMEASURED = {
     ),
     "database_grants": (
         "grants",
-        "Local surveys predating the structured tables did not read grants; "
-        "privilege_audit runs as its own analysis.",
+        "This survey did not run privilege_audit, so grants were not read — "
+        "it runs as its own analysis (postgres_operations). A survey that "
+        "DID run it gets real database_grants rows instead, via the "
+        "`operations.privilege_audit` branch in "
+        "database_rows_from_survey_data() above (added 2026-09-22 for the "
+        "grant_change comparator — see that function's own comment for the "
+        "gap this closed).",
     ),
     "database_settings": (
         "settings",
@@ -905,6 +954,11 @@ def backfill_database_survey(
         "database_columns": SECTION_COLUMNS,
         "database_table_activity": SECTION_TABLE_ACTIVITY,
         "database_sql_objects": SECTION_SQL_OBJECTS,
+        # Present in `rows` only when this survey's blob actually ran
+        # privilege_audit (see database_rows_from_survey_data) — otherwise
+        # "database_grants" is absent from `rows` entirely and falls through
+        # to the NOT_MEASURED loop below, same as before this was added.
+        "database_grants": SECTION_GRANTS,
     }
     written: dict[str, int] = {}
     for table, table_rows in rows.items():
@@ -917,6 +971,11 @@ def backfill_database_survey(
             coverage_section=sections[table],
         )
     for table, (section, detail) in _DATABASE_BLOB_UNMEASURED.items():
+        if table in rows:
+            # Actually measured this run (currently only possible for
+            # database_grants, when privilege_audit ran) — do not overwrite
+            # the real rows just written above with a NOT_MEASURED marker.
+            continue
         written[table] = registry.write_detail_rows(
             table,
             slug,
