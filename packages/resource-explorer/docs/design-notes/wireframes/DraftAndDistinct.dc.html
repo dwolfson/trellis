@@ -1,0 +1,279 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&amp;family=Lora:wght@400;500&amp;display=swap">
+  <style>
+    :root{
+      --paper:#f3f2f2; --rule:rgba(32,31,29,.16); --rule-strong:#8e8a8a;
+      --ink:#201f1d; --ink-muted:#4a463e;
+      --accent:#b68235; --accent-ink:#7d5411;
+      --ok:#1d6b3f; --warn:#9c4212; --gap:#5b4a9c;
+      --s1:4.6px; --s2:9.2px; --s3:13.8px; --s4:18.4px; --s6:27.6px;
+      --heading:"Cormorant Garamond",Georgia,serif;
+      --body:"Lora",Georgia,serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--body);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.55}
+    .tnum{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+    .mono{font-family:var(--mono);font-size:.87em}
+    .caps{font-family:var(--heading);font-weight:600;font-size:12px;letter-spacing:.09em;text-transform:uppercase}
+    .prov{font-size:13px;line-height:1.45}
+    .h{font-family:var(--heading);font-weight:600}
+    .lnk{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+    .card{border:1px solid var(--rule);border-radius:2px;padding:var(--s3);background:#fff}
+    .mine{border-left:3px solid var(--gap);padding-left:var(--s3)}
+    .bad{border-left:3px solid var(--warn);padding-left:var(--s3)}
+    .good{border-left:3px solid var(--ok);padding-left:var(--s3)}
+    .btn{display:inline-block;border:1px solid var(--rule-strong);border-radius:2px;
+         padding:1px var(--s2);font-size:12px;margin-right:var(--s1)}
+    .kv{display:grid;grid-template-columns:118px minmax(0,1fr);gap:var(--s1) var(--s3);font-size:13px}
+    .kv dt{color:var(--ink-muted)}
+    .kv dd{margin:0}
+    .nullbar{height:9px;background:#e6e4e0;border-radius:1px;overflow:hidden;width:190px}
+    .nullbar i{display:block;height:100%;background:var(--accent)}
+    .hatch{background-image:repeating-linear-gradient(45deg,#e6e4e0 0 5px,#f3f2f2 5px 10px);
+           border:1px dashed var(--rule-strong);border-radius:2px}
+    /* classic, as it actually renders: dark slate chrome */
+    .classic{background:#0f172a;color:#cbd5e1;font-family:ui-sans-serif,system-ui,sans-serif;
+             font-size:12px;padding:var(--s3);border-radius:3px;line-height:1.7}
+    .classic .amber{background:rgba(245,158,11,.2);color:#fbbf24;font-size:10px;
+                    text-transform:uppercase;font-weight:600;padding:0 4px;border-radius:3px}
+    .classic .dim{color:#64748b}
+    /* the proposed /next chip: ink outline, not a state colour */
+    .chip{display:inline-block;border:1px solid var(--ink-muted);border-radius:2px;
+          padding:0 5px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+          font-family:var(--heading);font-weight:600;color:var(--ink-muted);vertical-align:2px}
+  </style>
+</helmet>
+
+<div style="width:1340px;padding:var(--s6) var(--s6) 60px">
+
+  <div style="border-bottom:1px solid var(--rule-strong);padding-bottom:var(--s4)">
+    <div class="caps" style="color:var(--accent-ink)">Round 3 &middot; drawn against slices 9, 10 and 12 as merged</div>
+    <h1 class="h" style="font-weight:400;font-size:38px;margin:var(--s3) 0 var(--s2);max-width:38ch">The DRAFT badge where it lives, and the blank my own ask created</h1>
+    <p style="max-width:88ch;margin:0">
+      Both round-2 items were fixed properly, and the <span class="mono">n_distinct</span> fix went
+      further than I asked &mdash; three corrections deep, catching the
+      <span class="mono">reltuples</span> provenance and the PG13 sentinel ambiguity I had not seen.
+      This page is about what the fixes left behind, which in one case is a direct consequence of
+      the correction itself.
+    </p>
+  </div>
+
+  <!-- 1 · the badge as it really renders -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">One &middot; the badge, in classic, as shipped</div>
+    <div class="card" style="max-width:900px;margin-top:var(--s2)">
+      <div class="classic">
+        <div style="color:#94a3b8;font-weight:600;border-bottom:1px solid #1e293b;padding-bottom:3px;margin-bottom:5px">DataClassMatch (4)</div>
+        <div>&bull; <span>public.patient.email: matches Data Class &ldquo;Email Address&rdquo; &mdash; 1,000 of 1,000 sampled values conform (sample: 1,000 rows, seed 42)</span> <span class="dim">[92]</span></div>
+        <div>&bull; <span>public.patient.national_id: no Data Class matched, but 998 of 1,000 sampled values share one pattern &mdash; a candidate class</span> <span class="dim">[64]</span> <span class="amber">draft</span></div>
+        <div>&bull; <span>public.staff.home_phone: not established &mdash; no values were sampled. This is not a statement that no match exists.</span> <span class="dim">[0]</span></div>
+        <div>&bull; <span>legacy.ssn_old: not established &mdash; nothing to compare against.</span> <span class="dim">[0]</span></div>
+      </div>
+
+      <div class="good" style="margin-top:var(--s3)">
+        <p style="margin:0;max-width:84ch"><strong style="font-weight:500">This is right, and one part of it is right in a way worth naming.</strong>
+        The badge is drawn only for a non-empty <span class="mono">contentStatus</span>, and
+        <span class="mono">index.html:6660</span> says why: an empty value is
+        <em>not stated</em>, which is not the same as <em>confirmed</em>, so it must not earn a
+        badge of its own. That is the measured-zero-versus-nothing-found rule applied without
+        being asked.</p>
+        <p style="margin:var(--s2) 0 0;max-width:84ch">And the reason the other three rows survive
+        having no badge is that <span class="mono">describe()</span> already puts the verdict in
+        words &mdash; <em>not established &mdash; &hellip; This is not a statement that no match
+        exists.</em> The badge is a second channel on a distinction the sentence already carries,
+        which is the right order for those two to be built in.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2 · the /next side -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Two &middot; what <span class="mono">/next</span> does with it &mdash; and the decision waiting there</div>
+    <div class="card" style="max-width:900px;margin-top:var(--s2)">
+      <p style="margin:0;max-width:86ch">
+        <span class="mono">/next</span> has <strong style="font-weight:500">no live-Egeria
+        annotation surface at all</strong>: no <span class="mono">content_status</span>, no
+        <span class="mono">egeria-surveys</span>, nowhere. So the badge is not missing from a
+        screen that shows annotations &mdash; the screen does not exist yet.
+      </p>
+      <p style="margin:var(--s2) 0 0;max-width:86ch">
+        By <span class="mono">RULING-CLASSIC-AND-NEXT.md</span> that is
+        <strong style="font-weight:500">permitted</strong>: capability may diverge. It is not the
+        silent-omission case, because nothing on <span class="mono">/next</span> currently renders
+        a proposal as though it were a finding. But it becomes that case on the day that pane is
+        built, so the rule is worth stating before then rather than after:
+      </p>
+      <p class="mine" style="margin:var(--s3) 0 0;max-width:86ch">
+        <span class="mono">/next</span>'s annotation pane ships with the status mark on day one, or
+        it does not ship. A pane that lists proposals and findings in one list with nothing
+        separating them is the exact defect slice 10 was built to remove, rebuilt one surface over.
+      </p>
+
+      <div style="border-top:1px solid var(--rule);margin-top:var(--s3);padding-top:var(--s3)">
+        <div class="caps" style="color:var(--ink-muted)">and it cannot be amber there</div>
+        <p style="margin:var(--s2) 0 0;max-width:86ch">
+          Classic's amber (<span class="mono">bg-amber-500/20 text-amber-400</span>) is right for
+          classic's slate chrome. It cannot port: <span class="mono">/next</span> has three audited
+          state roles &mdash; <span style="color:var(--ok)">ok</span>,
+          <span style="color:var(--warn)">warn</span>, <span style="color:var(--gap)">gap</span>
+          &mdash; and the audit already records that <span class="mono">state-warn</span> and gold
+          sit within 1.02:1. There is no room for a fourth.
+        </p>
+        <p style="margin:var(--s2) 0 0;max-width:86ch">
+          There does not need to be one. <strong style="font-weight:500">DRAFT is not a state.</strong>
+          <span class="mono">ok</span>/<span class="mono">warn</span>/<span class="mono">gap</span>
+          say what we found out; DRAFT says <em>who has agreed to it so far</em>, which is the same
+          axis as measured&nbsp;/&nbsp;declared and is orthogonal to all three. A near-unique
+          national-id column can be a warn <em>and</em> a draft at once. So it is drawn as a mark in
+          ink, not a colour:
+        </p>
+        <div style="margin-top:var(--s3);padding:var(--s3);background:#fff;border:1px solid var(--rule);border-radius:2px;max-width:640px">
+          <div><span class="mono">public.patient.national_id</span> <span class="chip">draft</span></div>
+          <div class="prov" style="color:var(--ink-muted);margin-top:3px">no Data Class matched, but 998 of 1,000 sampled values share one pattern &mdash; a candidate class</div>
+          <div class="prov" style="margin-top:var(--s2)">
+            <span style="color:var(--warn)">&#9632;</span> sensitive pattern &middot; confidence <span class="tnum">64</span>
+            &middot; <span class="btn" style="margin-left:2px">accept as declared &rsaquo;</span>
+          </div>
+        </div>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted);max-width:86ch">
+          The state colour stays available for the finding; the chip carries the agreement. Both
+          read at a glance, and neither needs the other's channel.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 · the distinct_count blank -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Three &middot; the column profile card, with the corrected <span class="mono">distinct_count</span></div>
+
+    <div style="display:flex;gap:var(--s4);margin-top:var(--s2);flex-wrap:wrap">
+      <div class="card" style="width:430px">
+        <div class="prov caps" style="color:var(--ok)">resolves</div>
+        <div style="margin-top:var(--s2)"><span class="mono">public.patient</span> &middot; <strong style="font-weight:500">email</strong></div>
+        <dl class="kv" style="margin-top:var(--s3)">
+          <dt>nulls</dt><dd><div style="display:flex;align-items:center;gap:var(--s2)"><div class="nullbar"><i style="width:2%"></i></div><span class="tnum">2%</span></div></dd>
+          <dt>distinct</dt><dd class="tnum">~9,840 <span class="prov" style="color:var(--ink-muted)">(98% of rows)</span></dd>
+          <dt>avg width</dt><dd class="tnum">24 bytes</dd>
+          <dt>correlation</dt><dd class="tnum">0.03</dd>
+        </dl>
+        <div class="prov" style="color:var(--ink-muted);border-top:1px solid var(--rule);margin-top:var(--s3);padding-top:var(--s2)">
+          the database's own statistics &middot; <span class="mono">ANALYZE</span> <span class="tnum">2026-09-20 03:11</span>
+        </div>
+        <p class="prov" style="margin:var(--s2) 0 0;color:var(--ink-muted)">
+          <span class="mono">n_distinct = &minus;0.98</span> resolved against that
+          <span class="mono">ANALYZE</span>'s own <span class="mono">reltuples</span>. The card shows
+          the ratio too, because it is the figure Postgres actually stored.
+        </p>
+      </div>
+
+      <div class="card bad" style="width:430px;border-left-width:3px">
+        <div class="prov caps" style="color:var(--warn)">does not resolve &mdash; and says nothing</div>
+        <div style="margin-top:var(--s2)"><span class="mono">public.orders</span> &middot; <strong style="font-weight:500">customer_id</strong></div>
+        <dl class="kv" style="margin-top:var(--s3)">
+          <dt>nulls</dt><dd><div style="display:flex;align-items:center;gap:var(--s2)"><div class="nullbar"><i style="width:0%"></i></div><span class="tnum">0%</span></div></dd>
+          <dt>distinct</dt><dd><span class="hatch" style="display:inline-block;padding:0 var(--s3);color:var(--ink-muted)">&mdash;</span></dd>
+          <dt>avg width</dt><dd class="tnum">8 bytes</dd>
+          <dt>correlation</dt><dd class="tnum">0.91</dd>
+        </dl>
+        <div class="prov" style="color:var(--ink-muted);border-top:1px solid var(--rule);margin-top:var(--s3);padding-top:var(--s2)">
+          the database's own statistics &middot; <span class="mono">state = measured</span>
+        </div>
+        <p class="prov" style="margin:var(--s2) 0 0">
+          Every other field is real. The row is labelled <span class="mono">measured</span>. And the
+          one blank has no explanation anywhere, because the reason was known at survey time and not
+          written down.
+        </p>
+      </div>
+    </div>
+
+    <div class="card mine" style="max-width:900px;margin-top:var(--s4);border-left-width:3px">
+      <p style="margin:0;max-width:86ch">
+        <strong style="font-weight:500">This one is mine.</strong> I asked for the sign to be fixed;
+        <span class="mono">_resolve_n_distinct</span> fixes it by correctly
+        <em>refusing to guess</em> &mdash; it returns <span class="mono">None</span> rather than a
+        confident wrong number. But it returns <span class="mono">None</span> for
+        <strong style="font-weight:500">four different reasons</strong>, and the row is still written
+        with <span class="mono">state = measured</span>, because every other
+        <span class="mono">pg_stats</span> field came back fine. Row-level state cannot carry a
+        per-field absence. So a wrong number became a blank that cannot say why, which is the same
+        rule one step along: <em>absence and failure are states, never blanks.</em>
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:86ch">
+        <strong style="font-weight:500">And there is a live case that produces it on a healthy
+        database.</strong> <span class="mono">ever_analyzed</span> is derived from
+        <span class="mono">pg_stat_user_tables.last_analyze</span> &mdash; which
+        <span class="mono">pg_stat_reset()</span> clears, while the
+        <span class="mono">pg_stats</span> rows survive it untouched. After a stats reset, every
+        column whose <span class="mono">n_distinct</span> is a negative ratio &mdash; which is every
+        near-unique column: every id, every email, every key &mdash; silently loses its distinct
+        count, on a database whose statistics are perfectly good.
+      </p>
+      <p style="margin:var(--s3) 0 0;max-width:86ch">
+        <span class="mono">stats_reset</span> is already in scope
+        (<span class="mono">database_surveyor.py:379</span>), from the
+        <span class="mono">get_stats_reset()</span> that round 1 asked for &mdash; to tell a real
+        rate from a counter reset. It turns out to answer this question too, and this path does not
+        consult it.
+      </p>
+      <div style="border-top:1px solid var(--rule);margin-top:var(--s3);padding-top:var(--s2)">
+        <div class="prov caps" style="color:var(--ink-muted)">the four, and what the card should say</div>
+        <div style="display:grid;grid-template-columns:230px 1fr;gap:var(--s1) var(--s3);font-size:13px;margin-top:var(--s2)">
+          <div class="mono">n_distinct is null</div><div>&ldquo;not collected for this column &mdash; <span class="lnk">run ANALYZE &rsaquo;</span>&rdquo;</div>
+          <div class="mono">reltuples &lt; 0 (PG14+)</div><div>&ldquo;the table has never been ANALYZEd &mdash; <span class="lnk">run ANALYZE &rsaquo;</span>&rdquo;</div>
+          <div class="mono">reltuples = 0, never analyzed</div><div>same sentence &mdash; and on PG13 this is the ambiguous one, which is why the sentence must not say &ldquo;empty&rdquo;</div>
+          <div class="mono">reltuples = 0, stats were reset</div><div>&ldquo;distinct count not resolvable &mdash; table statistics were reset <span class="tnum">2026-09-19</span>; the other figures predate the reset and stand&rdquo; &mdash; <strong style="font-weight:500">and no ANALYZE is offered, because ANALYZE is not the problem</strong></div>
+        </div>
+        <p class="prov" style="margin:var(--s3) 0 0;color:var(--ink-muted);max-width:86ch">
+          Three of the four end in the same action and one ends in no action at all, which is the
+          whole reason they cannot share a dash. Cheapest shape: a short reason string beside the
+          value, the way <span class="mono">state</span> already sits beside the row.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 · the heatmap -->
+  <div style="margin-top:var(--s6)">
+    <div class="caps" style="color:var(--ink-muted)">Four &middot; the exposure heatmap &mdash; wait, and do not ship it caveated</div>
+    <div class="card" style="max-width:900px;margin-top:var(--s2)">
+      <p style="margin:0;max-width:86ch">
+        <strong style="font-weight:500">Wait.</strong> Not because the drawing is hard, but because
+        the next drawing is blocked on a build decision rather than on a design one. The two
+        candidate fixes produce different pictures:
+        <span class="mono">column_privileges</span> yields grants with a grantor and a grantee, so a
+        cell can say <em>granted directly</em> versus <em>inherited via</em> <span class="mono">readers</span>
+        and the revoke path is drawable; <span class="mono">has_column_privilege()</span> yields a
+        boolean per pair with no path at all. The popover I sketched on page 10 exists under one and
+        not the other. Drawing it now means drawing it twice.
+      </p>
+      <p class="bad" style="margin:var(--s3) 0 0;max-width:86ch;padding-left:var(--s3)">
+        <strong style="font-weight:500">But one thing is worth settling now, because it is a
+        shipping rule rather than a drawing.</strong> Until those reads land, the heatmap should not
+        ship <em>at all</em> &mdash; not behind a caveat, not in a preview, not with a banner. A
+        caveated exposure grid is still read as a grid: the reader's eye takes the empty cells as
+        the answer and the sentence above them as boilerplate. Everywhere else in this product a
+        caveat is the honest move. Here it is not enough, because the failure is silent and points
+        the wrong way.
+      </p>
+      <p class="prov" style="margin:var(--s3) 0 0;color:var(--ink-muted);max-width:86ch">
+        The three gaps are logged at <span class="mono">Backlog.md:6532</span> as slice&nbsp;#10
+        follow-ups and are not built. Page 10 stands as the target; it is not a build-ready spec
+        until they are.
+      </p>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
