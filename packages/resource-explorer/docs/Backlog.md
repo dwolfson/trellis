@@ -10,6 +10,152 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## A new annotation class is unguarded by `test_annotation_check_names.py` until someone remembers it
+
+**Found while building** `db_derived` (Phase 1 slice 9,
+`DB-DERIVED-STEP-IMPLEMENTED.md`).
+
+`tests/test_annotation_check_names.py` gates every annotation site in
+`surveyors/` on naming its `check_name`, and gates shared check names on being
+declared mutually exclusive. Both walk the AST looking for calls whose function
+name is in a hand-maintained set, `ANNOTATION_CTORS`. A new annotation class is
+absent from that set by default, so **every check in the file silently skips
+its call sites, and nothing reports that they are unchecked** — the guard is
+green because it never looked.
+
+Live when found: `ResourcePhysicalStatusAnnotation` (added by slice 8) was
+unguarded, and so were slice 9's `DataGrainAnnotation` and
+`FingerprintAnnotation`. All three were added to the set in slice 9's branch,
+and doing so immediately surfaced a real undeclared shared check name
+(`db_fingerprint`) that had been invisible — which is the evidence the gap
+matters rather than being theoretical.
+
+Two smaller holes in the same file, found the same way:
+
+- The shared-check-name check only reads `ast.Constant` keyword values, so a
+  site written `check_name=SOME_CONSTANT` is skipped. Slice 9's
+  `proposed_data_scope` sites were changed to spell the literal specifically so
+  the guard could see them, with a test pinning the literal against the
+  constant — satisfying the guard rather than dodging it, but the next author
+  has no way to know that is expected.
+- `DEFERRED` still excludes `database/database_surveyor.py`, on a 2026-09-02
+  note that DB/FS surveying is deferred "until the repo path is finished". Two
+  slices of database work have landed in that file since.
+
+**Candidate fix:** derive `ANNOTATION_CTORS` from `survey_report`'s own
+`Annotation` subclasses (or from `ANNOTATION_TYPES_REGISTRY`) instead of a hand
+list, so a new class is guarded by construction and the failure mode becomes "a
+new class breaks the build until declared" rather than "a new class is silently
+exempt". Re-examine `DEFERRED` at the same time.
+
+---
+
+## `min_value`/`max_value` are written only by the native survey path, so a local-only survey has no exact date range
+
+**Found while building** `db_derived`'s proposed `DataScope` (Phase 1 slice 9).
+
+`database_column_profiles` has `min_value`/`max_value` columns, and design
+§5.4's "what is the data's scope in time" row depends on them. The only writer
+is `result_materializer.py`'s native read-back path (from an Egeria column-
+values annotation's `range_from`/`range_to`). Slice 7's local `pg_stats` path
+does not populate them — `pg_stats` has no min/max column, and the step does
+not read values.
+
+So on a database RE has only surveyed locally, the exact coverage range is
+unavailable. Slice 9 falls back to the first and last elements of the stored
+`histogram_bounds_json`, which are Postgres's own ANALYZE-time estimates of the
+extremes, and labels the proposal's `basis` as `histogram_bounds` with reduced
+confidence accordingly. That is honest but weaker than it needs to be.
+
+**Candidate fixes**, either of which would make the local path produce an exact
+range: have `postgres_schema_and_stats` derive `min_value`/`max_value` from the
+histogram bounds at write time (no extra query, same estimate, but stored once
+rather than re-derived by every consumer); or give it a bounded
+`SELECT min(col), max(col)` per date column, which is exact but is a real query
+against the data and so a scope-of-fetch decision, not a free one.
+
+---
+
+## `FingerprintAnnotation`'s native Egeria field names are unverified
+
+**Found while building** `db_derived`'s `db_fingerprint` check (Phase 1 slice 9).
+
+`docs/egeria-integration.md` §2 confirms `FingerprintAnnotationProperties`
+exists and quotes its description; probe 5 (`PROBES-2026-09-21.md`) confirmed
+`create_annotation` *accepts* the type. Neither establishes what fields it
+carries, and no Egeria Java source checkout is available on this machine to
+read them from (`grep` for the class over `~/localGit` finds no `.java` at all).
+
+Slice 9 therefore publishes the fingerprint payload (digest, algorithm, table
+and column counts, closest match, similarity) through `additionalProperties` —
+the same fallback slice 8 used for `ResourcePhysicalStatusAnnotation` — rather
+than guessing typed field names that would land nowhere. `DataGrainAnnotation`
+needed no such fallback: its field names are quoted from the Java source in
+`egeria-support-for-multi-resource.md` §3, so it publishes as typed fields.
+
+**Candidate fix:** one probe — read `FingerprintAnnotationProperties` (and
+`ResourcePhysicalStatusAnnotationProperties`, same question) from the Egeria
+source or a live type query, and move both payloads onto their real fields.
+
+---
+
+## Does any ordinary read path surface `contentStatus`?
+
+**Raised by** `egeria-support-for-multi-resource.md` §3's own closing paragraph;
+**now live**, because `db_derived` (Phase 1 slice 9) is the first RE analysis
+that actually publishes `contentStatus: DRAFT` — on its proposed table grains
+and its proposed `DataScope`.
+
+The project owner's 2026-09-21 decision made `contentStatus: DRAFT` the
+mechanism for proposing a governance element that does not exist yet, and the
+corrected probe 4 showed it round-trips. What is *not* established is whether
+anything a consumer normally reads distinguishes a DRAFT annotation from a
+confirmed one: a `contentStatus: DRAFT` element keeps `ElementStatus: ACTIVE`,
+so it is not filtered out, and a naive reader sees the same element either way.
+
+Until that is checked, a proposal RE publishes may render exactly like a
+finding — which is the "absence rendered as a result" failure in a new place.
+**Candidate fix:** probe whether `find_metadata_elements`/RE's own annotation
+rendering surface the field at all, then make RE's own annotation views show it
+before anything leans on DRAFT as the primary proposal UX (§3 flags this as
+worth doing before slice 10).
+
+---
+
+## `db_hub_tables` is most of the way there for free
+
+**Noticed while building** `db_derived`'s relationship graph (Phase 1 slice 9).
+
+Design §5.3 lists `db_hub_tables` ("which tables would a consumer start with?
+FK in-degree, rows, comments, read activity") as its own analysis; it is not in
+slice 9's scope and was not built. But `db_relationship_graph` already computes
+FK in-degree per table and returns the top ten as `most_referenced`, and the
+other three inputs (row counts, comments, read activity) are all in the same
+stored rows this step already reads. A later slice could add it as a seventh
+zero-fetch check for very little work rather than as a new step.
+
+---
+
+## Change rates difference two snapshots, and nothing charts the series
+
+**Found while building** `db_derived`'s `db_change_rates` (Phase 1 slice 9).
+
+Two limits, both deliberate and both worth revisiting:
+
+- It differences the two most recent snapshots that carry activity rows, not a
+  longer series. Design §5.4 wants "per-table series → Understanding charts".
+  The series exists — `database_table_activity` rows across their several
+  `surveyed_at` values are it, which is why no new structured table was added —
+  but nothing walks more than two of them, and a trend over five surveys is a
+  different (and more useful) shape than a delta over the last two.
+- **Nothing renders it.** No Understanding-tier chart reads these rows. The
+  annotation carries the per-table payload and the classic DB view will show
+  the annotations, but the chart design §5.4 asks for is not built, so the
+  "per-table series" claim is currently satisfied by the data being reachable
+  rather than by anything a user sees.
+
+---
+
 ## No structured table for index usage, and no `ResourceProfile` annotation type
 
 **Found while building** `postgres_schema_and_stats`'s pg_stats/tuple-counter/
@@ -6310,6 +6456,20 @@ deliberately scoped out rather than half-built:
    `answering.kind` is still `gap`/`human`. The CSV is stream 4's ownership
    and not touched by this slice; whoever next edits it should reword those
    three rows' notes (and reconsider `kind`) now that the analyses exist.
+
+   **Extended 2026-09-21 by Phase 1 slice 9 (`db_derived`), same shape, six
+   more rows.** Regenerating the YAML again populated `analysis_ids` for
+   `db_classification`, `db_relationship_graph`, `grain_determination`,
+   `db_fingerprint`, `schema_conventions` and `db_change_rates`, while the
+   CSV's own prose for those rows still reads e.g. `GAP: db_fingerprint
+   (proposed) — FingerprintAnnotation exists as a type; no signature is
+   computed or compared` — which is now false in every case, since all six are
+   implemented and backed by a real step. That makes **nine** database rows
+   whose `answering.kind: gap` and "(proposed)" wording contradict their own
+   populated `analysis_ids`. Still stream 4's file and still not touched here,
+   but the drift is no longer marginal: a reader of the Questions tab is told
+   these questions cannot be answered by anything, by a note sitting next to
+   the id of the analysis that answers them.
 
 ### `ConnectionMaker.create_connection`'s direct (non-template) body silently drops `configurationProperties`
 

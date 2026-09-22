@@ -965,6 +965,154 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  # ── db_derived: the zero-fetch derivation tier (Phase 1 slice 9) ─────────
+  #
+  # All six are backed by the ONE `db_derived` step (design §5.7), which
+  # reads only rows RE already stored and opens no connection — to the
+  # database or to Egeria. `run_time: fast` and `availability: inline` follow
+  # from that: there is no acquisition to pay for, which is exactly the
+  # property CLAUDE.md rule 17 wants of the Discovery tier.
+  - id: db_classification
+    name: "Database Classification"
+    description: >
+      What kind of database this is — transactional, analytical, reference
+      data, staging or a copy — derived from stored table shapes, key/FK
+      density, naming patterns and the read/write mix in stored tuple
+      counters. Reports a confidence scaled to how many signal families were
+      actually available; a missing family (no tuple counters because ANALYZE
+      never ran, no comparable database to fingerprint against) lowers
+      confidence rather than counting as evidence, and too little signal
+      renders as "not established" instead of naming a kind.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Data Expert"]
+    annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_relationship_graph
+    name: "Relationship Graph"
+    description: >
+      Is there a data model here — do the tables relate through foreign keys,
+      or is it a bag of tables? Builds the FK graph from stored column rows:
+      edge count, connected components, isolated tables, most-referenced
+      tables. A survey that never captured key information renders as "not
+      established" rather than as "no foreign keys".
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Data Expert"]
+    annotation_types: ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: grain_determination
+    name: "Table Grain"
+    description: >
+      What is the grain of each table — one row per what? Derived from the
+      declared primary key, or failing that from a stored column profile
+      whose distinct count matches the row count, plus any date column in the
+      key for the interval. Produces a DataGrainAnnotation carrying a
+      grainStatement and a confidence that reflects the basis, published as a
+      proposal (contentStatus DRAFT) because no DataGrain element exists yet.
+      A table with no key and no profile is "not established"; a table with a
+      profile and no unique column is a real modelling gap.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Data Expert", "Steward"]
+    annotation_types: ["DataGrainAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_fingerprint
+    name: "Schema Fingerprint"
+    description: >
+      Does this look like a copy or subset of a database we already know? A
+      structural signature over stored table and column names and types,
+      hashed, and compared against every other database in the registry that
+      has stored schema rows — by Jaccard similarity and by containment, so a
+      genuine subset is detected as well as a duplicate. A registry with
+      nothing comparable renders as "not established", not as "unique".
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Financial"]
+    annotation_types: ["FingerprintAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: schema_conventions
+    name: "Schema Conventions"
+    description: >
+      Check-granular structural hygiene derived from stored rows: tables with
+      no primary key, tables with no foreign key, tables and columns with no
+      comment, and names that are not lower snake_case. Does NOT cover unused
+      indexes — postgres_schema_and_stats owns that check, which needs a live
+      pg_stat_user_indexes read. A database where nothing at all is documented
+      reads as "comments not captured" rather than as 100% undocumented.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Data Expert"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_change_rates
+    name: "Change Rates"
+    description: >
+      How is it changing — rows inserted/updated/deleted per table per
+      period, size drift and schema churn — differenced between two stored
+      survey snapshots. A database surveyed only once renders as
+      "insufficient history", never as zero change. A table whose cumulative
+      counters were reset between snapshots reports "counters reset, no rate
+      available" rather than the negative delta the subtraction would give.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Admin", "Data Owner"]
+    annotation_types: ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: egeria_db_survey
     name: "Egeria Native DB Survey"
     description: "Trigger Egeria's native PostgreSQL survey for deep annotation of schema, data quality, and lineage. Runs asynchronously."

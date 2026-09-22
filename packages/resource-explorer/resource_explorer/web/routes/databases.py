@@ -378,17 +378,50 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     Definitions are not handled here — those already have their own
     dedicated dispatch paths (trigger_survey_by_guid / run_survey_definition
     via scheduler.py's _run_db_survey); this route is local-survey-only,
-    mirroring scheduler.py's _run_local_db_survey."""
+    mirroring scheduler.py's _run_local_db_survey.
+
+    Two local shapes now, not one: the DatabaseSurveyor step path below, and
+    the zero-fetch `db_derived` path (Phase 1 slice 9), which reads stored
+    rows and so takes neither a step nor credentials."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.database.database_surveyor import (
         DATABASE_ANALYSIS_STEP_MAP,
         run_database_survey,
+    )
+    from resource_explorer.surveyors.database.db_derived import (
+        DB_DERIVED_ANALYSES,
+        run_db_derived,
     )
 
     registry = ProjectRegistry()
     db = registry.get_database(slug)
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    # db_derived (Phase 1 slice 9) is handled before the step map and before
+    # the credentials check below, because it is zero-fetch: it reads stored
+    # rows only, so it neither needs a DatabaseSurveyor step nor stored
+    # credentials. Requiring credentials here would refuse the one database
+    # analysis that can still answer when the server is unreachable.
+    if analysis_id in DB_DERIVED_ANALYSES:
+        def _run_derived():
+            return run_db_derived(registry, slug)
+
+        try:
+            derived_result = await asyncio.to_thread(_run_derived)
+        except Exception as exc:
+            return AnalysisRunResult(
+                status="error", slug=slug, analysis_id=analysis_id, error=str(exc),
+            )
+        check = (derived_result.get("derived") or {}).get(analysis_id) or {}
+        return AnalysisRunResult(
+            status="ok", slug=slug, analysis_id=analysis_id,
+            message=(
+                f"{len(derived_result.get('annotations', []))} annotation(s) "
+                f"derived from stored rows (no fetch). "
+                f"{analysis_id}: {check.get('state', 'unknown')}."
+            ),
+        )
 
     if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
         raise HTTPException(

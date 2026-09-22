@@ -72,6 +72,28 @@ def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str
     }
 
 
+def _run_db_derived(db_entity, registry, **_) -> dict:
+    """db_derived (Phase 1 slice 9, design §5.3/§5.7): the ZERO-FETCH step —
+    classification, relationship graph, grain, fingerprint, structural
+    conventions checks, change rates and a proposed DataScope, all derived
+    from rows RE already stored.
+
+    Note the signature: no `db_user`/`db_pwd`. Unlike every other handler in
+    this module it never constructs a `DatabaseSurveyor` and never opens a
+    connection, so credentials are not merely unused here — there is nothing
+    to give them to. That is the design §5.7 cost line ("none / low") made
+    literal, and it is why this step can answer for a database whose
+    credentials are gone or whose server is down.
+    """
+    from resource_explorer.surveyors.database.db_derived import run_db_derived
+
+    result = run_db_derived(registry, db_entity.slug)
+    return {
+        "derived": result.get("derived", {}),
+        "read_snapshot": result.get("read_snapshot"),
+    }
+
+
 def _run_postgres_sql_analysis(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
@@ -247,6 +269,7 @@ _ADAPTER = ResourceTypeAdapter(
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,
+        "db_derived": _run_db_derived,
         "sql_analysis": _run_postgres_sql_analysis,
     },
     get_entity=_get_database_entity,
@@ -277,6 +300,26 @@ _ADAPTER = ResourceTypeAdapter(
                 "ResourcePhysicalStatusAnnotation",
                 "SchemaAnalysisAnnotation",
                 "RequestForAction",
+            ],
+        },
+        "db_derived": {
+            "description": (
+                "Zero-fetch derivation over already-stored rows (design §5.3, "
+                "§5.7): db_classification (what kind of database this is), "
+                "db_relationship_graph (FK graph, or a bag of tables), "
+                "grain_determination (one row per what, per table), "
+                "db_fingerprint (copy/subset of a database we already know), "
+                "schema_conventions (no PK, no comment, naming), "
+                "db_change_rates (tuple-counter deltas between snapshots) and "
+                "a proposed DataScope. Opens no connection to the database or "
+                "to Egeria."
+            ),
+            "annotation_types": [
+                "ClassificationAnnotation",
+                "SchemaAnalysisAnnotation",
+                "DataGrainAnnotation",
+                "FingerprintAnnotation",
+                "ResourceMeasureAnnotation",
             ],
         },
         "sql_analysis": {

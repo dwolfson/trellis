@@ -2040,7 +2040,8 @@ database_questions:
   - Select
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_classification
     checks: []
     note: 'GAP: db_classification (proposed) — the inputs are all available and nothing derives a classification
       from them.'
@@ -2063,6 +2064,7 @@ database_questions:
     kind: gap
     analysis_ids:
     - schema_inventory
+    - db_relationship_graph
     checks: []
     note: 'GAP: db_relationship_graph (proposed) — schema_inventory records the constraints but builds
       no graph from them.'
@@ -2083,7 +2085,8 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - grain_determination
     checks: []
     note: 'GAP: grain_determination (proposed) — Egeria''s DataGrain and DataGrainAnnotation types exist,
       but no service or analysis populates them.'
@@ -2104,7 +2107,8 @@ database_questions:
   - Select
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - db_fingerprint
     checks: []
     note: 'GAP: db_fingerprint (proposed) — FingerprintAnnotation exists as a type; no signature is computed
       or compared.'
@@ -2303,7 +2307,8 @@ database_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - schema_conventions
     checks: []
     note: 'GAP: schema_conventions (proposed) — none of these checks exists for databases.'
   answering_mechanism: Database Catalog Query
@@ -2373,6 +2378,7 @@ database_questions:
     kind: gap
     analysis_ids:
     - row_count_snapshot
+    - db_change_rates
     checks: []
     note: 'GAP: db_change_rates (proposed) — row_count_snapshot records a point in time and nothing derives
       a delta series between snapshots.'
@@ -2414,7 +2420,8 @@ database_questions:
   - Share
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - schema_conventions
     checks: []
     note: 'GAP: neither the proposed database comment-coverage measure nor schema_conventions exists yet,
       so there is nothing to score. See the Scouting comment-coverage row for why the proposed id is not
@@ -2458,7 +2465,9 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - grain_determination
+    - schema_conventions
     checks: []
     note: 'GAP: schema_conventions and grain_determination are both proposed.'
   answering_mechanism: Database Catalog Query
@@ -3097,7 +3106,8 @@ filesystem_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - grain_determination
     checks: []
     note: 'GAP: grain_determination (proposed) — Egeria''s DataGrain and DataGrainAnnotation types exist,
       but no service or analysis populates them.'
