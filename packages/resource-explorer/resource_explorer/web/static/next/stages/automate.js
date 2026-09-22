@@ -84,7 +84,7 @@ async function renderSubscriptions() {
   let subs;
   try {
     subs = await listSubscriptions(
-      _filterToSelected && slug ? { entityType: 'repo', entitySlug: slug } : {});
+      _filterToSelected && slug ? { entityType: state.resourceType, entitySlug: slug } : {});
   } catch (err) {
     el.innerHTML = `${subnavHtml()}
       <p class="max-w-[70ch] text-answer text-state-warn">Could not load subscriptions: ${esc(err.message)}</p>`;

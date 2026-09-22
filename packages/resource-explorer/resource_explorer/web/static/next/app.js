@@ -2982,7 +2982,7 @@ export function bindSubTabs() {
  */
 async function loadDispositionPane() {
   const el = $('content');
-  const blocked = paneNeedsRepo();
+  const blocked = paneNeedsRepoBackend('Disposition', 'a GitHub URL to key the verdict, journal and records to');
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   el.innerHTML = `${subTabsHtml()}
@@ -3275,17 +3275,47 @@ async function renderJournalEntries(slug) {
 }
 
 function paneNeedsRepo() {
-  if (state.resourceType !== 'repo') {
-    return paneMessage('Repos only, in /next',
-      'Surveys and dashboards are built for repositories here. Databases and '
-      + 'filesystems have their own survey endpoints, and they are live in the '
-      + 'current UI.');
-  }
   if (!state.selectedSlug) {
     return paneMessage('Select a resource',
-      'Pick a repository from the sidebar.');
+      `Pick a ${state.resourceType === 'repo' ? 'repository' : state.resourceType === 'db' ? 'database' : 'filesystem'} from the sidebar.`);
   }
   return '';
+}
+
+/** Some panes are repo-only not because /next hasn't built them, but because
+ *  their BACKEND is repo-only today — verified 2026-09-22 (docs/Backlog.md's
+ *  DB/FS-in-/next reversal entry), not assumed from the original blanket
+ *  old undifferentiated "repos only" message this replaces:
+ *
+ *   - Disposition: `registry.py`'s `set_disposition`/`get_disposition_history`
+ *     are keyed by `github_url`, and the journal (`/api/journal/repo/...`)
+ *     and records (`/api/projects/{slug}/records`) routes are hardcoded repo
+ *     paths. A database or filesystem has none of these.
+ *   - By analysis: `/api/projects/{slug}/survey-results` reads
+ *     `REPO_ANALYSIS_RESULTS_MAP`/`REPO_ANALYSIS_HEADLINE_MAP`
+ *     (`repo_survey_definition_adapter.py`) directly — there is no
+ *     database/filesystem equivalent aggregation to read.
+ *   - Questions checklist: the underlying catalog function
+ *     (`question_catalog_reader.get_questions`) IS resource-type-generic,
+ *     but the route this pane calls (`GET /api/projects/{slug}/scouting-questions`)
+ *     looks the slug up in the repo registry and always calls
+ *     `get_questions("repo", ...)`, and its `has_data` scoring
+ *     (`workflows/scouting.question_has_data`) reads the same
+ *     repo-only results map. Building the database/filesystem equivalents of
+ *     these is real, separate work (same shape as By analysis' gap above),
+ *     not a UI relaxation — see docs/Backlog.md.
+ *
+ *  Survey (`getSurveyCandidates`/`runSurveyDefinition`, both
+ *  `/api/survey-definitions/{entity_type}/...`) has no such gap and does not
+ *  call this — see loadSurveyPane's plain `paneNeedsRepo()` above. */
+function paneNeedsRepoBackend(what, mechanism) {
+  if (state.resourceType !== 'repo') {
+    const kind = state.resourceType === 'db' ? 'a database' : 'a filesystem';
+    return paneMessage(`${what} — repositories only`,
+      `${what} depends on ${mechanism}, which ${kind} does not have yet. `
+      + `That is a fact about what has been built, not about this resource.`);
+  }
+  return paneNeedsRepo();
 }
 
 /** The tiers, in the order a funnel is worked through. */
@@ -3375,7 +3405,7 @@ async function loadSurveyPane() {
 
   let data;
   try {
-    data = await getSurveyCandidates(slug, { phase: state.stage });
+    data = await getSurveyCandidates(slug, { entityType: state.resourceType, phase: state.stage });
   } catch (err) {
     el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
       `${err.message}. This is a fact about the request, not about ${slug} — nothing
@@ -3765,7 +3795,7 @@ async function launchSurvey(slug, ref) {
   const note = $('survey-note');
   if (note) note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
   try {
-    const res = await runSurveyDefinition(slug, ref);
+    const res = await runSurveyDefinition(slug, ref, { entityType: state.resourceType });
     if (note) note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
       ${res && (res.guid || res.engine_action_guid)
         ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}
@@ -4544,7 +4574,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
 
 async function loadByAnalysisPane() {
   const el = $('content');
-  const blocked = paneNeedsRepo();
+  const blocked = paneNeedsRepoBackend('By analysis', 'the repo-only survey-results aggregation (REPO_ANALYSIS_RESULTS_MAP)');
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   const stage = state.stage;
@@ -5044,12 +5074,15 @@ async function loadPane() {
     return;
   }
 
-  if (state.resourceType !== 'repo') {
-    el.innerHTML = paneMessage('Repos only, in /next',
-      'The Questions pane is built for repositories. Databases and filesystems '
-      + 'are live in the current UI.');
-    bindSubTabs();
-    return;
+  {
+    // Deduplicated onto the shared helper (2026-09-22) rather than this
+    // pane's own separate, independently-worded copy of the same gate — see
+    // paneNeedsRepoBackend's own comment for why the Questions checklist is
+    // in this list at all (the catalog function is generic; the route this
+    // pane calls and its has_data scoring are not, yet).
+    const blocked = paneNeedsRepoBackend('Questions checklist',
+      'the repo-only scouting-questions route and has_data scoring');
+    if (blocked) { el.innerHTML = blocked; bindSubTabs(); return; }
   }
 
   if (!state.selectedSlug) {
