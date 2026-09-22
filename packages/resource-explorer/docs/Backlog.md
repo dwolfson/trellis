@@ -6614,3 +6614,32 @@ trust it for the exposure heatmap (the entry immediately above) or any
 other consumer until the affected rows are re-surveyed. Whoever picks up
 either the historical-row question or the exposure heatmap should check
 this entry first.
+
+## Phase 1 slice 12 (database survey definitions) — follow-ups logged, not fixed here
+
+### Three database question-catalog rows are `kind: gap` naming a proposed id that slices 7/8 have since actually built
+
+Found 2026-09-21 while writing
+`scripts/generate_database_survey_definition.py` (see
+`docs/design-notes/DATABASE-SURVEY-DEFINITIONS-IMPLEMENTED.md` for the full
+account). `docs/dr-egeria/resource_questions.csv` still marks these three
+database questions `GAP:`, each naming a `(proposed)` analysis id in its
+note:
+
+- "Is this database alive — writes since the statistics were reset..." →
+  `GAP: db_activity_signals (proposed)`
+- "Is this database a primary or a replica..." →
+  `GAP: db_resilience (proposed)`
+- "What does this database depend on outside itself..." →
+  `GAP: db_external_dependencies (proposed)`
+
+All three ids are now real `analysis_catalog.yaml` entries, backed by the
+`postgres_operations` re_analysis_step (Phase 1 slice 8, already merged).
+The question catalog's `answering.kind` for these three rows should
+probably flip from `gap` to `analysis` — left as-is here because
+`resource_questions.csv` content is stream 4's (`db-questions-csv`)
+territory, not this slice's, to edit. The generated Survey Definition
+documents are unaffected (`_build_step_key_to_questions()` joins on
+`analysis_ids` regardless of `kind`, matching repo's identical, deliberate
+behavior), so this is a Questions-tab display gap only: these three still
+render as "no mechanism exists for this yet" when one now does.
