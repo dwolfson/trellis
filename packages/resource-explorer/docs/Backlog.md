@@ -6950,3 +6950,101 @@ needed to actually close Phase 1, tracked as separate slices: (a) fix the
 `bootstrap_data_classes.py` sentinel bug, seed real Data Classes, wire
 `ReferenceCatalog` into the live survey path, fix the CSV row; (b) build
 `grant_change` and a column-level `schema_diff` comparator.
+
+## `data_class_match`'s "Run" button was wired to a `ReferenceCatalog` that no caller ever loaded, and the bootstrap script that seeds Data Classes never actually created any (2026-09-22)
+
+Two layered bugs, both on branch `re/data-class-seed-and-wiring`, found and
+fixed in the same session as a live check of whether "which columns conform
+to a Data Class?" is actually answerable end-to-end.
+
+**Bug 1 — wiring gap.** `DatabaseSurveyor.survey()` accepted a
+`reference_catalog` parameter (`database_surveyor.py`) that no caller —
+neither `web/routes/databases.py`'s per-card `run_single_database_analysis`
+("Run →") nor `scheduler.py`'s scheduled runs, both going through
+`run_database_survey` — ever passed. `survey_definition_adapter.py`'s
+`_run_postgres_column_profile` (the Survey Definition executor path) DID
+load one via `egeria_reference_catalog.load_reference_catalog`, so the two
+doors into the same `postgres_column_profile` step behaved differently: one
+read the platform's Data Classes, the other silently ran with
+`reference_catalog=None`, which `column_profile_step.py` correctly treats as
+"we did not ask" — `MATCH_NO_CANDIDATES`/"not established" for every
+column, regardless of the data. **Fixed** by having `survey()` itself load
+the catalog (via the SAME `load_reference_catalog`/`build_reference_clients`
+functions, not a second implementation) when `column_profile` is requested
+and no catalog was supplied — one lock, not two that can drift. New
+`read_egeria_catalog` parameter mirrors the Survey Definition path's escape
+hatch. Tests in `tests/test_database_surveyor_steps.py`
+(`TestColumnProfileLoadsReferenceCatalog`).
+
+**Bug 2 — `bootstrap_data_classes.py`'s existence checks were fooled by
+pyegeria's miss-sentinel.** `get_guid_for_name` returns the literal string
+`"No elements found"` on a miss, not `None`/`""`/an exception — truthy in
+Python, so this script's `if not guid` checks (three of them: DataClass,
+ValidValuesSet, keyword ValidValueDefinitions) read every miss as "already
+exists" and skipped every create. A real run reported "Created Data
+Classes: 0, Skipped: 6" against a platform holding zero. **Fixed** by
+routing all three lookups through `survey_definition_reader._as_guid`
+(already used correctly elsewhere in this codebase). The identical bug was
+found and fixed the same way in `egeria_reference_catalog.py`'s
+`_find_existing` (used by the DRAFT-proposal path) while checking the rest
+of the directory for the same pattern. Logged as
+`egeria-python/PYEGERIA_ISSUES.md` ISSUE-114 (caller-guideline entry, not a
+pyegeria code change — no fix applied there, per this repo's standing
+"log and wait for approval" convention for pyegeria itself).
+
+**Bug 3 — found only once Bug 2 was fixed enough to actually attempt a
+create:** `bootstrap_data_classes.py`'s `create_data_class` body omitted
+`properties.class: "DataClassProperties"` and `isOwnAnchor: true`, which
+Egeria rejects outright (400 `CLIENT_ERROR_400`) — `create_valid_value_definition`
+was missing `isOwnAnchor` too, and `link_valid_value_definition` was called
+with no body at all, a gap `egeria_reference_catalog.py`'s own docstring
+already named ("makes pyegeria synthesise one and POST it un-serialised — a
+live bug this does not copy"). All three fixed to match the body shapes
+`egeria_reference_catalog.py`'s `build_proposed_data_class_body`/
+`build_proposed_valid_value_set_body` already use correctly. Tests in
+`tests/test_bootstrap_data_classes.py`.
+
+**Live-verified end to end**, against the shared dev platform (reachable
+from this checkout at `https://localhost:9443`, not `host.docker.internal`
+— that hostname only resolves from inside a container): confirmed zero
+existing Data Classes/Valid Value Sets first, then ran the fixed bootstrap
+and got "Created Data Classes: 6, Skipped: 0" — GUIDs:
+`EmailAddress cf667f16-e9d8-45dd-a86e-3fa27e0f62d6`,
+`PhoneNumber f6333002-7a31-4311-8556-2644bfc9984e`,
+`SocialSecurityNumber ebf003df-629b-4a00-a7aa-d939a5e833f7`,
+`CreditCardNumber f2b4fbdf-eb35-4263-b487-3b74518ec451`,
+`Password 3d442693-cfae-40c8-95f9-a7bfbac9739b`,
+`DateOfBirth 2e597370-d598-4109-9acd-04ee06eac828`. Then re-ran
+`data_class_match` through the actual "Run" path
+(`DATABASE_ANALYSIS_STEP_MAP["data_class_match"]` → `run_database_survey` →
+`DatabaseSurveyor.survey()`) against a scratch table
+(`public.scratch_verify_phase1_wiring`, an `email_addr` column of
+well-formed emails, dropped after) and confirmed `reference_catalog.available
+= True, data_class_count = 6` and a genuine, established verdict — no
+longer `no_candidates`/"not established" regardless of data.
+
+**Found but NOT fixed, flagged for whoever designs the seed content next:**
+the live verdict for `email_addr` came back `unmatched_patterned` (proposing
+a new class), not a match against the seeded `EmailAddress` class — because
+`column_matching.pattern_conformance_any` treats a Data Class's `dataPatterns`
+as VALUE-matching regexes (fullmatched against sampled values), but
+`STANDARD_DATA_CLASSES` in `bootstrap_data_classes.py` populates
+`dataPatterns` with plain keyword strings (`"email"`, `"email_address"`, ...)
+meant as name hints — and that same list is reused, unchanged, as the display
+names of the seeded `ValidValuesSet`'s keyword members. The two uses want
+different content (name keywords vs. value regexes) under one field, and
+changing it to real regexes would break the keyword-set seeding that reads
+the same list. Whoever owns the seed content next should either add a
+separate value-pattern field or split the two lists.
+
+**Also still pending, by design (not an oversight):** the Dr.Egeria
+authoring batch (VALIDATE/PROCESS) for this session's
+`docs/dr-egeria/resource_questions.csv` row 76 reword (`GAP: data_class_match
+(proposed)` → `data_class_match`, `kind: gap` → `kind: analysis`) has not
+been run — CSV/YAML regeneration only, per the same coordination reasoning
+as the `filesystem_inventory` entry above. **Also worth checking**: an
+active, separately-authored review (`FALSE-GAPS-2026-09-22.md`, referenced
+above, not present on this branch) is reportedly tracking 18 rows in this
+same "`GAP: ... (proposed)` for a now-built analysis" shape — row 76 may be
+one of them, so whoever merges next should check for an overlapping edit to
+the same CSV row rather than assume this change is the only one in flight.

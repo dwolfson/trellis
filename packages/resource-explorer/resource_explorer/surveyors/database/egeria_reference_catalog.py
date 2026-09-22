@@ -45,6 +45,7 @@ from resource_explorer.surveyors.database.column_matching import (
     KnownDataClass,
     KnownValidValueSet,
 )
+from resource_explorer.surveyors.survey_definition_reader import _as_guid
 
 log = logging.getLogger(__name__)
 
@@ -574,9 +575,18 @@ def _find_existing(client, qualified_name: str) -> str:
     """`get_guid_for_name`, never raising — "" means "not found or could not
     look up", and the caller attempts the create either way (Egeria rejects a
     duplicate qualifiedName, so a failed lookup costs a rejected create rather
-    than a duplicate element)."""
+    than a duplicate element).
+
+    Routed through `_as_guid` rather than a bare `or ""`: pyegeria's
+    `get_guid_for_name` returns the literal string "No elements found" (not
+    None/""/an exception) on a miss, which `or ""` does not catch because
+    that string is truthy — the same sentinel bug found live in
+    `bootstrap_data_classes.py` (2026-09-22), here too before this fix. A
+    bare `or ""` would make every proposal's idempotency check read "already
+    exists" for a name that was never created, silently skipping it.
+    """
     try:
-        return str(client.get_guid_for_name(qualified_name) or "")
+        return _as_guid(client.get_guid_for_name(qualified_name)) or ""
     except Exception as exc:
         log.debug("Proposal idempotency lookup failed for %s: %s", qualified_name, exc)
         return ""

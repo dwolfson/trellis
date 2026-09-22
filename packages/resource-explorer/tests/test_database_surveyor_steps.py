@@ -101,6 +101,97 @@ class TestStepsFiltered:
         mock_views.assert_not_called()
 
 
+class TestColumnProfileLoadsReferenceCatalog:
+    """`data_class_match`/`reference_data_match`'s "Run ->" button goes
+    through DatabaseSurveyor.survey(steps=[...,"column_profile"]), a
+    different door than survey_definition_adapter._run_postgres_column_profile
+    — see database_surveyor.py's bootstrap fix. Before that fix, survey()
+    accepted a `reference_catalog` parameter nothing ever passed, so this
+    path always ran column_profile_step with reference_catalog=None and every
+    column came back `no_candidates`/"not established" regardless of what
+    Egeria actually held. These tests pin that survey() now loads one itself,
+    via the SAME `load_reference_catalog`/`build_reference_clients` functions
+    the Survey Definition path uses — not a second, divergent implementation.
+    """
+
+    def _run_with_column_profile(self, registry, db_entity, **survey_kwargs):
+        conn = _mock_conn()
+        surveyor = DatabaseSurveyor(db_entity, {"user": "admin", "password": "secret"}, registry)
+        with _patched_connection(conn), \
+             patch(
+                 "resource_explorer.surveyors.database.column_profile_step.run_column_profile"
+             ) as mock_profile:
+            mock_profile.return_value = {
+                "column_profile_rows": [], "annotations": [],
+            }
+            surveyor.survey(steps=["column_profile"], **survey_kwargs)
+        return mock_profile
+
+    def test_loads_catalog_when_none_supplied(self, registry, db_entity):
+        fake_catalog = object()
+        with patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.build_reference_clients",
+            return_value=("designer", "ref_manager"),
+        ) as mock_build, patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.load_reference_catalog",
+            return_value=fake_catalog,
+        ) as mock_load:
+            mock_profile = self._run_with_column_profile(registry, db_entity)
+
+        mock_build.assert_called_once()
+        mock_load.assert_called_once_with("designer", "ref_manager")
+        assert mock_profile.call_args.kwargs["reference_catalog"] is fake_catalog
+
+    def test_explicit_reference_catalog_is_not_overridden(self, registry, db_entity):
+        explicit_catalog = object()
+        with patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.build_reference_clients",
+        ) as mock_build, patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.load_reference_catalog",
+        ) as mock_load:
+            mock_profile = self._run_with_column_profile(
+                registry, db_entity, reference_catalog=explicit_catalog,
+            )
+
+        mock_build.assert_not_called()
+        mock_load.assert_not_called()
+        assert mock_profile.call_args.kwargs["reference_catalog"] is explicit_catalog
+
+    def test_read_egeria_catalog_false_skips_loading(self, registry, db_entity):
+        with patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.build_reference_clients",
+        ) as mock_build, patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.load_reference_catalog",
+        ) as mock_load:
+            mock_profile = self._run_with_column_profile(
+                registry, db_entity, read_egeria_catalog=False,
+            )
+
+        mock_build.assert_not_called()
+        mock_load.assert_not_called()
+        assert mock_profile.call_args.kwargs["reference_catalog"] is None
+
+    def test_catalog_load_failure_is_non_fatal_and_recorded(self, registry, db_entity):
+        with patch(
+            "resource_explorer.surveyors.database.egeria_reference_catalog.build_reference_clients",
+            side_effect=RuntimeError("EGERIA_PLATFORM_URL is not set"),
+        ):
+            conn = _mock_conn()
+            surveyor = DatabaseSurveyor(
+                db_entity, {"user": "admin", "password": "secret"}, registry,
+            )
+            with _patched_connection(conn), patch(
+                "resource_explorer.surveyors.database.column_profile_step.run_column_profile",
+                return_value={"column_profile_rows": [], "annotations": []},
+            ) as mock_profile:
+                result = surveyor.survey(steps=["column_profile"])
+
+        assert mock_profile.call_args.kwargs["reference_catalog"] is None
+        assert any(
+            "EGERIA_PLATFORM_URL is not set" in err for err in result["errors"]
+        )
+
+
 class TestDatabaseAnalysisStepMap:
     def test_maps_all_local_survey_ids(self):
         # Phase 1 slice 8 (postgres_operations) added db_activity_signals/
