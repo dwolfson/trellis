@@ -52,6 +52,16 @@ import { renderAutomate } from '/static/next/stages/automate.js';
 // #intent-nav/currentNavIntent, NOT a STAGES entry. See next/admin/index.js's
 // own header comment for scope (five real ports, six named deferrals).
 import { openAdminPanel } from '/static/next/admin/index.js';
+// Discovery import (NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md) — the
+// corpus-level "find and import candidate repos" dialog: GitHub search,
+// the `/from-list` bulk loader, and the inventory CSV export. Chrome-level
+// like worklist.js/rfa.js, not a stage module — see that file's own header
+// comment for why (SPEC-ACTIONABLE-AND-HONEST.md point 2). Reached from the
+// sidebar's `find-repos` action below, for `state.resourceType === 'repo'`
+// only; databases/filesystems keep the old-UI-link stub, since classic's
+// own discover/register flows for those resource types are not this file's
+// scope.
+import { openFindReposDialog } from '/static/next/discovery-import.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -196,11 +206,14 @@ const STAGES = [
   // stage-specific rendering needed. Discovery's Disposition sub-tab was
   // already wired to a real write path (`POST /api/discovery/disposition`,
   // web/routes/discovery.py's set_repo_disposition) before this change; it
-  // only needed `built: true` to become reachable. Classic's
-  // org-import/repo-search/`/from-list`/CSV-export corpus-level Discovery
-  // features, and Analysis's "Sub-Resources" sub-view, are NOT ported --
-  // named, individually, as deliberate deferrals in that doc, not silently
-  // dropped.
+  // only needed `built: true` to become reachable. Classic's corpus-level
+  // repo-search/`/from-list`/CSV-export features are now ported too, as the
+  // sidebar's "Find repos" action (`next/discovery-import.js`,
+  // NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md) rather than as Discovery
+  // stage content -- see stages/discovery.js's header comment for why.
+  // Analysis's "Sub-Resources" sub-view is still NOT ported -- named as a
+  // deliberate deferral in ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md,
+  // not silently dropped.
   { id: 'discovery',     label: 'Discovery',     class: 'run', built: true },
   { id: 'assessment',    label: 'Assessment',    class: 'run', built: true },
   { id: 'analysis',      label: 'Analysis',      class: 'run', built: true },
@@ -2032,9 +2045,13 @@ function bindSidebar() {
     // Corpus-level, not a stage: the same action on Scouting as on Curate,
     // so it lives beside the switcher that already scopes the whole left
     // column, not in the per-stage strip (SPEC-ACTIONABLE-AND-HONEST.md,
-    // point 2). Still not built in /next -- says so, same as the deferred
-    // stage tabs did, just from here instead.
+    // point 2). Repos: a real port (NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md)
+    // -- GitHub search, the from-list bulk loader, and the inventory CSV
+    // export. Databases/filesystems keep the old-UI-link stub; classic's own
+    // per-server discover/register flows for those resource types are a
+    // separate, not-yet-ported affordance.
     'find-repos': () => {
+      if (state.resourceType === 'repo') { openFindReposDialog(); return; }
       const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
       const d = openDialog(title, title);
       d.querySelector('#wl-detail-body').innerHTML = `

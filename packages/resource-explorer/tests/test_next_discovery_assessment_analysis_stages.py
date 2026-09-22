@@ -119,23 +119,37 @@ class TestAnalysisSubResourcesIsNamedNotDropped:
         assert "$('enrichment-form')" in curate_src
 
 
-class TestOrgImportRepoSearchFromListCsvExportStayDeferredAtTheSidebar:
-    """Item 11's own scoping call: these four discovery.py endpoints are
-    corpus-level, not resource-scoped, and were already covered by the
-    sidebar's pre-existing 'Find repos' deferral -- this item must not
-    duplicate that deferral inside the Discovery stage pane."""
+class TestOrgImportRepoSearchFromListCsvExportLiveAtTheSidebarNotTheStage:
+    """Item 11's own scoping call: these discovery.py endpoints are
+    corpus-level, not resource-scoped, so this item correctly did not build
+    them inside the Discovery stage pane. NEXT-DISCOVERY-IMPORT-SEARCH-
+    IMPLEMENTED.md later built them for real at the sidebar's 'Find repos'
+    action this item deferred to (`next/discovery-import.js`) -- this class
+    now checks that placement held, not that the action still merely links
+    out for every resource type (it no longer does, for repos)."""
 
-    def test_find_repos_action_still_defers_and_links_out(self):
+    def test_find_repos_action_dispatches_by_resource_type(self):
         app = _app()
         assert "'find-repos': () => {" in app
         body = app[app.index("'find-repos': () => {"):]
         body = body[:body.index("\n    },")]
-        # PR #142 made the dialog title resource-type-aware (FIND_TITLE map) rather
-        # than the fixed "Repo discovery" string this test used to assert on.
+        # Repos: the real port. Other resource types: still the old-UI-link
+        # stub this item originally wrote -- that half is genuinely
+        # unchanged and out of NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md's
+        # scope.
+        assert "openFindReposDialog();" in body
         assert "FIND_TITLE[state.resourceType]" in body
         assert "oldUiHref()" in body
 
-    def test_discovery_py_still_declares_the_four_deferred_endpoints(self):
+    def test_discovery_stage_pane_itself_still_has_no_corpus_level_ui(self):
+        # The thing this item's own scoping call was actually protecting:
+        # search/import/export UI must not live inside stages/discovery.js,
+        # regardless of where else it now lives.
+        stage_src = (NEXT / "stages" / "discovery.js").read_text(encoding="utf-8")
+        assert "export {};" in stage_src
+        assert "searchDiscoveryRepos" not in stage_src
+
+    def test_discovery_py_still_declares_the_four_endpoints(self):
         discovery_py = (NEXT.parent.parent.parent / "web" / "routes" / "discovery.py").read_text(encoding="utf-8")
         assert '@router.get("/inventory.csv")' in discovery_py
         assert '@router.post("/from-list"' in discovery_py
