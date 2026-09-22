@@ -723,6 +723,65 @@ class TestBackfill:
         assert schema["mat_view_count"] is None
         assert schema["total_table_size_bytes"] is None
 
+    def test_grants_are_not_measured_when_privilege_audit_did_not_run(self):
+        """No `operations` key in the blob at all (a schema_inventory-only
+        local survey) — database_grants must be absent from the converted
+        rows so the caller's NOT_MEASURED marker applies, never an empty
+        'measured, none' list."""
+        rows = database_rows_from_survey_data(local_database_blob())
+        assert "database_grants" not in rows
+
+    def test_grants_are_extracted_when_privilege_audit_ran(self):
+        """Phase 1 slice 14 follow-up (2026-09-22): found live that
+        database_grants was written by NO survey path at all — this blob
+        (with operations.privilege_audit present, as database_surveyor.py's
+        `_survey_operations` stores it) must now convert to real rows."""
+        blob = dict(local_database_blob())
+        blob["operations"] = {
+            "privilege_audit": {
+                "roles": [],
+                "table_grants": [
+                    {"table_schema": "public", "table_name": "patient",
+                     "grantee": "app_user", "privilege_type": "SELECT",
+                     "is_grantable": "NO"},
+                    {"table_schema": "public", "table_name": "patient",
+                     "grantee": "PUBLIC", "privilege_type": "SELECT",
+                     "is_grantable": "NO"},
+                ],
+                "default_acl": [],
+            },
+        }
+        rows = database_rows_from_survey_data(blob)
+        grants = rows["database_grants"]
+        assert len(grants) == 2
+        by_grantee = {g["grantee"]: g for g in grants}
+        assert by_grantee["PUBLIC"]["privilege_type"] == "SELECT"
+        assert by_grantee["PUBLIC"]["object_name"] == "patient"
+        assert by_grantee["PUBLIC"]["object_type"] == "table"
+        assert by_grantee["app_user"]["is_grantable"] == 0
+
+    def test_backfill_writes_real_grant_rows_when_privilege_audit_ran(self, registry):
+        blob = dict(local_database_blob())
+        blob["operations"] = {
+            "privilege_audit": {
+                "roles": [], "default_acl": [],
+                "table_grants": [
+                    {"table_schema": "public", "table_name": "patient",
+                     "grantee": "PUBLIC", "privilege_type": "SELECT",
+                     "is_grantable": "NO"},
+                ],
+            },
+        }
+        written = backfill_database_survey(registry, "coco_ods", SURVEYED_AT, blob)
+        assert written["database_grants"] == 1
+
+        rows = registry.query_detail_rows("database_grants", "coco_ods")
+        assert len(rows) == 1
+        assert rows[0]["grantee"] == "PUBLIC"
+
+        coverage = registry.get_section_coverage("database", "coco_ods")
+        assert coverage["grants"]["state"] == STATE_MEASURED
+
     def test_backfill_writes_rows_and_marks_what_it_cannot_know(self, registry):
         written = backfill_database_survey(
             registry, "coco_ods", SURVEYED_AT, local_database_blob())
