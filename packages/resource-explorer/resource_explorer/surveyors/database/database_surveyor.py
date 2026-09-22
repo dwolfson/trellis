@@ -57,6 +57,11 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     # Sampling itself is the "column_profile" step.
     "data_class_match": ["schema", "statistics", "column_profile"],
     "reference_data_match": ["schema", "statistics", "column_profile"],
+    # Phase 1 slice 11 (postgres_nested_columns, design §5.4/§5.7). "schema"
+    # for the JSON/JSONB/XML column catalog to iterate, "statistics" for the
+    # same per-table row counts the sample's provenance is stated against —
+    # exactly slice 10's reasoning above, not a new invariant.
+    "nested_column_profile": ["schema", "statistics", "nested_columns"],
 }
 
 
@@ -171,29 +176,30 @@ class DatabaseSurveyor:
         """Run a database survey.
 
         steps : optional subset of {"schema", "statistics", "views",
-            "operations", "column_profile"} — None (default) runs the original three
-            (_ALL_STEPS), exactly as before "operations" existed;
-            "operations" must be requested explicitly (see _ALL_STEPS's
-            comment). "schema" always runs even if omitted, since every
-            other step's results are meaningless (or, for "operations",
-            just less complete — see _survey_operations()) without the
-            table list schema produces.
+            "operations", "column_profile", "nested_columns"} — None (default)
+            runs the original three (_ALL_STEPS), exactly as before
+            "operations" existed; "operations" must be requested explicitly
+            (see _ALL_STEPS's comment). "schema" always runs even if
+            omitted, since every other step's results are meaningless (or,
+            for "operations", just less complete — see
+            _survey_operations()) without the table list schema produces.
 
         Returns:
             Dict with survey results including annotations and statistics
         """
         requested = set(steps) if steps is not None else set(self._ALL_STEPS)
         requested.add("schema")
-        # "column_profile" (Phase 1 slice 10) reads two things "statistics"
-        # produces and nothing else does: the per-table row counts its sample
-        # provenance is stated against (design §5.8's "of 4.2M rows"), and
-        # slice 7's stored pg_stats `n_distinct`, which is
-        # `reference_data_match`'s low-cardinality gate. Requesting the
-        # profile without the statistics would silently produce every column's
-        # total_rows as "not established" and every cardinality gate as
-        # undecided — a run that looks like it worked and establishes nothing.
-        # Same invariant, and same reasoning, as "schema" above.
-        if "column_profile" in requested:
+        # "column_profile" (Phase 1 slice 10) and "nested_columns" (Phase 1
+        # slice 11) each read two things "statistics" produces and nothing
+        # else does: the per-table row counts their sample provenance is
+        # stated against (design §5.8's "of 4.2M rows"), and, for
+        # column_profile, slice 7's stored pg_stats `n_distinct` (the
+        # reference_data_match cardinality gate). Requesting either without
+        # the statistics would silently produce every column's total_rows as
+        # "not established" — a run that looks like it worked and
+        # establishes nothing. Same invariant, and same reasoning, as
+        # "schema" above.
+        if "column_profile" in requested or "nested_columns" in requested:
             requested.add("statistics")
 
         results = {
@@ -219,6 +225,9 @@ class DatabaseSurveyor:
             #: postgres_column_profile output (Phase 1 slice 10), built only
             #: when "column_profile" runs — see column_profile_step.py.
             "column_profile": {},
+            #: postgres_nested_columns output (Phase 1 slice 11), built only
+            #: when "nested_columns" runs — see nested_columns_step.py.
+            "nested_columns": {},
         }
 
         try:
@@ -324,6 +333,34 @@ class DatabaseSurveyor:
                     except Exception as profile_err:
                         results["errors"].append(
                             f"Column profiling failed (non-fatal): {profile_err}"
+                        )
+
+                # postgres_nested_columns: JSONB/JSON/XML value sampling and
+                # nested-schema inference (design §5.4, §5.7 — Phase 1 slice
+                # 11). Same opt-in shape as "column_profile" above and gated
+                # on it per the coordinator brief ("shares the inference
+                # core") — it reuses that step's own sample_column_values/
+                # SamplingBudget rather than a second sampling
+                # implementation; see nested_columns_step.py.
+                if "nested_columns" in requested:
+                    try:
+                        from resource_explorer.surveyors.database.nested_columns_step import (
+                            run_nested_columns,
+                        )
+
+                        nested_result = run_nested_columns(
+                            conn,
+                            capabilities,
+                            schema_info,
+                            results.get("statistics") or {},
+                            resource_slug=self.db_entity.slug,
+                            sampling_overrides=sampling_overrides,
+                        )
+                        results["nested_columns"] = nested_result["nested_columns"]
+                        results["annotations"].extend(nested_result["annotations"])
+                    except Exception as nested_err:
+                        results["errors"].append(
+                            f"Nested column profiling failed (non-fatal): {nested_err}"
                         )
 
         except Exception as e:

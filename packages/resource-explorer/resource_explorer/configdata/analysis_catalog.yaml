@@ -1152,6 +1152,26 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: nested_column_profile
+    name: "Nested Column Profile"
+    description: "What is inside the JSON/JSONB/XML columns — keys, nesting, types, and consistency across rows. Samples each JSONB/JSON/XML column with the same §5.8 configuration surface postgres_column_profile uses, then infers a nested schema: per-key presence frequency and JSON-type consistency (or, for XML, root-element and element/attribute name frequency), and nesting depth. Produces a SchemaAnalysisAnnotation per column — including for a column where every sampled value is a JSON scalar or unparseable XML, which is a real, distinct finding (possibly a misclassified column), never rendered as 'no nested structure' (design §5.4; postgres_nested_columns, Phase 1 slice 11, gated on slice 10's sampling infrastructure)."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Data Expert", "App/AI Builder"]
+    annotation_types: ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation"]
+    source: local
+    # api_heavy per design §5.7 — reads actual JSON/XML values, same cost
+    # class as postgres_column_profile and for the identical reason
+    # (CLAUDE.md rule 17's availability-is-not-run_time ruling).
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: egeria_db_survey
     name: "Egeria Native DB Survey"
     description: "Trigger Egeria's native PostgreSQL survey for deep annotation of schema, data quality, and lineage. Runs asynchronously."

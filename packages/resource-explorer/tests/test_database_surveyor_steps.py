@@ -109,10 +109,13 @@ class TestDatabaseAnalysisStepMap:
         # Phase 1 slice 10 (postgres_column_profile) added data_class_match/
         # reference_data_match and the "column_profile" step they map to —
         # see test_column_profile_backed_ids_also_need_statistics below.
+        # Phase 1 slice 11 (postgres_nested_columns) added
+        # nested_column_profile and the "nested_columns" step it maps to,
+        # gated on slice 10's sampling infrastructure the same way.
         assert set(DATABASE_ANALYSIS_STEP_MAP) == {
             "schema_inventory", "row_count_snapshot", "privilege_audit",
             "db_activity_signals", "db_resilience", "db_external_dependencies",
-            "data_class_match", "reference_data_match",
+            "data_class_match", "reference_data_match", "nested_column_profile",
         }
 
     def test_privilege_audit_now_runs_the_dedicated_operations_step(self):
@@ -136,3 +139,10 @@ class TestDatabaseAnalysisStepMap:
             assert set(DATABASE_ANALYSIS_STEP_MAP[analysis_id]) == {
                 "schema", "statistics", "column_profile",
             }
+
+    def test_nested_column_profile_also_needs_statistics(self):
+        # Phase 1 slice 11, same reasoning as slice 10 above: the sample's
+        # provenance is stated against "statistics"'s per-table row counts.
+        assert set(DATABASE_ANALYSIS_STEP_MAP["nested_column_profile"]) == {
+            "schema", "statistics", "nested_columns",
+        }
