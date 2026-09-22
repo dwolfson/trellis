@@ -1127,37 +1127,54 @@ Agreed on review (project owner, 2026-09-20), as proposed:
   is always explicit.
 **Amended 2026-09-21 — how a survey proposes an element.** The project owner
 reviewed `docs/egeria-support-for-multi-resource.md` and pointed at two
-mechanisms Egeria already has, both confirmed in the Java source (relayed by
-the coordinating session; the decision callouts land in that document): an
-`Annotation` carries `contentStatus`, which can be `DRAFT`
-(`ContentStatus.java:37`), and `AssociatedAnnotation`
-(`OpenMetadataType.java:6039`) links any element to an annotation directly,
-distinct from `ReportedAnnotation`. So the proposal path in §5.4 and §6.3
-changes from "an RFA carrying a spec in a string map" to: **the survey
-creates the real candidate element — `DataClass`, `ValidValueSet`,
-`DataGrain`, `DataScope` values — in `DRAFT` status, and links it by
-`AssociatedAnnotation` to the evidence annotation on the report.** The
-curator's accept is a status change to `ACTIVE`; dismiss deletes the draft.
-This keeps measured-vs-declared intact — `DRAFT` *is* the measured state,
-`ACTIVE` is the declaration — and makes the "annotations that propose"
-type ask in the support doc's §3 and §7 likely unnecessary. Conditional on
-probe 4 confirming that the create calls accept `initialStatus: DRAFT`; the
-RFA convention stays as the fallback if they do not. The review queue below
-is unchanged in purpose: it lists `DRAFT` elements with their evidence
-instead of RFAs.
+mechanisms Egeria already has, both confirmed in the Java source (the seven
+decision callouts are in that document as of dwolfson/trellis#189):
+`contentStatus`, a *domain property* on `AuthoredReferenceableProperties`
+that both `AnnotationProperties` and `DataClassProperties` inherit, with
+`DRAFT` among its values (`ContentStatus.java:37`); and `AssociatedAnnotation`
+(`OpenMetadataType.java:6039`), which links any element to an annotation
+directly, distinct from `ReportedAnnotation`. So the proposal path in §5.4
+and §6.3 changes from "an RFA carrying a spec in a string map" to: **the
+survey creates the real candidate element — `DataClass`, `ValidValueSet`,
+`DataGrain`, `DataScope` values — with `contentStatus: DRAFT`, and links it
+by `AssociatedAnnotation` to the evidence annotation on the report.** The
+curator's accept sets `contentStatus` to the confirmed value; dismiss
+deletes the draft. This keeps measured-vs-declared intact — `DRAFT` content
+*is* the measured state — and removes the "annotations that propose" type
+ask in the support doc's §3 and §7. Note that `contentStatus` is
+independent of Egeria's generic `ElementStatus` (entity persistence), which
+stays `ACTIVE` throughout. The review queue below is unchanged in purpose:
+it lists draft-content elements with their evidence instead of RFAs.
 
-- **Draft visibility (open, needs the project owner).** A `DRAFT` element is
-  a real element. Egeria's `QueryOptions.limitResultsByStatus` defaults to
-  null, which its own doc comment says means *all* statuses
-  (`QueryOptions.java:26,162-183`), so default find calls return drafts
-  unless a caller passes `[ACTIVE]`. The RFA path never had this exposure.
-  Two independent fixes, not mutually exclusive: RE's own query layer
-  defaults to `ACTIVE` only wherever it reads governance elements for
-  consumers; and drafts are placed in a governance zone consumers do not
-  see, independent of status. Recommendation: do both, because the second
-  also covers consumers that are not RE. Probe 4 should include one
-  unfiltered find immediately after creating a draft, to confirm the
-  behaviour empirically rather than from the doc comment.
+*Probe results, 2026-09-21 (dwolfson/trellis#194).* Probe 5 passed: all
+five proposal-shaped annotation types (`DataClassAnnotation`,
+`DataGrainAnnotation`, `ResourceProfileAnnotation`, `SemanticAnnotation`,
+`FingerprintAnnotation`) can be created from Python and attached to a
+report. Probe 4 passed on the second attempt: `contentStatus: DRAFT` in the
+properties round-trips cleanly for both a `DataClass` and a
+`DataClassAnnotation`. The first attempt tested the wrong field —
+`initialStatus`/`ElementStatus`, which pyegeria drops client-side and the
+server ignores (ISSUE-113, real but not this path's blocker; the project
+owner caught the mix-up). **Status: the draft-element path is the design;
+the RFA convention is retired for proposals.** One check remains before
+slice 10 leans on it: whether an ordinary consumer read path surfaces
+`contentStatus`, or renders a draft-content element identically to a
+confirmed one — which is the visibility item below, restated.
+
+- **Draft visibility (open, needs the project owner).** A draft-content
+  element is a real, `ACTIVE`-status element, and `contentStatus` is a
+  property, so **no status filter on find calls can hide it** — the earlier
+  suggestion to default RE's queries to `ElementStatus` `ACTIVE` does not
+  apply (`QueryOptions.limitResultsByStatus` filters entity status, not
+  content status). The RFA path never had this exposure. Two fixes, not
+  mutually exclusive: RE's own query layer filters on `contentStatus`
+  wherever it reads governance elements for consumers, and renders the
+  status as a badge wherever it shows one; and drafts are placed in a
+  governance zone consumers do not see until confirmed. Recommendation: do
+  both, because only the second covers consumers that are not RE. Before
+  slice 10: confirm whether Egeria's own consumer surfaces (the portal's
+  catalog views, Egeria Advisor) display `contentStatus` at all, since a
+  draft that renders identically to a confirmed class is the failure mode.
 - **Proposal acceptance surface.** Proposed Data Classes, reference sets,
   grains and scopes need a review queue (§11) before Phase 1 step 4 is worth
   building; otherwise proposals accumulate as unread RFAs.
