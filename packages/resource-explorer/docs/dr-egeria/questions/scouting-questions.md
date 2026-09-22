@@ -6405,3 +6405,141 @@ Asked At
 
 ___
 
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What kinds of files does this filesystem contain, and how much data is there?
+
+### Description
+File walk classifies every file by format and type, records sizes and timestamps — RE's baseline inventory for a filesystem resource, the filesystem equivalent of schema_inventory for a database.
+
+### Summary
+Need a basic inventory before deciding whether deeper analysis of this filesystem is worth the time.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What kinds of files does this filesystem contain, and how much data is there?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+What kinds of files does this filesystem contain, and how much data is there?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What kinds of files does this filesystem contain, and how much data is there?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+What kinds of files does this filesystem contain, and how much data is there?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What kinds of files does this filesystem contain, and how much data is there?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+### Description
+filesystem_inventory profiles tabular data file schemas (CSV, Excel, Parquet) it recognizes during the same walk — this reuses that profiling rather than a separate pass.
+
+### Summary
+Whether a filesystem holds usable structured data determines whether it's worth treating as a dataset source.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
