@@ -227,6 +227,26 @@ class TestEgeriaFlow:
         assert "members_unlinkable" in fn
         assert "result.ok" in fn
 
+    def test_unlinkable_members_render_slug_and_reason_not_the_raw_object(self):
+        # members_unlinkable is list[dict] (entity_type/entity_slug/reason --
+        # egeria_investigation_publisher.py), not list[str]. Mapping it
+        # straight through esc() (as members_linked/errors correctly do,
+        # since THOSE are list[str]) stringifies each dict to the literal
+        # text "[object Object]" -- reproduced live 2026-09-22 on a real
+        # promote with unlinkable members. The fix must read a field off
+        # each entry, not hand the whole object to esc().
+        src = _inv_src()
+        fn = src[src.index("inv-promote"):]
+        fn = fn[:fn.index("el.querySelector('[data-act=\"inv-sync\"]')")]
+        unlinkable_line = fn[fn.index("members_unlinkable"):]
+        unlinkable_line = unlinkable_line[:unlinkable_line.index("\n", unlinkable_line.index("\n") + 1) + 40]
+        assert "members_unlinkable.map(esc)" not in fn, (
+            "regression: mapping members_unlinkable straight through esc() "
+            "renders '[object Object]' for each entry"
+        )
+        assert "entity_slug" in unlinkable_line
+        assert "reason" in unlinkable_line
+
     def test_promote_reports_classification_confirmation_tristate(self):
         # classification_confirmed is tri-state: equals request / '' (dropped)
         # / null (couldn't verify) -- collapsing this to a boolean would
