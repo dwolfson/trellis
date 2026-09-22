@@ -316,35 +316,66 @@ section's "type ask" tier did not account for:
   real-world counterpart." This is the direct element↔annotation link the
   `candidate…GUIDs` fields were working around with a plain property list.
 
-**Revised reading, pending probe 4** (does `create_data_class`/equivalent
-accept `initialStatus: DRAFT`?): if it does, a survey can create the
-*actual* candidate element (DataClass/DataGrain/ValidValueSet) in `DRAFT`
-status directly and link it to its originating evidence via
-`AssociatedAnnotation`, rather than encoding the proposal as
-`RequestForAction` properties or a new annotation subtype. That would drop
-the §3 "type ask" tier entirely — only the RFA convention needed as a
-near-term stand-in (already the "now, no extension" plan) and probe 4/probe
-5 need to run to confirm.
+**Probes 4 and 5 run 2026-09-21 — see `docs/design-notes/PROBES-2026-09-21.md`
+for the full write-up.** Answer: **yes** for probe 4 (corrected — see
+below), **yes** for probe 5.
 
-**Open question the RFA path didn't have to answer: is a DRAFT element
-visible to ordinary search/consumer queries before it's accepted?**
-Checked `QueryOptions.limitResultsByStatus`
-(`open-metadata-framework/.../search/QueryOptions.java:26,162-183`): its
-own doc comment is explicit — `null` (the default) "means all" statuses,
-not just `ACTIVE`. So **Egeria's default `findMetadataElements`/`find_*`
-calls do not exclude `DRAFT` elements** — a freshly-created draft
-DataClass is visible to any caller that doesn't itself pass
-`limitResultsByStatus: [ACTIVE]`. This is real exposure the RFA convention
-never had (an RFA is not a searchable governance element in the same
-sense). Two independent ways to close it, neither built yet: (a) RE's own
-query/read layer always filters `limitResultsByStatus` to `[ACTIVE]`
-unless a caller explicitly asks for drafts, or (b) governance-zone gating —
-don't assign a draft element to any consumer-visible zone until it's
-accepted (separate mechanism from status, and this repo's own zone
-patterns already exist for exactly this kind of staged visibility).
-Probe 4 should include one `find_data_classes`/equivalent call right after
-creating the draft, with no status filter passed, to confirm this
-empirically rather than resting on the doc comment alone.
+**Probe 4's first pass tested the wrong field.** `create_data_class` with
+`initialStatus: DRAFT` — Egeria's generic entity persistence/lifecycle
+status (`ElementStatus`) — does return success with the element reading back
+as `ACTIVE`, confirmed at both the pyegeria layer (`NewElementRequestBody`
+has no `initial_status` field, silently dropped by `extra='ignore'` — logged
+as ISSUE-113 in `PYEGERIA_ISSUES.md`, PR against upstream
+`odpi/egeria-python`) and the server layer (a raw REST call bypassing
+pyegeria entirely also came back `ACTIVE`). But `ElementStatus` was never
+the mechanism this section's decision meant — re-reading it (and the Java
+source it cites) against the actual result caught this: the decision is
+about **`contentStatus`**, a domain property on
+`AuthoredReferenceableProperties` — a different field entirely from
+`ElementStatus`, describing whether the *content* is complete rather than
+whether the *entity* persists.
+
+**Corrected probe 4 — `contentStatus: DRAFT` inside `properties`: works
+cleanly**, tested on both proposed carriers: a `DataClass`
+(`DataDesigner.create_data_class`) and a `DataClassAnnotation`
+(`DataDiscovery.create_annotation`). Both round-trip `contentStatus` as
+`DRAFT` on read-back; both keep their separate `ElementStatus` at `ACTIVE`
+throughout — the two statuses are independent, exactly as the class
+hierarchy implies (`AnnotationProperties` and
+`DataValueSpecificationProperties`/`ValidValueDefinitionProperties` all
+extend `AuthoredReferenceableProperties`, so both proposed carriers get it
+for free).
+
+Probe 5 (`create_annotation` for all five proposal-shaped types, attached via
+`ReportedAnnotation`) worked cleanly for all five, verified by an independent
+re-read (5 distinct GUIDs, correct types) rather than by trusting the create
+calls.
+
+**So the §3 "type ask" tier DOES drop, confirmed via the corrected probe**:
+a proposal — a new governance element, or a proposal-carrying annotation —
+can be published as genuinely incomplete/unconfirmed today, via
+`contentStatus: DRAFT`, no pyegeria fix or Egeria change needed. No new
+`candidateDataClassSpecification`/`ReferenceDataAnnotation`/
+`DataScopeAnnotation` fields are needed; a proposal is a normal annotation
+(or element) with `contentStatus: DRAFT` set, linked to its originating
+evidence via `AssociatedAnnotation`.
+
+**Open question the RFA path didn't have to answer, sharpened by the
+correction rather than resolved: does an ordinary read path surface
+`contentStatus` at all?** The original visibility concern here was about
+`ElementStatus` (checked via `QueryOptions.limitResultsByStatus`, which
+defaults to `null`/"all statuses") — now confirmed *not* the live risk,
+since a `contentStatus: DRAFT` element's `ElementStatus` stays `ACTIVE` and
+was never going to be excluded by that filter regardless. The real question
+is different: a consumer reading via `find_metadata_elements` or similar
+sees the same `ACTIVE` element either way — does anything in that path
+distinguish a `contentStatus: DRAFT` annotation/DataClass from a confirmed
+one, or does it render identically unless the reader specifically checks
+`contentStatus`? Not checked here. Needs its own probe (does RE's own
+annotation rendering, or a naive consumer, surface `contentStatus`
+anywhere?) before relying on it as a safe default for unconfirmed
+proposals — worth doing before Phase 1 slice #10 leans on this as the
+primary UX, though it doesn't block starting the slice.
 
 ---
 
@@ -621,11 +652,13 @@ with the response, so the result is evidence and not a recollection.
 |---|---|---|---|
 | Egeria server | `linkReferenceValueAssignment` dispatches as ValidValuesAssignment (§4) | **being fixed on Egeria's side (2026-09-21)** — no filing needed | probe 2, to unblock/confirm before relying on it |
 | Egeria types | model Tier 1: properties on `DeployedAnalyticsModel`, `DerivedFromModel`, `TrainedOn`, evaluation-run properties (§2) | medium — **in design (2026-09-21)** | three real cards from Phase 4 |
-| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **likely unneeded (2026-09-21)** — `Annotation.contentStatus: DRAFT` + `AssociatedAnnotation` may already cover this; re-decide after probes 4/5 | the RFA convention having run once; probe 4 (`initialStatus: DRAFT`) |
+| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **unneeded (2026-09-21)** — probes 4/5 confirmed `contentStatus: DRAFT` (a domain property on `AuthoredReferenceableProperties`, distinct from the `ElementStatus`/`initialStatus` field the first probe pass mistakenly tested) works cleanly on both a proposal annotation and the candidate element itself; a proposal is a normal element/annotation with `contentStatus: DRAFT` | none — still open: does a normal read path surface `contentStatus` to a consumer (unchecked) |
 | Egeria content pack | `.duckdb` file type + folder → DuckDB survey process (§6) | **already planned for Egeria (2026-09-21)** — no filing needed | nothing; self-contained |
 | Egeria types | model Tier 2 `ModelCard` (§2) | discuss | Tier 1 |
 | Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | **deferred (2026-09-21)** — do not build `resource_reachability` yet either | rule B in use, further tests |
 | pyegeria | `_async_initiate_survey` drops request parameters (§8.1) | high for rule B | none — log now |
-| pyegeria | `create_notification_type`, `create_valid_value_set`, typed annotation helpers | low | probes 3, 5 |
+| pyegeria | `create_notification_type`, `create_valid_value_set` | low | probe 3 |
+| pyegeria | typed annotation helpers for the five proposal-shaped annotation types | **unneeded (2026-09-21)** — probe 5 confirmed the generic `create_annotation` already handles all five cleanly, no missing helper | none |
+| pyegeria | `NewElementRequestBody` has no `initial_status` field, so `initialStatus` is silently dropped client-side on every create routing through it (§3, ISSUE-113) | high — affects any create call that needs non-ACTIVE initial status, not just `create_data_class` | none — log now |
 | Dr.Egeria | `Create Valid Value Set` / `Create Valid Value Definition` commands | medium | none |
 | RE | `resource_reachability` table; RFA proposal convention; measured-scope key convention; call `initiate_gov_action_type` directly | — | none |
