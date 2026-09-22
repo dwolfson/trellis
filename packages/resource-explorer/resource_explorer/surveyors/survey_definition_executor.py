@@ -481,6 +481,7 @@ class SurveyDefinitionExecutor:
                 log.info("Skipping %s — %s", step.qualified_name, guard_reason)
                 steps_report.append({
                     "step": step.qualified_name,
+                    "re_analysis_step": _step_key(step),
                     "status": result_status.SKIPPED_BY_DESIGN,
                     "detail": guard_reason,
                 })
@@ -540,7 +541,7 @@ class SurveyDefinitionExecutor:
                         # already names, not a new one.
                         batch_guard = output.get("guard") if isinstance(output, dict) else None
                         for s in group:
-                            entry = {"step": s.qualified_name, "status": status}
+                            entry = {"step": s.qualified_name, "re_analysis_step": _step_key(s), "status": status}
                             if batch_errors:
                                 entry["detail"] = "; ".join(batch_errors)
                             steps_report.append(entry)
@@ -551,7 +552,7 @@ class SurveyDefinitionExecutor:
                         log.exception(msg)
                         errors.append(msg)
                         for s in group:
-                            steps_report.append({"step": s.qualified_name, "status": "error", "detail": str(exc)})
+                            steps_report.append({"step": s.qualified_name, "re_analysis_step": _step_key(s), "status": "error", "detail": str(exc)})
                     i = j
                     continue
                 # group of exactly 1 — fall through to the identical
@@ -562,7 +563,7 @@ class SurveyDefinitionExecutor:
                     output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok", "engine": "prefect"})
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except PrefectFlowRunCancelled as exc:
                     # Distinct from a generic failure — this is the user
@@ -573,12 +574,12 @@ class SurveyDefinitionExecutor:
                     msg = f"Prefect step '{step.re_analysis_step}' was cancelled: {exc}"
                     log.info(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "cancelled", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "cancelled", "engine": "prefect"})
                 except Exception as exc:
                     msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error", "engine": "prefect"})
             elif step.executes_at == "resource-explorer":
                 runner = adapter.re_analysis_steps.get(step.re_analysis_step)
                 if runner is None:
@@ -589,20 +590,20 @@ class SurveyDefinitionExecutor:
                     )
                     log.error(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "unknown_step"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "unknown_step"})
                     i += 1
                     continue
                 try:
                     output = runner(entity, self.registry, **runner_kwargs)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "status": "ok"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok"})
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except Exception as exc:
                     msg = f"RE step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error"})
             elif step.executes_at in adapter.other_engine_handlers:
                 handler = adapter.other_engine_handlers[step.executes_at]
                 try:
@@ -644,7 +645,7 @@ class SurveyDefinitionExecutor:
                     # step's engine was directly observable but WHICH of
                     # several strategies an adaptive handler actually took
                     # was not, without reading raw `detail`.
-                    entry = {"step": step.qualified_name, "status": status}
+                    entry = {"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": status}
                     if isinstance(outcome, dict) and "source" in outcome:
                         entry["source"] = outcome["source"]
                     if detail is not None:
@@ -656,7 +657,7 @@ class SurveyDefinitionExecutor:
                     msg = f"Failed to trigger {step.executes_at} for step '{step.qualified_name}': {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error"})
             elif step.executes_at == "egeria":
                 # Real, live-reported gap (2026-08-24 — "closing the stub"):
                 # this used to log.info and move on with no entry in `errors`
@@ -680,7 +681,7 @@ class SurveyDefinitionExecutor:
                 )
                 log.warning(msg)
                 errors.append(msg)
-                steps_report.append({"step": step.qualified_name, "status": "not_executed_no_egeria_handler"})
+                steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "not_executed_no_egeria_handler"})
             else:
                 msg = (
                     f"Skipping step {step.qualified_name}: unrecognized executes_at="
@@ -691,7 +692,7 @@ class SurveyDefinitionExecutor:
                 )
                 log.warning(msg)
                 errors.append(msg)
-                steps_report.append({"step": step.qualified_name, "status": "unrecognized_engine"})
+                steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "unrecognized_engine"})
 
             i += 1
 

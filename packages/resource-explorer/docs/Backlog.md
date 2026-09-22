@@ -6785,3 +6785,73 @@ scratch database from `PROBES-2026-09-21.md`'s earlier live-verification
 work). Not investigated or fixed here — unrelated to filesystems or this
 slice's changes, and this session did not touch that database or its
 Egeria elements.
+
+## Database/filesystem Analyses cards: run attribution fixed, publish attribution still not established
+
+Live-reproduced in classic (`coco_pharma @ local-docker`): running a real
+database survey (`POST /api/databases/{slug}/survey` -> 200 OK, confirmed via
+the network tab) left every per-analysis card (Schema Conventions, Nested
+Column Profile, Data Class Match, Change Rates, ...) still showing no
+run/result indicator at all. Root cause: `index.html`'s
+`_loadAnalysisCatalogPanel()` only ever fetched
+`/api/projects/{slug}/analyses/last-activity` when `resourceType === 'repo'`
+— `lastActivity` was hard-coded to `{}` for database and filesystem no
+matter what had actually run, so `renderAnalysisCatalogCards()`'s
+`lastActivity[a.id]` lookup (the `📅 Last run`/`☁ Published` badges) could
+never populate for those two resource types.
+
+**Fixed:** `GET /api/databases/{slug}/analyses/last-activity` and
+`GET /api/filesystems/{slug}/analyses/last-activity` now exist
+(`web/routes/databases.py`, `web/routes/filesystems.py`), backed by
+`workflows.analysis.build_analysis_last_activity` — the repo route's
+attribution logic, generalized and shared rather than forked (`projects.py`'s
+route is now a thin adapter over the same function). The frontend guard is
+gone; `_loadAnalysisCatalogPanel()` fetches the right endpoint for whichever
+`resourceType` is selected.
+
+Run attribution (`last_run_at`/`last_run_status`/`last_run_partial`) is now
+REAL data for database and filesystem, not a guess: `ProjectRegistry.
+get_analysis_last_run()` is generalized to take a step map per entity_type —
+`DATABASE_ANALYSIS_STEP_MAP`/`FILESYSTEM_ANALYSIS_STEP_MAP`
+(`*/survey_definition_adapter.py`), built directly from each adapter's own
+`re_analysis_step_info` descriptions, which name the analysis_catalog ids
+each coarse step produces. Database's map is a genuine step->analyses
+FAN-OUT (one step like `db_derived` is the real source of six separate
+catalog entries) rather than repo's step->analysis PARTITION, so
+`ProjectRegistry._step_key_to_analysis_ids` now returns a list per step key
+and credits every owner, not just one.
+
+A second, smaller fix rides along: `survey_definition_executor.py`'s
+`steps_report` entries now record each step's real `re_analysis_step` key
+directly (`_step_key(step)`, already used internally for guard evaluation),
+not just its Egeria `qualifiedName`. Before this, `get_analysis_last_run`
+attributed a step by parsing the LAST `::`-segment off its qualifiedName and
+assuming it equalled the `re_analysis_step` key — true for repo's own
+authoring convention, but `docs/survey-definitions.md`'s own PostgreSQL
+example uses a CamelCase qualifiedName suffix (`SchemaAndStats`) that does
+NOT match its `re_analysis_step` value (`postgres_schema_and_stats`),
+so nothing in the schema actually guaranteed that convention for database.
+The qualifiedName-suffix parse is kept as a fallback for historical rows
+that predate this field.
+
+**NOT fixed, and deliberately not guessed at:** publish attribution
+(`last_published_at`/`last_published_scope`) is still empty for every
+database/filesystem analysis, always. `record_published_annotation_types()`/
+`record_published_analyses()` — the two tables `get_last_published_
+annotation_types`/`get_last_published_analyses` read — are written ONLY from
+`EgeriaPublisher` on the repo publish path (`surveyors/egeria_publisher.py`).
+`EgeriaDatabaseSurveyor.publish_step_annotations` and the filesystem
+publisher never call them. Building the repo route's two-tier recorded/
+shared publish-attribution fallback on top of a data source that plain does
+not exist for database/filesystem would reproduce exactly the "Never run"/
+"Published today" contradiction this file's `get_analysis_last_run` entry
+already fixed once, aimed at the wrong field this time. Wiring this up needs:
+a `DATABASE_ANALYSES_FOR_STEPS`-equivalent of `egeria_publisher._analyses_for_
+steps` (straightforward — it's the inverse of `DATABASE_ANALYSIS_STEP_MAP`,
+already built above), plus a call to both record functions from
+`publish_step_annotations` (and the filesystem equivalent) with the actual
+annotation types/analysis_ids that publish covered. `publish_stale`
+(Egeria-linkage staleness) has the same gap one level up: nothing writes an
+`f"{entity_type}_publish"` linkage row for database/filesystem, so that flag
+is always `False` there too — real absence, not a lie, since a card only
+shows it beside a `last_published_at` that is itself always empty today.

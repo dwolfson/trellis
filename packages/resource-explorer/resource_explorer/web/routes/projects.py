@@ -839,89 +839,24 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     day for the Survey Results dashboards) already has everything needed —
     each analysis_id's own annotation_types (analysis_catalog.yaml) is the
     same join key used there, just applied per-analysis instead of
-    per-dashboard-of-several-analyses."""
+    per-dashboard-of-several-analyses.
+
+    The actual attribution logic (two-tier publish attribution, the
+    measured/never_run/not_established run basis, __auto_publishes__) now
+    lives in `workflows.analysis.build_analysis_last_activity` — generalized
+    there so `GET /api/databases/{slug}/analyses/last-activity` and the
+    filesystem equivalent (`web/routes/databases.py`, `web/routes/
+    filesystems.py`) can share it rather than fork this whole function; this
+    route is now a thin 404-translating adapter, same pattern as the
+    `/depth-offer` and `/catalogue-depth-offer` routes below."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
 
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    last_run = registry.get_analysis_last_run("repo", slug)
-    # Surveys that ran but carry no step detail (older rows). Their analyses
-    # cannot be credited, but they also cannot honestly be called never-run.
-    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
-    published_by_type = registry.get_last_published_annotation_types(slug)
-    published_by_analysis = registry.get_last_published_analyses(slug)
-    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
-    # AHEAD.md §4: one flag for the whole repo (there is one publish-state
-    # resolve per project, not per analysis), carried onto every analysis's
-    # own dict so each card can show it beside its own published-at.
-    publish_linkage = registry.get_egeria_linkage("repo_publish", slug) or {}
-    publish_stale = publish_linkage.get("status") == "stale"
-
-    result: dict[str, dict] = {}
-    for a in get_analyses("repo", include_egeria_live=False):
-        run = last_run.get(a["id"], {})
-        # Publish attribution, in two tiers. Annotation types are shared --
-        # ResourceMeasureAnnotation has 15 producers, ClassificationAnnotation
-        # 13 -- so "any of my annotation types was published" credited every
-        # sibling analysis with a publish it had no part in. That is what put
-        # "Published today" on cards that had never run.
-        #
-        # A type only ONE analysis can produce is real evidence THIS analysis
-        # was published. A shared one only shows the repo was published while
-        # this analysis's types were involved, which is weaker and is labelled
-        # as such -- the same 'analysis' vs 'repo' distinction the Survey
-        # Definition cards already draw.
-        # Recorded attribution first: the publish itself said which analyses it
-        # covered (project_published_analyses). Everything below is the older
-        # inference, kept only for publishes that predate that record.
-        recorded = published_by_analysis.get(a["id"])
-        own_types = a.get("annotation_types") or []
-        shared = [t for t in own_types if t in published_by_type]
-        if recorded:
-            pub_at, pub_scope = recorded, "analysis"
-        elif shared:
-            # The inference can no longer yield an 'analysis' scope for
-            # anything: once two analyses shared a type, nothing was uniquely
-            # owned. Historical rows therefore read as the hedged 'repo'
-            # scope, which is the truth about them — we cannot say which
-            # analysis a pre-record publish covered.
-            pub_at, pub_scope = max(published_by_type[t] for t in shared), "repo"
-        else:
-            pub_at, pub_scope = "", ""
-        result[a["id"]] = {
-            "last_run_at": run.get("last_run_at", ""),
-            "last_run_status": run.get("last_run_status", ""),
-            # "measured" / "never_run" / "not_established" -- the third is a
-            # repo that WAS surveyed by runs we cannot attribute to analyses.
-            # Calling that "never run" beside an attributable publish is what
-            # produced "Never run" and "Published today" on one card.
-            "last_run_basis": ("measured" if run.get("last_run_at")
-                               else "not_established" if unattributed else "never_run"),
-            "unattributed_surveys": unattributed,
-            "last_run_via": run.get("last_run_via", ""),
-            # Which analysis's run this freshness came from, when it came from
-            # a DERIVED one (architecture_diagram running the recovery's steps).
-            # Carried so the card can name it rather than saying "ran today"
-            # about a run of something else — see get_analysis_last_run().
-            "last_run_derived_from": run.get("last_run_derived_from", ""),
-            "last_run_partial": run.get("last_run_partial", False),
-            "last_published_at": pub_at,
-            "last_published_scope": pub_scope,
-            "publish_stale": bool(pub_at) and publish_stale,
-        }
-    # Repo-level, carried under a reserved key so the per-analysis map keeps
-    # its shape — same convention get_analysis_last_run uses for
-    # __unattributed_surveys__. Cards use it to hide a Publish button that has
-    # nothing to do: a run auto-publishes whenever the resource has an
-    # assigned Egeria Project, so offering to publish again reads as though
-    # publishing still needed doing.
-    result["__auto_publishes__"] = {
-        "auto_publishes": registry.has_assigned_egeria_project("repo", slug),
-    }
-    return result
+    return build_analysis_last_activity(registry, "repo", slug)
 
 
 @router.get("/{slug}/depth-offer")

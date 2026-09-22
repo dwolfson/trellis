@@ -2751,11 +2751,27 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
         }
       } catch { /* non-fatal — cards just show the unscheduled state */ }
       // Last-run/last-published per local analysis_id (direct feedback,
-      // 2026-08-24 — Analyses cards had neither before). repo-only today,
-      // same scope as the results/schedule machinery above.
-      if (resourceType === 'repo') {
+      // 2026-08-24 — Analyses cards had neither before). Was repo-only
+      // (`if (resourceType === 'repo')` guarded this whole fetch out for
+      // database/filesystem) until the same live reproduction that opened
+      // this file's Backlog.md entry: a database survey completed (200 OK,
+      // confirmed via the network tab) and every per-analysis card still
+      // showed no run/result indicator at all, because `lastActivity` was
+      // hard-coded to `{}` for every non-repo resource type no matter what
+      // had actually run. `/api/databases/{slug}/analyses/last-activity`
+      // and the filesystem equivalent now exist (`web/routes/databases.py`,
+      // `web/routes/filesystems.py`), backed by the same
+      // `workflows.analysis.build_analysis_last_activity` the repo route
+      // uses — see its docstring for what's real data today (run
+      // attribution) versus not yet (publish attribution, for database/
+      // filesystem).
+      const _lastActivityBase = resourceType === 'database' ? '/api/databases'
+        : resourceType === 'filesystem' ? '/api/filesystems'
+        : resourceType === 'repo' ? '/api/projects'
+        : '';
+      if (_lastActivityBase) {
         try {
-          const laRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/last-activity`);
+          const laRes = await fetch(`${_lastActivityBase}/${encodeURIComponent(slug)}/analyses/last-activity`);
           if (laRes.ok) lastActivity = await laRes.json();
         } catch { /* non-fatal — cards just show the never-run state */ }
       }
@@ -2935,13 +2951,16 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     const lastRunHtml = la.last_run_at
       ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})${_esc(_runVia)}${_esc(_partial)}">📅 Last run ${_relTime(la.last_run_at)}${la.last_run_partial ? '*' : ''}</span>`
       : la.last_run_basis === 'not_established'
-        ? `<span class="text-slate-500" title="${la.unattributed_surveys} survey run(s) on this repo predate per-step recording, so whether this analysis was among them cannot be determined. Run it to establish one.">📅 Last run not established</span>`
+        ? `<span class="text-slate-500" title="${la.unattributed_surveys} survey run(s) on this resource predate per-step recording, so whether this analysis was among them cannot be determined. Run it to establish one.">📅 Last run not established</span>`
         : `<span class="text-amber-400">📅 Never run</span>`;
     // Two tiers, because annotation types are shared. 'analysis' means a type
     // only this analysis produces was published — real evidence about THIS
-    // card. 'repo' means only shared types matched, so all that is known is
-    // that the repo was published; shown dimmer and hedged rather than
-    // claiming a precision the join cannot support.
+    // card. Anything else non-empty (was hardcoded 'repo' before database/
+    // filesystem also started sending this field — the backend now returns
+    // the resource's own entity_type for the shared tier, e.g. 'database')
+    // means only shared types matched, so all that is known is that the
+    // resource was published; shown dimmer and hedged rather than claiming a
+    // precision the join cannot support.
     // Fourth publish state, on top of the two tiers above (PUBLISH-STATE-
     // AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4):
     // the date stays — it is the only evidence a publish happened — and the
@@ -2950,8 +2969,8 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
       ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>`
       : '';
     const lastPublishedHtml = la.last_published_at
-      ? la.last_published_scope === 'repo'
-        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The repo was published at ${_esc(la.last_published_at)}.">☁ Repo published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
+      ? la.last_published_scope && la.last_published_scope !== 'analysis'
+        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The resource was published at ${_esc(la.last_published_at)}.">☁ Resource published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
         : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
       : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
