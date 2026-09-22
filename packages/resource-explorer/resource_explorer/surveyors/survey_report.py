@@ -35,6 +35,13 @@ class AnnotationType(str, Enum):
     QUALITY_SCORE = "QualityScoreAnnotation"
     RELATIONSHIP = "RelationshipAnnotation"
     REQUEST_FOR_ACTION = "RequestForActionAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 8, `postgres_operations`). Egeria's
+    #: real `ResourcePhysicalStatusAnnotationProperties` type — one of the
+    #: twelve RE left unused per `docs/egeria-integration.md` §2's audit —
+    #: is the correct fit for `db_resilience`'s findings (replication role,
+    #: replica lag, WAL archiving, backup/clustering signals) rather than
+    #: publishing them as a generic ResourceMeasureAnnotation.
+    RESOURCE_PHYSICAL_STATUS = "ResourcePhysicalStatusAnnotation"
 
 
 @dataclass
@@ -159,6 +166,27 @@ class RequestForActionAnnotation(Annotation):
 
 
 @dataclass
+class ResourcePhysicalStatusAnnotation(Annotation):
+    """Physical/operational state of a resource — Egeria's real
+    `ResourcePhysicalStatusAnnotationProperties` type.
+
+    Its own fixed fields (`resourceCreateTime`, `resourceUpdateTime`,
+    `resourceLastAccessedTime`, `size`, `encodingType`) describe a
+    filesystem-shaped resource and do not fit `postgres_operations`'
+    `db_resilience` finding (replication role, replica lag, WAL archiving,
+    backup-tool/clustering signals) — see design doc §5.5. Rather than
+    fabricating values for fields this finding does not have, this
+    dataclass carries a generic `physical_properties` bag, published under
+    `additionalProperties` (`annotation_props.py`), the same convention
+    already used for any field not yet natively typed on the wire. A
+    future filesystem use of this type (design doc §6, Phase 2) is the one
+    expected to populate the four named fields for real.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PHYSICAL_STATUS, init=False)
+    physical_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class SurveyResult:
     """
     Complete output of one survey run against a project.
@@ -267,7 +295,15 @@ ANNOTATION_TYPES_REGISTRY = [
         "properties": ["action_requested (str)", "action_target_name (str)"],
         "egeria_type": "RequestForActionProperties",
         "python_class": "RequestForActionAnnotation",
-    }
+    },
+    {
+        "type": "ResourcePhysicalStatusAnnotation",
+        "display_name": "Resource Physical Status",
+        "description": "Represents the physical/operational state of a resource (e.g. database replication role, replica lag, backup/archiving/clustering signals; a filesystem entry's create/update/access timestamps and size).",
+        "properties": ["physical_properties (dict)"],
+        "egeria_type": "ResourcePhysicalStatusAnnotationProperties",
+        "python_class": "ResourcePhysicalStatusAnnotation",
+    },
 ]
 
 

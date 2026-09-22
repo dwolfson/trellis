@@ -17,6 +17,7 @@ from resource_explorer.surveyors.survey_report import (
     AnnotationType,
     RequestForActionAnnotation,
     ResourceMeasureAnnotation,
+    ResourcePhysicalStatusAnnotation,
     SchemaAnalysisAnnotation,
 )
 
@@ -29,14 +30,26 @@ from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
 # clicked. "schema" always runs (see DatabaseSurveyor._ALL_STEPS's
 # comment), so schema_inventory/row_count_snapshot genuinely diverge in
 # what extra work they do (views vs. statistics), not just in label.
-# privilege_audit has no dedicated check today (confirmed — "database-only,
-# aspirational" per the target-shape audit) so it still runs the full
-# survey; a real audit would replace this entry with its own steps once one
-# exists, not add a fourth DatabaseSurveyor step.
+#
+# privilege_audit: had no dedicated check before Phase 1 slice 8
+# (confirmed — "database-only, aspirational" per the target-shape audit),
+# so it used to run the full survey (schema+statistics+views) as a
+# fallback with no dedicated queries backing it at all. It now maps to the
+# "operations" step (postgres_operations, design §5.7), which reads
+# pg_roles/role_table_grants/pg_default_acl directly and raises an RFA on
+# PUBLIC grants — see DatabaseSurveyor._survey_operations().
+# db_activity_signals/db_resilience/db_external_dependencies are new
+# catalog ids the same step now backs; each also needs "schema" for
+# _survey_operations()'s activity-signals table count, which is why
+# "schema" appears in their step lists too, not just because the shared
+# invariant below forces it regardless.
 DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "schema_inventory": ["schema", "views"],
     "row_count_snapshot": ["schema", "statistics"],
-    "privilege_audit": ["schema", "statistics", "views"],
+    "privilege_audit": ["schema", "operations"],
+    "db_activity_signals": ["schema", "operations"],
+    "db_resilience": ["schema", "operations"],
+    "db_external_dependencies": ["schema", "operations"],
 }
 
 
@@ -87,16 +100,29 @@ class DatabaseSurveyor:
     # prerequisite, repo-scope-narrowing-funnel plan) — see
     # DATABASE_ANALYSIS_STEP_MAP in web/routes/databases.py for the
     # analysis_id -> steps mapping this enables.
+    #
+    # "operations" (Phase 1 slice 8, postgres_operations) is deliberately
+    # NOT in _ALL_STEPS: unlike statistics/views, its four constituent
+    # analyses (privilege_audit, db_activity_signals, db_resilience,
+    # db_external_dependencies) are read directly from pg_roles/pg_stat_*/
+    # pg_settings/pg_extension — an "api / low" cost per design §5.7 that
+    # should not silently ride along on every default full survey(). It
+    # only runs when explicitly requested (DATABASE_ANALYSIS_STEP_MAP or the
+    # postgres_operations adapter entry point), same opt-in shape "views"
+    # already had before this slice.
     _ALL_STEPS = ("schema", "statistics", "views")
 
     def survey(self, steps: list[str] | None = None) -> dict:
         """Run a database survey.
 
-        steps : optional subset of {"schema", "statistics", "views"} — None
-            (default) runs all three, exactly as before this parameter
-            existed. "schema" always runs even if omitted (see _ALL_STEPS's
-            comment) since statistics/views results are meaningless without
-            the table list schema produces.
+        steps : optional subset of {"schema", "statistics", "views",
+            "operations"} — None (default) runs the original three
+            (_ALL_STEPS), exactly as before "operations" existed;
+            "operations" must be requested explicitly (see _ALL_STEPS's
+            comment). "schema" always runs even if omitted, since every
+            other step's results are meaningless (or, for "operations",
+            just less complete — see _survey_operations()) without the
+            table list schema produces.
 
         Returns:
             Dict with survey results including annotations and statistics
@@ -121,6 +147,9 @@ class DatabaseSurveyor:
             #: "statistics" runs — see _survey_extended_statistics().
             "column_profile_rows": [],
             "table_activity_rows": [],
+            #: postgres_operations output (Phase 1 slice 8), built only when
+            #: "operations" runs — see _survey_operations().
+            "operations": {},
         }
 
         try:
@@ -171,6 +200,22 @@ class DatabaseSurveyor:
                         )
                     except Exception as views_err:
                         results["errors"].append(f"SQL view static analysis failed (non-fatal): {views_err}")
+
+                # postgres_operations: privilege_audit, db_activity_signals,
+                # db_resilience, db_external_dependencies (design §5.5, §5.7
+                # — Phase 1 slice 8). Non-fatal, same shape as statistics/
+                # views above.
+                if "operations" in requested:
+                    try:
+                        operations_info = self._survey_operations(
+                            conn, capabilities, schema_info
+                        )
+                        results["operations"] = operations_info
+                        results["annotations"].extend(
+                            self._create_operations_annotations(operations_info)
+                        )
+                    except Exception as ops_err:
+                        results["errors"].append(f"Operations query failed (non-fatal): {ops_err}")
 
         except Exception as e:
             error_msg = str(e)
@@ -473,6 +518,380 @@ class DatabaseSurveyor:
 
         return profile_rows, activity_rows, annotations
 
+    def _survey_operations(
+        self,
+        conn,
+        capabilities: EngineCapabilities,
+        schema_info: dict,
+    ) -> dict:
+        """Fetch the four analyses `postgres_operations` folds together
+        (design §5.7): `privilege_audit`, `db_activity_signals`,
+        `db_resilience`, `db_external_dependencies`. Each is independently
+        capability-gated (design §5.1) — a section is `None` when this
+        connection's capability declaration says the engine can't do it,
+        never an empty dict indistinguishable from "measured, nothing
+        found". `_create_operations_annotations()` is the pure function
+        that turns this dict into annotations, and is also what
+        `EgeriaDatabaseSurveyor.publish_step_annotations` calls for the
+        Survey-Definition publish path — this method does only the fetch.
+        """
+        info: dict = {"capabilities": capabilities.as_dict()}
+
+        info["privilege_audit"] = (
+            conn.get_privilege_audit() if capabilities.privileges else None
+        )
+
+        if capabilities.tuple_counters:
+            info["activity_signals"] = {
+                "table_activity": conn.get_table_activity(),
+                "stats_reset": conn.get_stats_reset(),
+                "table_count": schema_info.get("total_tables", 0),
+            }
+        else:
+            info["activity_signals"] = None
+
+        if capabilities.resilience:
+            info["resilience"] = {
+                "replication": conn.get_replication_status(),
+                "wal_archiving": conn.get_wal_archiving_status(),
+                "backup_tool_signals": conn.get_backup_tool_signals(),
+                "clustering": conn.get_clustering_info(),
+            }
+        else:
+            info["resilience"] = None
+
+        info["external_dependencies"] = (
+            conn.get_external_dependencies() if capabilities.external_dependencies else None
+        )
+
+        return info
+
+    def _create_operations_annotations(self, operations_info: dict) -> list:
+        """Turn `_survey_operations()`'s fetched dict into annotations.
+
+        A `None` section here means "this connection's capability
+        declaration says the engine can't do this" (STATE_NOT_SUPPORTED in
+        registry.py's vocabulary) — rendered as a ResourceMeasureAnnotation
+        at confidence 0 rather than silently skipped, the same pattern
+        `_survey_extended_statistics` uses for column_stats/tuple_counters/
+        index_stats above. Kept as a pure function of already-fetched data
+        (no `conn` argument) so `EgeriaDatabaseSurveyor.publish_step_
+        annotations` can call it directly on a Survey-Definition step's
+        stored output, without re-opening a connection.
+        """
+        annotations: list = []
+
+        # ── privilege_audit (design §5.4, §5.7) ──
+        privilege_audit = operations_info.get("privilege_audit")
+        if privilege_audit is None:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Privilege audit (pg_roles/role_table_grants) not supported by this engine",
+                    analysis_step="DatabaseOperations",
+                    confidence=0,
+                    resource_properties={"capability": "privileges", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include privileges — the finding is not established, not a "
+                        "measurement of zero roles or grants."
+                    ),
+                )
+            )
+        else:
+            roles = privilege_audit.get("roles") or []
+            grants = privilege_audit.get("table_grants") or []
+            default_acl = privilege_audit.get("default_acl") or []
+            superusers = [r.get("rolname") for r in roles if r.get("rolsuper")]
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary=(
+                        f"{len(roles)} role(s), {len(grants)} table grant(s), "
+                        f"{len(superusers)} superuser role(s)"
+                    ),
+                    analysis_step="DatabaseOperations",
+                    confidence=100,
+                    resource_properties={
+                        "role_count": len(roles),
+                        "table_grant_count": len(grants),
+                        "default_acl_count": len(default_acl),
+                        "superuser_roles": superusers,
+                    },
+                    explanation=(
+                        "Roles, table grants and default ACLs read directly from "
+                        "pg_roles, information_schema.role_table_grants and "
+                        "pg_default_acl."
+                    ),
+                )
+            )
+
+            # RFA on PUBLIC grants (design §5.7), grouped per table so one
+            # table with several PUBLIC-granted privileges raises one
+            # actionable item rather than one per privilege_type.
+            public_grants: dict[tuple, list[str]] = {}
+            for g in grants:
+                if (g.get("grantee") or "").upper() == "PUBLIC":
+                    key = (g.get("table_schema", ""), g.get("table_name", ""))
+                    public_grants.setdefault(key, []).append(g.get("privilege_type", ""))
+            for (schema_name, table_name), privileges in sorted(public_grants.items()):
+                qualified = f"{schema_name}.{table_name}"
+                priv_list = ", ".join(sorted(set(privileges)))
+                annotations.append(
+                    RequestForActionAnnotation(
+                        summary=f"PUBLIC has {priv_list} on {qualified}",
+                        analysis_step="DatabaseOperations",
+                        confidence=100,
+                        action_requested=(
+                            f"Review whether the PUBLIC role should retain {priv_list} "
+                            f"on {qualified}; revoke if not intentional."
+                        ),
+                        action_target_name=qualified,
+                        explanation=(
+                            "A grant to the PUBLIC pseudo-role means every current and "
+                            "future database user has this privilege, not just an "
+                            "explicitly-listed role — read directly from "
+                            "information_schema.role_table_grants."
+                        ),
+                    )
+                )
+
+        # ── db_activity_signals (design §5.2, §5.7) ──
+        # Reuses Phase 1 slice 7's get_table_activity()/get_stats_reset()
+        # rather than querying pg_stat_user_tables a second way — this is
+        # the database-wide roll-up of the SAME per-table figures
+        # postgres_schema_and_stats records individually.
+        activity = operations_info.get("activity_signals")
+        if activity is None:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Activity signals (pg_stat_user_tables) not supported by this engine",
+                    analysis_step="DatabaseOperations",
+                    confidence=0,
+                    resource_properties={"capability": "tuple_counters", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include tuple_counters — the finding is not established, "
+                        "not a measurement of zero activity."
+                    ),
+                )
+            )
+        else:
+            rows = activity.get("table_activity") or []
+            table_count = activity.get("table_count", 0)
+            if not rows and table_count:
+                # Present in the catalog, absent from pg_stat_user_tables —
+                # stats not yet accumulated for any table, not zero
+                # activity. Same "run ANALYZE"-shaped distinction slice 7
+                # draws per-column; here it applies database-wide.
+                annotations.append(
+                    ResourceMeasureAnnotation(
+                        summary=(
+                            f"No pg_stat_user_tables rows despite {table_count} "
+                            "table(s) in the catalog — activity not yet accumulated"
+                        ),
+                        analysis_step="DatabaseOperations",
+                        confidence=0,
+                        resource_properties={"table_count": table_count, "rows_found": 0},
+                        explanation=(
+                            "The statistics collector has not produced a row for any "
+                            "table yet (recent stats reset, or the collector has not "
+                            "run) — this is absence of measurement, not a measurement "
+                            "of zero activity."
+                        ),
+                    )
+                )
+            else:
+                total_inserts = sum(r.get("rows_inserted") or 0 for r in rows)
+                total_updates = sum(r.get("rows_updated") or 0 for r in rows)
+                total_deletes = sum(r.get("rows_deleted") or 0 for r in rows)
+                never_read = [
+                    f"{r.get('schemaname')}.{r.get('tablename')}" for r in rows
+                    if (r.get("seq_scan") or 0) == 0 and (r.get("idx_scan") or 0) == 0
+                ]
+                tables_with_writes = [
+                    r for r in rows
+                    if (r.get("rows_inserted") or 0) or (r.get("rows_updated") or 0)
+                    or (r.get("rows_deleted") or 0)
+                ]
+                annotations.append(
+                    ResourceMeasureAnnotation(
+                        summary=(
+                            f"Database-wide activity since stats reset: "
+                            f"{total_inserts} inserts, {total_updates} updates, "
+                            f"{total_deletes} deletes across {len(rows)} table(s); "
+                            f"{len(never_read)} table(s) with no reads recorded"
+                        ),
+                        analysis_step="DatabaseOperations",
+                        confidence=100,
+                        resource_properties={
+                            "tables_measured": len(rows),
+                            "rows_inserted_total": total_inserts,
+                            "rows_updated_total": total_updates,
+                            "rows_deleted_total": total_deletes,
+                            "tables_with_no_reads": never_read,
+                            "tables_with_writes": len(tables_with_writes),
+                            "stats_reset": activity.get("stats_reset") or "",
+                        },
+                        explanation=(
+                            "Database-wide roll-up of pg_stat_user_tables tuple "
+                            "counters and scan counts — the same per-table figures "
+                            "postgres_schema_and_stats records individually (design "
+                            "§5.1), summarised here to answer 'is anything reading or "
+                            "writing at all', not per-table detail."
+                        ),
+                    )
+                )
+
+        # ── db_resilience (design §5.5 — a MIXED analysis) ──
+        resilience = operations_info.get("resilience")
+        if resilience is None:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary=(
+                        "Operational resilience (pg_stat_replication/pg_settings) "
+                        "not supported by this engine"
+                    ),
+                    analysis_step="DatabaseOperations",
+                    confidence=0,
+                    resource_properties={"capability": "resilience", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include resilience — the finding is not established, not a "
+                        "measurement of 'standalone, unreplicated'."
+                    ),
+                )
+            )
+        else:
+            replication = resilience.get("replication") or {}
+            wal = resilience.get("wal_archiving") or {}
+            backup = resilience.get("backup_tool_signals") or {}
+            clustering = resilience.get("clustering") or {}
+
+            is_in_recovery = replication.get("is_in_recovery")
+            replicas = replication.get("replicas") or []
+
+            if is_in_recovery is True:
+                role = "standby"
+                summary = "Standby — receiving from a primary (pg_is_in_recovery() = true)"
+            elif is_in_recovery is False and replicas:
+                role = "primary"
+                lags = [
+                    r.get("replay_lag_seconds") for r in replicas
+                    if r.get("replay_lag_seconds") is not None
+                ]
+                max_lag = max(lags) if lags else None
+                summary = (
+                    f"Primary with {len(replicas)} replica(s)"
+                    + (f", max replay lag {max_lag:.0f}s" if max_lag is not None else
+                       ", replay lag unknown")
+                )
+            elif is_in_recovery is False:
+                # A real, positive finding — not an error and not an
+                # omission. See DB-OPERATIONS-STEP-IMPLEMENTED.md.
+                role = "standalone"
+                summary = "Standalone — primary with no replicas (pg_is_in_recovery() = false)"
+            else:
+                role = "unknown"
+                summary = "Replication role could not be determined (pg_is_in_recovery() unavailable)"
+
+            annotations.append(
+                ResourcePhysicalStatusAnnotation(
+                    summary=summary,
+                    analysis_step="DatabaseOperations",
+                    confidence=100 if is_in_recovery is not None else 0,
+                    physical_properties={
+                        "role": role,
+                        "replica_count": len(replicas),
+                        "replicas": replicas,
+                        "archive_mode": wal.get("archive_mode") or "",
+                        "archiver_failed_count": wal.get("failed_count"),
+                        "archiver_last_archived_time": wal.get("last_archived_time") or "",
+                        "backup_tool_extensions_detected": backup.get("detected_extensions", []),
+                        "citus_detected": clustering.get("citus_detected", False),
+                        "citus_version": clustering.get("citus_version"),
+                        # Enrichment half — design §5.5 lists these as "no"
+                        # in the Observable column: not machine-observable
+                        # from inside the database at all. Recorded as
+                        # explicitly pending rather than omitted, per the
+                        # MIXED-analysis envelope rule ("the envelope must
+                        # say which half answered").
+                        "last_backup_date": None,
+                        "restore_test_date": None,
+                        "enrichment_pending": ["last_backup_date", "restore_test_date", "rpo_rto"],
+                    },
+                    explanation=(
+                        "MIXED analysis (design §5.5): the catalog half — replication "
+                        "role, replica lag, WAL archiving status, backup-tool presence "
+                        "and Citus clustering — is measured directly from "
+                        "pg_is_in_recovery(), pg_stat_replication, "
+                        "pg_settings.archive_mode, pg_stat_archiver and pg_extension. "
+                        "The Enrichment half (last successful backup date, whether a "
+                        "restore was ever tested, RPO/RTO) is NOT machine-observable "
+                        "from inside the database and stays genuinely pending — see "
+                        "enrichment_pending — rather than being silently omitted or "
+                        "reported as zero."
+                    ),
+                )
+            )
+
+        # ── db_external_dependencies (design §5.4, §5.7) ──
+        deps = operations_info.get("external_dependencies")
+        if deps is None:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary=(
+                        "External dependency inventory (pg_extension/"
+                        "pg_foreign_server/pg_publication) not supported by this engine"
+                    ),
+                    analysis_step="DatabaseOperations",
+                    confidence=0,
+                    resource_properties={"capability": "external_dependencies", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include external_dependencies — the finding is not "
+                        "established, not a measurement of zero dependencies."
+                    ),
+                )
+            )
+        else:
+            extensions = deps.get("extensions") or []
+            foreign_servers = deps.get("foreign_servers") or []
+            foreign_tables = deps.get("foreign_tables") or []
+            publications = deps.get("publications") or []
+            subscriptions = deps.get("subscriptions") or []
+            annotations.append(
+                SchemaAnalysisAnnotation(
+                    summary=(
+                        f"{len(extensions)} extension(s), {len(foreign_servers)} "
+                        f"foreign server(s), {len(foreign_tables)} foreign table(s), "
+                        f"{len(publications)} publication(s), {len(subscriptions)} "
+                        f"subscription(s)"
+                    ),
+                    analysis_step="DatabaseOperations",
+                    schema_name=self.db_entity.database_name,
+                    schema_type="external_dependencies",
+                    confidence=100,
+                    json_properties={
+                        "extensions": [e.get("extname") for e in extensions],
+                        "foreign_servers": [s.get("srvname") for s in foreign_servers],
+                        "foreign_tables": [
+                            f"{t.get('schema_name')}.{t.get('table_name')}"
+                            for t in foreign_tables
+                        ],
+                        "publications": [p.get("pubname") for p in publications],
+                        "subscriptions": [s.get("subname") for s in subscriptions],
+                    },
+                    explanation=(
+                        "What this database depends on outside itself — extensions, "
+                        "foreign data wrappers/servers/tables and logical replication "
+                        "publications/subscriptions — read directly from pg_extension, "
+                        "pg_foreign_server, pg_foreign_table, pg_publication and "
+                        "pg_subscription."
+                    ),
+                )
+            )
+
+        return annotations
+
     def _create_schema_annotations(self, schema_info: dict) -> list:
         """Create annotations from schema information."""
         annotations = []
@@ -647,6 +1066,11 @@ class DatabaseSurveyor:
                 "statistics": statistics,
                 "annotation_count": len(results["annotations"]),
                 "views": results.get("views", []),
+                #: postgres_operations (Phase 1 slice 8) — empty dict when
+                #: the "operations" step was not requested, same "step
+                #: didn't run" convention as `views` above; not a new
+                #: structured table, folded into this existing blob.
+                "operations": results.get("operations", {}),
             },
             surveyed_at=results["surveyed_at"],
         )

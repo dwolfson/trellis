@@ -427,12 +427,18 @@ class TestEngineCapabilitiesDeclaration:
         assert caps.column_stats is True
         assert caps.tuple_counters is True
         assert caps.index_stats is True
-        # Not yet implemented anywhere — declaring these True would be a
-        # promise this build does not keep (design §5.1's honest-absence rule).
-        assert caps.replication_status is False
+        # query_stats: still not implemented anywhere — declaring it True
+        # would be a promise this build does not keep (design §5.1's
+        # honest-absence rule).
         assert caps.query_stats is False
-        assert caps.resilience is False
-        assert caps.external_dependencies is False
+        # replication_status/resilience/external_dependencies/privileges:
+        # Phase 1 slice 8 (postgres_operations, design §5.5/§5.7) implements
+        # these — see test_postgres_operations_step.py for the dedicated
+        # coverage of what they gate.
+        assert caps.replication_status is True
+        assert caps.resilience is True
+        assert caps.external_dependencies is True
+        assert caps.privileges is True
 
     def test_default_capabilities_are_all_false(self):
         from resource_explorer.surveyors.database.connection import (

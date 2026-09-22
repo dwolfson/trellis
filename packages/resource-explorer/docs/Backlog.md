@@ -6258,3 +6258,55 @@ same review) — it is accepted as-is here, in writing, rather than silently.
 Any future rework of the historical-blob back-fill path should consider a
 weaker state than `STATE_MEASURED` (e.g. "stored, no run status recorded")
 for rows whose source blob genuinely carries no success/failure signal.
+
+## Phase 1 slice 8 (`postgres_operations`) — follow-ups logged, not fixed here
+
+Three items surfaced building the `postgres_operations` step (design
+§5.5/§5.7, `docs/design-notes/DB-OPERATIONS-STEP-IMPLEMENTED.md`), each
+deliberately scoped out rather than half-built:
+
+1. **Patroni-via-REST clustering detection is not attempted.** Design §5.5
+   marks it "partly" observable, but via a live REST call to a Patroni
+   instance — a different class of dependency (reachable HTTP endpoint,
+   separate credential, separate failure mode) than the catalog reads this
+   slice does. `get_clustering_info()` covers Citus only (a real Postgres
+   extension visible from `pg_extension`) and says so in its docstring.
+   Whoever picks this up should treat it as its own scope-of-fetch decision,
+   not an extension of `get_clustering_info()`.
+
+2. **`pg_subscription`'s per-item absence is not distinguished.**
+   `get_external_dependencies()` swallows a permission error on
+   `pg_subscription` (superuser/subscription-owner-only, subscriber-database
+   only) to an empty list via the same generic try/except as every other
+   read in that method. So "no subscriptions" and "not permitted to see
+   pg_subscription" collapse to the same empty result — the whole-capability
+   `external_dependencies` gate still distinguishes "this engine can't do
+   this at all", but not this one per-item case within it. A real fix needs
+   either a dedicated capability sub-flag or exception-type discrimination on
+   the psycopg2 error raised for an insufficient-privilege catalog read.
+
+3. **No live Postgres exercised any of the six new query methods.** All of
+   `get_privilege_audit`/`get_replication_status`/`get_wal_archiving_status`/
+   `get_backup_tool_signals`/`get_clustering_info`/`get_external_dependencies`
+   are covered only through a duck-typed fake connection
+   (`tests/test_postgres_operations_step.py`), which validates the
+   surveyor's logic (absence states, RFA firing, the MIXED envelope) but not
+   that the SQL itself is correct against a real server — e.g. that
+   `EXTRACT(EPOCH FROM replay_lag)` behaves as expected against a genuine
+   `pg_stat_replication` row with an actual replica attached, or that the
+   `pg_default_acl` join produces sensible rows against a database with real
+   default ACLs configured. Once step 6 (re-cataloguing `coco_ods` with a
+   reachable connection) or a primary/replica test pair exists, running
+   `postgres_operations` against it once and diffing the result against a
+   hand-checked `psql` session would close this gap.
+
+4. **`docs/dr-egeria/resource_questions.csv`'s prose is now stale for the
+   three rows this slice's `analysis_catalog.yaml` additions resolved.**
+   Regenerating `question_catalog.yaml` (required — see
+   `DB-OPERATIONS-STEP-IMPLEMENTED.md`) populated `analysis_ids` for
+   `db_activity_signals`/`db_resilience`/`db_external_dependencies`, but the
+   CSV's own `Answering Analysis` text for those rows still reads `GAP:
+   <id> (proposed) — <analysis> is not read by any analysis today`, and
+   `answering.kind` is still `gap`/`human`. The CSV is stream 4's ownership
+   and not touched by this slice; whoever next edits it should reword those
+   three rows' notes (and reconsider `kind`) now that the analyses exist.
