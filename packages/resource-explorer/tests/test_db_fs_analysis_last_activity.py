@@ -67,7 +67,10 @@ class TestDatabaseStepMapFansOutCorrectly:
     """DATABASE_ANALYSIS_STEP_MAP: one coarse step legitimately credits
     several analysis_catalog entries at once -- not a partition like repo's."""
 
-    def test_db_derived_credits_all_six_analyses(self):
+    def test_db_derived_credits_all_analyses(self):
+        """Was "all six" until Phase 1 slice 14's follow-up (2026-09-22) added
+        schema_diff and grant_change to db_derived — both zero-fetch, same
+        shape as the original six, so they own the same step key."""
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             DATABASE_ANALYSIS_STEP_MAP)
 
@@ -78,6 +81,7 @@ class TestDatabaseStepMapFansOutCorrectly:
         assert set(owners_of_db_derived) == {
             "db_classification", "db_relationship_graph", "grain_determination",
             "db_fingerprint", "schema_conventions", "db_change_rates",
+            "schema_diff", "grant_change",
         }
 
     def test_sql_analysis_has_no_analysis_catalog_entry(self):

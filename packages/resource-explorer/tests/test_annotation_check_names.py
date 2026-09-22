@@ -112,6 +112,14 @@ KNOWN_EXCLUSIVE = {
     # above — which is the point of adding it. `_fingerprint_annotations`'
     # absence branch is the same early `return`.
     ("database/db_derived.py", "db_fingerprint"),
+    # Added 2026-09-22 with the grant_change/schema_diff (column half)
+    # comparators (Phase 1 slice 14 follow-up, design §9.1).
+    # `_schema_diff_annotations`/`_grant_change_annotations` have the exact
+    # same shape as the four above: an early-`return` absence branch
+    # (insufficient_history) and a measured branch, verified by reading —
+    # never both in one run.
+    ("database/db_derived.py", "schema_diff"),
+    ("database/db_derived.py", "grant_change"),
 }
 
 
