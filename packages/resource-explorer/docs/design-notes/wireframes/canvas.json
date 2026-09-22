@@ -1,269 +1,309 @@
 {
-  "pages": [
-    {
-      "id": "page-1",
-      "name": "List answers & records"
-    },
-    {
-      "id": "page-2",
-      "name": "Cost & depth"
-    },
-    {
-      "id": "page-3",
-      "name": "Components & ports"
-    },
-    {
-      "id": "page-4",
-      "name": "The stage page"
-    },
-    {
-      "id": "page-5",
-      "name": "Actionable & honest"
-    },
-    {
-      "id": "page-6",
-      "name": "What a verdict is about"
-    },
-    {
-      "id": "page-7",
-      "name": "The branch tree"
-    },
-    {
-      "id": "page-8",
-      "name": "Curate: selection & blueprints"
-    }
-  ],
-  "artboards": [
-    {
-      "file": "Main.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1"
-    },
-    {
-      "file": "RailSentence.dc.html",
-      "x": 0,
-      "y": 1060,
-      "w": 1000,
-      "h": 1560,
-      "page": "page-1"
-    },
-    {
-      "file": "SaveReport.dc.html",
-      "x": 1100,
-      "y": 1060,
-      "w": 960,
-      "h": 1360,
-      "page": "page-1"
-    },
-    {
-      "file": "Report.dc.html",
-      "x": 0,
-      "y": 2800,
-      "w": 900,
-      "h": 1360,
-      "print": "flow",
-      "page": "page-1"
-    },
-    {
-      "file": "Records.dc.html",
-      "x": 1000,
-      "y": 2800,
-      "w": 960,
-      "h": 1160,
-      "page": "page-1"
-    },
-    {
-      "file": "ReportActs.dc.html",
-      "x": 0,
-      "y": 4300,
-      "w": 1040,
-      "h": 1660,
-      "page": "page-1"
-    },
-    {
-      "file": "RunChoice.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1000,
-      "h": 1400,
-      "page": "page-2"
-    },
-    {
-      "file": "DepthOffer.dc.html",
-      "x": 1100,
-      "y": 0,
-      "w": 1000,
-      "h": 1360,
-      "page": "page-2"
-    },
-    {
-      "file": "ComponentReview.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1120,
-      "h": 1620,
-      "page": "page-3"
-    },
-    {
-      "file": "PortsAndWires.dc.html",
-      "x": 1220,
-      "y": 0,
-      "w": 1040,
-      "h": 1900,
-      "page": "page-3"
-    },
-    {
-      "file": "StagePage.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1120,
-      "h": 1700,
-      "page": "page-4"
-    },
-    {
-      "file": "FactInPlace.dc.html",
-      "x": 1220,
-      "y": 0,
-      "w": 1080,
-      "h": 1560,
-      "page": "page-4"
-    },
-    {
-      "file": "AnalysesIndex.dc.html",
-      "x": 0,
-      "y": 1840,
-      "w": 1160,
-      "h": 1740,
-      "page": "page-4"
-    },
-    {
-      "file": "Actionable.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1120,
-      "h": 1420,
-      "page": "page-5"
-    },
-    {
-      "file": "WhatWeFound.dc.html",
-      "x": 1220,
-      "y": 0,
-      "w": 1120,
-      "h": 1900,
-      "page": "page-5"
-    },
-    {
-      "file": "VerdictSubject.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1120,
-      "h": 2180,
-      "page": "page-6"
-    },
-    {
-      "file": "ComponentTree.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1240,
-      "h": 2360,
-      "page": "page-7"
-    },
-    {
-      "file": "CurateSelection.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1260,
-      "h": 2500,
-      "page": "page-8"
-    }
-  ],
-  "annotations": [
-    {
-      "id": "brief",
-      "x": 1540,
-      "y": 0,
-      "w": 300,
-      "page": "page-1",
-      "text": "Round: the side-by-side list answer, and the report record.\n\nRead against origin/main 19f3733 \u2014 after #56, so the rail frame, the four states and the member-tree link are already built. This draws the half that is still open: the rail SENTENCE, and where a saved list lives.\n\n#60 has since built the sentence \u2014 see REVIEW-RAIL-SENTENCE.md for the three copy defects."
-    },
-    {
-      "id": "agree",
-      "x": 1540,
-      "y": 340,
-      "w": 300,
-      "page": "page-1",
-      "text": "The two numbers agree out loud: 32 in the rail, 32 in the pane, and \"10 of 32 packed\" says what the model actually saw. That clause is the provenance of the sentence beside it, not an apology."
-    },
-    {
-      "id": "kinds",
-      "x": 2100,
-      "y": 2800,
-      "w": 300,
-      "page": "page-1",
-      "text": "One Record, two kinds. Curate's commit is the catalogue kind and already exists \u2014 append-only, server-stamped author, selection as a snapshot. A report is the same row with no steps."
-    },
-    {
-      "id": "cost-brief",
-      "x": 2200,
-      "y": 0,
-      "w": 300,
-      "page": "page-2",
-      "text": "The two calls handed back in FUNNEL-COST-IMPLEMENTED.md: where the wait/background choice goes on /next's one-click re-run, and \u00a73 \u2014 keep-investigating offering the deeper surveys with the split price.\n\nRead against main at 2d4357e."
-    },
-    {
-      "id": "ports-brief",
-      "x": 2360,
-      "y": 0,
-      "w": 300,
-      "page": "page-3",
-      "text": "Round one of the ports work. Read against origin/main 91d6d93.\n\nLeads with a correction: the Curate column claims ports are derived from the accepted set. They are not \u2014 interfaces.propose() reads deployment artifacts at survey time and never consults a verdict.\n\nAnd the scale finding: no human-accepted component is cohesive under any bar; curators accept named packages. So review happens at the branch."
-    },
-    {
-      "id": "owner-round",
-      "x": 2400,
-      "y": 0,
-      "w": 300,
-      "page": "page-4",
-      "text": "The owner's round of 2026-09-14, points 1/2/3/6/7/9/10 \u2014 seven faces of one question.\n\nRead against origin/main 0841c17.\n\nThe cause, from the code rather than the complaint: the Questions row renders the answer and cannot reach the members; Dashboard by-question renders the SAME sentence from the same envelope so it can host a detail disclosure whose payload opens in a 290px rail."
-    },
-    {
-      "id": "round-five",
-      "x": 2440,
-      "y": 0,
-      "w": 300,
-      "page": "page-5",
-      "text": "The owner's second round, 2026-09-15. Read against origin/main 93be502.\n\nPoint 3: the honesty rules made a surface scrupulous about what it cannot say and silent about what to do. The missing half is WHOSE absence it is.\n\nPoints 4/5/6 are one habit: a row composed from several analyses over several populations, written as though it came from one."
-    },
-    {
-      "id": "verdict-brief",
-      "x": 1220,
-      "y": 0,
-      "w": 300,
-      "page": "page-6",
-      "text": "Item 1 of the work plan, ruled. Read against origin/main 05cb63c0 \u2014 after #104.\n\nThe question was unanswerable because three different things in this product are called \"perspective\": run_label (detect/coupling), Component.perspective (physical/deployment/logical/dev), and the twelve role chips in the chrome.\n\nRuling: a verdict is about the component \u2014 the thing at that path \u2014 not about the proposal that surfaced it. No schema change; four render changes and one sort change."
-    },
-    {
-      "id": "tree-brief",
-      "x": 1340,
-      "y": 0,
-      "w": 300,
-      "page": "page-7",
-      "text": "Item 2 of the work plan \u2014 the component branch tree, unblocked by the verdict ruling on page six.\n\nThe owner's point 4 is four questions in one: what this is, why we think so, how much of it you are seeing, and what you can do about it. The tree answers all four in the same rows.\n\nMeasured figures are from #85 on egeria-workspaces; the five branch rows are illustrative shapes, not spec. The artboard says which is which at the foot \u2014 a drawing should carry its own provenance."
-    },
-    {
-      "id": "curate-brief",
-      "x": 1360,
-      "y": 0,
-      "w": 300,
-      "page": "page-8",
-      "text": "Item 3 of the plan. Read against main at 7b7bc2b4.\n\nTwo halves. Selection is a control that already exists one level out \u2014 selectMode is resource-level in the sidebar; the tree has per-row accept and no way to act on several.\n\nBlueprints are the live defect: the coverage sentence says '0 of 12 clusters in the logical reading reviewed' and blueprints have ZERO UI references in /next. A count that opens nothing.\n\nAnd a blueprint verdict is reading-scoped (perspective::cluster_name) where a component's is path-scoped \u2014 one table, two identity regimes, and the screen has to say which."
-    }
-  ],
-  "launch": {
-    "view": "canvas",
-    "page": "page-8"
+ "pages": [
+  {
+   "id": "page-1",
+   "name": "List answers & records"
+  },
+  {
+   "id": "page-2",
+   "name": "Cost & depth"
+  },
+  {
+   "id": "page-3",
+   "name": "Components & ports"
+  },
+  {
+   "id": "page-4",
+   "name": "The stage page"
+  },
+  {
+   "id": "page-5",
+   "name": "Actionable & honest"
+  },
+  {
+   "id": "page-6",
+   "name": "What a verdict is about"
+  },
+  {
+   "id": "page-7",
+   "name": "The branch tree"
+  },
+  {
+   "id": "page-8",
+   "name": "Curate: selection & blueprints"
+  },
+  {
+   "id": "page-9",
+   "name": "Column profile (round 2)"
+  },
+  {
+   "id": "page-10",
+   "name": "Exposure heatmap (round 2)"
   }
+ ],
+ "artboards": [
+  {
+   "file": "Main.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "page": "page-1"
+  },
+  {
+   "file": "RailSentence.dc.html",
+   "x": 0,
+   "y": 1060,
+   "w": 1000,
+   "h": 1560,
+   "page": "page-1"
+  },
+  {
+   "file": "SaveReport.dc.html",
+   "x": 1100,
+   "y": 1060,
+   "w": 960,
+   "h": 1360,
+   "page": "page-1"
+  },
+  {
+   "file": "Report.dc.html",
+   "x": 0,
+   "y": 2800,
+   "w": 900,
+   "h": 1360,
+   "print": "flow",
+   "page": "page-1"
+  },
+  {
+   "file": "Records.dc.html",
+   "x": 1000,
+   "y": 2800,
+   "w": 960,
+   "h": 1160,
+   "page": "page-1"
+  },
+  {
+   "file": "ReportActs.dc.html",
+   "x": 0,
+   "y": 4300,
+   "w": 1040,
+   "h": 1660,
+   "page": "page-1"
+  },
+  {
+   "file": "RunChoice.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1000,
+   "h": 1400,
+   "page": "page-2"
+  },
+  {
+   "file": "DepthOffer.dc.html",
+   "x": 1100,
+   "y": 0,
+   "w": 1000,
+   "h": 1360,
+   "page": "page-2"
+  },
+  {
+   "file": "ComponentReview.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1120,
+   "h": 1620,
+   "page": "page-3"
+  },
+  {
+   "file": "PortsAndWires.dc.html",
+   "x": 1220,
+   "y": 0,
+   "w": 1040,
+   "h": 1900,
+   "page": "page-3"
+  },
+  {
+   "file": "StagePage.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1120,
+   "h": 1700,
+   "page": "page-4"
+  },
+  {
+   "file": "FactInPlace.dc.html",
+   "x": 1220,
+   "y": 0,
+   "w": 1080,
+   "h": 1560,
+   "page": "page-4"
+  },
+  {
+   "file": "AnalysesIndex.dc.html",
+   "x": 0,
+   "y": 1840,
+   "w": 1160,
+   "h": 1740,
+   "page": "page-4"
+  },
+  {
+   "file": "Actionable.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1120,
+   "h": 1420,
+   "page": "page-5"
+  },
+  {
+   "file": "WhatWeFound.dc.html",
+   "x": 1220,
+   "y": 0,
+   "w": 1120,
+   "h": 1900,
+   "page": "page-5"
+  },
+  {
+   "file": "VerdictSubject.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1120,
+   "h": 2180,
+   "page": "page-6"
+  },
+  {
+   "file": "ComponentTree.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1240,
+   "h": 2360,
+   "page": "page-7"
+  },
+  {
+   "file": "CurateSelection.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1260,
+   "h": 2500,
+   "page": "page-8"
+  },
+  {
+   "file": "ColumnProfile.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1320,
+   "h": 2320,
+   "page": "page-9"
+  },
+  {
+   "file": "ExposureHeatmap.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1380,
+   "h": 2900,
+   "page": "page-10"
+  }
+ ],
+ "annotations": [
+  {
+   "id": "brief",
+   "x": 1540,
+   "y": 0,
+   "w": 300,
+   "page": "page-1",
+   "text": "Round: the side-by-side list answer, and the report record.\n\nRead against origin/main 19f3733 \u2014 after #56, so the rail frame, the four states and the member-tree link are already built. This draws the half that is still open: the rail SENTENCE, and where a saved list lives.\n\n#60 has since built the sentence \u2014 see REVIEW-RAIL-SENTENCE.md for the three copy defects."
+  },
+  {
+   "id": "agree",
+   "x": 1540,
+   "y": 340,
+   "w": 300,
+   "page": "page-1",
+   "text": "The two numbers agree out loud: 32 in the rail, 32 in the pane, and \"10 of 32 packed\" says what the model actually saw. That clause is the provenance of the sentence beside it, not an apology."
+  },
+  {
+   "id": "kinds",
+   "x": 2100,
+   "y": 2800,
+   "w": 300,
+   "page": "page-1",
+   "text": "One Record, two kinds. Curate's commit is the catalogue kind and already exists \u2014 append-only, server-stamped author, selection as a snapshot. A report is the same row with no steps."
+  },
+  {
+   "id": "cost-brief",
+   "x": 2200,
+   "y": 0,
+   "w": 300,
+   "page": "page-2",
+   "text": "The two calls handed back in FUNNEL-COST-IMPLEMENTED.md: where the wait/background choice goes on /next's one-click re-run, and \u00a73 \u2014 keep-investigating offering the deeper surveys with the split price.\n\nRead against main at 2d4357e."
+  },
+  {
+   "id": "ports-brief",
+   "x": 2360,
+   "y": 0,
+   "w": 300,
+   "page": "page-3",
+   "text": "Round one of the ports work. Read against origin/main 91d6d93.\n\nLeads with a correction: the Curate column claims ports are derived from the accepted set. They are not \u2014 interfaces.propose() reads deployment artifacts at survey time and never consults a verdict.\n\nAnd the scale finding: no human-accepted component is cohesive under any bar; curators accept named packages. So review happens at the branch."
+  },
+  {
+   "id": "owner-round",
+   "x": 2400,
+   "y": 0,
+   "w": 300,
+   "page": "page-4",
+   "text": "The owner's round of 2026-09-14, points 1/2/3/6/7/9/10 \u2014 seven faces of one question.\n\nRead against origin/main 0841c17.\n\nThe cause, from the code rather than the complaint: the Questions row renders the answer and cannot reach the members; Dashboard by-question renders the SAME sentence from the same envelope so it can host a detail disclosure whose payload opens in a 290px rail."
+  },
+  {
+   "id": "round-five",
+   "x": 2440,
+   "y": 0,
+   "w": 300,
+   "page": "page-5",
+   "text": "The owner's second round, 2026-09-15. Read against origin/main 93be502.\n\nPoint 3: the honesty rules made a surface scrupulous about what it cannot say and silent about what to do. The missing half is WHOSE absence it is.\n\nPoints 4/5/6 are one habit: a row composed from several analyses over several populations, written as though it came from one."
+  },
+  {
+   "id": "verdict-brief",
+   "x": 1220,
+   "y": 0,
+   "w": 300,
+   "page": "page-6",
+   "text": "Item 1 of the work plan, ruled. Read against origin/main 05cb63c0 \u2014 after #104.\n\nThe question was unanswerable because three different things in this product are called \"perspective\": run_label (detect/coupling), Component.perspective (physical/deployment/logical/dev), and the twelve role chips in the chrome.\n\nRuling: a verdict is about the component \u2014 the thing at that path \u2014 not about the proposal that surfaced it. No schema change; four render changes and one sort change."
+  },
+  {
+   "id": "tree-brief",
+   "x": 1340,
+   "y": 0,
+   "w": 300,
+   "page": "page-7",
+   "text": "Item 2 of the work plan \u2014 the component branch tree, unblocked by the verdict ruling on page six.\n\nThe owner's point 4 is four questions in one: what this is, why we think so, how much of it you are seeing, and what you can do about it. The tree answers all four in the same rows.\n\nMeasured figures are from #85 on egeria-workspaces; the five branch rows are illustrative shapes, not spec. The artboard says which is which at the foot \u2014 a drawing should carry its own provenance."
+  },
+  {
+   "id": "curate-brief",
+   "x": 1360,
+   "y": 0,
+   "w": 300,
+   "page": "page-8",
+   "text": "Item 3 of the plan. Read against main at 7b7bc2b4.\n\nTwo halves. Selection is a control that already exists one level out \u2014 selectMode is resource-level in the sidebar; the tree has per-row accept and no way to act on several.\n\nBlueprints are the live defect: the coverage sentence says '0 of 12 clusters in the logical reading reviewed' and blueprints have ZERO UI references in /next. A count that opens nothing.\n\nAnd a blueprint verdict is reading-scoped (perspective::cluster_name) where a component's is path-scoped \u2014 one table, two identity regimes, and the screen has to say which."
+  },
+  {
+   "id": "profile-brief",
+   "x": 1420,
+   "y": 0,
+   "w": 300,
+   "page": "page-9",
+   "text": "Round 2 of the multi-resource brief, drawn against slices 6 and 7 as merged.\n\nEvery field name and all four state values are the shipped ones from database_column_profiles. stats_source and stats_computed_at are there because round 1 asked for them \u2014 the schema comment quotes the reasoning.\n\nThe third panel is not a design question: n_distinct is negative when it expresses a ratio, so the shipped REAL column will render \"distinct: \u22120.8\" unless the sign is branched on at the render site. Same shape as the counter-reset case.\n\nTreemap deliberately not drawn \u2014 its inventory rows need checking the same way these fields were. The heatmap IS drawn, on page 10: slice 8 had landed in #193, which I only found on looking."
+  },
+  {
+   "id": "heatmap-brief",
+   "x": 1480,
+   "y": 0,
+   "w": 300,
+   "page": "page-10",
+   "text": "Round 2, second drawing. Read against main at 9d531b3b \u2014 slice 8 (postgres_operations, #193) had already landed, so the role side exists and this was drawable after all.\n\nDrawing it found three separate paths by which the grid can say \"no access\" about a role that has access:\n\n1. Cells are inherited from TABLE grants. role_table_grants is table-level and database_grants has no column_name, so a column-only grant (GRANT SELECT (email)) is invisible. Ask: read information_schema.column_privileges \u2014 a strict superset \u2014 and add column_name. A migration, which is why it belongs in round 2.\n\n2. PUBLIC is a pseudo-role, so it cannot be one column among five. It is a band above the grid.\n\n3. Role membership is read nowhere \u2014 no pg_auth_members, no pg_has_role. Granting through a group role is normal Postgres administration. has_column_privilege() answers all three at once.\n\nThe rule the page turns on: for an exposure view the two failure directions are not symmetric. An empty cell must mean \"no path found\", never \"no path\"."
+  }
+ ],
+ "launch": {
+  "view": "canvas",
+  "page": "page-10"
+ }
 }
