@@ -305,6 +305,24 @@ const SUB_TABS = [
 
 export const $ = (id) => document.getElementById(id);
 
+/** `state.resourceType` ('repo' | 'db' | 'filesystem') is /next's own UI
+ *  shorthand -- the sidebar chip ids (renderSidebar's `types`) and the
+ *  `type=` URL param. Every backend route uses the canonical vocabulary
+ *  'repo' | 'database' | 'filesystem' instead (schedules.py's
+ *  `_RESOURCE_LOOKUP`, survey_definition_executor.py's `_ADAPTERS`,
+ *  analyses.py's `resource_type` param) — 'db' is not a valid entity_type
+ *  anywhere server-side. Verified live 2026-09-22 against the running dev
+ *  server: `GET /api/survey-definitions/db/.../candidates` 400s ("No Survey
+ *  Definition adapter registered for entity_type='db'"), and worse,
+ *  `GET /api/analyses/db` silently returns `[]` rather than erroring — the
+ *  exact silent-wrong-data shape this task exists to fix elsewhere
+ *  (automate.js/worklist.js's old 'repo' hardcodes). Call this at every
+ *  boundary that sends `state.resourceType` to the server; 'filesystem'
+ *  already matches on both sides and passes through unchanged. */
+export function apiEntityType(resourceType) {
+  return resourceType === 'db' ? 'database' : resourceType;
+}
+
 /** The active stage's display label, for the pane header. */
 const stageLabel = () =>
   STAGES.find((s) => s.id === state.stage)?.label || state.stage;
@@ -3405,7 +3423,7 @@ async function loadSurveyPane() {
 
   let data;
   try {
-    data = await getSurveyCandidates(slug, { entityType: state.resourceType, phase: state.stage });
+    data = await getSurveyCandidates(slug, { entityType: apiEntityType(state.resourceType), phase: state.stage });
   } catch (err) {
     el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
       `${err.message}. This is a fact about the request, not about ${slug} — nothing
@@ -3795,7 +3813,7 @@ async function launchSurvey(slug, ref) {
   const note = $('survey-note');
   if (note) note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
   try {
-    const res = await runSurveyDefinition(slug, ref, { entityType: state.resourceType });
+    const res = await runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType) });
     if (note) note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
       ${res && (res.guid || res.engine_action_guid)
         ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}

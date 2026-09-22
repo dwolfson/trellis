@@ -65,12 +65,41 @@ class TestPaneNeedsRepoNoLongerBlanketBlocksNonRepo:
 
     def test_survey_candidates_call_threads_the_real_resource_type(self):
         src = _app()
-        assert "getSurveyCandidates(slug, { entityType: state.resourceType" in src
+        assert "getSurveyCandidates(slug, { entityType: apiEntityType(state.resourceType)" in src
         assert "getSurveyCandidates(slug, { phase: state.stage })" not in src
 
     def test_run_survey_definition_call_threads_the_real_resource_type(self):
         src = _app()
-        assert "runSurveyDefinition(slug, ref, { entityType: state.resourceType })" in src
+        assert "runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType) })" in src
+
+
+class TestApiEntityTypeTranslatesTheUiShorthand:
+    """Verified live against the running dev server 2026-09-22: the backend's
+    canonical vocabulary is 'repo' | 'database' | 'filesystem'
+    (schedules.py's _RESOURCE_LOOKUP, survey_definition_executor.py's
+    _ADAPTERS) -- 'db', /next's own sidebar-chip shorthand, is not a valid
+    entity_type anywhere server-side. GET /api/survey-definitions/db/.../candidates
+    400s, and GET /api/analyses/db silently returns [] instead of erroring --
+    exactly the silent-wrong-data shape this task exists to fix elsewhere.
+    Every call site that sends state.resourceType to the server must
+    translate it first."""
+
+    def test_helper_exists_and_maps_db_to_database(self):
+        src = _app()
+        assert "export function apiEntityType(resourceType) {" in src
+        assert "resourceType === 'db' ? 'database' : resourceType" in src
+
+    def test_survey_pane_call_sites_translate_before_sending(self):
+        src = _app()
+        assert "entityType: apiEntityType(state.resourceType)" in src
+        # Neither call site sends the raw, untranslated UI shorthand.
+        assert "entityType: state.resourceType" not in src
+
+    def test_automate_subscription_filter_translates_before_sending(self):
+        src = _automate_src()
+        assert "apiEntityType" in src
+        assert "entityType: apiEntityType(state.resourceType)" in src
+        assert "entityType: state.resourceType" not in src
 
 
 class TestPaneNeedsRepoBackendIsHonestNotBlanket:
@@ -119,7 +148,7 @@ class TestPaneNeedsRepoBackendIsHonestNotBlanket:
 class TestAutomateNoLongerHardcodesRepo:
     def test_subscription_filter_threads_state_resource_type(self):
         src = _automate_src()
-        assert "entityType: state.resourceType" in src
+        assert "state.resourceType" in src
         assert "entityType: 'repo'" not in src
 
 

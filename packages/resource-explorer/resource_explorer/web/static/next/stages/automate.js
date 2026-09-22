@@ -39,7 +39,7 @@ import { ago } from '/static/next/format.js';
 import {
   listSubscriptions, setSubscriptionActive, listAllSchedules, deleteSchedule, runScheduleNow,
 } from '/static/re-api.js';
-import { state, esc, $, icon, oldUiHref } from '/static/next/app.js';
+import { state, esc, $, icon, oldUiHref, apiEntityType } from '/static/next/app.js';
 
 // Module-local, not on `state`: which of Automate's two sub-tabs is showing,
 // and whether the subscriptions list is filtered to the selected resource.
@@ -84,7 +84,7 @@ async function renderSubscriptions() {
   let subs;
   try {
     subs = await listSubscriptions(
-      _filterToSelected && slug ? { entityType: state.resourceType, entitySlug: slug } : {});
+      _filterToSelected && slug ? { entityType: apiEntityType(state.resourceType), entitySlug: slug } : {});
   } catch (err) {
     el.innerHTML = `${subnavHtml()}
       <p class="max-w-[70ch] text-answer text-state-warn">Could not load subscriptions: ${esc(err.message)}</p>`;
