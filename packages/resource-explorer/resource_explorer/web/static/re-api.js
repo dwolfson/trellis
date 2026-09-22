@@ -984,6 +984,16 @@ export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId
 export const setSubscriptionActive = (id, active) =>
   post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
 
+/** Create one. `entityType` is always 'repo' from every caller today — the
+ *  Questions-checklist engine (app.js) that calls this is itself gated to
+ *  `state.resourceType === 'repo'` (DEFECT-UNBUILT... no, see app.js's own
+ *  "Repos only, in /next" branch) — but the parameter stays real rather than
+ *  hardcoded in the request body, so this doesn't need to change the day
+ *  that gate is lifted. */
+export const createSubscription = (entityType, entitySlug, analysisId, label = '') =>
+  post('/api/automate/subscriptions',
+       { entity_type: entityType, entity_slug: entitySlug, analysis_id: analysisId, label });
+
 /** Every scheduled analysis across every resource — what a subscription
  *  actually needs to fire. Global by design; there is no per-resource
  *  variant because the Automate pane's own filter checkbox does that
