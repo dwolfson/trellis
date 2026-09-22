@@ -42,6 +42,9 @@ from resource_explorer.registry import (
 )
 from resource_explorer.surveyors.database.connection import EngineCapabilities
 from resource_explorer.surveyors.database.database_surveyor import (
+    REASON_NEVER_ANALYZED,
+    REASON_NOT_COLLECTED,
+    REASON_STATS_RESET,
     DatabaseSurveyor,
     _resolve_n_distinct,
 )
@@ -171,6 +174,9 @@ class TestNormalCase:
         assert by_col["email"]["stats_source"] == STATS_SOURCE_DATABASE
         assert by_col["email"]["stats_computed_at"] == "2026-09-20T00:00:00"
         assert by_col["email"]["most_common_values_json"] == ["a@x.com", "b@x.com"]
+        # A resolved distinct_count carries no reason -- reason is only set
+        # when distinct_count came back None (round 3 design review §3).
+        assert by_col["email"]["distinct_count_reason"] is None
 
         # "id" carries pg_stats' NEGATIVE n_distinct convention (-1.0 means
         # "unique, scales with row count" -- a ratio, not a count). Found
@@ -203,43 +209,99 @@ class TestResolveNDistinct:
     rendered a negative cardinality. The multiplier must be pg_class.reltuples
     (the SAME analyze run's row count), not a separately-read live tuple
     count that can drift from it -- a second design-review finding, same day.
+
+    `_resolve_n_distinct` returns an `NDistinctResolution(distinct_count,
+    reason)`, not a bare `float | None` -- round 3 design review, §3: a wrong
+    number is bad, and collapsing all four `None` cases back to one blank
+    that cannot say why is the same bug one step along. `.reason` is `None`
+    exactly when `.distinct_count` is resolved.
     """
 
     def test_non_negative_value_passes_through_unchanged(self):
-        assert _resolve_n_distinct(950.0, reltuples=995) == 950.0
+        result = _resolve_n_distinct(950.0, reltuples=995)
+        assert result.distinct_count == 950.0
+        assert result.reason is None
 
     def test_negative_ratio_resolves_against_reltuples(self):
-        assert _resolve_n_distinct(-1.0, reltuples=995) == pytest.approx(995.0)
-        assert _resolve_n_distinct(-0.5, reltuples=1000) == pytest.approx(500.0)
+        r1 = _resolve_n_distinct(-1.0, reltuples=995)
+        assert r1.distinct_count == pytest.approx(995.0)
+        assert r1.reason is None
+        r2 = _resolve_n_distinct(-0.5, reltuples=1000)
+        assert r2.distinct_count == pytest.approx(500.0)
+        assert r2.reason is None
 
     def test_negative_ratio_with_no_reltuples_is_not_established(self):
         # Silently returning the raw ratio would be a wrong number, not an
         # honest absence -- must say "not established" instead.
-        assert _resolve_n_distinct(-0.8, reltuples=None) is None
+        result = _resolve_n_distinct(-0.8, reltuples=None)
+        assert result.distinct_count is None
+        assert result.reason == REASON_NEVER_ANALYZED
 
     def test_negative_ratio_with_never_analyzed_placeholder_is_not_established(self):
         # reltuples == -1 is Postgres's own "never analyzed" placeholder
         # (PG14+) -- untrustworthy as a multiplier, even though n_distinct
         # existing at all should mean an analyze already ran; handled
         # explicitly rather than trusted away.
-        assert _resolve_n_distinct(-0.8, reltuples=-1) is None
+        result = _resolve_n_distinct(-0.8, reltuples=-1)
+        assert result.distinct_count is None
+        assert result.reason == REASON_NEVER_ANALYZED
 
     def test_negative_ratio_against_a_confirmed_empty_analyzed_table_is_zero(self):
         # reltuples == 0 with ever_analyzed=True (last_analyze/last_autoanalyze
         # non-null) is a confirmed, real empty table -- 0 is a legitimate
         # answer, not "not established".
-        assert _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=True) == 0
+        result = _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=True)
+        assert result.distinct_count == 0
+        assert result.reason is None
 
     def test_reltuples_zero_without_confirmed_analyze_is_not_established(self):
         # On PG13 and earlier, reltuples == 0 means BOTH "analyzed, empty"
         # and "never analyzed" -- without independent confirmation via
         # last_analyze/last_autoanalyze, a table with real rows that was
         # never ANALYZEd would otherwise resolve to a confident, wrong 0.
-        assert _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=False) is None
-        assert _resolve_n_distinct(-1.0, reltuples=0) is None  # ever_analyzed defaults to unknown
+        # With no stats_reset evidence either, this is "never analyzed".
+        r1 = _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=False)
+        assert r1.distinct_count is None
+        assert r1.reason == REASON_NEVER_ANALYZED
+        r2 = _resolve_n_distinct(-1.0, reltuples=0)  # ever_analyzed defaults to unknown
+        assert r2.distinct_count is None
+        assert r2.reason == REASON_NEVER_ANALYZED
+
+    def test_reltuples_zero_with_stats_reset_is_reset_not_never_analyzed(self):
+        # Round 3 design review §3: pg_stat_reset() clears last_analyze/
+        # last_autoanalyze (so ever_analyzed reads false) while the pg_stats
+        # row and pg_class.reltuples it fed from survive untouched -- a
+        # table analyzed before a reset looks exactly like "never analyzed"
+        # unless stats_reset is consulted. When it is present, that is the
+        # right read instead, and no ANALYZE should be suggested.
+        result = _resolve_n_distinct(
+            -1.0, reltuples=0, ever_analyzed=False, stats_reset="2026-09-20T00:00:00Z"
+        )
+        assert result.distinct_count is None
+        assert result.reason == REASON_STATS_RESET
+
+    def test_reltuples_zero_with_no_stats_reset_evidence_stays_never_analyzed(self):
+        # stats_reset=None (or falsy) must not flip the read -- absence of
+        # reset evidence is not evidence a reset happened.
+        result = _resolve_n_distinct(
+            -1.0, reltuples=0, ever_analyzed=False, stats_reset=None
+        )
+        assert result.distinct_count is None
+        assert result.reason == REASON_NEVER_ANALYZED
+
+    def test_stats_reset_does_not_override_a_confirmed_analyze(self):
+        # ever_analyzed=True already answers the question; stats_reset being
+        # present too must not change a real empty-table 0 into "reset".
+        result = _resolve_n_distinct(
+            -1.0, reltuples=0, ever_analyzed=True, stats_reset="2026-09-20T00:00:00Z"
+        )
+        assert result.distinct_count == 0
+        assert result.reason is None
 
     def test_none_input_is_none(self):
-        assert _resolve_n_distinct(None, reltuples=995) is None
+        result = _resolve_n_distinct(None, reltuples=995)
+        assert result.distinct_count is None
+        assert result.reason == REASON_NOT_COLLECTED
 
 
 class TestStatsNeverCollected:
@@ -301,6 +363,103 @@ class TestStatsNeverCollected:
         assert len(profiles) == 1
         assert profiles[0]["state"] == STATE_MEASURED
         assert profiles[0]["null_fraction"] == 0.0
+
+
+class TestStatsWereReset:
+    """End-to-end: a table analyzed before a statistics reset must not read
+    as "never analyzed" (round 3 design review §3).
+
+    `pg_stat_reset()` clears `pg_stat_user_tables.last_analyze`/
+    `last_autoanalyze` (so `ever_analyzed` reads false here) while the
+    `pg_stats` row itself, and `pg_class.reltuples`, survive it untouched —
+    the exact live scenario `_resolve_n_distinct`'s `stats_reset` parameter
+    exists for. Every near-unique column (negative `n_distinct`) on a table
+    like this used to silently lose its distinct count on a database whose
+    statistics are perfectly good.
+    """
+
+    def test_reltuples_zero_with_stats_reset_present_is_reset_not_uncollected(
+        self, registry, db_entity
+    ):
+        schema_info = _schema_info(columns=("id", "email"))
+        statistics = {
+            "column_stats": [
+                {"schemaname": "public", "tablename": "customers", "attname": "id",
+                 "null_frac": 0.0, "n_distinct": -1.0, "avg_width": 4,
+                 "correlation": 1.0, "most_common_vals": None,
+                 "most_common_freqs": None, "histogram_bounds": None,
+                 "reltuples": 0},
+                {"schemaname": "public", "tablename": "customers", "attname": "email",
+                 "null_frac": 0.02, "n_distinct": -0.9, "avg_width": 24,
+                 "correlation": 0.1, "most_common_vals": None,
+                 "most_common_freqs": None, "histogram_bounds": None,
+                 "reltuples": 0},
+            ],
+            # last_analyze/last_autoanalyze both cleared by the reset --
+            # ever_analyzed reads false for this table.
+            "table_activity": [
+                {"schemaname": "public", "tablename": "customers",
+                 "rows_inserted": 1000, "rows_updated": 50, "rows_deleted": 5,
+                 "hot_updates": 10, "live_tuples": 995, "dead_tuples": 5,
+                 "seq_scan": 3, "idx_scan": 120,
+                 "last_vacuum": "", "last_autovacuum": "",
+                 "last_analyze": "", "last_autoanalyze": "",
+                 "pending_changes": 0},
+            ],
+            "index_stats": [],
+            "stats_reset": "2026-09-20T00:00:00",
+        }
+        conn = _FakeConnection(schema_info, statistics, FULL_CAPS)
+        surveyor = DatabaseSurveyor(db_entity, {"user": "a", "password": "b"}, registry)
+        with _patched_connection(conn):
+            surveyor.survey()
+
+        profiles = registry.query_detail_rows("database_column_profiles", db_entity.slug)
+        by_col = {r["column_name"]: r for r in profiles}
+
+        for col in ("id", "email"):
+            # Row is still STATE_MEASURED -- every other pg_stats field came
+            # back fine, only distinct_count could not be resolved. State
+            # cannot carry this distinction; the reason field does.
+            assert by_col[col]["state"] == STATE_MEASURED
+            assert by_col[col]["distinct_count"] is None
+            assert by_col[col]["distinct_count_reason"] == REASON_STATS_RESET
+
+        # The other figures on the row predate the reset and stand --
+        # confirmed by the table activity row still carrying its own
+        # (unrelated) measured values and the same stats_reset timestamp.
+        activity = registry.query_detail_rows("database_table_activity", db_entity.slug)
+        assert activity[0]["state"] == STATE_MEASURED
+        assert activity[0]["live_tuples"] == 995
+        assert activity[0]["stats_reset"] == "2026-09-20T00:00:00"
+
+    def test_reltuples_zero_with_no_stats_reset_still_reads_never_analyzed(
+        self, registry, db_entity
+    ):
+        """Without a stats_reset timestamp, the same reltuples==0 shape must
+        stay "never analyzed" -- absence of reset evidence is not evidence a
+        reset happened, so the two cases must not blur together."""
+        schema_info = _schema_info(columns=("id",))
+        statistics = {
+            "column_stats": [
+                {"schemaname": "public", "tablename": "customers", "attname": "id",
+                 "null_frac": 0.0, "n_distinct": -1.0, "avg_width": 4,
+                 "correlation": 1.0, "most_common_vals": None,
+                 "most_common_freqs": None, "histogram_bounds": None,
+                 "reltuples": 0},
+            ],
+            "table_activity": [],
+            "index_stats": [],
+            "stats_reset": "",
+        }
+        conn = _FakeConnection(schema_info, statistics, FULL_CAPS)
+        surveyor = DatabaseSurveyor(db_entity, {"user": "a", "password": "b"}, registry)
+        with _patched_connection(conn):
+            surveyor.survey()
+
+        profiles = registry.query_detail_rows("database_column_profiles", db_entity.slug)
+        assert profiles[0]["distinct_count"] is None
+        assert profiles[0]["distinct_count_reason"] == REASON_NEVER_ANALYZED
 
 
 class TestCapabilityNotSupported:

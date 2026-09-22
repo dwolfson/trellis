@@ -1,6 +1,7 @@
 """Database surveyor for custom database surveys."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from resource_explorer.registry import (
@@ -84,7 +85,74 @@ def _parse_pg_array(value) -> list | None:
     return [part.strip().strip('"') for part in text.split(",")]
 
 
-def _resolve_n_distinct(n_distinct, reltuples, ever_analyzed=None) -> float | None:
+#: `_resolve_n_distinct`'s reason vocabulary — why `distinct_count` came back
+#: `None`, per round 3's design review (§3, "the corrected `distinct_count`,
+#: and the blank the correction produced"). A row's `state` already says
+#: *whether* a value is measured; these say *why one specific field* is
+#: absent when the row around it is otherwise `STATE_MEASURED` — row-level
+#: state cannot carry a per-field absence, which is exactly what produced the
+#: unexplained blank the review flagged. Three of the four end in the same
+#: card action ("run ANALYZE"); `REASON_STATS_RESET` deliberately does not,
+#: because ANALYZE is not the problem there — see each constant's docstring.
+REASON_NOT_COLLECTED = "not_collected"
+"""`n_distinct` itself is null in `pg_stats` for this column — the stat was
+never collected (e.g. a statistics target of 0). Card sentence: "not
+collected for this column — run ANALYZE"."""
+
+REASON_NEVER_ANALYZED = "never_analyzed"
+"""The table has never been ANALYZEd: `reltuples < 0` (PG14+'s explicit
+sentinel), or `reltuples == 0` with no evidence a reset happened instead
+(PG13's ambiguous case, folded into the same reason so the card never
+guesses "empty"). Card sentence: "the table has never been ANALYZEd — run
+ANALYZE"."""
+
+REASON_STATS_RESET = "stats_reset"
+"""`reltuples == 0` and `ever_analyzed` reads false, but `stats_reset` shows
+a reset happened — the table WAS analyzed before that reset, so "never
+analyzed" would be the wrong read. Distinct count is not resolvable right
+now, but the other figures on the row predate the reset and stand. Card
+sentence: "distinct count not resolvable — table statistics were reset on
+<date>; the other figures predate the reset and stand." **No ANALYZE
+prompt** — ANALYZE is not the problem here."""
+
+
+@dataclass(frozen=True)
+class NDistinctResolution:
+    """`_resolve_n_distinct`'s return shape: the resolved count (or `None`),
+    plus — when it is `None` — which of the four cases produced that,
+    from `REASON_*` above. Collapsing straight back to `float | None` is
+    exactly the bug design review round 3 §3 found: three of the four
+    `None` cases want "run ANALYZE" and one wants no action at all, and a
+    bare `None` cannot tell a caller which.
+    """
+
+    distinct_count: float | None
+    reason: str | None
+
+
+def _distinct_count_reason_sentence(reason: str | None, stats_reset=None) -> str:
+    """The card sentence for one `REASON_*` code (round 3 design review §3's
+    table, verbatim). Shared between the annotation `explanation` built here
+    and, eventually, whatever UI reads `distinct_count_reason` off the
+    stored row — one place so the four sentences cannot drift apart.
+    """
+    if reason == REASON_NOT_COLLECTED:
+        return "Not collected for this column — run ANALYZE."
+    if reason == REASON_NEVER_ANALYZED:
+        return "The table has never been ANALYZEd — run ANALYZE."
+    if reason == REASON_STATS_RESET:
+        when = stats_reset or "an unknown time"
+        return (
+            f"Distinct count not resolvable — table statistics were reset "
+            f"on {when}; the other figures predate the reset and stand. "
+            "No ANALYZE needed — ANALYZE is not the problem here."
+        )
+    return ""
+
+
+def _resolve_n_distinct(
+    n_distinct, reltuples, ever_analyzed=None, stats_reset=None
+) -> NDistinctResolution:
     """Resolve `pg_stats.n_distinct`'s sign convention into an actual
     estimated distinct-value count.
 
@@ -115,16 +183,36 @@ def _resolve_n_distinct(n_distinct, reltuples, ever_analyzed=None) -> float | No
     (already read by this module's caller) rather than trusting the
     server-version-dependent sentinel alone. `ever_analyzed=None` (unknown)
     is treated the same as `False` — refuse to guess.
+
+    `stats_reset` disambiguates the PG13 `reltuples == 0` / not-analyzed
+    case one step further (round 3 design review, §3). `ever_analyzed`
+    comes from `pg_stat_user_tables.last_analyze`/`last_autoanalyze`, which
+    `pg_stat_reset()` (or an equivalent counters reset) clears — while the
+    `pg_stats` row `n_distinct` came from, and `pg_class.reltuples`, are
+    untouched by it. So a table that was genuinely analyzed, then had its
+    statistics reset, reads exactly like "never analyzed": `ever_analyzed`
+    is false and `reltuples` reads 0. Passing `stats_reset` (this module's
+    existing `get_stats_reset()`/`stats_info["stats_reset"]` value, already
+    read at :699/:416 for the change-comparator and RFA uses) lets this
+    function tell the two apart: when it is present, a reset is known to
+    have happened, so "never analyzed" is not the right conclusion — see
+    `REASON_STATS_RESET`. There is no per-table reset timestamp to compare
+    against (`stats_reset` is database-wide, from `pg_stat_database`), so
+    presence is the whole test — the same convention this file already uses
+    to present the value (`stats_reset or "reset time unknown"`, the
+    unused-index RFA below) rather than diffing it against a threshold.
     """
     if n_distinct is None:
-        return None
+        return NDistinctResolution(None, REASON_NOT_COLLECTED)
     if n_distinct >= 0:
-        return n_distinct
+        return NDistinctResolution(n_distinct, None)
     if reltuples is None or reltuples < 0:
-        return None
+        return NDistinctResolution(None, REASON_NEVER_ANALYZED)
     if reltuples == 0 and not ever_analyzed:
-        return None
-    return abs(n_distinct) * reltuples
+        if stats_reset:
+            return NDistinctResolution(None, REASON_STATS_RESET)
+        return NDistinctResolution(None, REASON_NEVER_ANALYZED)
+    return NDistinctResolution(abs(n_distinct) * reltuples, None)
 
 
 class DatabaseSurveyor:
@@ -558,9 +646,14 @@ class DatabaseSurveyor:
                         last_analyzed = activity.get("last_analyze") or activity.get("last_autoanalyze") or None
 
                     n_distinct_raw = stat.get("n_distinct")
-                    distinct_count = _resolve_n_distinct(
-                        n_distinct_raw, stat.get("reltuples"), ever_analyzed=bool(last_analyzed)
+                    n_distinct_resolution = _resolve_n_distinct(
+                        n_distinct_raw,
+                        stat.get("reltuples"),
+                        ever_analyzed=bool(last_analyzed),
+                        stats_reset=stats_reset,
                     )
+                    distinct_count = n_distinct_resolution.distinct_count
+                    distinct_count_reason = n_distinct_resolution.reason
 
                     profile_rows.append({
                         "schema_name": schema_name,
@@ -568,6 +661,7 @@ class DatabaseSurveyor:
                         "column_name": column_name,
                         "null_fraction": stat.get("null_frac"),
                         "distinct_count": distinct_count,
+                        "distinct_count_reason": distinct_count_reason,
                         "average_width": stat.get("avg_width"),
                         "correlation": stat.get("correlation"),
                         "most_common_values_json": _parse_pg_array(stat.get("most_common_vals")),
@@ -593,13 +687,18 @@ class DatabaseSurveyor:
                                 "null_frac": stat.get("null_frac"),
                                 "n_distinct": n_distinct_raw,
                                 "distinct_count": distinct_count,
+                                "distinct_count_reason": distinct_count_reason,
                                 "avg_width": stat.get("avg_width"),
                                 "correlation": stat.get("correlation"),
                             },
                             explanation=(
-                                "Column profile read from pg_stats, populated by the "
-                                "database's own ANALYZE — no sampling performed by "
-                                "Resource Explorer."
+                                _distinct_count_reason_sentence(distinct_count_reason, stats_reset)
+                                if distinct_count_reason
+                                else (
+                                    "Column profile read from pg_stats, populated by the "
+                                    "database's own ANALYZE — no sampling performed by "
+                                    "Resource Explorer."
+                                )
                             ),
                         )
                     )

@@ -184,6 +184,22 @@ def resolve_n_distinct(
     11 can import it instead of adding a third copy. If slice 9 lands its own,
     the two must be reconciled to one before both are in the tree; see
     `POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md`.
+
+    **Reconciliation note (round 3 design review, `stats_reset` fix).**
+    `database_surveyor._resolve_n_distinct` gained a `stats_reset` parameter
+    and a `reason` on its result so the "reltuples == 0, never analyzed"
+    ambiguity can be told apart from "reltuples == 0, stats were reset"
+    (see its docstring). This function does not need the same fix: its only
+    caller (`column_profile_step.run_column_profile`) feeds it
+    `profile["distinct_count"]` — the value `_resolve_n_distinct` already
+    produced upstream, which is either `None` or a non-negative resolved
+    count, never a raw negative-ratio `n_distinct`. The `value < 0` branch
+    below never fires in practice; `reltuples`/`ever_analyzed`/`stats_reset`
+    are not in scope here because the ambiguity they resolve was already
+    settled (or deliberately left `None`) before this function ever sees the
+    number. The two are still not reconciled to one (per the note above),
+    but that gap and this one are independent — reconciling them is not
+    required to close the `stats_reset` gap.
     """
     if distinct_count is None:
         return None
