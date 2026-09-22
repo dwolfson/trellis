@@ -1135,6 +1135,54 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: schema_diff
+    name: "Schema Diff (Columns)"
+    description: >
+      Column-level schema drift since the previous survey — columns added,
+      dropped, or retyped — restricted to tables that exist in both
+      snapshots (a whole table appearing or disappearing is
+      `db_change_rates`'s schema-churn story, not this one's). A database
+      surveyed only once renders as "insufficient history", never as zero
+      change. Design §9.1's `schema_diff` comparator; this covers the
+      column/constraint half, the table add/drop half is already covered by
+      `db_change_rates`.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Admin"]
+    annotation_types: ["SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: grant_change
+    name: "Grant Change"
+    description: >
+      New grants (especially to PUBLIC) or revoked grants since the
+      previous survey, differenced across the two most recent snapshots of
+      `database_grants`. A database surveyed only once renders as
+      "insufficient history", never as zero change. Design §9.1's
+      `grant_change` comparator — the Privacy/Security preset's
+      done-test case.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Security", "Admin"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: reference_data_match
     name: "Reference Data Match"
     description: "Which low-cardinality columns conform to a known Egeria ValidValueSet, and which should become one. Columns whose n_distinct (from the stored pg_stats profile, sign convention resolved) falls under the reference-data gate have their sampled distinct values compared against every set in the platform: a full match becomes ValidValuesAssignment advice, a partial match raises an RFA listing the values outside the set, and no match at all proposes a new set with contentStatus: DRAFT (design §5.4). A truncated distinct-value list is inconclusive rather than a partial match, since a coverage fraction from an incomplete list is wrong in an unknown direction."

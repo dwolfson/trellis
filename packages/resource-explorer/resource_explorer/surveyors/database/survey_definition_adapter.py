@@ -418,9 +418,12 @@ _ADAPTER = ResourceTypeAdapter(
                 "grain_determination (one row per what, per table), "
                 "db_fingerprint (copy/subset of a database we already know), "
                 "schema_conventions (no PK, no comment, naming), "
-                "db_change_rates (tuple-counter deltas between snapshots) and "
-                "a proposed DataScope. Opens no connection to the database or "
-                "to Egeria."
+                "db_change_rates (tuple-counter deltas between snapshots), "
+                "schema_diff (column add/drop/retype between snapshots, "
+                "restricted to tables present in both), grant_change (new/"
+                "revoked grants between snapshots, PUBLIC called out "
+                "specifically) and a proposed DataScope. Opens no connection "
+                "to the database or to Egeria."
             ),
             "annotation_types": [
                 "ClassificationAnnotation",
@@ -537,6 +540,8 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "db_fingerprint": ["db_derived"],
     "schema_conventions": ["db_derived"],
     "db_change_rates": ["db_derived"],
+    "schema_diff": ["db_derived"],
+    "grant_change": ["db_derived"],
     "data_class_match": ["postgres_column_profile"],
     "reference_data_match": ["postgres_column_profile"],
     "nested_column_profile": ["postgres_nested_columns"],

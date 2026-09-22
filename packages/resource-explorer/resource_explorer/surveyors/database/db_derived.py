@@ -74,6 +74,14 @@ DB_DERIVED_ANALYSES: tuple[str, ...] = (
     "db_fingerprint",
     "schema_conventions",
     "db_change_rates",
+    # Added for Phase 1 slice 14's remaining §9.1 comparators (schema_diff's
+    # column/constraint half, and grant_change) — both are zero-fetch diffs
+    # over already-stored rows, same shape as db_change_rates, and each needs
+    # its own analysis_id so a subscription to it can be scheduled and
+    # checked independently (see db_derived.py's own §7/§8 sections and
+    # db_change_comparator.py).
+    "schema_diff",
+    "grant_change",
 )
 
 #: NOTE on the two annotation sites that carry this check's name: they spell
@@ -1575,6 +1583,222 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 7. schema_diff — column/constraint-level  (design §9.1)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The table-add/drop half of `schema_diff` already exists as
+# `derive_change_rates`'s `schema_churn` (differencing `database_tables`
+# across the same two snapshots `db_change_rates` itself compares). This is
+# the other half design §9.1 lists as still open: within tables that exist in
+# BOTH snapshots, did a column get added, dropped, or retyped? Deliberately
+# scoped to tables present in both snapshots — a whole new/dropped table's
+# columns are schema churn's story to tell, not this one's, so a table add
+# does not get double-reported as "N columns added" here too.
+#
+# A distinct `analysis_id` from `db_change_rates` (not folded into it):
+# design §9.1's Perspective presets subscribe to `schema_diff` and
+# `db_change_rates` separately (Steward gets `schema_diff`, `class_change`,
+# `reference_set_change` — not `db_change_rates`), so a Steward's
+# subscription needs its own comparator to check, and its own schedule to
+# check it after (`scheduler._check_subscriptions` dispatches by
+# `analysis_id`, matched to whichever schedule just completed).
+
+def derive_schema_diff(registry, slug: str) -> dict:
+    """Column-level `schema_diff`: new/dropped/retyped columns, restricted to
+    tables present in both of the two most recent snapshots that carry
+    `database_columns` rows.
+
+    Same two-snapshot, zero-fetch shape as `derive_change_rates` — reads
+    already-stored rows via `registry.query_detail_rows`, opens no
+    connection. `state=STATE_NOT_MEASURED, reason="insufficient_history"`
+    with fewer than two such snapshots, mirroring that function's absence
+    discipline exactly (one snapshot is "cannot compare yet", never "no
+    columns changed").
+    """
+    keys = _snapshot_keys(registry, slug)
+    snapshots: list[tuple[str, str, list[dict]]] = []
+    for surveyed_at, source in keys:
+        columns = registry.query_detail_rows("database_columns", slug, surveyed_at, source)
+        if not columns:
+            continue
+        snapshots.append((surveyed_at, source, columns))
+        if len(snapshots) == 2:
+            break
+
+    if len(snapshots) < 2:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": "insufficient_history",
+            "snapshots_available": len(snapshots),
+            "explanation": (
+                f"Column-level schema diff needs two survey snapshots to "
+                f"difference; {len(snapshots)} snapshot(s) of column rows "
+                f"exist for this database. This is insufficient history — "
+                f"NOT a finding that the schema is unchanged, and not a "
+                f"failure. Survey the database again and this answers "
+                f"itself."
+            ),
+            "columns_added": [], "columns_dropped": [], "columns_retyped": [],
+        }
+
+    (new_at, _new_src, new_columns) = snapshots[0]
+    (old_at, _old_src, old_columns) = snapshots[1]
+
+    old_tables = {_table_key(c) for c in old_columns}
+    new_tables = {_table_key(c) for c in new_columns}
+    common_tables = old_tables & new_tables
+
+    def _col_key(c: dict) -> tuple[str, str, str]:
+        return (c.get("schema_name") or "", c.get("table_name") or "", c.get("column_name") or "")
+
+    old_by_col = {_col_key(c): c for c in old_columns if _table_key(c) in common_tables}
+    new_by_col = {_col_key(c): c for c in new_columns if _table_key(c) in common_tables}
+
+    added = sorted(
+        f"{s}.{t}.{c}" for (s, t, c) in (new_by_col.keys() - old_by_col.keys())
+    )
+    dropped = sorted(
+        f"{s}.{t}.{c}" for (s, t, c) in (old_by_col.keys() - new_by_col.keys())
+    )
+
+    def _type_of(row: dict) -> str:
+        return (row.get("base_type") or row.get("data_type") or "").strip()
+
+    retyped: list[dict] = []
+    for key in sorted(old_by_col.keys() & new_by_col.keys()):
+        old_type = _type_of(old_by_col[key])
+        new_type = _type_of(new_by_col[key])
+        if old_type and new_type and old_type != new_type:
+            schema_name, table_name, column_name = key
+            retyped.append({
+                "qualified_name": f"{schema_name}.{table_name}.{column_name}",
+                "old_type": old_type,
+                "new_type": new_type,
+            })
+
+    changed = bool(added or dropped or retyped)
+    parts: list[str] = []
+    if added:
+        parts.append(f"{len(added)} column(s) added: {', '.join(added)}")
+    if dropped:
+        parts.append(f"{len(dropped)} column(s) dropped: {', '.join(dropped)}")
+    if retyped:
+        detail = ", ".join(f"{r['qualified_name']} ({r['old_type']} -> {r['new_type']})" for r in retyped)
+        parts.append(f"{len(retyped)} column(s) retyped: {detail}")
+
+    return {
+        "state": STATE_MEASURED,
+        "from_surveyed_at": old_at,
+        "to_surveyed_at": new_at,
+        "columns_added": added,
+        "columns_dropped": dropped,
+        "columns_retyped": retyped,
+        "explanation": (
+            "; ".join(parts) if changed else
+            f"Differenced {new_at} against {old_at} over "
+            f"{len(common_tables)} table(s) present in both snapshots: no "
+            f"column was added, dropped or retyped — genuinely unchanged."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. grant_change  (design §9.1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def derive_grant_change(registry, slug: str) -> dict:
+    """`grant_change`: a new grant appearing (especially to `PUBLIC`) or an
+    existing grant being revoked, between the two most recent snapshots that
+    carry `database_grants` rows.
+
+    Same two-snapshot, zero-fetch shape as `derive_change_rates`/
+    `derive_schema_diff`. A grant's identity is
+    `(schema_name, object_name, grantee, privilege_type)` — the same tuple
+    `database_grants`' own UNIQUE constraint uses, so "the same grant" here
+    means exactly what the registry already treats as one row.
+    """
+    keys = _snapshot_keys(registry, slug)
+    snapshots: list[tuple[str, str, list[dict]]] = []
+    for surveyed_at, source in keys:
+        grants = registry.query_detail_rows("database_grants", slug, surveyed_at, source)
+        if not grants:
+            continue
+        snapshots.append((surveyed_at, source, grants))
+        if len(snapshots) == 2:
+            break
+
+    if len(snapshots) < 2:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": "insufficient_history",
+            "snapshots_available": len(snapshots),
+            "explanation": (
+                f"Grant change needs two survey snapshots to difference; "
+                f"{len(snapshots)} snapshot(s) of grant rows exist for this "
+                f"database. This is insufficient history — NOT a finding "
+                f"that grants are unchanged, and not a failure. Survey the "
+                f"database again and this answers itself."
+            ),
+            "grants_added": [], "grants_revoked": [], "public_grants_added": [],
+        }
+
+    (new_at, _new_src, new_grants) = snapshots[0]
+    (old_at, _old_src, old_grants) = snapshots[1]
+
+    def _grant_key(g: dict) -> tuple[str, str, str, str]:
+        return (
+            g.get("schema_name") or "", g.get("object_name") or "",
+            g.get("grantee") or "", g.get("privilege_type") or "",
+        )
+
+    old_by_grant = {_grant_key(g): g for g in old_grants}
+    new_by_grant = {_grant_key(g): g for g in new_grants}
+
+    added_keys = new_by_grant.keys() - old_by_grant.keys()
+    revoked_keys = old_by_grant.keys() - new_by_grant.keys()
+
+    def _describe(key: tuple[str, str, str, str]) -> str:
+        schema_name, object_name, grantee, privilege = key
+        qualified = f"{schema_name}.{object_name}" if schema_name else object_name
+        return f"{privilege} on {qualified} to {grantee}"
+
+    added = sorted(_describe(k) for k in added_keys)
+    revoked = sorted(_describe(k) for k in revoked_keys)
+    # PUBLIC grants get their own field so a subscriber never has to parse
+    # `added` looking for the specific case design §9.1 calls out by name
+    # ("new grant, especially to PUBLIC") — the done-test this comparator
+    # exists for names PUBLIC specifically, so it must be unambiguous in the
+    # result, not buried in a generic "grants changed" message.
+    public_added = sorted(
+        _describe(k) for k in added_keys if (k[2] or "").upper() == "PUBLIC"
+    )
+
+    changed = bool(added or revoked)
+    parts: list[str] = []
+    if public_added:
+        parts.append(f"{len(public_added)} new grant(s) to PUBLIC: {', '.join(public_added)}")
+    non_public_added = sorted(set(added) - set(public_added))
+    if non_public_added:
+        parts.append(f"{len(non_public_added)} other new grant(s): {', '.join(non_public_added)}")
+    if revoked:
+        parts.append(f"{len(revoked)} grant(s) revoked: {', '.join(revoked)}")
+
+    return {
+        "state": STATE_MEASURED,
+        "from_surveyed_at": old_at,
+        "to_surveyed_at": new_at,
+        "grants_added": added,
+        "grants_revoked": revoked,
+        "public_grants_added": public_added,
+        "explanation": (
+            "; ".join(parts) if changed else
+            f"Differenced {new_at} against {old_at}: no grant was added or "
+            f"revoked — genuinely unchanged."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Proposed DataScope  (design §5.4; key names from support doc §7)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1723,6 +1947,8 @@ def run_db_derived(
     grain = determine_grain(inputs)
     conventions = check_conventions(inputs)
     change_rates = derive_change_rates(registry, inputs)
+    schema_diff = derive_schema_diff(registry, slug)
+    grant_change = derive_grant_change(registry, slug)
     scope = propose_data_scope(inputs)
 
     derived = {
@@ -1732,6 +1958,8 @@ def run_db_derived(
         "db_fingerprint": fingerprint,
         "schema_conventions": conventions,
         "db_change_rates": change_rates,
+        "schema_diff": schema_diff,
+        "grant_change": grant_change,
         _PROPOSED_SCOPE_CHECK: scope,
     }
 
@@ -1761,6 +1989,8 @@ def build_annotations(derived: dict) -> list:
     annotations.extend(_fingerprint_annotations(derived["db_fingerprint"]))
     annotations.extend(_conventions_annotations(derived["schema_conventions"]))
     annotations.extend(_change_rate_annotations(derived["db_change_rates"]))
+    annotations.extend(_schema_diff_annotations(derived["schema_diff"]))
+    annotations.extend(_grant_change_annotations(derived["grant_change"]))
     annotations.extend(_scope_annotations(derived[_PROPOSED_SCOPE_CHECK]))
     return annotations
 
@@ -2061,6 +2291,93 @@ def _change_rate_annotations(result: dict) -> list:
             },
         ))
     return annotations
+
+
+def _schema_diff_annotations(result: dict) -> list:
+    if result["state"] != STATE_MEASURED:
+        return [ResourceMeasureAnnotation(
+            summary="Column-level schema diff: insufficient history",
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="schema_diff",
+            check_name="schema_diff",
+            label="unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={
+                "reason": result.get("reason") or "",
+                "snapshots_available": result.get("snapshots_available"),
+            },
+        )]
+
+    changed = bool(result["columns_added"] or result["columns_dropped"] or result["columns_retyped"])
+    return [SchemaAnalysisAnnotation(
+        summary=(
+            f"{len(result['columns_added'])} column(s) added, "
+            f"{len(result['columns_dropped'])} dropped, "
+            f"{len(result['columns_retyped'])} retyped"
+            if changed else "No column-level schema change"
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="schema_diff",
+        check_name="schema_diff",
+        label="changed" if changed else "unchanged",
+        confidence=100,
+        explanation=result["explanation"],
+        schema_name="column-level schema diff",
+        schema_type="change",
+        json_properties={
+            "from_surveyed_at": result["from_surveyed_at"],
+            "to_surveyed_at": result["to_surveyed_at"],
+            "columns_added": result["columns_added"],
+            "columns_dropped": result["columns_dropped"],
+            "columns_retyped": result["columns_retyped"],
+        },
+    )]
+
+
+def _grant_change_annotations(result: dict) -> list:
+    if result["state"] != STATE_MEASURED:
+        return [ResourceMeasureAnnotation(
+            summary="Grant change: insufficient history",
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="grant_change",
+            check_name="grant_change",
+            label="unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={
+                "reason": result.get("reason") or "",
+                "snapshots_available": result.get("snapshots_available"),
+            },
+        )]
+
+    changed = bool(result["grants_added"] or result["grants_revoked"])
+    return [ResourceMeasureAnnotation(
+        summary=(
+            f"{len(result['grants_added'])} grant(s) added "
+            f"({len(result['public_grants_added'])} to PUBLIC), "
+            f"{len(result['grants_revoked'])} revoked"
+            if changed else "No grant change"
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="grant_change",
+        check_name="grant_change",
+        label="changed" if changed else "unchanged",
+        confidence=100,
+        explanation=result["explanation"],
+        resource_properties={
+            "from_surveyed_at": result["from_surveyed_at"],
+            "to_surveyed_at": result["to_surveyed_at"],
+            "grants_added_count": len(result["grants_added"]),
+            "public_grants_added_count": len(result["public_grants_added"]),
+            "grants_revoked_count": len(result["grants_revoked"]),
+        },
+        json_properties={
+            "grants_added": result["grants_added"],
+            "public_grants_added": result["public_grants_added"],
+            "grants_revoked": result["grants_revoked"],
+        },
+    )]
 
 
 def _scope_annotations(result: dict) -> list:
