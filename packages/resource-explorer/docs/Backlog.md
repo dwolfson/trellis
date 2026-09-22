@@ -6310,3 +6310,61 @@ deliberately scoped out rather than half-built:
    `answering.kind` is still `gap`/`human`. The CSV is stream 4's ownership
    and not touched by this slice; whoever next edits it should reword those
    three rows' notes (and reconsider `kind`) now that the analyses exist.
+
+### `ConnectionMaker.create_connection`'s direct (non-template) body silently drops `configurationProperties`
+
+Found 2026-09-21, running Phase 1 slice #6 (probe 9, properly, against
+freshly-recatalogued `coco_ods`/`coco_pharma` post-redeploy —
+`docs/design-notes/PROBES-2026-09-21.md` has the full write-up under "Probe
+9 done properly"). Two separate `Connection` elements this session — RE's
+own admin secrets-store `Connection` and the per-database
+`SecretsStoreConnection` embedded by the PostgreSQL template — both came
+back from Egeria with `configurationProperties` entirely absent, despite
+both being supplied in `ConnectionMaker.create_connection`'s creation body.
+Patching the same property afterward with `update_connection(...,
+mergeUpdate=True)` took effect immediately, confirming the property itself
+is fine server-side; it is specifically the *creation* call that drops it.
+
+**Not the same bug as the wrong-connector-class one above** (that one is
+about which class handles the property; this one is about the property
+never landing at all), and **not the same as the missing-placeholder OCF
+precondition** (that one is fixed by supplying a value; here a value was
+supplied and still didn't land).
+
+**Not investigated further here** — needs someone to determine whether this
+is a `ConnectionMaker.create_connection` client-side body-shape defect
+(candidate for `PYEGERIA_ISSUES.md`, pending the usual approval-before-fix
+gate) or an Egeria server-side difference in how `configurationProperties`
+is handled between a template-instantiation body
+(`TemplateRequestBody.placeholderPropertyValues`, which has never shown
+this symptom) and a direct `NewElementRequestBody`/`UpdateElementRequestBody`
+creation. Both of this session's live-verified admin-store and
+per-database Connections needed a manual `update_connection` patch to work
+at all; `egeria_database_surveyor.py`'s own code has not been changed to
+work around this yet, since the right fix depends on which side the defect
+is actually on.
+
+### A leftover `ConnectorType` can carry a since-fixed bug forward, because "found by qualifiedName" never re-verifies its properties
+
+Found 2026-09-21, same investigation. The wrong-connector-class bug (this
+file's "Native Postgres survey fails with SCRAM auth error..." entry, above)
+was fixed in PR #188 for *new* `ConnectorType` creation. But
+`_ensure_own_secrets_store_guid`'s find-or-create now correctly reuses a
+`ConnectorType` if one already exists by qualifiedName (a separate fix,
+also 2026-09-21, for a 409 the naive Asset-only existence check caused) —
+and a leftover `ConnectorType` from before the class fix landed still
+carried the old, wrong `connectorProviderClassName`
+(`YAMLSecretsStoreProvider`, read-only). Reusing it by qualifiedName
+silently carried the old defect forward even though new-creation code had
+already been fixed — a third instance of "reuse never repairs," this time
+of a bug that genuinely was already fixed for the creation path. Patched
+live via `update_connector_type`.
+
+**Not fixed at the source.** Open question for a project-owner decision:
+should `_ensure_own_secrets_store_guid` verify a found `ConnectorType`'s
+`connectorProviderClassName` before trusting it (repairing it in place if
+wrong), the same "reuse never repairs" lesson this file already applies
+elsewhere — or was this specific stale element simply a one-time leftover
+from mid-development that a platform which has never run the pre-fix code
+will not reproduce, making the extra verification permanent complexity for
+a transient problem?
