@@ -609,7 +609,9 @@ function bindDetail(inv, members) {
       host.innerHTML = `<div class="mt-s2 text-caveat ${result.ok ? 'text-state-ok' : 'text-state-warn'}">
         ${result.ok ? 'Created.' : 'Partial — see below.'} ${confirmedLine}.
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
-        ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(esc).join(', ')}.` : ''}
+        ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(
+          m => esc(`${m.entity_slug || m.entity_type || '?'}${m.reason ? ` (${m.reason})` : ''}`)
+        ).join('; ')}.` : ''}
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
         <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
       </div>`;
