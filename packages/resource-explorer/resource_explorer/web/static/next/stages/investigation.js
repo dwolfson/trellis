@@ -89,8 +89,12 @@ function statusGlyph(status) {
 }
 
 function bindingGlyph(inv) {
+  // `egeria_context` (registry.py get_investigation()) is a small object,
+  // not a display string — {status, egeria_project_guid,
+  // egeria_project_qualified_name, free_text_name}. Use the qualified name
+  // straight off the row, same as the detail view does.
   return inv.egeria_project_guid
-    ? `<span title="${esc(inv.egeria_context || inv.egeria_project_qualified_name || 'bound to an Egeria Project')}">☁ Egeria</span>`
+    ? `<span title="${esc(inv.egeria_project_qualified_name || 'bound to an Egeria Project')}">☁ Egeria</span>`
     : '<span class="text-ink-muted" title="no Egeria Project">🏠 local</span>';
 }
 
@@ -506,13 +510,25 @@ function bindDetail(inv, members) {
       btn.textContent = 'Reclassifying…';
       const resultEl = host.querySelector('#inv-reclass-result');
       try {
+        // ReclassificationResult.as_dict() (investigation_reclassifier.py):
+        // `still_public` is a LIST of guids still exposed on a tightening
+        // (always [] otherwise), `local_applied`/`ok` are booleans. Left on
+        // screen with an explicit "Reload" rather than an immediate
+        // renderDetail() -- this is the one write in the whole pane where a
+        // partial result naming exactly which elements did not move matters
+        // more than snapping back to a clean view.
         const result = await reclassifyInvestigation(
           inv.slug, sel.value, host.querySelector('#inv-reclass-hyp').value.trim());
-        resultEl.innerHTML = result.ok
-          ? `<span class="text-state-ok">Reclassified. still_public=${esc(String(result.still_public))}, local_applied=${esc(String(result.local_applied))}</span>`
-          : `<span class="text-state-warn">Partial: ${esc(JSON.stringify(result))}</span>`;
+        btn.textContent = 'Reclassify';
+        resultEl.innerHTML = (result.ok
+          ? `<span class="text-state-ok">Reclassified to ${esc(result.to_classification)}.</span>`
+          : `<span class="text-state-warn">Partial (${esc(result.direction)}): local_applied=${
+              esc(String(result.local_applied))}.${result.still_public.length
+                ? ` Still public: ${result.still_public.map(esc).join(', ')}.` : ''}${
+              result.errors.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}</span>`)
+          + `<div class="mt-s2"><button id="inv-reclass-reload" class="${btnCls()}">Reload</button></div>`;
+        resultEl.querySelector('#inv-reclass-reload').addEventListener('click', () => renderDetail(inv.slug));
         await refreshInvestigationsAndSidebar();
-        renderDetail(inv.slug);
       } catch (err) {
         btn.disabled = false;
         btn.textContent = 'Reclassify';
@@ -595,9 +611,14 @@ function bindDetail(inv, members) {
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
         ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(esc).join(', ')}.` : ''}
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
+        <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
       </div>`;
+      // Left on screen rather than an immediate renderDetail() -- see the
+      // reclassify handler's identical reasoning: a partial promote's
+      // members_unlinkable/errors matter more than snapping back to a
+      // clean view that would otherwise erase them before they're read.
+      host.querySelector('#inv-promote-reload').addEventListener('click', () => renderDetail(inv.slug));
       await refreshInvestigationsAndSidebar();
-      renderDetail(inv.slug);
     } catch (err) {
       btn.disabled = false;
       btn.textContent = 'Create in Egeria →';
