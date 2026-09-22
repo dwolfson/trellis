@@ -293,46 +293,74 @@ class EgeriaDatabaseSurveyor:
         maker.create_egeria_bearer_token(self.user_id, self.user_password)
         relationship_body = {"class": "NewRelationshipRequestBody"}
 
-        connector_type_guid = maker.create_connector_type({
-            "class": "NewElementRequestBody",
-            "isOwnAnchor": True,
-            "properties": {
-                "class": "ConnectorTypeProperties",
-                "qualifiedName": f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType",
-                "displayName": "Resource Explorer YAML secrets store connector type",
-                "connectorProviderClassName": _YAML_SECRETS_FILE_PROVIDER_CLASS,
-            },
-        })
-        endpoint_guid = maker.create_endpoint({
-            "class": "NewElementRequestBody",
-            "isOwnAnchor": True,
-            "properties": {
-                "class": "EndpointProperties",
-                "qualifiedName": f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Endpoint",
-                "displayName": "Resource Explorer secrets store endpoint",
-                "networkAddress": cfg.secrets_store_path_name,
-            },
-        })
-        connection_guid = maker.create_connection({
-            "class": "NewElementRequestBody",
-            "isOwnAnchor": True,
-            "properties": {
-                "class": "ConnectionProperties",
-                "qualifiedName": _OWN_SECRETS_STORE_QUALIFIED_NAME,
-                "displayName": "Resource Explorer secrets store connection",
-                # The OCF secrets-store connector framework's own start()
-                # requires SOME non-null secretsCollectionName configuration
-                # property before it will initialize at all (confirmed live
-                # 2026-09-21: "OCF-CONNECTOR-400-009 ... secretsCollectionName
-                # was not supplied" otherwise). YAMLSecretsFileConnector's own
-                # start() override immediately nulls this back out after the
-                # framework's check passes -- every real save call supplies
-                # its own collectionName as a method argument -- so this
-                # value is never actually read; it exists purely to satisfy
-                # that startup validation.
-                "configurationProperties": {"secretsCollectionName": "resource-explorer-admin"},
-            },
-        })
+        # Find-or-create each sub-element individually, not just the final
+        # Asset. Confirmed live 2026-09-21: after an Egeria wipe-and-redeploy,
+        # the ConnectorType from this method's own graph was found to already
+        # exist while the Asset did not -- gating creation on the Asset alone
+        # made the whole method blow up with a 409 duplicate-qualifiedName on
+        # the very first create call instead of finding and reusing what was
+        # already there. A partial graph (any subset of these four elements
+        # already present) must not be fatal.
+        connector_type_qn = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType"
+        connector_type_guid = self._find_element_guid(connector_type_qn)
+        if not connector_type_guid:
+            connector_type_guid = maker.create_connector_type({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "ConnectorTypeProperties",
+                    "qualifiedName": connector_type_qn,
+                    "displayName": "Resource Explorer YAML secrets store connector type",
+                    "connectorProviderClassName": _YAML_SECRETS_FILE_PROVIDER_CLASS,
+                },
+            })
+
+        endpoint_qn = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Endpoint"
+        endpoint_guid = self._find_element_guid(endpoint_qn)
+        if not endpoint_guid:
+            endpoint_guid = maker.create_endpoint({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "EndpointProperties",
+                    "qualifiedName": endpoint_qn,
+                    "displayName": "Resource Explorer secrets store endpoint",
+                    "networkAddress": cfg.secrets_store_path_name,
+                },
+            })
+
+        connection_guid = self._find_element_guid(_OWN_SECRETS_STORE_QUALIFIED_NAME)
+        if not connection_guid:
+            connection_guid = maker.create_connection({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "ConnectionProperties",
+                    "qualifiedName": _OWN_SECRETS_STORE_QUALIFIED_NAME,
+                    "displayName": "Resource Explorer secrets store connection",
+                    # The OCF secrets-store connector framework's own start()
+                    # requires SOME non-null secretsCollectionName configuration
+                    # property before it will initialize at all (confirmed live
+                    # 2026-09-21: "OCF-CONNECTOR-400-009 ... secretsCollectionName
+                    # was not supplied" otherwise). YAMLSecretsFileConnector's own
+                    # start() override immediately nulls this back out after the
+                    # framework's check passes -- every real save call supplies
+                    # its own collectionName as a method argument -- so this
+                    # value is never actually read; it exists purely to satisfy
+                    # that startup validation.
+                    "configurationProperties": {"secretsCollectionName": "resource-explorer-admin"},
+                },
+            })
+
+        # Link unconditionally, not only on fresh-create. Confirmed live
+        # 2026-09-21: a found-but-reused Connection can be a partial leftover
+        # that was never linked to its ConnectorType/Endpoint (this is exactly
+        # what happened after a wipe-and-redeploy left this graph's Connection
+        # present but unlinked) -- gating the link calls on "just created"
+        # reproduces the same "reuse never repairs" defect this whole method
+        # exists to avoid. Both link_* calls are safe to repeat: re-linking an
+        # already-correctly-linked pair is a live-verified no-op-on-success,
+        # not a duplicate or an error.
         maker.link_connection_connector_type(connection_guid, connector_type_guid, body=relationship_body)
         maker.link_connection_endpoint(connection_guid, endpoint_guid, body=relationship_body)
 

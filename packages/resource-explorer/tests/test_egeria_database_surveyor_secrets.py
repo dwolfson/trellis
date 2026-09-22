@@ -146,6 +146,83 @@ class TestEnsureOwnSecretsStoreGuid:
         mock_maker_cls.assert_not_called()
         surveyor._automated_curation.get_guid_for_name.assert_not_called()
 
+    def test_reuses_a_partially_existing_graph_instead_of_409ing(self):
+        """Live-verified 2026-09-21, after an Egeria wipe-and-redeploy: this
+        method's own ConnectorType was found to already exist while the
+        Endpoint/Connection/Asset did not. Gating creation on the Asset alone
+        made create_connector_type blow up with a 409 duplicate-qualifiedName
+        instead of finding and reusing what was already there."""
+        surveyor = self._surveyor()
+        mock_maker = MagicMock()
+        mock_maker.create_endpoint.return_value = "fresh-endpoint-guid"
+        mock_maker.create_connection.return_value = "fresh-connection-guid"
+        mock_maker.create_asset.return_value = "fresh-asset-guid"
+
+        def fake_find(qn: str) -> str:
+            if qn == f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType":
+                return "preexisting-connector-type-guid"
+            return ""
+
+        with patch("resource_explorer.config.get_config") as mock_get_config:
+            mock_get_config.return_value.egeria.secrets_store_guid = ""
+            mock_get_config.return_value.egeria.secrets_store_path_name = (
+                "/deployments/secrets/resource-explorer.omsecrets"
+            )
+            with patch("pyegeria.ConnectionMaker", return_value=mock_maker):
+                with patch.object(surveyor, "_find_element_guid", side_effect=fake_find):
+                    guid = surveyor._ensure_own_secrets_store_guid()
+
+        assert guid == "fresh-asset-guid"
+        # The pre-existing ConnectorType must be reused, not recreated.
+        mock_maker.create_connector_type.assert_not_called()
+        # Everything else, genuinely absent, must still be created.
+        mock_maker.create_endpoint.assert_called_once()
+        mock_maker.create_connection.assert_called_once()
+        mock_maker.create_asset.assert_called_once()
+        # And the found ConnectorType must actually get linked to the fresh
+        # Connection -- reusing a sub-element is only safe if it still ends
+        # up wired into the graph.
+        relationship_body = {"class": "NewRelationshipRequestBody"}
+        mock_maker.link_connection_connector_type.assert_called_once_with(
+            "fresh-connection-guid", "preexisting-connector-type-guid", body=relationship_body
+        )
+
+    def test_relinks_a_found_connection_even_when_not_freshly_created(self):
+        """Live-verified 2026-09-21: a found-but-reused Connection can be a
+        partial leftover that was never linked to its ConnectorType/Endpoint
+        at all (OCF-CONNECTION-400-003 'Null connectorType property passed in
+        connection'). Gating the link_* calls on 'just created' reproduces
+        the exact 'reuse never repairs' defect this whole method exists to
+        avoid -- the link calls must run whether or not this call created the
+        Connection."""
+        surveyor = self._surveyor()
+        mock_maker = MagicMock()
+        mock_maker.create_asset.return_value = "fresh-asset-guid"
+
+        def fake_find(qn: str) -> str:
+            return {
+                f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType": "existing-connector-type-guid",
+                f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Endpoint": "existing-endpoint-guid",
+                _OWN_SECRETS_STORE_QUALIFIED_NAME: "existing-connection-guid",
+            }.get(qn, "")
+
+        with patch("resource_explorer.config.get_config") as mock_get_config:
+            mock_get_config.return_value.egeria.secrets_store_guid = ""
+            with patch("pyegeria.ConnectionMaker", return_value=mock_maker):
+                with patch.object(surveyor, "_find_element_guid", side_effect=fake_find):
+                    surveyor._ensure_own_secrets_store_guid()
+
+        mock_maker.create_connector_type.assert_not_called()
+        mock_maker.create_endpoint.assert_not_called()
+        mock_maker.create_connection.assert_not_called()
+        relationship_body = {"class": "NewRelationshipRequestBody"}
+        mock_maker.link_connection_connector_type.assert_called_once_with(
+            "existing-connection-guid", "existing-connector-type-guid", body=relationship_body
+        )
+        mock_maker.link_connection_endpoint.assert_called_once_with(
+            "existing-connection-guid", "existing-endpoint-guid", body=relationship_body
+        )
+
 
 class TestSaveDatabaseSecret:
     def _surveyor(self):
