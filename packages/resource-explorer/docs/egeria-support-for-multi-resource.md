@@ -316,15 +316,34 @@ section's "type ask" tier did not account for:
   real-world counterpart." This is the direct element↔annotation link the
   `candidate…GUIDs` fields were working around with a plain property list.
 
-**Revised reading, pending probe 4** (does `create_data_class`/equivalent
-accept `initialStatus: DRAFT`?): if it does, a survey can create the
-*actual* candidate element (DataClass/DataGrain/ValidValueSet) in `DRAFT`
-status directly and link it to its originating evidence via
-`AssociatedAnnotation`, rather than encoding the proposal as
-`RequestForAction` properties or a new annotation subtype. That would drop
-the §3 "type ask" tier entirely — only the RFA convention needed as a
-near-term stand-in (already the "now, no extension" plan) and probe 4/probe
-5 need to run to confirm.
+**Probes 4 and 5 run 2026-09-21 — see `docs/design-notes/PROBES-2026-09-21.md`
+for the full write-up.** Answer: **no** for probe 4, **yes** for probe 5.
+
+`create_data_class` with `initialStatus: DRAFT` returns success but the
+created element reads back as `ACTIVE` — confirmed by reading pyegeria's own
+`NewElementRequestBody` Pydantic model, which has no `initial_status` field
+and `extra='ignore'`, so the property is silently dropped client-side before
+the request ever reaches Egeria's server. Not an Egeria server limitation —
+`initialStatus` is genuinely server-supported for other endpoints
+(`collection_manager.py`'s own docstrings document it) — just missing on the
+model this particular create call routes through. Logged as ISSUE-113 in
+`PYEGERIA_ISSUES.md`; not fixed here, waiting on approval per this repo's
+pyegeria-gaps-tracking convention.
+
+Probe 5 (`create_annotation` for all five proposal-shaped types, attached via
+`ReportedAnnotation`) worked cleanly for all five, verified by an independent
+re-read (5 distinct GUIDs, correct types) rather than by trusting the create
+calls.
+
+**So the §3 "type ask" tier does NOT drop entirely, for now**: the DRAFT-
+element path this section hoped might replace it is blocked on ISSUE-113,
+not confirmed working. Until that lands, `data_class_match`/
+`reference_data_match`'s "propose a new Data Class/ValidValueSet" path stays
+on the existing RFA convention (§3's "now, no extension" plan) — RE cannot
+create a genuine DRAFT candidate element today through this pyegeria
+surface. Phase 1 slice #10 (`postgres_column_profile`,
+`data_class_match`/`reference_data_match`) should default to RFA-only rather
+than building around DRAFT-element creation.
 
 **Open question the RFA path didn't have to answer: is a DRAFT element
 visible to ordinary search/consumer queries before it's accepted?**
@@ -621,11 +640,13 @@ with the response, so the result is evidence and not a recollection.
 |---|---|---|---|
 | Egeria server | `linkReferenceValueAssignment` dispatches as ValidValuesAssignment (§4) | **being fixed on Egeria's side (2026-09-21)** — no filing needed | probe 2, to unblock/confirm before relying on it |
 | Egeria types | model Tier 1: properties on `DeployedAnalyticsModel`, `DerivedFromModel`, `TrainedOn`, evaluation-run properties (§2) | medium — **in design (2026-09-21)** | three real cards from Phase 4 |
-| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **likely unneeded (2026-09-21)** — `Annotation.contentStatus: DRAFT` + `AssociatedAnnotation` may already cover this; re-decide after probes 4/5 | the RFA convention having run once; probe 4 (`initialStatus: DRAFT`) |
+| Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **still needed for now (2026-09-21)** — probes 4/5 run: probe 4 (`initialStatus: DRAFT`) failed (ISSUE-113, pyegeria client-side gap, not an Egeria server limitation), so the DRAFT-element path can't replace this yet; stays on the RFA convention until ISSUE-113 lands | ISSUE-113 |
 | Egeria content pack | `.duckdb` file type + folder → DuckDB survey process (§6) | **already planned for Egeria (2026-09-21)** — no filing needed | nothing; self-contained |
 | Egeria types | model Tier 2 `ModelCard` (§2) | discuss | Tier 1 |
 | Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | **deferred (2026-09-21)** — do not build `resource_reachability` yet either | rule B in use, further tests |
 | pyegeria | `_async_initiate_survey` drops request parameters (§8.1) | high for rule B | none — log now |
-| pyegeria | `create_notification_type`, `create_valid_value_set`, typed annotation helpers | low | probes 3, 5 |
+| pyegeria | `create_notification_type`, `create_valid_value_set` | low | probe 3 |
+| pyegeria | typed annotation helpers for the five proposal-shaped annotation types | **unneeded (2026-09-21)** — probe 5 confirmed the generic `create_annotation` already handles all five cleanly, no missing helper | none |
+| pyegeria | `NewElementRequestBody` has no `initial_status` field, so `initialStatus` is silently dropped client-side on every create routing through it (§3, ISSUE-113) | high — affects any create call that needs non-ACTIVE initial status, not just `create_data_class` | none — log now |
 | Dr.Egeria | `Create Valid Value Set` / `Create Valid Value Definition` commands | medium | none |
 | RE | `resource_reachability` table; RFA proposal convention; measured-scope key convention; call `initiate_gov_action_type` directly | — | none |
