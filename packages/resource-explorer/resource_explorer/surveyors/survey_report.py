@@ -42,6 +42,22 @@ class AnnotationType(str, Enum):
     #: replica lag, WAL archiving, backup/clustering signals) rather than
     #: publishing them as a generic ResourceMeasureAnnotation.
     RESOURCE_PHYSICAL_STATUS = "ResourcePhysicalStatusAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 9, `db_derived`). Egeria's real
+    #: `DataGrainAnnotationProperties` type — the grain of a table, "one row
+    #: per what". Its native fields are known and typed (see
+    #: `docs/egeria-support-for-multi-resource.md` §3: `granularityBasis`,
+    #: `grainStatement`, `interval`, `candidateDataGrainGUIDs`), so unlike
+    #: FINGERPRINT below this one publishes as typed fields rather than
+    #: through `additionalProperties`.
+    DATA_GRAIN = "DataGrainAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 9, `db_derived`). Egeria's real
+    #: `FingerprintAnnotationProperties` type — "an annotation capturing
+    #: digital resource fingerprint information" (`docs/egeria-integration.md`
+    #: §2's audit of the twelve unused types). Its native field names could
+    #: NOT be verified in this environment (no Egeria Java source checkout is
+    #: present, and no probe has sent one), so its payload travels as
+    #: `additionalProperties` — see `annotation_props.py`.
+    FINGERPRINT = "FingerprintAnnotation"
 
 
 @dataclass
@@ -111,6 +127,26 @@ class Annotation:
     #: run that produces it. Consumed by Phase 2 (not implemented yet); Phase 1
     #: only adds the field so sub-surveyors can start setting it.
     evidence_of: int | None = None
+    #: Egeria's `contentStatus` (`ContentStatus.java`) — whether the CONTENT
+    #: of this annotation is complete, as opposed to whether the entity
+    #: persists (`ElementStatus`, a different field entirely). Empty means
+    #: "say nothing", which is every pre-existing annotation's behaviour.
+    #:
+    #: Set to "DRAFT" for a PROPOSAL: a finding that asks a curator to
+    #: declare a governance element that does not exist yet (a DataGrain, a
+    #: DataScope). This is the mechanism the project owner's 2026-09-21
+    #: decision in `docs/egeria-support-for-multi-resource.md` §3 settled on,
+    #: after the corrected probe 4 showed `contentStatus: DRAFT` round-trips
+    #: cleanly on both an element and an annotation — replacing the earlier
+    #: plan to carry proposals as an RFA convention or to ask Egeria for new
+    #: `candidate…Specification` fields.
+    #:
+    #: Known open question, recorded rather than assumed away (§3's own
+    #: closing paragraph): it is NOT established that an ordinary read path
+    #: surfaces `contentStatus` at all, so a DRAFT proposal may render
+    #: identically to a confirmed finding to a naive consumer. That needs its
+    #: own probe; RE's own rendering of it is not built here.
+    content_status: str = ""
 
 
 @dataclass
@@ -184,6 +220,54 @@ class ResourcePhysicalStatusAnnotation(Annotation):
     """
     annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PHYSICAL_STATUS, init=False)
     physical_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DataGrainAnnotation(Annotation):
+    """The grain of a table — "one row per what" — Egeria's real
+    `DataGrainAnnotationProperties` type.
+
+    Field names mirror the Egeria type exactly (`docs/egeria-support-for-
+    multi-resource.md` §3 quotes them from the Java source:
+    `granularityBasis`, `grainStatement`, `interval`,
+    `candidateDataGrainGUIDs`), so the mapping in `annotation_props.py` is a
+    rename-free copy and a future curator "accept this grain" action can
+    prefill `create_data_grain` key-for-key.
+
+    `candidate_data_grain_guids` stays empty in `db_derived`: the whole point
+    of the slice-9 finding is that no `DataGrain` element exists yet to point
+    at. The proposal is carried by `content_status = "DRAFT"` on the base
+    class instead, per §3's project-owner decision.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.DATA_GRAIN, init=False)
+    #: e.g. "one row per (customer_id, order_date)"
+    grain_statement: str = ""
+    #: WHAT the statement was derived from — "primary_key", "unique_column",
+    #: "temporal_key" — so a reader can weigh it without re-deriving it.
+    granularity_basis: str = ""
+    #: The temporal interval, when the grain has one (daily, monthly).
+    interval: str = ""
+    candidate_data_grain_guids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FingerprintAnnotation(Annotation):
+    """A structural signature of a resource, and its nearest known matches —
+    Egeria's real `FingerprintAnnotationProperties` type.
+
+    **The native field names are not known here.** `docs/egeria-integration.md`
+    §2 confirms the type exists and quotes its description ("an annotation
+    capturing digital resource fingerprint information"), but no Egeria Java
+    source checkout is available in this environment to read its properties
+    from, and probe 5 established only that `create_annotation` ACCEPTS the
+    type — not what fields it carries. So the payload travels as
+    `additionalProperties` (the same fallback `ResourcePhysicalStatusAnnotation`
+    uses for its own unmapped bag) rather than guessing at typed field names
+    that would silently land in the wrong place. Logged to `docs/Backlog.md`
+    as a probe worth running before anything depends on the field names.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.FINGERPRINT, init=False)
+    fingerprint_properties: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -303,6 +387,25 @@ ANNOTATION_TYPES_REGISTRY = [
         "properties": ["physical_properties (dict)"],
         "egeria_type": "ResourcePhysicalStatusAnnotationProperties",
         "python_class": "ResourcePhysicalStatusAnnotation",
+    },
+    {
+        "type": "DataGrainAnnotation",
+        "display_name": "Data Grain",
+        "description": "Represents the granularity of a data collection — what one row means (e.g. one row per customer, one row per account per day). Produced as a PROPOSAL (contentStatus DRAFT) where no DataGrain element exists yet.",
+        "properties": [
+            "grain_statement (str)", "granularity_basis (str)",
+            "interval (str)", "candidate_data_grain_guids (list[str])",
+        ],
+        "egeria_type": "DataGrainAnnotationProperties",
+        "python_class": "DataGrainAnnotation",
+    },
+    {
+        "type": "FingerprintAnnotation",
+        "display_name": "Fingerprint",
+        "description": "Represents a structural signature of a resource and its nearest known matches, for duplicate/copy/subset detection across databases or files.",
+        "properties": ["fingerprint_properties (dict)"],
+        "egeria_type": "FingerprintAnnotationProperties",
+        "python_class": "FingerprintAnnotation",
     },
 ]
 
