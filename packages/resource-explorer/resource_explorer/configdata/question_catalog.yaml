@@ -2237,12 +2237,14 @@ database_questions:
   - Certify
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - data_class_match
     checks: []
-    note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
-      never base tables, and no RFA proposes a new class.'
+    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation)'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
     against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
@@ -3136,12 +3138,14 @@ filesystem_questions:
   - Certify
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - data_class_match
     checks: []
-    note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
-      never base tables, and no RFA proposes a new class.'
+    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation)'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
     against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
@@ -3787,12 +3791,14 @@ dataset_questions:
   - Certify
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - data_class_match
     checks: []
-    note: 'GAP: data_class_match (proposed) — today''s matching runs over view-lineage leaf columns only,
-      never base tables, and no RFA proposes a new class.'
+    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation)'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
     against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.

@@ -6,6 +6,8 @@ import os
 import sys
 import logging
 
+from resource_explorer.surveyors.survey_definition_reader import _as_guid
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -87,7 +89,11 @@ def bootstrap_data_classes() -> int:
         
         data_class_guid = None
         try:
-            data_class_guid = designer.get_guid_for_name(qualified_name)
+            # pyegeria's get_guid_for_name returns the literal string
+            # "No elements found" (not None/""/an exception) on a miss —
+            # _as_guid rejects that sentinel (it contains whitespace, unlike
+            # a real GUID) so a miss is not mistaken for "already exists".
+            data_class_guid = _as_guid(designer.get_guid_for_name(qualified_name))
         except Exception as e:
             log.debug(f"Lookup failed for '{qualified_name}': {e}")
 
@@ -96,7 +102,18 @@ def bootstrap_data_classes() -> int:
             log.info(f"Creating DataClass '{qualified_name}'...")
             body = {
                 "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
                 "properties": {
+                    # Live-verified 2026-09-22: omitting "class" here (as this
+                    # body did until now) makes Egeria reject the create with
+                    # a 400 CLIENT_ERROR_400 — pyegeria's
+                    # `_async_create_element_body_request` needs
+                    # `properties.class` to resolve the DTO shape.
+                    # `egeria_reference_catalog.build_proposed_data_class_body`
+                    # already carried both this field and `isOwnAnchor`; this
+                    # was the exact gap its own docstring names as "a bug
+                    # this deliberately does not copy" — now fixed here too.
+                    "class": "DataClassProperties",
                     "qualifiedName": qualified_name,
                     "displayName": dc_spec["displayName"],
                     "description": dc_spec["description"],
@@ -118,7 +135,7 @@ def bootstrap_data_classes() -> int:
         set_qname = f"ValidValuesSet::{dc_spec['name']}Keywords"
         set_guid = None
         try:
-            set_guid = ref_manager.get_guid_for_name(set_qname)
+            set_guid = _as_guid(ref_manager.get_guid_for_name(set_qname))
         except Exception as e:
             log.debug(f"Lookup failed for ValidValuesSet '{set_qname}': {e}")
 
@@ -126,6 +143,7 @@ def bootstrap_data_classes() -> int:
             log.info(f"Creating ValidValuesSet '{set_qname}'...")
             set_body = {
                 "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
                 "properties": {
                     "class": "ValidValueDefinitionProperties",
                     "qualifiedName": set_qname,
@@ -149,7 +167,7 @@ def bootstrap_data_classes() -> int:
             kw_qname = f"ValidValueDefinition::{dc_spec['name']}Keyword::{kw}"
             kw_guid = None
             try:
-                kw_guid = ref_manager.get_guid_for_name(kw_qname)
+                kw_guid = _as_guid(ref_manager.get_guid_for_name(kw_qname))
             except Exception as e:
                 log.debug(f"Lookup failed for ValidValueDefinition '{kw_qname}': {e}")
 
@@ -157,6 +175,7 @@ def bootstrap_data_classes() -> int:
                 log.info(f"Creating ValidValueDefinition '{kw_qname}'...")
                 kw_body = {
                     "class": "NewElementRequestBody",
+                    "isOwnAnchor": True,
                     "properties": {
                         "class": "ValidValueDefinitionProperties",
                         "qualifiedName": kw_qname,
@@ -173,10 +192,26 @@ def bootstrap_data_classes() -> int:
                     log.error(f"Failed to create ValidValueDefinition '{kw_qname}': {e}")
                     return 1
 
-                # Link valid value definition as member of the ValidValuesSet
+                # Link valid value definition as member of the ValidValuesSet.
+                # An explicit body, not the no-body call this used to make —
+                # egeria_reference_catalog.py's publish_proposed_valid_value_set
+                # docstring already named this exact gap ("makes pyegeria
+                # synthesise one and POST it un-serialised — a live bug this
+                # does not copy"); fixed here to match that module's body shape.
                 log.info(f"Linking ValidValueDefinition '{kw}' to ValidValuesSet...")
                 try:
-                    ref_manager.link_valid_value_definition(vv_set_guid=set_guid, vv_member_guid=kw_guid)
+                    ref_manager.link_valid_value_definition(
+                        set_guid, kw_guid,
+                        body={
+                            "class": "NewRelationshipRequestBody",
+                            "properties": {
+                                "class": "ValidValueMemberProperties",
+                                "isDefaultValue": False,
+                                "label": kw,
+                                "description": "Standard keyword for this Data Class.",
+                            },
+                        },
+                    )
                     log.info(f"Linked '{kw}' successfully.")
                 except Exception as e:
                     log.error(f"Failed to link ValidValueDefinition to set: {e}")

@@ -980,6 +980,27 @@ class TestDraftProposalPath:
         assert result.guid == "guid-existing"
         assert designer.created == []
 
+    def test_a_miss_reading_as_pyegerias_sentinel_string_still_creates(self):
+        # `_find_existing` (egeria_reference_catalog.py) used to check
+        # `get_guid_for_name`'s result with a bare `... or ""`, which does
+        # not catch pyegeria's real miss return value: the literal string
+        # "No elements found", not None/""/an exception. That string is
+        # truthy, so a miss read as "already exists" and the create was
+        # silently skipped — the same sentinel bug found live in
+        # bootstrap_data_classes.py (2026-09-22). Fixed by routing through
+        # `_as_guid`, which rejects the sentinel because it contains
+        # whitespace, unlike a real GUID.
+        match = _proposal_match()
+
+        class _SentinelDesigner(_FakeDesigner):
+            def get_guid_for_name(self, name):
+                return "No elements found"
+
+        designer = _SentinelDesigner()
+        result = publish_proposed_data_class(designer, match)
+        assert result.created is True
+        assert len(designer.created) == 1
+
     def test_a_proposal_identity_is_keyed_on_the_column_not_the_pattern(self):
         # Two runs must converge on one element, and the pattern is exactly
         # what a second run might decide differently.

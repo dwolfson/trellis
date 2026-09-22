@@ -1,8 +1,11 @@
 """Database surveyor for custom database surveys."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 from resource_explorer.registry import (
     DatabaseEntity,
@@ -260,6 +263,7 @@ class DatabaseSurveyor:
         steps: list[str] | None = None,
         sampling_overrides: dict | None = None,
         reference_catalog=None,
+        read_egeria_catalog: bool = True,
     ) -> dict:
         """Run a database survey.
 
@@ -271,6 +275,36 @@ class DatabaseSurveyor:
             omitted, since every other step's results are meaningless (or,
             for "operations", just less complete — see
             _survey_operations()) without the table list schema produces.
+
+        reference_catalog : an already-loaded `ReferenceCatalog` (see
+            `egeria_reference_catalog.load_reference_catalog`) to hand to the
+            "column_profile" step for `data_class_match`/`reference_data_match`.
+            When `None` (the default) and "column_profile" is among the
+            requested steps, this method loads one itself — see the note
+            below. Pass an explicit catalog to avoid a second read when a
+            caller (e.g. `survey_definition_adapter._run_postgres_column_profile`)
+            has already loaded one for the same run.
+
+        read_egeria_catalog : when the caller has not supplied a
+            `reference_catalog` and "column_profile" is requested, whether to
+            read the platform's Data Classes / Valid Value Sets at all.
+            Mirrors `_run_postgres_column_profile`'s parameter of the same
+            name (design §5.4/§5.8): both entry points into
+            `postgres_column_profile` — the Survey Definition executor and
+            this survey() method, which backs the classic UI's per-analysis
+            "Run" button (`web/routes/databases.py`'s
+            `run_single_database_analysis`) — must load the SAME
+            `ReferenceCatalog` the same way, via
+            `egeria_reference_catalog.load_reference_catalog`, or a column's
+            data-class verdict depends on which door the run came through.
+            Before this, `survey()` accepted a `reference_catalog` parameter
+            that no caller ever passed, so every "Run →" click on
+            `data_class_match`/`reference_data_match` silently ran with
+            `reference_catalog=None` — column_profile_step then treats an
+            absent catalog as "we did not read the platform's Data Classes",
+            which is `MATCH_NO_CANDIDATES`/"not established" for every
+            column, never a real match. Set to False only where a caller
+            deliberately wants that no-read behaviour (e.g. an offline test).
 
         Returns:
             Dict with survey results including annotations and statistics
@@ -289,6 +323,38 @@ class DatabaseSurveyor:
         # "schema" above.
         if "column_profile" in requested or "nested_columns" in requested:
             requested.add("statistics")
+
+        # Load the platform's Data Classes / Valid Value Sets here, not only
+        # in survey_definition_adapter._run_postgres_column_profile — see
+        # this method's docstring. Both entry points share ONE loading
+        # function (`load_reference_catalog`) rather than each re-reading the
+        # platform their own way; this is the difference between the two
+        # doors and one lock versus two locks that can drift.
+        catalog_load_error = ""
+        if (
+            "column_profile" in requested
+            and reference_catalog is None
+            and read_egeria_catalog
+        ):
+            try:
+                from resource_explorer.surveyors.database.egeria_reference_catalog import (
+                    build_reference_clients,
+                    load_reference_catalog,
+                )
+
+                designer, ref_manager = build_reference_clients()
+                reference_catalog = load_reference_catalog(designer, ref_manager)
+            except Exception as exc:
+                # Non-fatal, same as _run_postgres_column_profile's identical
+                # try/except: a failed read must surface as an explicitly
+                # unavailable ReferenceCatalog (carrying the reason), not as
+                # an empty one silently treated as "the platform holds none".
+                catalog_load_error = str(exc)
+                log.warning(
+                    "Could not read Egeria's Data Classes / Valid Value Sets "
+                    "for %s (survey() column_profile path): %s",
+                    self.db_entity.slug, exc,
+                )
 
         results = {
             "database_slug": self.db_entity.slug,
@@ -317,6 +383,11 @@ class DatabaseSurveyor:
             #: when "nested_columns" runs — see nested_columns_step.py.
             "nested_columns": {},
         }
+        if catalog_load_error:
+            results["errors"].append(
+                f"Could not read Egeria's Data Classes / Valid Value Sets "
+                f"(non-fatal): {catalog_load_error}"
+            )
 
         try:
             with database_connection(self.db_entity, self.credentials) as conn:
@@ -1632,6 +1703,8 @@ def run_database_survey(
     credentials: dict,
     registry: ProjectRegistry | None = None,
     steps: list[str] | None = None,
+    reference_catalog=None,
+    read_egeria_catalog: bool = True,
 ) -> dict:
     """Convenience function to run a database survey.
 
@@ -1642,6 +1715,13 @@ def run_database_survey(
         steps: optional subset of {"schema", "statistics", "views"} — see
             DatabaseSurveyor.survey()'s docstring. None (default) runs all
             three, unchanged from before this parameter existed.
+        reference_catalog / read_egeria_catalog: passed straight through to
+            `DatabaseSurveyor.survey()` — see its docstring. This is the
+            funnel both `web/routes/databases.py`'s per-card "Run" endpoint
+            and `scheduler.py`'s scheduled runs go through, so leaving
+            `reference_catalog` as `None` here (the default) lets `survey()`
+            load it itself for `column_profile`, rather than each caller
+            needing to know to load one.
 
     Returns:
         Survey results dict
@@ -1660,6 +1740,10 @@ def run_database_survey(
         raise ValueError(f"Database '{db_slug}' not found in registry")
 
     surveyor = DatabaseSurveyor(db_entity, credentials, registry)
-    return surveyor.survey(steps=steps)
+    return surveyor.survey(
+        steps=steps,
+        reference_catalog=reference_catalog,
+        read_egeria_catalog=read_egeria_catalog,
+    )
 
 # Made with Bob
