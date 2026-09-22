@@ -28,16 +28,21 @@ import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetai
 import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
-// Enrichment, Understanding, Curate, Automate and (item 11) Analysis have
-// something to import; the remaining canonical stage ids — investigation,
+// Enrichment, Understanding, Curate, Automate, Investigation and (item 11)
+// Analysis have something to import; the remaining canonical stage ids —
 // scouting, discovery, assessment — have a `next/stages/*.js` module too,
 // but it is empty (Discovery and Assessment deliberately, item 11: the
 // generic Questions-checklist engine below reaches both correctly with no
-// stage-specific code; Investigation and Scouting for other reasons — see
-// each stub's own header comment). Building one of them means adding real
-// exports to its stub file and one import line here — see
-// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
+// stage-specific code; Scouting for other reasons — see its own stub
+// header comment). Building one of them means adding real exports to its
+// stub file and one import line here — see
+// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md. Investigation's stub
+// (`stages/investigation.js`) is no longer empty — it now ports classic's
+// Investigations tab (list/create/detail: members, dispositions,
+// next-steps, purposes, classification, Egeria bind/promote/sync/
+// reclassify) into /next; see that file's own header comment.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
+import { renderInvestigation, openInvestigationDetail } from '/static/next/stages/investigation.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
 import { renderAnalysisNote } from '/static/next/stages/analysis.js';
@@ -2237,7 +2242,10 @@ function currentInvestigation() {
   return LS.get(INVESTIGATION_KEY, '') || '';
 }
 
-async function setInvestigation(slug) {
+/** Exported so the Investigation pane (stages/investigation.js) can make a
+ *  freshly created or reopened investigation the current one — the same
+ *  write path the sidebar's own `<select>` uses, not a second one. */
+export async function setInvestigation(slug) {
   state.investigation = slug;
   LS.set(INVESTIGATION_KEY, slug);
   if (!slug) {
@@ -2249,6 +2257,20 @@ async function setInvestigation(slug) {
   }
   renderTopBar();
   renderSidebar();
+}
+
+/** Re-fetch the investigations list and repaint anything that shows it (the
+ *  sidebar's Investigation `<select>`, the top-bar badge). Mirrors
+ *  `refreshGroupsAndSidebar()` above — `state.investigations` is otherwise
+ *  populated once, in `start()`, so a pane that creates/closes/reopens/
+ *  renames an investigation must call this or the rest of the chrome keeps
+ *  showing stale data until a full reload. */
+export async function refreshInvestigationsAndSidebar() {
+  try {
+    state.investigations = (await listInvestigations({ includeClosed: true })) || [];
+  } catch { /* keep whatever we had; the pane calling this shows its own error */ }
+  renderSidebar();
+  renderTopBar();
 }
 
 async function loadWorkingSet() {
@@ -2558,6 +2580,10 @@ export function resourceHeaderHtml(slug) {
         ? `<span class="flex flex-wrap gap-s3 text-caveat">${links.join('')}</span>`
         : `<span class="text-caveat text-ink-muted">no external links recorded</span>`}
       <span class="ml-auto flex flex-wrap items-baseline gap-s2 text-caveat">
+        ${state.investigation && state.workingSet.has(slug)
+          ? `<button data-act="open-investigation" class="cursor-pointer bg-transparent text-accent-ink underline"
+              title="Open the current investigation this resource is in scope for">Open Investigation →</button>`
+          : ''}
         <button data-act="disposition" class="cursor-pointer rounded-pill border border-rule-strong bg-transparent px-2 py-[1px] text-ink hover:border-accent">
           ${esc(p?.disposition || 'undecided')} ▾
         </button>
@@ -2782,6 +2808,21 @@ export function bindResourceHeader() {
   if (!el || !slot) return;
 
   const note = (html) => { slot.innerHTML = `<div class="text-caveat text-ink">${html}</div>`; };
+
+  // Classic's own "Open Investigation →" (index.html ~5779) just switches
+  // the main view to Investigations — no deep link to a resource's
+  // position within it either, since a resource can be in several at once
+  // and there is no single "the" investigation to land on beyond whichever
+  // one is current. Same shape here: switch stage, open the current
+  // investigation's detail.
+  el.querySelector('[data-act="open-investigation"]')?.addEventListener('click', () => {
+    if (!state.investigation) return;
+    openInvestigationDetail(state.investigation);
+    state.stage = 'investigation';
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  });
 
   el.querySelector('[data-act="disposition"]')?.addEventListener('click', () => {
     if (!p?.github_url) {
@@ -4970,14 +5011,31 @@ async function loadPane() {
     return;
   }
 
+  // Investigation is the frame, not a Questions-checklist stage — same
+  // bypass shape as Understanding/Automate above, not the generic engine.
+  // stages/investigation.js's own renderer (list/create/detail: members,
+  // dispositions, next-steps, purposes, classification, Egeria binding)
+  // replaces the old "not in /next" placeholder this branch used to print
+  // for `class === 'frame'`; see that file's header comment.
+  if (state.stage === 'investigation') {
+    await renderInvestigation();
+    renderPerspectiveRow();
+    return;
+  }
+
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
+  // The `class === 'frame'` half is unreachable today (Investigation, the
+  // only frame-class entry, returns above before this line is ever
+  // reached) — kept as the fallback for a FUTURE frame-class stage added
+  // without its own dedicated branch, same defensive shape as `!built`
+  // covering a stage nobody has written a renderer for yet.
   if (stageDef?.class === 'frame' || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
       stageDef.class === 'frame'
-        ? 'Investigations are the frame around a body of work, and /next does not '
-          + 'implement them. They are live in the current UI.'
+        ? 'This is a frame, not a built pane, and has no dedicated renderer of '
+          + 'its own in /next yet.'
         : 'This stage has no rows in the analysis catalog or the activity log, so '
           + 'there is nothing for a questions pane to show. It is marked here '
           + 'rather than hidden, which is the point.');

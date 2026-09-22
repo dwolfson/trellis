@@ -388,6 +388,33 @@ export async function fetchInventoryCsv() {
 }
 
 /* ── Investigations ──────────────────────────────────────────────────── */
+/* The full route surface lives here, in one place (a second, partial
+ * `Investigations` section used to sit further down in this file with just
+ * `listInvestigations` -- merged in here). `web/routes/investigations.py`
+ * is the source of truth for every path and body shape below. */
+
+export const listInvestigations = ({ includeClosed = false } = {}) =>
+  get(`/api/investigations/?include_closed=${includeClosed}`);
+
+export const getInvestigationPurposes = () => get('/api/investigations/purposes');
+
+export const getInvestigationClassifications = () => get('/api/investigations/classifications');
+
+export const getInvestigation = (slug) => get(`/api/investigations/${encodeURIComponent(slug)}`);
+
+export const createInvestigation = ({
+  displayName, description = '', purposes = [],
+  projectClassification = 'StudyProject', egeriaBinding = 'egeria', hypothesis = '',
+  egeriaProjectGuid = '', egeriaProjectQualifiedName = '',
+} = {}) =>
+  post('/api/investigations/', {
+    display_name: displayName, description, purposes,
+    project_classification: projectClassification, egeria_binding: egeriaBinding, hypothesis,
+    egeria_project_guid: egeriaProjectGuid, egeria_project_qualified_name: egeriaProjectQualifiedName,
+  });
+
+export const updateInvestigation = (slug, fields) =>
+  patch(`/api/investigations/${encodeURIComponent(slug)}`, fields);
 
 export const listInvestigationMembers = (slug) =>
   get(`/api/investigations/${encodeURIComponent(slug)}/members`);
@@ -402,6 +429,44 @@ export const removeInvestigationMember = (slug, entityType, entitySlug) =>
   request(`/api/investigations/${encodeURIComponent(slug)}/members/`
           + `${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
           { method: 'DELETE' });
+
+export const closeInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/close`);
+
+export const suspendInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/suspend`);
+
+export const reopenInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/reopen`);
+
+export const bindInvestigationEgeriaProject = (slug, {
+  status = 'unset', egeriaProjectGuid = '', egeriaProjectQualifiedName = '', freeTextName = '',
+} = {}) =>
+  put(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
+    status, egeria_project_guid: egeriaProjectGuid,
+    egeria_project_qualified_name: egeriaProjectQualifiedName, free_text_name: freeTextName,
+  });
+
+export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
+
+export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/reclassify`, {
+    project_classification: projectClassification, hypothesis,
+  });
+
+export const relinkInvestigationMembers = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/relink-members`);
+
+export const syncInvestigationEgeria = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/sync-egeria`);
+
+export const getInvestigationDispositions = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/dispositions`);
+
+export const setInvestigationDisposition = (slug, entityType, entitySlug, disposition = '', rationale = '') =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/dispositions/`
+       + `${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`
+       + `?disposition=${encodeURIComponent(disposition)}&rationale=${encodeURIComponent(rationale)}`);
+
+export const getInvestigationNextSteps = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/next-steps`);
 
 /* ── Query ───────────────────────────────────────────────────────────── */
 
@@ -803,11 +868,6 @@ export async function pollActivity(entryId, {
     await sleep(intervalMs);
   }
 }
-
-/* ── Investigations ──────────────────────────────────────────────────── */
-
-export const listInvestigations = ({ includeClosed = false } = {}) =>
-  get(`/api/investigations/?include_closed=${includeClosed}`);
 
 /* ── Curate ─────────────────────────────────────────────────────────────── */
 
