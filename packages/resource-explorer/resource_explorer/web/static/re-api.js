@@ -356,6 +356,37 @@ export const importDiscoveredRepos = (repos, { groupSlug = '', sourceLabel = 'se
     source_label: sourceLabel,
   });
 
+/** A pasted/uploaded CSV or newline list of GitHub URLs, turned into the
+ *  same DiscoveredRepo rows a search would — read-only, same as search:
+ *  nothing is registered until the caller selects rows and calls
+ *  `importDiscoveredRepos`. An account URL in the list (e.g.
+ *  `github.com/apache`) is expanded into its member repos server-side and
+ *  reported back in `expanded_orgs`, since a bare account isn't itself a
+ *  repo — see `discovery.py`'s `discover_from_list` docstring. */
+export const discoverFromList = (text) => post('/api/discovery/from-list', { text });
+
+/** The inventory CSV export — raw text + filename, not `get()`'s JSON path,
+ *  since the response is `text/csv` with a `Content-Disposition` header.
+ *  Deliberately does not touch the DOM (no Blob, no anchor click): classic's
+ *  `_downloadInventory` (index.html) found that a plain `<a download>`
+ *  quietly saved a 404's `{"detail":"Not Found"}` body as a `.csv`-shaped
+ *  file that looked like a real export — checking `res.ok` here, before any
+ *  caller touches the response as a file, is what a blob-download helper in
+ *  the DOM layer cannot do on its own. */
+export async function fetchInventoryCsv() {
+  const res = await fetch('/api/discovery/inventory.csv');
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
+    throw new ApiError(res.status, detail, '/api/discovery/inventory.csv');
+  }
+  const text = await res.text();
+  const cd = res.headers.get('content-disposition') || '';
+  const m = cd.match(/filename="?([^";]+)"?/);
+  const filename = m ? m[1] : `re-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+  return { text, filename };
+}
+
 /* ── Investigations ──────────────────────────────────────────────────── */
 
 export const listInvestigationMembers = (slug) =>

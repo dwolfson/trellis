@@ -1154,14 +1154,18 @@ function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
 /** The panel shell both the cell popup and the refresh plan use. One shell,
  *  so the two cannot drift apart in behaviour — backdrop closes, Escape
  *  closes, a click inside does not. */
-export function openDialog(title, sub) {
+export function openDialog(title, sub, { wide = false } = {}) {
   closeCellDetail();
   const el = document.createElement('div');
   el.id = 'wl-detail';
   el.className = 'fixed inset-0 z-50 flex items-start justify-center '
     + 'bg-black/40 p-s4 overflow-auto';
+  // `wide` is for content that is a table, not a paragraph — the discovery
+  // import dialog's search-results grid is the first caller
+  // (discovery-import.js); every other dialog on this shell is prose or a
+  // short list and keeps the original width unless it opts in.
   el.innerHTML = `
-    <div class="mt-[6vh] w-full max-w-[640px] rounded bg-paper p-s4 shadow-lg"
+    <div class="mt-[6vh] w-full ${wide ? 'max-w-[960px]' : 'max-w-[640px]'} rounded bg-paper p-s4 shadow-lg"
       role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="flex items-start justify-between gap-s3">
         <div>
