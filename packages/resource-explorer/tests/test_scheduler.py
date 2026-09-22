@@ -230,6 +230,53 @@ class TestRunDueDatabaseSurvey:
         assert kwargs["steps"] == ["schema", "statistics"]
 
 
+class TestRunDueDbDerivedScheduling:
+    """Phase 1 slice 14 regression coverage: scheduling a db_derived
+    analysis_id (e.g. db_change_rates) must run the zero-fetch
+    run_db_derived() step, not fall through to _run_local_db_survey — which
+    would wrongly require stored credentials and run the full
+    DatabaseSurveyor instead. Found while wiring slice 14's comparator onto
+    the scheduler; see scheduler.py's _run_db_survey for the full story."""
+
+    def test_db_change_rates_needs_no_stored_credentials(
+        self, registry, registered_database_without_credentials,
+    ):
+        _make_due(registry, "database", registered_database_without_credentials, analysis_id="db_change_rates")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.db_derived.run_db_derived", return_value={}) as mock_run:
+            scheduler._run_due()
+
+        mock_run.assert_called_once()
+        entries = registry.list_activity(entity_slug=registered_database_without_credentials)
+        assert entries[0]["status"] == "ok"
+        rows = registry.get_schedules("database", registered_database_without_credentials)
+        assert rows[0]["last_run_status"] == "ok"
+
+    def test_db_change_rates_never_reaches_the_credentialed_survey_path(
+        self, registry, registered_database_without_credentials,
+    ):
+        _make_due(registry, "database", registered_database_without_credentials, analysis_id="db_change_rates")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.db_derived.run_db_derived", return_value={}), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_survey:
+            scheduler._run_due()
+
+        mock_survey.assert_not_called()
+
+    def test_db_derived_exception_is_recorded_as_error_not_a_crash(
+        self, registry, registered_database_without_credentials,
+    ):
+        _make_due(registry, "database", registered_database_without_credentials, analysis_id="db_classification")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.db_derived.run_db_derived") as mock_run:
+            mock_run.side_effect = RuntimeError("boom")
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_database_without_credentials)
+        assert entries[0]["status"] == "error"
+        assert "boom" in entries[0]["detail"]
+
+
 class TestRunDueDispatch:
     """Regression coverage for the dispatch gap found while wiring up
     start_time: scheduler.py used to run the same generic local scan for

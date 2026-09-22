@@ -22,6 +22,16 @@ from dataclasses import dataclass
 class ChangeResult:
     changed: bool
     summary: str = ""
+    # Absence discipline (multi-resource design §9.1/§9.2's "local delivery
+    # path"): `changed=False` alone conflates "compared two runs and nothing
+    # differed" with "could not compare at all yet" (one history batch, or no
+    # comparator implemented for this analysis_id). Both correctly suppress
+    # an RFA — a subscriber should not be notified either way — but a caller
+    # that wants to report *why* nothing fired (the Automate UI, a test)
+    # needs the distinction, so it is carried here rather than collapsed.
+    # Defaults True so every pre-existing call site (all findings/metrics-
+    # backed — genuinely comparable once there are two batches) is unchanged.
+    established: bool = True
 
 
 def _group_by_surveyed_at(rows: list[dict]) -> list[tuple[str, list[dict]]]:

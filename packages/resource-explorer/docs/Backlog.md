@@ -6685,3 +6685,59 @@ part of the slice.
 and `reference_data_match` still carry `GAP: … (proposed)` prose although both
 analyses now exist — the same staleness slice 8 flagged for its own three ids.
 The CSV's prose is its owner's call (stream 4), not a consumer's.
+
+## Slice 14 (database change comparators, design §9.1) — what remains open
+
+**Found while building** `db_change_comparator.py` (Phase 1 slice 14,
+`docs/design-notes/DB-CHANGE-RATES-DELIVERY-IMPLEMENTED.md`). The real gap
+this slice closed was structural, not computational: `db_derived`'s six
+checks (slice 9) never persisted through `project_analysis_findings`/
+`project_analysis_metrics` — both FK'd to `projects(slug)`, repos only — so
+`notification_detector.detect_change()` (the engine behind Automate
+subscriptions) silently read an always-empty history for any database
+analysis_id and reported "no change" forever. A database subscription
+already existed as a UI concept (`automate.py`'s `RESOURCE_ICON` includes
+`database`) with no way to ever fire. Fixed for `db_change_rates` only, by
+bridging `derive_change_rates`'s already-computed per-table deltas/schema
+churn into a `ChangeResult`. Logged, not fixed here:
+
+**1. Design §9.1's other six database comparators have no bridge yet:**
+`schema_diff` (column/constraint-level — today's fix only covers the
+table-add/drop half, via `db_change_rates`'s schema churn), `grant_change`,
+`class_change`, `reference_set_change`, `scope_change`,
+`resilience_change`. Each needs a two-snapshot diff over data this codebase
+already collects (`postgres_operations`'s `privilege_audit`/`db_resilience`
+— slice 8; `data_class_match`/`reference_data_match` — slice 10; proposed
+`DataScope` — slice 9) but none of those checks is differenced across runs
+today. `db_change_comparator.DATABASE_CHANGE_COMPARATORS` is the one place
+to add each as its own entry; `detect_database_change` already reports "no
+comparator implemented" (not a false "no change") for any analysis_id not
+yet in that dict, so subscribing to one of these today is honest, not
+silently broken — see 2.
+
+**2. Subscribing to a database analysis_id with no comparator yet is legal
+in the UI and silently inert.** `automate.py`'s subscription-create route
+validates project existence only for `entity_type == "repo"`; there is no
+check anywhere that a database `analysis_id` has an entry in
+`DATABASE_CHANGE_COMPARATORS`. A user can create a `db_classification`
+subscription today and it will never fire, with `established=False`
+recorded on every check but nothing in the UI surfacing that distinction
+(the Automate subscriptions table shows `last_checked_at`/
+`notification_count`, not *why* a check found nothing). Worth a UI
+affordance once a second comparator exists to make the contrast visible.
+
+**3. The same absence gap exists on the repo side, pre-existing, not
+introduced by this slice.** `notification_detector._detect_findings_change`/
+`_detect_metrics_change` both return `ChangeResult(changed=False)` — not
+`established=False` — for a kind with fewer than two history batches. The
+`established` field slice 14 added to `ChangeResult` would apply cleanly
+there too, but changing those two call sites is a repo-side behavior change
+outside this slice's database-only scope; left as found.
+
+**4. `_run_db_survey`'s db_derived dispatch fix (this slice) covers
+scheduling; the per-card manual "Run" route in `web/routes/databases.py`
+already had it (slice 9 built that one correctly).** Only the scheduler
+path had the gap, because it independently re-derives which local surveyor
+call to make rather than sharing one dispatcher with the web route — worth
+a future consolidation so a new db_derived-shaped analysis can't reintroduce
+the same gap a third way.
