@@ -8104,10 +8104,27 @@ class ProjectRegistry:
         survey_data: dict,
         egeria_report_guid: str = "",
         source: str = "local",
+        surveyed_at: str | None = None,
     ) -> None:
-        """Record a database survey result."""
+        """Record a database survey result.
+
+        `surveyed_at` defaults to "now" (unchanged behaviour) but a caller
+        that already stamped its own results dict with a `surveyed_at` MUST
+        pass it here — this method's internal `backfill_database_survey`
+        call writes `database_table_activity` / `database_column_profiles`
+        placeholder rows from the SAME blob, keyed `(slug, surveyed_at,
+        source)`. A caller writing its own, richer detail rows for those same
+        tables after calling this method needs them keyed under the exact
+        same `surveyed_at`, or the two writes land under different keys and
+        `query_detail_rows`'s "latest wins" lookup can pick the older,
+        thinner one. Found live in Phase 1 slice 7's own tests: with two
+        independently-generated timestamps, `postgres_schema_and_stats`'s
+        real tuple counters were silently shadowed by this method's
+        `last_vacuum`/`last_analyze`-only backfill row, because the backfill
+        call's freshly-generated timestamp happened to sort later.
+        """
         slug = self._normalize_slug(slug)
-        surveyed_at = datetime.utcnow().isoformat()
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO database_surveys

@@ -10,6 +10,41 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## No structured table for index usage, and no `ResourceProfile` annotation type
+
+**Found while building** `postgres_schema_and_stats`'s pg_stats/tuple-counter/
+index extension (Phase 1 slice 7, `DB-SCHEMA-AND-STATS-EXTENSION-IMPLEMENTED.md`).
+
+Design §5.1 lists `pg_stat_user_indexes`/`pg_index` (index usage, unused-index
+detection) as part of this step's catalog sources, and §5.7 says the step
+produces "SchemaAnalysis, ResourceMeasure … ResourceProfile (frequent
+values)". Neither has a home in the current data model:
+
+- The ten structured tables `re/db-fs-structured-tables` built
+  (`database_schemas`, `database_tables`, `database_columns`,
+  `database_column_profiles`, `database_table_activity`, `database_grants`,
+  `database_sql_objects`, `database_settings`, plus the two filesystem
+  tables) have no `database_indexes` table. Index findings this slice
+  produces are annotations only (`ResourceMeasureAnnotation` per index,
+  `RequestForActionAnnotation` for an unused non-PK index) — not queryable
+  rows, so a UI wanting "list of unused indexes across all databases" has
+  nowhere to query.
+- `AnnotationType` (`surveyors/survey_report.py`) has no `RESOURCE_PROFILE`
+  member. Only Egeria's own native survey has a distinct "frequent values"
+  annotation shape (`ANN_COLUMN_VALUES` in `result_materializer.py`); a local
+  publish folds frequent values into `ResourceMeasureAnnotation.
+  resource_properties` instead.
+
+Both were left alone rather than added speculatively — slice 7's brief was
+explicit about not inventing a new table, and adding a new `AnnotationType`
+member is a catalog-and-publisher-wide decision, not a one-step scope
+extension. Worth a project-owner decision before either is picked up: does
+index usage get its own structured table (parity with the other nine), and
+is `ResourceProfile` worth adding as a distinct annotation type or does
+folding frequent values into `ResourceMeasureAnnotation` stay the pattern.
+
+---
+
 ## Classic panel: primary component pick is still `latest`, not best-evidenced
 
 `RULING-CLASSIC-AND-NEXT.md` §3 (2026-09-17) also called for the classic panel's

@@ -879,11 +879,19 @@ database_analyses:
 
   - id: row_count_snapshot
     name: "Row Count Snapshot"
-    description: "Count rows in all tables using pg_stat_user_tables. Records a time-series data point for trend analysis."
+    description: >
+      Count rows in all tables using pg_stat_user_tables. Records a
+      time-series data point for trend analysis. Also profiles columns from
+      pg_stats (null fraction, distinct count, frequent values — without
+      sampling), reads tuple counters/dead-row/scan activity from
+      pg_stat_user_tables, and flags unused indexes from
+      pg_stat_user_indexes. A capability the connection's engine does not
+      support, or a table ANALYZE has never touched, is reported as such
+      rather than as zero.
     resource_types: ["database"]
     intent: scouting
     perspectives: ["all", "Admin"]
-    annotation_types: ["ResourceMeasureAnnotation"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
     action: survey

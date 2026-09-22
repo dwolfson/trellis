@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+from resource_explorer.surveyors.database.connection import EngineCapabilities
 from resource_explorer.surveyors.database.database_surveyor import (
     DATABASE_ANALYSIS_STEP_MAP,
     DatabaseSurveyor,
@@ -35,7 +36,14 @@ def db_entity(registry):
 def _mock_conn():
     conn = MagicMock()
     conn.get_schema_info.return_value = {"schemas": [], "total_tables": 0, "total_columns": 0}
-    conn.get_statistics.return_value = {"row_stats": [], "table_stats": []}
+    conn.get_statistics.return_value = {
+        "row_stats": [], "table_stats": [],
+        "column_stats": [], "table_activity": [], "index_stats": [],
+        "stats_reset": "",
+    }
+    conn.capabilities = EngineCapabilities(
+        column_stats=True, tuple_counters=True, index_stats=True,
+    )
     return conn
 
 

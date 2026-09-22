@@ -3,14 +3,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+from resource_explorer.registry import (
+    DatabaseEntity,
+    ProjectRegistry,
+    SECTION_COLUMN_PROFILES,
+    SECTION_TABLE_ACTIVITY,
+    STATE_MEASURED,
+    STATE_NOT_COLLECTED,
+    STATE_NOT_SUPPORTED,
+    STATS_SOURCE_DATABASE,
+)
 from resource_explorer.surveyors.survey_report import (
     AnnotationType,
+    RequestForActionAnnotation,
     ResourceMeasureAnnotation,
     SchemaAnalysisAnnotation,
 )
 
-from .connection import database_connection
+from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
 
 # analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps.
 # Database per-card dispatch fix (D6 prerequisite, repo-scope-narrowing-
@@ -28,6 +38,25 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "row_count_snapshot": ["schema", "statistics"],
     "privilege_audit": ["schema", "statistics", "views"],
 }
+
+
+def _parse_pg_array(value) -> list | None:
+    """Parse a Postgres array's text representation (`{a,b,c}`) to a list.
+
+    Returns None for a genuinely absent value (NULL, or the column is not
+    array-typed for this stat) so "not reported" survives — an empty list
+    is a different, real answer (pg_stats can validly report `{}`).
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    text = str(value).strip()
+    if text.startswith("{") and text.endswith("}"):
+        text = text[1:-1]
+    if not text:
+        return []
+    return [part.strip().strip('"') for part in text.split(",")]
 
 
 class DatabaseSurveyor:
@@ -83,10 +112,22 @@ class DatabaseSurveyor:
             "schema_info": {},
             "statistics": {},
             "errors": [],
+            #: design §5.1's capability declaration, captured while the
+            #: connection is open (this dict is the only thing that survives
+            #: past the `with` block below). Defaults to "nothing declared"
+            #: so a caller never sees this key missing.
+            "engine_capabilities": NO_CAPABILITIES.as_dict(),
+            #: Rows ready for registry.write_detail_rows(), built only when
+            #: "statistics" runs — see _survey_extended_statistics().
+            "column_profile_rows": [],
+            "table_activity_rows": [],
         }
 
         try:
             with database_connection(self.db_entity, self.credentials) as conn:
+                capabilities = getattr(conn, "capabilities", NO_CAPABILITIES)
+                results["engine_capabilities"] = capabilities.as_dict()
+
                 # Survey schema — always runs, see _ALL_STEPS's comment.
                 schema_info = self._survey_schema(conn)
                 results["schema_info"] = schema_info
@@ -102,6 +143,21 @@ class DatabaseSurveyor:
                         results["annotations"].extend(
                             self._create_statistics_annotations(stats_info)
                         )
+                        # pg_stats / pg_stat_user_tables / index usage
+                        # extension (design §5.1, §5.7 — Phase 1 slice 7).
+                        # Kept separate from _create_statistics_annotations
+                        # because it also needs to know the full column/table
+                        # catalog (schema_info) to tell "never analyzed" from
+                        # "genuinely has no stats" — the other method never
+                        # needed the catalog before now.
+                        profile_rows, activity_rows, extended_annotations = (
+                            self._survey_extended_statistics(
+                                schema_info, stats_info, capabilities
+                            )
+                        )
+                        results["column_profile_rows"] = profile_rows
+                        results["table_activity_rows"] = activity_rows
+                        results["annotations"].extend(extended_annotations)
                     except Exception as stats_err:
                         results["errors"].append(f"Statistics query failed (non-fatal): {stats_err}")
 
@@ -137,6 +193,285 @@ class DatabaseSurveyor:
     def _survey_statistics(self, conn) -> dict:
         """Survey database statistics."""
         return conn.get_statistics()
+
+    def _survey_extended_statistics(
+        self,
+        schema_info: dict,
+        stats_info: dict,
+        capabilities: EngineCapabilities,
+    ) -> tuple[list[dict], list[dict], list]:
+        """`pg_stats` column profiling, `pg_stat_user_tables` tuple counters
+        and index-usage detection (design §5.1, §5.7 — Phase 1 slice 7).
+
+        Iterates the column/table catalog from `schema_info` rather than the
+        raw query results from `stats_info`, so a column or table that the
+        catalog knows about but the statistics query has no row for is
+        recognised as *absent from statistics* — the "ANALYZE never ran"
+        case — rather than simply not appearing in the output at all. This
+        is the distinction design §5.1 calls out by name: "the `pg_stats`
+        route also has a second absence mode, 'stats never collected', which
+        must render as 'run ANALYZE' rather than as 'no values'".
+
+        Returns `(column_profile_rows, table_activity_rows, annotations)`.
+        The rows are shaped exactly like `database_column_profiles` /
+        `database_table_activity` (see `result_materializer.py`'s identical
+        native-path shape) so `_store_results` can hand them to
+        `registry.write_detail_rows` unchanged.
+        """
+        profile_rows: list[dict] = []
+        activity_rows: list[dict] = []
+        annotations: list = []
+
+        stats_reset = stats_info.get("stats_reset") or None
+
+        column_stats_by_key = {
+            (r.get("schemaname", ""), r.get("tablename", ""), r.get("attname", "")): r
+            for r in (stats_info.get("column_stats") or [])
+        }
+        activity_by_key = {
+            (r.get("schemaname", ""), r.get("tablename", "")): r
+            for r in (stats_info.get("table_activity") or [])
+        }
+
+        if not capabilities.column_stats:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Column profiling (pg_stats) not supported by this engine",
+                    analysis_step="DatabaseSchemaAndStats",
+                    confidence=0,
+                    resource_properties={"capability": "column_stats", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include column_stats — the finding is not established, "
+                        "not a measurement of zero columns."
+                    ),
+                )
+            )
+        if not capabilities.tuple_counters:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Table activity (pg_stat_user_tables) not supported by this engine",
+                    analysis_step="DatabaseSchemaAndStats",
+                    confidence=0,
+                    resource_properties={"capability": "tuple_counters", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include tuple_counters — the finding is not established, "
+                        "not a measurement of zero activity."
+                    ),
+                )
+            )
+
+        for schema in schema_info.get("schemas", []):
+            schema_name = schema.get("name", "")
+            for table in schema.get("tables", []):
+                table_name = table.get("name", "")
+
+                # ── table activity (tuple counters, dead/live rows, scans) ──
+                if capabilities.tuple_counters:
+                    activity = activity_by_key.get((schema_name, table_name))
+                    if activity is None:
+                        activity_rows.append({
+                            "schema_name": schema_name,
+                            "table_name": table_name,
+                            "state": STATE_NOT_COLLECTED,
+                        })
+                    else:
+                        activity_rows.append({
+                            "schema_name": schema_name,
+                            "table_name": table_name,
+                            "rows_inserted": activity.get("rows_inserted"),
+                            "rows_updated": activity.get("rows_updated"),
+                            "rows_deleted": activity.get("rows_deleted"),
+                            "hot_updates": activity.get("hot_updates"),
+                            "live_tuples": activity.get("live_tuples"),
+                            "dead_tuples": activity.get("dead_tuples"),
+                            "seq_scan": activity.get("seq_scan"),
+                            "idx_scan": activity.get("idx_scan"),
+                            "last_vacuum": activity.get("last_vacuum", ""),
+                            "last_autovacuum": activity.get("last_autovacuum", ""),
+                            "last_analyze": activity.get("last_analyze", ""),
+                            "last_autoanalyze": activity.get("last_autoanalyze", ""),
+                            "pending_changes": activity.get("pending_changes"),
+                            "stats_reset": stats_reset,
+                            "state": STATE_MEASURED,
+                        })
+                        annotations.append(
+                            ResourceMeasureAnnotation(
+                                summary=(
+                                    f"Table {schema_name}.{table_name} activity: "
+                                    f"{activity.get('live_tuples')} live / "
+                                    f"{activity.get('dead_tuples')} dead tuples, "
+                                    f"seq_scan={activity.get('seq_scan')} "
+                                    f"idx_scan={activity.get('idx_scan')}"
+                                ),
+                                analysis_step="DatabaseSchemaAndStats",
+                                confidence=100,
+                                resource_properties={
+                                    "schema": schema_name,
+                                    "table": table_name,
+                                    **{
+                                        k: activity.get(k)
+                                        for k in (
+                                            "rows_inserted", "rows_updated", "rows_deleted",
+                                            "hot_updates", "live_tuples", "dead_tuples",
+                                            "seq_scan", "idx_scan",
+                                        )
+                                    },
+                                },
+                                explanation=(
+                                    "Cumulative tuple counters and scan counts since the "
+                                    "last statistics reset, read directly from "
+                                    "pg_stat_user_tables."
+                                ),
+                            )
+                        )
+                else:
+                    activity_rows.append({
+                        "schema_name": schema_name,
+                        "table_name": table_name,
+                        "state": STATE_NOT_SUPPORTED,
+                    })
+
+                # ── column profiling (pg_stats) ──
+                for column in table.get("columns", []):
+                    column_name = column.get("name", "")
+                    if not capabilities.column_stats:
+                        profile_rows.append({
+                            "schema_name": schema_name,
+                            "table_name": table_name,
+                            "column_name": column_name,
+                            "state": STATE_NOT_SUPPORTED,
+                        })
+                        continue
+
+                    stat = column_stats_by_key.get((schema_name, table_name, column_name))
+                    if stat is None:
+                        # In the catalog, absent from pg_stats: ANALYZE has
+                        # never run for this table (or this column has a
+                        # statistics target of 0) — "run ANALYZE", not
+                        # "no values". See STATE_NOT_COLLECTED's docstring.
+                        profile_rows.append({
+                            "schema_name": schema_name,
+                            "table_name": table_name,
+                            "column_name": column_name,
+                            "stats_source": STATS_SOURCE_DATABASE,
+                            "stats_computed_at": None,
+                            "state": STATE_NOT_COLLECTED,
+                        })
+                        continue
+
+                    last_analyzed = None
+                    activity = activity_by_key.get((schema_name, table_name))
+                    if activity:
+                        last_analyzed = activity.get("last_analyze") or activity.get("last_autoanalyze") or None
+
+                    profile_rows.append({
+                        "schema_name": schema_name,
+                        "table_name": table_name,
+                        "column_name": column_name,
+                        "null_fraction": stat.get("null_frac"),
+                        "distinct_count": stat.get("n_distinct"),
+                        "average_width": stat.get("avg_width"),
+                        "correlation": stat.get("correlation"),
+                        "most_common_values_json": _parse_pg_array(stat.get("most_common_vals")),
+                        "most_common_freqs_json": _parse_pg_array(stat.get("most_common_freqs")),
+                        "histogram_bounds_json": _parse_pg_array(stat.get("histogram_bounds")),
+                        "stats_source": STATS_SOURCE_DATABASE,
+                        "stats_computed_at": last_analyzed,
+                        "state": STATE_MEASURED,
+                    })
+                    annotations.append(
+                        ResourceMeasureAnnotation(
+                            summary=(
+                                f"Column {schema_name}.{table_name}.{column_name} profile: "
+                                f"null_frac={stat.get('null_frac')}, "
+                                f"n_distinct={stat.get('n_distinct')}"
+                            ),
+                            analysis_step="DatabaseSchemaAndStats",
+                            confidence=100,
+                            resource_properties={
+                                "schema": schema_name,
+                                "table": table_name,
+                                "column": column_name,
+                                "null_frac": stat.get("null_frac"),
+                                "n_distinct": stat.get("n_distinct"),
+                                "avg_width": stat.get("avg_width"),
+                                "correlation": stat.get("correlation"),
+                            },
+                            explanation=(
+                                "Column profile read from pg_stats, populated by the "
+                                "database's own ANALYZE — no sampling performed by "
+                                "Resource Explorer."
+                            ),
+                        )
+                    )
+
+        # ── index usage (pg_stat_user_indexes / pg_index) ──
+        if capabilities.index_stats:
+            for idx in stats_info.get("index_stats") or []:
+                schema_name = idx.get("schemaname", "")
+                table_name = idx.get("tablename", "")
+                index_name = idx.get("indexrelname", "")
+                idx_scan = idx.get("idx_scan")
+                is_primary = bool(idx.get("is_primary"))
+                annotations.append(
+                    ResourceMeasureAnnotation(
+                        summary=f"Index {schema_name}.{index_name} on {table_name}: idx_scan={idx_scan}",
+                        analysis_step="DatabaseSchemaAndStats",
+                        confidence=100,
+                        resource_properties={
+                            "schema": schema_name,
+                            "table": table_name,
+                            "index": index_name,
+                            "idx_scan": idx_scan,
+                            "idx_tup_read": idx.get("idx_tup_read"),
+                            "idx_tup_fetch": idx.get("idx_tup_fetch"),
+                            "is_unique": bool(idx.get("is_unique")),
+                            "is_primary": is_primary,
+                            "index_size_bytes": idx.get("index_size_bytes"),
+                        },
+                        explanation=(
+                            "Index scan count since the last statistics reset, read "
+                            "directly from pg_stat_user_indexes/pg_index."
+                        ),
+                    )
+                )
+                if idx_scan == 0 and not is_primary:
+                    annotations.append(
+                        RequestForActionAnnotation(
+                            summary=f"Unused index candidate: {schema_name}.{index_name} on {table_name}",
+                            analysis_step="DatabaseSchemaAndStats",
+                            confidence=70,
+                            action_requested=(
+                                "Review whether this index is still needed; it has "
+                                "recorded zero scans since the last statistics reset."
+                            ),
+                            action_target_name=f"{schema_name}.{index_name}",
+                            explanation=(
+                                "idx_scan is 0 since the last pg_stat_database reset "
+                                f"({stats_reset or 'reset time unknown'}). A young "
+                                "index or one reset recently may simply not have been "
+                                "exercised yet — this is a candidate, not a verdict."
+                            ),
+                        )
+                    )
+        else:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Index usage (pg_stat_user_indexes) not supported by this engine",
+                    analysis_step="DatabaseSchemaAndStats",
+                    confidence=0,
+                    resource_properties={"capability": "index_stats", "supported": False},
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include index_stats — the finding is not established, not "
+                        "a measurement of zero indexes."
+                    ),
+                )
+            )
+
+        return profile_rows, activity_rows, annotations
 
     def _create_schema_annotations(self, schema_info: dict) -> list:
         """Create annotations from schema information."""
@@ -297,6 +632,11 @@ class DatabaseSurveyor:
                 table["size_bytes"] = ts.get("total_bytes", 0) or 0
                 table["size_pretty"] = ts.get("total_size", "")
 
+        # `surveyed_at` is passed explicitly (rather than left to default)
+        # so this call's own backfill_database_survey() write and the
+        # extension's write just below land under the SAME
+        # (slug, surveyed_at, source) key — see record_database_survey's
+        # docstring for the bug this avoids.
         self.registry.record_database_survey(
             slug=self.db_entity.slug,
             schema_count=len(schema_info.get("schemas", [])),
@@ -308,7 +648,38 @@ class DatabaseSurveyor:
                 "annotation_count": len(results["annotations"]),
                 "views": results.get("views", []),
             },
+            surveyed_at=results["surveyed_at"],
         )
+
+        # pg_stats / pg_stat_user_tables extension (design §5.1, §5.7 —
+        # Phase 1 slice 7). Written through the same generic detail-row path
+        # `result_materializer.py` uses for native surveys, `source="local"`
+        # (the default), so a native and a local run of the same database on
+        # the same day coexist rather than overwrite (design §3 rule D).
+        # Only written when the "statistics" step actually ran — an omitted
+        # step leaves these lists empty and no rows/coverage are written,
+        # which is correct: "step did not run" is a different fact from
+        # "ran and found nothing" and is already covered by `skipped_steps`
+        # elsewhere in this codebase, not by an empty coverage row here.
+        surveyed_at = results["surveyed_at"]
+        column_profile_rows = results.get("column_profile_rows") or []
+        table_activity_rows = results.get("table_activity_rows") or []
+        if column_profile_rows:
+            self.registry.write_detail_rows(
+                "database_column_profiles",
+                self.db_entity.slug,
+                surveyed_at,
+                rows=column_profile_rows,
+                coverage_section=SECTION_COLUMN_PROFILES,
+            )
+        if table_activity_rows:
+            self.registry.write_detail_rows(
+                "database_table_activity",
+                self.db_entity.slug,
+                surveyed_at,
+                rows=table_activity_rows,
+                coverage_section=SECTION_TABLE_ACTIVITY,
+            )
 
     def _survey_views(self, conn, schema_info: dict) -> list[dict]:
         """Fetch view definitions and perform static analysis using SQLGlot."""
