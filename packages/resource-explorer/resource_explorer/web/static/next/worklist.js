@@ -212,7 +212,12 @@ export async function renderWorkListPane(ctx) {
   renderActions(ctx);
   renderLegend();
   try {
-    grid.analyses = await listAnalyses('repo', { intent: stage });
+    // The work list itself is homogeneous in entity_type (work_lists.py's
+    // WorkListCreate.entity_type, one value per list, default "repo") --
+    // this used to hardcode 'repo' regardless, silently showing the repo
+    // analysis catalog's menu on a database/filesystem work list rather than
+    // an honest error or the right menu.
+    grid.analyses = await listAnalyses(wl.entity_type || 'repo', { intent: stage });
   } catch (err) {
     grid.analyses = { error: err.message };
   }

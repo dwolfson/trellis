@@ -7105,3 +7105,30 @@ all removed afterward; the two fixes above are real and stay.
 Still open per design §9.1's full comparator table: `class_change`,
 `reference_set_change`, `scope_change`, `resilience_change` — logged
 already in `db_change_comparator.py`'s own module docstring.
+
+
+## Decision reversal: DB and FS now in scope for `/next` (2026-09-22)
+
+**Decision (project owner, 2026-09-22):** `/next` should reach parity with
+classic across all three resource types (repo, database, filesystem), not
+just repos — reversing the earlier ruling logged in
+`docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md` ("DB and FS stay out
+of `/next`. Project owner, 2026-09-20. They land in the classic UI..."; see
+that file's "What is different from the repo work" section for the original
+wording). The one-session-at-a-time rule on `next/app.js` that ruling had
+lifted is back in effect for DB/FS-touching `/next` work.
+
+A parity audit run the same day found the backend already resource-type-
+generic under most of `/next`'s panes — the gate was UI-side only:
+`paneNeedsRepo()` in `app.js` blocked Survey/Sub-Resources/By-analysis/
+Disposition for any non-repo `resourceType`, the Questions-engine pane had
+its own separate duplicate guard, and `automate.js`/`worklist.js` silently
+hardcoded `entityType`/`'repo'` instead of reading `state.resourceType`
+(worse than a gate — wrong data with no visible error, not an honest
+absence). `re/next-db-fs-gate-removal` removes/relaxes these gates and
+threads the real resource type through; see that branch's own commits for
+what was live-verified against a running database resource vs. left as an
+honest "not built" state (DB-specific views with no `/next` equivalent —
+schema-distribution charts, Kroki ER diagrams, the Survey Database modal —
+and filesystem-specific views — file inventory browsing, data-file
+profiling — stay out of scope, unchanged by this reversal).

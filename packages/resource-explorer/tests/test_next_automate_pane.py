@@ -132,7 +132,10 @@ class TestSubscriptionCreationIsHonestlyDeferred:
         app = _app()
         assert "export function oldUiHref() {" in app
         src = _automate_src()
-        assert "oldUiHref } from '/static/next/app.js';" in src
+        # re/next-db-fs-gate-removal (2026-09-22) added `apiEntityType` to
+        # this same import line (see test_next_db_fs_gate_removal.py) --
+        # match on the two names present rather than the exact literal line.
+        assert "state, esc, $, icon, oldUiHref, apiEntityType } from '/static/next/app.js';" in src
         assert "oldUiHref()" in src
 
     def test_no_create_subscription_form_exists_in_this_module(self):
