@@ -6855,3 +6855,58 @@ annotation types/analysis_ids that publish covered. `publish_stale`
 `f"{entity_type}_publish"` linkage row for database/filesystem, so that flag
 is always `False` there too — real absence, not a lie, since a card only
 shows it beside a `last_published_at` that is itself always empty today.
+
+## Most of RE's own Perspectives are now content-pack-homed, not RE-owned
+
+Live-queried via `elementHeader.origin` (`originCategory` +
+`homeMetadataCollectionName`) on this platform, 2026-09-22: of the 14
+`Perspective` entities in Egeria, 12 are `CONTENT_PACK`/`CoreContentPack`
+origin — including 10 of RE's own canonical 12 (Financial, Governance,
+Steward, Consumer, App/AI Builder, Privacy, Community, Data Expert,
+Security, Architecture), plus two RE doesn't define (`Owner`,
+`Administration`). Only `Admin` and `Data Owner` remain `LOCAL_COHORT`
+(`qs-metadata-store`).
+
+This happened because RE's authoring does a Merge Update against the same
+`qualifiedName` (e.g. `Perspective::Financial`) — once Egeria's own core
+content pack started shipping a `Perspective::Financial` entity, RE's batch
+landed its updates onto that pre-existing content-pack entity instead of
+creating a separate local one. Not a bug in the sense of anything broken —
+the terms still resolve and Question-to-Perspective links still work — but
+worth knowing before anyone assumes "RE owns its 12 perspectives outright"
+or plans a Perspectives-model change without checking origin first.
+
+By contrast, all ~100 `Question` GlossaryTerms on this platform are still
+`LOCAL_COHORT` — no content-pack overlap for Questions today, and
+specifically none for filesystem or reachability questions (checked
+directly while deciding whether to add filesystem_inventory question rows
+below).
+
+**Also new (project owner, 2026-09-22):** a new canonical intent, `Enhance`,
+for the valid values list. Not yet wired into RE — CLAUDE.md's canonical
+eight-intent list (rule 17), `analysis_catalog.yaml`/intent-validation, and
+any UI nav entry all still need updating. Project owner said this can be
+done "when convenient" — not urgent, but real: the next session that
+touches the intent list should check this entry first.
+
+## filesystem_inventory had zero question coverage in resource_questions.csv
+
+Found while investigating a related but separate active review
+(`FALSE-GAPS-2026-09-22.md`, not authored by this session, tracking 18
+rows where `Answering Analysis` still says `GAP: ... (proposed)` for
+now-built analyses). Distinct problem: `filesystem_inventory` — the one
+registered filesystem analysis (file walk, format/size/timestamp
+classification, tabular data-file schema profiling) — was referenced by
+**no row at all**, not even a `GAP:` one. The CSV had zero
+filesystem-only-scoped rows; filesystem only got incidental coverage via
+`database;filesystem[;dataset]` combo rows and `*` rows, none of which name
+`filesystem_inventory`.
+
+Fixed: two new filesystem-scoped rows added directly to
+`docs/dr-egeria/resource_questions.csv` and the runtime YAML regenerated.
+The Dr.Egeria authoring step (publishing these as real `Question`
+GlossaryTerms in Egeria) is deliberately **not done in this same
+change** — coordinating with other live sessions first, since the
+questions batch's perspective links have no reconciler and a duplicate
+there is permanent (see `coordinate-shared-writes` skill). Do the
+authoring as a separate, single, coordinated run once clear.

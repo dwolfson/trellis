@@ -3195,6 +3195,53 @@ filesystem_questions:
     or reject.
   catalog_history: ''
   retired: false
+- question: What kinds of files does this filesystem contain, and how much data is there?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Expert
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - filesystem_inventory
+    checks: []
+    note: filesystem_inventory
+  answering_mechanism: Code Analysis
+  rationale: File walk classifies every file by format and type, records sizes and timestamps — RE's baseline
+    inventory for a filesystem resource, the filesystem equivalent of schema_inventory for a database.
+  catalog_history: '2026-09-22: added — filesystem_inventory is a real, registered analysis (file walk,
+    format/size/timestamp classification, tabular data-file schema profiling) that had zero question coverage
+    in this catalog, not even a GAP row. Confirmed via a live query against Egeria that no content-pack
+    element covers filesystem or reachability questions, so there is no overlap risk in adding these.'
+  retired: false
+- question: Does this filesystem contain recognizable tabular or structured data files, and what do their
+    schemas look like?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Data Expert
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - filesystem_inventory
+    checks: []
+    note: filesystem_inventory
+  answering_mechanism: Code Analysis
+  rationale: filesystem_inventory profiles tabular data file schemas (CSV, Excel, Parquet) it recognizes
+    during the same walk — this reuses that profiling rather than a separate pass.
+  catalog_history: '2026-09-22: added — filesystem_inventory is a real, registered analysis (file walk,
+    format/size/timestamp classification, tabular data-file schema profiling) that had zero question coverage
+    in this catalog, not even a GAP row. Confirmed via a live query against Egeria that no content-pack
+    element covers filesystem or reachability questions, so there is no overlap risk in adding these.'
+  retired: false
 dataset_questions:
 - question: What is this resource, and what is it for?
   stage: Scouting
