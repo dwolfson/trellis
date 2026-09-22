@@ -493,6 +493,26 @@ SECTION_DATA_FILES = "data_files"
 #:
 #: Nullable numeric columns are deliberate: NULL means "not measured", and the
 #: row's `state` says why. A 0 in these columns is a real measured zero.
+#:
+#: Reachability outcome vocabulary (Phase 1 slice #13), taken verbatim from
+#: `docs/egeria-support-for-multi-resource.md` §5's "Gap and ask" section
+#: rather than invented for this table -- confirmed unchanged during this
+#: slice's build by a peer review of the design doc. `unknown` doubles as
+#: the third state of the reachability check's absence discipline: it means
+#: "checked, but the CHECK_ASSET call itself did not complete or could not
+#: be evaluated" (timeout, exception, initiation failure) -- as opposed to
+#: no row at all ("never checked") or any of the other five outcomes, which
+#: all mean "checked, and here is what Egeria said." See reachability.py's
+#: classify_check_asset_result().
+REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
+    "reachable",
+    "no_connection",
+    "unresolvable_secret",
+    "network_unreachable",
+    "auth_rejected",
+    "unknown",
+})
+
 _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # ── databases ──────────────────────────────────────────────────────────
     """
@@ -812,6 +832,53 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
     )
     """,
+    # ── reachability (Phase 1 slice #13) ────────────────────────────────────
+    # Deferred 2026-09-21 (egeria-support-for-multi-resource.md §5/§10: "defer
+    # the resource_reachability table until further tests -- do not build it
+    # yet") pending live confirmation of probe 7's premise and of what a
+    # CHECK_ASSET result actually looks like. Un-deferred by the project
+    # owner 2026-09-22 -- see docs/design-notes/RESOURCE-REACHABILITY-
+    # IMPLEMENTED.md and PROBES-2026-09-21.md's "Probes 7 and 8, run live"
+    # section for the live evidence this table's shape is built from.
+    #
+    # Scoped to filesystem/folder resources only, per the same live evidence:
+    # probe 7 confirmed the mechanism (initiate_gov_action_type against
+    # FileSurvey::survey-folder with finalAnalysisStep=CHECK_ASSET) but ALSO
+    # confirmed RE's own create_folder_element_from_template() DataFolder
+    # template attaches no Connection at all -- every filesystem RE has ever
+    # cataloged this way hits the "no_connection" outcome, not a genuine
+    # reachability answer, until a real Connection is attached (see the
+    # design notes doc). Database reachability was NOT probed here -- the
+    # design doc's own §5 gap analysis is explicitly about the folder-survey
+    # CHECK_ASSET mechanism, and the two are different governance action
+    # types with different failure shapes (secrets-store resolution vs. a
+    # plain filesystem Connection) -- extending this table/check to databases
+    # is future work, not assumed to work the same way.
+    #
+    # `outcome` uses the exact vocabulary from egeria-support-for-multi-
+    # resource.md §5 (confirmed by a peer review during this slice's build,
+    # not invented fresh): reachable, no_connection, unresolvable_secret,
+    # network_unreachable, auth_rejected, unknown. `unknown` is also the
+    # three-state-discipline's third state -- "the CHECK_ASSET call itself
+    # did not complete/could not be evaluated" (timeout, exception, initiation
+    # failure) -- distinct from both "never checked" (no row at all) and any
+    # of the other outcomes, which all mean "checked, and here is what Egeria
+    # said". See reachability.py's classify_check_asset_result() docstring.
+    """
+    CREATE TABLE IF NOT EXISTS resource_reachability (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource_type      TEXT NOT NULL DEFAULT 'filesystem',
+        filesystem_slug    TEXT NOT NULL,
+        probed_at          TEXT NOT NULL,
+        probed_from        TEXT NOT NULL DEFAULT '',
+        outcome            TEXT NOT NULL,
+        error_code         TEXT DEFAULT '',
+        error_detail       TEXT DEFAULT '',
+        latency_ms         INTEGER DEFAULT NULL,
+        engine_action_guid TEXT DEFAULT '',
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
 )
 
 #: Coverage table and slug column per resource type. Separate from
@@ -840,6 +907,8 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fs_data_files_slug ON filesystem_data_files(filesystem_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_coverage_slug ON database_survey_coverage(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_fs_coverage_slug ON filesystem_survey_coverage(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_resource_reachability_slug "
+    "ON resource_reachability(filesystem_slug, probed_at)",
 )
 
 #: Columns added after the tables above first shipped. Empty at introduction;
@@ -881,6 +950,7 @@ _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], .
     )),
     ("database_survey_coverage", ()),
     ("filesystem_survey_coverage", ()),
+    ("resource_reachability", ()),
 )
 
 
@@ -929,7 +999,21 @@ def _parse_detail_table_spec(ddl: str) -> _DetailTableSpec | None:
     if not name_match:
         return None
     table = name_match.group(1)
-    if table in ("database_survey_coverage", "filesystem_survey_coverage"):
+    if table in (
+        "database_survey_coverage",
+        "filesystem_survey_coverage",
+        # resource_reachability (Phase 1 slice #13) is keyed by
+        # (filesystem_slug, probed_at, outcome) with its own dedicated
+        # methods (record_reachability_check/get_latest_reachability/
+        # list_reachability_history) -- it has no surveyed_at/source columns
+        # and does not fit the generic (slug, surveyed_at, source, ...,
+        # state) detail-row shape the reader/writer below assumes. Excluded
+        # here the same way the two coverage tables are, for the same
+        # reason: it would otherwise be auto-detected by its `filesystem_
+        # slug` column and silently break write_detail_rows()'s generic
+        # insert (no surveyed_at/source to insert into).
+        "resource_reachability",
+    ):
         return None
 
     # Column lines only: a constraint line starts with UNIQUE/FOREIGN/PRIMARY,
@@ -8565,6 +8649,15 @@ class ProjectRegistry:
                         f"DELETE FROM {_table} WHERE {_spec.slug_column} = ?",
                         (normalized,),
                     )
+            # resource_reachability is excluded from _DETAIL_TABLE_SPECS (see
+            # _parse_detail_table_spec's docstring) since it doesn't fit the
+            # generic detail-row shape, so it needs its own explicit cleanup
+            # here rather than riding the loop above -- same FK-before-parent
+            # reasoning as every other child table in this method.
+            conn.execute(
+                "DELETE FROM resource_reachability WHERE filesystem_slug = ?",
+                (normalized,),
+            )
             conn.execute(
                 "DELETE FROM filesystem_survey_coverage WHERE filesystem_slug = ?",
                 (normalized,),
@@ -8594,6 +8687,81 @@ class ProjectRegistry:
                 "UPDATE file_systems SET egeria_asset_guid = ? WHERE slug = ?",
                 (guid, self._normalize_slug(slug)),
             )
+
+    def record_reachability_check(
+        self,
+        filesystem_slug: str,
+        *,
+        probed_at: str,
+        outcome: str,
+        probed_from: str = "",
+        error_code: str = "",
+        error_detail: str = "",
+        latency_ms: int | None = None,
+        engine_action_guid: str = "",
+        resource_type: str = "filesystem",
+    ) -> None:
+        """Record one reachability probe result (Phase 1 slice #13).
+
+        Every call writes a NEW row -- this is a history table, not a
+        single "current status" row, the same choice `database_settings`/
+        `database_grants` etc. make and for the same reason: "reachable at
+        T1, unreachable at T2" is itself a fact worth keeping, not just the
+        latest value. `get_latest_reachability` is the "current status" read.
+
+        `outcome` must be one of `REACHABILITY_OUTCOMES` (validated here,
+        not just by convention) -- see reachability.py's
+        classify_check_asset_result() for how a live CHECK_ASSET result maps
+        onto this vocabulary, taken verbatim from egeria-support-for-multi-
+        resource.md §5 rather than invented for this table.
+        """
+        if outcome not in REACHABILITY_OUTCOMES:
+            raise ValueError(
+                f"outcome={outcome!r} is not one of {sorted(REACHABILITY_OUTCOMES)}"
+            )
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_reachability (
+                    resource_type, filesystem_slug, probed_at, probed_from,
+                    outcome, error_code, error_detail, latency_ms,
+                    engine_action_guid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    resource_type, normalized, probed_at, probed_from,
+                    outcome, error_code, error_detail, latency_ms,
+                    engine_action_guid,
+                ),
+            )
+
+    def get_latest_reachability(self, filesystem_slug: str) -> dict | None:
+        """Most recent reachability probe for this filesystem, or None if it
+        has never been checked -- the "never checked" state of the
+        three-state absence discipline (rule: absence of a row, not a
+        sentinel value, means "never checked"). Distinct from a row that
+        exists with `outcome='unknown'`, which means "checked, and the
+        CHECK_ASSET call itself did not complete/could not be evaluated"."""
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM resource_reachability
+                   WHERE filesystem_slug = ?
+                   ORDER BY probed_at DESC, id DESC LIMIT 1""",
+                (normalized,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_reachability_history(self, filesystem_slug: str, limit: int = 20) -> list[dict]:
+        """Reachability probes for this filesystem, most recent first."""
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_reachability
+                   WHERE filesystem_slug = ?
+                   ORDER BY probed_at DESC, id DESC LIMIT ?""",
+                (normalized, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def add_filesystem_survey(
         self,

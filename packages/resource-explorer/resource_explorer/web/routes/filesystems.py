@@ -464,3 +464,70 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             status_code=500,
             detail=f"Publish failed: {exc}"
         )
+
+
+class ReachabilityResultModel(BaseModel):
+    """One reachability probe result, past or just-run — Phase 1 slice #13.
+    Mirrors resource_reachability's columns; see reachability.py's module
+    docstring for the outcome vocabulary and how each maps to Egeria's raw
+    CHECK_ASSET response."""
+    resource_type: str = "filesystem"
+    filesystem_slug: str
+    probed_at: str
+    probed_from: str = ""
+    outcome: str
+    error_code: str = ""
+    error_detail: str = ""
+    latency_ms: int | None = None
+    engine_action_guid: str = ""
+
+
+@router.get("/{slug}/reachability", response_model=ReachabilityResultModel | None)
+def get_filesystem_reachability(slug: str):
+    """Most recent reachability check for this filesystem, or null if it has
+    never been checked — the "never checked" state is the absence of any
+    row, not a sentinel value (see registry.get_latest_reachability's
+    docstring)."""
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    latest = registry.get_latest_reachability(slug)
+    return ReachabilityResultModel(**latest) if latest else None
+
+
+@router.get("/{slug}/reachability/history", response_model=list[ReachabilityResultModel])
+def get_filesystem_reachability_history(slug: str, limit: int = 20):
+    """Reachability probe history for this filesystem, most recent first."""
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    rows = registry.list_reachability_history(slug, limit=limit)
+    return [ReachabilityResultModel(**r) for r in rows]
+
+
+@router.post("/{slug}/reachability", response_model=ReachabilityResultModel)
+def check_filesystem_reachability_endpoint(slug: str):
+    """Trigger the fast CHECK_ASSET reachability probe for this filesystem
+    and return (and persist) its result.
+
+    Scope (Phase 1 slice #13): filesystem/folder resources only — see
+    reachability.py's module docstring for why database reachability is not
+    handled by this same code path. Never 500s for an Egeria-side failure
+    (timeout, disconnected platform, ...) — that is reported as a normal
+    `outcome: "unknown"` result, per the three-state absence discipline, not
+    an HTTP error. A 404 here means the filesystem itself isn't registered,
+    which is a different, real error.
+    """
+    from resource_explorer.reachability import ReachabilityCheckScopeError, check_filesystem_reachability
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    try:
+        result = check_filesystem_reachability(slug, registry)
+    except ReachabilityCheckScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    latest = registry.get_latest_reachability(slug)
+    return ReachabilityResultModel(**latest)

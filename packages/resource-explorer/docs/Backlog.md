@@ -6741,3 +6741,47 @@ path had the gap, because it independently re-derives which local surveyor
 call to make rather than sharing one dispatcher with the web route — worth
 a future consolidation so a new db_derived-shaped analysis can't reintroduce
 the same gap a third way.
+
+## Phase 1 slice #13 — resource reachability (2026-09-22)
+
+Filed while building the slice (`resource_explorer/reachability.py`,
+`resource_reachability` table, launcher sentence — see
+`docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md`). This slice was
+deferred by the project owner 2026-09-21 ("do not build it yet ... further
+tests") and the deferral was reversed by the project owner 2026-09-22, who
+asked for it to proceed.
+
+**Real, previously-unconfirmed finding, not something this slice fixes**:
+`EgeriaFileSystemSurveyor.catalog_and_survey`'s `create_folder_element_
+from_template()` call attaches no Connection to the folder Asset it
+creates. Confirmed live (probe 7, first pass, `PROBES-2026-09-21.md`) —
+every filesystem RE has ever cataloged this way will report
+`outcome=no_connection` from this check, not a genuine reachability
+answer, until something attaches a real Connection. Whether to fix this by
+having `catalog_and_survey` attach one automatically (and if so, at catalog
+time or lazily on first reachability check) is a real design decision, not
+made here — this slice only builds the check itself and reports what it
+honestly finds.
+
+**Not re-tested**: probe 8's "folder-depth control" claim
+(`analysisLevel=ALL_FOLDERS_AND_FILES`) was run against an empty scratch
+folder on both request-parameter shapes and completed either way — this
+does not distinguish "CHECK_ASSET genuinely skips recursion" from "there
+was nothing to recurse into." Worth a follow-up probe against a populated
+folder before leaning on that claim as confirmed.
+
+**Out of scope, not attempted**: database reachability. `survey-postgres-
+database` is a different governance action type with a different failure
+shape (secrets-store resolution, per probe 9's write-up) — extending
+`resource_reachability`/the check to databases needs its own live probe
+pass, not an assumption that the folder-survey mechanism transfers.
+
+**Pre-existing, unrelated test failure noticed while running the full suite
+for this slice**: `tests/test_egeria_live_smoke.py::
+TestTheByNameFallbackWorks::test_a_cataloged_database_is_findable_by_name`
+fails against the current dev platform state (an assertion diff naming guid
+`45a75724-dbd3-45c6-bcd3-203db34265db` — the `egeria_optional_prefect_db`
+scratch database from `PROBES-2026-09-21.md`'s earlier live-verification
+work). Not investigated or fixed here — unrelated to filesystems or this
+slice's changes, and this session did not touch that database or its
+Egeria elements.
