@@ -41,7 +41,10 @@ from resource_explorer.registry import (
     STATS_SOURCE_DATABASE,
 )
 from resource_explorer.surveyors.database.connection import EngineCapabilities
-from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+from resource_explorer.surveyors.database.database_surveyor import (
+    DatabaseSurveyor,
+    _resolve_n_distinct,
+)
 from resource_explorer.surveyors.survey_report import RequestForActionAnnotation
 
 
@@ -133,11 +136,13 @@ class TestNormalCase:
                 {"schemaname": "public", "tablename": "customers", "attname": "id",
                  "null_frac": 0.0, "n_distinct": -1.0, "avg_width": 4,
                  "correlation": 1.0, "most_common_vals": None,
-                 "most_common_freqs": None, "histogram_bounds": None},
+                 "most_common_freqs": None, "histogram_bounds": None,
+                 "reltuples": 995.0},
                 {"schemaname": "public", "tablename": "customers", "attname": "email",
                  "null_frac": 0.02, "n_distinct": 950.0, "avg_width": 24,
                  "correlation": 0.1, "most_common_vals": '{"a@x.com","b@x.com"}',
-                 "most_common_freqs": '{0.01,0.008}', "histogram_bounds": None},
+                 "most_common_freqs": '{0.01,0.008}', "histogram_bounds": None,
+                 "reltuples": 995.0},
             ],
             "table_activity": [
                 {"schemaname": "public", "tablename": "customers",
@@ -167,6 +172,16 @@ class TestNormalCase:
         assert by_col["email"]["stats_computed_at"] == "2026-09-20T00:00:00"
         assert by_col["email"]["most_common_values_json"] == ["a@x.com", "b@x.com"]
 
+        # "id" carries pg_stats' NEGATIVE n_distinct convention (-1.0 means
+        # "unique, scales with row count" -- a ratio, not a count). Found
+        # live in design review round 2, 2026-09-21: passing this through
+        # unresolved renders as a negative cardinality ("distinct: -0.8"),
+        # never a real answer. Must resolve to a positive estimated count
+        # using pg_class.reltuples (995 here) -- the SAME analyze run's row
+        # count, not a separately-read live tuple count that can drift from
+        # it (a second design-review finding, same day).
+        assert by_col["id"]["distinct_count"] == pytest.approx(995.0)
+
         activity = registry.query_detail_rows("database_table_activity", db_entity.slug)
         assert len(activity) == 1
         row = activity[0]
@@ -177,6 +192,54 @@ class TestNormalCase:
         assert row["seq_scan"] == 3
         assert row["idx_scan"] == 120
         assert row["stats_reset"] == "2026-01-01T00:00:00"
+
+
+class TestResolveNDistinct:
+    """pg_stats.n_distinct's sign convention, resolved in isolation.
+
+    A non-negative value is an absolute count; a negative value is
+    -(distinct/rowcount), a ratio -- found live in design review round 2,
+    2026-09-21, where passing a negative ratio straight through would have
+    rendered a negative cardinality. The multiplier must be pg_class.reltuples
+    (the SAME analyze run's row count), not a separately-read live tuple
+    count that can drift from it -- a second design-review finding, same day.
+    """
+
+    def test_non_negative_value_passes_through_unchanged(self):
+        assert _resolve_n_distinct(950.0, reltuples=995) == 950.0
+
+    def test_negative_ratio_resolves_against_reltuples(self):
+        assert _resolve_n_distinct(-1.0, reltuples=995) == pytest.approx(995.0)
+        assert _resolve_n_distinct(-0.5, reltuples=1000) == pytest.approx(500.0)
+
+    def test_negative_ratio_with_no_reltuples_is_not_established(self):
+        # Silently returning the raw ratio would be a wrong number, not an
+        # honest absence -- must say "not established" instead.
+        assert _resolve_n_distinct(-0.8, reltuples=None) is None
+
+    def test_negative_ratio_with_never_analyzed_placeholder_is_not_established(self):
+        # reltuples == -1 is Postgres's own "never analyzed" placeholder
+        # (PG14+) -- untrustworthy as a multiplier, even though n_distinct
+        # existing at all should mean an analyze already ran; handled
+        # explicitly rather than trusted away.
+        assert _resolve_n_distinct(-0.8, reltuples=-1) is None
+
+    def test_negative_ratio_against_a_confirmed_empty_analyzed_table_is_zero(self):
+        # reltuples == 0 with ever_analyzed=True (last_analyze/last_autoanalyze
+        # non-null) is a confirmed, real empty table -- 0 is a legitimate
+        # answer, not "not established".
+        assert _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=True) == 0
+
+    def test_reltuples_zero_without_confirmed_analyze_is_not_established(self):
+        # On PG13 and earlier, reltuples == 0 means BOTH "analyzed, empty"
+        # and "never analyzed" -- without independent confirmation via
+        # last_analyze/last_autoanalyze, a table with real rows that was
+        # never ANALYZEd would otherwise resolve to a confident, wrong 0.
+        assert _resolve_n_distinct(-1.0, reltuples=0, ever_analyzed=False) is None
+        assert _resolve_n_distinct(-1.0, reltuples=0) is None  # ever_analyzed defaults to unknown
+
+    def test_none_input_is_none(self):
+        assert _resolve_n_distinct(None, reltuples=995) is None
 
 
 class TestStatsNeverCollected:

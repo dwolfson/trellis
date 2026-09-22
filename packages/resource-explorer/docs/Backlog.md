@@ -6368,3 +6368,89 @@ elsewhere — or was this specific stale element simply a one-time leftover
 from mid-development that a platform which has never run the pre-fix code
 will not reproduce, making the extra verification permanent complexity for
 a transient problem?
+
+### Exposure heatmap (data_class_match × privilege_audit, design §5.6) will show false negatives if built on today's grant reads — design guidance for Phase 1 slice #10
+
+Found 2026-09-21, designer round 2 review, drawing the exposure heatmap
+against the reads slice #8's `postgres_operations` (`privilege_audit`)
+already ships. **Not a bug in shipped code** — slice #8's own scope (a
+table-level RFA when the `PUBLIC` pseudo-role holds a grant) is correct and
+complete for what it does. The finding is that reusing today's grant reads
+naively for a *column-level, per-role* exposure matrix (§5.6's composite,
+gated on slice #10's `data_class_match`, not started) would produce three
+distinct false negatives — a role reads as having no access to a sensitive
+column when it actually does:
+
+1. **The reads are table-level; a column-level grid needs column grants.**
+   `information_schema.role_table_grants` (what `get_privilege_audit()`
+   reads today) and the structured `database_grants` table (Phase 0 stream
+   3) are both table-granularity — `database_grants` has no `column_name`
+   column, not even in its `UNIQUE` constraint. A column-level `GRANT SELECT
+   (email) ON patient TO analyst_ro` is invisible to both, and that role
+   would render as a full row of "no access" while actually holding a real
+   column grant.
+2. **`PUBLIC` can't be rendered as a column-role in a per-role grid.** It's
+   a pseudo-role, not a real one — as one column among several, a reader
+   scanning a specific role's row for red would find none, while that role
+   can in fact read everything via its `PUBLIC` inheritance.
+3. **Role membership/inheritance is read nowhere in this codebase** — no
+   `pg_auth_members`, no `pg_has_role`, anywhere. Granting access through a
+   group role (the normal Postgres administration pattern) would be
+   invisible to a grid built only from direct per-role grants.
+
+**The fix, when slice #10 builds this**: `has_column_privilege(role, table,
+column, 'SELECT')` collapses all three into one call — Postgres itself
+resolves membership, inheritance and `PUBLIC` at query time, so the
+composite doesn't need to reimplement any of it. Requires extending
+`database_grants`'s structured table with a `column_name` field (a
+migration) and reading `information_schema.column_privileges` (a strict
+superset of what `role_table_grants` reads today — it returns column grants
+*and* table grants pre-expanded per column) rather than the current
+table-only read.
+
+**The general rule underneath it, worth carrying into slice #10's design
+directly**: for an exposure view, the two failure directions are not
+symmetric the way they are for a plain measurement. A missing measurement
+elsewhere in this codebase renders as an honest gap (`not_established`,
+`STATE_NOT_COLLECTED`, etc.) — but here, a missing read renders as a *clean
+bill of health*, which is the worse direction to fail in for a
+security-relevant view. An empty cell in the exposure grid has to mean "no
+access path found" and never "no access path measured" — the absence
+discipline this codebase already applies elsewhere needs an even stronger
+form here, since the default failure mode (silence) reads as reassurance
+instead of as a gap.
+
+### `n_distinct` sign fix (design review round 2, 2026-09-21) does not repair rows already stored — decision needed
+
+`database_surveyor.py`'s `_resolve_n_distinct()` fixes `pg_stats.n_distinct`'s
+sign convention going forward, using `pg_class.reltuples` (the same
+`ANALYZE` run's row count, not a separately-read live count — a second
+design-review finding, caught before it shipped: the first fix used
+`pg_stat_user_tables.n_live_tup`, which can drift from the count the ratio
+was actually computed against). A third finding, same review: `reltuples
+== -1` only means "never analyzed" from PG14 on — on PG13 and earlier, `0`
+means both "analyzed, empty" and "never analyzed", so a table with real
+rows that was never ANALYZEd would otherwise resolve to a confident, wrong
+0. Fixed version-independently by cross-checking `last_analyze`/
+`last_autoanalyze` (already read by this module) rather than trusting the
+server-version-dependent sentinel alone.
+
+**The fix does not touch rows already written.** Every `database_column_profiles`
+row from a survey run before this fix carries the raw, unresolved value —
+either a bare negative number, or (if some earlier ad hoc code already
+multiplied by the wrong row count) a number computed from a mismatched
+denominator. A peer flagged this specifically: roughly 4,912 rows from a
+recent back-fill, and anything surveyed since, still say what they said
+before the fix. Deliberately **not fixed here** — re-running the back-fill
+is described as idempotent by key and therefore safe, but re-surveying (or
+otherwise mutating) the shared production registry's existing rows is a
+bigger, more consequential action than this bug-fix PR's scope, and needs
+the project owner's go-ahead rather than being done silently as a side
+effect of a code fix.
+
+**Until that happens**: any `database_column_profiles.distinct_count` value
+recorded before this fix landed should be treated as unreliable — do not
+trust it for the exposure heatmap (the entry immediately above) or any
+other consumer until the affected rows are re-surveyed. Whoever picks up
+either the historical-row question or the exposure heatmap should check
+this entry first.
