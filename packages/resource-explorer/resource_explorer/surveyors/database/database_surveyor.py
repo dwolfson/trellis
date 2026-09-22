@@ -50,6 +50,13 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "db_activity_signals": ["schema", "operations"],
     "db_resilience": ["schema", "operations"],
     "db_external_dependencies": ["schema", "operations"],
+    # Phase 1 slice 10 (postgres_column_profile, design §5.4/§5.7/§5.8). Both
+    # need "statistics" as well as "schema": the cardinality gate for
+    # reference_data_match reads slice 7's stored pg_stats n_distinct, and the
+    # sample's provenance needs the table row counts "statistics" collects.
+    # Sampling itself is the "column_profile" step.
+    "data_class_match": ["schema", "statistics", "column_profile"],
+    "reference_data_match": ["schema", "statistics", "column_profile"],
 }
 
 
@@ -155,11 +162,16 @@ class DatabaseSurveyor:
     # already had before this slice.
     _ALL_STEPS = ("schema", "statistics", "views")
 
-    def survey(self, steps: list[str] | None = None) -> dict:
+    def survey(
+        self,
+        steps: list[str] | None = None,
+        sampling_overrides: dict | None = None,
+        reference_catalog=None,
+    ) -> dict:
         """Run a database survey.
 
         steps : optional subset of {"schema", "statistics", "views",
-            "operations"} — None (default) runs the original three
+            "operations", "column_profile"} — None (default) runs the original three
             (_ALL_STEPS), exactly as before "operations" existed;
             "operations" must be requested explicitly (see _ALL_STEPS's
             comment). "schema" always runs even if omitted, since every
@@ -172,6 +184,17 @@ class DatabaseSurveyor:
         """
         requested = set(steps) if steps is not None else set(self._ALL_STEPS)
         requested.add("schema")
+        # "column_profile" (Phase 1 slice 10) reads two things "statistics"
+        # produces and nothing else does: the per-table row counts its sample
+        # provenance is stated against (design §5.8's "of 4.2M rows"), and
+        # slice 7's stored pg_stats `n_distinct`, which is
+        # `reference_data_match`'s low-cardinality gate. Requesting the
+        # profile without the statistics would silently produce every column's
+        # total_rows as "not established" and every cardinality gate as
+        # undecided — a run that looks like it worked and establishes nothing.
+        # Same invariant, and same reasoning, as "schema" above.
+        if "column_profile" in requested:
+            requested.add("statistics")
 
         results = {
             "database_slug": self.db_entity.slug,
@@ -193,6 +216,9 @@ class DatabaseSurveyor:
             #: postgres_operations output (Phase 1 slice 8), built only when
             #: "operations" runs — see _survey_operations().
             "operations": {},
+            #: postgres_column_profile output (Phase 1 slice 10), built only
+            #: when "column_profile" runs — see column_profile_step.py.
+            "column_profile": {},
         }
 
         try:
@@ -259,6 +285,46 @@ class DatabaseSurveyor:
                         )
                     except Exception as ops_err:
                         results["errors"].append(f"Operations query failed (non-fatal): {ops_err}")
+
+                # postgres_column_profile: value sampling, data_class_match,
+                # reference_data_match (design §5.4, §5.7, §5.8 — Phase 1
+                # slice 10). Non-fatal, same shape as the three above, and
+                # opt-in for the same reason "operations" is: design §5.7
+                # prices it at "api_heavy / medium", the only step in the
+                # family that reads actual table data, so it must never ride
+                # along on a default full survey().
+                #
+                # Delegated to column_profile_step rather than implemented
+                # here: slices 7 and 8 own this file, and slice 10 consumes
+                # their output (schema_info's column catalog, statistics'
+                # row counts, and column_profile_rows' pg_stats n_distinct)
+                # rather than extending their code.
+                if "column_profile" in requested:
+                    try:
+                        from resource_explorer.surveyors.database.column_profile_step import (
+                            run_column_profile,
+                        )
+
+                        profile_result = run_column_profile(
+                            conn,
+                            capabilities,
+                            schema_info,
+                            results.get("statistics") or {},
+                            results.get("column_profile_rows") or [],
+                            resource_slug=self.db_entity.slug,
+                            reference_catalog=reference_catalog,
+                            sampling_overrides=sampling_overrides,
+                        )
+                        results["column_profile"] = profile_result
+                        results["annotations"].extend(profile_result["annotations"])
+                        # This step's rows are ADDITIONAL rows, not edits to
+                        # slice 7's — see _profile_row()'s docstring for why
+                        # merging them would make `stats_source` wrong.
+                        results["column_sample_rows"] = profile_result["column_profile_rows"]
+                    except Exception as profile_err:
+                        results["errors"].append(
+                            f"Column profiling failed (non-fatal): {profile_err}"
+                        )
 
         except Exception as e:
             error_msg = str(e)

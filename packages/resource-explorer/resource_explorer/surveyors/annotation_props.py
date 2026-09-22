@@ -137,13 +137,18 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         props["expression"] = ann.expression
     if ann.json_properties:
         props["jsonProperties"] = json.dumps(ann.json_properties)
-    # `contentStatus` — whether the CONTENT is complete, not whether the
-    # entity persists (that is ElementStatus, a separate field). Emitted only
-    # when the producing analysis set it, so every pre-existing annotation's
-    # body is byte-identical to before. A proposal sets it to "DRAFT": the
+    # Egeria's `contentStatus` — whether the CONTENT is complete, not whether
+    # the entity persists (that is `ElementStatus`, a different field, set by a
+    # different mechanism, and one pyegeria drops silently). A plain domain
+    # property on `AuthoredReferenceableProperties`, so it goes inside
+    # `properties` on the existing `NewElementRequestBody` with no other
+    # change; verified live 2026-09-21 to round-trip as `DRAFT` — the
     # mechanism the project owner's 2026-09-21 decision settled on for
     # proposing governance elements that do not exist yet
     # (`docs/egeria-support-for-multi-resource.md` §3, corrected probe 4).
+    #
+    # Guarded on truthiness like `explanation`/`expression` above, so the wire
+    # payload stays byte-identical for every caller that does not set it.
     content_status = getattr(ann, "content_status", "")
     if content_status:
         props["contentStatus"] = content_status

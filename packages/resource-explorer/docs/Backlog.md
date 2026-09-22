@@ -6614,3 +6614,74 @@ trust it for the exposure heatmap (the entry immediately above) or any
 other consumer until the affected rows are re-surveyed. Whoever picks up
 either the historical-row question or the exposure heatmap should check
 this entry first.
+
+---
+
+## Slice 10 (`postgres_column_profile`) — seven follow-ups
+
+**Found while building** `postgres_column_profile` / `data_class_match` /
+`reference_data_match` (Phase 1 slice 10,
+`docs/design-notes/POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md`). Logged, not
+fixed — each is outside that slice's scope.
+
+**1. No curator accept/reject surface for a DRAFT proposal — the largest gap.**
+Slice 10 creates candidate `DataClass`/`ValidValueSet` elements with
+`contentStatus: DRAFT` and links them to their evidence via
+`AssociatedAnnotation`. Accepting one — clearing `contentStatus`, creating the
+real `ValidValuesAssignment` — has no surface at all. Design §11's review
+queue is the natural home. Until it exists, a proposal can only be actioned in
+Egeria's own UI.
+
+**2. RE has no DataClass/ValidValueSet browsing surface.** A DRAFT proposal is
+now visible as an *annotation* (see 3), but the proposed *element* is not
+visible in RE anywhere. The only real property read of a governance element in
+the whole package (`database_surveyor.py`'s PII-keyword lookup, ~line 1216)
+never reaches a UI. Prerequisite for 1.
+
+**3. `contentStatus` is still not carried by the older `/{slug}/annotations`
+read path.** Slice 10 surfaced it on the main chain
+(`egeria_survey_reader.get_annotations_by_report_guid` → the three
+`EgeriaAnnotationItem` models → `renderAnnotations`). The older
+qualifiedName-guessing path (`surveyors/egeria_reader.py::_parse_annotation` →
+`AnnotationItem` in `web/routes/egeria.py`) has its own model and its own
+field-by-field population and was left alone. Cheap: add `"contentStatus"` to
+`_parse_annotation`'s subtype-field list, then the model and its construction.
+
+**4. `resolve_n_distinct` may end up duplicated with slice 9.** The brief for
+slice 10 said to reuse slice 9's `_resolve_n_distinct`; slice 9 (`db_derived`)
+had not merged and there was nothing to import, so slice 10 implemented
+`column_matching.resolve_n_distinct` as a **public** name for slices 9 and 11
+to import. **If slice 9 lands its own, reconcile the two to one** before both
+are in the tree — two copies of a sign-convention correction is exactly the
+shape that drifts.
+
+**5. Two live bugs in `bootstrap_data_classes.py`, deliberately not copied by
+slice 10.** (a) Its `create_data_class` body's `properties` omits the
+`"class": "DataClassProperties"` discriminator that every other create path in
+both repos sets. (b) It calls `link_valid_value_definition` with no `body`,
+which makes pyegeria synthesise one from its own internal `prop` hint and POST
+it un-serialised. Both are in RE's own code, so both are fixable here.
+
+**6. Two pyegeria `prop`-hint mismatches — file, do not fix in place.**
+`link_annotation_to_described_element` passes
+`"AnnotationDescribedElementRelationship"` and `attach_annotation_to_report`
+passes `"SurveyReportAnnotationRelationship"`, neither of which is a real
+Egeria properties class (they should be `AssociatedAnnotationProperties` and
+`ReportedAnnotationProperties`). Harmless while a caller passes an explicit
+body — slice 10 always does — and a malformed POST when one is not. Belongs in
+`egeria-python`'s `PYEGERIA_ISSUES.md` per the log-and-wait policy.
+
+**7. Three things slice 10 could not verify without a live server**, worth one
+probe together against `coco_ods`: that `TABLESAMPLE SYSTEM (…) REPEATABLE (…)`
+is accepted as generated and that the 3× oversample actually fills `max_rows`;
+that `create_valid_value_definition` with `typeName: "ValidValueSet"` inside
+`properties` really yields a set rather than a bare definition (that path is
+exercised nowhere in either repo); and that
+`link_annotation_to_described_element` works at all — **that endpoint has
+never been called from Python**, so the evidence links are the least-verified
+part of the slice.
+
+**Also:** the regenerated `question_catalog.yaml` rows for `data_class_match`
+and `reference_data_match` still carry `GAP: … (proposed)` prose although both
+analyses now exist — the same staleness slice 8 flagged for its own three ids.
+The CSV's prose is its owner's call (stream 4), not a consumer's.

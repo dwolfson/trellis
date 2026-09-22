@@ -605,6 +605,15 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         sample_strategy           TEXT DEFAULT '',
         sample_rows               INTEGER DEFAULT NULL,
         sample_seed               INTEGER DEFAULT NULL,
+        -- The table's total row count as known when the sample was taken.
+        -- Phase 1 slice 10 (design §5.8): the envelope sentence §5.8 makes a
+        -- hard requirement is "from a random sample of 10,000 of 4.2M rows
+        -- (seed 7, ...)", and `sample_rows` alone is the 10,000 — without the
+        -- 4.2M, a sample size cannot be read as a proportion, which is the
+        -- only thing that makes it interpretable. NULL means the total was
+        -- not established (the statistics collector had no row for the
+        -- table), which is distinct from 0.
+        sample_total_rows         INTEGER DEFAULT NULL,
         state                     TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
@@ -851,6 +860,10 @@ _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], .
     ("database_column_profiles", (
         ("stats_source", "TEXT DEFAULT ''"),
         ("stats_computed_at", "TEXT DEFAULT NULL"),
+        # Phase 1 slice 10 — same seam, same reason: the table already exists
+        # on every checkout, so the CREATE TABLE addition above is a no-op
+        # there and this entry is what actually lands the column.
+        ("sample_total_rows", "INTEGER DEFAULT NULL"),
     )),
     # stats_reset: same story, same designer-review addition, same gap.
     ("database_table_activity", (
