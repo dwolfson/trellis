@@ -1140,11 +1140,23 @@ creates the real candidate element — `DataClass`, `ValidValueSet`,
 curator's accept is a status change to `ACTIVE`; dismiss deletes the draft.
 This keeps measured-vs-declared intact — `DRAFT` *is* the measured state,
 `ACTIVE` is the declaration — and makes the "annotations that propose"
-type ask in the support doc's §3 and §7 likely unnecessary. Conditional on
-probe 4 confirming that the create calls accept `initialStatus: DRAFT`; the
-RFA convention stays as the fallback if they do not. The review queue below
-is unchanged in purpose: it lists `DRAFT` elements with their evidence
+type ask in the support doc's §3 and §7 likely unnecessary. The review queue
+below is unchanged in purpose: it lists `DRAFT` elements with their evidence
 instead of RFAs.
+
+*Probe results, 2026-09-21.* Probe 5 passed: all five proposal-shaped
+annotation types (`DataClassAnnotation`, `DataGrainAnnotation`,
+`ResourceProfileAnnotation`, `SemanticAnnotation`, `FingerprintAnnotation`)
+can be created from Python and attached to a report, so the *evidence* half
+of this path works today. Probe 4 failed, but client-side: pyegeria's
+`NewElementRequestBody` silently drops `initialStatus` (ISSUE-113), so the
+element came back `ACTIVE`. That says nothing yet about the server. **Status:
+the DRAFT-element path is blocked on ISSUE-113 and on a raw-REST probe of
+whether the server honours `initialStatus`.** Until both are known, the RFA
+convention (support doc §3) is what gets built; if the server honours it,
+the DRAFT path becomes the design once the pyegeria fix lands, and the
+draft-visibility item below stays live; if the server ignores it too, the
+RFA convention is the design and the visibility item is closed.
 
 - **Draft visibility (open, needs the project owner).** A `DRAFT` element is
   a real element. Egeria's `QueryOptions.limitResultsByStatus` defaults to
