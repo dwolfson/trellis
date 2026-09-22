@@ -492,6 +492,21 @@ below has two outcome kinds to distinguish, `no_connection` and
 **Decision (project owner, 2026-09-21):** defer the `resource_reachability`
 table until further tests — do not build it yet.
 
+**Correction (project owner, 2026-09-22):** the 2026-09-21 deferral above is
+reversed — the project owner asked for this slice (Phase 1 slice #13) to
+proceed now. Probe 7/8 (below) are the "further tests" the deferral was
+waiting for; both ran live 2026-09-22. Built: `resource_reachability`
+(filesystem-scoped, not the fully polymorphic shape sketched above — see
+`docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md` for why), the
+check (`resource_explorer/reachability.py`), and the classic-UI launcher
+sentence. The live run also surfaced a real, previously-unconfirmed gap:
+RE's own folder-cataloging path attaches no Connection to the Asset it
+creates, so this check reports `no_connection` for essentially every
+filesystem RE has cataloged today — see the design notes doc and
+`docs/design-notes/PROBES-2026-09-21.md`'s "Probes 7 and 8, run live"
+section for the live evidence. Database reachability remains out of scope
+(not probed as part of this slice).
+
 ---
 
 ## 6. DuckDB via folder survey
@@ -655,7 +670,7 @@ with the response, so the result is evidence and not a recollection.
 | Egeria types | "annotations that propose": `candidateDataClassSpecification`, `ReferenceDataAnnotation`, `DataScopeAnnotation` (§3, §7) | **unneeded (2026-09-21)** — probes 4/5 confirmed `contentStatus: DRAFT` (a domain property on `AuthoredReferenceableProperties`, distinct from the `ElementStatus`/`initialStatus` field the first probe pass mistakenly tested) works cleanly on both a proposal annotation and the candidate element itself; a proposal is a normal element/annotation with `contentStatus: DRAFT` | none — still open: does a normal read path surface `contentStatus` to a consumer (unchecked) |
 | Egeria content pack | `.duckdb` file type + folder → DuckDB survey process (§6) | **already planned for Egeria (2026-09-21)** — no filing needed | nothing; self-contained |
 | Egeria types | model Tier 2 `ModelCard` (§2) | discuss | Tier 1 |
-| Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | **deferred (2026-09-21)** — do not build `resource_reachability` yet either | rule B in use, further tests |
+| Egeria types | reachability outcome on `ConnectorActivityReport` or a `CHECK_ASSET` annotation (§5) | **deferred (2026-09-21), reversed (2026-09-22)** — `resource_reachability` (filesystem-scoped) is now built; the `ConnectorActivityReport`/`ReachabilityAnnotation` upstream ask itself is still not worth filing until the check has run for a while | rule B in use; probes 7/8 run live 2026-09-22 |
 | pyegeria | `_async_initiate_survey` drops request parameters (§8.1) | high for rule B | none — log now |
 | pyegeria | `create_notification_type`, `create_valid_value_set` | low | probe 3 |
 | pyegeria | typed annotation helpers for the five proposal-shaped annotation types | **unneeded (2026-09-21)** — probe 5 confirmed the generic `create_annotation` already handles all five cleanly, no missing helper | none |

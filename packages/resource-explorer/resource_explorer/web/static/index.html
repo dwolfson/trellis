@@ -14753,6 +14753,7 @@ async function loadFilesystemSurveyReport() {
     const surveys = surveyRes.ok ? await surveyRes.json() : [];
     renderFilesystemSurveyReport(fs, surveys);
     _fsSurveyLoaded = true;
+    if (fs.egeria_asset_guid) refreshFsReachabilitySentence(fs.slug);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs py-8 text-center">Failed to load: ${e.message}</div>`;
   }
@@ -14814,9 +14815,16 @@ function renderFilesystemSurveyReport(fs, surveys) {
             ☁ Re-publish to Egeria
           </button>
         ` : ''}
+        ${fs.egeria_asset_guid ? `
+          <button id="fs-reachability-btn-${_esc(fs.slug)}" onclick="checkFsReachability('${_esc(fs.slug)}')"
+            class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-amber-300 transition-colors whitespace-nowrap">
+            🔌 Check Reachability
+          </button>
+        ` : ''}
       </div>
     </div>
-    <div class="text-xs text-slate-500">Last surveyed: <span class="text-slate-300">${surveyDate}</span></div>`;
+    <div class="text-xs text-slate-500">Last surveyed: <span class="text-slate-300">${surveyDate}</span></div>
+    <div id="fs-reachability-sentence-${_esc(fs.slug)}" class="text-xs text-slate-500">${_renderReachabilitySentence(null)}</div>`;
 
   if (!latest) {
     html += `<div class="text-slate-500 text-sm py-6 text-center">
@@ -15002,6 +15010,67 @@ function renderFilesystemSurveyReport(fs, surveys) {
 
   view.innerHTML = html;
   loadEgeriaSurveys(`/api/filesystems/${fs.slug}`, 'fs-egeria-surveys-list', 'fs-egeria');
+}
+
+// ── reachability (Phase 1 slice #13) ────────────────────────────────────────────
+// Launcher sentence per COORDINATOR-BRIEF-MULTI-RESOURCE.md's slice #13 row —
+// deliberately minimal: one button, one rendered sentence, no new page or
+// dashboard. Lives in the classic UI (index.html), not /next, matching
+// CLAUDE.md's "DB/FS work stays in the classic UI" note.
+const _REACHABILITY_OUTCOME_DISPLAY = {
+  reachable:            ['✅', 'text-emerald-400', 'Reachable'],
+  no_connection:        ['⚠️', 'text-amber-400',   'Not reachable — no Connection is attached to this asset yet'],
+  unresolvable_secret:  ['⚠️', 'text-amber-400',   'Not reachable — the resource’s secret reference does not resolve'],
+  network_unreachable:  ['⚠️', 'text-amber-400',   'Not reachable — the engine host cannot reach this resource'],
+  auth_rejected:        ['⚠️', 'text-amber-400',   'Not reachable — authentication was rejected'],
+  unknown:              ['❓', 'text-slate-400',   'Could not determine reachability'],
+};
+
+function _renderReachabilitySentence(result) {
+  if (!result) {
+    return 'Reachability: <span class="text-slate-500">not checked yet</span>';
+  }
+  const [icon, cls, label] = _REACHABILITY_OUTCOME_DISPLAY[result.outcome] || ['❓', 'text-slate-400', result.outcome];
+  const when = result.probed_at ? result.probed_at.replace('T', ' ').substring(0, 16) + ' UTC' : '';
+  const detail = result.error_code ? ` <span class="text-slate-600 font-mono" title="${_esc(result.error_detail || '')}">(${_esc(result.error_code)})</span>` : '';
+  return `Reachability: <span class="${cls}">${icon} ${_esc(label)}</span>${detail}` +
+    (when ? ` <span class="text-slate-600">— checked ${when}</span>` : '');
+}
+
+async function refreshFsReachabilitySentence(slug) {
+  const el = document.getElementById(`fs-reachability-sentence-${slug}`);
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/filesystems/${slug}/reachability`);
+    const result = res.ok ? await res.json() : null;
+    el.innerHTML = _renderReachabilitySentence(result);
+  } catch (e) {
+    // Never surface this as an error state — "could not load the last
+    // result" is not itself a reachability finding, so leave the sentence
+    // showing whatever it already showed rather than replacing it with
+    // something that looks like a probe outcome.
+  }
+}
+
+async function checkFsReachability(slug) {
+  const btn = document.getElementById(`fs-reachability-btn-${slug}`);
+  const el = document.getElementById(`fs-reachability-sentence-${slug}`);
+  if (btn) { btn.disabled = true; btn.textContent = '🔌 Checking…'; }
+  if (el) el.innerHTML = 'Reachability: <span class="text-slate-500">checking…</span>';
+  try {
+    const res = await fetch(`/api/filesystems/${slug}/reachability`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+    if (el) el.innerHTML = _renderReachabilitySentence(result);
+    const display = _REACHABILITY_OUTCOME_DISPLAY[result.outcome];
+    showToast(result.outcome === 'reachable' ? 'success' : 'info',
+      `Reachability check: ${display ? display[2] : result.outcome}`, 4000);
+  } catch (e) {
+    if (el) el.innerHTML = `Reachability: <span class="text-red-400">check failed — ${_esc(e.message)}</span>`;
+    showToast('error', `Reachability check failed: ${e.message}`, 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔌 Check Reachability'; }
+  }
 }
 
 // ── utils ──────────────────────────────────────────────────────────────────────
