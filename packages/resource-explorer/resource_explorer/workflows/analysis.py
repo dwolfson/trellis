@@ -733,3 +733,80 @@ def assess_freshness(registry, entity_type: str, slug: str, analysis_id: str,
     fresh = 0 <= age < max_age_seconds
     return Freshness(fresh, "fresh" if fresh else "stale", age,
                      best_ts.isoformat(), best_via)
+
+
+def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
+    for every local analysis_catalog entry of `entity_type` against `slug` —
+    generalized out of `projects.py`'s `GET /{slug}/analyses/last-activity`
+    (repo-only route, added first) so database and filesystem get the same
+    per-analysis "Last run"/"Published" badge data their own Analyses cards
+    were missing entirely (docs/Backlog.md: in classic, a survey visibly ran
+    — 200 OK, confirmed via network tab — and every per-analysis card still
+    showed no run/result indicator, because `_loadAnalysisCatalogPanel()`
+    only ever fetched this for `resourceType === 'repo'`).
+
+    `last_run_*` is real, attributed data for every entity_type now that
+    `ProjectRegistry.get_analysis_last_run()` is generalized (see its
+    docstring and `database/survey_definition_adapter.py`'s
+    `DATABASE_ANALYSIS_STEP_MAP`).
+
+    `last_published_at`/`last_published_scope` are NOT yet real data for
+    database/filesystem: `record_published_annotation_types()`/
+    `record_published_analyses()` — the tables this reads — are written only
+    from `EgeriaPublisher` on the repo publish path (`surveyors/
+    egeria_publisher.py`); `EgeriaDatabaseSurveyor.publish_step_annotations`
+    and the filesystem equivalent never call them. So for database/
+    filesystem this always returns empty publish fields today — an honest
+    "not established", not a wrong "never published" — until that publish
+    path is wired up too (logged as a follow-up in docs/Backlog.md rather
+    than guessed at here; building the two-tier recorded/shared fallback the
+    repo endpoint uses on top of data that plain doesn't exist yet would be
+    exactly the "Never run"/"Published today" contradiction this endpoint
+    exists to avoid, aimed at the wrong field).
+
+    `publish_stale` is likewise always False for non-repo entity_types today:
+    nothing writes a `f"{entity_type}_publish"` Egeria linkage row for
+    database/filesystem (`get_egeria_linkage` has no such writer outside the
+    repo path), so there is no staleness signal to report — never a lie,
+    since a card only shows the flag alongside a real `last_published_at`,
+    which is itself always empty here.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    last_run = registry.get_analysis_last_run(entity_type, slug)
+    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+    published_by_analysis = registry.get_last_published_analyses(slug)
+    publish_linkage = registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}
+    publish_stale = publish_linkage.get("status") == "stale"
+
+    result: dict[str, dict] = {}
+    for a in get_analyses(entity_type, include_egeria_live=False):
+        run = last_run.get(a["id"], {})
+        recorded = published_by_analysis.get(a["id"])
+        own_types = a.get("annotation_types") or []
+        shared = [t for t in own_types if t in published_by_type]
+        if recorded:
+            pub_at, pub_scope = recorded, "analysis"
+        elif shared:
+            pub_at, pub_scope = max(published_by_type[t] for t in shared), entity_type
+        else:
+            pub_at, pub_scope = "", ""
+        result[a["id"]] = {
+            "last_run_at": run.get("last_run_at", ""),
+            "last_run_status": run.get("last_run_status", ""),
+            "last_run_basis": ("measured" if run.get("last_run_at")
+                               else "not_established" if unattributed else "never_run"),
+            "unattributed_surveys": unattributed,
+            "last_run_via": run.get("last_run_via", ""),
+            "last_run_derived_from": run.get("last_run_derived_from", ""),
+            "last_run_partial": run.get("last_run_partial", False),
+            "last_published_at": pub_at,
+            "last_published_scope": pub_scope,
+            "publish_stale": bool(pub_at) and publish_stale,
+        }
+    result["__auto_publishes__"] = {
+        "auto_publishes": registry.has_assigned_egeria_project(entity_type, slug),
+    }
+    return result

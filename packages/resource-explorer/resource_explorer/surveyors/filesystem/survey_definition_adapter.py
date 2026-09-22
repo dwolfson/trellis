@@ -259,3 +259,16 @@ _ADAPTER = ResourceTypeAdapter(
 )
 
 register_adapter(_ADAPTER)
+
+
+#: analysis_id -> the re_analysis_step key(s) that produce it — the
+#: filesystem equivalent of database/survey_definition_adapter's
+#: DATABASE_ANALYSIS_STEP_MAP (see that constant's docstring for the full
+#: reasoning). Filesystem has exactly one local re_analysis_step and one
+#: analysis_catalog.yaml entry today, so this is a 1:1 map rather than a
+#: fan-out — kept as its own named constant anyway, matching the per-
+#: resource-type convention, so a second filesystem analysis added later has
+#: an obvious place to be attributed rather than a special case bolted on.
+FILESYSTEM_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+    "filesystem_inventory": ["filesystem_inventory"],
+}

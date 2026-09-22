@@ -168,6 +168,33 @@ async def get_database(slug: str) -> DatabaseSummary:
     return _to_summary(database)
 
 
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
+    for every local database AnalysisKind — the database equivalent of
+    `projects.py`'s `GET /{slug}/analyses/last-activity`, added because the
+    frontend's `_loadAnalysisCatalogPanel()` only ever fetched that repo
+    route: a database's Analyses cards (Schema Conventions, Nested Column
+    Profile, Data Class Match, Change Rates, ...) showed no run/result
+    indicator at all, no matter how many real surveys had completed against
+    the database (docs/Backlog.md has the live-reproduction details).
+
+    Delegates to the same `workflows.analysis.build_analysis_last_activity`
+    the repo route now uses — see that function's docstring for exactly
+    what is and is not real data yet (run attribution is; publish
+    attribution is not, for database/filesystem, until their publish paths
+    also record `project_published_analyses`/`project_published_annotation_
+    types` — logged as a follow-up rather than guessed at here)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    return build_analysis_last_activity(registry, "database", slug)
+
+
 @router.post("/register", response_model=DatabaseSummary)
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""

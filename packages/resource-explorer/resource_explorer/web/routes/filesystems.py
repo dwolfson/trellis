@@ -200,6 +200,25 @@ def get_filesystem(slug: str):
     )
 
 
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
+    for every local filesystem AnalysisKind — the filesystem equivalent of
+    `projects.py`'s `GET /{slug}/analyses/last-activity` and `databases.py`'s
+    identically-named route. See `workflows.analysis.build_analysis_last_
+    activity`'s docstring for exactly what is real data today (run
+    attribution) and what is not yet (publish attribution — filesystem's
+    publish path does not record `project_published_analyses`/
+    `project_published_annotation_types` either, same gap as database's)."""
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    return build_analysis_last_activity(registry, "filesystem", slug)
+
+
 @router.delete("/{slug}/")
 def delete_filesystem(slug: str):
     """Remove a filesystem registration and all its surveys from the registry."""

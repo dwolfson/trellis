@@ -9055,6 +9055,14 @@ class ProjectRegistry:
         the same reason (direct feedback: Analyses cards had no last-run
         signal at all, unlike Survey Definition cards).
 
+        Generalized beyond repo (docs/Backlog.md: "Database/filesystem
+        Analyses cards never showed a last-run/published badge" — the UI only
+        ever fetched this for entity_type='repo', so database/filesystem
+        cards could not show a badge no matter how many surveys had run).
+        `entity_type` selects the step map via `_analysis_step_map()`/
+        `_analysis_derived_sources()` above; the SQL and the attribution
+        logic below are unchanged and identical for every entity_type.
+
         Reads TWO kinds of activity row, because an analysis can be invoked two
         ways and reading only one made almost everything look never-run:
 
@@ -9067,20 +9075,29 @@ class ProjectRegistry:
           the findings tables and its annotations sat published — the card said
           "Never run" and "Published today" side by side.
 
-        A survey step's qualifiedName ends with its re_analysis_step key
-        (`GovActionProcessStep::RepoCoarseProfile::repo_language`), and
-        REPO_ANALYSIS_STEP_MAP partitions those keys across analyses — each key
-        belongs to exactly one — so this attribution is exact, not a guess.
+        Each step's `re_analysis_step` key (recorded directly in `detail.steps`
+        by survey_definition_executor as of this same change — previously only
+        the step's qualifiedName was recorded, and callers had to assume its
+        last `::`-separated segment equalled the re_analysis_step key, which
+        held for repo's own authoring convention but is NOT guaranteed by
+        anything in the schema; falls back to that same qualifiedName-suffix
+        parse for historical rows that predate the field) is looked up in
+        `_analysis_step_map(entity_type)`'s inversion.
+
+        For repo, REPO_ANALYSIS_STEP_MAP partitions step keys across
+        analyses — each key belongs to exactly one — so attribution is exact.
+        For database, a single coarse step (e.g. "db_derived") is the source
+        of SEVERAL analysis_catalog entries at once (see
+        DATABASE_ANALYSIS_STEP_MAP's docstring) — that fan-out is real and
+        intentional, not a guess, so one step run credits every analysis_id
+        it names, not just one.
 
         An analysis owning several step keys counts as run when ANY of them
         ran: it did real work then, and calling that "never run" is the larger
         error. `last_run_partial` says whether the run covered all its steps.
         """
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            repo_analysis_derived_sources as _repo_analysis_derived_sources)
-
-        step_owner = self._step_key_to_analysis_id()
-        owned_counts = {a: len(k) for a, k in _repo_analysis_step_map().items()}
+        step_owner = self._step_key_to_analysis_ids(entity_type)
+        owned_counts = {a: len(k) for a, k in _analysis_step_map(entity_type).items()}
         result: dict[str, dict] = {}
 
         with self._conn() as conn:
@@ -9116,8 +9133,8 @@ class ProjectRegistry:
                 # data minutes earlier while its card still read ten days stale.
                 # Newest-first, so this loses to any more recent row of the
                 # source's own, exactly like the survey-step branch below.
-                for source_id, keys in _repo_analysis_derived_sources(
-                        analysis_id or "").items():
+                for source_id, keys in _analysis_derived_sources(
+                        entity_type, analysis_id or "").items():
                     if source_id in result:
                         continue
                     result[source_id] = {
@@ -9149,9 +9166,11 @@ class ProjectRegistry:
 
             ran: dict[str, list] = {}
             for step in (detail.get("steps") or []):
-                key = str(step.get("step") or "").rsplit("::", 1)[-1]
-                owner = step_owner.get(key)
-                if owner:
+                # `re_analysis_step` is the real key, recorded directly since
+                # this same change; a historical row that predates it falls
+                # back to the qualifiedName-suffix parse repo always relied on.
+                key = step.get("re_analysis_step") or str(step.get("step") or "").rsplit("::", 1)[-1]
+                for owner in step_owner.get(key, []):
                     ran.setdefault(owner, []).append(step.get("status") or "")
             for analysis_id, statuses in ran.items():
                 if analysis_id in result:
@@ -9232,13 +9251,21 @@ class ProjectRegistry:
         return out
 
     @staticmethod
-    def _step_key_to_analysis_id() -> dict[str, str]:
-        """Inverse of REPO_ANALYSIS_STEP_MAP."""
-        return {
-            key: analysis_id
-            for analysis_id, keys in _repo_analysis_step_map().items()
-            for key in keys
-        }
+    def _step_key_to_analysis_ids(entity_type: str) -> dict[str, list[str]]:
+        """Inverse of `_analysis_step_map(entity_type)`: step_key ->
+        [analysis_id, ...]. A list, not a single id, because database's
+        `DATABASE_ANALYSIS_STEP_MAP` genuinely fans one step key out to
+        several analysis_ids (e.g. "db_derived" -> six analyses) — unlike
+        repo's REPO_ANALYSIS_STEP_MAP, which partitions the step-key space so
+        this inversion happens to be 1:1 there. `setdefault(...).append(...)`
+        preserves every owner rather than the dict-comprehension overwrite
+        `_repo_analysis_step_map`'s own docstring warns can silently drop
+        one when two analyses declare the same key by mistake."""
+        out: dict[str, list[str]] = {}
+        for analysis_id, keys in _analysis_step_map(entity_type).items():
+            for key in keys:
+                out.setdefault(key, []).append(analysis_id)
+        return out
 
     def update_activity_status(
         self,
@@ -9881,3 +9908,52 @@ def _repo_analysis_step_map() -> dict:
     except ImportError:  # pragma: no cover - defensive
         return {}
     return REPO_ANALYSIS_STEP_MAP
+
+
+def _analysis_step_map(entity_type: str) -> dict[str, list[str]]:
+    """analysis_id -> [re_analysis_step keys] for `entity_type`, fetched
+    lazily (same import-cycle reason as `_repo_analysis_step_map` above).
+
+    Added alongside the database/filesystem last-activity endpoints
+    (docs/Backlog.md: "Database/filesystem Analyses cards never showed a
+    last-run/published badge") to generalize `get_analysis_last_run` beyond
+    repo. `entity_type` values outside this map (or an import failure)
+    return `{}` — an entity_type with no step map simply attributes no
+    survey rows, same as repo behaved before REPO_ANALYSIS_STEP_MAP existed.
+    """
+    if entity_type == "repo":
+        return _repo_analysis_step_map()
+    if entity_type == "database":
+        try:
+            from resource_explorer.surveyors.database.survey_definition_adapter import (
+                DATABASE_ANALYSIS_STEP_MAP,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            return {}
+        return DATABASE_ANALYSIS_STEP_MAP
+    if entity_type == "filesystem":
+        try:
+            from resource_explorer.surveyors.filesystem.survey_definition_adapter import (
+                FILESYSTEM_ANALYSIS_STEP_MAP,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            return {}
+        return FILESYSTEM_ANALYSIS_STEP_MAP
+    return {}
+
+
+def _analysis_derived_sources(entity_type: str, analysis_id: str) -> dict[str, list[str]]:
+    """{source_analysis_id: [step_keys]} that `analysis_id` derives from, for
+    `entity_type` — repo's `architecture_diagram`-derives-from-
+    `architecture_recovery` pattern (see repo_analysis_derived_sources).
+    Database and filesystem have no AnalysisKind-style `derives_from`
+    declaration today, so this is `{}` for every other entity_type — not a
+    guess, a real absence: neither adapter declares one analysis as a view
+    over another's steps the way repo's architecture_diagram does."""
+    if entity_type != "repo":
+        return {}
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        repo_analysis_derived_sources,
+    )
+
+    return repo_analysis_derived_sources(analysis_id)

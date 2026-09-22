@@ -87,17 +87,28 @@ class TestRunAttribution:
     def test_the_two_attribution_paths_agree(self):
         """There are two of them, and they disagreed on a colliding key.
 
-        `ProjectRegistry._step_key_to_analysis_id` builds a dict, so the LAST
-        analysis declaring a key wins. `egeria_annotation_materializer`'s
-        `_analysis_for` loops and returns on the FIRST match. On
-        `repo_arch_detect` those gave different answers, so a run and the
-        annotations produced by that run were filed under different analyses.
+        `ProjectRegistry._step_key_to_analysis_ids` (renamed from the
+        singular `_step_key_to_analysis_id` when database's fan-out map made
+        "exactly one owner per step key" a repo-only assumption, not a
+        universal one) now returns every analysis declaring a key, in
+        declaration order — for repo specifically this must still be AT MOST
+        ONE, because REPO_ANALYSIS_STEP_MAP's own contract is a partition;
+        a second entry here would mean two analyses claim the same repo step,
+        which is exactly the collision this test exists to catch.
+        `egeria_annotation_materializer`'s `_analysis_for` loops and returns
+        on the FIRST match. On `repo_arch_detect` those once gave different
+        answers, so a run and the annotations produced by that run were filed
+        under different analyses.
         """
         from resource_explorer.registry import ProjectRegistry
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
             REPO_ANALYSIS_STEP_MAP,
         )
-        last_wins = ProjectRegistry._step_key_to_analysis_id()
+        by_all = ProjectRegistry._step_key_to_analysis_ids("repo")
+        offending = {k: v for k, v in by_all.items() if len(v) > 1}
+        assert offending == {}, (
+            f"repo step key(s) claimed by more than one analysis: {offending}")
+        last_wins = {k: v[0] for k, v in by_all.items()}
         first_wins = {}
         for analysis_id, keys in REPO_ANALYSIS_STEP_MAP.items():
             for k in keys:
@@ -362,15 +373,25 @@ class TestPublishAttribution:
         assert pg_registry.get_last_published_analyses("attr-none") == {}
 
     def test_the_route_prefers_the_record_over_the_inference(self):
+        """The attribution logic this test pins moved out of the route and
+        into `workflows.analysis.build_analysis_last_activity` when
+        database/filesystem got their own `/analyses/last-activity` routes
+        and needed the identical logic — `projects.get_analyses_last_activity`
+        is now a thin 404-translating adapter that calls it, same pattern as
+        `get_depth_offer`/`get_catalogue_depth_offer` below it in that file.
+        The assertion follows the logic to its new home rather than the
+        (now near-empty) route function."""
         import inspect
 
         from resource_explorer.web.routes import projects
+        from resource_explorer.workflows import analysis as analysis_workflow
 
-        src = inspect.getsource(projects.get_analyses_last_activity)
+        src = inspect.getsource(analysis_workflow.build_analysis_last_activity)
         assert "published_by_analysis" in src
         # The dead inference helper is gone, not left to rot beside its
         # replacement.
         assert not hasattr(projects, "_sole_producer")
+        assert not hasattr(analysis_workflow, "_sole_producer")
 
 
 class TestNotEstablished:

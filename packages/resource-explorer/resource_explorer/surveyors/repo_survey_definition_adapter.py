@@ -4155,12 +4155,23 @@ class AnalysisKind:
     #: The steps this analysis OWNS. `REPO_ANALYSIS_STEP_MAP` is built from
     #: these and must PARTITION the step keys — each key belongs to exactly
     #: one analysis — because run attribution inverts it
-    #: (`ProjectRegistry._step_key_to_analysis_id`). A duplicate key there does
-    #: not raise: the inverse is a dict comprehension, so the later analysis
-    #: silently wins and the earlier one stops being credited with its own
-    #: runs. Measured 2026-09-08, before `derives_from` below existed:
+    #: (`ProjectRegistry._step_key_to_analysis_ids`). A duplicate key there
+    #: no longer raises OR silently drops one owner (as of the database/
+    #: filesystem generalization, the inverse is built with
+    #: `setdefault(...).append(...)`, not a dict comprehension) — a repo step
+    #: key declared by two analyses now credits BOTH on a run, which is
+    #: correct for database's intentional fan-out but is NOT what repo wants:
+    #: repo's contract is still that each key belongs to exactly one analysis,
+    #: so a duplicate here is a bug to fix, not a collision the map silently
+    #: resolves. Measured 2026-09-08, before `derives_from` below existed:
     #: `architecture_diagram` declared `architecture_recovery`'s two steps and
-    #: took ownership of both.
+    #: took ownership of both — back then the dict-comprehension inversion
+    #: masked it as a single silent winner; today it would show up as both
+    #: analyses being credited for the recovery's runs, which is at least
+    #: visible rather than silent, but still wrong for repo's partition
+    #: invariant. `tests/test_run_publish_honesty.py`'s
+    #: `test_the_two_attribution_paths_agree` asserts no repo key has more
+    #: than one owner.
     step_keys: list[str]
     #: Steps this analysis READS but does not own — the steps to execute to
     #: refresh its data, when it has none of its own.

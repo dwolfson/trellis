@@ -488,3 +488,57 @@ _ADAPTER = ResourceTypeAdapter(
 )
 
 register_adapter(_ADAPTER)
+
+
+#: analysis_id -> the re_analysis_step key(s) that produce it — the database
+#: equivalent of repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP, added
+#: for ProjectRegistry.get_analysis_last_run()'s database attribution (see
+#: docs/Backlog.md, "Database/filesystem Analyses cards never showed a last-
+#: run/published badge"). Unlike REPO_ANALYSIS_STEP_MAP, this is NOT a
+#: partition of the step-key space in the other direction: a single coarse
+#: re_analysis_step here (e.g. "db_derived") is itself the SOURCE of several
+#: analysis_catalog.yaml entries, so several analysis_ids legitimately map to
+#: the SAME step key — that fan-out is intentional, not a collision, and
+#: ProjectRegistry inverts this generically (step_key -> list[analysis_id])
+#: rather than assuming a single owner per step the way repo's inversion does.
+#: Every analysis_id here owns exactly one step key of its own, so
+#: `last_run_partial` is never true for a database analysis today.
+#:
+#: Built directly from _ADAPTER.re_analysis_step_info's own descriptions
+#: above, which name these analysis_catalog ids explicitly (e.g.
+#: "db_derived"'s docstring literally lists db_classification,
+#: db_relationship_graph, grain_determination, db_fingerprint,
+#: schema_conventions and db_change_rates by name) — not a guess.
+#:
+#: Two known gaps, deliberately left open rather than guessed at:
+#: * "sql_analysis" has no analysis_catalog.yaml entry at all (no card
+#:   depends on it), so it is omitted here on purpose.
+#: * "egeria_db_survey" is triggered via `other_engine_handlers["egeria"]`,
+#:   not `re_analysis_steps` — docs/survey-definitions.md says
+#:   `re_analysis_step` is meaningful "for executes_at: resource-explorer
+#:   steps only", so whether a live Survey Definition's egeria-triggered
+#:   GovActionProcessStep actually carries
+#:   `re_analysis_step: egeria_db_survey` in Egeria is unconfirmed — nothing
+#:   in this codebase enforces it. Mapped here on the reasonable convention
+#:   that an author would name it after its own analysis_catalog id; if a
+#:   live definition uses something else, this entry silently fails to
+#:   attribute (falls into `__unattributed_surveys__`, never a wrong
+#:   attribution) until corrected.
+DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+    "schema_inventory": ["postgres_schema_and_stats"],
+    "row_count_snapshot": ["postgres_schema_and_stats"],
+    "privilege_audit": ["postgres_operations"],
+    "db_activity_signals": ["postgres_operations"],
+    "db_resilience": ["postgres_operations"],
+    "db_external_dependencies": ["postgres_operations"],
+    "db_classification": ["db_derived"],
+    "db_relationship_graph": ["db_derived"],
+    "grain_determination": ["db_derived"],
+    "db_fingerprint": ["db_derived"],
+    "schema_conventions": ["db_derived"],
+    "db_change_rates": ["db_derived"],
+    "data_class_match": ["postgres_column_profile"],
+    "reference_data_match": ["postgres_column_profile"],
+    "nested_column_profile": ["postgres_nested_columns"],
+    "egeria_db_survey": ["egeria_db_survey"],
+}
