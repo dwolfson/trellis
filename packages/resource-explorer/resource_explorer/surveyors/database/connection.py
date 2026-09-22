@@ -541,10 +541,35 @@ class PostgreSQLConnection(DatabaseConnection):
 
         table_grants: list[dict] = []
         try:
+            # NOT information_schema.role_table_grants — found live while
+            # verifying grant_change against a real PUBLIC grant on coco_ods
+            # (2026-09-22): that view only shows grants where the CURRENT
+            # connecting role is the grantor or grantee (or a member of one),
+            # per its own Postgres documentation. Confirmed directly: as
+            # `egeria_user` (RE's stored, non-superuser credential — the
+            # ordinary case, not a special one), it returned egeria_user's
+            # own SELECT and nothing else, hiding both the table owner's
+            # grants AND a real `GRANT SELECT ... TO PUBLIC` on the same
+            # table — exactly the design §9.1 done-test case
+            # ("especially to PUBLIC") this survey exists to catch. pg_class
+            # ACLs are catalog metadata, visible to any connected role
+            # regardless of what that role itself was granted, so this reads
+            # the real ACL as stored rather than only the slice of it that
+            # happens to involve the connecting role.
             table_grants = self.execute_query("""
-                SELECT table_schema, table_name, grantee, privilege_type, is_grantable
-                FROM information_schema.role_table_grants
-                WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                SELECT
+                    n.nspname AS table_schema,
+                    c.relname AS table_name,
+                    CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                         ELSE acl.grantee::regrole::text END AS grantee,
+                    acl.privilege_type,
+                    acl.is_grantable
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                  AND c.relacl IS NOT NULL
                 ORDER BY table_schema, table_name, grantee, privilege_type
             """)
         except Exception:

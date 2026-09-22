@@ -804,7 +804,12 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
                 # does not select it — left blank rather than guessed.
                 "grantor": "",
                 "privilege_type": g.get("privilege_type") or "",
-                "is_grantable": 1 if str(g.get("is_grantable") or "").upper() == "YES" else 0,
+                # connection.py's get_privilege_audit() query (pg_class ACLs
+                # via aclexplode) returns a real boolean; a stale/cached blob
+                # from before that fix, or a native survey's own shape,
+                # could still carry the information_schema-style 'YES'/'NO'
+                # text — accept either rather than assuming one.
+                "is_grantable": 1 if g.get("is_grantable") in (True, "YES", "yes") else 0,
                 "state": STATE_MEASURED,
             })
         result["database_grants"] = grants
