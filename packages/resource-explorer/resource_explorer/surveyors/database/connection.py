@@ -365,17 +365,29 @@ class PostgreSQLConnection(DatabaseConnection):
         pg_stats" from "genuinely profiled". This method only reports what
         pg_stats has; it never fabricates a row for a column ANALYZE has not
         reached.
+
+        Joins in `pg_class.reltuples` — the row-count estimate from the SAME
+        `ANALYZE` run that produced `n_distinct` — because resolving
+        `n_distinct`'s negative-ratio form needs the row count *as of that
+        analyze*, not a live count read separately (design review round 2,
+        2026-09-21: `pg_stat_user_tables.n_live_tup` drifts from
+        `pg_class.reltuples` between analyzes, so multiplying a ratio
+        computed at analyze time by a row count read at survey time is an
+        internally inconsistent number, even once the sign is fixed).
         """
         query = """
             SELECT
-                schemaname, tablename, attname,
-                null_frac, n_distinct, avg_width, correlation,
-                most_common_vals::text  AS most_common_vals,
-                most_common_freqs::text AS most_common_freqs,
-                histogram_bounds::text  AS histogram_bounds
-            FROM pg_stats
-            WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-            ORDER BY schemaname, tablename, attname
+                s.schemaname, s.tablename, s.attname,
+                s.null_frac, s.n_distinct, s.avg_width, s.correlation,
+                s.most_common_vals::text  AS most_common_vals,
+                s.most_common_freqs::text AS most_common_freqs,
+                s.histogram_bounds::text  AS histogram_bounds,
+                c.reltuples
+            FROM pg_stats s
+            LEFT JOIN pg_namespace n ON n.nspname = s.schemaname
+            LEFT JOIN pg_class c ON c.relname = s.tablename AND c.relnamespace = n.oid
+            WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY s.schemaname, s.tablename, s.attname
         """
         try:
             return self.execute_query(query)

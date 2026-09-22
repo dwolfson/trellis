@@ -72,6 +72,49 @@ def _parse_pg_array(value) -> list | None:
     return [part.strip().strip('"') for part in text.split(",")]
 
 
+def _resolve_n_distinct(n_distinct, reltuples, ever_analyzed=None) -> float | None:
+    """Resolve `pg_stats.n_distinct`'s sign convention into an actual
+    estimated distinct-value count.
+
+    Postgres overloads this one column: a non-negative value is an absolute
+    estimated count of distinct values; a NEGATIVE value is `-(distinct
+    values / row count)` — a ratio, used when the planner expects the
+    distinct count to scale with table size (e.g. a near-unique column).
+    Passing a negative ratio through as if it were a count renders as a
+    negative cardinality, which is never a real answer (found live,
+    2026-09-21, design review round 2 — the shipped `REAL distinct_count`
+    would have rendered "distinct: -0.8" for exactly this case).
+
+    The row count MUST be `pg_class.reltuples` — the estimate from the same
+    `ANALYZE` run that produced `n_distinct` — not a live tuple count read
+    separately (a second design-review finding, same day: multiplying an
+    analyze-time ratio by a since-drifted live count is an internally
+    inconsistent number, even with the sign fixed. "Correct number, wrong
+    label" wears a third shape here: computed at all, from the wrong
+    denominator).
+
+    `reltuples == -1` is Postgres's own "never analyzed" placeholder, but
+    **only from PG14 on**. On PG13 and earlier, `0` means BOTH "analyzed,
+    genuinely empty" and "never analyzed" — a table with real rows that has
+    never been ANALYZEd would otherwise resolve every column's distinct
+    count to a confident, wrong 0 (a third design-review finding, same
+    day). `ever_analyzed` disambiguates this version-independently: pass
+    whether this table has a non-null `last_analyze`/`last_autoanalyze`
+    (already read by this module's caller) rather than trusting the
+    server-version-dependent sentinel alone. `ever_analyzed=None` (unknown)
+    is treated the same as `False` — refuse to guess.
+    """
+    if n_distinct is None:
+        return None
+    if n_distinct >= 0:
+        return n_distinct
+    if reltuples is None or reltuples < 0:
+        return None
+    if reltuples == 0 and not ever_analyzed:
+        return None
+    return abs(n_distinct) * reltuples
+
+
 class DatabaseSurveyor:
     """Custom surveyor for databases when Egeria can't access them directly."""
 
@@ -411,12 +454,17 @@ class DatabaseSurveyor:
                     if activity:
                         last_analyzed = activity.get("last_analyze") or activity.get("last_autoanalyze") or None
 
+                    n_distinct_raw = stat.get("n_distinct")
+                    distinct_count = _resolve_n_distinct(
+                        n_distinct_raw, stat.get("reltuples"), ever_analyzed=bool(last_analyzed)
+                    )
+
                     profile_rows.append({
                         "schema_name": schema_name,
                         "table_name": table_name,
                         "column_name": column_name,
                         "null_fraction": stat.get("null_frac"),
-                        "distinct_count": stat.get("n_distinct"),
+                        "distinct_count": distinct_count,
                         "average_width": stat.get("avg_width"),
                         "correlation": stat.get("correlation"),
                         "most_common_values_json": _parse_pg_array(stat.get("most_common_vals")),
@@ -431,7 +479,7 @@ class DatabaseSurveyor:
                             summary=(
                                 f"Column {schema_name}.{table_name}.{column_name} profile: "
                                 f"null_frac={stat.get('null_frac')}, "
-                                f"n_distinct={stat.get('n_distinct')}"
+                                f"distinct_count={distinct_count}"
                             ),
                             analysis_step="DatabaseSchemaAndStats",
                             confidence=100,
@@ -440,7 +488,8 @@ class DatabaseSurveyor:
                                 "table": table_name,
                                 "column": column_name,
                                 "null_frac": stat.get("null_frac"),
-                                "n_distinct": stat.get("n_distinct"),
+                                "n_distinct": n_distinct_raw,
+                                "distinct_count": distinct_count,
                                 "avg_width": stat.get("avg_width"),
                                 "correlation": stat.get("correlation"),
                             },
