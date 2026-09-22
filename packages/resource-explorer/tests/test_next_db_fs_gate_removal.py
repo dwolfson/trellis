@@ -105,12 +105,15 @@ class TestPaneNeedsRepoBackendIsHonestNotBlanket:
         body = src[start:end]
         assert "paneNeedsRepoBackend('By analysis'" in body
 
-    def test_questions_pane_no_longer_has_its_own_separate_guard(self):
-        # The duplicate inline "Repos only, in /next" guard this pane used to
-        # carry independently of paneNeedsRepo() is gone, replaced by a call
-        # to the same shared helper everything else uses.
+    def test_questions_engine_no_longer_has_its_own_separate_guard(self):
+        # The duplicate inline "Repos only, in /next" guard this dispatcher
+        # used to carry independently of paneNeedsRepo() is gone, replaced by
+        # a call to the same shared helper everything else uses. It backs
+        # Scouting/Discovery/Assessment/Analysis/Enrichment/Curate, not just
+        # a "Questions" tab, so it names the actual stage dynamically rather
+        # than a fixed label.
         src = _app()
-        assert "paneNeedsRepoBackend('Questions checklist'" in src
+        assert "paneNeedsRepoBackend(stageDef?.label || 'This stage'" in src
 
 
 class TestAutomateNoLongerHardcodesRepo:

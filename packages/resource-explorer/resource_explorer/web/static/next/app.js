@@ -5077,11 +5077,15 @@ async function loadPane() {
   {
     // Deduplicated onto the shared helper (2026-09-22) rather than this
     // pane's own separate, independently-worded copy of the same gate — see
-    // paneNeedsRepoBackend's own comment for why the Questions checklist is
-    // in this list at all (the catalog function is generic; the route this
-    // pane calls and its has_data scoring are not, yet).
-    const blocked = paneNeedsRepoBackend('Questions checklist',
-      'the repo-only scouting-questions route and has_data scoring');
+    // paneNeedsRepoBackend's own comment for why this is in the list at all
+    // (the catalog function, question_catalog_reader.get_questions, IS
+    // resource-type-generic; the route this whole engine calls to reach it,
+    // GET /api/projects/{slug}/scouting-questions, and its has_data scoring
+    // are not, yet). This one dispatcher backs Scouting/Discovery/
+    // Assessment/Analysis/Enrichment/Curate — not just a "Questions" tab —
+    // so the message names the actual stage rather than a fixed label.
+    const blocked = paneNeedsRepoBackend(stageDef?.label || 'This stage',
+      'the repo-only scouting-questions route and has_data scoring behind the question-checklist engine');
     if (blocked) { el.innerHTML = blocked; bindSubTabs(); return; }
   }
 
