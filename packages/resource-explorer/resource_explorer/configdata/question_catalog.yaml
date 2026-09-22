@@ -2286,7 +2286,8 @@ database_questions:
   - Learn
   answering:
     kind: gap
-    analysis_ids: []
+    analysis_ids:
+    - nested_column_profile
     checks: []
     note: 'GAP: nested_column_profile (proposed) — semi-structured column contents are never sampled or
       shape-inferred.'
