@@ -600,6 +600,17 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         column_name               TEXT NOT NULL,
         null_fraction             REAL DEFAULT NULL,
         distinct_count            REAL DEFAULT NULL,
+        -- Why distinct_count is NULL, when it is. Designer review round 3
+        -- (§3, "the corrected distinct_count, and the blank the correction
+        -- produced"): `_resolve_n_distinct` in database_surveyor.py returns
+        -- None for four different reasons, and this row's own `state` stays
+        -- STATE_MEASURED because every other pg_stats field came back fine
+        -- — a row-level state cannot carry a per-field absence. Values are
+        -- database_surveyor.py's REASON_NOT_COLLECTED / REASON_NEVER_ANALYZED
+        -- / REASON_STATS_RESET, or NULL when distinct_count is itself
+        -- resolved. NULL here is silent on purpose: it means either
+        -- distinct_count is present, or this row predates this column.
+        distinct_count_reason     TEXT DEFAULT NULL,
         average_width             INTEGER DEFAULT NULL,
         correlation               REAL DEFAULT NULL,
         most_common_values_json   TEXT DEFAULT NULL,
@@ -933,6 +944,8 @@ _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], .
         # on every checkout, so the CREATE TABLE addition above is a no-op
         # there and this entry is what actually lands the column.
         ("sample_total_rows", "INTEGER DEFAULT NULL"),
+        # distinct_count_reason: same story, round 3 design review addition.
+        ("distinct_count_reason", "TEXT DEFAULT NULL"),
     )),
     # stats_reset: same story, same designer-review addition, same gap.
     ("database_table_activity", (
