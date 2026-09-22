@@ -1,8 +1,11 @@
 """Automate's pane in /next (PLAN-FINISH-REPOS.md item 4): pinning the real
 part of the port (subscription and schedule listing/toggling, against the
-same routes classic uses) and the honesty of the one deliberate gap
-(subscription creation, which rides on an Assessment/Analysis card neither
-of which is built in /next).
+same routes classic uses). Subscription CREATION used to be this module's
+one deliberate, honestly-named gap; as of re/next-automate-create-
+subscription it is real, but lives in app.js's Questions-checklist engine
+(a question row's "🔔 notify me" action), not in this file -- see
+`TestSubscriptionCreationNowLivesInTheQuestionsEngine` below, and
+test_next_notify_subscription.py for the creation flow itself.
 
 No browser verification happened for this file with a signed-in session --
 see docs/design-notes/ITEM-4-AUTOMATE-IMPLEMENTED.md for what was and was
@@ -115,20 +118,42 @@ class TestSchedulesAreReal:
         assert "deleteSchedule(entityType, entitySlug, analysisId)" in body
 
 
-class TestSubscriptionCreationIsHonestlyDeferred:
-    """The one real gap: creating a subscription rides on an Assessment/
-    Analysis card, and neither stage is built in /next. The pane must say
-    that specifically -- not a generic 'not built' -- and the link out must
-    actually work (same oldUiHref() every other deferred surface uses,
-    preserving the selected resource when there is one)."""
+class TestSubscriptionCreationNowLivesInTheQuestionsEngine:
+    """re/next-automate-create-subscription: creation is real now, but not
+    IN this module -- it hangs off the Questions-checklist engine's question
+    rows (app.js's `provenanceLine`/`openNotifyDialog`), since that is where
+    Assessment/Analysis actually live in /next (there is no card grid here to
+    attach a button to, and building a standalone form in this file would
+    have been exactly the half-built-feature outcome PLAN-FINISH-REPOS.md
+    warned against). This class pins that automate.js's own comment block
+    was corrected to say so, that the pane's own copy points at the real
+    action rather than the old dead end, and that automate.js itself still
+    contains no create form -- the previous version of this test class
+    pinned the opposite (creation deferred, `createSubscription` absent
+    everywhere); the absence-from-this-file half is still true, so it is
+    re-pinned here rather than dropped."""
 
-    def test_the_pane_names_the_specific_missing_piece_not_a_generic_gap(self):
+    def test_the_top_comment_no_longer_claims_creation_is_unbuilt(self):
         src = _automate_src()
-        assert "\"🔔 Notify me\" action" in src
-        assert "Assessment/Analysis" in src
-        assert "not built in /next yet" in src
+        assert "CREATING a subscription is now built too" in src
+        assert "CREATING a subscription is NOT built here" not in src
 
-    def test_it_links_out_via_the_shared_old_ui_href_helper(self):
+    def test_the_top_comment_names_the_real_attachment_point(self):
+        src = _automate_src()
+        assert "openNotifyDialog" in src
+        assert "provenanceLine" in src
+
+    def test_the_pane_points_at_the_question_row_action_not_a_dead_end(self):
+        src = _automate_src()
+        body = src[src.index("async function renderSubscriptions("):src.index(
+            "async function renderSchedules(")]
+        assert "🔔 notify me" in body
+        assert "question row" in body
+
+    def test_it_still_links_out_via_the_shared_old_ui_href_helper(self):
+        # Kept as the fallback for database/filesystem resources, which the
+        # Questions engine openNotifyDialog hangs off does not cover yet
+        # (state.resourceType !== 'repo' in app.js's loadPane()).
         app = _app()
         assert "export function oldUiHref() {" in app
         src = _automate_src()
@@ -139,11 +164,15 @@ class TestSubscriptionCreationIsHonestlyDeferred:
         assert "oldUiHref()" in src
 
     def test_no_create_subscription_form_exists_in_this_module(self):
-        # If a create form gets added later without updating this deferral
-        # copy, that is a real product decision -- this pins that it hasn't
-        # happened silently.
+        # The real creation logic lives in app.js (openNotifyDialog) and
+        # re-api.js (createSubscription), not here -- automate.js only reads
+        # subscriptions, it never writes one into existence. The comment
+        # block legitimately names classic's `_createSubscriptionFromCard`
+        # (which contains "createSubscription" as a substring), so this
+        # checks for an actual call/import instead of a bare substring.
         src = _automate_src()
-        assert "createSubscription" not in src
+        assert "await createSubscription(" not in src
+        assert "createSubscription }" not in src
         assert "CreateSubscriptionRequest" not in src
 
 

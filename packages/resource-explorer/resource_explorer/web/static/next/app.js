@@ -104,6 +104,7 @@ import {
   postDepthOfferOutcome,
   promoteMembers,
   getQuestions,
+  createSubscription,
   getScoutingOverview,
   listActivity,
   listAnalyses,
@@ -5545,6 +5546,19 @@ function provenanceLine(entry, i, lines, st) {
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
   }
 
+  // Automate (Part 4) — "🔔 Notify me" attached to the question row rather
+  // than to a card, since Assessment/Analysis have no card grid in /next
+  // (see automate.js's own comment block, and PLAN-FINISH-REPOS.md item 4).
+  // A subscription watches an ANALYSIS, not a question, and `analysis_ids`
+  // is not always 1:1 with a question (MIXED:/PARTIAL: answers can name
+  // several) — gated on the array rather than `primaryId` alone so a
+  // multi-analysis row still offers the action, and openNotifyDialog below
+  // makes the reader pick rather than silently subscribing to the first.
+  if ((entry.analysis_ids || []).length && st !== 'running') {
+    actions.push(`<button data-notify="${i}" class="cursor-pointer bg-transparent text-accent-ink underline"
+      title="Notify me (via RFA) when this changes on a future scheduled run — also set ⏱ Schedule in Automate, or this never fires">🔔 notify me</button>`);
+  }
+
   if (!bits.length && !actions.length) return '';
   return `<div class="ml-[22px] mt-[7px] text-provenance text-ink-muted">${
     [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>
@@ -5612,6 +5626,99 @@ function bindRowActions(el, entry, i) {
   const numbersBtn = el.querySelector(`[data-numbers="${i}"]`);
   numbersBtn?.addEventListener('click', () =>
     toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn));
+  el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
+}
+
+/**
+ * "🔔 Notify me" for a question row. Classic's own version
+ * (`_createSubscriptionFromCard` in index.html) fires straight from the
+ * button with no form — it can, because a card already names exactly one
+ * analysis_id. A question row cannot assume that: `analysis_ids` is not
+ * always 1:1 (a MIXED:/PARTIAL: answer can be produced by several), so this
+ * always shows a small dialog rather than ever guessing — a picker when
+ * there is more than one id, a single confirm when there is exactly one.
+ * Never silently subscribes to `analysis_ids[0]`, unlike `rerun`/
+ * `openRunChoice` above, which pick the first because re-running is
+ * idempotent and safe to under-target; a subscription is a standing watch
+ * on ONE analysis and picking the wrong one silently would be wrong, not
+ * just incomplete.
+ */
+async function openNotifyDialog(entry) {
+  const ids = entry.analysis_ids || [];
+  const slug = state.selectedSlug;
+  if (!ids.length || !slug) return;
+
+  // Friendly names when available, same source `openAnalysisPopover` and the
+  // "By analysis" section use (`getAnalysesIndex`) — falls back to the raw
+  // id for any id that index doesn't carry (e.g. a not-yet-run analysis),
+  // never blocks the dialog on this fetch failing.
+  let namesById = {};
+  try {
+    const idx = await getAnalysesIndex(slug);
+    namesById = Object.fromEntries(
+      (idx.analyses || []).map((r) => [r.analysis_id, r.name || r.analysis_id]));
+  } catch { /* names are a nicety; the ids alone still work */ }
+  const nameOf = (id) => namesById[id] || id;
+
+  const d = openDialog('🔔 Notify me', entry.question);
+  const body = d.querySelector('#wl-detail-body');
+  const pickerHtml = ids.length > 1
+    ? `<p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">This question is answered by
+         more than one analysis — pick the one to watch.</p>
+       <div class="mb-s2 flex flex-col gap-[4px]">
+         ${ids.map((id, n) => `<label class="inline-flex cursor-pointer items-center gap-[6px] text-caveat text-ink">
+             <input type="radio" name="notify-analysis" value="${esc(id)}" ${n === 0 ? 'checked' : ''}>
+             ${esc(nameOf(id))} <span class="font-mono text-ink-muted">${esc(id)}</span>
+           </label>`).join('')}
+       </div>`
+    : `<input type="hidden" id="notify-analysis-only" value="${esc(ids[0])}">
+       <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">Watching
+         <span class="font-mono">${esc(nameOf(ids[0]))}</span> for
+         <span class="font-mono">${esc(slug)}</span>.</p>`;
+  body.innerHTML = `
+    ${pickerHtml}
+    <label class="mb-[3px] block text-caveat text-ink-muted">Label</label>
+    <input id="notify-label" type="text" value="${esc(`${nameOf(ids[0])} changed`)}"
+      class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-answer text-ink">
+    <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">Delivered as an RFA the next time a
+      <em>scheduled</em> run of that analysis detects a change — set ⏱ Schedule for it on this
+      resource in Automate, or this never fires.</p>
+    <div id="notify-error" class="mb-s2 text-caveat text-state-warn"></div>
+    <div class="flex gap-s2">
+      <button id="notify-submit" type="button"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink">Subscribe</button>
+      <button data-act="close" type="button" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
+    </div>`;
+
+  if (ids.length > 1) {
+    body.querySelectorAll('input[name="notify-analysis"]').forEach((r) => r.addEventListener('change', () => {
+      body.querySelector('#notify-label').value = `${nameOf(r.value)} changed`;
+    }));
+  }
+
+  body.querySelector('#notify-submit').addEventListener('click', async () => {
+    const chosen = ids.length > 1
+      ? body.querySelector('input[name="notify-analysis"]:checked')?.value
+      : body.querySelector('#notify-analysis-only').value;
+    const errEl = body.querySelector('#notify-error');
+    if (!chosen) { errEl.textContent = 'Pick an analysis to watch.'; return; }
+    const label = body.querySelector('#notify-label').value.trim();
+    const btn = body.querySelector('#notify-submit');
+    btn.disabled = true;
+    btn.textContent = 'Subscribing…';
+    try {
+      // entity_type is 'repo' unconditionally: the Questions engine this
+      // dialog is attached to is itself gated to `state.resourceType ===
+      // 'repo'` a few lines up in loadPane() — there is no other value this
+      // row could carry today. See createSubscription's own doc comment.
+      await createSubscription('repo', slug, chosen, label);
+      closeCellDetail();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Subscribe';
+      errEl.textContent = err.message;
+    }
+  });
 }
 
 /**
