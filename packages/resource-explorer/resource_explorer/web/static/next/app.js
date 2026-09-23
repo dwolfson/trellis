@@ -68,11 +68,16 @@ import { openAdminPanel } from '/static/next/admin/index.js';
 // the `/from-list` bulk loader, and the inventory CSV export. Chrome-level
 // like worklist.js/rfa.js, not a stage module — see that file's own header
 // comment for why (SPEC-ACTIONABLE-AND-HONEST.md point 2). Reached from the
-// sidebar's `find-repos` action below, for `state.resourceType === 'repo'`
-// only; databases/filesystems keep the old-UI-link stub, since classic's
-// own discover/register flows for those resource types are not this file's
-// scope.
+// sidebar's `find-repos` action below, for `state.resourceType === 'repo'`.
 import { openFindReposDialog } from '/static/next/discovery-import.js';
+// Database server discovery — classic's real mechanism for databases
+// (register a server once, then server-side introspection via
+// POST /api/db-servers/{slug}/discover), ported for `state.resourceType
+// === 'db'` in the same `find-repos` action. Chrome-level, same placement
+// rule as discovery-import.js above. Filesystems still keep the
+// old-UI-link stub — classic's own filesystem registration flow is not
+// this file's scope yet.
+import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -1712,13 +1717,12 @@ function markKeyHtml() {
   </div>`;
 }
 
-// The find/discover action's stub (below, 'find-repos') is a single honest
-// placeholder for three genuinely different classic mechanisms -- GitHub
-// search + list-import for repos, server-side introspection
-// (POST /api/db-servers/{slug}/discover) for databases, and whatever
-// filesystem registration classic offers. Keeping one copy that always says
-// "repos" was quietly wrong on the DBs/FS tabs; this at least names the
-// right noun per tab until each gets its own real screen (see Backlog.md).
+// The find/discover action's title per resource type. Repos and databases
+// both now have real ports of classic's mechanisms (GitHub search +
+// list-import for repos via discovery-import.js; server-side introspection,
+// POST /api/db-servers/{slug}/discover, for databases via
+// db-server-discovery.js) — filesystem is the one that still falls through
+// to the old-UI-link stub below (see Backlog.md).
 const FIND_TITLE = {
   repo: 'Find and import candidate repos',
   db: 'Discover databases on a registered server',
@@ -2233,11 +2237,14 @@ function bindSidebar() {
     // column, not in the per-stage strip (SPEC-ACTIONABLE-AND-HONEST.md,
     // point 2). Repos: a real port (NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md)
     // -- GitHub search, the from-list bulk loader, and the inventory CSV
-    // export. Databases/filesystems keep the old-UI-link stub; classic's own
-    // per-server discover/register flows for those resource types are a
+    // export. Databases: a real port too -- register a server, then
+    // server-side introspection (POST /api/db-servers/{slug}/discover) to
+    // find and add its databases (db-server-discovery.js). Filesystem keeps
+    // the old-UI-link stub; classic's own filesystem registration flow is a
     // separate, not-yet-ported affordance.
     'find-repos': () => {
       if (state.resourceType === 'repo') { openFindReposDialog(); return; }
+      if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
       const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
       const d = openDialog(title, title);
       d.querySelector('#wl-detail-body').innerHTML = `
