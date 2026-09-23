@@ -4812,13 +4812,13 @@ ___
 User Questions
 
 ### Display Name
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ### Description
-Design §5.5 draws the line explicitly: primary/standby role, replicas, WAL archiving and extension-based backup tooling are catalog-observable, while last successful backup, tested restore and RPO/RTO are not. They come from an Enrichment "Backup and recovery" section, and the answer envelope must say which half answered.
+Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL archiving and extension-based backup tooling are catalog-observable, while last successful backup, tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and recovery" section, and the answer envelope must say which half answered.
 
 ### Summary
-These are the two resilience questions a data owner actually asks, and the two that nothing inside the database can answer.
+These are the two resilience questions a data owner actually asks, and the two that nothing inside the resource itself can answer.
 
 ### Usage
 Typically relevant during Analysis and Enrichment.
@@ -4828,7 +4828,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ___
 
@@ -4838,7 +4838,7 @@ ___
 Perspective::Governance
 
 ### Question Name
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ___
 
@@ -4848,7 +4848,7 @@ ___
 Perspective::Data Owner
 
 ### Question Name
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ___
 
@@ -4858,14 +4858,14 @@ ___
 Perspective::Admin
 
 ### Question Name
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ### Scope Reference
 Analysis
@@ -4878,7 +4878,7 @@ ___
 ## Link Element To Scope
 
 ### Target Element
-When was this database last backed up successfully, and has a restore ever been tested?
+When was this resource last backed up successfully, and has a restore ever been tested?
 
 ### Scope Reference
 Enrichment

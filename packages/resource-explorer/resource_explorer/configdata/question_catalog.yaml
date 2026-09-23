@@ -1374,12 +1374,12 @@ database_questions:
   - Explore
   - Select
   answering:
-    kind: analysis
-    analysis_ids:
-    - repository_health
-    - chaoss_metrics
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: repository_health + chaoss_metrics (contributor identities and concentration)
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for database resources (absent from analysis_catalog.yaml''s
+      database_analyses section).'
   answering_mechanism: Git Statistics
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
@@ -1567,8 +1567,7 @@ database_questions:
   - Deploy
   answering:
     kind: human
-    analysis_ids:
-    - security_scan
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
       queries.
@@ -1626,12 +1625,12 @@ database_questions:
   - Select
   - Certify
   answering:
-    kind: analysis
-    analysis_ids:
-    - license_classification
-    checks:
-    - license_classification:license_risk_tier
-    note: 'license_classification [checks: license_classification:license_risk_tier]'
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for database resources (absent from analysis_catalog.yaml''s database_analyses
+      section).'
   answering_mechanism: Code Analysis
   rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
     categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
@@ -2006,7 +2005,7 @@ database_questions:
     §5.5 — last successful backup and tested restore are NOT observable and are asked separately.'
   catalog_history: ''
   retired: false
-- question: When was this database last backed up successfully, and has a restore ever been tested?
+- question: When was this resource last backed up successfully, and has a restore ever been tested?
   stage: Analysis/Enrichment
   perspectives:
   - Governance
@@ -2022,12 +2021,12 @@ database_questions:
     - db_resilience
     checks: []
     note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
-      analysis).
+      analysis for databases; no filesystem-side catalog-observable half exists yet).
   answering_mechanism: Human-Supplied
-  rationale: 'Design §5.5 draws the line explicitly: primary/standby role, replicas, WAL archiving and
-    extension-based backup tooling are catalog-observable, while last successful backup, tested restore
-    and RPO/RTO are not. They come from an Enrichment "Backup and recovery" section, and the answer envelope
-    must say which half answered.'
+  rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
+    archiving and extension-based backup tooling are catalog-observable, while last successful backup,
+    tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
+    recovery" section, and the answer envelope must say which half answered.'
   catalog_history: ''
   retired: false
 - question: What kind of database is this — transactional, analytical, reference data, staging or a copy?
@@ -2577,12 +2576,12 @@ filesystem_questions:
   - Explore
   - Select
   answering:
-    kind: analysis
-    analysis_ids:
-    - repository_health
-    - chaoss_metrics
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: repository_health + chaoss_metrics (contributor identities and concentration)
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s
+      filesystem_analyses section).'
   answering_mechanism: Git Statistics
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
@@ -2770,8 +2769,7 @@ filesystem_questions:
   - Deploy
   answering:
     kind: human
-    analysis_ids:
-    - security_scan
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
       queries.
@@ -2829,12 +2827,12 @@ filesystem_questions:
   - Select
   - Certify
   answering:
-    kind: analysis
-    analysis_ids:
-    - license_classification
-    checks:
-    - license_classification:license_risk_tier
-    note: 'license_classification [checks: license_classification:license_risk_tier]'
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses
+      section).'
   answering_mechanism: Code Analysis
   rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
     categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
@@ -3078,7 +3076,7 @@ filesystem_questions:
     and the readiness question to hold together before a DigitalProduct is proposed.
   catalog_history: ''
   retired: false
-- question: When was this database last backed up successfully, and has a restore ever been tested?
+- question: When was this resource last backed up successfully, and has a restore ever been tested?
   stage: Analysis/Enrichment
   perspectives:
   - Governance
@@ -3090,16 +3088,15 @@ filesystem_questions:
   - Maintain
   answering:
     kind: human
-    analysis_ids:
-    - db_resilience
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
-      analysis).
+      analysis for databases; no filesystem-side catalog-observable half exists yet).
   answering_mechanism: Human-Supplied
-  rationale: 'Design §5.5 draws the line explicitly: primary/standby role, replicas, WAL archiving and
-    extension-based backup tooling are catalog-observable, while last successful backup, tested restore
-    and RPO/RTO are not. They come from an Enrichment "Backup and recovery" section, and the answer envelope
-    must say which half answered.'
+  rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
+    archiving and extension-based backup tooling are catalog-observable, while last successful backup,
+    tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
+    recovery" section, and the answer envelope must say which half answered.'
   catalog_history: ''
   retired: false
 - question: What is the grain of each table — one row per what?
@@ -3114,8 +3111,7 @@ filesystem_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids:
-    - grain_determination
+    analysis_ids: []
     checks: []
     note: 'GAP: grain_determination (proposed) — Egeria''s DataGrain and DataGrainAnnotation types exist,
       but no service or analysis populates them.'
@@ -3138,14 +3134,14 @@ filesystem_questions:
   - Certify
   - Remediate
   answering:
-    kind: analysis
-    analysis_ids:
-    - data_class_match
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+    note: 'GAP: data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
       value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
       per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
-      DRAFT, linked to its evidence via AssociatedAnnotation)'
+      DRAFT, linked to its evidence via AssociatedAnnotation) -- data_class_match is not a real analysis
+      for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses section).'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
     against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
@@ -3166,8 +3162,7 @@ filesystem_questions:
   - Remediate
   answering:
     kind: gap
-    analysis_ids:
-    - reference_data_match
+    analysis_ids: []
     checks: []
     note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
       or proposes a new set.'
@@ -3277,12 +3272,12 @@ dataset_questions:
   - Explore
   - Select
   answering:
-    kind: analysis
-    analysis_ids:
-    - repository_health
-    - chaoss_metrics
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: repository_health + chaoss_metrics (contributor identities and concentration)
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for dataset resources (absent from analysis_catalog.yaml''s
+      dataset_analyses section).'
   answering_mechanism: Git Statistics
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
@@ -3470,8 +3465,7 @@ dataset_questions:
   - Deploy
   answering:
     kind: human
-    analysis_ids:
-    - security_scan
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
       queries.
@@ -3529,12 +3523,12 @@ dataset_questions:
   - Select
   - Certify
   answering:
-    kind: analysis
-    analysis_ids:
-    - license_classification
-    checks:
-    - license_classification:license_risk_tier
-    note: 'license_classification [checks: license_classification:license_risk_tier]'
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for dataset resources (absent from analysis_catalog.yaml''s dataset_analyses
+      section).'
   answering_mechanism: Code Analysis
   rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
     categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
@@ -3791,14 +3785,14 @@ dataset_questions:
   - Certify
   - Remediate
   answering:
-    kind: analysis
-    analysis_ids:
-    - data_class_match
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+    note: 'GAP: data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
       value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
       per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
-      DRAFT, linked to its evidence via AssociatedAnnotation)'
+      DRAFT, linked to its evidence via AssociatedAnnotation) -- data_class_match is not a real analysis
+      for dataset resources (absent from analysis_catalog.yaml''s dataset_analyses section).'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
     against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
@@ -3838,12 +3832,12 @@ model_questions:
   - Explore
   - Select
   answering:
-    kind: analysis
-    analysis_ids:
-    - repository_health
-    - chaoss_metrics
+    kind: gap
+    analysis_ids: []
     checks: []
-    note: repository_health + chaoss_metrics (contributor identities and concentration)
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for model resources (absent from analysis_catalog.yaml''s
+      model_analyses section).'
   answering_mechanism: Git Statistics
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
@@ -4031,8 +4025,7 @@ model_questions:
   - Deploy
   answering:
     kind: human
-    analysis_ids:
-    - security_scan
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
       queries.
@@ -4090,12 +4083,12 @@ model_questions:
   - Select
   - Certify
   answering:
-    kind: analysis
-    analysis_ids:
-    - license_classification
-    checks:
-    - license_classification:license_risk_tier
-    note: 'license_classification [checks: license_classification:license_risk_tier]'
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for model resources (absent from analysis_catalog.yaml''s model_analyses
+      section).'
   answering_mechanism: Code Analysis
   rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
     categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)

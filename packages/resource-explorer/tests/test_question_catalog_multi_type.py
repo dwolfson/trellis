@@ -305,3 +305,129 @@ class TestKnownAnalysisIdsSpanEverySection:
     def test_ids_are_deduped(self, generator):
         ids = generator.KNOWN_ANALYSIS_IDS
         assert len(ids) == len(set(ids))
+
+
+class TestPerTypeAnalysisValidation:
+    """2026-09-23: `_load_known_analysis_ids()`'s union (above) is right for
+    classifying `kind` -- it must recognize an id from ANY resource type's
+    section, or a real `database_analyses` id classifies as `kind: unknown`
+    (that's the whole point of the class above). But `generate()` was using
+    that SAME union to decide whether an already-computed `analysis_ids` list
+    is valid when stamping a `*`/multi-type row into a *specific* type's
+    section -- so a repo-only id like `repository_health` (reads git
+    contributor history) "validated" straight into `database_questions`,
+    `filesystem_questions`, `dataset_questions` and `model_questions`, none of
+    which have git history. Found auditing the generated YAML against
+    `get_analyses(resource_type)`'s real per-type ids (~15 bad rows, see the
+    PR this landed with). These tests pin the fix: `_restrict_answering_to_type`
+    checks each type's OWN section (`KNOWN_ANALYSIS_IDS_BY_TYPE`), not the
+    union, and downgrades a now-empty `analysis`-kind entry to `gap` rather
+    than silently keeping an id that cannot answer for that type.
+    """
+
+    def _generated_for(self, generator, extra: dict):
+        fieldnames, rows = _rows()
+        row = {c: "" for c in fieldnames}
+        row.update(extra)
+        return yaml.safe_load(generator.generate(rows + [row]))
+
+    def test_a_repo_only_id_downgrades_to_gap_in_the_database_section(self, generator):
+        raw = self._generated_for(generator, {
+            "Question": "Who maintains this (hypothetical, repo-only id)?",
+            "Funnel Stage": "Scouting",
+            "Resource Types": "*",
+            "Answering Analysis": "repository_health",
+        })
+        entry = next(e for e in raw["database_questions"]
+                     if e["question"] == "Who maintains this (hypothetical, repo-only id)?")
+        assert entry["answering"]["kind"] == "gap"
+        assert entry["answering"]["analysis_ids"] == []
+        assert "repository_health" in entry["answering"]["note"]
+        assert "not a real analysis for database" in entry["answering"]["note"]
+
+    def test_the_same_row_stays_kind_analysis_in_the_repo_section(self, generator):
+        raw = self._generated_for(generator, {
+            "Question": "Who maintains this (hypothetical, repo-only id)?",
+            "Funnel Stage": "Scouting",
+            "Resource Types": "*",
+            "Answering Analysis": "repository_health",
+        })
+        entry = next(e for e in raw["repo_questions"]
+                     if e["question"] == "Who maintains this (hypothetical, repo-only id)?")
+        assert entry["answering"]["kind"] == "analysis"
+        assert entry["answering"]["analysis_ids"] == ["repository_health"]
+
+    def test_repository_health_really_is_repo_only(self):
+        """Pins the premise of the two tests above."""
+        cat = yaml.safe_load(
+            (ROOT / "resource_explorer" / "configdata" / "analysis_catalog.yaml").read_text()
+        )
+        assert "repository_health" not in {a["id"] for a in cat.get("database_analyses", [])}
+        assert "repository_health" not in {a["id"] for a in cat.get("filesystem_analyses", [])}
+
+    def test_an_id_valid_for_the_stamped_type_is_kept_and_not_downgraded(self, generator):
+        """A `*` row naming an id that DOES exist for a given type (here,
+        `schema_inventory`, database-only) must not be touched for that type
+        -- only ids absent from the type's own section get dropped."""
+        raw = self._generated_for(generator, {
+            "Question": "Which schemas exist (hypothetical, valid-for-type id)?",
+            "Funnel Stage": "Scouting",
+            "Resource Types": "database",
+            "Answering Analysis": "schema_inventory",
+        })
+        entry = next(e for e in raw["database_questions"]
+                     if e["question"] == "Which schemas exist (hypothetical, valid-for-type id)?")
+        assert entry["answering"]["kind"] == "analysis"
+        assert entry["answering"]["analysis_ids"] == ["schema_inventory"]
+
+    def test_a_non_analysis_kind_just_loses_the_inapplicable_id(self, generator):
+        """A `human`/`mixed`/etc. row never claimed the analysis alone answers
+        the question, so an out-of-type id is dropped from the structured
+        `analysis_ids` list without downgrading `kind` further -- there is
+        nothing to downgrade it TO."""
+        raw = self._generated_for(generator, {
+            "Question": "Does it fit our security posture (hypothetical)?",
+            "Funnel Stage": "Analysis/Enrichment",
+            "Resource Types": "database",
+            "Answering Analysis": (
+                "N/A — human-supplied via Enrichment, informed by security_scan findings."
+            ),
+        })
+        entry = next(e for e in raw["database_questions"]
+                     if e["question"] == "Does it fit our security posture (hypothetical)?")
+        assert entry["answering"]["kind"] == "human"
+        assert entry["answering"]["analysis_ids"] == []
+
+    def test_known_analysis_ids_by_type_has_one_entry_per_analyses_section(self, generator):
+        by_type = generator.KNOWN_ANALYSIS_IDS_BY_TYPE
+        assert "repository_health" in by_type["repo"]
+        assert "schema_inventory" in by_type["database"]
+        assert "filesystem_inventory" in by_type["filesystem"]
+        assert "schema_inventory" not in by_type["repo"]
+        assert "repository_health" not in by_type["database"]
+
+    def test_the_committed_catalog_names_no_out_of_type_analysis_id(self):
+        """Coverage guard: fails if ANY committed question entry, in ANY
+        non-repo section, names an `analysis_ids` entry that is not present
+        in that section's own `analysis_catalog.yaml` `<type>_analyses` list.
+        This is the exact bug class the tests above pin at the unit level --
+        this one guards the real, committed file so it cannot silently
+        recur through a future CSV edit that nobody re-audits by hand."""
+        from resource_explorer.resource_types import RESOURCE_TYPES
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        raw = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
+        offenders = []
+        for rt in RESOURCE_TYPES:
+            valid = {a["id"] for a in get_analyses(rt)}
+            for entry in raw.get(f"{rt}_questions", []):
+                bad = [
+                    aid for aid in (entry["answering"].get("analysis_ids") or [])
+                    if aid not in valid
+                ]
+                if bad:
+                    offenders.append((rt, entry["question"], bad))
+        assert not offenders, (
+            f"question(s) name an analysis_id that does not exist for their "
+            f"resource type: {offenders}"
+        )

@@ -114,7 +114,53 @@ def _load_known_analysis_ids() -> list[str]:
     return ids
 
 
+def _load_known_analysis_ids_by_type() -> dict[str, set[str]]:
+    """Per-resource-type analysis ids, keyed by resource type (not by the
+    `<type>_analyses` section name), read from the same catalog as
+    `_load_known_analysis_ids()` above.
+
+    That function answers "is this id known to ANY resource type" — needed so
+    `_parse_answering()` classifies `kind` correctly no matter which type a row
+    ends up applying to (design §1.1 item 1: reading only `repo_analyses` made
+    a real `database_analyses` id like `schema_inventory` classify as
+    `kind: unknown`). But it was *also* the check `generate()` used when
+    stamping a `*`/multi-type row's already-computed `analysis_ids` into each
+    type's own section — which answers a different question ("is this id known
+    to database specifically") and the union cannot answer it. That gap is
+    what let `repository_health`/`chaoss_metrics` (repo-only: they read git
+    contributor history) "validate" straight into `database_questions`,
+    `filesystem_questions`, `dataset_questions` and `model_questions`, none of
+    which have git history to read — found 2026-09-23 auditing the generated
+    YAML against `get_analyses(resource_type)`'s real per-type ids. This is
+    the per-type index `generate()` needs to catch that: an id absent from
+    `resource_type`'s own section is not valid for `resource_type`, full stop,
+    regardless of how many other sections it appears in.
+
+    `dataset`/`model` have no section in analysis_catalog.yaml yet (§13 Phase
+    0 item 4 added them to the vocabulary with no surveyor behind them) —
+    they simply get an empty set here, which is correct: no analysis exists
+    for either type today, so every `analysis`-kind row lands as `gap` for
+    them until one is built.
+    """
+    if not _ANALYSIS_CATALOG_PATH.exists():
+        raise FileNotFoundError(
+            f"analysis catalog not found at {_ANALYSIS_CATALOG_PATH}; the "
+            f"question catalog cannot be generated without it."
+        )
+    cat = yaml.safe_load(_ANALYSIS_CATALOG_PATH.read_text()) or {}
+    by_type: dict[str, set[str]] = {}
+    for key, section in cat.items():
+        if not key.endswith(_ANALYSES_KEY_SUFFIX) or key == _ANALYSES_KEY_SUFFIX:
+            continue
+        resource_type = key[: -len(_ANALYSES_KEY_SUFFIX)]
+        by_type[resource_type] = {
+            a["id"] for a in (section or []) if a.get("id") and a.get("action") != "publish"
+        }
+    return by_type
+
+
 KNOWN_ANALYSIS_IDS = _load_known_analysis_ids()
+KNOWN_ANALYSIS_IDS_BY_TYPE = _load_known_analysis_ids_by_type()
 
 
 # Purpose vocabulary — the controlled kinds from
@@ -297,6 +343,50 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
     return {"kind": kind, "analysis_ids": analysis_ids, "checks": checks, "note": note}
 
 
+def _restrict_answering_to_type(answering: dict, resource_type: str) -> None:
+    """Drop analysis ids/checks from `answering` that are not real for
+    `resource_type`, downgrading `kind: analysis` to `kind: gap` if that
+    empties it.
+
+    Mutates `answering` in place; caller passes a deep copy so this cannot
+    leak across a cross-type row's other stamped entries. `analysis_ids` and
+    `checks` were computed once per CSV row against the catalog-wide union
+    (`KNOWN_ANALYSIS_IDS`) so `kind` classifies correctly regardless of which
+    types the row applies to — that computation is still correct and is left
+    alone. What was missing is this second, per-type pass at stamping time:
+    an id valid for one type is not automatically valid for another, and a
+    `*`/multi-type row was copying the SAME list into every type's section
+    unchecked.
+
+    Other kinds (`human`, `mixed`, `partial`, `gap`, `direct`, `chart`,
+    `unknown`) never claimed the analysis alone answers the question, so
+    there is nothing to downgrade for them — they just lose the inapplicable
+    id from the structured `analysis_ids`/`checks` lists. `note` (the CSV's
+    verbatim prose) is left untouched in that case; a `gap` note already
+    reads as "not built", and a `human`/`mixed` note mentioning an
+    out-of-type analysis as context (e.g. "informed by security_scan
+    findings") is not a false claim of an answer, just informational text
+    that stops being backed by a structured id.
+    """
+    valid = KNOWN_ANALYSIS_IDS_BY_TYPE.get(resource_type, set())
+    original_ids = answering["analysis_ids"]
+    dropped = [aid for aid in original_ids if aid not in valid]
+    if not dropped:
+        return
+    answering["analysis_ids"] = [aid for aid in original_ids if aid in valid]
+    answering["checks"] = [
+        c for c in answering["checks"] if c.split(":", 1)[0] in valid
+    ]
+    if answering["kind"] == "analysis" and not answering["analysis_ids"]:
+        answering["kind"] = "gap"
+        plural = "is" if len(dropped) == 1 else "are"
+        answering["note"] = (
+            f"GAP: {answering['note']} -- {' + '.join(dropped)} {plural} not a "
+            f"real analysis for {resource_type} resources (absent from "
+            f"analysis_catalog.yaml's {resource_type}_analyses section)."
+        )
+
+
 def generate(rows: list[dict]) -> str:
     known_checks = _load_known_checks()
     # resource_type -> entries, in first-seen order. A type appears as a key
@@ -334,7 +424,9 @@ def generate(rows: list[dict]) -> str:
             # types would then hand their readers the same mutable entry. A
             # cross-type question is authored once and rendered per type; the
             # YAML should read that way too.
-            by_type.setdefault(resource_type, []).append(copy.deepcopy(entry))
+            type_entry = copy.deepcopy(entry)
+            _restrict_answering_to_type(type_entry["answering"], resource_type)
+            by_type.setdefault(resource_type, []).append(type_entry)
 
     header = (
         "# Question checklist catalog — generated by\n"
