@@ -1247,6 +1247,103 @@ class ProjectRegistry:
             conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
         log.info("registry: added user_id to %s and widened its primary key", table)
 
+    def _migrate_repo_dispositions_to_entity_key(self, conn) -> None:
+        """Widen `repo_dispositions`' primary key from `github_url` alone to
+        `(entity_type, entity_slug)` — the schema half of generalizing
+        disposition to database/filesystem resources (Backlog.md,
+        "Disposition is NOT fixed here", 2026-09-22). No-op once
+        `entity_slug` already exists: every run after the first, and every
+        freshly-created database (the CREATE TABLE just above already
+        declares the new shape).
+
+        Backfill (every pre-migration row is `entity_type='repo'`):
+        `entity_slug` is the row's own `project_slug` when non-empty — the
+        repo's real, already-resolved slug, which can legitimately differ
+        from a github_url-derived guess (a manual slug override, or a
+        collision-avoidance rename — confirmed live in the shared dev
+        registry: `odpi/egeria`'s row already carries `project_slug=
+        'egeria_git'`, not the `_url_to_slug`-derived `'egeria'`). For the
+        rarer never-imported candidate (`project_slug` `''` — 1 of 20 rows
+        in the shared dev registry as of 2026-09-22), fall back to the same
+        `_url_to_slug` derivation `org_importer.py` already uses for a
+        candidate's entity_slug elsewhere (`resource_working_set`/
+        `activity_log`) — see `add()` for what reconciles this if that repo
+        is later imported under a *different* slug.
+        """
+        existing = self._get_table_columns(conn, "repo_dispositions")
+        if not existing or "entity_slug" in existing:
+            return
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        conn.execute("ALTER TABLE repo_dispositions ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'repo'")
+        conn.execute("ALTER TABLE repo_dispositions ADD COLUMN entity_slug TEXT NOT NULL DEFAULT ''")
+        rows = conn.execute("SELECT github_url, project_slug FROM repo_dispositions").fetchall()
+        for row in rows:
+            slug = row["project_slug"] or _url_to_slug(row["github_url"])
+            conn.execute(
+                "UPDATE repo_dispositions SET entity_slug = ? WHERE github_url = ?",
+                (slug, row["github_url"]),
+            )
+        if conn.is_postgres:
+            conn.execute("ALTER TABLE repo_dispositions DROP CONSTRAINT IF EXISTS repo_dispositions_pkey")
+            conn.execute("ALTER TABLE repo_dispositions ADD PRIMARY KEY (entity_type, entity_slug)")
+        else:
+            tmp = "repo_dispositions__entity_key_migration"
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            conn.execute(f"""
+                CREATE TABLE {tmp} (
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL,
+                    github_url   TEXT DEFAULT '',
+                    disposition  TEXT NOT NULL DEFAULT 'undecided',
+                    reason       TEXT DEFAULT '',
+                    decided_by   TEXT DEFAULT '',
+                    decided_at   TEXT NOT NULL,
+                    project_slug TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
+            conn.execute(
+                f"INSERT INTO {tmp} (entity_type, entity_slug, github_url, disposition, "
+                "reason, decided_by, decided_at, project_slug) "
+                "SELECT entity_type, entity_slug, github_url, disposition, reason, "
+                "decided_by, decided_at, project_slug FROM repo_dispositions"
+            )
+            conn.execute("DROP TABLE repo_dispositions")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO repo_dispositions")
+        log.info("registry: widened repo_dispositions primary key to (entity_type, entity_slug)")
+
+    def _migrate_repo_disposition_history_to_entity_key(self, conn) -> None:
+        """Backfill `entity_type`/`entity_slug` on `repo_disposition_history`
+        — the append-only companion to `repo_dispositions` above. No PK
+        change needed here (it's keyed on its own `id`, never on
+        `github_url`), so this is a plain backfill, not a rebuild.
+
+        Prefers the slug `repo_dispositions` already resolved for a given
+        `github_url` (keeps history consistent with the current-state row
+        for the same repo); falls back to the same url-derived slug for a
+        `github_url` that only ever appears in history (its current-state
+        row was since deleted, or somehow never existed)."""
+        existing = self._get_table_columns(conn, "repo_disposition_history")
+        if not existing or "entity_slug" in existing:
+            return
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        conn.execute("ALTER TABLE repo_disposition_history ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'repo'")
+        conn.execute("ALTER TABLE repo_disposition_history ADD COLUMN entity_slug TEXT NOT NULL DEFAULT ''")
+        current = {
+            r["github_url"]: r["entity_slug"]
+            for r in conn.execute("SELECT github_url, entity_slug FROM repo_dispositions").fetchall()
+        }
+        rows = conn.execute("SELECT id, github_url FROM repo_disposition_history").fetchall()
+        for row in rows:
+            slug = current.get(row["github_url"]) or _url_to_slug(row["github_url"])
+            conn.execute(
+                "UPDATE repo_disposition_history SET entity_slug = ? WHERE id = ?",
+                (slug, row["id"]),
+            )
+        log.info("registry: backfilled repo_disposition_history.entity_type/entity_slug")
+
     def _search_path_schema(self) -> str:
         """Schema named by the connection URL's `options=-csearch_path=<name>`
         query parameter; `resource_explorer` when the URL does not pin one."""
@@ -2743,7 +2840,7 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_egeria_call_timings_call "
                 "ON egeria_call_timings(call_name, kind)"
             )
-            # Repo triage disposition — undecided (default) / tracking /
+            # Resource triage disposition — undecided (default) / tracking /
             # investigating / recommended / using / abandoned / ignored.
             # `recommended` and `using` are both positive terminal states,
             # sitting alongside the negative terminal states
@@ -2752,41 +2849,72 @@ class ProjectRegistry:
             # counterpart to "decided against it"; `using` added later for
             # the stronger signal that the org is already actively using
             # the resource or knows of its use elsewhere in the org.
-            # Keyed by github_url (not project_slug)
-            # so it covers both a never-imported discovery-search candidate
-            # and an already-registered repo with the same row ("Discover
-            # repos to scout" plan, D10). One row per github_url — upsert,
-            # not append-only, since there's only ever one *current* decision.
+            #
+            # Keyed by (entity_type, entity_slug) — generalized 2026-09-22
+            # (Backlog.md, "Disposition is NOT fixed here") from a
+            # github_url-only PK, joining the same convention every other
+            # entity-family table already uses (see `_ENTITY_SLUG_TABLES`
+            # below). `github_url` stays as a plain column, kept for
+            # entity_type='repo' rows only — it is still how a repo's
+            # disposition gets set/read (see `set_disposition`), just no
+            # longer the identity the table is keyed on; database/
+            # filesystem rows leave it ''.
+            #
+            # entity_slug for a repo is its Project's real slug once
+            # imported (which can legitimately differ from a github_url-
+            # derived guess — a manual slug override, or a collision-
+            # avoidance rename), or a github_url-derived slug for a
+            # never-imported discovery-search candidate ("Discover repos to
+            # scout" plan, D10) — same derivation `org_importer._url_to_slug`
+            # already uses for a candidate's entity_slug elsewhere
+            # (resource_working_set/activity_log). `add()` reconciles a
+            # candidate's disposition row onto the real slug at import time,
+            # for the rarer case where they differ (see `add()`'s docstring
+            # / `_reconcile_disposition_on_import`).
+            #
+            # One row per (entity_type, entity_slug) — upsert, not
+            # append-only, since there's only ever one *current* decision.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS repo_dispositions (
-                    github_url   TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL,
+                    github_url   TEXT DEFAULT '',
                     disposition  TEXT NOT NULL DEFAULT 'undecided',
                     reason       TEXT DEFAULT '',
                     decided_by   TEXT DEFAULT '',
                     decided_at   TEXT NOT NULL,
-                    project_slug TEXT DEFAULT ''
+                    project_slug TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            self._migrate_repo_dispositions_to_entity_key(conn)
             # Append-only companion to repo_dispositions above — that table
-            # is upsert-only (one row per github_url, only the *current*
+            # is upsert-only (one row per entity, only the *current*
             # decision), so it can't answer "what was the history of
-            # decisions on this repo." Every set_disposition() call writes
-            # here too, in addition to upserting the current-state row
-            # (Scouting workflow redesign plan, D3/D6 — the Disposition
+            # decisions on this resource." Every set_disposition() call
+            # writes here too, in addition to upserting the current-state
+            # row (Scouting workflow redesign plan, D3/D6 — the Disposition
             # sub-tab's timeline view reads this).
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS repo_disposition_history (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    github_url   TEXT NOT NULL,
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL DEFAULT '',
+                    github_url   TEXT DEFAULT '',
                     disposition  TEXT NOT NULL,
                     reason       TEXT DEFAULT '',
                     decided_by   TEXT DEFAULT '',
                     decided_at   TEXT NOT NULL
                 )
             """)
+            self._migrate_repo_disposition_history_to_entity_key(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_disposition_history_entity "
+                "ON repo_disposition_history(entity_type, entity_slug, decided_at)"
             )
             # DepthOffer (designer, 2026-09-13): the outcome of the /next
             # pane's "run these never-run analyses" offer, recorded on the
@@ -4281,6 +4409,65 @@ class ProjectRegistry:
                 )""",
                 data,
             )
+        if project.github_url:
+            self._reconcile_disposition_on_import(project.github_url, data["slug"])
+
+    def _reconcile_disposition_on_import(self, github_url: str, real_slug: str) -> None:
+        """A repo's disposition can be set before it's ever imported (a
+        discovery-search candidate), keyed provisionally by a github_url-
+        derived slug (`resolve_repo_entity_slug`'s fallback). If it's later
+        imported under a genuinely different slug — a manual override, or a
+        collision-avoidance rename — that provisional row is now orphaned:
+        nothing at the real slug, and a stale one still sitting under the
+        guess. Re-key it here, at the one place every import path (org
+        importer, CLI, manual "add project") funnels through.
+
+        A no-op in the overwhelmingly common case (no row was ever set for
+        this repo pre-import, or the guessed slug already matches). Merges
+        rather than overwrites if a row somehow already exists at
+        real_slug too (shouldn't happen — real_slug wasn't registered a
+        moment ago — but favor the already-real row over the guess rather
+        than raise, since this runs inside `add()`'s success path and a
+        disposition mismatch is not a reason to fail the import)."""
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        guessed_slug = _url_to_slug(github_url)
+        if guessed_slug == real_slug:
+            return
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                (guessed_slug,),
+            ).fetchone()
+            if not existing:
+                return
+            real_exists = conn.execute(
+                "SELECT 1 FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                (real_slug,),
+            ).fetchone()
+            if real_exists:
+                # The real slug already has its own disposition row (set
+                # directly against it, somehow, before this import) — leave
+                # it alone and drop the stale guess rather than clobber it.
+                conn.execute(
+                    "DELETE FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                    (guessed_slug,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE repo_dispositions SET entity_slug = ?, project_slug = ? "
+                    "WHERE entity_type = 'repo' AND entity_slug = ?",
+                    (real_slug, real_slug, guessed_slug),
+                )
+            conn.execute(
+                "UPDATE repo_disposition_history SET entity_slug = ? "
+                "WHERE entity_type = 'repo' AND entity_slug = ?",
+                (real_slug, guessed_slug),
+            )
+        log.info(
+            "registry: reconciled disposition for %s from provisional slug '%s' to real slug '%s'",
+            github_url, guessed_slug, real_slug,
+        )
 
     @staticmethod
     def _normalize_slug(slug: str) -> str:
@@ -4646,6 +4833,13 @@ class ProjectRegistry:
         "working_set_members", "notification_subscriptions",
         "architecture_component_verdicts", "architecture_materialized_components",
         "architecture_materialized_blueprints", "architecture_materialized_ports",
+        # Joined this list 2026-09-22, when disposition's PK generalized from
+        # github_url alone to (entity_type, entity_slug) — see
+        # `_migrate_repo_dispositions_to_entity_key`. `repo_dispositions`
+        # ALSO keeps its own project_slug-column UPDATE just below (a
+        # separate, informational field, not the key), since that predates
+        # and is independent of this list.
+        "repo_dispositions", "repo_disposition_history",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,
@@ -6824,60 +7018,121 @@ class ProjectRegistry:
         queried as '.../repo' (and vice versa)."""
         return url.lower().rstrip("/").removesuffix(".git")
 
+    def resolve_repo_entity_slug(self, github_url: str) -> str:
+        """The entity_slug a repo's disposition is keyed on, for a given
+        github_url — the project's real slug if it has been imported
+        (which can legitimately differ from a url-derived guess: a manual
+        slug override, or a collision-avoidance rename), else the same
+        url-derived slug `org_importer.py`'s `_url_to_slug` already uses for
+        a not-yet-imported candidate elsewhere (`resource_working_set`/
+        `activity_log`). Exposed as its own method (not folded into
+        `set_disposition`) so `add()` can call it too, to reconcile a
+        candidate's disposition row onto the real slug at import time when
+        the two differ.
+
+        Normalizes the URL before deriving the fallback slug —
+        `_url_to_slug` (unlike this class's own `_normalize_github_url`)
+        does not strip a `.git` suffix, so '.../bar.git' and '.../bar'
+        would otherwise resolve to different slugs ('bar_git' vs 'bar') for
+        what is the same repo."""
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        project = self.get_by_github_url(github_url)
+        return project.slug if project else _url_to_slug(self._normalize_github_url(github_url))
+
     def set_disposition(
         self, github_url: str, disposition: str,
         reason: str = "", decided_by: str = "", resource_slug: str = "",
     ) -> None:
-        """Upsert the current triage disposition for a repo — one row per
-        github_url, overwriting any prior decision (unlike the append-only
-        findings/metrics tables, there's only ever one *current* disposition)
-        — and append a row to repo_disposition_history so the Disposition
-        sub-tab can show a real timeline, not just the latest value
-        ("Discover repos to scout" plan, D10; Scouting workflow redesign
-        plan, D3/D6). Applies whether or not the repo has been imported yet —
-        project_slug is best-effort context, not required."""
+        """Upsert the current triage disposition for a repo — repo-specific
+        convenience over `set_disposition_for_entity` (entity_type='repo',
+        entity_slug=`resolve_repo_entity_slug(github_url)`). Applies whether
+        or not the repo has been imported yet — project_slug is best-effort
+        context, not required. Kept github_url-in, github_url-out rather
+        than folded away once the underlying table generalized
+        (Backlog.md, "Disposition is NOT fixed here", 2026-09-22): a repo's
+        stable identity really is its github_url (import can rename its
+        slug, `rename_project_slug` can rename it again later), so every
+        one of this method's ~20 existing callers already has the right
+        identifier in hand and gains nothing from computing a slug
+        themselves that this method computes once, correctly, either way."""
         key = self._normalize_github_url(github_url)
-        decided_at = datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO repo_dispositions
-                       (github_url, disposition, reason, decided_by, decided_at, project_slug)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(github_url) DO UPDATE SET
-                       disposition = excluded.disposition,
-                       reason = excluded.reason,
-                       decided_by = excluded.decided_by,
-                       decided_at = excluded.decided_at,
-                       project_slug = excluded.project_slug""",
-                (key, disposition, reason, decided_by, decided_at, resource_slug),
-            )
-            conn.execute(
-                """INSERT INTO repo_disposition_history
-                       (github_url, disposition, reason, decided_by, decided_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (key, disposition, reason, decided_by, decided_at),
-            )
+        entity_slug = self.resolve_repo_entity_slug(github_url)
+        self.set_disposition_for_entity(
+            "repo", entity_slug, disposition,
+            reason=reason, decided_by=decided_by,
+            github_url=key, project_slug=resource_slug,
+        )
 
     def get_disposition(self, github_url: str) -> dict | None:
         """The current disposition for a repo, or None if nobody has ever
         decided on it (callers should treat that the same as "undecided")."""
-        key = self._normalize_github_url(github_url)
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM repo_dispositions WHERE github_url = ?", (key,)
-            ).fetchone()
-        return dict(row) if row else None
+        return self.get_disposition_for_entity("repo", self.resolve_repo_entity_slug(github_url))
 
     def get_disposition_history(self, github_url: str) -> list[dict]:
         """Every disposition ever set for this repo, oldest first — backs
         the Disposition sub-tab's timeline view. `depth_offer` comes back
         parsed (a dict) or None — never the raw JSON string."""
-        key = self._normalize_github_url(github_url)
+        return self.get_disposition_history_for_entity("repo", self.resolve_repo_entity_slug(github_url))
+
+    def set_disposition_for_entity(
+        self, entity_type: str, entity_slug: str, disposition: str,
+        reason: str = "", decided_by: str = "", github_url: str = "", project_slug: str = "",
+    ) -> None:
+        """Upsert the current triage disposition for any entity — one row
+        per (entity_type, entity_slug), overwriting any prior decision
+        (unlike the append-only findings/metrics tables, there's only ever
+        one *current* disposition) — and append a row to
+        repo_disposition_history so the Disposition sub-tab can show a real
+        timeline, not just the latest value ("Discover repos to scout"
+        plan, D10; Scouting workflow redesign plan, D3/D6). This is the
+        generalized primitive (Backlog.md, "Disposition is NOT fixed
+        here", 2026-09-22) — `database`/`filesystem` callers use this
+        directly; repo callers go through `set_disposition`, which resolves
+        `entity_slug` and always passes `entity_type='repo'`."""
+        decided_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO repo_dispositions
+                       (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at, project_slug)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                       github_url = excluded.github_url,
+                       disposition = excluded.disposition,
+                       reason = excluded.reason,
+                       decided_by = excluded.decided_by,
+                       decided_at = excluded.decided_at,
+                       project_slug = excluded.project_slug""",
+                (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at, project_slug),
+            )
+            conn.execute(
+                """INSERT INTO repo_disposition_history
+                       (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at),
+            )
+
+    def get_disposition_for_entity(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The current disposition for any entity, or None if nobody has
+        ever decided on it (callers should treat that the same as
+        "undecided")."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM repo_dispositions WHERE entity_type = ? AND entity_slug = ?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_disposition_history_for_entity(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """Every disposition ever set for this entity, oldest first — backs
+        the Disposition sub-tab's timeline view. `depth_offer` comes back
+        parsed (a dict) or None — never the raw JSON string."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT disposition, reason, decided_by, decided_at, depth_offer "
-                "FROM repo_disposition_history WHERE github_url = ? ORDER BY decided_at ASC",
-                (key,),
+                "FROM repo_disposition_history WHERE entity_type = ? AND entity_slug = ? "
+                "ORDER BY decided_at ASC",
+                (entity_type, entity_slug),
             ).fetchall()
         result = []
         for r in rows:

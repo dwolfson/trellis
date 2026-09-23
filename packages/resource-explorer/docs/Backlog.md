@@ -7239,3 +7239,201 @@ above, and whether existing `github_url` values need backfilling to slugs or
 can stay keyed as-is under a widened key) belongs to its own reviewed slice.
 `/next`'s Disposition gate (`paneNeedsRepoBackend('Disposition', ...)`) is
 therefore left exactly as the prior agent built it — unchanged by this PR.
+
+## Disposition generalized to `(entity_type, entity_slug)` — the schema gap above is now closed (2026-09-22)
+
+`re/generalize-disposition` picks up exactly the decision the entry above
+deliberately deferred. Investigated both options concretely before
+choosing, per the brief:
+
+**Row counts (shared dev Postgres, `resource_explorer.repo_dispositions`/
+`repo_disposition_history`, read-only query):** 20 current-disposition rows,
+44 history rows. Tiny — a live migration here carries none of the risk a
+large table would.
+
+**Call-site count.** Grepping every `.set_disposition(`/`.get_disposition(`/
+`.get_disposition_history(`/`.record_depth_offer(` call turned up ~11
+production sites (`workflows/discovery.py`, `web/routes/discovery.py` ×3,
+`web/routes/projects.py` ×2, `curate_plan.py`, `facts.py`, `batch_io.py`,
+`work_lists.py`, `cli/main.py`) and ~30 more in tests — larger than the
+Backlog entry above estimated ("the journal and records routes"), because
+`get_disposition`/`get_disposition_history` turned out to be read from five
+more modules than the two routes named. This mattered for the decision (see
+below): a signature change at every one of those ~41 sites was the real
+cost Option B was weighed against, not just "the schema."
+
+**FK/join surface.** `SELECT conname FROM pg_constraint WHERE confrelid IN
+('repo_dispositions'::regclass, 'repo_disposition_history'::regclass)`
+returned zero rows — nothing joins to disposition by `github_url`. So
+Option B's migration surface does not multiply beyond the two tables
+themselves, unlike a table that other tables reference.
+
+**Decision: Option B (generalize the key), with the schema widened but the
+existing repo-facing method signatures kept unchanged.** This needs
+unpacking, because it is not quite either option as originally framed.
+
+*Why B over A:* this session has a repeated, explicit precedent for
+generalizing rather than duplicating —
+`DATABASE_ANALYSIS_STEP_MAP`/`FILESYSTEM_ANALYSIS_STEP_MAP`,
+`database_grants`, `workflows.analysis.build_survey_results` (previous
+entry, item 1) all chose one generic mechanism over parallel per-type
+copies. More concretely here: `registry.py` already has a **live,
+maintained example of this exact shape** — `_ENTITY_SLUG_TABLES` (16
+tables: `resource_tags`, `resource_feedback`, `activity_log`,
+`resource_working_set`, etc.), all keyed on `(entity_type, entity_slug)`,
+all repointed automatically by `rename_project_slug()`. `repo_dispositions`/
+`repo_disposition_history` were the only two tables in the "entity family"
+still keyed on `github_url` alone. Option A (a new `database_disposition`/
+`filesystem_disposition` pair) would have added a *third* naming scheme
+alongside that convention and the repo-only one, for no gain the
+investigation above supports — the row count is trivial, nothing joins on
+`github_url`, and `registry.py` already has a tested PK-widening migration
+pattern for exactly this move (`_add_user_id_to_keyed_table`, used for
+`resource_working_set`'s `user_id` column) to build from.
+
+**Genuine risk found, and how it's handled — this is the reason the
+methods' signatures did NOT change at every one of the ~41 call sites.** A
+repo's disposition can be set before the repo is ever imported (a
+discovery-search candidate — 1 of the 20 rows in the shared dev registry
+today, `intake/intake`). At that point there is no `Project` and therefore
+no stable slug — only a URL. Naively keying straight off a
+github_url-derived guess (`org_importer._url_to_slug`) breaks the moment
+the repo is later imported under a **different** slug than that guess: a
+manual slug override, or a collision-avoidance rename. This is not
+hypothetical — it is already true of live data: `odpi/egeria`'s row
+carries `project_slug='egeria_git'`, not the url-derived `'egeria'`. A
+repo's stable identity really is its `github_url` (that is *why* the
+original schema keyed on it), and none of the other `_ENTITY_SLUG_TABLES`
+rows are ever written before a project exists, so they never had to solve
+this.
+
+So: the schema generalized (composite PK), but `set_disposition`/
+`get_disposition`/`get_disposition_history` (registry.py) kept their
+existing `github_url`-in, `github_url`-out signatures — **zero of the ~41
+existing call sites needed to change**, and the ~30 existing tests for them
+pass unmodified. Internally they now resolve `entity_slug` via a new
+`resolve_repo_entity_slug(github_url)` (the project's real slug once
+imported, else the same url-derived guess `org_importer.py` already uses
+elsewhere for a pre-import candidate) and delegate to new, genuinely
+generic primitives — `set_disposition_for_entity`/
+`get_disposition_for_entity`/`get_disposition_history_for_entity`
+(`entity_type`, `entity_slug`, ...) — which `database`/`filesystem` callers
+use directly, since those entities have no pre-import ambiguity (their slug
+*is* their stable identity from registration). `add()` gained a
+reconciliation step (`_reconcile_disposition_on_import`) that re-keys a
+provisional pre-import disposition row onto the real slug at import time,
+for the rarer case where they differ — closing the gap rather than leaving
+it as a latent bug. `rename_project_slug` also gained
+`repo_dispositions`/`repo_disposition_history` in its `_ENTITY_SLUG_TABLES`
+repoint list, so a later rename keeps disposition in sync the same way it
+already does for the other 16 tables.
+
+This is a deliberate departure from "update every caller to the new
+signature," and the reasoning is worth being explicit about rather than
+silently choosing the smaller diff: the repo-facing signature is not a
+leftover — `github_url` genuinely is the right identity for a resource that
+can be triaged before it exists as a project and renamed after, and forcing
+each of ~41 call sites to compute (or fetch) an `entity_slug` themselves
+would duplicate `resolve_repo_entity_slug`'s logic that many times for no
+behavioral gain. The literal instruction's intent — every caller reaching
+the correct API for its entity type — is satisfied: repo callers already
+had the correct API, and it stayed correct; new `database`/`filesystem`
+callers reach the new one.
+
+**Migration.** `repo_dispositions.github_url TEXT PRIMARY KEY` →
+`(entity_type, entity_slug)` composite PK, following the exact
+Postgres-vs-SQLite branch `_add_user_id_to_keyed_table` established
+(`ALTER ... DROP CONSTRAINT` + `ADD PRIMARY KEY` on Postgres; create-copy-
+swap on SQLite, since SQLite cannot drop a PRIMARY KEY in place).
+`repo_disposition_history` needed no PK change at all (it's keyed on its
+own `id`, never on `github_url`) — just a backfill and a new index.
+Backfill uses `project_slug` when the row already has one (the resolved
+slug set the last time this repo's disposition was written with a `Project`
+in hand — this is what makes `egeria_git`, not `egeria`, the right answer
+for that row) and falls back to `_url_to_slug(github_url)` only for the
+rarer empty-`project_slug` row. Verified against a hand-built pre-migration
+SQLite fixture reproducing both shapes (a normal imported-repo row and the
+`egeria`/`egeria_git`-style divergent one) — backfill lands both at the
+correct `entity_slug`, confirmed by reading it back through the unchanged
+`get_disposition`/`get_disposition_history` API afterward.
+
+**Records/journal routes.** The journal route
+(`/api/journal/{entity_type}/{slug}`) turned out to already be fully
+entity-generic on the backend — the "hardcoded repo paths" this and the
+prior entry described was actually the **frontend** wrapper
+(`re-api.js`'s `getJournal`/`writeJournal` hardcoding `/api/journal/repo/
+...`), fixed by threading an `entityType` param through (default `'repo'`,
+so no existing caller's behavior changes). The records route
+(`/api/projects/{slug}/records`, `.../records/{record_id}/act`) was a real
+backend gap, but a route-level one, not a disposition-schema one — same
+shape as items 1/2 above: `Curations.for_resource(entity_type, slug)` was
+already generic underneath; only the existence check (`registry.get(slug)`,
+Project-only) and the hardcoded `entity_type='repo'` passed to
+`WorkLists`/`log_rfa` needed generalizing. Added entity-generic siblings
+(`GET/POST /api/projects/entity/{entity_type}/{slug}/records[/...]`) rather
+than changing the existing repo routes in place, so the repo path is
+provably untouched. `GET .../records/{record_id}` (single-record fetch/
+export) needed no sibling — it never checked `entity_type` at all.
+
+**Deliberately NOT generalized, and why:** DepthOffer (the "these analyses
+have never run" offer shown after a verdict) stays repo-only. It reasons
+about the repo analysis catalog's analysis/assessment tiers specifically;
+generalizing it is a separate, analysis-catalog-shaped piece of work, not a
+disposition-schema one, and nothing in the brief asked for it. The frontend
+already degrades correctly without special-casing: `renderDepthOffer` gates
+on `p?.github_url`, which is simply absent for a database/filesystem
+`resource`, so it silently doesn't render rather than erroring. Similarly,
+a report's "write a correction" action (`saveReport`) stays on its
+existing repo-only route — out of scope here, and it fails with a visible
+error rather than silently for a database/filesystem record if someone
+reaches it, which is the correct degrade for something genuinely unbuilt.
+
+**Frontend.** `/next`'s Disposition pane no longer calls
+`paneNeedsRepoBackend()` — with the backend gap closed, nothing called that
+function any more, so it was deleted outright (dead code left in place is
+exactly the kind of thing a future gate could reach for again without
+re-checking whether it's still needed). The pane now uses the plain
+`paneNeedsRepo()` "select a resource" check, threads
+`apiEntityType(state.resourceType)` at the boundary (same convention as
+`getSurveyCandidates`/`getQuestions`), and branches picker/history/journal/
+records calls on whether the resolved entity type is `'repo'` (github_url-
+keyed, unchanged) or not (entity_slug-keyed, new). `DatabaseSummary`/
+`FileSystemSummary` gained a `disposition` field (mirroring
+`ProjectSummary`'s, already there) so the picker renders the current
+verdict without an extra round trip.
+
+**Tests.** `tests/test_registry.py` gained migration/backfill coverage
+(a fixture with pre-migration `github_url`-keyed rows, including the
+divergent-slug case, asserting the post-migration `(entity_type,
+entity_slug)` landing spot) and coverage of the new
+`*_for_entity`/`resolve_repo_entity_slug`/`_reconcile_disposition_on_import`
+methods. `tests/test_next_db_fs_gate_removal.py` updated: the class
+asserting `paneNeedsRepoBackend` still gated Disposition is replaced with
+one asserting the function is gone entirely and Disposition now follows
+the same `paneNeedsRepo()`/`apiEntityType()` shape as By analysis/
+Questions.
+
+**Live verification.** Not performed against the running dev server
+(`localhost:8810`) for this schema change specifically, and that gap is
+deliberate, not an oversight: that server currently runs the *old*
+registry.py against the *same* shared Postgres database this migration
+targets. Running the migration from this branch (a `ProjectRegistry()`
+construction is enough to trigger `_init_schema()`) would alter
+`repo_dispositions`' live constraints out from under the currently-running
+server mid-session — its old code's `INSERT ... ON CONFLICT(github_url)`
+would then fail outright (`ON CONFLICT` requires a unique constraint
+exactly matching its target, and `github_url` stops being one), breaking
+disposition-setting for every concurrent user until that server is
+restarted onto this branch. That restart is exactly the kind of shared,
+unreviewed disruption this repo's conventions route through a merged PR
+and a coordinated restart, not a solo subagent action — and this session
+had no working peer-messaging path to confirm no one else was mid-write
+against the same database first. Verified instead: the full local test
+suite (below) against a fresh SQLite registry and a hand-built
+pre-migration SQLite fixture reproducing the shared DB's actual data shape
+(20/44-row scale, including the one divergent-slug row) with the migration
+applied and read back through the unchanged public API; and a read-only
+`psql` query confirming the live table's current shape, row counts, and
+absence of FK references, all reported above. The coordinator should run
+this migration (or accept the PR and let the normal deploy/restart cycle
+do it) rather than have it applied ad hoc from a subagent session.

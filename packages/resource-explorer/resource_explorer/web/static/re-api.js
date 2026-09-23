@@ -210,6 +210,25 @@ export const VALID_DISPOSITIONS = [
 export const setDisposition = (githubUrl, disposition, reason = '') =>
   post('/api/discovery/disposition', { github_url: githubUrl, disposition, reason });
 
+/**
+ * A database/filesystem's disposition — the entity-generic sibling of
+ * `setDisposition`/`getDispositionHistory` above, added when
+ * `repo_dispositions`' PK generalized from github_url alone to
+ * (entity_type, entity_slug) (Backlog.md, "Disposition is NOT fixed here",
+ * 2026-09-22). Keyed on `entitySlug` directly — no pre-import ambiguity to
+ * resolve server-side the way a repo's github_url has, since a database/
+ * filesystem's slug IS its stable identity from registration. Pass the
+ * `apiEntityType()`-translated value ('database'/'filesystem'), never the
+ * UI's own 'db' shorthand.
+ */
+export const getEntityDisposition = (entityType, entitySlug) =>
+  get(`/api/discovery/disposition/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`);
+export const setEntityDisposition = (entityType, entitySlug, disposition, reason = '') =>
+  post(`/api/discovery/disposition/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
+       { disposition, reason });
+export const getEntityDispositionHistory = (entityType, entitySlug) =>
+  get(`/api/discovery/disposition-history/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`);
+
 /* ── Enrichment context ───────────────────────────────────────────────────
  *
  * Human-provided metadata for one resource. `question_answers` holds answers
@@ -233,9 +252,16 @@ export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement',
  * Append-only prose on a resource, with a server-stamped author. A
  * suggestion is routed by perspective or person and arrives as a work-list
  * entry for them — never a notification. */
-export const getJournal = (slug) => get(`/api/journal/repo/${encodeURIComponent(slug)}`);
-export const writeJournal = (slug, body, suggestTo = []) =>
-  post(`/api/journal/repo/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+// `entityType` defaults to 'repo' for every existing caller — pass the
+// `apiEntityType(state.resourceType)`-translated value for a database/
+// filesystem, same as `getQuestions` above. The backend route was already
+// entity-generic (`/api/journal/{entity_type}/{slug}`); only this wrapper
+// was hardcoded to 'repo' (Backlog.md, "Disposition is NOT fixed here",
+// 2026-09-22).
+export const getJournal = (slug, entityType = 'repo') =>
+  get(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`);
+export const writeJournal = (slug, body, suggestTo = [], entityType = 'repo') =>
+  post(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
 
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
@@ -1017,16 +1043,29 @@ export const saveReport = (slug, analysisId, { question = '', metric = '', membe
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/report`,
        { question, metric, members, facet, name, scope, corrects });
 
-/** Both kinds, newest first, reports carrying out_of_date. */
-export const listRecords = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/records`);
+/** Both kinds, newest first, reports carrying out_of_date. `entityType`
+ *  defaults to 'repo' — pass the `apiEntityType()`-translated value for a
+ *  database/filesystem, routed to `list_entity_records`'s sibling endpoint
+ *  (Backlog.md, "Disposition is NOT fixed here", 2026-09-22); the repo path
+ *  is unchanged. `recordExportHref`/`getRecord` (a bare GET by record id)
+ *  needed no sibling — that route never checked entity_type at all. */
+export const listRecords = (slug, entityType = 'repo') =>
+  entityType === 'repo'
+    ? get(`/api/projects/${encodeURIComponent(slug)}/records`)
+    : get(`/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records`);
 export const recordExportHref = (slug, id, fmt) =>
   `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
 
 /** The three acts on a report: work_list | rfa | journal. `rows` null = the
- *  whole report. The server acts on the stored snapshot. */
-export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}) =>
-  post(`/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
-       { action, rows, name, suggest_to: suggestTo, journal_id: journalId });
+ *  whole report. The server acts on the stored snapshot. `entityType` as
+ *  above. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType = 'repo') =>
+  post(
+    entityType === 'repo'
+      ? `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`
+      : `/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
+    { action, rows, name, suggest_to: suggestTo, journal_id: journalId },
+  );
 
 /* ── Component review ───────────────────────────────────────────────────── */
 

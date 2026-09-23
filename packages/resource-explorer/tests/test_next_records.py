@@ -34,7 +34,10 @@ class TestWhereTheyLive:
         app = _app()
         pane = app[app.index("async function loadDispositionPane("):app.index("function renderJournalWrite(")]
         assert 'id="records"' in pane and 'id="journal-write"' in pane and 'id="disposition-history"' in pane
-        assert "await renderRecords(slug);" in pane
+        # renderRecords gained an `entityType` param 2026-09-22 (Backlog.md,
+        # "Disposition is NOT fixed here") -- match the call regardless of
+        # its arguments rather than the literal old text.
+        assert "await renderRecords(slug" in pane
 
     def test_a_report_shows_its_header_and_out_of_date_and_exports(self):
         app = _app()
@@ -62,8 +65,10 @@ class TestTheThreeActsOnAReport:
         body = app[app.index("function wireRecordActs("):app.index("function wireDispositionPicker(") if "function wireDispositionPicker(" in app[app.index("function wireRecordActs("):] else None]
         assert "ta.value = `Per “${rec.name}” (${String(rec.requested_at).slice(0, 10)}): `;" in body
         assert "ta.dataset.citesRecord = id;" in body
-        # the use is recorded when the entry lands, never written for the person
-        assert "actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' })" in app
+        # the use is recorded when the entry lands, never written for the
+        # person. actOnRecord gained a trailing `entityType` argument
+        # 2026-09-22 (Backlog.md, "Disposition is NOT fixed here").
+        assert "actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }, entityType)" in app
 
     def test_a_failed_act_says_not_recorded_and_the_buttons_stay_live(self):
         app = _app()

@@ -34,6 +34,11 @@ class DatabaseSummary(BaseModel):
     egeria_server: str = ""
     egeria_user: str = ""
     group_slug: str = ""
+    # 'undecided' when nobody has ever decided, same convention
+    # `ProjectSummary.disposition` (projects.py) already uses — populated
+    # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
+    # (Backlog.md, "Disposition is NOT fixed here", 2026-09-22).
+    disposition: str = "undecided"
 
 
 class DatabaseRegistration(BaseModel):
@@ -122,7 +127,8 @@ def _to_summary(db) -> DatabaseSummary:
     registry = ProjectRegistry()
     surveys = registry.get_database_surveys(db.slug)
     latest = surveys[0] if surveys else None
-    
+    disp = registry.get_disposition_for_entity("database", db.slug) or {}
+
     return DatabaseSummary(
         slug=db.slug,
         display_name=db.display_name,
@@ -145,6 +151,7 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_server=db.egeria_server or "",
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
+        disposition=disp.get("disposition", "undecided"),
     )
 
 

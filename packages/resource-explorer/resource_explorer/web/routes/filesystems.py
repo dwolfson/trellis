@@ -29,6 +29,9 @@ class FileSystemSummary(BaseModel):
     egeria_server: str = ""
     egeria_user: str = ""
     group_slug: str = ""
+    # 'undecided' when nobody has ever decided — see DatabaseSummary's own
+    # comment (databases.py) for why this field exists now.
+    disposition: str = "undecided"
 
 
 class FileSystemRegistration(BaseModel):
@@ -97,6 +100,7 @@ def list_filesystems():
     result = []
     for fs in filesystems:
         latest = registry.get_latest_filesystem_survey(fs.slug)
+        disp = registry.get_disposition_for_entity("filesystem", fs.slug) or {}
         result.append(
             FileSystemSummary(
                 slug=fs.slug,
@@ -113,6 +117,7 @@ def list_filesystems():
                 egeria_server=fs.egeria_server or "",
                 egeria_user=fs.egeria_user or "",
                 group_slug=getattr(fs, "group_slug", "") or "",
+                disposition=disp.get("disposition", "undecided"),
             )
         )
     return result
@@ -183,7 +188,8 @@ def get_filesystem(slug: str):
             status_code=404,
             detail=f"FileSystem '{slug}' not found."
         )
-        
+    disp = registry.get_disposition_for_entity("filesystem", fs.slug) or {}
+
     return FileSystemSummary(
         slug=fs.slug,
         display_name=fs.display_name,
@@ -195,6 +201,7 @@ def get_filesystem(slug: str):
         egeria_asset_guid=fs.egeria_asset_guid or "",
         file_count=fs.file_count,
         data_file_count=fs.data_file_count,
+        disposition=disp.get("disposition", "undecided"),
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
         egeria_user=fs.egeria_user or "",
