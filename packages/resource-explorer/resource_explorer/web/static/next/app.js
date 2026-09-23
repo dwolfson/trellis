@@ -108,6 +108,8 @@ import {
   getScoutingOverview,
   listActivity,
   listAnalyses,
+  listDatabases,
+  listFilesystems,
   listGroups,
   listInvestigationMembers,
   listInvestigations,
@@ -134,8 +136,18 @@ import {
  * ════════════════════════════════════════════════════════════════════════ */
 
 export const state = {
-  resourceType: 'repo',        // repo | db | filesystem — only repo is real here
+  resourceType: 'repo',        // repo | db | filesystem
   projects: [],
+  // Databases/filesystems are fetched lazily -- on first switch to that
+  // sidebar chip, or on boot when the URL already names that type -- not
+  // eagerly at start() like `projects`, since most sessions never touch
+  // them. The `*Loaded` flags distinguish "fetched, zero results" from
+  // "never fetched" so the sidebar can say which one it is instead of
+  // rendering an empty list either way.
+  databases: [],
+  databasesLoaded: false,
+  filesystems: [],
+  filesystemsLoaded: false,
   groups: [],
   selectedSlug: null,
   overview: null,              // the selected repo's scouting-overview, or null
@@ -322,6 +334,35 @@ export const $ = (id) => document.getElementById(id);
  *  already matches on both sides and passes through unchanged. */
 export function apiEntityType(resourceType) {
   return resourceType === 'db' ? 'database' : resourceType;
+}
+
+/** The sidebar's row data for whichever resource type is current. Databases
+ *  and filesystems don't carry `working_set_hidden`/`disposition`/
+ *  `group_slug`-scoped-selection concepts the way repos do (see
+ *  `nonRepoRowsHtml`'s own comment for what's deliberately not ported), so
+ *  this returns the raw fetched list -- filtering happens where it's used. */
+function currentResourceRows() {
+  return state.resourceType === 'db' ? state.databases
+    : state.resourceType === 'filesystem' ? state.filesystems
+    : state.projects;
+}
+
+/** Fetch the database/filesystem list on first need -- repos are fetched
+ *  once at boot (`start()`), but /next never fetched either of these lists
+ *  at all until now, so there is no existing "refresh" path to extend.
+ *  Cached behind `*Loaded` rather than re-fetched on every chip click; a
+ *  session that wants fresh data can reload. No-op for 'repo' and for a
+ *  type that's already loaded. */
+async function ensureResourceListLoaded(type) {
+  if (type === 'db' && !state.databasesLoaded) {
+    try { state.databases = (await listDatabases()) || []; }
+    catch { state.databases = []; }
+    state.databasesLoaded = true;
+  } else if (type === 'filesystem' && !state.filesystemsLoaded) {
+    try { state.filesystems = (await listFilesystems()) || []; }
+    catch { state.filesystems = []; }
+    state.filesystemsLoaded = true;
+  }
 }
 
 /** The active stage's display label, for the pane header. */
@@ -1735,6 +1776,79 @@ function visibleProjects() {
   });
 }
 
+/** The current type's database/filesystem rows passing the text filter --
+ *  the only filter that applies to them. Unlike `visibleProjects()`, there
+ *  is no `working_set_hidden`/disposition/lifecycle-scope concept for these
+ *  rows to filter on (see `nonRepoRowsHtml`'s comment for why). */
+function filteredNonRepoRows() {
+  const f = state.filter.trim().toLowerCase();
+  return currentResourceRows().filter((r) =>
+    !f || `${r.slug} ${r.display_name}`.toLowerCase().includes(f));
+}
+
+/** Clickable database/filesystem rows, grouped the same way repos are
+ *  (`group_slug` is on both `DatabaseSummary` and `FileSystemSummary` --
+ *  `web/routes/databases.py`/`filesystems.py`) -- but WITHOUT the
+ *  repo-only machinery that doesn't cleanly apply to these resource types:
+ *  no disposition facets/marks (dispositions are repo-only, per the notice
+ *  above this in the sidebar), no `working_set_hidden`/"show hidden"
+ *  (there is no equivalent field on either summary shape), no select-mode
+ *  bulk actions (scope/hide/disposition/work-list/delete all assume a repo
+ *  identity -- `entityType: 'repo'` is baked into several of those write
+ *  paths and porting them is a separate slice, not this one). What IS
+ *  ported: the group-by-`group_slug` layout, and a cloud-icon mark for
+ *  `egeria_asset_guid` (cataloged in Egeria), since both are cheap and the
+ *  data is already on the row. */
+function nonRepoRowsHtml() {
+  const type = state.resourceType; // 'db' | 'filesystem'
+  const label = type === 'db' ? 'database' : 'filesystem';
+  const loaded = type === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
+  const all = currentResourceRows();
+  const rows = filteredNonRepoRows();
+
+  if (!loaded) {
+    return `<div class="text-chip text-chrome-ink">Loading ${label}s…</div>`;
+  }
+  if (!rows.length) {
+    return `<div class="text-chip text-chrome-ink">${
+      all.length ? 'Nothing matches these filters.' : `No ${label}s registered.`}</div>`;
+  }
+
+  const groups = new Map();
+  for (const r of rows) {
+    const g = r.group_slug || '';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+  const groupName = (slug) =>
+    slug ? (state.groups.find((g) => g.slug === slug)?.display_name || slug) : 'Ungrouped';
+
+  return `
+    <div class="mb-s2 text-chip text-chrome-ink" style="border-bottom:1px dashed currentColor;padding-bottom:2px">
+      Select-mode, disposition and group-collapse memory are repo-only in /next -- ${label}s below are a plain, always-expanded list.
+    </div>
+    ${[...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, items]) => `
+      <details class="mb-s4" open>
+        <summary class="mb-[7px] flex cursor-pointer items-center gap-[6px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
+          <span class="min-w-0 truncate">${esc(groupName(g))}</span>
+          <span class="tnum">${items.length}</span>
+        </summary>
+        <div class="flex flex-col gap-[1px]">
+          ${items.map((r) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
+            r.slug === state.selectedSlug
+              ? 'border-l-2 border-accent bg-chrome-surface'
+              : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
+            <button data-nonrepo-slug="${esc(r.slug)}"
+              class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
+              >${esc(r.display_name || r.slug)}</button>
+            ${r.egeria_asset_guid
+              ? icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Cataloged in Egeria' })
+              : ''}
+          </div>`).join('')}
+        </div>
+      </details>`).join('')}`;
+}
+
 function renderSidebar() {
   const el = $('sidebar');
   const types = [
@@ -1802,7 +1916,8 @@ function renderSidebar() {
 
     ${investigationBarHtml()}
 
-    <input id="resource-filter" placeholder="Filter repos…" value="${esc(state.filter)}"
+    <input id="resource-filter" placeholder="Filter ${
+      state.resourceType === 'repo' ? 'repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}…" value="${esc(state.filter)}"
       class="mb-s2 w-full rounded-sm border border-chrome-line bg-transparent px-[9px] py-[5px]
              text-chip text-chrome-ink placeholder:text-chrome-muted">
 
@@ -1839,6 +1954,7 @@ function renderSidebar() {
           : ''}
     </div>`}
 
+    ${state.resourceType === 'repo' ? `
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
       <button data-act="select-mode" class="cursor-pointer bg-transparent ${
         state.selectMode ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
@@ -1849,7 +1965,11 @@ function renderSidebar() {
       <span class="ml-auto"><span class="tnum">${visible.length}</span> shown</span>
     </div>
 
-    ${state.selectMode ? selectActionsHtml() : ''}
+    ${state.selectMode ? selectActionsHtml() : ''}` : `
+    <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
+      <span class="text-chrome-muted">Select-mode bulk actions (scope, disposition, work lists, delete) are repo-only in /next.</span>
+      <span class="ml-auto"><span class="tnum">${filteredNonRepoRows().length}</span> shown</span>
+    </div>`}
 
     ${state.workLists.length ? `
       <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
@@ -1865,14 +1985,7 @@ function renderSidebar() {
             w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
       </div>` : ''}
 
-    ${state.resourceType !== 'repo' ? `
-      <div class="text-chip text-chrome-ink" style="border-bottom:1px dashed currentColor;padding-bottom:2px">
-        Databases and filesystems · not built in /next
-      </div>
-      <div class="mt-s2 text-chip text-chrome-ink">
-        This experiment covers one pane for one resource type.
-        <a href="/" class="text-accent-on-dark underline">Open the current UI ↗</a>
-      </div>`
+    ${state.resourceType !== 'repo' ? nonRepoRowsHtml()
     : visible.length === 0 ? `
       <div class="text-chip text-chrome-ink">Nothing matches these filters.</div>`
     : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
@@ -1917,6 +2030,31 @@ function renderSidebar() {
   bindSidebar();
 }
 
+/** Switch the sidebar's resource-type chip: fetches that type's list on
+ *  first visit (`ensureResourceListLoaded`), then re-selects a resource of
+ *  the NEW type -- `state.selectedSlug` otherwise keeps pointing at a
+ *  resource of the type just left, which would be a repo slug while
+ *  `state.resourceType` says 'db', mismatched in exactly the way
+ *  `apiEntityType()` call sites downstream (Survey pane, `getQuestions`,
+ *  etc.) assume can't happen. Renders once immediately (so the chip
+ *  highlight and any "loading…" row show right away) and again once the
+ *  fetch settles. */
+async function switchResourceType(type) {
+  state.resourceType = type;
+  renderSidebar();
+  writeUrl();
+  await ensureResourceListLoaded(type);
+  const rows = currentResourceRows();
+  if (!rows.some((r) => r.slug === state.selectedSlug)) {
+    state.selectedSlug = rows[0]?.slug || null;
+  }
+  renderSidebar();
+  writeUrl();
+  renderTopBar();
+  renderRailScope();
+  loadPane();
+}
+
 /** Re-fetch groups and the project list and re-render the sidebar.
  *
  * state.groups/state.projects are otherwise only ever populated once, in
@@ -1924,14 +2062,23 @@ function renderSidebar() {
  * create/delete/assign, all real writes to group_slug) needs the sidebar's
  * grouping to reflect what it just changed rather than staying stale until
  * a full page reload, so it imports and calls this after each write. See
- * docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md. */
+ * docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md. Admin → Groups assigns
+ * groups to databases and filesystems too (admin/groups.js's own
+ * listDatabases()/listFilesystems() calls), so this also refreshes
+ * whichever of those two this session has already fetched -- not
+ * unconditionally, to avoid fetching a list this session has never shown
+ * any interest in. */
 export async function refreshGroupsAndSidebar() {
   clearCache();
-  const [groups, projects] = await Promise.allSettled([
+  const [groups, projects, databases, filesystems] = await Promise.allSettled([
     listGroups(),
     listProjects({ includeIgnored: true, includeHidden: true }),
+    state.databasesLoaded ? listDatabases() : Promise.resolve(state.databases),
+    state.filesystemsLoaded ? listFilesystems() : Promise.resolve(state.filesystems),
   ]);
   if (groups.status === 'fulfilled') state.groups = groups.value || [];
+  if (state.databasesLoaded && databases.status === 'fulfilled') state.databases = databases.value || [];
+  if (state.filesystemsLoaded && filesystems.status === 'fulfilled') state.filesystems = filesystems.value || [];
   if (projects.status === 'fulfilled') state.projects = projects.value || [];
   renderSidebar();
 }
@@ -1997,11 +2144,7 @@ function bindSidebar() {
   const el = $('sidebar');
   const rerender = () => { renderSidebar(); writeUrl(); };
 
-  el.querySelectorAll('button[data-type]').forEach((b) => b.addEventListener('click', () => {
-    state.resourceType = b.dataset.type;
-    rerender();
-    loadPane();
-  }));
+  el.querySelectorAll('button[data-type]').forEach((b) => b.addEventListener('click', () => switchResourceType(b.dataset.type)));
   el.querySelectorAll('button[data-scope]').forEach((b) => b.addEventListener('click', () => {
     if (b.disabled) return;
     state.scope = b.dataset.scope;
@@ -2049,6 +2192,19 @@ function bindSidebar() {
     state.workListSlug = null;
     // Selecting a resource preserves stage and perspectives, deliberately.
     state.selectedSlug = b.dataset.slug;
+    rerender();
+    renderTopBar();
+    renderRailScope();
+    loadPane();
+  }));
+  // Database/filesystem rows (nonRepoRowsHtml) -- same selection behaviour
+  // as a repo row's data-slug handler above, minus the work-list bookkeeping
+  // (work lists are repo-only; state.workListSlug is never set while
+  // resourceType !== 'repo', but clear it anyway for a stray leftover).
+  el.querySelectorAll('button[data-nonrepo-slug]').forEach((b) => b.addEventListener('click', () => {
+    if (state.workListSlug) state.lastWorkListSlug = state.workListSlug;
+    state.workListSlug = null;
+    state.selectedSlug = b.dataset.nonrepoSlug;
     rerender();
     renderTopBar();
     renderRailScope();
@@ -2528,9 +2684,15 @@ function readUrl() {
  * The resource header
  * ──────────────────────────────────────────────────────────────────────── */
 
-/** The selected resource's summary row from `GET /api/projects/`. */
+/** The selected resource's summary row -- from `GET /api/projects/` for a
+ *  repo, `GET /api/databases/`/`GET /api/filesystems/` for the others. The
+ *  callers below (resourceHeaderHtml) read fields (`display_name`,
+ *  `last_surveyed_at`) that all three summary shapes carry; `github_url`
+ *  and `is_published` simply come back undefined for db/filesystem rows,
+ *  which the rendering already treats as "no external links" / "not
+ *  published" rather than erroring. */
 function selectedProject() {
-  return state.projects.find((p) => p.slug === state.selectedSlug) || null;
+  return currentResourceRows().find((p) => p.slug === state.selectedSlug) || null;
 }
 
 /**
@@ -6207,6 +6369,13 @@ async function start() {
     state.projects = projects.value || [];
   }
 
+  // The URL may already name a db/filesystem resource (`?type=db&resource=…`)
+  // before either list has ever been fetched -- the batch above only ever
+  // fetched repos, since most sessions never touch the other two chips.
+  if (state.resourceType !== 'repo') {
+    await ensureResourceListLoaded(state.resourceType);
+  }
+
   // The investigation may have gone away since this browser last stored it.
   if (state.investigation
       && !state.investigations.some((i) => i.slug === state.investigation)) {
@@ -6218,7 +6387,9 @@ async function start() {
   if (state.scope === 'working-set' && !state.investigation) state.scope = '';
 
   if (!state.selectedSlug) {
-    const first = visibleProjects()[0] || state.projects[0];
+    const first = state.resourceType === 'repo'
+      ? (visibleProjects()[0] || state.projects[0])
+      : currentResourceRows()[0];
     if (first) state.selectedSlug = first.slug;
   }
   writeUrl();
