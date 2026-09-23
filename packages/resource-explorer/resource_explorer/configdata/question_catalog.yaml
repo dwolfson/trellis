@@ -1925,12 +1925,12 @@ database_questions:
   - Maintain
   - Assess
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_activity_signals
     checks: []
-    note: 'GAP: db_activity_signals (proposed) — the tuple and scan counters are not read by any analysis
-      today.'
+    note: db_activity_signals (design §5.2, §5.7 — database-wide roll-up of pg_stat_user_tables tuple
+      and scan counters; reuses postgres_schema_and_stats' per-table figures rather than re-querying them)
   answering_mechanism: Database Catalog Query
   rationale: 'pg_stat_user_tables carries n_tup_ins/upd/del, n_live_tup, n_dead_tup, last_vacuum/autovacuum/analyze,
     seq_scan and idx_scan; pg_stat_database carries the transaction and block counters. All of it is a
@@ -1992,12 +1992,13 @@ database_questions:
   - Assess
   - Maintain
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_resilience
     checks: []
-    note: 'GAP: db_resilience (proposed) — none of the replication, archiving or clustering catalog reads
-      exists today.'
+    note: 'db_resilience (design §5.5, MIXED — catalog half measured directly: primary/standby, replicas
+      and lag, WAL archiving status, backup-tool/Citus-clustering signals; Enrichment half stays explicitly
+      pending, never silently omitted)'
   answering_mechanism: Database Catalog Query + Human-Supplied
   rationale: 'Catalog-observable: pg_is_in_recovery() for the primary/standby role, pg_stat_replication
     for standbys and replay lag, pg_settings.archive_mode with pg_stat_archiver for WAL archiving, pg_extension
@@ -2038,12 +2039,13 @@ database_questions:
   - Explore
   - Select
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_classification
     checks: []
-    note: 'GAP: db_classification (proposed) — the inputs are all available and nothing derives a classification
-      from them.'
+    note: db_classification (design §5.3, §5.7 — derived from stored table shapes, key/FK density, naming
+      patterns and the read/write mix in stored tuple counters; confidence scales with how many signal
+      families were available)
   answering_mechanism: Database Catalog Query
   rationale: 'Zero new fetch — reasons over what Scouting already stored: table shapes, foreign-key density,
     naming conventions, read/write ratios from the tuple counters, and the query mix if pg_stat_statements
@@ -2060,13 +2062,12 @@ database_questions:
   - Explore
   - Learn
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
-    - schema_inventory
     - db_relationship_graph
     checks: []
-    note: 'GAP: db_relationship_graph (proposed) — schema_inventory records the constraints but builds
-      no graph from them.'
+    note: 'db_relationship_graph (design §5.3, §5.7 — builds the FK graph from stored column rows: edge
+      count, connected components, isolated tables, most-referenced tables)'
   answering_mechanism: Database Catalog Query
   rationale: 'Zero new fetch: the foreign-key constraints Scouting already read become a graph, and the
     measure is connectivity — orphan tables, components, in-degree.'
@@ -2083,12 +2084,13 @@ database_questions:
   - Learn
   - Assess
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - grain_determination
     checks: []
-    note: 'GAP: grain_determination (proposed) — Egeria''s DataGrain and DataGrainAnnotation types exist,
-      but no service or analysis populates them.'
+    note: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
+      column profile whose distinct count matches the row count, plus any date column in the key; published
+      as a DataGrainAnnotation proposal)
   answering_mechanism: Database Catalog Query + Agent-Based Analysis
   rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
     and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
@@ -2105,12 +2107,13 @@ database_questions:
   - Explore
   - Select
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_fingerprint
     checks: []
-    note: 'GAP: db_fingerprint (proposed) — FingerprintAnnotation exists as a type; no signature is computed
-      or compared.'
+    note: db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
+      types, hashed and compared by Jaccard similarity and containment against every other database in
+      the registry with stored schema rows)
   answering_mechanism: Database Catalog Query + Local Registry Query
   rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
     and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
@@ -2310,11 +2313,13 @@ database_questions:
   - Assess
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - schema_conventions
     checks: []
-    note: 'GAP: schema_conventions (proposed) — none of these checks exists for databases.'
+    note: 'schema_conventions (design §5.4, §5.7 — check-granular structural hygiene derived from stored
+      rows: no primary key, no foreign key, no comment, non-snake_case names; does not cover unused indexes,
+      which needs a live pg_stat_user_indexes read)'
   answering_mechanism: Database Catalog Query
   rationale: 'Check-granular in the same shape as the repository conventions analysis: each defect is
     its own named check so an assessment can cite it and a subscription can watch it. All of it reads
@@ -2332,11 +2337,12 @@ database_questions:
   - Assess
   - Deploy
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_external_dependencies
     checks: []
-    note: 'GAP: db_external_dependencies (proposed) — none of these catalogs is read today.'
+    note: db_external_dependencies (design §5.4 — extensions, foreign data wrappers/servers/tables, logical
+      replication publications/subscriptions)
   answering_mechanism: Database Catalog Query
   rationale: pg_foreign_server and pg_foreign_table for FDWs, pg_extension for extensions including dblink,
     pg_publication and pg_subscription for logical replication. A catalog read, no row data.
@@ -2380,13 +2386,12 @@ database_questions:
   - Maintain
   - Assess
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
-    - row_count_snapshot
     - db_change_rates
     checks: []
-    note: 'GAP: db_change_rates (proposed) — row_count_snapshot records a point in time and nothing derives
-      a delta series between snapshots.'
+    note: db_change_rates (design §5.4, §5.7 — rows inserted/updated/deleted per table per period, size
+      drift and schema churn, differenced between two stored survey snapshots)
   answering_mechanism: Trend Chart
   rationale: Deltas of the n_tup_ins/upd/del counters and of relation sizes between two stored snapshots,
     per table, producing a series the Understanding tier can chart and the change detectors in design
@@ -2510,12 +2515,12 @@ database_questions:
   - Maintain
   - Assess
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_activity_signals
     checks: []
-    note: 'GAP: db_activity_signals (proposed) — vacuum recency and dead-tuple ratios sit in pg_stat_user_tables
-      and are not read.'
+    note: db_activity_signals (design §5.2, §5.7 — vacuum recency and dead-tuple ratios read from the
+      same stored pg_stat_user_tables figures as the activity-signals roll-up above)
   answering_mechanism: Database Catalog Query
   rationale: 'Scores the activity signals against thresholds: how long since the last vacuum or analyse,
     the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1''s
@@ -2532,12 +2537,12 @@ database_questions:
   - Assess
   - Attest
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - db_resilience
     checks: []
-    note: 'GAP: db_resilience (proposed) combines catalog facts with an Enrichment "Backup and recovery"
-      section; neither half is built.'
+    note: db_resilience (design §5.5, MIXED — combines the catalog-read half above with an Enrichment
+      'Backup and recovery' section that stays explicitly pending rather than silently omitted)
   answering_mechanism: Database Catalog Query + Human-Supplied
   rationale: 'Design §5.5 makes this deliberately two-sided: the catalog facts (role, replicas, archiving,
     backup tooling) and the Enrichment facts (last successful backup, tested restore, RPO and RTO). The
@@ -3113,8 +3118,10 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: grain_determination (proposed) — Egeria''s DataGrain and DataGrainAnnotation types exist,
-      but no service or analysis populates them.'
+    note: 'GAP: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
+      column profile whose distinct count matches the row count, plus any date column in the key; published
+      as a DataGrainAnnotation proposal) -- grain_determination is not a real analysis for filesystem
+      resources (absent from analysis_catalog.yaml''s filesystem_analyses section).'
   answering_mechanism: Database Catalog Query + Agent-Based Analysis
   rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
     and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
