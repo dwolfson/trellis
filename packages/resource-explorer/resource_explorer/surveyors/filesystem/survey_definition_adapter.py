@@ -256,6 +256,16 @@ _ADAPTER = ResourceTypeAdapter(
         "egeria-adaptive": _run_egeria_adaptive,
     },
     egeria_technology_type_name="File System Directory",
+    # Declared lazily (the maps are defined later in this module), same
+    # reasoning as database/survey_definition_adapter.py's own comment at its
+    # `_ADAPTER` (RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0): without this,
+    # FactLayer and context_compile.py's results-reader fallback could not
+    # read a filesystem's own results at all, for the same reason a database
+    # question was invisible before that fix. `analysis_source_steps`/
+    # `analysis_kinds`/`state_sources` stay undeclared for now, same as
+    # database's.
+    analysis_results_map=lambda: FILESYSTEM_ANALYSIS_RESULTS_MAP,
+    analysis_headline_map=lambda: FILESYSTEM_ANALYSIS_HEADLINE_MAP,
 )
 
 register_adapter(_ADAPTER)

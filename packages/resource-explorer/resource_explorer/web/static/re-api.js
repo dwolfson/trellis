@@ -592,10 +592,20 @@ export const getInvestigationNextSteps = (slug) =>
 
 /* ── Query ───────────────────────────────────────────────────────────── */
 
-export const ask = (query, { resourceSlug, perspectives = [], sessionId } = {}) =>
+/**
+ * `entityType` defaults to 'repo' for existing callers, same convention as
+ * `getQuestions`/`getAnswer` above — pass the `apiEntityType(state.resourceType)`-
+ * translated value at every /next boundary crossing. Omitting it used to mean
+ * every chat/Ask turn silently compiled evidence from the repo catalog
+ * regardless of what resource was actually selected: a database or
+ * filesystem question always got repo-shaped sections (`foss_scorecard`,
+ * `chaoss_metrics`, ...) and reported its real answer as a gap.
+ */
+export const ask = (query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) =>
   post('/api/query/', {
     query,
     project_slug: resourceSlug || null,   // the wire key is still the old name
+    entity_type: entityType,
     perspectives: [...perspectives],
     session_id: sessionId || null,
   });
@@ -653,13 +663,14 @@ export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', se
  * old browser, a proxy that buffers SSE) should catch and retry with the
  * plain `ask()` above rather than this function pretending to stream.
  */
-export async function* askStream(query, { resourceSlug, perspectives = [], sessionId } = {}) {
+export async function* askStream(query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) {
   const res = await fetch('/api/query/stream', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({
       query,
       project_slug: resourceSlug || null,
+      entity_type: entityType,
       perspectives: [...perspectives],
       session_id: sessionId || null,
     }),

@@ -21,7 +21,8 @@ _SESSION_MAX = 50
 _sessions: dict[str, tuple] = {}
 
 
-def _get_or_create_session(session_id: str, resource_slug: str | None):
+def _get_or_create_session(session_id: str, resource_slug: str | None,
+                            resource_type: str | None = None):
     """Return a ConversationAgent for this session, creating one if needed."""
     from resource_explorer.agents.conversation_agent import ConversationAgent
 
@@ -38,7 +39,7 @@ def _get_or_create_session(session_id: str, resource_slug: str | None):
         del _sessions[oldest]
 
     if session_id not in _sessions:
-        agent = ConversationAgent(resource_slug=resource_slug)
+        agent = ConversationAgent(resource_slug=resource_slug, resource_type=resource_type or "repo")
         # So the compile it runs can be recorded against this session.
         agent.session_id = session_id
         # Hydrate memory from persisted history so context survives restarts
@@ -55,6 +56,8 @@ def _get_or_create_session(session_id: str, resource_slug: str | None):
         _sessions[session_id] = (agent, now)
         if resource_slug:
             agent.resource_slug = resource_slug
+        if resource_type:
+            agent.resource_type = resource_type
 
     return agent
 
@@ -90,6 +93,13 @@ class QueryRequest(BaseModel):
     # key; drop the alias when the wire format moves too.
     resource_slug: str | None = Field(default=None, alias="project_slug")
     database_slug: str | None = None  # NEW: for database-scoped queries
+    #: 'repo' | 'database' | 'filesystem' — which resource type `resource_slug`
+    #: names. Defaults to "repo" for backward compatibility with callers
+    #: (e.g. the classic UI) that don't pass it. Threaded into
+    #: ConversationAgent -> compile_context() so a database/filesystem-scoped
+    #: chat question pulls that type's own catalog and analyses instead of
+    #: always compiling against repo's.
+    entity_type: str = "repo"
     #: Active Perspective chips. Empty means no perspective filter, which is a
     #: real state and not a missing value -- the compile still runs.
     perspectives: list[str] = []
@@ -207,10 +217,11 @@ async def ask(request: QueryRequest) -> QueryResponse:
 
     compiled = None
     if request.session_id:
-        agent = _get_or_create_session(request.session_id, request.resource_slug)
+        agent = _get_or_create_session(request.session_id, request.resource_slug,
+                                        request.entity_type)
         response = await asyncio.to_thread(
             agent.handle, request.query, resource_slug=request.resource_slug,
-            perspectives=request.perspectives,
+            resource_type=request.entity_type, perspectives=request.perspectives,
         )
         _persist_turn(request.session_id, request.query, response, request.resource_slug)
         compiled = _compiled_payload(agent)
@@ -257,8 +268,10 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 if request.session_id:
                     from resource_explorer.query_processor import QueryProcessor
                     intent = QueryProcessor().classify(request.query).value
-                    agent = _get_or_create_session(request.session_id, request.resource_slug)
+                    agent = _get_or_create_session(request.session_id, request.resource_slug,
+                                                    request.entity_type)
                     text = agent.handle(request.query, resource_slug=request.resource_slug,
+                                        resource_type=request.entity_type,
                                         perspectives=request.perspectives)
                     compiled = _compiled_payload(agent)
                     _persist_turn(request.session_id, request.query, text, request.resource_slug,

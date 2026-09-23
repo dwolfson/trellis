@@ -5097,6 +5097,7 @@ _ADAPTER = ResourceTypeAdapter(
     analysis_results_map=lambda: REPO_ANALYSIS_RESULTS_MAP,
     analysis_source_steps=lambda: REPO_ANALYSIS_SOURCE_STEPS,
     analysis_kinds=lambda: ANALYSIS_KINDS,
+    analysis_headline_map=lambda: REPO_ANALYSIS_HEADLINE_MAP,
     state_sources=lambda: __import__(
         "resource_explorer.facts", fromlist=["RESOURCE_STATE_SOURCES"],
     ).RESOURCE_STATE_SOURCES,
