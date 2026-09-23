@@ -359,7 +359,7 @@ function currentResourceRows() {
  *  Cached behind `*Loaded` rather than re-fetched on every chip click; a
  *  session that wants fresh data can reload. No-op for 'repo' and for a
  *  type that's already loaded. */
-async function ensureResourceListLoaded(type) {
+export async function ensureResourceListLoaded(type) {
   if (type === 'db' && !state.databasesLoaded) {
     try { state.databases = (await listDatabases()) || []; }
     catch { state.databases = []; }

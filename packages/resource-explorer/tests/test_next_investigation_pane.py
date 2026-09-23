@@ -186,6 +186,23 @@ class TestMembersAndDispositions:
         for t in ("repo", "database", "filesystem"):
             assert f"['{t}'," in src
 
+    def test_add_member_slug_datalist_reflects_the_selected_entity_type(self):
+        # Regression: the slug field's autocomplete used to always list
+        # state.projects (repos) regardless of the type dropdown, so picking
+        # "Database"/"Filesystem" left no suggestions at all -- reachable in
+        # principle (the click handler reads the type correctly), but with
+        # nothing telling a user what a valid slug looked like. The type
+        # select must react to its own change and refresh the datalist from
+        # the matching resource list, loading it on demand if not cached yet.
+        src = _inv_src()
+        assert "ensureResourceListLoaded" in src
+        change_block = src[src.index("#inv-add-type"):]
+        change_block = change_block[change_block.index("addEventListener('change'"):]
+        change_block = change_block[:change_block.index("});")]
+        assert "ensureResourceListLoaded" in change_block
+        assert "inv-add-slug-list" in change_block
+        assert "state.databases" in src and "state.filesystems" in src
+
     def test_disposition_select_offers_the_full_working_set_vocabulary(self):
         src = _inv_src()
         for d in ("tracking", "investigating", "recommended", "using", "abandoned", "ignored"):
