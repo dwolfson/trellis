@@ -103,10 +103,20 @@ class TestApiEntityTypeTranslatesTheUiShorthand:
 
 
 class TestPaneNeedsRepoBackendIsHonestNotBlanket:
-    """By analysis, Disposition and the Questions checklist stay repo-only,
-    but the message must say a real, verified backend reason -- never the
-    old undifferentiated 'Repos only, in /next' wording, which reads as an
-    arbitrary /next limitation rather than the real one."""
+    """Disposition stays repo-only, but the message must say a real,
+    verified backend reason -- never the old undifferentiated 'Repos only,
+    in /next' wording, which reads as an arbitrary /next limitation rather
+    than the real one.
+
+    By analysis and the Questions checklist used to be gated the same way,
+    on the strength of `REPO_ANALYSIS_RESULTS_MAP`/the repo-only scouting-
+    questions route having no database/filesystem equivalent. As of the
+    generalization in `re/next-generalize-byanalysis-disposition-questions`
+    (docs/Backlog.md, "By analysis / scouting-questions were repo-only"),
+    both backends exist for database/filesystem too
+    (`workflows.analysis.build_survey_results`, `workflows.scouting.
+    build_question_checklist`), so both panes were moved off this gate --
+    see TestByAnalysisAndQuestionsNoLongerGatedToRepo below."""
 
     def test_backend_gate_helper_exists_and_still_gates_non_repo(self):
         src = _app()
@@ -127,22 +137,57 @@ class TestPaneNeedsRepoBackendIsHonestNotBlanket:
         body = src[start:end]
         assert "paneNeedsRepoBackend('Disposition'" in body
 
-    def test_by_analysis_pane_uses_the_backend_gate(self):
+    def test_by_analysis_pane_no_longer_uses_the_backend_gate(self):
         src = _app()
         start = src.index("async function loadByAnalysisPane() {")
         end = src.index("\n}", start + 2000)
         body = src[start:end]
-        assert "paneNeedsRepoBackend('By analysis'" in body
+        assert "paneNeedsRepoBackend(" not in body
+        assert "const blocked = paneNeedsRepo();" in body
 
-    def test_questions_engine_no_longer_has_its_own_separate_guard(self):
-        # The duplicate inline "Repos only, in /next" guard this dispatcher
-        # used to carry independently of paneNeedsRepo() is gone, replaced by
-        # a call to the same shared helper everything else uses. It backs
-        # Scouting/Discovery/Assessment/Analysis/Enrichment/Curate, not just
-        # a "Questions" tab, so it names the actual stage dynamically rather
-        # than a fixed label.
+    def test_questions_engine_no_longer_gates_on_backend_either(self):
+        # The paneNeedsRepoBackend() call this dispatcher used to make is
+        # gone -- database/filesystem's questions route now exists
+        # (workflows.scouting.build_question_checklist). Only paneNeedsRepo()
+        # (select a resource) remains.
         src = _app()
-        assert "paneNeedsRepoBackend(stageDef?.label || 'This stage'" in src
+        assert "paneNeedsRepoBackend(stageDef?.label" not in src
+
+
+class TestByAnalysisAndQuestionsNoLongerGatedToRepo:
+    """docs/Backlog.md, "By analysis / scouting-questions were repo-only"
+    (2026-09-22): both panes now reach a real database/filesystem backend
+    instead of stopping at a UI gate."""
+
+    def test_get_survey_dashboards_threads_entity_type(self):
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "web" / "static" / "re-api.js").read_text(encoding="utf-8")
+        start = src.index("function _surveyResultsPath(")
+        end = src.index("};", src.index("export const getSurveyDashboards"))
+        body = src[start:end]
+        assert "entityType = 'repo'" in body
+        assert "/api/databases/" in body
+        assert "/api/filesystems/" in body
+
+    def test_get_questions_threads_entity_type(self):
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "web" / "static" / "re-api.js").read_text(encoding="utf-8")
+        assert "function _questionsPath(entityType" in src
+        assert "/api/databases/" in src
+        assert "/api/filesystems/" in src
+
+    def test_app_js_passes_apientitytype_at_both_boundaries(self):
+        src = _app()
+        by_analysis_start = src.index("async function loadByAnalysisPane() {")
+        by_analysis_end = src.index("\n}", by_analysis_start + 2000)
+        assert "apiEntityType(state.resourceType)" in src[by_analysis_start:by_analysis_end]
+
+        checklist_start = src.index("checklist = await getQuestions(slug, {")
+        checklist_call = src[checklist_start:src.index("});", checklist_start)]
+        assert "apiEntityType(state.resourceType)" in checklist_call
+
+        context_call = src[src.index("const ctx = await getContext("):][:80]
+        assert "apiEntityType(state.resourceType)" in context_call
 
 
 class TestAutomateNoLongerHardcodesRepo:

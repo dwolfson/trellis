@@ -810,3 +810,171 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
         "auto_publishes": registry.has_assigned_egeria_project(entity_type, slug),
     }
     return result
+
+
+def _results_map_for(entity_type: str):
+    """(results_map, headline_map) for `entity_type` — the three per-type
+    constants `build_survey_results` reads results/headlines from."""
+    if entity_type == "database":
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+            DATABASE_ANALYSIS_RESULTS_MAP,
+        )
+        return DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_HEADLINE_MAP
+    if entity_type == "filesystem":
+        from resource_explorer.surveyors.filesystem.survey_definition_adapter import (
+            FILESYSTEM_ANALYSIS_HEADLINE_MAP,
+            FILESYSTEM_ANALYSIS_RESULTS_MAP,
+        )
+        return FILESYSTEM_ANALYSIS_RESULTS_MAP, FILESYSTEM_ANALYSIS_HEADLINE_MAP
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_HEADLINE_MAP,
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+    return REPO_ANALYSIS_RESULTS_MAP, REPO_ANALYSIS_HEADLINE_MAP
+
+
+def build_survey_results(
+    registry, entity_type: str, slug: str, stage: str = "", include_empty: bool = False,
+) -> dict:
+    """Tier 2 — the Survey Results ("By analysis") dashboards for any
+    entity_type, generalized out of `projects.py`'s `_survey_results_sync`
+    (repo-only route, added first; see docs/Backlog.md's "By analysis" was
+    repo-only entry) the same way `build_analysis_last_activity` above
+    generalized the analyses/last-activity route.
+
+    For `entity_type == "repo"` this reproduces the original route exactly —
+    same curated `SURVEY_RESULT_DASHBOARDS` groupings, same stage/perspective/
+    publish-state derivation.
+
+    Database and filesystem have no such curated groupings (`docs/survey-
+    results-dashboard-plan.md`'s dashboard design was written for repo only,
+    and building repo's kind of multi-analysis, themed dashboard for the
+    other two entity_types is real design work, not a generalization of this
+    function). So for those two entity_types, this SYNTHESIZES one dashboard
+    per analysis_id that has an entry in the type's own *_ANALYSIS_RESULTS_MAP
+    — literally "by analysis", which is what the pane is named and what the
+    frontend gate (`paneNeedsRepoBackend` in app.js) has been describing this
+    gap as. Every other field (has_results, last_published_at, publish_stale,
+    last_surveyed_at) is computed the same way the repo branch computes it,
+    just scoped to that one analysis_id's own annotation_types instead of a
+    dashboard's union.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    results_map, headline_map = _results_map_for(entity_type)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+    publish_stale = (registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}).get("status") == "stale"
+    last_surveyed_at = ""
+    getter = {
+        "repo": registry.get, "database": registry.get_database, "filesystem": registry.get_filesystem,
+    }.get(entity_type)
+    entity = getter(slug) if getter else None
+    if entity is not None:
+        last_surveyed_at = getattr(entity, "last_surveyed_at", "") or ""
+
+    dashboards: list[dict] = []
+
+    if entity_type == "repo":
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            SURVEY_RESULT_DASHBOARDS,
+            get_dashboard_annotation_types,
+            get_dashboard_perspectives,
+            get_dashboard_stages,
+        )
+
+        for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+            stages = get_dashboard_stages(dashboard.analysis_ids)
+            if stage and stage not in stages:
+                continue
+            analyses = _read_analyses(registry, slug, dashboard.analysis_ids, results_map, headline_map)
+            has_results = any(_results_have_data(a["results"]) for a in analyses)
+            if not has_results and not include_empty:
+                continue
+            dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
+            last_published_at = max(
+                (published_by_type[t] for t in dashboard_types if t in published_by_type),
+                default="",
+            )
+            dashboards.append({
+                "id": dashboard.id,
+                "title": dashboard.title,
+                "description": dashboard.description,
+                "render": dashboard.render,
+                "custom_renderer": dashboard.custom_renderer,
+                "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+                "stages": stages,
+                "has_results": has_results,
+                "analyses": analyses,
+                "last_published_at": last_published_at,
+                "publish_stale": bool(last_published_at) and publish_stale,
+                "last_surveyed_at": last_surveyed_at,
+            })
+        return {"slug": slug, "stage": stage, "dashboards": dashboards}
+
+    # database / filesystem: one synthesized dashboard per analysis_id that
+    # this entity_type actually has a results reader for.
+    catalog_by_id = {a["id"]: a for a in get_analyses(entity_type, include_egeria_live=False)}
+    for analysis_id in results_map:
+        entry = catalog_by_id.get(analysis_id)
+        analyses = _read_analyses(registry, slug, [analysis_id], results_map, headline_map)
+        this_stage = ((entry or {}).get("intent") or "").strip().lower()
+        if stage and stage != this_stage:
+            continue
+        has_results = any(_results_have_data(a["results"]) for a in analyses)
+        if not has_results and not include_empty:
+            continue
+        annotation_types = (entry or {}).get("annotation_types") or []
+        last_published_at = max(
+            (published_by_type[t] for t in annotation_types if t in published_by_type),
+            default="",
+        )
+        dashboards.append({
+            "id": analysis_id,
+            "title": (entry or {}).get("name") or analysis_id.replace("_", " ").title(),
+            "description": (entry or {}).get("description") or "",
+            "render": "custom",
+            "custom_renderer": "",
+            "perspectives": [],
+            "stages": [this_stage] if this_stage else [],
+            "has_results": has_results,
+            "analyses": analyses,
+            "last_published_at": last_published_at,
+            "publish_stale": bool(last_published_at) and publish_stale,
+            "last_surveyed_at": last_surveyed_at,
+        })
+    return {"slug": slug, "stage": stage, "dashboards": dashboards}
+
+
+def _read_analyses(registry, slug: str, analysis_ids: list[str], results_map: dict, headline_map: dict) -> list[dict]:
+    """[{analysis_id, results, headline}] for a dashboard's analysis_ids —
+    same fail-soft shape as the original repo-only loop: a reader that
+    raises degrades to None rather than breaking the whole dashboard."""
+    analyses = []
+    for analysis_id in analysis_ids:
+        entry = results_map.get(analysis_id)
+        results = None
+        if entry:
+            results_reader, _ = entry
+            try:
+                results = results_reader(registry, slug)
+            except Exception:
+                results = None
+        headline_reader = headline_map.get(analysis_id)
+        headline = None
+        if headline_reader:
+            try:
+                headline = headline_reader(registry, slug)
+            except Exception:
+                headline = None
+        analyses.append({"analysis_id": analysis_id, "results": results, "headline": headline})
+    return analyses
+
+
+def _results_have_data(results) -> bool:
+    """The exact same "truthy but not shaped-empty" test the original
+    repo-only `_survey_results_sync` used (`workflows.scouting.
+    results_have_data` — see that function's docstring for the full
+    reasoning on why plain truthiness over-counts)."""
+    from resource_explorer.workflows.scouting import results_have_data
+    return results_have_data(results)

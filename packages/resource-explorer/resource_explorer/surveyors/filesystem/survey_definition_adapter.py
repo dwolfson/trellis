@@ -272,3 +272,41 @@ register_adapter(_ADAPTER)
 FILESYSTEM_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "filesystem_inventory": ["filesystem_inventory"],
 }
+
+
+# ── Results reading — the filesystem equivalent of repo_survey_definition_
+# adapter.REPO_ANALYSIS_RESULTS_MAP / database's own DATABASE_ANALYSIS_
+# RESULTS_MAP (see that constant's docstring for the full reasoning; the
+# same "one analysis, one thin wrapper over already-stored rows" shape
+# applies here too). filesystem has exactly one analysis, and its detail
+# rows (`filesystem_entries`/`filesystem_data_files`) are already
+# materialized by every local survey (`result_materializer.
+# filesystem_rows_from_survey_data`), so this is a plain summarization —
+# no new domain logic, same as database's schema_inventory/row_count_
+# snapshot readers.
+def _filesystem_inventory_results(registry, slug: str) -> dict:
+    entries = registry.query_detail_rows("filesystem_entries", slug)
+    if not entries:
+        return {}
+    data_files = registry.query_detail_rows("filesystem_data_files", slug)
+    files = [e for e in entries if (e.get("entry_type") or "file") == "file"]
+    dirs = [e for e in entries if e.get("entry_type") == "directory"]
+    total_size = sum(e.get("size_bytes") or 0 for e in files)
+    return {
+        "entry_count": len(entries),
+        "file_count": len(files),
+        "directory_count": len(dirs),
+        "data_file_count": len(data_files),
+        "total_size_bytes": total_size,
+        "hidden_count": sum(1 for e in entries if e.get("is_hidden")),
+        "symlink_count": sum(1 for e in entries if e.get("is_symlink")),
+    }
+
+
+FILESYSTEM_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
+    "filesystem_inventory": (_filesystem_inventory_results, None),
+}
+
+#: See DATABASE_ANALYSIS_HEADLINE_MAP's docstring — same "not built yet,
+#: doesn't block the map" gap, kept explicit rather than silently absent.
+FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {}

@@ -142,20 +142,38 @@ export const listAnalyses = (resourceType, { intent, perspective } = {}) => {
 
 /* ── Questions and answers ───────────────────────────────────────────── */
 
+/** repo -> /api/projects/{slug}/scouting-questions (the original, and the
+ *  only route that keeps that name — database/filesystem's equivalent
+ *  routes are just called `.../questions`, added later). Not a general-
+ *  purpose entity-type-to-path-prefix mapper: kept private and narrow to
+ *  these two routes' actual shapes rather than invented as a shared utility
+ *  nothing else needs yet. */
+function _questionsPath(entityType, slug) {
+  const enc = encodeURIComponent(slug);
+  if (entityType === 'database') return `/api/databases/${enc}/questions`;
+  if (entityType === 'filesystem') return `/api/filesystems/${enc}/questions`;
+  return `/api/projects/${enc}/scouting-questions`;
+}
+
 /**
- * The question checklist for one repo and one funnel stage.
+ * The question checklist for one resource and one funnel stage.
  *
  * `perspectives` is a Set or array; empty means all, which is the API's own
  * default — do not send an empty `perspectives=` param, it is not the same
  * thing as omitting it.
+ *
+ * `entityType` defaults to 'repo' for every existing caller — pass the
+ * `apiEntityType(state.resourceType)`-translated value at every /next
+ * boundary crossing, same as `getSurveyCandidates`/`runSurveyDefinition`
+ * already do, so a database's 'db' never reaches here untranslated.
  */
-export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [] } = {}) {
+export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [], entityType = 'repo' } = {}) {
   const qs = new URLSearchParams({ phase });
   const persp = [...perspectives];
   const purp = [...purposes];
   if (persp.length) qs.set('perspectives', persp.join(','));
   if (purp.length) qs.set('purposes', purp.join(','));
-  return get(`/api/projects/${encodeURIComponent(slug)}/scouting-questions?${qs}`);
+  return get(`${_questionsPath(entityType, slug)}?${qs}`);
 }
 
 /**
@@ -650,12 +668,27 @@ export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
  * dashboard" — an absence reported as a non-existence, which is the one thing
  * this UI is most careful not to do.
  */
-export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false } = {}) => {
+/** repo -> /api/projects/, database -> /api/databases/, filesystem ->
+ *  /api/filesystems/ — all three now expose the identically-shaped
+ *  `/{slug}/survey-results` route (see `workflows.analysis.
+ *  build_survey_results`'s docstring for what a database/filesystem
+ *  dashboard actually contains, vs. repo's curated groupings). */
+function _surveyResultsPath(entityType, slug) {
+  const enc = encodeURIComponent(slug);
+  if (entityType === 'database') return `/api/databases/${enc}/survey-results`;
+  if (entityType === 'filesystem') return `/api/filesystems/${enc}/survey-results`;
+  return `/api/projects/${enc}/survey-results`;
+}
+
+/** `entityType` defaults to 'repo' for every existing caller — pass
+ *  `apiEntityType(state.resourceType)`-translated value at every /next
+ *  boundary crossing, same as `getQuestions` above. */
+export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType = 'repo' } = {}) => {
   const qs = new URLSearchParams();
   if (stage) qs.set('stage', stage);
   if (includeEmpty) qs.set('include_empty', 'true');
   const q = qs.toString();
-  return get(`/api/projects/${encodeURIComponent(slug)}/survey-results${q ? `?${q}` : ''}`);
+  return get(`${_surveyResultsPath(entityType, slug)}${q ? `?${q}` : ''}`);
 };
 
 /** One-line headline per analysis that has results — the summary tiles. */

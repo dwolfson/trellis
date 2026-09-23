@@ -3464,27 +3464,26 @@ function paneNeedsRepo() {
 }
 
 /** Some panes are repo-only not because /next hasn't built them, but because
- *  their BACKEND is repo-only today — verified 2026-09-22 (docs/Backlog.md's
- *  DB/FS-in-/next reversal entry), not assumed from the original blanket
- *  old undifferentiated "repos only" message this replaces:
+ *  their BACKEND is repo-only — verified, not assumed from the original
+ *  blanket old undifferentiated "repos only" message this replaces.
+ *
+ *  As of 2026-09-22 (docs/Backlog.md's "By analysis" / scouting-questions
+ *  were repo-only entries), By analysis and the Questions-checklist engine
+ *  no longer call this — `workflows.analysis.build_survey_results` and
+ *  `workflows.scouting.build_question_checklist` gave database/filesystem
+ *  real (if partial for database — see `DATABASE_ANALYSIS_RESULTS_MAP`'s own
+ *  docstring for the few analyses still missing a local results store)
+ *  backends of their own, reached via `GET /api/{databases,filesystems}
+ *  /{slug}/{survey-results,questions}`. Only Disposition still calls this:
  *
  *   - Disposition: `registry.py`'s `set_disposition`/`get_disposition_history`
  *     are keyed by `github_url`, and the journal (`/api/journal/repo/...`)
  *     and records (`/api/projects/{slug}/records`) routes are hardcoded repo
- *     paths. A database or filesystem has none of these.
- *   - By analysis: `/api/projects/{slug}/survey-results` reads
- *     `REPO_ANALYSIS_RESULTS_MAP`/`REPO_ANALYSIS_HEADLINE_MAP`
- *     (`repo_survey_definition_adapter.py`) directly — there is no
- *     database/filesystem equivalent aggregation to read.
- *   - Questions checklist: the underlying catalog function
- *     (`question_catalog_reader.get_questions`) IS resource-type-generic,
- *     but the route this pane calls (`GET /api/projects/{slug}/scouting-questions`)
- *     looks the slug up in the repo registry and always calls
- *     `get_questions("repo", ...)`, and its `has_data` scoring
- *     (`workflows/scouting.question_has_data`) reads the same
- *     repo-only results map. Building the database/filesystem equivalents of
- *     these is real, separate work (same shape as By analysis' gap above),
- *     not a UI relaxation — see docs/Backlog.md.
+ *     paths. A database or filesystem has none of these, and generalizing the
+ *     two `github_url`-keyed tables to a real `(entity_type, entity_slug)`
+ *     key is its own schema-migration-sized piece of work — logged in
+ *     docs/Backlog.md rather than attempted here; this gate stays until
+ *     that lands.
  *
  *  Survey (`getSurveyCandidates`/`runSurveyDefinition`, both
  *  `/api/survey-definitions/{entity_type}/...`) has no such gap and does not
@@ -4755,7 +4754,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
 
 async function loadByAnalysisPane() {
   const el = $('content');
-  const blocked = paneNeedsRepoBackend('By analysis', 'the repo-only survey-results aggregation (REPO_ANALYSIS_RESULTS_MAP)');
+  const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   const stage = state.stage;
@@ -4772,9 +4771,15 @@ async function loadByAnalysisPane() {
 
   const live = () => token === dashToken && state.subTab === 'by_analysis';
 
+  // database/filesystem now have a real (if partial -- see docs/Backlog.md,
+  // "By analysis" was repo-only) survey-results route of their own
+  // (workflows.analysis.build_survey_results) -- apiEntityType() translates
+  // state.resourceType at this boundary the same way getSurveyCandidates/
+  // runSurveyDefinition already do, so 'db' never reaches the server
+  // untranslated.
   let data;
   try {
-    data = await getSurveyDashboards(slug, stage, { includeEmpty: true });
+    data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType: apiEntityType(state.resourceType) });
   } catch (err) {
     if (live()) $('dash-boards').innerHTML =
       `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
@@ -5256,17 +5261,13 @@ async function loadPane() {
   }
 
   {
-    // Deduplicated onto the shared helper (2026-09-22) rather than this
-    // pane's own separate, independently-worded copy of the same gate — see
-    // paneNeedsRepoBackend's own comment for why this is in the list at all
-    // (the catalog function, question_catalog_reader.get_questions, IS
-    // resource-type-generic; the route this whole engine calls to reach it,
-    // GET /api/projects/{slug}/scouting-questions, and its has_data scoring
-    // are not, yet). This one dispatcher backs Scouting/Discovery/
-    // Assessment/Analysis/Enrichment/Curate — not just a "Questions" tab —
-    // so the message names the actual stage rather than a fixed label.
-    const blocked = paneNeedsRepoBackend(stageDef?.label || 'This stage',
-      'the repo-only scouting-questions route and has_data scoring behind the question-checklist engine');
+    // The repo-only gate that used to sit here (paneNeedsRepoBackend) is
+    // gone as of the database/filesystem generalization (docs/Backlog.md,
+    // "scouting-questions was repo-only"): `GET /api/{databases,filesystems}
+    // /{slug}/questions` now exist and reach the same, already-generic
+    // question_catalog_reader.get_questions() the repo route always did.
+    // Only paneNeedsRepo() remains -- a resource must still be selected.
+    const blocked = paneNeedsRepo();
     if (blocked) { el.innerHTML = blocked; bindSubTabs(); return; }
   }
 
@@ -5320,6 +5321,7 @@ async function loadPane() {
       phase: state.stage,
       perspectives: [...state.activePerspectives],
       purposes: currentPurposes(),
+      entityType: apiEntityType(state.resourceType),
     });
   } catch (err) {
     $('question-rows').innerHTML = `<div class="py-s3 text-answer text-accent-ink">
@@ -5336,7 +5338,7 @@ async function loadPane() {
   // failure here leaves the rows answerable and unanswered, which is the
   // truthful degradation: we could not read them, so we do not claim any.
   try {
-    const ctx = await getContext('repo', slug);
+    const ctx = await getContext(apiEntityType(state.resourceType), slug);
     state.contextAnswers = ctx?.question_answers || {};
     state.enrichment = ctx?.enrichment || {};
   } catch {
@@ -5348,7 +5350,7 @@ async function loadPane() {
   // a perspective is held — the number is the whole point of the chip row.
   if (state.activePerspectives.size) {
     try {
-      const all = await getQuestions(slug, { phase: state.stage });
+      const all = await getQuestions(slug, { phase: state.stage, entityType: apiEntityType(state.resourceType) });
       state.allQuestions = all.questions || [];
     } catch {
       // Unknown, and it must stay unknown: with no unfiltered set there is

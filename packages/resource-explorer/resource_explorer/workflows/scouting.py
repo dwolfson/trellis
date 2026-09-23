@@ -122,7 +122,7 @@ def execute_and_record_scouting_scan(slug: str, activity_id: str,
 # ── "has anything actually been measured here" ───────────────────────────────
 
 
-def question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | None:
+def question_has_data(registry, slug: str, analysis_ids: list[str], entity_type: str = "repo") -> bool | None:
     """Best-effort "has RE actually run this for this resource" check.
 
     True as soon as ANY of the question's mapped analysis_ids has data, False if
@@ -135,19 +135,27 @@ def question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | No
     directly instead, the same signal scouting-overview itself reads. Every
     reader call is wrapped: a results_reader raising must never break the whole
     checklist.
+
+    `entity_type` (added for the database/filesystem generalization, docs/
+    Backlog.md's "scouting-questions was repo-only" entry) picks which
+    *_ANALYSIS_RESULTS_MAP to check against — see `workflows.analysis.
+    _results_map_for` for the same three-way switch used by the survey-
+    results dashboards. The `repository_health` special case stays repo-only:
+    it is a repo-specific project_stats signal with no database/filesystem
+    analogue, not a generic fallback other entity_types should also hit.
     """
     if not analysis_ids:
         return None
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_RESULTS_MAP,
-    )
+    from resource_explorer.workflows.analysis import _results_map_for
+
+    results_map, _headline_map = _results_map_for(entity_type)
 
     for analysis_id in analysis_ids:
-        if analysis_id == "repository_health":
+        if entity_type == "repo" and analysis_id == "repository_health":
             if registry.get_latest_project_stats(slug):
                 return True
             continue
-        entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+        entry = results_map.get(analysis_id)
         if not entry:
             continue
         results_reader, _ = entry
@@ -158,6 +166,54 @@ def question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | No
         if data and (not isinstance(data, dict) or any(v for v in data.values())):
             return True
     return False
+
+
+def build_question_checklist(
+    registry, entity_type: str, slug: str,
+    phase: str = "scouting", perspectives: list[str] | None = None, purposes: list[str] | None = None,
+) -> dict:
+    """The Question checklist for any entity_type, generalized out of
+    `projects.py`'s `GET /{slug}/scouting-questions` (repo-only route, added
+    first — see docs/Backlog.md's "scouting-questions was repo-only" entry).
+
+    `question_catalog_reader.get_questions()` was already resource-type-
+    generic before this change; only the route calling it, and the has_data
+    scoring behind it, were repo-only. This function is that route's body,
+    parametrized over entity_type so `projects.py`, `databases.py` and
+    `filesystems.py` can each expose it as a thin wrapper — same shape as
+    `build_analysis_last_activity`/`build_survey_results` above it.
+    """
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    entries = get_questions(entity_type, phase=phase, perspectives=perspectives or None, purposes=purposes or None)
+
+    questions = []
+    for e in entries:
+        answering = e["answering"]
+        has_data = (
+            question_has_data(registry, slug, answering["analysis_ids"], entity_type=entity_type)
+            if answering["kind"] in ("analysis", "partial", "mixed")
+            else None
+        )
+        questions.append({
+            "question": e["question"],
+            "stage": e["stage"],
+            "perspectives": e["perspectives"],
+            "kind": answering["kind"],
+            "analysis_ids": answering["analysis_ids"],
+            "checks": list(answering.get("checks") or []),
+            "note": answering["note"],
+            "answering_mechanism": e.get("answering_mechanism", ""),
+            "rationale": e.get("rationale", ""),
+            "catalog_history": e.get("catalog_history", ""),
+            "has_data": has_data,
+            "purposes": e.get("purposes", []),
+            "derivation": e.get("derivation", {}),
+        })
+
+    return {
+        "phase": phase, "perspectives": perspectives or [], "purposes": purposes or [], "questions": questions,
+    }
 
 
 def results_have_data(results) -> bool:

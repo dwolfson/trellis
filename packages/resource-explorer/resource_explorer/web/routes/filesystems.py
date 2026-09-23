@@ -1,6 +1,7 @@
 """Filesystem management endpoints — list, get, register, survey, remove."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -217,6 +218,45 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
 
     return build_analysis_last_activity(registry, "filesystem", slug)
+
+
+@router.get("/{slug}/survey-results")
+async def get_filesystem_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """The filesystem equivalent of `projects.py`'s `GET /{slug}/survey-
+    results` ("By analysis" in /next) and `databases.py`'s identically-shaped
+    route. See `workflows.analysis.build_survey_results`'s docstring — a
+    filesystem gets one synthesized dashboard, since `FILESYSTEM_ANALYSIS_
+    RESULTS_MAP` has exactly the one entry filesystem has an analysis for."""
+    from resource_explorer.workflows.analysis import build_survey_results
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    return await asyncio.to_thread(
+        build_survey_results, registry, "filesystem", slug, stage, include_empty,
+    )
+
+
+@router.get("/{slug}/questions")
+async def get_filesystem_questions(
+    slug: str,
+    phase: str = "scouting",
+    perspectives: str | None = None,
+    purposes: str | None = None,
+) -> dict:
+    """The filesystem equivalent of `projects.py`'s `GET /{slug}/scouting-
+    questions` and `databases.py`'s identically-shaped route — see that
+    route's docstring."""
+    from resource_explorer.workflows.scouting import build_question_checklist
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
+    purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
+    return build_question_checklist(registry, "filesystem", slug, phase, persp_list, purp_list)
 
 
 @router.delete("/{slug}/")
