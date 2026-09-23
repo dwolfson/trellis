@@ -99,6 +99,19 @@ reads **no verdict can be recorded for a database yet** rather than rendering an
 empty chip set. An empty facet row is indistinguishable from "nothing is
 dispositioned", which is a claim about the data rather than about the mechanism.
 
+**Decision (project owner, 2026-09-23): superseded.** The mechanism gap this
+section named closed on 2026-09-22 (PR #223 generalized `repo_dispositions`'
+PK to `(entity_type, entity_slug)`) — a database/filesystem CAN carry a real
+disposition now, the same as a repo. The apology text above was left in
+`/next`'s sidebar for another day past that, rendering "no verdict can be
+recorded" over a disposition that had actually been recordable since PR #223
+— itself the "confident wrong answer" this whole document exists to prevent,
+just inverted (an apology where there is now a real answer, rather than an
+empty chip row standing in for one). The project owner confirmed disposition
+facets, groups and multi-select bulk actions are wanted for all three
+resource types (re/multiselect-groups-dbfs, 2026-09-23); the sidebar's facet
+row is unconditional now and this section's guidance no longer applies.
+
 ## 6 · The interim prior — yes, and mark it declared
 
 Do the five minutes of YAML. But it renders as a **declared** number, visually

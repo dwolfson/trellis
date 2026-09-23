@@ -132,6 +132,7 @@ import {
   pollActivity,
   removeInvestigationMember,
   removeProject,
+  removeEntity,
   runAnalysis,
   setDisposition,
   setEntityDisposition,
@@ -350,10 +351,12 @@ export function apiEntityType(resourceType) {
 }
 
 /** The sidebar's row data for whichever resource type is current. Databases
- *  and filesystems don't carry `working_set_hidden`/`disposition`/
- *  `group_slug`-scoped-selection concepts the way repos do (see
- *  `nonRepoRowsHtml`'s own comment for what's deliberately not ported), so
- *  this returns the raw fetched list -- filtering happens where it's used. */
+ *  and filesystems now carry the same `working_set_hidden`/`disposition`/
+ *  `group_slug`/`is_published` fields repos do (`web/routes/databases.py`/
+ *  `filesystems.py`), so `visibleRows()` filters all three the same way --
+ *  this just returns the raw fetched list; filtering happens where it's
+ *  used. `state.scope`'s investigation/lifecycle chips remain repo-only
+ *  (see SCOPE_CHIPS) -- that is the one axis genuinely repo-specific. */
 function currentResourceRows() {
   return state.resourceType === 'db' ? state.databases
     : state.resourceType === 'filesystem' ? state.filesystems
@@ -1761,7 +1764,7 @@ function toggleGroupCollapsed(slug) {
 // with the number the user just read. Ported from classic's
 // `_toggleGroupSelected` (index.html).
 function toggleGroupSelected(groupSlug) {
-  const members = visibleProjects()
+  const members = visibleRows()
     .filter((p) => (p.group_slug || '') === groupSlug)
     .map((p) => p.slug);
   if (!members.length) return;
@@ -1788,77 +1791,32 @@ function visibleProjects() {
   });
 }
 
-/** The current type's database/filesystem rows passing the text filter --
- *  the only filter that applies to them. Unlike `visibleProjects()`, there
- *  is no `working_set_hidden`/disposition/lifecycle-scope concept for these
- *  rows to filter on (see `nonRepoRowsHtml`'s comment for why). */
-function filteredNonRepoRows() {
+/** The database/filesystem rows passing every active filter, in list order —
+ *  the `visibleProjects()` above generalized once `DatabaseSummary`/
+ *  `FileSystemSummary` grew `working_set_hidden`/`is_published` fields
+ *  alongside the `disposition`/`group_slug` they already carried
+ *  (`web/routes/databases.py`/`filesystems.py`). There is still no
+ *  investigation-scope/lifecycle-kind concept for these rows (`state.scope`'s
+ *  chips stay repo-only — see SCOPE_CHIPS), so this mirrors `visibleProjects`
+ *  minus that one filter. */
+function visibleNonRepoRows() {
   const f = state.filter.trim().toLowerCase();
-  return currentResourceRows().filter((r) =>
-    !f || `${r.slug} ${r.display_name}`.toLowerCase().includes(f));
+  return currentResourceRows().filter((r) => {
+    if (!state.showHidden && r.working_set_hidden) return false;
+    if (state.dispositionFacet !== 'all'
+        && (r.disposition || 'undecided') !== state.dispositionFacet) return false;
+    if (f && !(`${r.slug} ${r.display_name}`.toLowerCase().includes(f))) return false;
+    return true;
+  });
 }
 
-/** Clickable database/filesystem rows, grouped the same way repos are
- *  (`group_slug` is on both `DatabaseSummary` and `FileSystemSummary` --
- *  `web/routes/databases.py`/`filesystems.py`) -- but WITHOUT the
- *  repo-only machinery that doesn't cleanly apply to these resource types:
- *  no disposition facets/marks (dispositions are repo-only, per the notice
- *  above this in the sidebar), no `working_set_hidden`/"show hidden"
- *  (there is no equivalent field on either summary shape), no select-mode
- *  bulk actions (scope/hide/disposition/work-list/delete all assume a repo
- *  identity -- `entityType: 'repo'` is baked into several of those write
- *  paths and porting them is a separate slice, not this one). What IS
- *  ported: the group-by-`group_slug` layout, and a cloud-icon mark for
- *  `egeria_asset_guid` (cataloged in Egeria), since both are cheap and the
- *  data is already on the row. */
-function nonRepoRowsHtml() {
-  const type = state.resourceType; // 'db' | 'filesystem'
-  const label = type === 'db' ? 'database' : 'filesystem';
-  const loaded = type === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
-  const all = currentResourceRows();
-  const rows = filteredNonRepoRows();
-
-  if (!loaded) {
-    return `<div class="text-chip text-chrome-ink">Loading ${label}s…</div>`;
-  }
-  if (!rows.length) {
-    return `<div class="text-chip text-chrome-ink">${
-      all.length ? 'Nothing matches these filters.' : `No ${label}s registered.`}</div>`;
-  }
-
-  const groups = new Map();
-  for (const r of rows) {
-    const g = r.group_slug || '';
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(r);
-  }
-  const groupName = (slug) =>
-    slug ? (state.groups.find((g) => g.slug === slug)?.display_name || slug) : 'Ungrouped';
-
-  return `
-    <div class="mb-s2 text-chip text-chrome-ink" style="border-bottom:1px dashed currentColor;padding-bottom:2px">
-      Select-mode, disposition and group-collapse memory are repo-only in /next -- ${label}s below are a plain, always-expanded list.
-    </div>
-    ${[...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, items]) => `
-      <details class="mb-s4" open>
-        <summary class="mb-[7px] flex cursor-pointer items-center gap-[6px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
-          <span class="min-w-0 truncate">${esc(groupName(g))}</span>
-          <span class="tnum">${items.length}</span>
-        </summary>
-        <div class="flex flex-col gap-[1px]">
-          ${items.map((r) => `<div class="flex items-baseline gap-[6px] px-2 py-[5px] ${
-            r.slug === state.selectedSlug
-              ? 'border-l-2 border-accent bg-chrome-surface'
-              : 'border-l-2 border-transparent hover:bg-chrome-surface'}">
-            <button data-nonrepo-slug="${esc(r.slug)}"
-              class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
-              >${esc(r.display_name || r.slug)}</button>
-            ${r.egeria_asset_guid
-              ? icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Cataloged in Egeria' })
-              : ''}
-          </div>`).join('')}
-        </div>
-      </details>`).join('')}`;
+/** The current resource type's rows passing every active filter — dispatches
+ *  to `visibleProjects()` for repos (the lifecycle/scope-aware original) and
+ *  `visibleNonRepoRows()` for databases/filesystems. The single entry point
+ *  the grouped list, the "N shown" count and `toggleGroupSelected` all read,
+ *  so a resource type only ever has one notion of "currently visible". */
+function visibleRows() {
+  return state.resourceType === 'repo' ? visibleProjects() : visibleNonRepoRows();
 }
 
 function renderSidebar() {
@@ -1876,8 +1834,12 @@ function renderSidebar() {
 
   // Disposition counts over everything the filters have NOT already removed
   // by disposition, so the numbers describe the list you are choosing from.
+  // `currentResourceRows()` generalizes this over whichever resource type is
+  // current -- `DatabaseSummary`/`FileSystemSummary` carry `disposition` the
+  // same way `ProjectSummary` does (Backlog.md, "Disposition is NOT fixed
+  // here", 2026-09-22), so this is no longer repo-only.
   const counts = {};
-  for (const p of state.projects) {
+  for (const p of currentResourceRows()) {
     if (!state.showHidden && p.working_set_hidden) continue;
     const d = p.disposition || 'undecided';
     counts[d] = (counts[d] || 0) + 1;
@@ -1888,11 +1850,16 @@ function renderSidebar() {
   const present = Object.keys(counts).sort();
   const absent = VALID_DISPOSITIONS.filter((d) => !counts[d]);
 
-  const visible = visibleProjects();
-  const hiddenCount = state.projects.filter((p) => p.working_set_hidden).length;
+  const visible = visibleRows();
+  const hiddenCount = currentResourceRows().filter((p) => p.working_set_hidden).length;
+  const loaded = state.resourceType === 'repo' ? true
+    : state.resourceType === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
+  const nonRepoLabel = state.resourceType === 'db' ? 'database' : 'filesystem';
 
-  // Grouped by the repo's group. Group display names come from the groups
-  // endpoint; a repo with no group lands in Ungrouped.
+  // Grouped by the resource's group. Group display names come from the
+  // groups endpoint; a resource with no group lands in Ungrouped. Generic
+  // across all three resource types since `group_slug` is on all three
+  // summary shapes (`web/routes/projects.py`/`databases.py`/`filesystems.py`).
   const groups = new Map();
   for (const p of visible) {
     const g = p.group_slug || '';
@@ -1946,11 +1913,6 @@ function renderSidebar() {
       title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
       Disposition · ${state.resourceType === 'repo' ? 'all registered repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}
     </div>
-    ${state.resourceType !== 'repo' ? `
-    <div class="mb-s2 text-chip text-chrome-ink">
-      No verdict can be recorded for a ${state.resourceType === 'db' ? 'database' : 'filesystem'} yet — dispositions exist for repositories only.
-      <span class="text-chrome-muted">That is a fact about the mechanism, not about the data.</span>
-    </div>` : `
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
@@ -1964,9 +1926,8 @@ function renderSidebar() {
           ? `<button data-act="show-empty-facets" class="cursor-pointer bg-transparent text-chrome-muted underline"
               ><span class="tnum">${absent.length}</span> more…</button>`
           : ''}
-    </div>`}
+    </div>
 
-    ${state.resourceType === 'repo' ? `
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
       <button data-act="select-mode" class="cursor-pointer bg-transparent ${
         state.selectMode ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
@@ -1977,11 +1938,7 @@ function renderSidebar() {
       <span class="ml-auto"><span class="tnum">${visible.length}</span> shown</span>
     </div>
 
-    ${state.selectMode ? selectActionsHtml() : ''}` : `
-    <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
-      <span class="text-chrome-muted">Select-mode bulk actions (scope, disposition, work lists, delete) are repo-only in /next.</span>
-      <span class="ml-auto"><span class="tnum">${filteredNonRepoRows().length}</span> shown</span>
-    </div>`}
+    ${state.selectMode ? selectActionsHtml() : ''}
 
     ${state.workLists.length ? `
       <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
@@ -1997,9 +1954,13 @@ function renderSidebar() {
             w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
       </div>` : ''}
 
-    ${state.resourceType !== 'repo' ? nonRepoRowsHtml()
+    ${!loaded ? `
+      <div class="text-chip text-chrome-ink">Loading ${nonRepoLabel}s…</div>`
     : visible.length === 0 ? `
-      <div class="text-chip text-chrome-ink">Nothing matches these filters.</div>`
+      <div class="text-chip text-chrome-ink">${
+        currentResourceRows().length
+          ? 'Nothing matches these filters.'
+          : state.resourceType === 'repo' ? 'Nothing matches these filters.' : `No ${nonRepoLabel}s registered.`}</div>`
     : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
         const memberSlugs = rows.map((p) => p.slug);
         const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
@@ -2053,6 +2014,14 @@ function renderSidebar() {
  *  fetch settles. */
 async function switchResourceType(type) {
   state.resourceType = type;
+  // A selection (and select-mode) is per-resource-type: `state.selected`
+  // holds slugs, and a repo slug surviving a switch to 'db' would let a
+  // bulk action fire against `state.databases` rows that don't exist, or
+  // silently no-op against ones that share a slug by coincidence. Clearing
+  // both here is the same rule `state.selectedSlug` already follows a few
+  // lines down for the single-selection case.
+  state.selected.clear();
+  state.selectMode = false;
   renderSidebar();
   writeUrl();
   await ensureResourceListLoaded(type);
@@ -2209,19 +2178,6 @@ function bindSidebar() {
     renderRailScope();
     loadPane();
   }));
-  // Database/filesystem rows (nonRepoRowsHtml) -- same selection behaviour
-  // as a repo row's data-slug handler above, minus the work-list bookkeeping
-  // (work lists are repo-only; state.workListSlug is never set while
-  // resourceType !== 'repo', but clear it anyway for a stray leftover).
-  el.querySelectorAll('button[data-nonrepo-slug]').forEach((b) => b.addEventListener('click', () => {
-    if (state.workListSlug) state.lastWorkListSlug = state.workListSlug;
-    state.workListSlug = null;
-    state.selectedSlug = b.dataset.nonrepoSlug;
-    rerender();
-    renderTopBar();
-    renderRailScope();
-    loadPane();
-  }));
   el.querySelector('#investigation-select')?.addEventListener('change', (e) => {
     setInvestigation(e.target.value);
   });
@@ -2262,7 +2218,7 @@ function bindSidebar() {
       if (!state.selectMode) state.selected.clear();
       renderSidebar();
     },
-    'sel-all': () => { visibleProjects().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
+    'sel-all': () => { visibleRows().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
     'sel-none': () => { state.selected.clear(); renderSidebar(); },
     'sel-scope-add': () => bulkScope(true),
     'sel-scope-remove': () => bulkScope(false),
@@ -2294,11 +2250,12 @@ function sidebarNote(html) {
 async function bulkScope(add) {
   if (!state.investigation || !state.selected.size) return;
   const slugs = [...state.selected];
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      if (add) await addInvestigationMember(state.investigation, 'repo', slug);
-      else await removeInvestigationMember(state.investigation, 'repo', slug);
+      if (add) await addInvestigationMember(state.investigation, entityType, slug);
+      else await removeInvestigationMember(state.investigation, entityType, slug);
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
   await loadWorkingSet();
@@ -2315,11 +2272,12 @@ async function bulkScope(add) {
 async function bulkHide() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      await setWorkingSetHidden('repo', slug, true);
-      const p = state.projects.find((x) => x.slug === slug);
+      await setWorkingSetHidden(entityType, slug, true);
+      const p = currentResourceRows().find((x) => x.slug === slug);
       if (p) p.working_set_hidden = true;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
@@ -2332,16 +2290,24 @@ async function bulkHide() {
 async function bulkDisposition(disposition) {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const isRepo = state.resourceType === 'repo';
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   const noUrl = [];
   for (const slug of slugs) {
-    const p = state.projects.find((x) => x.slug === slug);
-    // The endpoint is keyed on github_url. A repo without one cannot be
-    // dispositioned, and saying so beats a silent no-op.
-    if (!p?.github_url) { noUrl.push(slug); continue; }
+    const p = currentResourceRows().find((x) => x.slug === slug);
+    // Repos: the older endpoint is keyed on github_url, since it must also
+    // resolve a repo that has not been imported yet. A repo without one
+    // cannot be dispositioned that way, and saying so beats a silent no-op.
+    // Databases/filesystems: `setEntityDisposition` is keyed on the slug
+    // directly — no pre-import ambiguity to resolve, since a database/
+    // filesystem's slug IS its stable identity from registration (see
+    // `getEntityDisposition`'s own comment in re-api.js).
+    if (isRepo && !p?.github_url) { noUrl.push(slug); continue; }
     try {
-      await setDisposition(p.github_url, disposition);
-      p.disposition = disposition;
+      if (isRepo) await setDisposition(p.github_url, disposition);
+      else await setEntityDisposition(entityType, slug, disposition);
+      if (p) p.disposition = disposition;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
   const parts = [];
@@ -2355,16 +2321,24 @@ async function bulkDisposition(disposition) {
 
 /**
  * Delete is the one action with no undo anywhere in the stack: the endpoint
- * takes no confirmation flag, drops the repo's pgvector collections and
+ * takes no confirmation flag, drops the resource's pgvector collections and
  * removes the registry row. So the confirmation has to be here, it has to
  * name what is going, and it must not be a one-click button.
+ *
+ * Repo/database/filesystem deletion are three genuinely different registry
+ * operations (`removeProject`/`removeDatabase`/`removeFilesystem` in
+ * re-api.js, each hitting its own DELETE route) — `removeEntity()` dispatches
+ * by `apiEntityType()`-translated type, the same pattern `POST /{slug}/group`
+ * already uses server-side (projects.py).
  */
 function confirmBulkDelete() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const noun = state.resourceType === 'repo' ? 'repo'
+    : state.resourceType === 'db' ? 'database' : 'filesystem';
   sidebarNote(`
     <div class="text-accent-on-dark">Unregister <span class="tnum">${slugs.length}</span>
-      ${slugs.length === 1 ? 'repo' : 'repos'} and delete all local survey data?
+      ${noun}${slugs.length === 1 ? '' : 's'} and delete all local survey data?
       This cannot be undone.</div>
     <div class="mt-s1 break-words text-chrome-muted">${esc(slugs.join(', '))}</div>
     <div class="mt-s2 flex gap-s2">
@@ -2380,11 +2354,14 @@ function confirmBulkDelete() {
 }
 
 async function bulkDelete(slugs) {
+  const entityType = apiEntityType(state.resourceType);
+  const listKey = state.resourceType === 'repo' ? 'projects'
+    : state.resourceType === 'db' ? 'databases' : 'filesystems';
   const failed = [];
   for (const slug of slugs) {
     try {
-      await removeProject(slug);
-      state.projects = state.projects.filter((p) => p.slug !== slug);
+      await removeEntity(entityType, slug);
+      state[listKey] = state[listKey].filter((p) => p.slug !== slug);
       state.selected.delete(slug);
       if (state.selectedSlug === slug) state.selectedSlug = null;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
@@ -2414,6 +2391,7 @@ async function saveSelectionAsWorkList() {
     const wl = await saveAsWorkList(name.trim() || 'Candidates', slugs, {
       investigation: state.investigation,
       rationale: 'selected in the sidebar',
+      entityType: apiEntityType(state.resourceType),
     });
     state.workLists = await listWorkLists();
     state.workListSlug = wl.slug;
@@ -3078,7 +3056,13 @@ export function bindResourceHeader() {
     const hiding = !p?.working_set_hidden;
     note(hiding ? 'Hiding…' : 'Unhiding…');
     try {
-      await setWorkingSetHidden('repo', state.selectedSlug, hiding);
+      // Generalized alongside the sidebar's bulk "hide" action -- this used
+      // to hard-code 'repo' regardless of the selected resource type, which
+      // silently hid the WRONG row whenever a database/filesystem happened
+      // to share a slug with a repo (`resource_working_set` is keyed on
+      // (entity_type, entity_slug), so a wrong entity_type is a wrong key,
+      // not a 404).
+      await setWorkingSetHidden(apiEntityType(state.resourceType), state.selectedSlug, hiding);
       if (p) p.working_set_hidden = hiding;
       renderSidebar();
       await loadPane();

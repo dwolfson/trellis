@@ -39,6 +39,17 @@ class DatabaseSummary(BaseModel):
     # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
     # (Backlog.md, "Disposition is NOT fixed here", 2026-09-22).
     disposition: str = "undecided"
+    # egeria_asset_guid set — boolean only, not the raw GUID, same convention
+    # as `ProjectSummary.is_published` (projects.py). Lets /next's shared
+    # `lifecycleMark()` render the same "published to Egeria" mark for a
+    # database row it already renders for a repo row.
+    is_published: bool = False
+    # Personal view filter, separate axis from disposition — see
+    # `ProjectSummary.working_set_hidden` (projects.py) and
+    # `registry.py`'s `resource_working_set` table. Needed so /next's
+    # select-mode "hide" bulk action and "Show hidden" toggle work for
+    # databases the same way they do for repos.
+    working_set_hidden: bool = False
 
 
 class DatabaseRegistration(BaseModel):
@@ -152,6 +163,8 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
         disposition=disp.get("disposition", "undecided"),
+        is_published=bool(getattr(db, "egeria_asset_guid", "") or ""),
+        working_set_hidden=registry.is_working_set_hidden("database", db.slug),
     )
 
 

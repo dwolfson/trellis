@@ -117,9 +117,28 @@ class TestDispositionRulings:
         assert "Reversing <em>${esc(current)}</em> → <em>${esc(value)}</em> — why?" in body
         assert "a reversal needs a reason" in body and "setDisposition(p.github_url, value, reason)" in body
 
-    def test_a_non_repo_says_no_verdict_can_be_recorded_instead_of_empty_chips(self):
+    def test_a_non_repo_now_renders_real_disposition_chips_not_the_old_apology(self):
+        """SUPERSEDED (re/multiselect-groups-dbfs, 2026-09-23): FUNNEL-COST-
+        RULINGS §5 (docs/design-notes/REPLY-FUNNEL-COST.md) was correct for
+        2026-09-13's mechanism -- a database/filesystem genuinely had no
+        disposition, so an empty facet row would have misrepresented a
+        mechanism gap as "nothing is dispositioned". That mechanism gap
+        closed on 2026-09-22 (PR #223, disposition generalized to
+        (entity_type, entity_slug)) and the sidebar facet row was the one
+        piece of /next that hadn't caught up -- it kept rendering the "no
+        verdict can be recorded" apology over a disposition that had, since
+        PR #223, actually been recordable the whole time. The project owner
+        confirmed (this PR) that disposition facets are wanted for databases/
+        filesystems the same as repos, so the apology is gone and the real
+        chip row (counts, marks, the `mark as…` bulk action) now renders for
+        every resource type -- see REPLY-FUNNEL-COST.md's own addendum."""
         app = (NEXT / "app.js").read_text(encoding="utf-8")
-        i = app.index("No verdict can be recorded for a")
-        assert "dispositions exist for repositories only" in app[i:i + 200]
-        # the chip row is inside the repo branch, so a database renders none
-        assert "${state.resourceType !== 'repo' ? `" in app[i - 400:i]
+        assert "No verdict can be recorded for a" not in app
+        assert "dispositions exist for repositories only" not in app
+        # The facet row itself is no longer gated to state.resourceType ===
+        # 'repo' -- it renders unconditionally in renderSidebar().
+        start = app.index("function renderSidebar() {")
+        end = app.index("\nfunction bindSidebar() {", start)
+        body = app[start:end]
+        assert 'data-facet="all"' in body
+        assert "state.resourceType === 'repo' ? `" not in body

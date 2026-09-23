@@ -371,6 +371,31 @@ export const setWorkingSetHidden = (entityType, entitySlug, hidden) =>
 export const removeProject = (slug) =>
   request(`/api/projects/${encodeURIComponent(slug)}`, { method: 'DELETE' });
 
+/**
+ * Unregister a database / filesystem and delete its local survey data —
+ * the database.py `DELETE /{slug}` and filesystems.py `DELETE /{slug}/`
+ * siblings of `removeProject` above. Same caution applies: no confirmation
+ * flag, irreversible, caller must confirm before calling.
+ *
+ * The trailing slash on the filesystem route is real (filesystems.py's
+ * `delete_filesystem` is registered at `/{slug}/`, not `/{slug}`) — dropped,
+ * this 404s.
+ */
+export const removeDatabase = (slug) =>
+  request(`/api/databases/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+export const removeFilesystem = (slug) =>
+  request(`/api/filesystems/${encodeURIComponent(slug)}/`, { method: 'DELETE' });
+
+/** Dispatch to whichever of the three deletes above matches an
+ *  `apiEntityType()`-translated entity type — the frontend's equivalent of
+ *  `POST /{slug}/group`'s server-side dispatch by resource type
+ *  (projects.py), since repo/database/filesystem deletion are three
+ *  genuinely different registry operations with no single shared route. */
+export const removeEntity = (entityType, slug) =>
+  entityType === 'database' ? removeDatabase(slug)
+    : entityType === 'filesystem' ? removeFilesystem(slug)
+    : removeProject(slug);
+
 /* ── Groups ──────────────────────────────────────────────────────────── */
 
 export const listGroups = () => cached('groups', () => get('/api/projects/groups'));
@@ -907,10 +932,10 @@ export const listWorkLists = (investigation = '') =>
 
 export const getWorkList = (slug) => get(`/api/work-lists/${encodeURIComponent(slug)}`);
 
-export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '' } = {}) =>
+export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '', entityType = 'repo' } = {}) =>
   post('/api/work-lists/', {
     display_name: displayName, entity_slugs: [...entitySlugs],
-    investigation, rationale, description,
+    investigation, rationale, description, entity_type: entityType,
   });
 
 export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
