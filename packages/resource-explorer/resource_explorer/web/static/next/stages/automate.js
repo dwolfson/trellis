@@ -10,22 +10,45 @@
  *     against the same `/api/automate/subscriptions` routes classic uses.
  *   - VIEWING and DELETING the global Schedules overview (⏱ Schedules) is
  *     built here too, against `/api/schedules/`.
- *   - CREATING a subscription is NOT built here, and that is the honest
- *     boundary, not a corner cut. Classic creates one from a "🔔 Notify me"
- *     button on an Assessment/Analysis CARD (index.html, `_notifyMe` /
- *     "Cross-stage definitions"). Assessment and Analysis are now built
- *     stages in /next (item 11), but through the generic Questions-checklist
- *     engine -- QUESTION ROWS, not the card grid classic's Notify-me button
- *     is attached to. That card grid still has no /next equivalent, so the
- *     gap this section describes is unchanged even though the stages
- *     themselves are no longer "not in /next" (see `STAGES` in app.js).
- *     Building a standalone create-subscription form here, detached from the
- *     card it is supposed to sit on, would recreate the exact half-built-
- *     feature outcome PLAN-FINISH-REPOS.md's own stub comment warns against.
- *     So creation stays a link into the current UI (`oldUiHref`), same
- *     pattern as the RFA drawer and every deferred sub-tab in app.js -- the
- *     difference is that here it names the ONE missing piece rather than
- *     deferring the whole stage.
+ *   - CREATING a subscription is now built too (re/next-automate-create-
+ *     subscription), but NOT in this file -- the correction below is worth
+ *     spelling out because the paragraph this replaced said the opposite,
+ *     and a future reader trusting the old claim would go looking for a
+ *     card grid that was never going to exist.
+ *
+ *     Classic creates one from a "🔔 Notify me" button on an Assessment/
+ *     Analysis CARD (index.html, `_createSubscriptionFromCard` /
+ *     "Cross-stage definitions") -- a card names exactly one analysis_id, so
+ *     classic's button fires the POST directly with no form. Assessment and
+ *     Analysis are built in /next (item 11) through the generic Questions-
+ *     checklist engine -- QUESTION ROWS, not a card grid, and that card grid
+ *     still has no /next equivalent and was never going to get one (building
+ *     a standalone form detached from a card that doesn't exist would have
+ *     recreated the exact half-built-feature outcome PLAN-FINISH-REPOS.md's
+ *     own stub comment warns against).
+ *
+ *     The real attachment point turned out to be the question row itself:
+ *     `app.js`'s `provenanceLine()` grows a "🔔 notify me" action wherever a
+ *     row carries `analysis_ids` (`bindRowActions` wires it to
+ *     `openNotifyDialog()`, also in app.js). One further wrinkle a card
+ *     never had: a question's `analysis_ids` is not always 1:1 with one
+ *     analysis (a MIXED:/PARTIAL: answer can name several), so unlike
+ *     classic's one-click button, `openNotifyDialog()` always opens a small
+ *     dialog (`worklist.js`'s `openDialog()`) -- a picker when the row names
+ *     more than one analysis, a plain confirm when it names exactly one --
+ *     rather than ever guessing which one the reader meant. It posts the
+ *     same `/api/automate/subscriptions` this view reads (via `re-api.js`'s
+ *     new `createSubscription()`), so a subscription made from a question
+ *     row shows up in the table below identically to one classic made from
+ *     a card, with no separate plumbing needed: this view already re-fetches
+ *     `listSubscriptions()` on every render rather than caching, so there is
+ *     nothing here to push into.
+ *
+ *     `oldUiHref` below is therefore no longer the only way to create one --
+ *     kept as a fallback link for `state.resourceType !== 'repo'` (database/
+ *     filesystem resources), since the Questions engine `openNotifyDialog()`
+ *     hangs off is itself still gated to repos only in app.js's `loadPane()`
+ *     as of this writing.
  *
  * Like Understanding (next/stages/understanding.js), Automate bypasses the
  * generic Questions-checklist engine entirely -- `loadPane()` in app.js
@@ -141,11 +164,12 @@ async function renderSubscriptions() {
     <p class="max-w-[70ch] text-caveat text-ink-muted">
       A subscription watches an analysis for change on its <em>scheduled</em> runs (see ⏱ Schedules --
       one with no active schedule for its analysis never fires) and delivers via the RFA drawer when
-      something changes. Creating one rides on the "🔔 Notify me" action on an Assessment/Analysis
-      card, and those stages are not built in /next yet --
-      <a href="${esc(oldUiHref())}" class="text-accent-ink underline">open ${
+      something changes. Create one from the "🔔 notify me" action on a question row in Assessment or
+      Analysis${slug ? '' : ' (repositories only, for now)'} --
+      <a href="${esc(oldUiHref())}" class="text-accent-ink underline">or use ${
         slug ? `<span class="font-mono">${esc(slug)}</span>` : 'the current UI'
-      } to create one</a> ${icon('external-link', { size: 12, cls: 'text-accent-ink' })}.
+      }</a> ${icon('external-link', { size: 12, cls: 'text-accent-ink' })} for a database or filesystem,
+      which the Questions engine doesn't cover yet.
     </p>
     <div class="my-s3 h-px bg-rule"></div>
     ${subs.length ? `<table class="w-full text-left">
