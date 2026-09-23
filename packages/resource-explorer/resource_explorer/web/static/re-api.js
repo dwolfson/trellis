@@ -232,10 +232,19 @@ export function getQuestions(slug, { phase = 'scouting', perspectives = [], purp
  * NOT be rendered as a negative answer about the resource. For most of the
  * 41 catalogued questions that is the correct outcome, and inventing an
  * answer for them is exactly what this layer exists to prevent.
+ *
+ * `entityType` defaults to 'repo' for existing callers, same as
+ * `getQuestions()` above — pass `apiEntityType(state.resourceType)` at
+ * every /next boundary crossing. Omitting it used to mean every lookup
+ * silently searched the repo catalog regardless of the resource's real
+ * type: a database/filesystem question worded identically to a repo one
+ * matched the repo's entry (wrong analysis/mechanism, same slug); one
+ * worded differently 404'd outright ("not in the catalog the answer layer
+ * reads").
  */
-export const getAnswer = (slug, question) =>
+export const getAnswer = (slug, question, entityType = 'repo') =>
   get(`/api/analyses/facts/${encodeURIComponent(slug)}/answer`
-      + `?question=${encodeURIComponent(question)}`);
+      + `?question=${encodeURIComponent(question)}&entity_type=${encodeURIComponent(entityType)}`);
 
 /* ── Write paths ─────────────────────────────────────────────────────── */
 

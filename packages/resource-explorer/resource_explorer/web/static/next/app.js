@@ -3037,10 +3037,24 @@ export function bindResourceHeader() {
   });
 
   el.querySelector('[data-act="disposition"]')?.addEventListener('click', () => {
-    if (!p?.github_url) {
-      note(`<span class="text-accent-ink">This repo has no GitHub URL recorded, and the
-        disposition endpoint is keyed on that URL — so its disposition cannot be
-        set from here.</span>`);
+    // Generalized 2026-09-23 alongside the Disposition pane (#223): a repo's
+    // disposition is keyed on its github_url (stable across import/renames —
+    // see registry.py's resolve_repo_entity_slug); a database/filesystem's is
+    // keyed on its slug directly, since that IS its stable identity from
+    // registration. This handler used to check `p?.github_url` and hard-code
+    // 'repo' regardless of the selected resource type — correct for repos,
+    // but it also fired the header's disposition button on db/fs resources,
+    // which always have a slug and never a github_url, so it always refused.
+    const entityType = apiEntityType(state.resourceType);
+    const isRepo = entityType === 'repo';
+    const identifier = isRepo ? p?.github_url : state.selectedSlug;
+    if (!identifier) {
+      note(isRepo
+        ? `<span class="text-accent-ink">This repo has no GitHub URL recorded, and the
+          disposition endpoint is keyed on that URL — so its disposition cannot be
+          set from here.</span>`
+        : `<span class="text-accent-ink">No resource is selected — its disposition
+          cannot be set from here.</span>`);
       return;
     }
     slot.innerHTML = `
@@ -3051,13 +3065,13 @@ export function bindResourceHeader() {
     // visible — which is the rationale trail, not decoration. A single
     // current value cannot say that something was abandoned and then picked
     // back up.
-    renderDispositionHistory('repo', p.github_url, 'disposition-history-popover');
+    renderDispositionHistory(entityType, identifier, 'disposition-history-popover');
     wireDispositionPicker(slot, p, { note, onSet: async (value) => {
       el.innerHTML = '';        // rebuilt below by loadPane
       await loadPane();
       $('resource-action').innerHTML =
         `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
-    } });
+    } }, entityType, state.selectedSlug);
   });
 
   el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
@@ -5799,7 +5813,7 @@ async function loadAnswer(entry, i, slug) {
   state.answers.set(entry.question, 'loading');
   let env;
   try {
-    env = await getAnswer(slug, entry.question);
+    env = await getAnswer(slug, entry.question, apiEntityType(state.resourceType));
   } catch (err) {
     // 404 means the question text is not in the catalog the FactLayer reads —
     // a real mismatch between two catalogs, said plainly rather than shown

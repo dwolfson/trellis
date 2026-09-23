@@ -448,7 +448,8 @@ def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> d
 
 
 @router.get("/facts/{slug}/answer")
-def answer_question(slug: str, question: str = Query(...)) -> dict:
+def answer_question(slug: str, question: str = Query(...),
+                     entity_type: str = Query("repo")) -> dict:
     """An answer envelope for one catalogued question.
 
     The question is matched by its text, which is what the catalog keys on and
@@ -457,11 +458,22 @@ def answer_question(slug: str, question: str = Query(...)) -> dict:
     answer about the resource — for 30 of the 41 catalogued questions that is
     the correct outcome, and inventing an answer for them is precisely what
     this layer exists to prevent.
+
+    `entity_type` used to be unaccepted here, so every lookup searched
+    `get_questions()`'s "repo" default regardless of the resource actually
+    asked about. A database/filesystem question with wording that happens to
+    also exist under "repo" (several were authored that way — the wording
+    pass reused repo's text) silently matched the REPO catalog's entry
+    instead, answering from the repo's own analysis_ids/mechanism against a
+    non-repo slug. A database/filesystem question with NO repo-side match at
+    all 404'd outright — surfaced in `/next` as "This question is not in the
+    catalog the answer layer reads." Both are the same bug: the entity type
+    the checklist was built for never reached this lookup.
     """
     from resource_explorer.facts import FactLayer
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
-    match = next((q for q in get_questions() if q.get("question") == question), None)
+    match = next((q for q in get_questions(entity_type) if q.get("question") == question), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Question not in the catalog: {question!r}")
     return FactLayer().answer(slug, match).as_dict()
