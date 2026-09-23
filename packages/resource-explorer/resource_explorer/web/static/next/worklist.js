@@ -1873,8 +1873,8 @@ export async function openWorkList(ctx, slug) {
   await renderWorkListPane(ctx);
 }
 
-export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '' } = {}) {
-  return createWorkList(displayName, slugs, { investigation, rationale });
+export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '', entityType = 'repo' } = {}) {
+  return createWorkList(displayName, slugs, { investigation, rationale, entityType });
 }
 
 export { listWorkLists };

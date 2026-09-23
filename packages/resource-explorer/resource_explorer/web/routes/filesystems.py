@@ -32,6 +32,18 @@ class FileSystemSummary(BaseModel):
     # 'undecided' when nobody has ever decided — see DatabaseSummary's own
     # comment (databases.py) for why this field exists now.
     disposition: str = "undecided"
+    # egeria_asset_guid set — boolean only, not the raw GUID, same convention
+    # as `ProjectSummary.is_published` (projects.py). Lets /next's shared
+    # `lifecycleMark()` render the same "published to Egeria" mark for a
+    # filesystem row it already renders for a repo row, instead of a
+    # filesystem-only ad hoc egeria_asset_guid check.
+    is_published: bool = False
+    # Personal view filter, separate axis from disposition — see
+    # `ProjectSummary.working_set_hidden` (projects.py) and
+    # `registry.py`'s `resource_working_set` table. Needed so /next's
+    # select-mode "hide" bulk action and "Show hidden" toggle work for
+    # filesystems the same way they do for repos.
+    working_set_hidden: bool = False
 
 
 class FileSystemRegistration(BaseModel):
@@ -118,6 +130,8 @@ def list_filesystems():
                 egeria_user=fs.egeria_user or "",
                 group_slug=getattr(fs, "group_slug", "") or "",
                 disposition=disp.get("disposition", "undecided"),
+                is_published=bool(fs.egeria_asset_guid or ""),
+                working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
             )
         )
     return result
@@ -205,6 +219,8 @@ def get_filesystem(slug: str):
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
         egeria_user=fs.egeria_user or "",
+        is_published=bool(fs.egeria_asset_guid or ""),
+        working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
     )
 
 
