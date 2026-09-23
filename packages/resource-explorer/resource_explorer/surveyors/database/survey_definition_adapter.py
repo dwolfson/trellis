@@ -372,6 +372,14 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 _ADAPTER = ResourceTypeAdapter(
     entity_type="database",
     technology_type="PostgreSQL Database",
+    # Declared lazily (the map is defined later in this module) so FactLayer
+    # can read a database's own results instead of silently falling through
+    # to "no results map declared for this resource type" — see
+    # RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0: `analysis_source_steps`/
+    # `analysis_kinds` stay undeclared for now (FactLayer degrades those to
+    # "no can_run steps offered"/"no kind info", not a hard failure), so this
+    # is the minimal fix, not the complete one.
+    analysis_results_map=lambda: DATABASE_ANALYSIS_RESULTS_MAP,
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,

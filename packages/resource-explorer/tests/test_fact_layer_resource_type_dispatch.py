@@ -97,8 +97,10 @@ class TestTheRepoPathIsUnchanged:
                        for et, slug in registry.last_run_calls)
 
 
-class TestAResourceTypeThatDeclaresNoMaps:
-    """A database today: an adapter exists, and it declares no fact maps.
+class TestAResourceTypeThatDeclaresNoMapsAtAll:
+    """Filesystem today: an adapter exists, and it declares no fact maps at
+    all (database used to be this case too -- see
+    TestTheDatabaseAdapterNowDeclaresResults below for why it no longer is).
 
     The honest answer is "nothing can be read about this resource type here
     yet", not "this analysis has never run" -- the second is a claim about
@@ -106,9 +108,10 @@ class TestAResourceTypeThatDeclaresNoMaps:
     """
 
     def test_fact_reports_undeclared_not_never_run(self, registry):
-        f = FactLayer(registry, resource_type="database").fact("coco_ods", "schema_inventory")
+        f = FactLayer(registry, resource_type="filesystem").fact(
+            "some-fs", "filesystem_inventory")
         assert f.state == NOT_ESTABLISHED
-        assert "database" in f.note
+        assert "filesystem" in f.note
         assert "never run" not in f.note.lower()
 
     def test_a_question_is_not_answered_out_of_the_repo_state_table(self, registry):
@@ -119,7 +122,7 @@ class TestAResourceTypeThatDeclaresNoMaps:
             "question": "Is this repository actively maintained?",
             "answering": {"kind": "direct", "analysis_ids": []},
         }
-        env = FactLayer(registry, resource_type="database").answer("coco_ods", question)
+        env = FactLayer(registry, resource_type="filesystem").answer("some-fs", question)
         assert not env.answerable
         assert env.blocked_reason
 
@@ -127,6 +130,39 @@ class TestAResourceTypeThatDeclaresNoMaps:
         assert "Is this repository actively maintained?" in (
             get_adapter("repo").state_sources()
         )
+
+
+class TestTheDatabaseAdapterNowDeclaresResults:
+    """RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0: the database adapter
+    used to declare no `analysis_results_map` at all, so every database
+    question -- whatever the catalog said -- was answered (or, before that,
+    misrouted to the repo's own results) out of a layer with nowhere to
+    read from. Fixed by declaring `analysis_results_map` on the database
+    adapter and passing the caller's resource_type into FactLayer at the
+    `/facts/{slug}/answer` route (`web/routes/analyses.py`).
+
+    `analysis_source_steps`/`analysis_kinds`/`state_sources` stay
+    undeclared for the database adapter for now -- this only closes the gap
+    that made every prior database-catalog fix invisible on screen, not
+    every gap in the database fact layer.
+    """
+
+    def test_the_results_map_is_the_database_one(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_RESULTS_MAP,
+        )
+
+        assert get_adapter("database").analysis_results_map() is DATABASE_ANALYSIS_RESULTS_MAP
+
+    def test_a_known_database_analysis_is_no_longer_reported_undeclared(self, registry):
+        f = FactLayer(registry, resource_type="database").fact("coco_ods", "schema_inventory")
+        # No analysis_kinds map means the live-read path never fires and no
+        # run is recorded by this stub registry, so the honest state here is
+        # NEVER_RUN -- a claim about the resource this stub's `coco_ods` has
+        # never made a survey run for. The point being pinned is what it is
+        # NOT: the "no results map declared" note this analysis_id used to
+        # get regardless of which database was asked about.
+        assert "no analysis results are registered" not in f.note.lower()
 
 
 class TestAnUnknownResourceType:
