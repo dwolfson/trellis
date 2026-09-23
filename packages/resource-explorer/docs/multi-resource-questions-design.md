@@ -1409,6 +1409,55 @@ is the `scopeElements` key set shared by lens and scope: `subjectTerms`,
 `dataClasses`, `regions`, `jurisdiction`, `controller`, `grainStatement`,
 `interval`, so that fit compares like with like.
 
+### 16.7 The six cross-type gaps from the DB/FS coverage audit — one read-back layer, not six items
+
+The DB/FS coverage audit (§2.2 there, 2026-09-23) found six cross-type
+questions that all sit on Egeria-native elements — `DataScope`,
+`DigitalSubscription`, `DigitalProduct`, zones and classifications — with
+no working read or write path from RE. Its read that this is one plumbing
+gap rather than per-type work is right. What §16 already answers, what it
+extends, and what belongs elsewhere:
+
+| # | Question | §16 status | What closes it |
+|---|---|---|---|
+| 1 | Can Egeria's engine reach this resource, or must RE survey locally, and which is cheaper? | **Not §16.** Rule B (§3) and Phase 1 slice 13 (`resource_reachability`, `CHECK_ASSET`-only engine action, cost record), in progress | slice 13; nothing here |
+| 2 | Where is the resource physically — host, region, jurisdiction, residency? | **Partly.** §16's `coverage_signals` measures the *data's* spatial extent; the *resource's* location is a different fact, though both land in `DataScope.scopeElements` (§4's sovereignty row) | **extend `coverage_signals`** with a resource-location group, all free at Scouting: endpoint host and port from the Connection, cloud region from instance metadata where present, mount or bucket region for filesystems, portal country for datasets; jurisdiction and controller stay human-supplied (Enrichment) and are declared, never inferred |
+| 3 | What is the data's scope in time — collection, validity, coverage? | **Answered.** The audit calls it "blocked on column-level date-range profiling"; it is not — `pg_stats` histogram bounds, partition bounds and Parquet footers give the estimate at Scouting with no profiling (§16.2), and `coverage_profile` measures it in Analysis | build order in §16.6 |
+| 4 | Restrictions beyond the licence — zone, confidentiality classification, non-standard terms, agreements? | **Not §16, but the same read path.** These are classifications and relationships already on the asset in Egeria; nothing reads them back into the question layer | the read-back layer below |
+| 5 | Is there a defined need or market? | **Partly.** §16.5 point 5 adds the lens-fit demand signal, which needs no Egeria read; `DigitalSubscription` counts and RFAs asking for this kind of data are reads that do not exist | the read-back layer, plus an RFA index by requested data kind (a local query over `rfa_actions`, small) |
+| 6 | Ready to be offered as a data product? | **Composite over 1–5**, plus §16.4's quality dimensions and the declared `DataScope`/`DataGrain` as inputs | unblocked when the read-back layer and slice 13 land; the composite itself is a day |
+
+**The read-back layer.** One analysis, `governance_context_readback`,
+`source: egeria`, rule A in spirit (Egeria is the record; RE mirrors), rule D
+in mechanics (rows in RE's store, keyed `(slug, read_at)`, so the question
+layer and the change comparators read local rows). For the asset and its
+anchored elements it reads:
+
+| Read | Egeria source | Feeds question |
+|---|---|---|
+| `DataScope` classification | classification-explorer (`get` side of the same endpoint `add_data_scope` writes) | 2, 3 — the *declared* half of measured-vs-declared |
+| Governance zones, confidentiality / criticality / retention classifications | classification-explorer | 4 |
+| `License`, `DataSharingAgreement`, `Agreement` relationships and their terms | classification-explorer / governance-officer | 4, and the cross-type licence row in §4 |
+| `DigitalProduct` membership, `DigitalSubscription` count and subscribers | digital-product view service | 5, 6 |
+| `Ownership` classification | classification-explorer | §4's ownership row |
+| `DataGrain` assignment | data-designer | §16's declared grain |
+
+Everything in that table has a pyegeria read method already
+(`egeria-support-for-multi-resource.md` §7 for `DataScope`; the
+classification-explorer family for the rest; `DigitalSubscription` is the
+one to verify with a probe before building on it). The write side —
+declaring `DataScope` and `DataGrain` from the Curate surface — is §16.1
+and §14; this is its mirror image, and the two should be one slice so the
+round trip is tested together: declare, read back, render, change the
+declaration, see the comparator fire.
+
+**Where it sits in the plan:** Phase 1, after the structured tables
+(stream 3), as its own slice, cross-type by construction. It is not a
+database or filesystem item and should not be filed per type. It is the
+first analysis whose source is `egeria` for *every* resource type,
+including repositories, so its results reader is the template for any
+later Egeria-mirrored analysis.
+
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
 `facts.py`, `registry.py`, `configdata/analysis_catalog.yaml`, both question
