@@ -469,6 +469,18 @@ def answer_question(slug: str, question: str = Query(...),
     all 404'd outright — surfaced in `/next` as "This question is not in the
     catalog the answer layer reads." Both are the same bug: the entity type
     the checklist was built for never reached this lookup.
+
+    That earlier fix (this docstring's paragraph above) covers only the
+    CATALOG lookup. It shipped with `FactLayer()` still built with no
+    `resource_type`, defaulting to "repo" — so even a correctly-matched
+    database question was still answered out of the REPO's results map,
+    which holds none of the database's analyses. Caught by the designer
+    session reading this route end to end
+    (`RULING-DB-QUESTION-CATALOG-CONSISTENCY.md` §0): every prior "fix" to
+    the database question catalog (PR #226's entity-type threading, #229's
+    eleven gap-to-analysis relabels) changed what the CATALOG claims without
+    changing what this route actually READS, because nothing here ever told
+    `FactLayer` which resource type's maps to use.
     """
     from resource_explorer.facts import FactLayer
     from resource_explorer.surveyors.question_catalog_reader import get_questions
@@ -476,7 +488,7 @@ def answer_question(slug: str, question: str = Query(...),
     match = next((q for q in get_questions(entity_type) if q.get("question") == question), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Question not in the catalog: {question!r}")
-    return FactLayer().answer(slug, match).as_dict()
+    return FactLayer(resource_type=entity_type).answer(slug, match).as_dict()
 
 
 @router.get("/{resource_type}")
