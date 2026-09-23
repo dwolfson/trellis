@@ -7132,3 +7132,110 @@ honest "not built" state (DB-specific views with no `/next` equivalent —
 schema-distribution charts, Kroki ER diagrams, the Survey Database modal —
 and filesystem-specific views — file inventory browsing, data-file
 profiling — stay out of scope, unchanged by this reversal).
+
+## By analysis / scouting-questions were repo-only; Disposition's `github_url` keying is not fixed here (2026-09-22)
+
+Three more real, separate backend gaps found continuing the audit above (on
+`re/next-generalize-byanalysis-disposition-questions`) — all genuinely
+repo-only backends, not a leftover UI restriction:
+
+**1. "By analysis" (`GET /{slug}/survey-results`)** read
+`REPO_ANALYSIS_RESULTS_MAP`/`REPO_ANALYSIS_HEADLINE_MAP`
+(`repo_survey_definition_adapter.py`) directly, with no database/filesystem
+equivalent. Fixed by extracting the route body into `workflows.analysis.
+build_survey_results(registry, entity_type, slug, stage, include_empty)` and
+adding `GET /api/databases/{slug}/survey-results` and `GET
+/api/filesystems/{slug}/survey-results` alongside it — same shape as
+`build_analysis_last_activity` above it. repo's own curated
+`SURVEY_RESULT_DASHBOARDS` groupings are untouched; database and filesystem
+have no such curated, themed groupings today, so this synthesizes one
+dashboard **per analysis_id** for those two entity_types instead — literally
+"by analysis", which is what the pane is named.
+
+New `DATABASE_ANALYSIS_RESULTS_MAP` (`database/survey_definition_adapter.py`)
+covers 14 of database's 18 analyses with **real** local reads, not stubs:
+- 8 are `live_read`-style thin wrappers over `run_db_derived()` (and its two
+  comparators, `derive_schema_diff`/`derive_grant_change`) — db_classification,
+  db_relationship_graph, grain_determination, db_fingerprint,
+  schema_conventions, db_change_rates, schema_diff, grant_change. All eight
+  already had this exact zero-fetch computation built (it backs their Egeria
+  publish path); wiring a reader for them is a read-time wrapper, not new
+  domain logic.
+- 6 are thin reads of already-materialized detail rows or the latest
+  `database_surveys.survey_data` blob — schema_inventory, row_count_snapshot
+  (`database_tables`/`database_columns` detail rows), privilege_audit,
+  db_activity_signals, db_resilience, db_external_dependencies (the four
+  `postgres_operations` sections, read from the survey blob's `operations`
+  key — no dedicated detail table exists for these four yet).
+
+**Left out, on purpose, not guessed at:** `data_class_match`,
+`reference_data_match` and `nested_column_profile` have no results reader.
+Their verdicts are real (`column_matching.py`/`nested_columns_step.py`
+compute them) but are turned ONLY into Egeria annotations — there is no
+local table a reader could query, because `registry.upsert_finding()` (the
+table every repo results_reader reads via `query_findings`) hard-requires
+`registry.get(slug)`, i.e. a registered **repo** `Project`; a database or
+filesystem survey cannot write to `project_analysis_findings`/
+`project_analysis_metrics` at all today. Building that path — either
+generalizing `upsert_finding`'s guard to accept database/filesystem
+entities, or giving these three their own detail table the way
+`database_column_profiles` exists for the pg_stats side of column
+profiling — is real, separate schema-and-write-path work, not a reader
+wrapper, so these three (and `egeria_db_survey`, which is a trigger with no
+local results either way, same as repo's own Egeria-triggered analyses)
+stay `results=None` — an honest "no results view yet", same as repo's own
+`repository_health`.
+
+**2. "Questions checklist" (`GET /{slug}/scouting-questions`)** — the
+underlying catalog function, `question_catalog_reader.get_questions()`, was
+already resource-type-generic; only the ROUTE reaching it, and the
+`has_data` scoring behind it (`workflows.scouting.question_has_data`, which
+read `REPO_ANALYSIS_RESULTS_MAP` directly) were repo-only. This dispatcher
+backs Scouting/Discovery/Assessment/Analysis/Enrichment/Curate in `/next`,
+not just a "Questions" tab (`app.js`'s `loadPane()`), so the fix has that
+whole blast radius. Fixed by extracting `workflows.scouting.
+build_question_checklist(registry, entity_type, slug, phase, perspectives,
+purposes)` and parametrizing `question_has_data` over `entity_type`
+(dispatching to the same `_results_map_for` three-way switch
+`build_survey_results` uses), then adding `GET /api/databases/{slug}/
+questions` and `GET /api/filesystems/{slug}/questions`. Database/filesystem
+questions now score `has_data` against the real
+`DATABASE_ANALYSIS_RESULTS_MAP`/`FILESYSTEM_ANALYSIS_RESULTS_MAP` above,
+inheriting the same three-analysis gap noted in item 1 — a question whose
+only `analysis_ids` are `data_class_match`/`reference_data_match`/
+`nested_column_profile` reports `has_data: false` today (a real "checked,
+found nothing to point at" answer only in the sense that there is genuinely
+nowhere local to check yet, not that the analysis found nothing).
+
+`/next`'s `app.js` gates for both panes (`paneNeedsRepoBackend('By
+analysis', ...)` and the questions-engine's own duplicate copy) are removed;
+both now fall through to the plain `paneNeedsRepo()` "select a resource"
+check, same as Survey. `apiEntityType()` is threaded through every new call
+site (`getSurveyDashboards`, `getQuestions`, and the `getContext` call the
+Questions pane's human-answer overlay was making with a hardcoded `'repo'`
+— found while touching this code, fixed alongside it since it is the exact
+same bug class this whole effort exists to close).
+
+**3. Disposition is NOT fixed here — investigated and deliberately left as
+an honest gate.** `registry.py`'s `set_disposition`/`get_disposition_history`
+are keyed by `github_url`, including a hardcoded `repo_disposition` table
+with `github_url TEXT PRIMARY KEY` (~line 2762) and a `repo_disposition_
+history` table keyed the same way (~line 2780) — plus the journal
+(`/api/journal/repo/...`) and records (`/api/projects/{slug}/records`)
+routes, both hardcoded repo paths. Unlike items 1 and 2, this is not a
+route-level gap over an already-generic backend; the `github_url` primary
+key is load-bearing schema, and every write/read path assumes it. A real fix
+needs one of:
+- a new `database_disposition`/`filesystem_disposition` table pair (schema
+  duplication, but no migration of existing rows), or
+- a genuine generalization of `repo_disposition`/`repo_disposition_history`
+  to a `(entity_type, entity_slug)` composite key in place of `github_url`
+  (no duplication, but a real migration of every existing disposition row
+  and every caller that currently passes a `github_url`).
+
+Judged too large to attempt as a "rushed half-migration" alongside items 1
+and 2 in the same PR — a real schema decision (which of the two shapes
+above, and whether existing `github_url` values need backfilling to slugs or
+can stay keyed as-is under a widened key) belongs to its own reviewed slice.
+`/next`'s Disposition gate (`paneNeedsRepoBackend('Disposition', ...)`) is
+therefore left exactly as the prior agent built it — unchanged by this PR.

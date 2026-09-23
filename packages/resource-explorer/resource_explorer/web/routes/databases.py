@@ -195,6 +195,60 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     return build_analysis_last_activity(registry, "database", slug)
 
 
+@router.get("/{slug}/survey-results")
+async def get_database_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """The database equivalent of `projects.py`'s `GET /{slug}/survey-results`
+    ("By analysis" in /next) — added because that pane was gated to
+    `resourceType === 'repo'` on the honest grounds that the repo route reads
+    `REPO_ANALYSIS_RESULTS_MAP` directly (docs/Backlog.md's "By analysis" was
+    repo-only entry). Delegates to the same `workflows.analysis.
+    build_survey_results` the repo route now uses — see that function's
+    docstring for what a database gets here: one synthesized dashboard per
+    analysis_id in `DATABASE_ANALYSIS_RESULTS_MAP` (14 of 18 database
+    analyses have one; see that map's own docstring for the three that don't
+    yet and why), not repo's curated multi-analysis groupings.
+
+    Off the event loop for the same reason as the repo route: the
+    `db_derived`-backed readers recompute on every call and a slow one must
+    not block other requests."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.analysis import build_survey_results
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    return await asyncio.to_thread(
+        build_survey_results, registry, "database", slug, stage, include_empty,
+    )
+
+
+@router.get("/{slug}/questions")
+async def get_database_questions(
+    slug: str,
+    phase: str = "scouting",
+    perspectives: str | None = None,
+    purposes: str | None = None,
+) -> dict:
+    """The database equivalent of `projects.py`'s `GET /{slug}/scouting-
+    questions` — added because `question_catalog_reader.get_questions()` was
+    already resource-type-generic, but the ONLY route reaching it was
+    hardcoded to the repo registry (docs/Backlog.md's "scouting-questions was
+    repo-only" entry). Delegates to `workflows.scouting.
+    build_question_checklist` — same has_data scoring machinery the repo
+    route uses, keyed to `DATABASE_ANALYSIS_RESULTS_MAP` instead."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.scouting import build_question_checklist
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
+    purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
+    return build_question_checklist(registry, "database", slug, phase, persp_list, purp_list)
+
+
 @router.post("/register", response_model=DatabaseSummary)
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""

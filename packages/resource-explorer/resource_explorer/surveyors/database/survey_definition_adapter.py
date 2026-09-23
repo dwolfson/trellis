@@ -547,3 +547,185 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "nested_column_profile": ["postgres_nested_columns"],
     "egeria_db_survey": ["egeria_db_survey"],
 }
+
+
+# ── Results reading — the database equivalent of repo_survey_definition_
+# adapter.REPO_ANALYSIS_RESULTS_MAP (see docs/Backlog.md, "By analysis" /
+# scouting-questions has_data were repo-only) ────────────────────────────────
+#
+# repo's map exists because every repo analysis has a bespoke results_reader
+# hand-written for it. Database has no such per-analysis reader layer today,
+# and building 18 of them from scratch is not "generalizing a map" — it is
+# writing new domain logic per analysis, the same shape of decision the
+# disposition generalization faced and one this entry answers the same way,
+# analysis-id by analysis-id rather than for the whole map at once:
+#
+# * The 8 `db_derived`-owned analyses (db_classification, db_relationship_
+#   graph, grain_determination, db_fingerprint, schema_conventions,
+#   db_change_rates, schema_diff, grant_change) already have a real,
+#   zero-fetch, already-built pure computation — `run_db_derived()` (and the
+#   two comparators it calls, `derive_schema_diff`/`derive_grant_change`) —
+#   because that is what backs their Egeria publish path today. Wiring a
+#   results_reader for these is a thin read-time wrapper, not new logic, so
+#   they are `live_read=True` (recomputed on read, same shape as repo's
+#   `architecture_diagram`) rather than a stored-row lookup.
+# * schema_inventory, row_count_snapshot, privilege_audit, db_activity_
+#   signals, db_resilience and db_external_dependencies are genuinely
+#   MEASURED and stored already — either in the structured detail tables
+#   (`database_tables`/`database_columns`, materialized by
+#   `result_materializer.py` from every local survey) or, for the four
+#   `postgres_operations` sections, in the latest `database_surveys.
+#   survey_data` blob's `operations` key (no detail table exists for those
+#   four yet — reading the blob is the honest way to reach data that is
+#   already there rather than re-deriving it). Wrapping either read is a thin
+#   pass-through, again not new domain logic.
+# * data_class_match, reference_data_match and nested_column_profile are NOT
+#   included. Their verdicts are built (column_matching.py /
+#   nested_columns_step.py) but only ever turned into Egeria annotations —
+#   there is no local table a reader could query, and `upsert_finding()` (the
+#   table repo's readers use) hard-requires `registry.get(slug)`, i.e. a
+#   registered *repo* `Project`, so a database survey cannot write to it at
+#   all today. Building that path is the same shape of "needs its own schema
+#   slice" decision item 2 (disposition) hit, so it is logged rather than
+#   rushed — see docs/Backlog.md's "Database per-column match results have no
+#   local store" entry — and these three stay `results=None` (an honest
+#   "no results view yet", same as repo's `repository_health`).
+# * egeria_db_survey has no local results either way, same as repo's own
+#   Egeria-triggered analyses — it is a trigger, not a reader.
+def _db_derived_field_reader(field: str):
+    """A results_reader for one of run_db_derived()'s `derived` keys.
+
+    `run_db_derived` recomputes all eight fields together (it opens no
+    connection — it reads already-stored detail rows), so this reads the
+    whole thing and returns just the one field a caller asked for. Slightly
+    more work than a bespoke per-field reader would do, and exactly the
+    trade repo's own architecture_diagram live_read reader makes.
+
+    db_derived's own absence marker is `registry.STATE_NOT_MEASURED`
+    ("insufficient stored rows to compute this" — its own module docstring:
+    "the same vocabulary slices 7 and 8 use"), a DIFFERENT vocabulary from
+    `result_status.py`'s `NEVER_RUN`/`NOT_ESTABLISHED` that `workflows.
+    scouting.results_have_data` (the shared "does this payload actually hold
+    anything" check every results/has_data path in this codebase runs
+    through) knows how to recognize. Left untranslated, a never-surveyed
+    database's `{"state": "not_measured", "explanation": "...", ...}`
+    envelope reads as data to that check — truthy dict, non-empty
+    `explanation` string — the exact "absence rendered as an answer" failure
+    this whole area exists to avoid. Normalized to `{}` here, at the one
+    seam where the vocabularies meet, rather than teaching
+    `results_have_data` a second absence vocabulary it would then have to
+    keep in sync with this one.
+    """
+    from resource_explorer.registry import STATE_NOT_MEASURED
+
+    def _read(registry, slug: str) -> dict:
+        from resource_explorer.surveyors.database.db_derived import run_db_derived
+
+        data = run_db_derived(registry, slug).get("derived", {}).get(field) or {}
+        if isinstance(data, dict) and data.get("state") == STATE_NOT_MEASURED:
+            return {}
+        return data
+
+    return _read
+
+
+def _operations_section_reader(section: str):
+    """A results_reader for one of `postgres_operations`'s four sections,
+    read back from the latest survey's stored `survey_data` blob (there is
+    no dedicated detail table for these four yet — see the module docstring
+    above). Returns {} — not None — when nothing has been measured, matching
+    every other reader's "empty dict, not an exception" contract; `None` in
+    the blob means "this engine capability was not supported", which the
+    caller (has_data / the results card) treats as present-but-empty, same as
+    repo's ResourceMeasureAnnotation(confidence=0) rendering for the same
+    fact.
+    """
+    import json as _json
+
+    def _read(registry, slug: str) -> dict:
+        survey = registry.get_latest_database_survey(slug)
+        if not survey:
+            return {}
+        try:
+            survey_data = _json.loads(survey.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return (survey_data.get("operations") or {}).get(section) or {}
+
+    return _read
+
+
+def _schema_inventory_results(registry, slug: str) -> dict:
+    """Last-measured schema shape, read from the structured detail tables
+    every local survey's `postgres_schema_and_stats` step already writes
+    (`result_materializer.database_rows_from_survey_data`) — no re-fetch."""
+    tables = registry.query_detail_rows("database_tables", slug)
+    if not tables:
+        return {}
+    columns = registry.query_detail_rows("database_columns", slug)
+    columns_by_table: dict[tuple, int] = {}
+    for c in columns:
+        key = (c.get("schema_name"), c.get("table_name"))
+        columns_by_table[key] = columns_by_table.get(key, 0) + 1
+    return {
+        "table_count": len(tables),
+        "column_count": len(columns),
+        "tables": [
+            {
+                "schema_name": t.get("schema_name"),
+                "table_name": t.get("table_name"),
+                "table_type": t.get("table_type") or "",
+                "column_count": columns_by_table.get(
+                    (t.get("schema_name"), t.get("table_name")), 0
+                ),
+                "row_count": t.get("row_count"),
+            }
+            for t in tables
+        ],
+    }
+
+
+def _row_count_snapshot_results(registry, slug: str) -> dict:
+    """Row counts by table, from the same `database_tables` detail rows
+    schema_inventory reads — its own catalog entry, since a row count is a
+    different question ("how much data") from a schema shape ("what tables
+    exist"), even though both are read from the same stored snapshot."""
+    tables = registry.query_detail_rows("database_tables", slug)
+    if not tables:
+        return {}
+    measured = [t for t in tables if t.get("row_count") is not None]
+    return {
+        "tables": [
+            {"schema_name": t.get("schema_name"), "table_name": t.get("table_name"),
+             "row_count": t.get("row_count")}
+            for t in tables
+        ],
+        "table_count": len(tables),
+        "measured_count": len(measured),
+    }
+
+
+DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
+    "schema_inventory": (_schema_inventory_results, None),
+    "row_count_snapshot": (_row_count_snapshot_results, None),
+    "privilege_audit": (_operations_section_reader("privilege_audit"), None),
+    "db_activity_signals": (_operations_section_reader("activity_signals"), None),
+    "db_resilience": (_operations_section_reader("resilience"), None),
+    "db_external_dependencies": (_operations_section_reader("external_dependencies"), None),
+    "db_classification": (_db_derived_field_reader("db_classification"), None),
+    "db_relationship_graph": (_db_derived_field_reader("db_relationship_graph"), None),
+    "grain_determination": (_db_derived_field_reader("grain_determination"), None),
+    "db_fingerprint": (_db_derived_field_reader("db_fingerprint"), None),
+    "schema_conventions": (_db_derived_field_reader("schema_conventions"), None),
+    "db_change_rates": (_db_derived_field_reader("db_change_rates"), None),
+    "schema_diff": (_db_derived_field_reader("schema_diff"), None),
+    "grant_change": (_db_derived_field_reader("grant_change"), None),
+}
+
+#: No headline readers yet (Tier 1 stat tiles) — every entry above is real,
+#: full results, and a headline is an additional, optional summarization repo
+#: builds per analysis (see AnalysisKindResults.headline_reader). Not
+#: building it is a smaller, self-contained gap than the map itself and does
+#: not block "By analysis" or the Questions checklist, which only consult
+#: DATABASE_ANALYSIS_RESULTS_MAP.
+DATABASE_ANALYSIS_HEADLINE_MAP: dict = {}

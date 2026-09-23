@@ -507,15 +507,20 @@ async def get_scouting_questions(
     perspectives: str | None = None,
     purposes: str | None = None,
 ) -> QuestionChecklist:
-    """Per-phase Question checklist — which of the authored Scouting
+    """Per-phase Question checklist -- which of the authored Scouting
     questions (docs/dr-egeria/resource_questions.csv, via
     question_catalog_reader.py) this phase raises or can answer, filtered
     by the active Perspective set (comma-separated query param, matching
-    the UI's activePerspectives multi-select — see index.html's
+    the UI's activePerspectives multi-select -- see index.html's
     togglePerspective()), with a computed has_data flag for
-    analysis/partial/mixed-kind questions."""
+    analysis/partial/mixed-kind questions.
+
+    As of the database/filesystem generalization (docs/Backlog.md,
+    "scouting-questions was repo-only"), this is a thin wrapper over
+    `workflows.scouting.build_question_checklist` -- see that function's
+    docstring. repo's own behavior here is unchanged."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.question_catalog_reader import get_questions
+    from resource_explorer.workflows.scouting import build_question_checklist
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -524,38 +529,8 @@ async def get_scouting_questions(
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
     purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
-    entries = get_questions(
-        "repo", phase=phase,
-        perspectives=persp_list or None,
-        purposes=purp_list or None,
-    )
-
-    checklist = []
-    for e in entries:
-        answering = e["answering"]
-        has_data = (
-            _question_has_data(registry, slug, answering["analysis_ids"])
-            if answering["kind"] in ("analysis", "partial", "mixed")
-            else None
-        )
-        checklist.append(QuestionChecklistEntry(
-            question=e["question"],
-            stage=e["stage"],
-            perspectives=e["perspectives"],
-            kind=answering["kind"],
-            analysis_ids=answering["analysis_ids"],
-            checks=list(answering.get("checks") or []),
-            note=answering["note"],
-            answering_mechanism=e.get("answering_mechanism", ""),
-            rationale=e.get("rationale", ""),
-            catalog_history=e.get("catalog_history", ""),
-            has_data=has_data,
-            purposes=e.get("purposes", []),
-            derivation=e.get("derivation", {}),
-        ))
-
     return QuestionChecklist(
-        phase=phase, perspectives=persp_list, purposes=purp_list, questions=checklist
+        **build_question_checklist(registry, "repo", slug, phase, persp_list, purp_list)
     )
 
 
@@ -1053,128 +1028,30 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
 
 
 def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False) -> dict:
-    """Tier 2 — the Survey Results dashboards for this repo.
+    """Tier 2 -- the Survey Results dashboards for this repo.
 
     stage (optional): restrict to cards belonging to that funnel stage, so each
     intent's own Results tab shows only what it is responsible for. Omitted =
     every stage, the original repo-wide view.
 
     include_empty (optional): return cards with no stored results too. Off by
-    default — see the has_results comment below for why an empty card is worse
-    than an absent one.
+    default -- see build_survey_results' has_results comment for why an empty
+    card is worse than an absent one.
 
-    Original docstring follows.
-
-    Tier 2 — the repo-wide Survey Results dashboard
-    (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
-    entry, with its resolved analysis_ids' latest results attached (reusing
-    the exact same results_reader()s the per-analysis_id Analysis/Assessment
-    cards already call — no new persistence, this is a pure aggregation
-    layer) and its derived Perspective tags. A dashboard entry whose reader
-    raises (e.g. a step that's never been run for this repo) degrades to
-    results=None for that one analysis_id rather than failing the whole
-    dashboard list."""
+    As of the database/filesystem generalization (docs/Backlog.md, "By
+    analysis" was repo-only), this is a thin wrapper over
+    `workflows.analysis.build_survey_results` -- see that function's
+    docstring for the full picture, including what changed for the other two
+    entity_types. repo's own behavior here is unchanged."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_HEADLINE_MAP,
-        REPO_ANALYSIS_RESULTS_MAP,
-        SURVEY_RESULT_DASHBOARDS,
-        get_dashboard_annotation_types,
-        get_dashboard_perspectives,
-        get_dashboard_stages,
-    )
+    from resource_explorer.workflows.analysis import build_survey_results
 
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    # {annotation_type: latest published_at} — one query for the whole repo,
-    # joined per-dashboard below against each dashboard's own annotation_types
-    # (get_dashboard_annotation_types). Real Egeria publish history, not a
-    # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
-    published_by_type = registry.get_last_published_annotation_types(slug)
-    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
-    # AHEAD.md §4 — one flag for the whole repo, same as get_analyses_last_
-    # activity above.
-    publish_stale = (registry.get_egeria_linkage("repo_publish", slug) or {}).get("status") == "stale"
-
-    dashboards = []
-    for dashboard in SURVEY_RESULT_DASHBOARDS.values():
-        stages = get_dashboard_stages(dashboard.analysis_ids)
-        # Stage filter: a card can legitimately belong to several stages
-        # (health_maturity reports repository_health/scouting *and*
-        # maturity/assessment), so this is membership, not equality.
-        if stage and stage not in stages:
-            continue
-
-        analyses = []
-        for analysis_id in dashboard.analysis_ids:
-            entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
-            results = None
-            if entry:
-                results_reader, _ = entry
-                try:
-                    results = results_reader(registry, slug)
-                except Exception:
-                    results = None
-            # headline is the same {label, tone} summary the Tier-1 stat
-            # tiles already use (get_survey_results_summary above) — added
-            # 2026-08-31 so a custom dashboard renderer (renderSecurityOverview
-            # Dashboard's scorecard) can show a tile for an analysis without
-            # re-deriving its own summary logic in JS from raw findings, which
-            # would duplicate exactly what each analysis's headline_reader
-            # already computes. Same fail-soft shape as results — a reader
-            # that raises degrades to headline=None, never breaks the card.
-            headline_reader = REPO_ANALYSIS_HEADLINE_MAP.get(analysis_id)
-            headline = None
-            if headline_reader:
-                try:
-                    headline = headline_reader(registry, slug)
-                except Exception:
-                    headline = None
-            analyses.append({"analysis_id": analysis_id, "results": results, "headline": headline})
-
-        # Only surface a card backed by something that actually ran. Previously
-        # every dashboard was returned unconditionally and a card with no data
-        # rendered as an empty shell, so the Results tab advertised analyses the
-        # repo had never been surveyed for — 6 cards covering 13 analyses when
-        # Scouting only ever runs a handful. `results=None` is what a reader
-        # returns for a step with no stored rows, so it is the honest signal.
-        has_results = any(_results_have_data(a["results"]) for a in analyses)
-        if not has_results and not include_empty:
-            continue
-
-        # Real per-dashboard publish signal (2026-08-24), not a repo-wide
-        # guess: the latest of this dashboard's own annotation_types' known
-        # publish times. Blank when has_results is true but nothing in it
-        # has ever actually been published — an honest, common state (ran
-        # locally, never sent to Egeria), distinct from never-run.
-        dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
-        last_published_at = max(
-            (published_by_type[t] for t in dashboard_types if t in published_by_type),
-            default="",
-        )
-
-        dashboards.append({
-            "id": dashboard.id,
-            "title": dashboard.title,
-            "description": dashboard.description,
-            "render": dashboard.render,
-            "custom_renderer": dashboard.custom_renderer,
-            "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
-            "stages": stages,
-            "has_results": has_results,
-            "analyses": analyses,
-            "last_published_at": last_published_at,
-            "publish_stale": bool(last_published_at) and publish_stale,
-            # Repo-wide, not per-dashboard — there's no per-analysis_id run
-            # timestamp to draw on today (unlike last_published_at above,
-            # which genuinely is per-dashboard). Still an honest "as of"
-            # signal: every dashboard's data was current no later than this.
-            "last_surveyed_at": project.last_surveyed_at or "",
-        })
-    return {"slug": slug, "stage": stage, "dashboards": dashboards}
+    return build_survey_results(registry, "repo", slug, stage, include_empty)
 
 
 @router.get("/{slug}/survey-results/summary")
