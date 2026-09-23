@@ -129,6 +129,8 @@ import {
   removeProject,
   runAnalysis,
   setDisposition,
+  setEntityDisposition,
+  getEntityDispositionHistory,
   setWorkingSetHidden,
   getContext,
   getJournal,
@@ -2790,12 +2792,14 @@ export function resourceHeaderHtml(slug) {
 // until 2026-09-12; getElementById found the popover's (earlier in the
 // DOM) once it had been opened, so the pane's trail never refreshed again
 // and the no-URL message landed in the popover instead of the pane.
-async function renderDispositionHistory(githubUrl, target = 'disposition-history') {
+async function renderDispositionHistory(entityType, identifier, target = 'disposition-history') {
   const el = $(target);
   if (!el) return;
   let rows;
   try {
-    rows = await getDispositionHistory(githubUrl);
+    rows = entityType === 'repo'
+      ? await getDispositionHistory(identifier)
+      : await getEntityDispositionHistory(entityType, identifier);
   } catch (err) {
     el.innerHTML = `<span class="text-state-warn">History could not be read: ${esc(err.message)}</span>`;
     return;
@@ -2925,7 +2929,11 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
     }
     box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
       outcome === 'declined' ? 'declined' : `<span class="tnum">${ids.length}</span> queued in the background`} · on the verdict's record</div>`;
-    renderDispositionHistory(p.github_url);
+    // DepthOffer stays repo-only (it reasons about never-run analyses at
+    // the analysis/assessment tiers, tied to the repo analysis catalog) —
+    // `renderDepthOffer` above already gates on `p?.github_url`, so this
+    // callback only ever runs for a repo.
+    renderDispositionHistory('repo', p.github_url);
   };
   box.querySelector('[data-depth="accepted"]').addEventListener('click', () => finish('accepted', rows.map((a) => a.analysis_id)));
   box.querySelector('[data-depth="declined"]').addEventListener('click', () => finish('declined', []));
@@ -2940,15 +2948,25 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
   });
 }
 
-function wireDispositionPicker(host, p, { note, onSet }) {
+// `entityType`/`entitySlug` default to the repo shape every existing caller
+// (the header popover, and the pane before it took database/filesystem)
+// already uses. A database/filesystem caller passes both explicitly — its
+// slug IS its stable identity, unlike a repo's github_url-keyed write path.
+function wireDispositionPicker(host, p, { note, onSet }, entityType = 'repo', entitySlug = '') {
   const commit = async (value, reason = '') => {
     note('Saving…');
     try {
-      await setDisposition(p.github_url, value, reason);
+      if (entityType === 'repo') {
+        await setDisposition(p.github_url, value, reason);
+      } else {
+        await setEntityDisposition(entityType, entitySlug, value, reason);
+      }
       p.disposition = value;
       renderSidebar();
       await onSet(value);
-      // The offer, at the moment the verdict is recorded, in the pane.
+      // The offer, at the moment the verdict is recorded, in the pane —
+      // repo-only (renderDepthOffer gates on p?.github_url, a no-op
+      // otherwise, since DepthOffer is deliberately not generalized here).
       const slot = $('depth-offer') || $('resource-action');
       if (slot) renderDepthOffer(p, slot, { afterVerdict: true });
     } catch (err) {
@@ -3026,7 +3044,7 @@ export function bindResourceHeader() {
     // visible — which is the rationale trail, not decoration. A single
     // current value cannot say that something was abandoned and then picked
     // back up.
-    renderDispositionHistory(p.github_url, 'disposition-history-popover');
+    renderDispositionHistory('repo', p.github_url, 'disposition-history-popover');
     wireDispositionPicker(slot, p, { note, onSet: async (value) => {
       el.innerHTML = '';        // rebuilt below by loadPane
       await loadPane();
@@ -3169,9 +3187,17 @@ export function bindSubTabs() {
  */
 async function loadDispositionPane() {
   const el = $('content');
-  const blocked = paneNeedsRepoBackend('Disposition', 'a GitHub URL to key the verdict, journal and records to');
+  // Generalized 2026-09-22 (Backlog.md, "Disposition is NOT fixed here"):
+  // `repo_dispositions`' PK widened to (entity_type, entity_slug), the
+  // journal/records routes got entity-generic siblings, so this pane no
+  // longer needs a repo-only backend gate — `paneNeedsRepo()` (any
+  // resource selected) is enough, same as By-analysis/Questions since
+  // PR #220.
+  const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
+  const entityType = apiEntityType(state.resourceType);
+  const isRepo = entityType === 'repo';
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -3192,28 +3218,39 @@ async function loadDispositionPane() {
     <div id="journal-entries" class="mt-s3 text-caveat text-ink-muted">Reading the journal…</div>`;
   bindSubTabs();
   bindResourceHeader();
-  const project = state.projects.find((x) => x.slug === slug);
-  if (project?.github_url) {
+  const resource = selectedProject();
+  // A repo's disposition is keyed on its github_url (stable across import/
+  // renames — see registry.py's resolve_repo_entity_slug); a database/
+  // filesystem's is keyed on its slug directly, since that IS its stable
+  // identity from registration. Either way `resource` must exist.
+  const canDispose = isRepo ? Boolean(resource?.github_url) : Boolean(resource);
+  if (canDispose) {
     // The picker WITH its trail, as drawn -- the header popover is a click
     // away and above the heading; this is where a verdict is considered.
     const mountPicker = () => {
       const pick = $('disposition-picker');
       if (!pick) return;
-      pick.innerHTML = dispositionPickerHtml(project);
-      wireDispositionPicker(pick, project, {
+      pick.innerHTML = dispositionPickerHtml(resource);
+      wireDispositionPicker(pick, resource, {
         note: (html) => { const h = $('disposition-history'); if (h) h.innerHTML = html; },
-        onSet: async () => { mountPicker(); await renderDispositionHistory(project.github_url); },
-      });
+        onSet: async () => { mountPicker(); await renderDispositionHistory(entityType, isRepo ? resource.github_url : slug); },
+      }, entityType, slug);
     };
     mountPicker();
-    renderDispositionHistory(project.github_url);
-    renderDepthOffer(project, $('depth-offer'));
+    renderDispositionHistory(entityType, isRepo ? resource.github_url : slug);
+    // DepthOffer stays repo-only, deliberately -- it reasons about
+    // never-run analyses at the analysis/assessment tiers against the repo
+    // analysis catalog, which has no database/filesystem equivalent here;
+    // the function itself no-ops without a github_url.
+    if (isRepo) renderDepthOffer(resource, $('depth-offer'));
   } else {
-    $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+    $('disposition-history').textContent = isRepo
+      ? 'No GitHub URL, so no disposition can be keyed to this resource.'
+      : 'This resource could not be found.';
   }
-  renderJournalWrite(slug);
-  await renderJournalEntries(slug);
-  await renderRecords(slug);
+  renderJournalWrite(slug, entityType);
+  await renderJournalEntries(slug, entityType);
+  await renderRecords(slug, entityType);
 }
 
 /** Records under the resource, beside the journal and the verdict trail --
@@ -3221,11 +3258,11 @@ async function loadDispositionPane() {
  *  thirty-two-row table fights. A catalogue record shows its steps inline
  *  as Curate draws them; a report shows its header sentence. Same row
  *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
-async function renderRecords(slug) {
+async function renderRecords(slug, entityType = 'repo') {
   const host = $('records');
   if (!host) return;
   let recs;
-  try { recs = (await listRecords(slug)).records || []; }
+  try { recs = (await listRecords(slug, entityType)).records || []; }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
@@ -3262,7 +3299,7 @@ async function renderRecords(slug) {
     const rows = host.querySelector(`[data-record="${b.dataset.recordOpen}"] [data-record-rows]`);
     if (rows) rows.hidden = !rows.hidden;
   }));
-  wireRecordActs(host, slug, recs);
+  wireRecordActs(host, slug, recs, entityType);
 }
 
 function rowCount(rep) {
@@ -3312,7 +3349,7 @@ function recordUsesHtml(r) {
   return uses.length ? `<div class="mt-s1">${uses.join('')}</div>` : '';
 }
 
-function wireRecordActs(host, slug, recs) {
+function wireRecordActs(host, slug, recs, entityType = 'repo') {
   host.querySelectorAll('[data-record]').forEach((box) => {
     const id = box.dataset.record;
     const rec = recs.find((x) => x.id === id);
@@ -3343,10 +3380,10 @@ function wireRecordActs(host, slug, recs) {
       }
       b.disabled = true; status.textContent = '…';
       try {
-        const out = await actOnRecord(slug, id, { action, rows });
+        const out = await actOnRecord(slug, id, { action, rows }, entityType);
         const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
         status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
-        await renderRecords(slug);
+        await renderRecords(slug, entityType);
       } catch (err) {
         b.disabled = false;
         status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
@@ -3364,7 +3401,7 @@ function wireRecordActs(host, slug, recs) {
           name: `${rec.name} — corrected ${new Date().toISOString().slice(0, 10)}`, scope: 'all', corrects: id,
         });
         status.innerHTML = `<span class="text-state-ok">→ correcting record “${esc(out.record.name)}” · ${esc(out.record.report?.header || '')}</span>`;
-        await renderRecords(slug);
+        await renderRecords(slug, entityType);
       } catch (err) {
         b.disabled = false;
         status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to write a correction' : `: ${esc(err.message)}`}</span>`;
@@ -3373,7 +3410,7 @@ function wireRecordActs(host, slug, recs) {
   });
 }
 
-function renderJournalWrite(slug) {
+function renderJournalWrite(slug, entityType = 'repo') {
   const host = $('journal-write');
   if (!host) return;
   const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
@@ -3406,14 +3443,14 @@ function renderJournalWrite(slug) {
     if (person) targets.push(person);
     const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
     try {
-      const out = await writeJournal(slug, body, targets);
+      const out = await writeJournal(slug, body, targets, entityType);
       const cites = $('journal-body').dataset.citesRecord;
       if (cites) {
         // The record learns it was cited. Best effort: the entry is real
         // either way, and a failure here is not a failed write.
-        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }); } catch { /* the entry stands */ }
+        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }, entityType); } catch { /* the entry stands */ }
         delete $('journal-body').dataset.citesRecord;
-        renderRecords(slug);
+        renderRecords(slug, entityType);
       }
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
@@ -3429,7 +3466,7 @@ function renderJournalWrite(slug) {
       note.setAttribute('data-journal-note', '1');
       note.textContent = where ? `written · suggested — now in “${where}”` : 'written';
       host.appendChild(note);
-      await renderJournalEntries(slug);
+      await renderJournalEntries(slug, entityType);
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to write' : `not written: ${err.message}`;
@@ -3437,11 +3474,11 @@ function renderJournalWrite(slug) {
   });
 }
 
-async function renderJournalEntries(slug) {
+async function renderJournalEntries(slug, entityType = 'repo') {
   const host = $('journal-entries');
   if (!host) return;
   let data;
-  try { data = await getJournal(slug); }
+  try { data = await getJournal(slug, entityType); }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   const entries = data.entries || [];
@@ -3469,40 +3506,17 @@ function paneNeedsRepo() {
   return '';
 }
 
-/** Some panes are repo-only not because /next hasn't built them, but because
- *  their BACKEND is repo-only — verified, not assumed from the original
- *  blanket old undifferentiated "repos only" message this replaces.
- *
- *  As of 2026-09-22 (docs/Backlog.md's "By analysis" / scouting-questions
- *  were repo-only entries), By analysis and the Questions-checklist engine
- *  no longer call this — `workflows.analysis.build_survey_results` and
- *  `workflows.scouting.build_question_checklist` gave database/filesystem
- *  real (if partial for database — see `DATABASE_ANALYSIS_RESULTS_MAP`'s own
- *  docstring for the few analyses still missing a local results store)
- *  backends of their own, reached via `GET /api/{databases,filesystems}
- *  /{slug}/{survey-results,questions}`. Only Disposition still calls this:
- *
- *   - Disposition: `registry.py`'s `set_disposition`/`get_disposition_history`
- *     are keyed by `github_url`, and the journal (`/api/journal/repo/...`)
- *     and records (`/api/projects/{slug}/records`) routes are hardcoded repo
- *     paths. A database or filesystem has none of these, and generalizing the
- *     two `github_url`-keyed tables to a real `(entity_type, entity_slug)`
- *     key is its own schema-migration-sized piece of work — logged in
- *     docs/Backlog.md rather than attempted here; this gate stays until
- *     that lands.
- *
- *  Survey (`getSurveyCandidates`/`runSurveyDefinition`, both
- *  `/api/survey-definitions/{entity_type}/...`) has no such gap and does not
- *  call this — see loadSurveyPane's plain `paneNeedsRepo()` above. */
-function paneNeedsRepoBackend(what, mechanism) {
-  if (state.resourceType !== 'repo') {
-    const kind = state.resourceType === 'db' ? 'a database' : 'a filesystem';
-    return paneMessage(`${what} — repositories only`,
-      `${what} depends on ${mechanism}, which ${kind} does not have yet. `
-      + `That is a fact about what has been built, not about this resource.`);
-  }
-  return paneNeedsRepo();
-}
+/** A stricter helper used to live here — a gate for panes whose BACKEND was
+ *  repo-only rather than merely un-built in /next.
+ *  By analysis and the Questions checklist came off it on 2026-09-22 (their
+ *  backends generalized: `workflows.analysis.build_survey_results`,
+ *  `workflows.scouting.build_question_checklist`) and Disposition — the
+ *  last caller — came off it the same day once `repo_dispositions`' PK
+ *  generalized from `github_url` alone to `(entity_type, entity_slug)` and
+ *  the journal/records routes grew entity-generic siblings (Backlog.md,
+ *  "Disposition is NOT fixed here"). With no callers left, that helper was
+ *  removed rather than kept as dead code a future gate might reach for
+ *  again without re-verifying the backend actually needs it. */
 
 /** The tiers, in the order a funnel is worked through. */
 const SURVEY_TIERS = ['scouting', 'discovery', 'assessment', 'analysis',
@@ -5288,7 +5302,7 @@ async function loadPane() {
   }
 
   {
-    // The repo-only gate that used to sit here (paneNeedsRepoBackend) is
+    // The stricter repo-only backend gate that used to sit here is
     // gone as of the database/filesystem generalization (docs/Backlog.md,
     // "scouting-questions was repo-only"): `GET /api/{databases,filesystems}
     // /{slug}/questions` now exist and reach the same, already-generic

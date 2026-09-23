@@ -34,7 +34,10 @@ class TestOneTrailFormat:
     def test_the_journal_note_names_the_list_and_stays(self):
         app = (NEXT / "app.js").read_text(encoding="utf-8")
         i = app.index("const where = (out.work_lists")
-        body = app[i:app.index("await renderJournalEntries(slug);", i)]
+        # renderJournalEntries gained an `entityType` param 2026-09-22
+        # (Backlog.md, "Disposition is NOT fixed here") -- match the call
+        # regardless of its arguments rather than the literal old text.
+        body = app[i:app.index("await renderJournalEntries(slug", i)]
         assert "w.name || w.work_list" in body
         assert "setTimeout" not in body, "the only record the writer gets must not self-destruct"
 

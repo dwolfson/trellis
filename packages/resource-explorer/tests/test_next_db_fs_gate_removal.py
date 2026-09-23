@@ -102,40 +102,46 @@ class TestApiEntityTypeTranslatesTheUiShorthand:
         assert "entityType: state.resourceType" not in src
 
 
-class TestPaneNeedsRepoBackendIsHonestNotBlanket:
-    """Disposition stays repo-only, but the message must say a real,
-    verified backend reason -- never the old undifferentiated 'Repos only,
-    in /next' wording, which reads as an arbitrary /next limitation rather
-    than the real one.
+class TestPaneNeedsRepoBackendIsGoneEntirely:
+    """`paneNeedsRepoBackend()` existed for exactly one straggler:
+    Disposition, whose backend (`registry.py`'s `repo_dispositions`/
+    `repo_disposition_history`, keyed on `github_url` alone) genuinely had
+    no database/filesystem equivalent, unlike By analysis/Questions (fixed
+    in `re/next-generalize-byanalysis-disposition-questions` -- see
+    TestByAnalysisAndQuestionsNoLongerGatedToRepo below), which were only
+    ever a route-level gap over an already-generic backend.
 
-    By analysis and the Questions checklist used to be gated the same way,
-    on the strength of `REPO_ANALYSIS_RESULTS_MAP`/the repo-only scouting-
-    questions route having no database/filesystem equivalent. As of the
-    generalization in `re/next-generalize-byanalysis-disposition-questions`
-    (docs/Backlog.md, "By analysis / scouting-questions were repo-only"),
-    both backends exist for database/filesystem too
-    (`workflows.analysis.build_survey_results`, `workflows.scouting.
-    build_question_checklist`), so both panes were moved off this gate --
-    see TestByAnalysisAndQuestionsNoLongerGatedToRepo below."""
+    Disposition's gap was closed in `re/generalize-disposition`
+    (docs/Backlog.md, "Disposition is NOT fixed here", 2026-09-22):
+    `repo_dispositions`' PK widened to (entity_type, entity_slug), and the
+    journal/records routes grew entity-generic siblings. With Disposition
+    off the gate, nothing calls `paneNeedsRepoBackend()` any more, so the
+    dead function was removed outright rather than left as an unused trap
+    for a future gate to accidentally resurrect."""
 
-    def test_backend_gate_helper_exists_and_still_gates_non_repo(self):
+    def test_backend_gate_helper_no_longer_exists(self):
         src = _app()
-        assert "function paneNeedsRepoBackend(" in src
-        start = src.index("function paneNeedsRepoBackend(")
-        end = src.index("\n}", start)
-        body = src[start:end]
-        assert "state.resourceType !== 'repo'" in body
+        assert "function paneNeedsRepoBackend(" not in src
+        assert "paneNeedsRepoBackend(" not in src
 
     def test_old_undifferentiated_message_is_gone(self):
         src = _app()
         assert "Repos only, in /next" not in src
 
-    def test_disposition_pane_uses_the_backend_gate(self):
+    def test_disposition_pane_uses_the_plain_gate_now(self):
         src = _app()
         start = src.index("async function loadDispositionPane() {")
-        end = src.index("\n}", src.index("await renderRecords(slug);", start))
+        end = src.index("\n}", src.index("await renderRecords(slug", start))
         body = src[start:end]
-        assert "paneNeedsRepoBackend('Disposition'" in body
+        assert "const blocked = paneNeedsRepo();" in body
+        assert "paneNeedsRepoBackend" not in body
+
+    def test_disposition_pane_threads_apientitytype(self):
+        src = _app()
+        start = src.index("async function loadDispositionPane() {")
+        end = src.index("\n}", src.index("await renderRecords(slug", start))
+        body = src[start:end]
+        assert "apiEntityType(state.resourceType)" in body
 
     def test_by_analysis_pane_no_longer_uses_the_backend_gate(self):
         src = _app()
