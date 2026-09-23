@@ -1366,6 +1366,24 @@ consequences for the design:
    "This resource fitted last week and does not now" must be answerable
    by showing what changed: the data, or the requirement.
 
+5. **A survey serves every investigation, not the one that ran it.**
+   Measured scope, grain and quality are facts about the *resource*,
+   stored once per snapshot (rule D); the lens is the only thing that
+   belongs to an investigation. So the match runs both ways: a resource
+   that does not meet one investigation's lens is matched, with no new
+   survey, against every other open lens — "this does not cover 2025 for
+   EMEA, but it fits the North America study exactly" — and a new
+   investigation begins by querying what has already been measured before
+   it registers anything. Two consequences. The investigation's
+   membership (`investigation-framing-design.md` §6, many-to-many) gains a
+   *suggested* state: resources whose stored measurements fit the lens but
+   were surveyed for someone else. And the demand side of the data-product
+   question in §4 gets a concrete signal: a resource that fits several
+   open lenses has demonstrated demand, before anyone subscribes. Publishing
+   the declared `DataScope` and `DataGrain` to Egeria is what makes this
+   work beyond RE — any consumer that can express a lens can find the
+   resource.
+
 What this changes elsewhere: `investigation-framing-design.md`'s
 `ResearchQuestion` (§3 there, "the investigation's own open questions")
 is the natural home for a lens that is still forming — a research question
