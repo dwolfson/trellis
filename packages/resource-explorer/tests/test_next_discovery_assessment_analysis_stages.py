@@ -9,6 +9,13 @@ note about what Analysis's classic Sub-Resources feature does not have a
 /next equivalent for, and (3) documentation-only staleness fixes to
 Automate's comment about what a card-less Assessment/Analysis stage means.
 
+That note (`renderAnalysisNote`) was later removed once Sub-Resources itself
+was built for real -- see `test_next_analysis_subresources.py` and
+`docs/design-notes/RULING-SUBRESOURCES-PLACEMENT.md`. `TestTheGenericEngine
+NeededNoStageSpecificBranch` below was updated accordingly: Analysis now has
+exactly as little stage-specific code in `loadPane()` as Discovery/
+Assessment.
+
 No browser verification of a signed-in session happened for this file — see
 docs/design-notes/ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md for
 what was and was not checked live. These tests grep/slice function bodies
@@ -74,15 +81,16 @@ class TestTheGenericEngineNeededNoStageSpecificBranch:
         assert "state.stage === 'discovery'" not in body
         assert "state.stage === 'assessment'" not in body
 
-    def test_analysis_gets_exactly_one_note_call_not_a_bypass(self):
+    def test_analysis_gets_no_stage_level_bypass(self):
+        # Analysis used to get one honest note call here (renderAnalysisNote,
+        # naming classic's un-ported Sub-Resources sub-tab). That feature is
+        # now built for real -- see test_next_analysis_subresources.py --
+        # and the note is gone; Analysis reaches the generic engine with
+        # exactly as little stage-specific code as Discovery/Assessment.
         app = _app()
         body = app[app.index("async function loadPane()"):app.index("function wireHumanAnswers(")]
-        assert "if (state.stage === 'analysis') renderAnalysisNote(slug);" in body
-        # It must run alongside the generic row rendering, not instead of it
-        # -- placed before the empty-question early return, same as Curate.
-        i = body.index("if (state.stage === 'analysis') renderAnalysisNote(slug);")
-        j = body.index("if (!state.questions.length) {")
-        assert i < j
+        assert "state.stage === 'analysis'" not in body
+        assert "renderAnalysisNote" not in app
 
     def test_discovery_and_assessment_stage_modules_export_nothing(self):
         # They genuinely have no bespoke rendering -- an export here would
@@ -102,21 +110,6 @@ class TestDispositionSubTabAlreadyWritesThroughDiscoveryPy:
         discovery_py = (NEXT.parent.parent.parent / "web" / "routes" / "discovery.py").read_text(encoding="utf-8")
         assert '@router.post("/disposition"' in discovery_py
         assert "async def set_repo_disposition(" in discovery_py
-
-
-class TestAnalysisSubResourcesIsNamedNotDropped:
-    def test_the_note_names_sub_resources_specifically_and_links_out(self):
-        src = (NEXT / "stages" / "analysis.js").read_text(encoding="utf-8")
-        assert "export function renderAnalysisNote(" in src
-        body = src[src.index("export function renderAnalysisNote("):]
-        assert "Sub-Resources" in body
-        assert "oldUiHref()" in body
-
-    def test_the_note_mounts_into_the_shared_per_stage_slot_curate_also_uses(self):
-        src = (NEXT / "stages" / "analysis.js").read_text(encoding="utf-8")
-        assert "$('enrichment-form')" in src
-        curate_src = (NEXT / "stages" / "curate.js").read_text(encoding="utf-8")
-        assert "$('enrichment-form')" in curate_src
 
 
 class TestOrgImportRepoSearchFromListCsvExportLiveAtTheSidebarNotTheStage:
