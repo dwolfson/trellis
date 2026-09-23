@@ -346,7 +346,7 @@ function discoverHtml() {
   }).join('');
 
   return `${header}
-    <div class="max-h-[45vh] overflow-y-auto">${rows}</div>
+    <div class="max-h-[46vh] overflow-y-auto">${rows}</div>
     <div class="mt-s3 flex items-center gap-s2 border-t border-rule pt-s2">
       <button data-act="add-selected" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink" ${view.busy ? 'disabled' : ''}
         >${view.busy ? 'Adding…' : 'Add Selected →'}</button>
