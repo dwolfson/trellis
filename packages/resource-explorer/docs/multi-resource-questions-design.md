@@ -1424,7 +1424,7 @@ extends, and what belongs elsewhere:
 | 2 | Where is the resource physically — host, region, jurisdiction, residency? | **Partly.** §16's `coverage_signals` measures the *data's* spatial extent; the *resource's* location is a different fact, though both land in `DataScope.scopeElements` (§4's sovereignty row) | **extend `coverage_signals`** with a resource-location group, all free at Scouting: endpoint host and port from the Connection, cloud region from instance metadata where present, mount or bucket region for filesystems, portal country for datasets; jurisdiction and controller stay human-supplied (Enrichment) and are declared, never inferred |
 | 3 | What is the data's scope in time — collection, validity, coverage? | **Answered.** The audit calls it "blocked on column-level date-range profiling"; it is not — `pg_stats` histogram bounds, partition bounds and Parquet footers give the estimate at Scouting with no profiling (§16.2), and `coverage_profile` measures it in Analysis | build order in §16.6 |
 | 4 | Restrictions beyond the licence — zone, confidentiality classification, non-standard terms, agreements? | **Not §16, but the same read path.** These are classifications and relationships already on the asset in Egeria; nothing reads them back into the question layer | the read-back layer below |
-| 5 | Is there a defined need or market? | **Partly.** §16.5 point 5 adds the lens-fit demand signal, which needs no Egeria read; `DigitalSubscription` counts and RFAs asking for this kind of data are reads that do not exist | the read-back layer, plus an RFA index by requested data kind (a local query over `rfa_actions`, small) |
+| 5 | Is there a defined need or market? | **Answered by §16.5, corrected 2026-09-23.** The primary mechanism is `DataLens` fit: open lenses whose declared scope the resource's measured scope satisfies *are* the demand, and that needs no Egeria read beyond the lenses. `DigitalSubscription` does **not** apply to the resource directly — per Egeria's model a subscription attaches to a `DigitalProduct`, and a raw surveyed resource has no product wrapper (project owner, 2026-09-23) | lens fit (§16.5); an RFA index by requested data kind (a local query over `rfa_actions`, small); and the *indirect* subscription read below, which answers a different question |
 | 6 | Ready to be offered as a data product? | **Composite over 1–5**, plus §16.4's quality dimensions and the declared `DataScope`/`DataGrain` as inputs | unblocked when the read-back layer and slice 13 land; the composite itself is a day |
 
 **The read-back layer.** One analysis, `governance_context_readback`,
@@ -1438,7 +1438,8 @@ anchored elements it reads:
 | `DataScope` classification | classification-explorer (`get` side of the same endpoint `add_data_scope` writes) | 2, 3 — the *declared* half of measured-vs-declared |
 | Governance zones, confidentiality / criticality / retention classifications | classification-explorer | 4 |
 | `License`, `DataSharingAgreement`, `Agreement` relationships and their terms | classification-explorer / governance-officer | 4, and the cross-type licence row in §4 |
-| `DigitalProduct` membership, `DigitalSubscription` count and subscribers | digital-product view service | 5, 6 |
+| `DigitalProduct` membership of *this* asset, if any | digital-product view service | 6 |
+| Existing `DigitalProduct`s, their member assets, and each product's `DigitalSubscription` count | digital-product view service | 5′ below — "is something like this already productised?", not "is there demand for this resource" |
 | `Ownership` classification | classification-explorer | §4's ownership row |
 | `DataGrain` assignment | data-designer | §16's declared grain |
 
@@ -1450,6 +1451,30 @@ declaring `DataScope` and `DataGrain` from the Curate surface — is §16.1
 and §14; this is its mirror image, and the two should be one slice so the
 round trip is tested together: declare, read back, render, change the
 declaration, see the comparator fire.
+
+**5′ — what the subscription read actually answers.** Reading existing
+products and their subscriptions does not measure demand for the resource
+under review; it answers three neighbouring questions the project owner
+named on 2026-09-23:
+
+| Stage | Question | How |
+|---|---|---|
+| Discovery | Do assets already packaged in data products hold similar data — similar subject, scope, grain — to this resource? | derive a lens from each product's member assets (§16.5 point 3, "lens from a set": the union of their declared `DataScope`s, grains and subject terms) and run `preliminary_fit` of *this* resource against it |
+| Analysis | What is different between this resource and the ones we already productise? | the same comparison, reported field by field: subject overlap, grain compatibility, coverage overlap, quality dimensions side by side |
+| Discovery | Do we already have a similar data product — and how subscribed is it? | the product-derived lens that fits best, with its `DigitalSubscription` count as the "how wanted is that shape of data" signal |
+
+This is **not a new analysis**. It is the §16.5 fit machinery with the lens
+supplied from a product's assets instead of from an investigation, so it
+lands as the read above plus one "lens from a product" action alongside the
+existing "lens from a resource" and "lens from a set". It is also distinct
+from the coverage audit's open similarity-search item (§2.6 there): that is
+*content* similarity over pgvector embeddings; this is *scope* similarity
+over declared and measured structure, cheap and exact, and the two
+complement rather than overlap — content similarity finds candidates whose
+scope has never been declared, scope fit ranks the ones whose scope has.
+A product with many subscriptions whose member assets fit this resource
+well is the strongest available signal that the resource *could* be
+productised into an existing family, which is the input Q6 wants.
 
 **Where it sits in the plan:** Phase 1, after the structured tables
 (stream 3), as its own slice, cross-type by construction. It is not a
