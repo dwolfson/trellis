@@ -411,7 +411,7 @@ type list. The reworded repo rows plus the additions from the review:
 | Discovery | **How much has changed since the last survey — is it worth re-running now?** | Change Detection | moved from "Automate" |
 | Discovery | **Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally — and which is cheaper?** | Egeria + local probe | rule B surfaced |
 | Discovery / Analysis | **Where is the data physically located, under which jurisdiction, and are there residency or transfer constraints (sovereignty)?** | Connection metadata + Enrichment + `DataScope` | project owner, point 16. Machine part: host/region from the connection endpoint, cloud metadata, file path; human part: legal controller, residency rule. Published as a proposed `DataScope` with `scopeElements` {jurisdiction, region, controller} |
-| Analysis | **What is the scope of the data in time — collection period, validity, coverage?** | Profiling (min/max of date columns, mtime range) + Enrichment | the other half of `DataScope`; machine-proposable |
+| Analysis | **What is the scope of the data in time — collection period, validity, coverage?** | Profiling (min/max of date columns, mtime range) + Enrichment | the other half of `DataScope`; machine-proposable. **Superseded in detail by §16**, which adds the sought side (`DataLens`), grain, gaps, and fit, and moves the cheap estimate to Scouting |
 | Analysis | Are there any restrictions for use beyond the licence (classification, zone, terms)? | Direct Field + Agent | |
 | Analysis | What are similar resources, and how does this differ? | Agent over pgvector | gap for every type |
 | Analysis/Enrichment | What does it cost to run, host or license? | Human | |
@@ -1203,6 +1203,211 @@ confirmed one — which is the visibility item below, restated.
   about what it is.
 
 ---
+
+## 16. Coverage, grain and quality — does the data fit what we are looking for?
+
+**Added 2026-09-22 at the project owner's direction.** A key requirement for
+any data resource — database, file, dataset — is that the data and its values
+fall within the *scope* and *grain* being sought. Not "this is sales
+transaction data" but "sales transactions **per day**, for **these regions**,
+covering **last year**", and then the flavours of quality on top. §4 and §5
+had the pieces scattered — a sovereignty row, one "period covered" row, an
+entity-grain analysis, seven quality signals with no frame — and nothing
+that states what is *sought*, so nothing could answer *fit*. This section
+adds the requirement side, organises the signals by funnel stage on cost,
+and names the analyses.
+
+### 16.1 The model: sought versus held, and Egeria already has both halves
+
+Checked in the Java property classes on 2026-09-22:
+
+| Side | Egeria element | Carries | Who sets it |
+|---|---|---|---|
+| **Sought** | `DataLens` — a governance definition, "the scope of data for a particular type of processing" | bounding box (`min/maxLongitude`, `min/maxLatitude`, heights), `dataCollectionStart/End`, `dataValidityStart/End`, `dataCoverageStart/End`, `scopeElements` map | the investigation, at framing |
+| **Held** | `DataScope` classification on the asset | **the identical field list** | a curator, declaring from what was measured (§14) |
+| Grain, both sides | `DataGrain` — `granularityBasis`, `grainStatement`, `interval` | entity grain ("one row per order line") *and* time grain (`interval`, e.g. one day) | sought: on the requirement; held: proposed by a survey, declared by a curator |
+| Quality | `QualityAnnotation` — `qualityDimension`, `qualityScore`, `qualityDescription` | one per dimension per resource or field | the survey; unused by RE today |
+
+`DataLens` and `DataScope` having the same fields is the design: **fit is a
+field-by-field comparison between a lens and a scope**, with grain
+compatibility and quality thresholds alongside. Subject ("sales
+transactions") is the one axis neither carries as a field; it goes in
+`scopeElements` as glossary-term qualified names and data-class names, the
+same vocabulary `semantic_suggestions` and `data_class_match` already
+produce, so the subject test is a set intersection over things RE already
+computes.
+
+**The requirement is a data requirement on the investigation** (design
+`investigation-framing-design.md`): subject terms, entity grain, time
+interval, regions or bounding box, time window, and quality thresholds by
+dimension. One `DataLens` per investigation, linked to its project, editable
+in the framing step. The three questions "what is this about", "at what
+grain", "covering what" are answered *descriptively* whether or not a
+requirement exists; the fourth, "does it fit", renders **"no requirement
+declared"** when there is none — absence as an answer, never a vacuous pass —
+or, when the user supplies the criteria in the question itself, answers as a
+comparison across resources (§16.5).
+
+### 16.2 Funnel placement — the analysis is not cheap, so what is free comes first
+
+The full answer needs a pass over the data. But most of the *signal* is
+available from catalogs, file metadata and names before any row is read,
+and that is what lets Scouting and Discovery triage "could this be in
+scope?" and gate the expensive pass. Placement follows the stage rule in
+CLAUDE.md rule 17 — *does this collect, or reason over what is collected* —
+with the cost of each signal stated.
+
+| Signal | Source | Cost | Stage | Confidence |
+|---|---|---|---|---|
+| **Subject from names and comments** — table, column, file and folder names; `pg_description`; README and descriptor text; DCAT `theme`/`keyword`; card tags | catalog / walk / descriptor | none beyond what Scouting already reads | Scouting | low–medium; a name is a claim |
+| **Time grain from naming** — columns `*_date`, `*_ts`, `day`, `hour`, `period`; tables `daily_*`, `*_hourly`; partition keys `year=/month=/day=`; file names carrying dates (`sales_2025-03.parquet`) | same | none | Scouting | medium for partitions and file names, low for column names |
+| **Entity grain from keys** — PK composition; a date column *in* the PK means per-period grain | catalog | none | Scouting | medium–high |
+| **Coverage from catalog statistics** — `pg_stats.histogram_bounds` on date and timestamp columns gives min and max **without reading rows** (after `ANALYZE`); partition bounds from `pg_partitioned_table` / check constraints give exact ranges | catalog | none | Scouting | high when stats are fresh; **absent means "run ANALYZE", not "no dates"** |
+| **Coverage from file metadata** — Parquet and Feather footers carry per-row-group min/max per column, so date range comes from the footer alone; ORC likewise | file footer read, no data | tiny | Scouting | high |
+| **Coverage from descriptors** — DCAT `temporal` and `spatial`; Croissant; HF card front matter; DataScope already declared on the asset | descriptor | none | Scouting | as good as the publisher |
+| **Geography from names and classes** — columns named country, region, state, postcode, lat/lon; data-class matches by *name only* (ISO country code, postcode) | catalog + class registry | none | Scouting | low–medium |
+| **Preliminary fit** — the above against the requirement: subject overlap, grain estimate compatible, catalog-bound coverage overlaps the window | stored rows | none | **Discovery** | stated per input; this is the gate |
+| **Measured cadence and gaps** — one aggregate query per date column (`date_trunc(period), count(*) group by 1`) rather than sampling: one scan, exact; gaps = missing periods inside the range; per-region gaps by grouping on the region column too | data read, single aggregate pass per column | api_heavy / medium; bounded by the sampling config (§5.8) when the table is large | **Analysis** | high |
+| **Measured spatial extent** — min/max of lat/lon columns; distinct values of region-typed columns matched to a reference set (`reference_data_match`) | data read | api_heavy / low–medium | Analysis | high |
+| **Measured entity grain** — `n_distinct` of candidate key ≈ row count, from `pg_stats` first, sample second | catalog then data | none, then medium | Analysis (confirms Scouting's estimate) | high |
+| **Quality by dimension** (§16.4) | mostly already-stored profiles | low once profiles exist | Analysis | per dimension |
+| **Fit** — lens versus scope, grain compatibility, thresholds | stored rows | none | **Assessment** | states which inputs were measured vs estimated |
+
+So the shape is: **Scouting collects the free estimates and names them as
+estimates; Discovery computes a preliminary fit from them and decides
+whether the aggregate pass is worth running; Analysis runs it; Assessment
+compares against the lens.** For files, Parquet's footer statistics make the
+Scouting estimate nearly as good as the measurement; for CSV there is no
+free signal beyond names and the file's date, so CSV is where the
+Discovery gate earns its keep.
+
+### 16.3 The questions
+
+Cross-type (`*`), except where marked. Rule column as in §5.
+
+| Stage | Question | Answering analysis | Mechanism | Rule | Perspectives |
+|---|---|---|---|---|---|
+| Scouting | **What is this data about — which subjects, business terms or data classes does it appear to hold?** | `subject_signals` (new; names, comments, descriptors → candidate glossary terms and classes; extends `semantic_suggestions` to whole-resource level) | Catalog + Egeria glossary | C | Consumer, Data Expert, Steward |
+| Scouting | **At what grain does it look like it is recorded — one row per what, and per what period?** | `grain_determination` (exists, extended with time grain from naming, partitions and PK date columns; emits a `DataGrain` proposal with `interval`) | Catalog | C | Data Expert, Consumer |
+| Scouting | **What period and places does it appear to cover, from catalog statistics, file footers and descriptors alone?** | `coverage_signals` (new; `pg_stats` bounds, partition bounds, Parquet footers, descriptor `temporal`/`spatial`, file-name dates; emits a measured-scope annotation with `basis` per field) | Catalog / footer / descriptor | C | Consumer, Governance |
+| Discovery | **Could this be in scope for what I am looking for — worth the full pass?** | `preliminary_fit` (new; zero-fetch; the three Scouting estimates against the investigation's `DataLens`; per-input confidence; renders "no requirement declared" when none) | Analysis | C | Consumer, Financial |
+| Discovery | Does the declared scope on the asset (if any) agree with the catalog estimate? | `coverage_signals` vs `DataScope` | Analysis | C | Steward |
+| Analysis | **What is the actual cadence, and where are the gaps — missing days, missing regions, missing months?** | `coverage_profile` (new; aggregate pass per date column and per region column; period counts, gap list, completeness ratio; bounded by §5.8) | Profiling | C | Data Expert, Steward, Consumer |
+| Analysis | **What is the actual spatial extent — bounding box, or the set of regions present?** | `coverage_profile` + `reference_data_match` | Profiling | C | Governance, Consumer |
+| Analysis | Is the grain what the keys claim — is the candidate key actually unique per period? | `grain_determination` (measured, `n_distinct` / sample) | Catalog + Profiling | C | Data Expert |
+| Analysis | **How good is it, by dimension — completeness, validity, consistency, uniqueness, timeliness, coverage completeness, accuracy?** | `quality_dimensions` (new; composite over stored profiles; one `QualityAnnotation` per dimension) | Analysis | C | Steward, Consumer |
+| Assessment | **Does it fit what I am looking for — subject, grain, coverage and quality — and where exactly does it fall short?** | `requirement_fit` (new; lens vs scope field by field; grain compatibility; thresholds; per-input state) | Analysis | C | Consumer, App/AI Builder, Data Owner |
+| Assessment | Is the coverage complete enough to declare (no gaps above the threshold in the window)? | `coverage_profile` [checks] | Analysis | C | Steward |
+| Curate | Declare the scope and grain (from the measured proposal) | `DataScope` classification + `DataGrain` assignment, prefilled | Human | — | Steward, Data Owner |
+| Enrichment | Supply subject, grain or coverage where nothing derivable exists (a bare CSV with no dates) | Enrichment form, feeds the same fields | Human | — | Data Owner |
+| Discovery (automation) | Has the coverage moved — a new period appeared, a region dropped, a gap opened? | `coverage_change` comparator (§9.1) | Change Detection | C | Steward, Consumer |
+
+For **datasets** (§7) the Scouting rows are answered from the descriptor
+and the Analysis rows after download, through §6; `descriptor_conformance`
+gains coverage as one of the things it checks. For **models** (§8) the
+subject and coverage questions apply to the *training data*, through
+`model_lineage` to §7 datasets; a model has no grain.
+
+### 16.4 Quality as named dimensions
+
+The seven signals the design already had, organised so "how good is it"
+has one shape, and each published as a `QualityAnnotation` with
+`qualityDimension` set. No composite score (§15): the answer is a table of
+dimensions, each with its state.
+
+| Dimension | Measured by | Already in the design as | Needs |
+|---|---|---|---|
+| Completeness | null fractions per column; required-column presence | `column_profile` | nothing new |
+| Validity | conformance to data classes and reference sets, type conformance | `data_class_match`, `reference_data_match` | nothing new |
+| Consistency | same schema across shards or partitions; FK integrity; cross-column rules | `schema_consistency`, `schema_conventions` | FK orphan check on DB side |
+| Uniqueness | duplicate rows or files; key uniqueness | `file_fingerprint`, `grain_determination` | row-level duplicate count on DB side |
+| Timeliness | freshness: last write vs now, vs declared cadence | `db_activity_signals`, mtime histogram, `dataset_descriptor` cadence | a declared cadence to compare against (from the lens or the descriptor) |
+| **Coverage completeness** | gaps inside the covered range, by period and by region | **`coverage_profile` (new)** | the new analysis |
+| Accuracy | agreement with a reference source | — | **a reference**; not measurable without one, and rendered as `not_established` rather than assumed |
+
+### 16.5 The requirement is optional, often discovered, and refined as the investigation goes
+
+**Project owner, 2026-09-22:** there is not always a specific requirement
+known a priori, and requirements are refined over the course of an
+investigation. §16.1's "one `DataLens` per investigation, set at framing"
+is therefore the *end state* of a lens, not its starting point. Four
+consequences for the design:
+
+1. **Description comes first and stands alone.** The Scouting, Discovery
+   and Analysis rows in §16.3 answer "what is this about, at what grain,
+   covering what, how good" for every resource whether or not any lens
+   exists. Those answers are the primary output, stored per snapshot as
+   measured scope, grain and quality. A lens is never a precondition for
+   surveying.
+2. **Fit is a query over stored measurements, not a survey.** `preliminary_fit`
+   and `requirement_fit` read the stored scope, grain and quality rows and
+   compare them with whatever lens exists *now*. Changing the lens
+   recomputes fit across every already-surveyed resource at zero fetch
+   cost. This is what makes refinement cheap: the expensive pass is
+   spent once per resource, the comparison as often as the requirement
+   moves. It also means the same question works with no lens at all as a
+   *comparison across resources* — "which of these cover 2025 at daily
+   grain?" is fit with the lens supplied ad hoc by the question.
+3. **Lenses are discovered as much as declared.** Three ways a lens comes
+   into being besides the framing form: *from a resource* ("make this
+   resource's held scope my requirement", the common case when the first
+   good candidate defines what good looks like); *from a set* (the
+   intersection or union of the held scopes of the resources in the
+   working set, shown as "what is achievable with what we have", so the
+   requirement is negotiated against reality rather than written in a
+   vacuum); and *from a question* (the ad hoc lens in point 2, kept if the
+   user says so). Each of these is a Curate-tier action on the
+   investigation, and the framing form is its editor, not its only source.
+4. **The lens has history.** Refinement means the lens changes, and a fit
+   verdict is only meaningful against the lens version it was computed
+   with. So the lens is versioned like everything else here — `DataLens`
+   is a governance definition and carries the standard version
+   properties — and every fit result records the lens version it used.
+   "This resource fitted last week and does not now" must be answerable
+   by showing what changed: the data, or the requirement.
+
+5. **A survey serves every investigation, not the one that ran it.**
+   Measured scope, grain and quality are facts about the *resource*,
+   stored once per snapshot (rule D); the lens is the only thing that
+   belongs to an investigation. So the match runs both ways: a resource
+   that does not meet one investigation's lens is matched, with no new
+   survey, against every other open lens — "this does not cover 2025 for
+   EMEA, but it fits the North America study exactly" — and a new
+   investigation begins by querying what has already been measured before
+   it registers anything. Two consequences. The investigation's
+   membership (`investigation-framing-design.md` §6, many-to-many) gains a
+   *suggested* state: resources whose stored measurements fit the lens but
+   were surveyed for someone else. And the demand side of the data-product
+   question in §4 gets a concrete signal: a resource that fits several
+   open lenses has demonstrated demand, before anyone subscribes. Publishing
+   the declared `DataScope` and `DataGrain` to Egeria is what makes this
+   work beyond RE — any consumer that can express a lens can find the
+   resource.
+
+What this changes elsewhere: `investigation-framing-design.md`'s
+`ResearchQuestion` (§3 there, "the investigation's own open questions")
+is the natural home for a lens that is still forming — a research question
+whose answer *is* the eventual lens. The designer brief's fit summary
+(§11) gets a fifth state alongside measured and estimated: *no lens; here
+is what the working set could satisfy*.
+
+### 16.6 Cost and what to build
+
+| Piece | Cost tier | Phase |
+|---|---|---|
+| `subject_signals`, `coverage_signals`, time-grain extension of `grain_determination` | none / low (catalog, footers, names) | Phase 1 with `db_derived`; Parquet footer read joins Phase 2's `filesystem_structure` (it is metadata, not content) |
+| Data requirement on the investigation, as a `DataLens` — optional, discoverable from a resource or a set, versioned (§16.5) | none (a form, three "make this my lens" actions, one Egeria write) | Phase 1; `preliminary_fit` works before it exists, as a comparison across resources |
+| `preliminary_fit` | none | Phase 1, Discovery gate |
+| `coverage_profile` | api_heavy / medium, one aggregate pass per date or region column, bounded | Phase 1 after `postgres_column_profile`; FS variant in Phase 2 |
+| `quality_dimensions`, `requirement_fit` | low (composites) | end of Phase 1 |
+| `coverage_change` comparator | low | with the other comparators |
+| Designer: calendar heat strip for cadence and gaps; map with held and sought extents; the dimension table | — | round 2 of the designer brief |
+
+**Egeria asks: none.** `DataLens`, `DataScope`, `DataGrain` and
+`QualityAnnotation` cover it. The one convention to fix in `foundations.md`
+is the `scopeElements` key set shared by lens and scope: `subjectTerms`,
+`dataClasses`, `regions`, `jurisdiction`, `controller`, `grainStatement`,
+`interval`, so that fit compares like with like.
 
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
