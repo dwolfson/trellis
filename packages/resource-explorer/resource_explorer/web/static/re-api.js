@@ -119,6 +119,50 @@ export const getProject = (slug) => get(`/api/projects/${encodeURIComponent(slug
 export const listDatabases = () => get('/api/databases/');
 export const listFilesystems = () => get('/api/filesystems/');
 
+/* ── Database servers (web/routes/db_servers.py) ────────────────────────
+ *
+ * Classic's (index.html) real mechanism for finding databases: a server is
+ * registered once with stored credentials, then `discoverDatabases` connects
+ * and lists what is actually on it (`DiscoveredDatabase` rows, each flagging
+ * `is_registered` so an already-added database can be shown but disabled),
+ * and `addDiscoveredDatabase` turns a chosen candidate into a real
+ * `DatabaseEntity` row (what `listDatabases` above returns). Ported for
+ * /next by db-server-discovery.js, reached from the sidebar's `find-repos`
+ * action for `state.resourceType === 'db'`.
+ */
+export const listDbServers = () => get('/api/db-servers/');
+
+export const registerDbServer = (payload) => post('/api/db-servers/register', payload);
+
+export const deleteDbServer = (slug) =>
+  request(`/api/db-servers/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+/** Test a REGISTERED server's stored credentials -- `overrides` lets a
+ *  caller test host/port/credentials that haven't been saved yet, same as
+ *  classic's `TestConnectionRequest` (all fields optional, falling back to
+ *  the stored values server-side). */
+export const testDbServer = (slug, overrides = {}) =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/test`, overrides);
+
+/** Test connection details BEFORE a server is registered at all -- classic's
+ *  `_test-inline` route, used by the registration form's own "Test" button. */
+export const testDbServerInline = (payload) => post('/api/db-servers/_test-inline', payload);
+
+/** Connects to the server right now and returns what's actually there --
+ *  read-only, like `searchDiscoveryRepos`: nothing is added to `databases`
+ *  until `addDiscoveredDatabase` is called for a chosen row. */
+export const discoverDatabases = (slug) =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/discover`);
+
+/** Registers one discovered database as a real `DatabaseEntity`. The route
+ *  takes `database_name`/`display_name` as query params, not a JSON body
+ *  (see db_servers.py's `add_database_from_server` signature) -- hence the
+ *  query string here rather than `post()`'s JSON body. */
+export const addDiscoveredDatabase = (slug, databaseName, displayName = '') =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/add-database`
+    + `?database_name=${encodeURIComponent(databaseName)}`
+    + (displayName ? `&display_name=${encodeURIComponent(displayName)}` : ''));
+
 /* ── Catalog vocabularies ────────────────────────────────────────────── */
 
 /** The perspectives that can actually narrow something — never a hardcoded
