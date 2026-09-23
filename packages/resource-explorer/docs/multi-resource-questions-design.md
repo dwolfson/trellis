@@ -1244,7 +1244,9 @@ dimension. One `DataLens` per investigation, linked to its project, editable
 in the framing step. The three questions "what is this about", "at what
 grain", "covering what" are answered *descriptively* whether or not a
 requirement exists; the fourth, "does it fit", renders **"no requirement
-declared"** when there is none — absence as an answer, never a vacuous pass.
+declared"** when there is none — absence as an answer, never a vacuous pass —
+or, when the user supplies the criteria in the question itself, answers as a
+comparison across resources (§16.5).
 
 ### 16.2 Funnel placement — the analysis is not cheap, so what is free comes first
 
@@ -1323,12 +1325,60 @@ dimensions, each with its state.
 | **Coverage completeness** | gaps inside the covered range, by period and by region | **`coverage_profile` (new)** | the new analysis |
 | Accuracy | agreement with a reference source | — | **a reference**; not measurable without one, and rendered as `not_established` rather than assumed |
 
-### 16.5 Cost and what to build
+### 16.5 The requirement is optional, often discovered, and refined as the investigation goes
+
+**Project owner, 2026-09-22:** there is not always a specific requirement
+known a priori, and requirements are refined over the course of an
+investigation. §16.1's "one `DataLens` per investigation, set at framing"
+is therefore the *end state* of a lens, not its starting point. Four
+consequences for the design:
+
+1. **Description comes first and stands alone.** The Scouting, Discovery
+   and Analysis rows in §16.3 answer "what is this about, at what grain,
+   covering what, how good" for every resource whether or not any lens
+   exists. Those answers are the primary output, stored per snapshot as
+   measured scope, grain and quality. A lens is never a precondition for
+   surveying.
+2. **Fit is a query over stored measurements, not a survey.** `preliminary_fit`
+   and `requirement_fit` read the stored scope, grain and quality rows and
+   compare them with whatever lens exists *now*. Changing the lens
+   recomputes fit across every already-surveyed resource at zero fetch
+   cost. This is what makes refinement cheap: the expensive pass is
+   spent once per resource, the comparison as often as the requirement
+   moves. It also means the same question works with no lens at all as a
+   *comparison across resources* — "which of these cover 2025 at daily
+   grain?" is fit with the lens supplied ad hoc by the question.
+3. **Lenses are discovered as much as declared.** Three ways a lens comes
+   into being besides the framing form: *from a resource* ("make this
+   resource's held scope my requirement", the common case when the first
+   good candidate defines what good looks like); *from a set* (the
+   intersection or union of the held scopes of the resources in the
+   working set, shown as "what is achievable with what we have", so the
+   requirement is negotiated against reality rather than written in a
+   vacuum); and *from a question* (the ad hoc lens in point 2, kept if the
+   user says so). Each of these is a Curate-tier action on the
+   investigation, and the framing form is its editor, not its only source.
+4. **The lens has history.** Refinement means the lens changes, and a fit
+   verdict is only meaningful against the lens version it was computed
+   with. So the lens is versioned like everything else here — `DataLens`
+   is a governance definition and carries the standard version
+   properties — and every fit result records the lens version it used.
+   "This resource fitted last week and does not now" must be answerable
+   by showing what changed: the data, or the requirement.
+
+What this changes elsewhere: `investigation-framing-design.md`'s
+`ResearchQuestion` (§3 there, "the investigation's own open questions")
+is the natural home for a lens that is still forming — a research question
+whose answer *is* the eventual lens. The designer brief's fit summary
+(§11) gets a fifth state alongside measured and estimated: *no lens; here
+is what the working set could satisfy*.
+
+### 16.6 Cost and what to build
 
 | Piece | Cost tier | Phase |
 |---|---|---|
 | `subject_signals`, `coverage_signals`, time-grain extension of `grain_determination` | none / low (catalog, footers, names) | Phase 1 with `db_derived`; Parquet footer read joins Phase 2's `filesystem_structure` (it is metadata, not content) |
-| Data requirement on the investigation, as a `DataLens` | none (a form and one Egeria write) | Phase 1, needed before `preliminary_fit` means anything |
+| Data requirement on the investigation, as a `DataLens` — optional, discoverable from a resource or a set, versioned (§16.5) | none (a form, three "make this my lens" actions, one Egeria write) | Phase 1; `preliminary_fit` works before it exists, as a comparison across resources |
 | `preliminary_fit` | none | Phase 1, Discovery gate |
 | `coverage_profile` | api_heavy / medium, one aggregate pass per date or region column, bounded | Phase 1 after `postgres_column_profile`; FS variant in Phase 2 |
 | `quality_dimensions`, `requirement_fit` | low (composites) | end of Phase 1 |
