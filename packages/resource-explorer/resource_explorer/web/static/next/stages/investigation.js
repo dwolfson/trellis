@@ -35,6 +35,7 @@ import {
 } from '/static/re-api.js';
 import {
   state, esc, $, icon, setInvestigation, refreshInvestigationsAndSidebar,
+  ensureResourceListLoaded,
 } from '/static/next/app.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 
@@ -373,6 +374,25 @@ function egeriaSectionHtml(inv) {
 
 const ENTITY_TYPES = [['repo', 'Repo'], ['database', 'Database'], ['filesystem', 'Filesystem']];
 
+// The add-member slug field is an autocomplete, not a hard picker (a member
+// can be added by slug even if its list hasn't loaded), but the datalist
+// must actually offer the right resources for whichever type is selected --
+// it used to always list `state.projects` (repos) regardless, so choosing
+// "Database"/"Filesystem" left the field with no suggestions at all and
+// nothing telling the user why. `ensureResourceListLoaded` (app.js) is the
+// same lazy-fetch-and-cache the sidebar's own type switcher uses, keyed by
+// its 'db'/'filesystem'/'repo' vocabulary -- not the backend's 'database',
+// which is what ENTITY_TYPES (and the API call) correctly use instead.
+function slugListSourceType(entityType) {
+  return entityType === 'database' ? 'db' : entityType;
+}
+
+function slugListRows(entityType) {
+  if (entityType === 'database') return state.databases || [];
+  if (entityType === 'filesystem') return state.filesystems || [];
+  return state.projects || [];
+}
+
 function addMemberFormHtml() {
   return `<div class="mb-s3 flex flex-wrap items-center gap-s2">
     <select id="inv-add-type" class="rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
@@ -381,7 +401,7 @@ function addMemberFormHtml() {
     <input id="inv-add-slug" list="inv-add-slug-list" type="text" placeholder="slug"
       class="rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
     <datalist id="inv-add-slug-list">
-      ${(state.projects || []).map((p) => `<option value="${esc(p.slug)}">`).join('')}
+      ${slugListRows('repo').map((p) => `<option value="${esc(p.slug)}">`).join('')}
     </datalist>
     <input id="inv-add-rationale" type="text" placeholder="why (optional)"
       class="flex-1 min-w-[160px] rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
@@ -653,6 +673,15 @@ function bindDetail(inv, members) {
     } catch (err) {
       btn.disabled = false;
       btn.textContent = `Not relinked: ${err.message}`;
+    }
+  });
+
+  el.querySelector('#inv-add-type')?.addEventListener('change', async (e) => {
+    const entityType = e.target.value;
+    await ensureResourceListLoaded(slugListSourceType(entityType));
+    const list = el.querySelector('#inv-add-slug-list');
+    if (list) {
+      list.innerHTML = slugListRows(entityType).map((p) => `<option value="${esc(p.slug)}">`).join('');
     }
   });
 
