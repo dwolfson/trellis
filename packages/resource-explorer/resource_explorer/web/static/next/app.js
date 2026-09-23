@@ -45,7 +45,13 @@ import { renderEnrichment } from '/static/next/stages/enrichment.js';
 import { renderInvestigation, openInvestigationDetail } from '/static/next/stages/investigation.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
-import { renderAnalysisNote } from '/static/next/stages/analysis.js';
+// Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
+// candidate-selection/catalogue UI, attached to sub_resource_survey's own
+// row in the Survey & analyses list below (analysisIndexRowHtml /
+// renderAnalysesIndexSection), not a stage-level bypass. The old one-line
+// deferral note this stage used to render from loadPane() is gone -- the
+// feature it named is now built; see stages/analysis.js's header comment.
+import { mountSubResourcePanel } from '/static/next/stages/analysis.js';
 // The RFA drawer (PLAN-FINISH-REPOS.md item 10) — chrome-level, like
 // worklist.js, not a per-resource stage; see next/rfa.js's own header
 // comment for why it lives at this level rather than under stages/.
@@ -3743,9 +3749,17 @@ function analysisRowPrice(cost) {
   return bits.join(' · ');
 }
 
+// sub_resource_survey is the one analysis whose Run button, alone, was a
+// dead end -- running it only produces a candidate list; deciding what to
+// DO with that list (select, catalog, dispatch a scoped analysis) is real
+// run-configuration with its own state, and that is what this toggle opens.
+// RULING-SUBRESOURCES-PLACEMENT.md: attached to this row, not a fifth tab.
+const SUBRES_ANALYSIS_ID = 'sub_resource_survey';
+
 function analysisIndexRowHtml(row) {
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
+  const isSubRes = row.analysis_id === SUBRES_ANALYSIS_ID;
   return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
     <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
     <div class="min-w-0 flex-1">
@@ -3764,10 +3778,14 @@ function analysisIndexRowHtml(row) {
         · ${analysisRowPrice(row.cost)}
       </div>
     </div>
+    ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
+      class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >🗂 select &amp; catalog</button>` : ''}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
-  </div>`;
+  </div>
+  ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
 
 /** The description popover: the full prose PLUS the catalog facts named in
@@ -3867,6 +3885,15 @@ async function renderAnalysesIndexSection(slug, stage) {
   host.querySelectorAll('[data-analysis-questions]').forEach((b) => b.addEventListener('click', () => {
     openAnalysisQuestionsPopover(rows.find((r) => r.analysis_id === b.dataset.analysisQuestions));
   }));
+  const subresToggle = host.querySelector('[data-subres-toggle]');
+  const subresPanel = host.querySelector('#subres-panel');
+  subresToggle?.addEventListener('click', async () => {
+    const opening = subresPanel.classList.contains('hidden');
+    subresPanel.classList.toggle('hidden', !opening);
+    subresToggle.setAttribute('aria-expanded', String(opening));
+    subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
+    if (opening) await mountSubResourcePanel(slug, subresPanel);
+  });
   host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
     const aid = b.dataset.analysisRun;
     b.disabled = true;
@@ -5367,10 +5394,10 @@ async function loadPane() {
   // whether or not the catalog has rows for the stage (today it has none).
   if (state.stage === 'curate') renderCurate(slug);
   // Analysis has real catalog rows (unlike Curate), so it renders through
-  // the generic engine below like any other built stage; this only adds the
-  // one honest note about what classic's Analysis carries that /next does
-  // not (next/stages/analysis.js).
-  if (state.stage === 'analysis') renderAnalysisNote(slug);
+  // the generic engine below like any other built stage, with no bypass
+  // branch here -- classic's Sub-Resources sub-tab is now ported onto the
+  // Survey & analyses pane's sub_resource_survey row instead of a stage-
+  // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
     rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.

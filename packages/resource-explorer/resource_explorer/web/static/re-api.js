@@ -694,6 +694,67 @@ export const getAnalysesIndex = (slug, stage = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses-index${
     stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
 
+/** Latest structured results for one analysis -- a raw dict whose shape
+ *  differs per analysis_id (REPO_ANALYSIS_RESULTS_MAP's own reader
+ *  functions). Used directly by the sub-resource survey panel to read its
+ *  own findings list on demand, rather than waiting on the by-analysis
+ *  dashboard grouping this same data also feeds. */
+export const getAnalysisResults = (slug, analysisId) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/results`);
+
+/* ── Sub-resources -- the repo scope-narrowing funnel's Select/Catalog/Narrow
+ * stages (docs/repo-scope-narrowing-funnel.md D2-D6). Repo-only: the
+ * underlying table is generic across resource types, but SubResourceSurveyor
+ * only exists for repos (RULING-SUBRESOURCES-PLACEMENT.md §1.2) -- these
+ * routes 404 the repo slug they're given, never a resource-type check, so
+ * nothing here needs an entityType param the way survey-definitions does. */
+
+/** What's currently tracked locally for this repo -- backs the "already
+ *  catalogued" state so re-opening the panel later shows prior selections
+ *  (repeatable, not a one-time gate). */
+export const listSubResources = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/sub-resources`);
+
+/** Track the selected sub-resources locally, and (by default) publish them
+ *  to Egeria as real FileFolder/DataFile assets in the same action.
+ *  `publishToEgeria: false` is the sandbox-mode escape hatch. */
+export const catalogSubResources = (slug, items, publishToEgeria = true) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/catalog`,
+       { items, publish_to_egeria: publishToEgeria });
+
+/** Reversible -- removes only RE's local tracking record, never anything
+ *  already published to Egeria. `locator` is a query param so the repo's
+ *  own root locator ("") is representable. */
+export const uncatalogSubResource = (slug, locator) =>
+  del(`/api/projects/${encodeURIComponent(slug)}/sub-resources?locator=${encodeURIComponent(locator)}`);
+
+/** Run one analysis's step(s) scoped to a single cataloged sub-resource
+ *  (the Narrow stage, D5/D6) rather than the whole repo. Only reachable for
+ *  analyses whose target_shape is compatible with the sub-resource's kind
+ *  -- the server re-checks this; `isShapeCompatible` below is the client's
+ *  own mirror of the same rule, used to decide what to offer in the first
+ *  place. */
+export const runScopedAnalysis = (slug, analysisId, locator) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/analyses/${
+    encodeURIComponent(analysisId)}/run`, { locator });
+
+/** Latest structured results for one analysis, scoped to a single cataloged
+ *  sub-resource. Empty dict for any analysis_id that never persists scoped
+ *  metrics -- that is an absence, not an error. */
+export const getScopedAnalysisResults = (slug, analysisId, locator) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/sub-resources/analyses/${
+    encodeURIComponent(analysisId)}/results?locator=${encodeURIComponent(locator)}`);
+
+/** Mirrors analysis_catalog_reader.is_shape_compatible() -- kept in sync by
+ *  hand since this is a small, stable 4-value enum, not worth a round-trip
+ *  (same approach classic's index.html took for the same check). */
+export function isShapeCompatible(targetShape, kind) {
+  if (targetShape === 'corpus') return true;
+  if (targetShape === 'single_container') return kind === 'folder' || kind === 'schema';
+  if (targetShape === 'single_leaf') return kind === 'file' || kind === 'table' || kind === 'column';
+  return false; // whole_resource_only, or unrecognized
+}
+
 /** Recent activity for one resource — the runs, with their per-step detail. */
 /* ── Members: the things a count counted ─────────────────────────────────
  *
