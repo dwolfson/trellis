@@ -8689,6 +8689,23 @@ class ProjectRegistry:
                 (status.value, error, slug),
             )
 
+    def update_database_credentials(self, slug: str, db_user: str, db_password: str) -> None:
+        """Update the stored connection credentials for a database entity.
+
+        Repoints an already-registered database at a different DB role/password
+        without disturbing its registration history (slug, egeria_asset_guid,
+        survey history, etc.) — the only supported way to change credentials;
+        there is deliberately no broader multi-connection/credential-store model
+        here (see docs/Backlog.md's "Database credential-capability model —
+        awaiting the project owner's ruling").
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
+                (db_user, db_password, slug),
+            )
+
     def update_database_surveyed_at(self, slug: str) -> None:
         """Update the last_surveyed_at timestamp for a database."""
         slug = self._normalize_slug(slug)

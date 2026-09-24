@@ -83,6 +83,12 @@ class DatabaseRegistration(BaseModel):
     group_slug: str = ""
 
 
+class DatabaseCredentialsUpdate(BaseModel):
+    """Request body for updating a registered database's stored credentials."""
+    db_user: str = ""
+    db_password: str = ""
+
+
 class SurveyRequest(BaseModel):
     """Request body for triggering a database survey."""
     username: str = ""  # DB username — falls back to stored db_user if blank
@@ -338,6 +344,26 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     registry.register_database(database)
     
     return _to_summary(database)
+
+
+@router.patch("/{slug}/credentials", response_model=DatabaseSummary)
+async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate) -> DatabaseSummary:
+    """Update the stored db_user/db_password for an already-registered database,
+    without disturbing its registration history (slug, egeria_asset_guid,
+    survey history, etc.). The only supported way to repoint credentials today —
+    see registry.py's update_database_credentials docstring."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+
+    database = registry.get_database(slug)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    registry.update_database_credentials(slug, req.db_user, req.db_password)
+
+    updated = registry.get_database(slug)
+    return _to_summary(updated)
 
 
 @router.post("/{slug}/survey", response_model=SurveyResult)
