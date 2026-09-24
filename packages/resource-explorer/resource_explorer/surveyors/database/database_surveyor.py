@@ -1521,7 +1521,12 @@ class DatabaseSurveyor:
         schema_info = results["schema_info"]
         statistics  = results.get("statistics", {})
 
-        # Enrich each table with row count + activity timestamps from pg_stat_user_tables
+        # Enrich each table with row count + activity timestamps from
+        # pg_stat_user_tables. Like information_schema, this view is
+        # privilege-filtered (PG10+: a role sees a table's row here only with
+        # some privilege on that table, or pg_monitor membership) — so a
+        # catalog-fallback table (connection.py's `_catalog_only_fallback()`,
+        # added for the same reason) legitimately has no entry here either.
         row_lookup: dict[tuple, dict] = {
             (rs["schemaname"], rs["tablename"]): rs
             for rs in statistics.get("row_stats", [])
@@ -1529,7 +1534,18 @@ class DatabaseSurveyor:
         for schema in schema_info.get("schemas", []):
             for table in schema["tables"]:
                 rs = row_lookup.get((schema["name"], table["name"]), {})
-                table["row_count"]      = rs.get("row_count", 0)
+                if rs:
+                    table["row_count"] = rs.get("row_count", 0)
+                elif table.get("source") == "catalog_fallback":
+                    # No real stats-collector row either — fall back to the
+                    # ANALYZE-time estimate connection.py already attached,
+                    # rather than defaulting to 0 (a fabricated "measured
+                    # zero" for a table this credential cannot actually
+                    # count). result_materializer.py reads
+                    # `row_count_estimate` when `row_count` is left absent.
+                    table["row_count"] = None
+                else:
+                    table["row_count"] = 0
                 table["last_analyzed"]  = rs.get("last_analyzed", "")
                 table["last_vacuumed"]  = rs.get("last_vacuumed", "")
                 table["pending_changes"] = rs.get("pending_changes", 0)
@@ -1542,7 +1558,16 @@ class DatabaseSurveyor:
         for schema in schema_info.get("schemas", []):
             for table in schema["tables"]:
                 ts = size_lookup.get((schema["name"], table["name"]), {})
-                table["size_bytes"] = ts.get("total_bytes", 0) or 0
+                if ts:
+                    table["size_bytes"] = ts.get("total_bytes", 0) or 0
+                elif table.get("source") == "catalog_fallback":
+                    # Same reasoning as row_count above: pg_tables (the
+                    # source of table_stats) is schema-USAGE-filtered, and a
+                    # catalog-fallback table has no size measurement to fall
+                    # back to at all — leave it unmeasured rather than 0.
+                    table["size_bytes"] = None
+                else:
+                    table["size_bytes"] = 0
                 table["size_pretty"] = ts.get("total_size", "")
 
         # `surveyed_at` is passed explicitly (rather than left to default)

@@ -214,7 +214,30 @@ class PostgreSQLConnection(DatabaseConnection):
             return {}
 
     def _get_tables_for_schema(self, schema_name: str) -> list[dict]:
-        """Get tables and columns for a schema, including PK/FK info and pg_description comments."""
+        """Get tables and columns for a schema, including PK/FK info and pg_description comments.
+
+        `information_schema.tables`/`.columns` (and the PK/FK/comment
+        lookups below, which also go through `information_schema`/
+        `obj_description()`/`col_description()`) are privilege-filtered by
+        Postgres: a role needs `SELECT` on a table before that table shows up
+        here at all. Confirmed live against a real `coco_pharma` incident
+        (design: ASK/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md): a
+        credential with `USAGE` on `coco_ods` but no `SELECT` grant on any
+        table inside it got **zero** tables back for that schema, even
+        though the tables genuinely exist.
+
+        `pg_class`/`pg_attribute`/`pg_namespace` are catalog metadata, not
+        privilege-filtered — any connected role can read them regardless of
+        grants (the same fact `get_credential_capability()` relies on). So
+        after the normal enumeration below, `_catalog_only_fallback()` fills
+        in any table the catalog knows about that `information_schema` did
+        not return — table name, column names, Postgres type names, and
+        `pg_class.reltuples` as an ANALYZE-time row estimate. This is a
+        fallback, not a replacement: a schema where `information_schema`
+        already sees every table is returned exactly as before, with the
+        richer exact data (real PK/FK, `is_nullable`, `column_default`,
+        exact comments) that only that path can supply.
+        """
         # Get primary keys for the schema
         pk_query = """
             SELECT kcu.table_name, kcu.column_name
@@ -293,6 +316,7 @@ class PostgreSQLConnection(DatabaseConnection):
                     "type": row["table_type"],
                     "description": row.get("table_description") or "",
                     "columns": [],
+                    "source": "information_schema",
                 }
             if row["column_name"]:
                 col_name = row["column_name"]
@@ -323,9 +347,126 @@ class PostgreSQLConnection(DatabaseConnection):
                     "description": row.get("column_description") or "",
                     "is_primary_key": is_pk,
                     "foreign_key": fk,
+                    "source": "information_schema",
                 })
 
+        self._catalog_only_fallback(schema_name, tables)
         return list(tables.values())
+
+    def _catalog_only_fallback(self, schema_name: str, tables: dict[str, dict]) -> None:
+        """Fill in, in place, any table `information_schema` did not return
+        for this schema but `pg_class` says exists.
+
+        Only ever ADDS entries `tables` is missing — a schema where
+        `information_schema` already saw every table is untouched, so a
+        credential with full access keeps getting exactly today's richer
+        data. See `_get_tables_for_schema()`'s docstring for why this is
+        possible at all (pg_class/pg_attribute/pg_namespace are not
+        privilege-filtered) and what it can and cannot supply.
+        """
+        try:
+            catalog = self._catalog_table_summary(schema_name)
+        except Exception:
+            return
+        for table_name, info in catalog.items():
+            if table_name in tables:
+                continue
+            columns = self._catalog_columns_for_table(schema_name, table_name)
+            tables[table_name] = {
+                "name": table_name,
+                "type": info.get("table_type") or "",
+                "description": "",
+                "columns": columns,
+                "source": "catalog_fallback",
+                # pg_class.reltuples is an ANALYZE-time estimate, never a
+                # live count — kept in its own field, and paired with an
+                # explicit basis, rather than written straight into a plain
+                # "row_count" that every other caller reads as exact.
+                "row_count_estimate": info.get("reltuples"),
+                "row_count_basis": "estimated",
+            }
+
+    def _catalog_table_summary(self, schema_name: str) -> dict[str, dict]:
+        """{table_name: {table_type, reltuples}} from `pg_class`/`pg_namespace`
+        for one schema — catalog metadata, readable by any connected role
+        regardless of `USAGE`/`SELECT` grants (same fact
+        `get_credential_capability()` relies on). `reltuples` is the row
+        estimate from the last `ANALYZE`, not a live count.
+        """
+        query = """
+            SELECT c.relname AS table_name, c.relkind, c.reltuples
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relkind IN ('r', 'p', 'v', 'm')
+        """
+        rows = self.execute_query(query, (schema_name,))
+        kind_to_type = {
+            "r": "BASE TABLE", "p": "BASE TABLE",
+            "v": "VIEW", "m": "MATERIALIZED VIEW",
+        }
+        out: dict[str, dict] = {}
+        for r in rows:
+            name = r.get("table_name")
+            if not name:
+                continue
+            reltuples = r.get("reltuples")
+            out[name] = {
+                "table_type": kind_to_type.get(r.get("relkind"), ""),
+                "reltuples": (
+                    int(reltuples) if reltuples is not None and reltuples >= 0 else None
+                ),
+            }
+        return out
+
+    def _catalog_columns_for_table(self, schema_name: str, table_name: str) -> list[dict]:
+        """Column names and Postgres type names from `pg_attribute`, for the
+        catalog-only fallback path.
+
+        Deliberately does NOT attempt `is_nullable`, `column_default`,
+        primary/foreign-key detail or a comment for these columns — this
+        codebase's PK/FK/default/comment lookups all go through
+        `information_schema`/`obj_description()`/`col_description()`, which
+        are exactly the privilege-filtered paths this fallback exists
+        because of. Reporting `nullable`/`is_primary_key` as a guessed
+        `False` here would be a confident wrong answer of the same shape
+        this whole change exists to avoid, so those fields are left `None`/
+        absent rather than defaulted.
+        """
+        query = """
+            SELECT a.attname AS column_name,
+                   a.attnum  AS ordinal_position,
+                   format_type(a.atttypid, a.atttypmod) AS data_type
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+              AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
+        """
+        try:
+            rows = self.execute_query(query, (schema_name, table_name))
+        except Exception:
+            return []
+        columns = []
+        for r in rows:
+            name = r.get("column_name")
+            if not name:
+                continue
+            data_type = r.get("data_type") or ""
+            columns.append({
+                "name": name,
+                "type": data_type,
+                "base_type": data_type,
+                "nullable": None,
+                "default": None,
+                "position": r.get("ordinal_position"),
+                "description": "",
+                "is_primary_key": None,
+                "foreign_key": None,
+                "source": "catalog_fallback",
+            })
+        return columns
 
     def list_databases(self) -> list[dict]:
         """List all databases on this server that the current user can connect to."""
