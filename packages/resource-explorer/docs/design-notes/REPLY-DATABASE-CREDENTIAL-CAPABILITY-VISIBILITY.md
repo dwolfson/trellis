@@ -97,11 +97,21 @@ said. RE's part is the **RFA to the database owner**, raised by the probe:
 `coco_ods.*` or register a broader connection on this asset." The RFA
 carries the exact object list, which the probe has.
 
-**pyegeria to verify (one probe):** which call lists an asset's
-connections with their `ResourceConnection` relationship properties, so the
-label is readable. `ClassificationExplorer.get_relationships` on the asset
-filtered to `ResourceConnection` is the likely answer; confirm it returns
-the relationship's `label` and not only the far-end element.
+**pyegeria enumeration — verified 2026-09-24 by the coordinating session,
+against `coco_pharma` (asset `5246aa50…`, the post-redeploy re-catalogue):**
+`ConnectionMaker.find_assets(search_string=…, output_format='JSON')` returns
+the asset with a `connections` array; each entry carries the relationship
+type (`ResourceConnection`, `superTypeNames: ["LabeledRelationship"]`) and
+its `relationshipProperties`, so the label *is* readable through this call.
+For `coco_pharma` today: exactly one connection, the unlabelled template
+one (`…::coco_pharma::Connection`), `relationshipProperties: null` — the
+slot exists and nothing has set it yet, as expected. **Gotcha for whoever
+builds this:** `ConnectionMaker.get_endpoints_for_asset` and
+`find_connections` both returned empty for the same asset; use
+`find_assets` and read the `connections` array. Also confirmed:
+`AutomatedCuration.initiate_postgres_server_survey(postgres_server_guid)`
+takes no connection argument, so the native route really is decided by the
+security connector alone.
 
 ---
 
@@ -172,7 +182,7 @@ denominator supplied by the system catalog.
 |---|---|---|
 | Egeria server | `selectConnection` returns `connectionEntities.get(0)` when exactly one connection is visible; should be `visibleConnections.get(0)` | `OpenMetadataAccessSecurityConnector.java:2666-2669` |
 | Egeria server | random selection among several visible connections; propose deterministic order (most recent, or a `ResourceConnection.label` match against a request parameter such as `connectionRole`) so a survey can ask for the surveyor connection | `:2670-2674` |
-| pyegeria | confirm or add a read of an asset's connections *with* the `ResourceConnection` relationship properties (label) | probe in §2 |
+| pyegeria | ~~confirm a read of an asset's connections with the link label~~ — **verified**: `find_assets(...)['connections']` (§2). Remaining item: `get_endpoints_for_asset` / `find_connections` return empty for an asset that has a connection; log as a gotcha or bug in `PYEGERIA_ISSUES.md` | §2 |
 
 Neither server item blocks piece 1. Both should be fixed before the
 operational rule in §2 is relied on in a multi-connection deployment.
