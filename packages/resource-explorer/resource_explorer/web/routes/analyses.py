@@ -286,6 +286,13 @@ def bulk_resource_facts(
         description="cheap projection: is there output and when was it measured, "
                     "without running the results readers",
     ),
+    entity_type: str = Query(
+        "repo",
+        description="resource type of the slugs above ('repo' | 'database' | "
+                     "'filesystem') — used to build FactLayer and to resolve the "
+                     "default analysis_ids list for this resource type, same "
+                     "convention as answer_question() above",
+    ),
 ) -> dict:
     """What is known about SEVERAL resources, in one call.
 
@@ -306,9 +313,7 @@ def bulk_resource_facts(
     choice is the URL length, hence the cap.
     """
     from resource_explorer.facts import FactLayer
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_RESULTS_MAP,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     subjects = [s.strip() for s in slugs.split(",") if s.strip()]
     # Deduped, order preserved: a repeated slug in the request should not mean
@@ -324,7 +329,7 @@ def bulk_resource_facts(
         )
 
     ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
-    ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+    ids = ids or sorted(get_adapter(entity_type).analysis_results_map())
 
     if states_only:
         # THE CHEAP PATH. Two grouped queries for the whole matrix instead of
@@ -343,7 +348,7 @@ def bulk_resource_facts(
 
         registry = ProjectRegistry()
         summary = registry.analysis_result_summary(subjects, ids)
-        layer = FactLayer()
+        layer = FactLayer(resource_type=entity_type)
         states: dict[str, dict] = {}
         for slug in subjects:
             runs = layer._last_run(slug)
@@ -381,7 +386,7 @@ def bulk_resource_facts(
         # A FactLayer per thread rather than one shared: it holds a registry
         # handle, and a DB connection is not something to share across
         # threads on the strength of it probably being fine.
-        return slug, [f.as_dict() for f in FactLayer().facts(slug, ids)]
+        return slug, [f.as_dict() for f in FactLayer(resource_type=entity_type).facts(slug, ids)]
 
     # Fanned out across resources, because the cost here is dominated by a
     # couple of readers that are slow rather than by many that are quick —
@@ -429,7 +434,15 @@ def bulk_resource_facts(
 
 
 @router.get("/facts/{slug}")
-def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> dict:
+def resource_facts(
+    slug: str,
+    analysis_ids: list[str] | None = Query(None),
+    entity_type: str = Query(
+        "repo",
+        description="resource type of slug ('repo' | 'database' | 'filesystem') — "
+                     "same convention as answer_question() above",
+    ),
+) -> dict:
     """What is known about this resource, and how well it is known.
 
     Facts arrive already judged: each carries a state from result_status's
@@ -438,12 +451,10 @@ def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> d
     reader.
     """
     from resource_explorer.facts import FactLayer
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_RESULTS_MAP,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
-    ids = analysis_ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
-    layer = FactLayer()
+    ids = analysis_ids or sorted(get_adapter(entity_type).analysis_results_map())
+    layer = FactLayer(resource_type=entity_type)
     return {"subject": slug, "facts": [f.as_dict() for f in layer.facts(slug, ids)]}
 
 
