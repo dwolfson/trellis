@@ -40,6 +40,17 @@ class PlanRequest(BaseModel):
     step_key: str
 
 
+class CapabilityRfaRequest(BaseModel):
+    """§7.1's third choice at the gate: "raise the RFA"."""
+    entity_type: str = "database"
+    slug: str
+    #: The step the capability shortfall blocked. Naming it is the entire
+    #: difference between this RFA and the standing one the
+    #: `credential_capability` probe raises — see
+    #: `credential_capability.capability_rfa`.
+    step_key: str
+
+
 class RunRequest(BaseModel):
     entity_type: str = "database"
     slug: str
@@ -49,6 +60,15 @@ class RunRequest(BaseModel):
     #: producer's `step_runs` row, so an accepted proposal's cost is
     #: attributable to the question that caused it.
     demanded_by: str = ""
+    #: §7.1's first choice — the user was shown a capability shortfall and
+    #: chose "run it anyway and say so". Sent back the same way `steps` is,
+    #: and for the same reason: the server must run what the user was shown,
+    #: and a re-resolve at accept time would otherwise re-raise the shortfall
+    #: and skip the step. It suppresses only the capability axis; a cost-tier
+    #: reason in the same proposal is not consented by it, because the
+    #: proposal's producers are named in `steps` and running them IS that
+    #: consent.
+    capability_consented: bool = False
 
 
 def _registry():
@@ -109,6 +129,73 @@ async def plan_prerequisites(req: PlanRequest) -> dict:
     return resolution.as_plan()
 
 
+@router.post("/capability-rfa")
+async def raise_capability_rfa(req: CapabilityRfaRequest) -> dict:
+    """Raise the launcher's own RFA for a capability-blocked step.
+
+    §7.1 lists three choices at the gate. This is the third; the first ("run
+    partially and say so") is the ordinary `/run` path with the demanding step
+    named, and the second ("pick another visible connection") is deliberately
+    not built — it needs the multi-connection model that is separately gated
+    on the project owner's ruling, and a button that cannot do anything is
+    worse than an absent one.
+
+    Re-resolves rather than trusting the request body for the shortfall: the
+    client says WHICH step it was blocked on, and the server establishes
+    whether it is still blocked and by how much. An RFA is a durable claim
+    about a grant, and posting one from a stale client-side number would put
+    a wrong fraction in front of a database owner.
+    """
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.surveyors import credential_capability
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    registry = _registry()
+    try:
+        adapter = get_adapter(req.entity_type)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    entity = adapter.get_entity(registry, req.slug)
+    if entity is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{req.entity_type} '{req.slug}' not found in the registry")
+    provider = getattr(adapter, "step_registry", None)
+    info = (provider() or {}).get(req.step_key) if provider else None
+    if info is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"the {req.entity_type} adapter has no step {req.step_key!r}")
+
+    probe = credential_capability.stored_probe(registry, entity)
+    assessment = credential_capability.assess(
+        getattr(info, "requires_capability", "") or "", probe)
+    if not assessment.blocks:
+        # Not an error and not a silent no-op: the honest answer is that
+        # there is nothing to ask for, and the three reasons differ enough
+        # that collapsing them would mislead.
+        return {
+            "status": "not_raised",
+            "step_key": req.step_key,
+            "capability": assessment.as_dict(),
+            "detail": (
+                "this step declares no capability requirement"
+                if not assessment.requirement else
+                "no capability probe has run for this resource, so no "
+                "shortfall has been measured to ask about"
+                if not assessment.known else
+                "the connected credential already satisfies this step's "
+                "requirement"),
+        }
+
+    payload = credential_capability.capability_rfa(
+        req.slug, getattr(entity, "display_name", "") or req.slug,
+        req.step_key, assessment)
+    entry_id = log_rfa(registry, **payload)
+    return {"status": "ok", "rfa_id": entry_id, "step_key": req.step_key,
+            "capability": assessment.as_dict(), "summary": payload["summary"]}
+
+
 @router.post("/run")
 async def run_prerequisites(req: RunRequest) -> dict:
     """Run the proposed steps. This is the user's yes."""
@@ -154,6 +241,7 @@ async def run_prerequisites(req: RunRequest) -> dict:
                     req.entity_type, req.slug, step_key,
                     executes_at="resource-explorer",
                     demanded_by=req.demanded_by,
+                    capability_consented=req.capability_consented,
                     **runner_kwargs,
                     # Locally, explicitly. The user accepted a specific
                     # estimate, and Prefect's own per-step overhead is real

@@ -250,3 +250,134 @@ class TestProposalHasItsOwnGlyphAndTone:
         tone_start = src.index("const STATE_TONE = {")
         tone_block = _balanced(src, src.index("{", tone_start))
         assert "proposal:" in tone_block
+
+
+class TestTheCapabilityAxisRendersInsideTheSameProposal:
+    """`REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §7.1: "Build it as
+    one axis beside cost tier in the same gate, not as a separate flow… the
+    launcher shows one combined reason."
+
+    The failure these guard against is a second UI surface: a capability
+    banner, drawer or row of its own, leaving a reader to reconcile two
+    prompts about the same run. So every assertion here is about the EXISTING
+    `prerequisiteProposalHtml` having grown the axis, not about a new
+    function existing.
+    """
+
+    def _proposal_fn(self) -> str:
+        return _fn_decl(_app_js_source(),
+                        "function prerequisiteProposalHtml(entry, i, indent)")
+
+    def test_there_is_no_second_proposal_renderer(self):
+        src = _app_js_source()
+        assert src.count("function prerequisiteProposalHtml(") == 1
+        for invented in ("function capabilityProposalHtml(",
+                         "function credentialGateHtml(",
+                         "function capabilityBannerHtml("):
+            assert invented not in src, (
+                f"{invented} is a parallel surface; §7.1 says one combined gate")
+
+    def test_the_one_renderer_reads_both_axes(self):
+        fn = self._proposal_fn()
+        # The cost axis it already had...
+        assert "estimated_seconds" in fn and "estimated_is_measured" in fn
+        # ...and the capability axis, in the same function.
+        assert "p.capability" in fn
+        assert "run_partially" in fn
+
+    def test_the_reasons_list_is_shared_by_both_kinds(self):
+        """Both a `tier` reason and a `capability` reason come through
+        `p.reasons`, so neither can be rendered without the other — this is
+        what makes "one combined reason" structural rather than a habit."""
+        fn = self._proposal_fn()
+        assert fn.count("p.reasons") == 1, (
+            "two separate passes over reasons invites filtering one kind out")
+
+    def test_a_capability_only_proposal_quotes_no_estimate(self):
+        """No chain means no work to cost. The lead line must branch on
+        whether there are steps rather than rendering "needs  first —
+        estimated 0s", which is three false claims in one sentence."""
+        fn = self._proposal_fn()
+        lead = fn[fn.index("const lead ="):]
+        assert "steps" in lead.split("\n")[0], "the lead line does not branch on the chain"
+        assert "can run, but not completely" in lead
+
+    def test_the_accept_button_says_which_kind_of_yes_it_is(self):
+        fn = self._proposal_fn()
+        assert "Run it anyway" in fn
+        assert "Run it'" in fn or 'Run it"' in fn
+
+    def test_running_partially_states_that_it_will_say_so(self):
+        """§7.1's first choice is "run partially AND SAY SO" — a button that
+        only offered the first half would let a bounded answer be read as a
+        whole one, which is the bug the whole axis exists to prevent."""
+        fn = self._proposal_fn()
+        assert "measured within this credential's scope" in fn
+
+    def test_pick_another_connection_is_absent_rather_than_dead(self):
+        """§7.1's second choice needs the multi-connection model that is
+        still gated on the project owner's ruling. A disabled-looking button
+        promising it would be worse than none — but its absence must be
+        deliberate, which the comment records."""
+        fn = self._proposal_fn()
+        assert "data-prereq-connection" not in fn
+        assert "pick another" in fn.lower()
+
+    def test_the_rfa_choice_is_offered_only_for_a_capability_shortfall(self):
+        """A cost-tier proposal has no use for "ask for broader access" —
+        offering it there would invite an RFA about a grant that is fine."""
+        fn = self._proposal_fn()
+        rfa_line = fn[fn.index("const rfa ="):]
+        assert "partial" in rfa_line.split("\n")[0]
+        assert "data-prereq-rfa" in rfa_line
+
+
+class TestTheAcceptPathRunsWhatTheUserWasShown:
+    """A capability-only proposal names no producers, so the thing to run is
+    the demanding step itself. Getting this wrong makes the accept button a
+    no-op — it posts an empty `steps`, the route 400s, and the user is told
+    their yes failed."""
+
+    def _accept_fn(self) -> str:
+        return _fn_decl(_app_js_source(),
+                        "async function acceptPrerequisiteProposal(")
+
+    def test_run_partially_is_appended_to_the_steps_the_user_accepted(self):
+        fn = self._accept_fn()
+        assert "proposal.run_partially" in fn
+        # Appended, not substituted: a proposal carrying BOTH axes runs the
+        # chain and then the step, as one accepted action.
+        assert "...(proposal.steps" in fn
+
+    def test_consent_travels_to_the_server(self):
+        """Without it the executor re-resolves, raises the same shortfall and
+        skips the step the user just approved."""
+        fn = self._accept_fn()
+        assert "!!proposal.run_partially" in fn
+        api = _fn_arrow(_re_api_source(), "runPrerequisites")
+        assert "capability_consented" in api
+
+    def test_the_note_does_not_say_it_ran_a_step_before_itself(self):
+        fn = self._accept_fn()
+        assert "within this credential's scope" in fn
+
+    def test_the_rfa_button_leaves_the_proposal_pending(self):
+        """Asking for access is not a decision about the run. Clearing the
+        row would make the RFA read as a third answer to a two-answer
+        question."""
+        fn = _fn_decl(_app_js_source(),
+                      "async function raisePrerequisiteCapabilityRfa(")
+        assert "pendingProposals.delete" not in fn
+        assert "raiseCapabilityRfa(" in fn
+        # And it must distinguish "asked" from "nothing to ask for" — the
+        # server's two real outcomes must not render alike.
+        assert "not_raised" in fn or "'ok'" in fn
+
+
+class TestReApiExposesTheCapabilityRfaEndpoint:
+    def test_raise_capability_rfa_posts_to_its_own_endpoint(self):
+        fn = _fn_arrow(_re_api_source(), "raiseCapabilityRfa")
+        assert "/api/prerequisites/capability-rfa" in fn
+        assert "step_key" in fn, (
+            "naming the blocked step is the entire difference between this "
+            "RFA and the standing one the probe raises")
