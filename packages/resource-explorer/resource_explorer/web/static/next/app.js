@@ -132,6 +132,7 @@ import {
   pollActivity,
   planPrerequisites,
   runPrerequisites,
+  raiseCapabilityRfa,
   removeInvestigationMember,
   removeProject,
   removeEntity,
@@ -5852,13 +5853,55 @@ function prerequisiteProposalHtml(entry, i, indent) {
     ? '<span class="text-ink-muted">(median of previous runs)</span>'
     : '<span class="text-ink-muted">(from its declared cost, never yet measured)</span>';
   const reasons = (p.reasons || []).map((r) => `<li>${esc(r.detail)}</li>`).join('');
-  return `<div class="${indent} text-answer text-ink">Answering this needs ${steps} first —
-      estimated <span class="tnum">${est}s</span> ${basis}.</div>
+
+  // The second axis (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+  // §7.1). Rendered INSIDE this same proposal rather than as a surface of its
+  // own, because §7.1's words are "one axis beside cost tier in the same
+  // gate… the launcher shows one combined reason". A proposal carrying both a
+  // tier reason and a capability reason is therefore one block with two
+  // bullets and one lead line -- never two prompts to reconcile. The bullets
+  // above already carry both; what changes below is only the LEAD sentence
+  // (a capability-only proposal has no chain to name and no estimate to
+  // quote) and the button row (a shortfall the credential cannot fix is
+  // worth an RFA, which a cost-tier proposal has no use for).
+  const cap = p.capability;
+  const partial = !!p.run_partially;
+  const frac = cap && cap.of
+    ? ` <span class="tnum">${cap.have}</span> of <span class="tnum">${cap.of}</span> table(s)`
+    : '';
+  const lead = steps
+    ? `Answering this needs ${steps} first —
+        estimated <span class="tnum">${est}s</span> ${basis}.`
+    // No chain, so no "needs X first" and no estimate. Saying either would be
+    // a claim about work that does not exist.
+    : `<code class="text-accent-ink">${esc(p.demanding_step || '')}</code> `
+      + `can run, but not completely`
+      + `${cap && cap.connected_as ? ` as <code>${esc(cap.connected_as)}</code>` : ''}${frac}.`;
+
+  // §7.1 names three choices. Two are offered; the third is deliberately
+  // absent and says so rather than appearing as a dead control.
+  // "pick another visible connection" needs the multi-connection model that
+  // is still gated on the project owner's ruling, and an enabled-looking
+  // button that cannot do anything is worse than none.
+  const accept = partial
+    ? 'Run it anyway — and say so'
+    : 'Run it';
+  const rfa = partial
+    ? `<button type="button" data-prereq-rfa="${i}"
+        class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
+        title="Raise a request to the database owner naming this step and the privilege it needs"
+        >ask for broader access</button>`
+    : '';
+  return `<div class="${indent} text-answer text-ink">${lead}</div>
     ${reasons ? `<ul class="${indent} mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
+    ${partial ? `<div class="${indent} mt-[4px] text-caveat text-ink-muted">Running it anyway is not wrong —
+      the result is marked as measured within this credential's scope, never as a
+      measurement of the whole database.</div>` : ''}
     <div class="${indent} mt-s2 flex flex-wrap items-center gap-s2">
       <button type="button" data-prereq-accept="${i}"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[1px] text-caveat text-accent-ink"
-        >Run it</button>
+        >${accept}</button>
+      ${rfa}
       <button type="button" data-prereq-decline="${i}"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">not now — nothing has run</button>
     </div>`;
@@ -6010,6 +6053,7 @@ function bindRowActions(el, entry, i) {
   el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
   el.querySelector(`[data-prereq-accept="${i}"]`)?.addEventListener('click', () => acceptPrerequisiteProposal(entry, i));
   el.querySelector(`[data-prereq-decline="${i}"]`)?.addEventListener('click', () => declinePrerequisiteProposal(entry, i));
+  el.querySelector(`[data-prereq-rfa="${i}"]`)?.addEventListener('click', () => raisePrerequisiteCapabilityRfa(entry, i));
 }
 
 /** The user's yes on a pending §17.1 proposal. Runs exactly the steps the
@@ -6023,17 +6067,32 @@ async function acceptPrerequisiteProposal(entry, i) {
   if (!pending) return;
   const { proposal, background, entityType } = pending;
   state.pendingProposals.delete(entry.question);
+  // A capability-only proposal names no producers at all: the thing to run
+  // IS the demanding step, and `run_partially` is where the server put it
+  // (`steps` means "producers to run FIRST", which would read as nonsense
+  // about the step the user just asked for). Appended rather than
+  // substituted so a proposal carrying BOTH axes runs the chain and then the
+  // step, in one accepted action -- §7.1's combined gate accepted as one.
+  const toRun = proposal.run_partially
+    ? [...(proposal.steps || []), proposal.run_partially]
+    : (proposal.steps || []);
   state.runsInFlight.set(entry.question, {
     analysisId: pending.analysisId,
-    label: `Running ${proposal.steps.join(', ')}…`,
+    label: `Running ${toRun.join(', ')}…`,
   });
   replaceRow(entry, i, state.answers.get(entry.question));
   try {
-    const body = await runPrerequisites(entityType, state.selectedSlug, proposal.steps, proposal.demanding_step);
+    const body = await runPrerequisites(entityType, state.selectedSlug, toRun,
+                                        proposal.demanding_step,
+                                        !!proposal.run_partially);
     if (body.status === 'error') {
       throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
     }
-    state.autoRanNotes.set(entry.question, `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`);
+    state.autoRanNotes.set(entry.question, proposal.steps.length
+      ? `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`
+      // Not "ran X first, then X". What happened is one step, run knowingly
+      // within a credential that cannot see all of what it reads.
+      : `Ran ${proposal.demanding_step} within this credential's scope.`);
   } catch (err) {
     state.runsInFlight.delete(entry.question);
     state.answers.set(entry.question, { __error: `The prerequisite could not be run: ${err.message}` });
@@ -6052,6 +6111,35 @@ async function acceptPrerequisiteProposal(entry, i) {
 function declinePrerequisiteProposal(entry, i) {
   state.pendingProposals.delete(entry.question);
   replaceRow(entry, i, state.answers.get(entry.question));
+}
+
+/** §7.1's third choice at the capability gate: raise an RFA to the database
+ *  owner naming THIS step and the privilege it needs.
+ *
+ *  Leaves the proposal pending on purpose. Asking for access is not a
+ *  decision about the run -- the user can still choose "run it anyway" or
+ *  "not now" afterwards, and clearing the row here would silently make the
+ *  RFA read as a third answer to a two-answer question. */
+async function raisePrerequisiteCapabilityRfa(entry, i) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return;
+  const { proposal, entityType } = pending;
+  const btn = document.querySelector(`[data-prereq-rfa="${i}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'asking…'; }
+  try {
+    const body = await raiseCapabilityRfa(entityType, state.selectedSlug,
+                                          proposal.run_partially);
+    if (btn) {
+      // Says which of the two outcomes happened. "not_raised" is a real,
+      // honest answer (the shortfall is gone, or was never measured) and must
+      // not render as if a request had been filed.
+      btn.textContent = body.status === 'ok'
+        ? 'asked — see the RFA drawer'
+        : 'nothing to ask for';
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = `could not ask: ${err.message}`; }
+  }
 }
 
 /**
