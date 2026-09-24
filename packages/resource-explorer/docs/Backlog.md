@@ -7542,3 +7542,65 @@ layer RE controls (`resource_explorer/connection.py`) rather than trying to
 observe libpq; for the thread issue, propagate the ContextVar explicitly at
 thread-spawn sites inside steps, or surface `bytes_complete=false` more
 visibly wherever `step_runs` metrics are displayed.
+
+---
+
+## `/next`'s "Survey & analyses" tab silently drops Egeria's own native, technology-specific survey processes — classic already shows them
+
+**Found live** (project owner, 2026-09-24): opened `/next`'s "Survey & analyses"
+sub-tab on a real database (`coco_ods`, PostgreSQL) and got "No survey
+definitions for this resource — the adapter registered none for this
+technology type," alongside a "Scope: all tiers — stage filter unavailable"
+chip. **First write-up of this entry claimed no Egeria survey definitions
+exist for database/filesystem at all — that was wrong, corrected by the
+project owner** ("there are plenty of Egeria database surveys — they are not
+generic, they are for PostgreSQL or whatever") and re-traced below.
+
+Two genuinely separate conventions exist in this codebase, per
+`ResourceTypeAdapter`'s own docstring and `technology_type_processes.py`'s
+header comment: **RE-authored** Survey Definitions (a `GovernanceActionProcess`
+tagged via `additionalProperties.supported_technology_type`, RE's own
+free-text convention — none exist for database/filesystem, only
+`repo-survey-definition-*` documents do, confirmed via
+`docs/dr-egeria/survey-definitions/`), and **Egeria-native** survey/catalog
+processes (real, pre-existing governance action processes/types Egeria
+itself ships or has cataloged for a real Technology Type, e.g. PostgreSQL).
+The second kind is real and already known to this codebase —
+`resource_explorer/configdata/technology_type_processes.yaml` has confirmed,
+live-verified entries for `PostgreSQL Relational Database` and
+`PostgreSQL Server`, including `PostgreSQLSurvey::survey-postgres-database`
+(`kind: survey_existing` — safe to trigger directly against an existing
+asset) and `PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess`
+(`kind: catalog_and_survey`).
+
+`web/routes/survey_definitions.py`'s `list_candidates()` DOES read this
+config (`get_native_processes(entity_type, adapter.egeria_technology_type_name)`)
+and returns it as a separate `egeria_native_processes` field on the response
+— deliberately not merged into `candidates`, since only `survey_existing`
+processes are currently safe to expose as runnable and `catalog_and_survey`
+needs template placeholder params RE doesn't collect yet. **Classic**
+(`web/static/index.html:8661`) reads this field and renders it as an
+informational block: *"Also known to Egeria for this technology (not yet
+runnable from here)."* **`/next` never reads `data.egeria_native_processes`
+at all** (`grep` across `web/static/next/app.js` returns nothing) — so for
+`coco_ods`, `/next` shows "no survey definitions" while classic, given the
+exact same API response, would show the real PostgreSQL native survey
+process that DOES exist for it. The "stage filter unavailable" chip is a
+correct, separate symptom (RE's own candidate lookup genuinely finds zero
+RE-authored definitions and falls back to a full scan, which also finds
+zero) — but it's misleading in context, since it implies nothing is
+survey-able here when something is.
+
+This is the same shape as the rest of this session's "/next hasn't caught up
+to classic" findings, not a new kind of gap.
+
+**Candidate fix:** port classic's `nativeProcessesHtml` block
+(`web/static/index.html` around line 8661) into `/next`'s `loadSurveyPane()`
+(`web/static/next/app.js`, the same function that renders the "No survey
+definitions" message) — read `data.egeria_native_processes`, render it the
+same informational-only way classic does, and make the "no survey
+definitions" empty-state message conditional on BOTH lists being empty, not
+just `candidates`. Separately worth a design decision, not blocking this
+fix: whether `survey_existing` native processes should become genuinely
+runnable from `/next` (they're flagged safe in the config already) rather
+than staying informational-only in both UIs.
