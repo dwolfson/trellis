@@ -7437,3 +7437,108 @@ applied and read back through the unchanged public API; and a read-only
 absence of FK references, all reported above. The coordinator should run
 this migration (or accept the PR and let the normal deploy/restart cycle
 do it) rather than have it applied ad hoc from a subagent session.
+
+---
+
+## Prefect-orchestrated survey definitions don't get §17.1's prerequisite resolution
+
+**Found while building** §17.1 (prerequisite auto-run, PR #241).
+
+The design doc says the Prefect path already expresses step dependencies as
+task edges and "Prefect renders the chain itself" — checked against the code
+and that's not true. `survey_execution_plan.build_plan` builds Prefect's task
+graph from a definition's authored `Link Next Process Step` edges and their
+guards only; it has never read `requires_context`, and `PRODUCES` (this PR's
+new source of truth for what a step writes) did not exist before it. A
+Prefect-orchestrated definition would dispatch a step whose stored input is
+absent, the same failure `step_preconditions.py` existed to catch on the local
+path.
+
+Contained, not fixed: a definition that needs resolving takes the local
+execution loop (which still routes individual `executes_at: prefect` steps
+through `run_prefect_step`); a definition with nothing to resolve — every
+definition today — goes to Prefect unchanged.
+
+**Candidate fix:** fold `PRODUCES` edges into `survey_execution_plan.build_plan`
+so Prefect's own task graph carries the same producer/precondition edges the
+local resolver derives, rather than running two different dependency
+mechanisms depending on which coordinator a definition happens to use.
+
+---
+
+## §17.2's cost vector is missing `source_rows`/`source_queries`, by design — but there's no marker for "will never be sampled"
+
+**Found while building** §17.2 (cost-vector recording, PR #241).
+
+The design lists `source_rows`/`source_queries` as "optional, sampled" —
+`pg_stat_statements` deltas or filesystem read counters. Neither is built, so
+the fields are simply **absent from the metrics vector**, not present at 0 (a
+0 would misread as "this step scanned no rows"). That's the right call for
+now, but nothing distinguishes "not sampled yet, could be added" from "will
+never be sampled for this step kind" — a later reader of `step_runs` has no
+way to tell those apart without re-reading this PR.
+
+**Candidate fix:** when `pg_stat_statements`/read-counter sampling is designed,
+decide the presence convention explicitly (absent vs. a typed "not sampled"
+sentinel) rather than leaving it implicit in "the column is missing."
+
+---
+
+## §17.3's Admin "Performance" panel — deferred, needs designer round 2 after real rows accumulate
+
+**Found while building** §17.2/§17.3 (PR #241).
+
+The derived metrics (cost per question answered, tier ratio) are built as
+functions with unit tests and no UI — `step_runs` has no consumer yet besides
+the resolver's own estimate lookups. Per the design's own sequencing, this
+waits for two weeks of real rows before a designer pass on the four
+Admin-panel views §17.3 describes.
+
+**Candidate fix:** none yet — this is intentionally waiting on data, not on
+design. Revisit once `step_runs` has enough real-run history to make the
+panel's views meaningful rather than speculative.
+
+---
+
+## `/next`'s prerequisite-proposal UI doesn't exist yet — classic-only for now
+
+**Found while building** §17.1 (PR #241).
+
+`POST /api/prerequisites/plan`/`run` work over HTTP (verified live against a
+real database), but nothing in `/next`'s stage pages renders a proposal or
+offers the "run it?" accept/decline flow — matching classic-first precedent
+elsewhere in this codebase, but a real capability gap in `/next` today: a
+`/next` user who crosses a tier boundary gets no prompt at all where classic
+would show one.
+
+**Candidate fix:** design the `/next` equivalent of the classic proposal
+prompt — likely a toast/inline-card pattern consistent with `/next`'s existing
+run-in-background and queued-toast conventions, reading the same
+`/api/prerequisites/plan` response classic will use.
+
+---
+
+## Two cost-vector measurement blind spots, both undercounting rather than overcounting
+
+**Found while building** §17.2 (PR #241), verified live against the real
+shared Postgres.
+
+- **`connects` is always 0 for database steps.** psycopg2 opens its socket
+  inside libpq, below anything RE's observer can instrument — so the
+  `fetch_cost='none'` disagreement check (a step declaring zero-fetch that
+  actually opened a connection) can never fire for a database step. A clean
+  board proves nothing here; it's structurally unable to catch the case it
+  exists to catch.
+- **A thread spawned inside a step doesn't inherit the calling ContextVar
+  scope**, so external calls made from that thread are undercounted in the
+  step's own cost vector. Safe direction for an "is this expensive" alarm
+  (undercounting never triggers a false alarm), wrong direction for trusting
+  a step's own "this was free" claim — `bytes_complete` on the row says
+  whether the count is trustworthy, but nothing surfaces that distinction
+  anywhere a reader would see it before trusting the number.
+
+**Candidate fix:** for `connects`, instrument at the connection-pool/adapter
+layer RE controls (`resource_explorer/connection.py`) rather than trying to
+observe libpq; for the thread issue, propagate the ContextVar explicitly at
+thread-spawn sites inside steps, or surface `bytes_complete=false` more
+visibly wherever `step_runs` metrics are displayed.
