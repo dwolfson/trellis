@@ -270,6 +270,7 @@ class SurveyDefinitionExecutor:
             entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
             process_guid=process_guid, process_qn=process_qn,
             publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
+            demanded_by=demanded_by,
         )
 
     def _execute(
