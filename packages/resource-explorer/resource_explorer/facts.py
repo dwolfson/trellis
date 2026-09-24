@@ -910,7 +910,7 @@ class FactLayer:
             from resource_explorer.gaps import record_gaps_for
 
             try:
-                record_gaps_for(self._registry, slug)
+                record_gaps_for(self._registry, slug, self.resource_type)
             except ValueError as exc:
                 log.debug("gap recording skipped for %s: %s", slug, exc)
         return results
