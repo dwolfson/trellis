@@ -100,29 +100,45 @@ class StageBatchResult:
     annotations: list[dict] = field(default_factory=list)
 
 
-def resolve_analysis_plan(analysis_id: str) -> tuple[bool, list[str] | None]:
-    """(is_ingest, steps) for one analysis id.
+def resolve_analysis_plan(
+    analysis_id: str, entity_type: str = "repo",
+) -> tuple[bool, list[str] | None]:
+    """(is_ingest, steps) for one analysis id, of ONE entity type.
 
     `action: "ingest"` (today only `rag_ingestion`) is not a SurveyOrchestrator
     step at all — it re-embeds content into pgvector via IncrementalIndexer.
     Resolved before the step-map lookup, the same way scheduler.py special-cases
     `action: "publish"`. Callers use the pair both to validate up front (an
     unknown id has neither) and to run.
+
+    `entity_type` used to be unaccepted here — this always resolved against
+    the repo catalog and `REPO_ANALYSIS_SOURCE_STEPS`, imported directly,
+    regardless of what the caller was actually running an analysis for. A
+    database/filesystem work-list batch run (`run_queue.py::_handle_analysis_run`,
+    a real, already-wired feature) resolved the wrong steps this way, then
+    every row in the batch failed downstream on `registry.get(slug)` — same
+    shape as `_results_map_for(entity_type)` a short distance below in this
+    same file, which already dispatches correctly; this follows that
+    template. `get_adapter(entity_type).analysis_source_steps` is None for a
+    resource type that has not declared one (filesystem, today) — treated as
+    "no known source steps" rather than an error, matching the None-means-
+    not-declared convention `ResourceTypeAdapter` documents for these
+    provider fields.
     """
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_SOURCE_STEPS,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     catalog_entry = next(
-        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id),
+        (a for a in get_analyses(entity_type, include_egeria_live=False) if a["id"] == analysis_id),
         None,
     )
     is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
     # SOURCE steps: this resolves what to RUN. An analysis that owns no steps
     # (architecture_diagram) still runs its source's — off the ownership map it
     # would resolve to [] and the caller would report it undispatchable.
-    steps = None if is_ingest else REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id)
+    source_steps_provider = get_adapter(entity_type).analysis_source_steps
+    source_steps = source_steps_provider() if source_steps_provider else {}
+    steps = None if is_ingest else source_steps.get(analysis_id)
     return is_ingest, steps
 
 
@@ -360,17 +376,24 @@ def run_stage_batch(
 
 def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
                                 *, registry=None, publish: str | None = None,
+                                entity_type: str = "repo",
                                 ) -> AnalysisRunResult:
     """Run one analysis and write its terminal status onto `activity_id`.
 
     `publish` ("wait" | "background" | None) is the per-run choice, carried
     here from the run queue's `target` dict (see run_queue.py's
     `_handle_analysis_run`) — passed straight through to `run_analysis`.
+
+    `entity_type` defaults to "repo" for every caller that predates it —
+    thread through the `target` dict's own `entity_type` (see
+    `WorkLists.enqueue_batch`) for a database/filesystem batch run, so
+    `resolve_analysis_plan` below resolves that resource type's steps rather
+    than always the repo's.
     """
     from resource_explorer.registry import ProjectRegistry
 
     registry = registry or ProjectRegistry()
-    is_ingest, steps = resolve_analysis_plan(analysis_id)
+    is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
     try:
         result = run_analysis(
             slug, analysis_id, is_ingest=is_ingest, steps=steps, registry=None,
