@@ -1110,6 +1110,39 @@ function _runAnalysisPath(entityType, slug, analysisId) {
 export const runAnalysis = (slug, analysisId, entityType = 'repo') =>
   post(_runAnalysisPath(entityType, slug, analysisId));
 
+/* ── Prerequisite proposals (design §17.1, web/routes/prerequisites.py) ───
+ *
+ * `/plan` asks what `stepKey` needs before it can answer, WITHOUT running
+ * anything — the exact question a UI has to ask before it can offer "answering
+ * this needs X first — estimated 40s; run it?" rather than dispatching a run
+ * that silently degrades to a skip. `stepKey` is the resolver's own vocabulary
+ * (`re_analysis_steps`/`step_registry` keys), not always identical to an
+ * `analysis_id` — a caller passing an `analysis_id` that happens not to be a
+ * declared step key gets back `status: "satisfied"` (prerequisite_resolver.
+ * resolve() returns SATISFIED for an unrecognised key), which is the correct,
+ * conservative answer rather than a false proposal.
+ *
+ * The response is one of `PlanRequest`'s three shapes:
+ *   {status: "satisfied"}                                   — run it, nothing to ask
+ *   {status: "auto_run", auto_run: [steps...]}               — within budget;
+ *     the ordinary run endpoint will run these first on its own, unasked
+ *   {status: "proposal", proposal: {...Proposal.as_dict()}}  — crosses tier;
+ *     needs the user's yes before anything runs (`runPrerequisites` below)
+ *   {status: "unsatisfiable", reason}                        — nothing produces
+ *     what is missing; there is no accept button for this one
+ */
+export const planPrerequisites = (entityType, slug, stepKey) =>
+  post('/api/prerequisites/plan', { entity_type: entityType, slug, step_key: stepKey });
+
+/** The user's yes on a `proposal` plan. Runs exactly the steps the plan
+ *  named, in the order it named them (`PlanRequest`'s docstring: a proposal
+ *  recomputed at accept time could differ from what was shown, so the
+ *  client sends back what it displayed rather than a bare "go"). `demandedBy`
+ *  is the step that asked for them, recorded on the producers' own
+ *  `step_runs` rows so the accepted chain's cost is attributable. */
+export const runPrerequisites = (entityType, slug, steps, demandedBy = '') =>
+  post('/api/prerequisites/run', { entity_type: entityType, slug, steps, demanded_by: demandedBy });
+
 export const getActivityEntry = (entryId) =>
   get(`/api/activity/${encodeURIComponent(entryId)}`);
 
