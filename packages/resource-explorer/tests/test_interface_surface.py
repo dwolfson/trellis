@@ -166,15 +166,72 @@ class TestTheThreeRungLadder:
 
     def test_routes_could_not_check_when_nothing_records_them(self):
         """The honest half of the defect: a fastapi dependency with no
-        openapi.yaml cannot be promoted to `implemented` because no
-        Discovery-tier step records route decorators — reported, not
-        guessed past."""
+        openapi.yaml and no code-marker capture cannot be promoted to
+        `implemented` — reported, not guessed past. DESIGN-INTERFACE-
+        SURFACE-IMPLEMENTED-RUNG.md §3.2's per-repo reason: with no
+        capture_coverage passed (the default), the reason is "capture has
+        never run", not the old permanent pipeline-wide string."""
         f = _by_name(detect([], ["fastapi"]))
         assert f["http_api"]["label"] == IMPLIED
         routes = f["http_api"]["detail"]["routes"]
         assert routes is not None
-        assert routes["could_not_check_reason"] == "route decorators are not recorded"
+        assert routes["could_not_check_reason"] == "no code-marker extraction has run for this repository"
         assert "could not be checked" in f["http_api"]["summary"]
+
+    def test_could_not_check_names_the_uncovered_languages_when_capture_ran(self):
+        """The middle-of-three-outcomes reason (§3.2): capture ran, but this
+        repo's languages are outside marker coverage."""
+        cc = {"has_run": True, "languages_present": ["go", "javascript"],
+              "marker_capable_languages_present": []}
+        f = _by_name(detect([], ["fastapi"], None, None, [], None, cc))
+        reason = f["http_api"]["detail"]["routes"]["could_not_check_reason"]
+        assert reason == "route registrations are not captured for go, javascript"
+
+    def test_a_measured_zero_is_not_a_could_not_check(self):
+        """The third outcome: capture ran, covered a marker-capable
+        language, and genuinely found nothing for this kind — a real
+        finding about the repository, distinct from both `implemented` and
+        `could_not_check`."""
+        cc = {"has_run": True, "languages_present": ["python"],
+              "marker_capable_languages_present": ["python"]}
+        f = _by_name(detect([], ["fastapi"], None, None, [], None, cc))
+        assert f["http_api"]["label"] == IMPLIED
+        routes = f["http_api"]["detail"]["routes"]
+        assert routes["could_not_check_reason"] is None
+        assert routes["count"] == 0
+
+    def test_markers_promote_a_route_like_kind_to_implemented(self):
+        """The §6 worked example this whole design exists to produce: a
+        FastAPI route registration recorded in project_code_markers is
+        `implemented` evidence, stronger than the bare dependency guess."""
+        markers = [{"interface_kind": "http_api", "detail": "GET /items/{id}",
+                    "qualified_name": "read_item", "file_path": "app.py",
+                    "framework": "fastapi"}]
+        f = _by_name(detect([], ["fastapi"], None, None, markers))
+        assert f["http_api"]["label"] == IMPLEMENTED
+        assert f["http_api"]["detail"]["routes"]["count"] == 1
+        assert f["http_api"]["detail"]["evidence"][0]["source_analysis"] == "project_code_markers"
+
+    def test_architecture_interfaces_ports_are_a_secondary_source(self):
+        """§1b: an architecture_interfaces port finding for a protocol this
+        module knows about is read when no marker row already answers the
+        same kind."""
+        arch = [{"kind": "port", "protocol": "HTTP/REST", "component": "api",
+                 "additionalProperties": {"operationCount": "31"}}]
+        f = _by_name(detect([], ["fastapi"], None, None, [], arch))
+        assert f["http_api"]["label"] == IMPLEMENTED
+        assert f["http_api"]["detail"]["evidence"][0]["source_analysis"] == "architecture_interfaces"
+
+    def test_markers_take_precedence_over_architecture_interfaces_for_the_same_kind(self):
+        """§3.2's preference order: markers first, architecture_interfaces
+        only when no marker answers the kind — never both for one kind."""
+        markers = [{"interface_kind": "http_api", "detail": "GET /x",
+                    "qualified_name": "foo", "file_path": "app.py", "framework": "fastapi"}]
+        arch = [{"kind": "port", "protocol": "HTTP/REST", "component": "api",
+                 "additionalProperties": {"operationCount": "31"}}]
+        f = _by_name(detect([], ["fastapi"], None, None, markers, arch))
+        http = [r for r in f["http_api"]["detail"]["evidence"]]
+        assert all(e["source_analysis"] == "project_code_markers" for e in http)
 
     def test_cli_implied_carries_no_could_not_check_note(self):
         """Unlike http_api, cli's implemented rung WAS checked (via

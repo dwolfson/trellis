@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 
-from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
+from resource_explorer.ingestion.code_symbol_extractor import CodeMarker, CodeSymbol
 
 _JAVADOC_STRIP = re.compile(r"^\s*/?\*+/?", re.MULTILINE)
 
@@ -280,3 +280,145 @@ class JavaSymbolExtractor:
             )
         except Exception:
             return None
+
+
+# ── Markers — Spring MVC / KafkaListener annotations, gRPC servicer methods ─
+#
+# DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md §3.1: covers `@GetMapping`/
+# `@PostMapping`/`@PutMapping`/`@DeleteMapping`/`@PatchMapping`/
+# `@RequestMapping` (Spring MVC) -> http_api, `@KafkaListener` -> messaging,
+# and a class extending a generated gRPC base (`*Servicer`/`*ImplBase`, the
+# naming both grpc-java and Python generators use) -> one `rpc_method`
+# marker per public method. Does NOT cover Spring WebFlux functional routing
+# (`RouterFunction` beans) or JAX-RS (`@Path`/`@GET`) — neither showed up in
+# the surveyed catalog and both need a different detection shape (bean
+# wiring / a different annotation family) than this pass covers.
+
+_SPRING_MAPPING_VERBS = {
+    "GetMapping": "GET", "PostMapping": "POST", "PutMapping": "PUT",
+    "DeleteMapping": "DELETE", "PatchMapping": "PATCH",
+}
+
+_STRING_LITERAL_RE = re.compile(r'"([^"]*)"')
+_REQUEST_METHOD_RE = re.compile(r"RequestMethod\.(\w+)")
+
+
+def _annotations(node) -> list[tuple[str, str]]:
+    """(name, argument_text) for each marker_annotation/annotation child of
+    node's `modifiers` — the two node types `_modifiers()` deliberately
+    filters OUT for the symbol table, which is exactly where routing/
+    messaging registrations live."""
+    mods = next((c for c in node.children if c.type == "modifiers"), None)
+    if mods is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for c in mods.children:
+        if c.type not in ("marker_annotation", "annotation"):
+            continue
+        name_node = c.child_by_field_name("name")
+        name = name_node.text.decode() if name_node else ""
+        args_node = c.child_by_field_name("arguments")
+        args_text = args_node.text.decode() if args_node else ""
+        out.append((name, args_text))
+    return out
+
+
+def _first_string_literal(args_text: str) -> str:
+    m = _STRING_LITERAL_RE.search(args_text)
+    return m.group(1) if m else ""
+
+
+def _is_grpc_base(superclass_text: str) -> bool:
+    return "Servicer" in superclass_text or superclass_text.rstrip().endswith("ImplBase")
+
+
+class JavaMarkerExtractor:
+    """Parse Java source via tree-sitter and return CodeMarker objects."""
+
+    def _get_parser(self):
+        from resource_explorer.ingestion.ast_chunker import ASTChunker
+        return ASTChunker()._get_parser("java")
+
+    def extract(self, file_path: str, content: str, resource_slug: str) -> list[CodeMarker]:
+        parser = self._get_parser()
+        if parser is None:
+            return []
+        try:
+            tree = parser.parse(bytes(content, "utf-8"))
+        except Exception:
+            return []
+        markers: list[CodeMarker] = []
+        self._walk_node(tree.root_node, file_path, resource_slug, parent_class="", markers=markers)
+        return markers
+
+    def _walk_node(self, node, file_path: str, resource_slug: str, parent_class: str,
+                    markers: list[CodeMarker]) -> None:
+        if node.type in _TYPE_NODE_KINDS:
+            name_node = node.child_by_field_name("name")
+            name = name_node.text.decode() if name_node else ""
+            qualified_class = f"{parent_class}.{name}" if parent_class else name
+
+            is_servicer = False
+            superclass = node.child_by_field_name("superclass")
+            if superclass is not None and _is_grpc_base(superclass.text.decode()):
+                is_servicer = True
+
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    if child.type in _METHOD_NODE_TYPES:
+                        self._method_markers(
+                            child, file_path, resource_slug, qualified_class,
+                            is_servicer, markers,
+                        )
+                    else:
+                        self._walk_node(child, file_path, resource_slug, qualified_class, markers)
+        else:
+            for child in node.children:
+                self._walk_node(child, file_path, resource_slug, parent_class, markers)
+
+    def _method_markers(self, node, file_path: str, resource_slug: str, parent_class: str,
+                         is_servicer: bool, markers: list[CodeMarker]) -> None:
+        try:
+            name_node = node.child_by_field_name("name")
+            name = name_node.text.decode() if name_node else ""
+        except Exception:
+            return
+        qualified_name = f"{parent_class}.{name}" if parent_class else name
+        line = node.start_point[0] + 1
+
+        for ann_name, args_text in _annotations(node):
+            if ann_name in _SPRING_MAPPING_VERBS:
+                verb = _SPRING_MAPPING_VERBS[ann_name]
+                path = _first_string_literal(args_text)
+                markers.append(CodeMarker(
+                    resource_slug=resource_slug, file_path=file_path, start_line=line,
+                    language="java", marker_kind="route", framework="spring-mvc",
+                    interface_kind="http_api", detail=f"{verb} {path}".strip(),
+                    qualified_name=qualified_name,
+                ))
+            elif ann_name == "RequestMapping":
+                verb_m = _REQUEST_METHOD_RE.search(args_text)
+                verb = verb_m.group(1) if verb_m else "GET"
+                path = _first_string_literal(args_text)
+                markers.append(CodeMarker(
+                    resource_slug=resource_slug, file_path=file_path, start_line=line,
+                    language="java", marker_kind="route", framework="spring-mvc",
+                    interface_kind="http_api", detail=f"{verb} {path}".strip(),
+                    qualified_name=qualified_name,
+                ))
+            elif ann_name == "KafkaListener":
+                topic = _first_string_literal(args_text)
+                markers.append(CodeMarker(
+                    resource_slug=resource_slug, file_path=file_path, start_line=line,
+                    language="java", marker_kind="message_handler", framework="kafka",
+                    interface_kind="messaging", detail=topic,
+                    qualified_name=qualified_name,
+                ))
+
+        if is_servicer and not _is_private_node(node) and node.type in _METHOD_NODE_TYPES:
+            markers.append(CodeMarker(
+                resource_slug=resource_slug, file_path=file_path, start_line=line,
+                language="java", marker_kind="rpc_method", framework="grpc",
+                interface_kind="grpc", detail="", qualified_name=qualified_name,
+            ))
