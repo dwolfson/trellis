@@ -3449,6 +3449,76 @@ function _renderAnalysisResultsContent(analysisId, data) {
 // `_status` comes from resource_explorer/surveyors/result_status.py. A kind
 // that has not adopted the outcome vocabulary attaches none, and falls back to
 // the original message — which is then only shown when it is actually true.
+// "answering this needs `X` first — estimated 40s, one download; run it?"
+// (design §17.1, classic UI.)
+//
+// Three things it must say, and the third is the one that is easy to drop:
+// WHAT would run, WHAT it costs, and WHY it is being asked rather than simply
+// done. Without the third, a prompt reads as the system being timid about a
+// cheap step; with it, the user can see that their own budget is what is
+// holding it — which is the whole consent argument.
+//
+// The estimate says whether it is a MEASUREMENT or a tier default. A step
+// nobody has ever run has no median to quote, and quoting the default as
+// though it were observed is how "40s" becomes a number people stop
+// believing.
+function _renderPrerequisiteProposal(p, data) {
+  // The resource this card is about. The payload names it when it can; the
+  // fallback is the selection the sidebar is showing, resolved through the
+  // same facet→type mapping every other route in this file uses, so a
+  // database card never posts a repo slug.
+  const entityType = (data && data.entity_type) || _facetToResourceType(resourceTypeFacet);
+  const selected = entityType === 'database' ? selectedDatabase
+    : entityType === 'filesystem' ? selectedFilesystem : selectedProject;
+  const slug = (data && (data.slug || data.resource_slug)) || (selected && selected.slug) || '';
+  const id = `prereq-${Math.random().toString(36).slice(2, 10)}`;
+  const steps = (p.steps || []).map(s => `<code class="text-sky-300">${_esc(s)}</code>`).join(' → ');
+  const reasons = (p.reasons || []).map(r => `<li>${_esc(r.detail)}</li>`).join('');
+  const est = `${Math.round(p.estimated_seconds || 0)}s`;
+  return `<div id="${id}" class="text-xs text-amber-300/90 border border-amber-500/30 rounded p-2 space-y-1.5">
+    <div class="flex items-start gap-1.5">
+      <span>⏵</span>
+      <span>Answering this needs ${steps} first — estimated <strong>${est}</strong>
+        ${p.estimated_is_measured
+          ? '<span class="text-slate-500">(median of previous runs)</span>'
+          : '<span class="text-slate-500">(from its declared cost, never measured)</span>'}.</span>
+    </div>
+    <ul class="list-disc list-inside text-slate-400">${reasons}</ul>
+    <div class="flex items-center gap-2 pt-1">
+      <button class="px-2 py-1 rounded bg-amber-600/80 hover:bg-amber-600 text-white"
+        onclick='acceptPrerequisiteProposal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(p.steps || [])}, ${JSON.stringify(p.demanding_step || '')}, ${JSON.stringify(id)})'>
+        Run it</button>
+      <span class="text-slate-500">or leave it — nothing has run.</span>
+    </div>
+  </div>`;
+}
+
+// The user's yes. Runs exactly the steps they were shown (see
+// routes/prerequisites.py for why the client sends the plan back rather than
+// the server recomputing one).
+async function acceptPrerequisiteProposal(entityType, slug, steps, demandedBy, elId) {
+  const el = document.getElementById(elId);
+  if (el) el.innerHTML = `<div class="text-slate-400">Running ${steps.map(_esc).join(', ')}…</div>`;
+  const opId = logOp({ type:'analysis', slug, status:'running',
+    summary:`Running prerequisite ${steps.join(', ')} for ${demandedBy}…` });
+  try {
+    const res = await fetch('/api/prerequisites/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_type: entityType, slug, steps, demanded_by: demandedBy}),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || 'prerequisite run failed');
+    if (body.status === 'error') throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
+    updateOp(opId, 'ok', `Prerequisite ${steps.join(', ')} complete`);
+    showToast('success', `Ran ${steps.map(_esc).join(', ')} — re-run <strong>${_esc(demandedBy)}</strong> to get the answer.`, 8000);
+    if (el) el.innerHTML = `<div class="text-emerald-400">Ran ${steps.map(_esc).join(', ')}. Re-run ${_esc(demandedBy)} for the answer.</div>`;
+  } catch (e) {
+    updateOp(opId, 'error', `Prerequisite ${steps.join(', ')} failed`, e.message);
+    showToast('error', `Prerequisite failed: ${_esc(e.message)}`, 8000);
+    if (el) el.innerHTML = `<div class="text-red-400">${_esc(e.message)}</div>`;
+  }
+}
+
 function _renderEmptyResultState(data) {
   const st = data && data._status;
   if (!st) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
@@ -3465,6 +3535,15 @@ function _renderEmptyResultState(data) {
     // correctly declining to run — so rendering it as degraded would punish the
     // thing working as designed. The reason is always shown; a skip without one
     // is indistinguishable from a failure.
+    //
+    // …UNLESS the skip carries a PROPOSAL (design §17.1). Then it is not a win
+    // at all: the answer is one or more steps away, the budget the user chose
+    // does not stretch to them, and the only thing standing between them and
+    // the answer is being asked. Rendering that as the neutral "not
+    // applicable" would be the exact failure §17.1 was written to fix — "you
+    // got 'skipped: no parsed dependencies' when what you wanted was the
+    // answer, one cheap step away."
+    if (st.proposal) return _renderPrerequisiteProposal(st.proposal, data);
     return `<div class="text-xs text-slate-400 flex items-start gap-1.5">
       <span class="text-slate-500">⊘</span>
       <span>Not applicable — ${_esc(st.hint || 'a gate determined this analysis does not apply here.')}</span>
