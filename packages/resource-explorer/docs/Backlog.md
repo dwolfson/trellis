@@ -7604,3 +7604,126 @@ just `candidates`. Separately worth a design decision, not blocking this
 fix: whether `survey_existing` native processes should become genuinely
 runnable from `/next` (they're flagged safe in the config already) rather
 than staying informational-only in both UIs.
+
+---
+
+## Revisit bundling `repo_symbol_extraction` into `interface_surface` once cheap-refresh or smaller-survey wiring exists
+
+**Decision (project owner, 2026-09-24):** leave `interface_surface`
+un-bundled, as merged in `#248` — no hard precondition, no auto-triggered
+`repo_symbol_extraction`. `PR #245`'s design doc originally cited
+`api_structure` as already using a "bundle" pattern for this exact
+relationship; that citation was wrong (`api_structure` was deliberately NOT
+bundled with `repo_symbol_extraction`, for the identical cost reason —
+see `analysis_catalog.yaml`'s comment above that `AnalysisKind` entry), so
+there was no working precedent to adopt as-is.
+
+**Why revisit later, and what would have to be true first:** the real
+objection to bundling is that `repo_symbol_extraction` is `fetch_cost=
+"download"` — a full zipball fetch — every time, even when the repo has not
+changed since the last extraction. Two things named by the project owner
+would change that cost calculus enough to make bundling worth trying again:
+
+1. **Skip the download when we already have the most recent version.**
+   `SourceCache` (`github/source_cache.py`) already keys `zipball_root`/
+   `git_clone_root` on `(repo, commit SHA)` and shares it across
+   `SurveyOrchestrator.run()` calls within one run — but nothing today
+   checks "is the SHA we last extracted from still the repo's current HEAD"
+   *before* deciding whether extraction is needed at all, across separate
+   runs/days. If a cheap SHA check (one API call, not a fetch) could answer
+   "nothing has changed since our last `project_code_markers`/
+   `project_code_symbols` write," bundling stops meaning "always pay for a
+   fresh download" and starts meaning "usually free, occasionally pays."
+2. **Wire smaller surveys together instead of building bigger ones.**
+   A framing the project owner raised directly, distinct from (1): rather
+   than making `interface_surface` itself absorb `repo_symbol_extraction`'s
+   cost, treat the relationship as an orchestration question — could §17.1's
+   own prerequisite-resolver machinery (already built, `PR #241`) be the
+   thing that composes "run `interface_surface`, and if its input is stale,
+   chain in `repo_symbol_extraction`" from two small, independently-useful
+   surveys, rather than either bundling them into one entry or leaving them
+   fully decoupled? This is closer to composing existing small pieces than
+   authoring a new combined analysis, and is worth a design pass of its own
+   before deciding whether "bundle" is even the right verb.
+
+**Candidate fix:** no code change until (1) or (2) exists. When either
+lands, re-open the bundling question for `interface_surface` specifically
+(and audit whether the same reasoning applies to any other analysis that
+today avoids bundling `repo_symbol_extraction` purely on cost grounds).
+
+---
+
+## `build_plan`'s PRODUCES-folding checks (`#247`) aren't run against the real, authored survey-definition corpus
+
+**Found while answering a project-owner question** ("how much static
+analysis can we do on the survey rather than only runtime checking?",
+2026-09-24, re: `PR #247`).
+
+`build_plan()` already does real static analysis: `MissingPrerequisiteError`/
+`PrerequisiteTierError` raise at plan-construction time, before any step
+executes, whenever a caller passes `step_registry=`. But
+`tests/test_survey_execution_plan.py::test_every_live_definition_plans_
+to_its_existing_order` — the one test that runs `build_plan()` against
+*every real, authored* Survey Definition document under
+`docs/dr-egeria/survey-definitions/` (via `documented_definitions()`) —
+calls it **without** `step_registry=`. So the new PRODUCES-folding path is
+only exercised against small hand-built fixtures (the `produces_world`
+fixture and its sibling tests), never against the real corpus. A survey
+definition authored with a step whose precondition producer is missing or
+crosses tier would not be caught by this test today, only by an actual
+Prefect run.
+
+**Candidate fix:** extend `test_every_live_definition_plans_to_its_existing_
+order` (or add a sibling test) to also call
+`build_plan(definition, step_registry=STEP_REGISTRY)` for every real,
+authored document and assert it does not raise either new error. Cheap
+(same test, one more assertion per document), zero runtime cost, and turns
+"will this survey definition actually work through the Prefect path" into a
+CI-time guard for every authored document rather than something only
+discovered by running it.
+
+---
+
+## `interface_surface`'s Thrift/SOAP coverage — a real gap and a probably-not-worth-it one, found together
+
+**Found while answering a project-owner question** ("seems like we need a
+Thrift bucket? Are we also looking at Swagger? Is SOAP really out in the
+wild still?", 2026-09-24, re: `PR #248`).
+
+**Swagger — already covered, no gap.** `_SPEC_PATTERNS`'s `"openapi"` regex
+matches `swagger.(yaml|json)` as well as `openapi.(yaml|json)` — Swagger is
+the pre-3.0 name for the same spec format, and this was already handled
+before `#248`.
+
+**Thrift — a real gap, not just the judgement-call mapping `#248` flagged.**
+`#248`'s PR body flags mapping `architecture_interfaces` port
+`protocol="Thrift"` to `interface_kind="grpc"` as a judgement call (no
+dedicated Thrift bucket exists). Checked further: the gap is bigger than
+that mapping. There is no `.thrift` entry in `_SPEC_PATTERNS` at all (unlike
+`.proto` for gRPC), so a repo with a committed Thrift IDL file gets **zero**
+`declared`-rung signal today — the only Thrift handling that exists is the
+after-the-fact port-protocol mapping, which requires `repo_arch_detect` to
+have already run and found a Thrift service. Thrift and gRPC are different
+wire protocols; folding one into the other's bucket is a stopgap, not a
+correct model.
+
+**Candidate fix:** add `"thrift": re.compile(r"\.thrift$")` to
+`_SPEC_PATTERNS` and `"thrift": "thrift"` to `_SPEC_TO_INTERFACE`, add
+`"thrift"` as its own entry in `_REGISTRATION_KINDS`/
+`_PORT_PROTOCOL_TO_INTERFACE_KIND` (mapping `"Thrift"` to `"thrift"`, not
+`"grpc"`), and add a `docs/dr-egeria/resource_questions.csv` /
+`analysis_catalog.yaml` mention if the question catalog enumerates interface
+kinds anywhere. Small, self-contained follow-up.
+
+**SOAP — likely not worth further investment, decision recorded so it isn't
+re-litigated.** `.wsdl` spec-file detection (`declared` rung) already
+exists, but `_DEPENDENCY_SIGNALS` has no `"soap"` entry (a repo depending on
+`zeep`/`spyne`/Spring-WS/JAX-WS gets no `implied` signal at all), and no
+framework marker capture was built in `#248` ("no framework in the surveyed
+catalog"). The design doc's own corpus measurement
+(`interface_surface.py`'s module docstring, dated 2026-08-26) found **zero**
+WSDL/SOAP hits across the measured catalog, against real counts for
+openapi/proto/graphql. Empirically dead in this specific corpus as of this
+writing — leave as `declared`-only unless a specific target resource is
+known to use SOAP, at which point revisit `_DEPENDENCY_SIGNALS` and
+framework-marker coverage together.
