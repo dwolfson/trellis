@@ -391,6 +391,7 @@ _ADAPTER = ResourceTypeAdapter(
     analysis_results_map=lambda: DATABASE_ANALYSIS_RESULTS_MAP,
     analysis_source_steps=lambda: DATABASE_ANALYSIS_STEP_MAP,
     analysis_kinds=lambda: DATABASE_ANALYSIS_KINDS,
+    analysis_headline_map=lambda: DATABASE_ANALYSIS_HEADLINE_MAP,
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,

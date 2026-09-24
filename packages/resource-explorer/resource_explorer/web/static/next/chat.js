@@ -44,7 +44,7 @@ import { ask, askStream, sendFeedback, submitAnswerFeedback } from '/static/re-a
 import {
   state, esc, icon, tnum, $,
   ensureRailShowing, railFrame, railClaim, openMembers,
-  promoteToPane, answerForm, copyAsEvidence,
+  promoteToPane, answerForm, copyAsEvidence, apiEntityType,
 } from '/static/next/app.js';
 
 /* A browser-generated id, so the agent can keep cross-turn memory.
@@ -615,7 +615,12 @@ export async function submitAsk() {
   const placeholder = $('promoted-body');
   if (placeholder) placeholder.innerHTML = `<div class="text-answer text-ink-muted">Answering…</div>`;
 
-  const opts = { resourceSlug: state.selectedSlug, perspectives: state.activePerspectives, sessionId: sessionId() };
+  const opts = {
+    resourceSlug: state.selectedSlug,
+    entityType: apiEntityType(state.resourceType),
+    perspectives: state.activePerspectives,
+    sessionId: sessionId(),
+  };
   let sawChunk = false;
   try {
     for await (const evt of askStream(q, opts)) {

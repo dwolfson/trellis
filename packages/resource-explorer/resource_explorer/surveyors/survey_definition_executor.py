@@ -120,6 +120,21 @@ class ResourceTypeAdapter:
     #: Keyed by question text, so this map is per resource type by
     #: construction: a database's questions are different strings.
     state_sources: Callable | None = None
+    #: () -> {analysis_id: headline_reader}. A separate, directly-keyed
+    #: provider rather than reading `analysis_kinds()[id].results.
+    #: headline_reader` (2026-09-23, context_compile.py's own
+    #: results-reader/headline fallback): that fallback previously imported
+    #: `REPO_ANALYSIS_HEADLINE_MAP` — a module-level dict, mutated in place by
+    #: `monkeypatch.setitem` in tests — directly rather than through
+    #: `ANALYSIS_KINDS`. Deriving the same value from `analysis_kinds()` at
+    #: call time would read past that monkeypatch, since the derived headline
+    #: map is a separate object from the kinds table it was built from. This
+    #: provider keeps the same object identity `REPO_ANALYSIS_HEADLINE_MAP`
+    #: already had. None (undeclared) means no headline reader is offered for
+    #: this resource type — the database/filesystem case today, same as their
+    #: own `DATABASE_ANALYSIS_HEADLINE_MAP`/`FILESYSTEM_ANALYSIS_HEADLINE_MAP`
+    #: constants being empty dicts.
+    analysis_headline_map: Callable | None = None
 
 
 _ADAPTERS: dict = {}
