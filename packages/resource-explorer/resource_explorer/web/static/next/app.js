@@ -130,6 +130,8 @@ import {
   listRfas,
   clearCache,
   pollActivity,
+  planPrerequisites,
+  runPrerequisites,
   removeInvestigationMember,
   removeProject,
   removeEntity,
@@ -185,6 +187,18 @@ export const state = {
   allQuestions: null,         // the stage's questions UNFILTERED; null = unknown
   answers: new Map(),          // question text -> envelope | {error} | 'loading'
   runsInFlight: new Map(),     // question text -> {analysisId, activityId}
+  // §17.1 prerequisite proposals -- a run the resolver would not let start
+  // unasked because it crosses the budget's tier. question -> {analysisId,
+  // entityType, proposal, background} while awaiting the user's accept/
+  // decline; cleared on either. Separate from `runsInFlight`, which is a run
+  // actually in progress -- a pending proposal is a run that has NOT started.
+  pendingProposals: new Map(),
+  // A one-shot "ran X first" note for the within-budget auto-run case (no
+  // proposal, nothing to accept -- the resolver already ran the producer by
+  // the time the demanding step's own result comes back). question -> text;
+  // read once by `bodyLines` on the next render and deleted, so it reads as
+  // what just happened rather than persisting as a stale caveat.
+  autoRanNotes: new Map(),
   me: null,
   counts: { activity: null, rfas: null },
   chat: [],                    // the transcript: one entry per turn
@@ -566,6 +580,11 @@ const GLYPH = {
   unclassified: '·',
   running: '◔',
   error: '✕',
+  // §17.1 -- "this needs something else first, and it costs enough that it
+  // needs your yes." Same glyph classic uses (⏵) for the same reason: a
+  // proposal is a decision point, not a state of the world, so it earns its
+  // own mark rather than borrowing unrun's ○ or human's ⚠.
+  proposal: '⏵',
 };
 
 /**
@@ -589,6 +608,10 @@ const STATE_TONE = {
   unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   running:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
   error:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
+  // Same role as `unrun`/`error` -- "needs your attention" -- because a
+  // proposal IS an attention-needing decision, not a different flavour of
+  // answered or automatic.
+  proposal:      { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
 };
 
 const tone = (st, ground = 'paper') =>
@@ -5634,7 +5657,12 @@ function rowInner(entry, i, env) {
   // the first-only version hid exactly that.
   const perspectives = entry.perspectives || [];
   const running = state.runsInFlight.get(entry.question);
+  const pending = state.pendingProposals.get(entry.question);
   const st = running ? 'running'
+    // A pending proposal takes over the row before `running` even starts --
+    // nothing has been dispatched yet, which is the entire point of §17.1:
+    // the ask happens BEFORE the run, not as a run that then fails.
+    : pending ? 'proposal'
     : env === 'loading' ? 'loading'
     : env && env.__error ? 'error'
     : rowState(entry, env);
@@ -5677,6 +5705,10 @@ function bodyLines(entry, i, st, env) {
   if (st === 'loading') {
     // A skeleton, not a spinner, and not a claim.
     return `<div class="${indent} h-[14px] w-[42%] rounded-sm bg-paper-surface"></div>`;
+  }
+
+  if (st === 'proposal') {
+    return prerequisiteProposalHtml(entry, i, indent);
   }
 
   if (st === 'running') {
@@ -5739,13 +5771,14 @@ function bodyLines(entry, i, st, env) {
     // line is the statement.
     const why = (env && env.blocked_reason) || 'Not run yet.';
     const lines = readEnvelope(entry, env);
-    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`
+    return autoRanNoteHtml(entry, indent)
+      + `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`
       + provenanceLine(entry, i, lines, st);
   }
 
   // answered | automatic
   const lines = readEnvelope(entry, env);
-  let html = '';
+  let html = autoRanNoteHtml(entry, indent);
   if (lines.answer) {
     html += `<div class="${indent} text-answer text-ink">${lines.answer}</div>`;
   }
@@ -5753,6 +5786,56 @@ function bodyLines(entry, i, st, env) {
     html += `<div class="ml-[22px] mt-[5px] text-caveat text-accent-ink">${tnum(esc(lines.caveat))}</div>`;
   }
   return html + provenanceLine(entry, i, lines, st);
+}
+
+/** §17.1's within-budget half: the resolver already ran a producer before
+ *  the demanding step, unasked, because it was cheap enough to stay inside
+ *  the tier the user was already paying for. Nothing to accept or decline --
+ *  it already happened -- but saying nothing would be the exact silent
+ *  omission the design's condition 3 forbids: a row that took longer than
+ *  usual with no visible reason.
+ *
+ *  Read-once: the note is deleted from `state.autoRanNotes` as soon as this
+ *  renders it, so the NEXT re-render of this row (a perspective filter
+ *  change, a tab switch back) shows the answer plainly rather than an
+ *  ever-present caveat about a run that is now history. */
+function autoRanNoteHtml(entry, indent) {
+  const note = state.autoRanNotes.get(entry.question);
+  if (!note) return '';
+  state.autoRanNotes.delete(entry.question);
+  return `<div class="${indent} text-caveat text-ink-muted">${tnum(esc(note))}</div>`;
+}
+
+/** §17.1's crossing-tier half: the resolver would not start the run unasked.
+ *  Three things said, same as classic's card (design §17.1's own list): WHAT
+ *  would run, WHAT it costs, and WHY it is being asked rather than simply
+ *  done -- dropping the third makes this read as the system being timid
+ *  about a cheap step, when the point is that the user's OWN budget is what
+ *  is holding it.
+ *
+ *  Rendered as the row's whole body, same convention `st === 'human'` uses
+ *  for its own decision point -- a proposal is a decision, not a finding, so
+ *  it does not share `answered`'s "answer + caveat + provenance" shape. */
+function prerequisiteProposalHtml(entry, i, indent) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return '';
+  const p = pending.proposal;
+  const steps = (p.steps || []).map((s) => `<code class="text-accent-ink">${esc(s)}</code>`).join(' → ');
+  const est = Math.round(p.estimated_seconds || 0);
+  const basis = p.estimated_is_measured
+    ? '<span class="text-ink-muted">(median of previous runs)</span>'
+    : '<span class="text-ink-muted">(from its declared cost, never yet measured)</span>';
+  const reasons = (p.reasons || []).map((r) => `<li>${esc(r.detail)}</li>`).join('');
+  return `<div class="${indent} text-answer text-ink">Answering this needs ${steps} first —
+      estimated <span class="tnum">${est}s</span> ${basis}.</div>
+    ${reasons ? `<ul class="${indent} mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
+    <div class="${indent} mt-s2 flex flex-wrap items-center gap-s2">
+      <button type="button" data-prereq-accept="${i}"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[1px] text-caveat text-accent-ink"
+        >Run it</button>
+      <button type="button" data-prereq-decline="${i}"
+        class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">not now — nothing has run</button>
+    </div>`;
 }
 
 function provenanceLine(entry, i, lines, st) {
@@ -5899,6 +5982,50 @@ function bindRowActions(el, entry, i) {
   numbersBtn?.addEventListener('click', () =>
     toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn));
   el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
+  el.querySelector(`[data-prereq-accept="${i}"]`)?.addEventListener('click', () => acceptPrerequisiteProposal(entry, i));
+  el.querySelector(`[data-prereq-decline="${i}"]`)?.addEventListener('click', () => declinePrerequisiteProposal(entry, i));
+}
+
+/** The user's yes on a pending §17.1 proposal. Runs exactly the steps the
+ *  proposal named (`runPrerequisites`, matching `/api/prerequisites/run`'s
+ *  own contract: it re-resolves internally, so a step no longer needed by the
+ *  time this lands is reported as such rather than re-run), then re-attempts
+ *  the ORIGINAL request the proposal was blocking -- `skipPlanCheck` so the
+ *  retry does not immediately re-ask about a chain it just ran. */
+async function acceptPrerequisiteProposal(entry, i) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return;
+  const { proposal, background, entityType } = pending;
+  state.pendingProposals.delete(entry.question);
+  state.runsInFlight.set(entry.question, {
+    analysisId: pending.analysisId,
+    label: `Running ${proposal.steps.join(', ')}…`,
+  });
+  replaceRow(entry, i, state.answers.get(entry.question));
+  try {
+    const body = await runPrerequisites(entityType, state.selectedSlug, proposal.steps, proposal.demanding_step);
+    if (body.status === 'error') {
+      throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
+    }
+    state.autoRanNotes.set(entry.question, `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`);
+  } catch (err) {
+    state.runsInFlight.delete(entry.question);
+    state.answers.set(entry.question, { __error: `The prerequisite could not be run: ${err.message}` });
+    replaceRow(entry, i, state.answers.get(entry.question));
+    updateAnsweredCount();
+    renderLegend();
+    return;
+  }
+  state.runsInFlight.delete(entry.question);
+  await rerun(entry, i, { background, skipPlanCheck: true });
+}
+
+/** "not now" -- the design's own words for declining (§17.1: "or leave it —
+ *  nothing has run"). Purely local: nothing was dispatched, so there is
+ *  nothing to undo server-side, only the pending marker to clear. */
+function declinePrerequisiteProposal(entry, i) {
+  state.pendingProposals.delete(entry.question);
+  replaceRow(entry, i, state.answers.get(entry.question));
 }
 
 /**
@@ -6133,10 +6260,62 @@ async function openRunChoice(entry, i, anchor) {
   if (line) line.innerHTML = priceLineHtml(cost, analysisId);
 }
 
-async function rerun(entry, i, { background = false } = {}) {
+/**
+ * §17.1's ask-before-you-run half. `analysisId` doubles as the resolver's
+ * `step_key` -- true for the common one-analysis-one-step case this wiring
+ * targets; an analysis mapped to SEVERAL survey steps (`DATABASE_ANALYSIS_
+ * STEP_MAP`'s multi-step entries, a repo analysis owning more than one
+ * `re_analysis_step`) is not resolved by this call, and `plan_prerequisites`
+ * degrades to `{status: "satisfied"}` for a `step_key` it does not recognise
+ * -- the conservative direction: the run proceeds exactly as it did before
+ * this existed, rather than a guessed step_key producing a false proposal.
+ * Known gap, named rather than silently accepted; see this PR's own report.
+ *
+ * Returns true when the caller should stop -- either a proposal is now
+ * pending the user's answer, or the plan check itself failed and calling it
+ * a second time on the same click would just repeat the failure.
+ */
+async function checkPrerequisitePlan(entry, i, analysisId, { background }) {
+  const entityType = apiEntityType(state.resourceType);
+  let plan;
+  try {
+    plan = await planPrerequisites(entityType, state.selectedSlug, analysisId);
+  } catch (err) {
+    // A plan-check failure must not silently block every run from now on --
+    // the endpoint being briefly unreachable is not the same fact as "this
+    // step is fine to run unasked", but it is also not license to wedge the
+    // whole Questions checklist. Proceeds, same as the pre-§17.1 behaviour,
+    // rather than leaving the row stuck on a question nobody can answer.
+    console.warn('prerequisite plan check failed, proceeding without it:', err);
+    return false;
+  }
+  if (plan.status === 'proposal' && plan.proposal) {
+    state.pendingProposals.set(entry.question, {
+      analysisId, entityType, background, proposal: plan.proposal,
+    });
+    replaceRow(entry, i, state.answers.get(entry.question));
+    return true;
+  }
+  // `plan.status === 'auto_run'` needs no action here: the ordinary run
+  // endpoint resolves the SAME chain again server-side and runs the
+  // producers itself (§17.1's within-budget half is unconditional, not
+  // gated on the client having asked first) -- this call only existed to
+  // find out WHETHER to stop and ask. `rerun` below leaves the auto-run
+  // note for `bodyLines` to show once the run comes back.
+  if (plan.status === 'auto_run' && (plan.auto_run || []).length) {
+    state.autoRanNotes.set(entry.question, `Ran ${plan.auto_run.join(', ')} first, then ${analysisId}.`);
+  }
+  return false;
+}
+
+async function rerun(entry, i, { background = false, skipPlanCheck = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
+
+  if (!skipPlanCheck && await checkPrerequisitePlan(entry, i, analysisId, { background })) {
+    return;
+  }
 
   state.runsInFlight.set(entry.question, { analysisId, label: `Queued · ${analysisId}` });
   replaceRow(entry, i, state.answers.get(entry.question));
