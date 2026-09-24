@@ -7542,3 +7542,52 @@ layer RE controls (`resource_explorer/connection.py`) rather than trying to
 observe libpq; for the thread issue, propagate the ContextVar explicitly at
 thread-spawn sites inside steps, or surface `bytes_complete=false` more
 visibly wherever `step_runs` metrics are displayed.
+
+---
+
+## No Egeria-native Survey Definition exists for database or filesystem, at any tier — "Survey & analyses" always reads empty
+
+**Found live** (project owner, 2026-09-24): opened `/next`'s "Survey & analyses"
+sub-tab on a real database (`coco_ods`, PostgreSQL) and got "No survey
+definitions for this resource — the adapter registered none for this
+technology type," alongside a "Scope: all tiers — stage filter unavailable"
+chip.
+
+That message is honest, not buggy — traced to root cause. Every authored
+Survey Definition document in this repo, under
+`docs/dr-egeria/survey-definitions/`, is `repo-survey-definition-*`
+(scouting/discovery/assessment/analysis/full/coarse-profile/compliance/
+architecture-discovery/refresh — nine tiers). There is no
+`database-survey-definition-*` or `filesystem-survey-definition-*` anything,
+and no `generate_database_survey_definition.py`/
+`generate_filesystem_survey_definition.py` (only
+`scripts/generate_repo_survey_definition.py` exists). `list_candidates()`
+(`web/routes/survey_definitions.py`) looks up Egeria `GovernanceActionProcess`
+elements tagged `supported_technology_type` matching the adapter's declared
+string (`"PostgreSQL Database"` for postgres) — there being zero such
+elements for ANY database/filesystem technology type is a structural fact
+about the catalog, not a per-resource bug. The "stage filter unavailable"
+chip is the same root cause once removed: the phase-scoped lookup finds
+nothing, falls back to a full scan (by design, D2's documented fallback),
+and the full scan also finds nothing.
+
+This does not block database/filesystem surveying generally — RE's own
+*local* analyses (the 17-analysis list rendered just below this message on
+the same page) run without any Egeria Survey Definition and work fine. It
+only means database/filesystem resources get no Egeria-orchestrated,
+multi-step, tiered survey experience the way repos do — no "run the full
+Discovery tier as one Egeria GovernanceActionProcess" option exists for
+them at all today.
+
+**Candidate fix:** author `database-survey-definition-{scouting,discovery,
+assessment,analysis,full}.md` (and the filesystem equivalent) mirroring the
+repo tier structure, referencing database/filesystem step names from
+`DATABASE_STEP_REGISTRY`/the filesystem equivalent; likely needs a
+`generate_database_survey_definition.py` mirroring
+`generate_repo_survey_definition.py`'s generation logic. This is a real
+scope decision, not just an implementation task — worth confirming with the
+project owner whether Egeria-native multi-tier Survey Definitions are
+actually wanted for database/filesystem, or whether the local-analysis-only
+path is the intended permanent shape for those resource types (in which
+case the fix is a clearer message/UI treatment for the tab instead, not new
+authored definitions).
