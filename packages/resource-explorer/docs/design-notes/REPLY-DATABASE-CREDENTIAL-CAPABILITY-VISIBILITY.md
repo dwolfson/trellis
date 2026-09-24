@@ -203,3 +203,84 @@ operational rule in §2 is relied on in a multi-connection deployment.
    data-class matching → `read`; `postgres_operations` → `stats`); the
    launcher gate; connection choice for local runs.
 4. **Alongside:** file the two Egeria issues; verify the pyegeria read.
+
+---
+
+## 7 · Follow-ups from `ASK-CREDENTIAL-GATING-AND-OMSECRETS-REFRESH.md` (#258), 2026-09-24
+
+### 7.1 Credential-tier gating: the catalog-tier signal is real, and it is §16's Discovery gate
+
+The project owner's idea — survey with the minimal-privilege credential
+first, disqualify early, prompt for broader credentials only for what
+survives — is the cost-tier gate of design §17.1 applied to a second axis,
+and the "worth pursuing" signal at catalog tier exists because design §16.2
+chose its Scouting/Discovery signals to need no row reads. With `catalog`
+capability alone (`pg_namespace`, `pg_class`, `pg_attribute`,
+`pg_constraint`, `pg_description`, `pg_partitioned_table`,
+`pg_stat_all_tables` — all readable by any role regardless of grants) RE
+can answer:
+
+| Answerable at `catalog` | Not answerable without `read` |
+|---|---|
+| size: `reltuples`, `relpages`, `n_live_tup` per table | `pg_stats` bounds and frequent values (privilege-filtered) |
+| structure and the FK graph; entity grain from PK composition | column profiles; data-class and reference-set matching |
+| subject signals from names and comments; documentation coverage | actual date ranges on unpartitioned tables |
+| coverage from partition bounds | gaps, cadence, spatial extent |
+| activity: `n_tup_ins/upd/del`, last vacuum and analyze | quality dimensions beyond completeness-by-structure |
+| the capability probe itself (§3) | — |
+
+So `preliminary_fit` (design §16.3, Discovery, zero fetch) runs at catalog
+tier and yields a pursue/disqualify verdict on subject, grain, size and —
+where partitioned — coverage. Where it cannot decide, its envelope says
+"needs `read` on N of M tables to answer", and **that state is the prompt
+for broader credentials.** It is also the natural first UI for the pending
+Connection model: the launcher's three choices from §3 (run partially and
+say so; pick another visible connection; raise the RFA), with "pick
+another" listing the asset's labelled connections. Build it as one axis
+beside cost tier in the same gate, not as a separate flow: a step declares
+`fetch_cost`, `compute_cost` and `requires_capability`, and the launcher
+shows one combined reason.
+
+### 7.2 `.omsecrets` refresh: a file edit takes effect on the next survey run, always
+
+Traced through the engine host rather than the connector alone:
+
+- `ConnectorBroker.getConnector` (`:314`) calls
+  `connectorProvider.getConnector(connection)` (`:460`) — a **new instance
+  on every call**.
+- `SurveyActionServiceHandler` starts a fresh survey service per engine
+  action (`:148`), and `SurveyAssetStore.getConnectorForAsset` goes through
+  `connectedAssetClient` on every call (`:146`), so the asset connector and
+  its embedded `SecretsStoreConnector` are new per survey run.
+- `SecretsStoreConnector` initialises `secretsTimeout = new Date()` at
+  construction (`:39`) and `checkSecretsStillValid` refreshes whenever
+  `!secretsTimeout.after(now)` (`:105`) — so the **first** secret read of
+  every new instance re-reads the file; the 60-minute
+  `refreshTimeInterval` (`:165-170`) only governs a long-lived instance.
+
+Net: no shared server state, no restart; an edit is live for the next
+survey, and for an already-running survey after the interval. The
+factor-of-60 correction in #258 stands and has no operational effect.
+
+### 7.3 Two credential sources: unify the identity and the writer, not the storage
+
+pyegeria has `save_client_side_secret` and `delete_client_side_secret` and
+**no read** (`automated_curation.py:2119-2269`); Egeria deliberately
+exposes no "get secret" API — secrets are read only by connectors. So RE's
+local execution path cannot resolve a credential through Egeria, and the
+`.omsecrets` file cannot be the single store for both paths.
+
+What §1's model unifies is therefore the **name and the writer**: one
+collection name per *(resource, role)*, persisted on the registry row
+(`database_credentials.secrets_collection_name`, never re-derived — the
+trap `PROBES-2026-09-21.md` filed), written to **both** places by RE in the
+same operation. The registry side stops being a clear-text column and
+becomes RE's own store — encrypted at rest, or the OS keychain on a
+developer machine — and the `.omsecrets` collection is its projection for
+the engine host. Drift is detectable by name: a collection missing on
+either side surfaces as the reachability probe's `unresolvable_secret`
+outcome (design §3 rule B), which is the strongest guarantee available
+without a read API. Asking Egeria for a secret-read endpoint is the wrong
+request; the right one, if any, is a *verify* call ("does collection X
+resolve for asset Y") that returns a boolean, which is what `CHECK_ASSET`
+already approximates.
