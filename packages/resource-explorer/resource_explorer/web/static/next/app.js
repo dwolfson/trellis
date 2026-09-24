@@ -2831,6 +2831,31 @@ export function resourceHeaderHtml(slug) {
       + ` publish again from the Analysis pane</span>`;
   }
 
+  // Persistent credential-visibility banner (design REPLY-DATABASE-
+  // CREDENTIAL-CAPABILITY-VISIBILITY.md §4, Piece 1 of ASK-...-#251): a
+  // database's `credential_capability` probe result, when one has run, is
+  // carried on the summary row (`p.credential_capability` — see
+  // `databases.py`'s `DatabaseSummary`) the same way `github_url`/
+  // `is_published` are, and simply comes back undefined for a repo/
+  // filesystem row, same convention `selectedProject()`'s own comment
+  // documents for those two fields. Shown here rather than only inside a
+  // Questions-row envelope so it stays visible regardless of which question
+  // is open — "connected as X" is a fact about the WHOLE resource, not one
+  // answer among many.
+  let credentialBanner = '';
+  const cap = p?.credential_capability;
+  if (cap && (cap.table_total || cap.schema_total)) {
+    const thin = (cap.table_select ?? 0) < (cap.table_total ?? 0)
+      || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
+    credentialBanner = `
+      <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
+        connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
+        sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
+        SELECT on ${esc(String(cap.table_select ?? 0))} of ${esc(String(cap.table_total ?? 0))} table(s)
+        ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
+      </div>`;
+  }
+
   return `
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(name)}</h3>
@@ -2853,6 +2878,7 @@ export function resourceHeaderHtml(slug) {
       </span>
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
+    ${credentialBanner}
     <div id="resource-action" class="mt-s2"></div>`;
 }
 

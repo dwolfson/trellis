@@ -50,6 +50,14 @@ class DatabaseSummary(BaseModel):
     # select-mode "hide" bulk action and "Show hidden" toggle work for
     # databases the same way they do for repos.
     working_set_hidden: bool = False
+    # The `credential_capability` probe's last result (design REPLY-DATABASE-
+    # CREDENTIAL-CAPABILITY-VISIBILITY.md §4, Piece 1 of ASK-...-#251), None
+    # when the probe has never run for this database. Carried on the summary
+    # row (rather than requiring a separate fetch) so /next's shared
+    # `resourceHeaderHtml()` can render the persistent visibility banner from
+    # the same row it already reads for every other resource type — a repo or
+    # filesystem row simply never sets this field.
+    credential_capability: dict | None = None
 
 
 class DatabaseRegistration(BaseModel):
@@ -134,11 +142,30 @@ class EgeriaAnnotationItem(BaseModel):
 def _to_summary(db) -> DatabaseSummary:
     """Convert DatabaseEntity to DatabaseSummary."""
     # Get latest survey data if available
+    import json
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     surveys = registry.get_database_surveys(db.slug)
     latest = surveys[0] if surveys else None
     disp = registry.get_disposition_for_entity("database", db.slug) or {}
+
+    # The credential_capability probe's last result, if the survey_data blob
+    # (from ANY prior survey, not just the most recent one) carries one —
+    # see credential_capability's own results reader
+    # (_credential_capability_results) for why this reads the same blob
+    # rather than a dedicated table. Checked across all stored surveys, most
+    # recent first, since a plain schema/statistics-only run after the probe
+    # ran would otherwise silently hide a still-current capability reading.
+    credential_capability: dict | None = None
+    for row in surveys:
+        try:
+            data = json.loads(row.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        cap = data.get("credential_capability")
+        if cap:
+            credential_capability = cap
+            break
 
     return DatabaseSummary(
         slug=db.slug,
@@ -165,6 +192,7 @@ def _to_summary(db) -> DatabaseSummary:
         disposition=disp.get("disposition", "undecided"),
         is_published=bool(getattr(db, "egeria_asset_guid", "") or ""),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
+        credential_capability=credential_capability,
     )
 
 

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 from resource_explorer.resource_types import DEFAULT_RESOURCE_TYPE
 from resource_explorer.surveyors.result_status import (
     MEASURED,
+    MEASURED_WITHIN_CREDENTIAL_SCOPE,
     NEVER_RUN,
     NOT_ESTABLISHED,
     NOTHING_FOUND,
@@ -106,7 +107,9 @@ class Fact:
         `nothing_found` counts: a measured zero is knowledge. `never_run` and
         `not_established` do not.
         """
-        return self.state in (MEASURED, NOTHING_FOUND, PARTIAL)
+        return self.state in (
+            MEASURED, NOTHING_FOUND, PARTIAL, MEASURED_WITHIN_CREDENTIAL_SCOPE,
+        )
 
     def as_dict(self) -> dict:
         # destination/destination_basis (SPEC-ACTIONABLE-AND-HONEST.md §3,
@@ -891,6 +894,17 @@ class FactLayer:
             return "This analysis ran and found nothing — a measured zero, not a gap in coverage."
         if state == PARTIAL:
             return "This run covered only part of what the analysis reports on."
+        if state == MEASURED_WITHIN_CREDENTIAL_SCOPE:
+            status = (value or {}).get("_status") or {}
+            fraction = status.get("fraction") or ""
+            connected_as = status.get("connected_as") or ""
+            who = f" as `{connected_as}`" if connected_as else ""
+            if fraction:
+                return (
+                    f"Measured within this credential's visibility only — connected{who}, "
+                    f"which can read {fraction}. Broader access may reveal more."
+                )
+            return f"Measured within this credential's visibility only{who} — broader access may reveal more."
         unverified = (value or {}).get("unverified") or []
         if unverified:
             return f"{len(unverified)} item(s) in this result are unverified."
