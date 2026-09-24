@@ -1483,6 +1483,141 @@ first analysis whose source is `egeria` for *every* resource type,
 including repositories, so its results reader is the template for any
 later Egeria-mirrored analysis.
 
+## 17. Prerequisites run themselves, and every run says what it cost
+
+**Added 2026-09-23 at the project owner's direction**, from two questions:
+should prerequisite steps run automatically when a step needs them, and
+should every survey or step report what it actually cost, on a dashboard,
+given that the funnel's whole argument is that early stages are cheaper
+than later ones.
+
+### 17.1 Prerequisites: yes, within the budget the user chose, and always as a result
+
+**What happens today.** `surveyors/step_preconditions.py` checks, before a
+step is dispatched, whether the stored data it reads exists (`cve_scan`
+needs rows in `project_dependencies`). If not, the step is **skipped with a
+named reason**, emitted as a real annotation so the skip is visible. That is
+the right honesty and the wrong outcome for a person who asked the
+question: they get "skipped: no parsed dependencies" when what they wanted
+was the answer, one cheap step away.
+
+**Decision (project owner, 2026-09-23):** prerequisite surveys or steps are
+executed automatically as needed, telling the user.
+
+Three conditions make that safe, and they are the design:
+
+1. **Within the budget, unasked; beyond it, proposed.** Surveys are already
+   composed by cost tier (`survey-model.md` Part II §3). A prerequisite whose
+   declared `fetch_cost` and `compute_cost` fall within the tier the user
+   selected runs without asking. One that crosses the tier, needs a download
+   or clone, needs credentials the executor cannot resolve (rule B), or has a
+   `human` answering kind becomes a **proposal**: "answering this needs
+   `dependency_analysis` first — estimated 40 s, one download; run it?" The
+   budget is the consent. A user who picked Scouting never triggers an
+   Analysis-tier fetch by accident, and a user who picked Analysis is not
+   nagged about a 200 ms catalog read.
+2. **A producer map, because preconditions name data, not steps.** The
+   precondition names are deliberately about *stored data*
+   (`step_preconditions.py`'s own docstring: so the check does not encode an
+   execution order it cannot enforce). Nothing today knows which step fills
+   `project_dependencies`. Add a small declarative registry —
+   `PRODUCES` on `StepInfo`, the tables a step writes — and derive the
+   inverse at import. The resolver then walks precondition → producing step
+   → *its* preconditions, with a **cycle guard** and two stop rules: a
+   producer that already ran on this snapshot and found nothing is not
+   re-run (its `nothing_found` is the answer, and re-running it is the
+   loop); and a producer whose own precondition is a proposal turns the
+   whole chain into one proposal listing every step and the summed cost.
+3. **An auto-run is a result, not an omission.** Same principle as the
+   skip. The report carries an annotation "ran `dependency_analysis`
+   because `cve_scan` required `project_dependencies`", the activity log
+   gets an entry (CLAUDE.md rule 16), and the cost (§17.2) is attributed to
+   the *demanding* step as well as recorded on the producer, so "why did
+   Scouting take three minutes" has an answer.
+
+Where it lives per executor: on the **Prefect** path this is task
+dependencies and Prefect renders the chain itself; on the **local thread**
+path it is the resolver above in `survey_definition_executor.py`; on
+**Egeria-orchestrated** definitions it is not RE's concern — the graph and
+its guards say what runs, and a missing input there is a `survey-invalid`
+guard, not a precondition. Rule E's remote executors get the same resolver
+output as a serialised plan.
+
+### 17.2 Cost: time is one axis of a vector, and yield is the denominator
+
+**What exists.** `surveyors/step_cost_observer.py` already wraps every
+local step: wall time, connection count, annotation count, and a
+declared-versus-observed **disagreement** check (a step declaring
+`fetch_cost: none` that opened a connection is flagged). Results are stored
+as per-project metrics (`<step>_elapsed`, `observed_connects`, …).
+`docs/funnel-cost-measured.md` is the one measurement made from them. That
+is the seed, and it measures one thing — seconds — that the funnel argument
+is not really about.
+
+**The cost vector per step run**, cheap ones on by default, expensive ones
+optional and sampled:
+
+| Axis | Measures | Why it is not the same as time | Collector | Default |
+|---|---|---|---|---|
+| `wall_ms` | elapsed | what the user waits | exists | on |
+| `cpu_ms` | process CPU time in the step | *compute*, which is what tier placement claims; a step that waits on the network is cheap in CPU and slow in wall time | `resource.getrusage` delta | on |
+| `bytes_fetched` | bytes over the network into RE | download and API payload; the acquisition half of "110 s to fetch, 5.9 s to run" | counting wrapper on the HTTP client and `git` (already partly in `SourceCache`) | on |
+| `api_calls` | external API requests by host | **for repositories this is the scarce resource**: the GitHub rate budget, not seconds | counting wrapper | on |
+| `source_rows`, `source_queries` | rows scanned and queries issued against the surveyed database; files opened and bytes read for a filesystem | load *on the source*, which the source's owner cares about and time does not show | `pg_stat_statements` delta when installed, else query count; `os.stat` and read counters in the walk | optional, sampled |
+| `llm_tokens_in/out` | tokens for agent and RAG steps | real money and wholly invisible today | the LLM client already reports usage | on |
+| `egeria_calls` | pyegeria requests | load on the platform; distinguishes a native survey's cost from RE's | counting wrapper on the client | on |
+| `cache_hits` | `SourceCache` and query-cache hits | so a warm run is not mistaken for a cheap step (22.6 s cold → 1.3 s warm is one step's real range) | exists in `SourceCache`; expose | on |
+| `annotations`, `questions_answered` | yield | **the denominator** — a step that produces nothing was not cheap at any price | exists (annotations); questions from the catalog's `analysis_ids` inverse | on |
+| `executor`, `source` | local / prefect / egeria / remote; whose engine | so native and remote runs sit on the same board; Egeria engine actions and Prefect flow runs both carry start and completion times | exists | on |
+
+Two **derived** metrics are the ones that test the funnel's premise, and
+they need the vector, not just seconds:
+
+- **Cost per question answered**, per step and per survey definition. A
+  Scouting definition that answers five questions for 2 s and 0 API calls,
+  and an Analysis definition that answers twelve for 90 s and 340 calls,
+  are both fine; the same Analysis definition answering three is the one to
+  look at.
+- **Tier ratio per resource**: Scouting cost as a fraction of Analysis
+  cost, on each axis. The funnel promises this is small. Where it is not,
+  a step is mis-tiered or under-declared, which is exactly the disagreement
+  check generalised from "did it open a connection" to every axis.
+
+**Storage.** One `step_runs` table, `(slug, step_key, surveyed_at, source,
+executor, demanded_by, metrics jsonb, declared jsonb, disagreement text)`,
+written by the observer instead of scattering `<step>_elapsed` metrics
+across project rows. `demanded_by` is the §17.1 attribution. The survey-level
+row is a rollup over its steps, so a survey definition's cost is a query,
+not a second measurement. Prefect flow-run ids and Egeria engine-action
+GUIDs go in `executor_ref` so the board can link out.
+
+### 17.3 The dashboard: under Admin, and it exists to tune three things
+
+Not an intent — it configures how the system behaves, which is the Admin
+rule in CLAUDE.md. Four views, all over `step_runs`:
+
+| View | Shows | What it is for |
+|---|---|---|
+| **Per step** | median and tail of each axis across all resources; disagreement rate; auto-run rate (how often it ran as a prerequisite vs on request) | finding under-declared and mis-tiered steps |
+| **Per resource type × tier** | the tier ratio on each axis | validating the funnel; the number the design keeps asserting and has measured once |
+| **Per survey definition** | total cost vector, cost per question answered, yield | which definitions earn their cost; which questions are expensive to answer |
+| **Native vs local** | for steps with both a rule-A native and a rule-B local route: time, source load, Egeria calls, yield side by side | **tuning rule B's efficiency policy from numbers**, which §3 promised and nothing yet delivers |
+
+Plus trend over time and an outliers list (the slowest, hungriest, and
+lowest-yield runs of the week, with their `demanded_by`). The dataviz
+conventions in the designer brief apply; this is round 2 material, after
+the vector has a few weeks of rows in it.
+
+### 17.4 Sequencing
+
+| Piece | Cost | Phase |
+|---|---|---|
+| `PRODUCES` on `StepInfo` + inverse map + resolver with cycle guard, local path | a day | Phase 1, with the DB steps, because `postgres_column_profile` is the first step with a real chain (needs `schema_inventory`, which needs the catalog read) |
+| Proposal rendering: "answering this needs X first; run it?" with summed cost | half a day, classic UI | same slice |
+| `step_runs` table and the observer writing the vector (wall, CPU, bytes, API calls, Egeria calls, cache hits, yield, executor) | a day; the counting wrappers are the work | Phase 1, before the native-vs-local comparison is worth reading |
+| Optional collectors: `pg_stat_statements` delta, LLM tokens | half a day each, behind config | when the first board shows a gap |
+| Admin "Performance" panel, four views | designer round 2 | after two weeks of rows |
+
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
 `facts.py`, `registry.py`, `configdata/analysis_catalog.yaml`, both question
