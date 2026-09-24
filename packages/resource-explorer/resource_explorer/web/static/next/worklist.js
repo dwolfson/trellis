@@ -1430,6 +1430,32 @@ function openRefreshPlan(ctx) {
 async function reportPlanMovement(slotId, slug_pairs) {
   const slot = document.getElementById(slotId);
   if (!slot || !slug_pairs.length) return;
+  // getAnalysisTrend hits /api/projects/{slug}/analyses/{id}/trend
+  // (re-api.js), a repo-only route (projects.py) with no entity_type
+  // parameter and no database/filesystem backend equivalent today.
+  // DEPENDENCY, not attempted here: generalizing getAnalysisTrend and its
+  // backend route to a non-repo entity type is a separate change.
+  //
+  // Without this gate, every read below would fail for a non-repo work
+  // list and land in the generic `catch (_) { return null }` further down
+  // — indistinguishable from "checked, this measurement is unreadable".
+  // The plan-movement callout would then simply never appear for a
+  // database/filesystem work list, silently undercounting "would repeat
+  // an unchanged measurement" as "nothing repeats" rather than saying the
+  // heuristic was never evaluated for this entity type. Low-visibility
+  // (this is a preview-only, best-effort callout, not a blocking check)
+  // but a real instance of the same absence-vs-never-measured conflation
+  // this session's other fixes address — so skip the doomed requests and
+  // say so, rather than let the catch block quietly stand in for an
+  // honest "not available for this type yet".
+  const entityType = grid.workList?.entity_type || 'repo';
+  if (entityType !== 'repo') {
+    slot.innerHTML = `<div class="mt-s2 text-caveat text-ink-muted">
+      Whether any of these run(s) would repeat an unchanged measurement
+      isn't tracked yet for ${esc(entityType)} resources — this heuristic
+      only reads repo analysis trends today.</div>`;
+    return;
+  }
   // One read per ANALYSIS, not per pair: the series is per (resource,
   // analysis), but an unchanged analysis is usually unchanged across the set,
   // and a plan preview must not cost more than the run it is describing.

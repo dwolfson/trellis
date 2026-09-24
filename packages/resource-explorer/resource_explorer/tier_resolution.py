@@ -78,22 +78,35 @@ def current_tier_of_analysis() -> dict[str, str]:
     return out
 
 
-@lru_cache(maxsize=1)
-def _step_key_owner() -> dict[str, str]:
-    """{step_key: analysis_id} — the inverse of the OWNERSHIP map.
+@lru_cache(maxsize=None)
+def _step_key_owner(entity_type: str = "repo") -> dict[str, str]:
+    """{step_key: analysis_id} for `entity_type` — the inverse of the
+    OWNERSHIP map.
 
-    Ownership, deliberately, not `REPO_ANALYSIS_SOURCE_STEPS`: this answers
-    "whose work was this step", which is attribution, and the source map exists
-    to answer the different question of what to run. Using the source map here
-    would credit `architecture_diagram` for the recovery's steps again — the
-    exact defect fixed on 2026-09-08.
+    Ownership, deliberately, not a SOURCE-STEPS map (`REPO_ANALYSIS_SOURCE_STEPS`
+    for repo): this answers "whose work was this step", which is attribution,
+    and a source map exists to answer the different question of what to run.
+    Using a source map here would credit `architecture_diagram` for the
+    recovery's steps again — the exact defect fixed on 2026-09-08. That is
+    also why this does NOT go through `get_adapter(entity_type)
+    .analysis_source_steps()` — for repo specifically that provider is wired
+    to `REPO_ANALYSIS_SOURCE_STEPS`, the derives-from map, not the ownership
+    one; using it here would silently reintroduce the same defect for repo
+    while looking like the "generalize via get_adapter" fix.
+
+    Dispatches per `entity_type` via `registry._analysis_step_map()`, which
+    already does the correct repo/database/filesystem lookup (with its own
+    lazy imports to avoid the same import cycle this module used to route
+    around directly for repo alone). Before this, only repo's
+    `REPO_ANALYSIS_STEP_MAP` was ever consulted here, so a database/filesystem
+    `survey` row's steps could never be found in `owner` and always resolved
+    to `unknown-analysis` regardless of what actually ran.
     """
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_STEP_MAP,
-    )
+    from resource_explorer.registry import _analysis_step_map
 
+    step_map = _analysis_step_map(entity_type)
     return {key: analysis_id
-            for analysis_id, keys in REPO_ANALYSIS_STEP_MAP.items()
+            for analysis_id, keys in step_map.items()
             for key in keys}
 
 
@@ -138,12 +151,21 @@ class TierAttribution:
 
 
 def tier_of_activity_row(operation: str, detail: dict,
-                         recorded_intent: str = "") -> TierAttribution:
+                         recorded_intent: str = "",
+                         entity_type: str = "repo") -> TierAttribution:
     """Resolve one `activity_log` row to its CURRENT tier(s).
 
     `detail` is the row's parsed `detail` JSON. Rows that are neither an
     `analysis_run` nor a `survey` are `not-a-run` — a `catalog` or `scout` row
     is real activity but is not a tier's work being done to a resource.
+
+    `entity_type` should be the row's own `ActivityEntry.entity_type`
+    ('repo' | 'database' | 'filesystem' | ...) so a `survey` row's steps
+    resolve against the right resource type's step map. Defaults to 'repo'
+    for backward compatibility with callers that predate per-type step maps
+    (and because `analysis_run` rows don't need it — `analysis_id` alone is
+    enough there); a caller iterating `activity_log` rows should always pass
+    the row's actual `entity_type`.
     """
     if not isinstance(detail, dict):
         detail = {}
@@ -172,7 +194,7 @@ def tier_of_activity_row(operation: str, detail: dict,
             # module exists to prevent.
             return TierAttribution(state="unattributable",
                                    recorded_tier=recorded_intent)
-        owner = _step_key_owner()
+        owner = _step_key_owner(entity_type)
         analyses = {owner[k] for k in
                     (str(s.get("step") or "").rsplit("::", 1)[-1] for s in steps)
                     if k in owner}

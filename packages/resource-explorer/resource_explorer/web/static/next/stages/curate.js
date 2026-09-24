@@ -20,6 +20,7 @@ import {
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
+  apiEntityType,
 } from '/static/next/app.js';
 
 
@@ -163,9 +164,47 @@ function curateRecordHtml(rec) {
   </div>`;
 }
 
+/** Curate is a generic `/next` nav item (reachable for any resource type via
+ *  `#intent-nav`), but everything it does — the plan, the commit, the
+ *  component tree, the depth offers — is built entirely against
+ *  `/api/projects/{slug}/...` (curate_plan.py, `registry.get(slug)` — the
+ *  repo-only `projects` table). Clicking Curate for a database/filesystem
+ *  today 404s with no explanation, indistinguishable from a real failure.
+ *
+ *  Component-tree/branch curation is genuinely repo-shaped by design (git
+ *  branches, architecture-recovery components) — building a database/
+ *  filesystem equivalent is a real, unscoped design question (see the PR
+ *  description), not something to build speculatively here. This is the
+ *  conservative fix: detect the resource type before making any repo-only
+ *  call, and say so honestly — same pattern as Understanding's
+ *  `nonRepoChartIndexHtml`/`loadChartsPane` gate (understanding.js) and
+ *  Scouting's `renderDepthOffer` (app.js, gated on `isRepo`) for other
+ *  panes that are deliberately not generalized yet. */
+function nonRepoCurateHtml(entityType) {
+  return `<div class="text-answer text-ink">
+      Curate isn't available for ${esc(entityType)}s yet.
+    </div>
+    <div class="mt-s2 text-caveat text-ink-muted">
+      Curate's component-tree and branch-based curation actions are built
+      against repositories today (git branches, architecture-recovery
+      components) — there is no database/filesystem equivalent yet. Search
+      tags, feedback and curator notes (this project's other Curate
+      capabilities) are reachable from the resource header regardless of
+      type; only this plan/commit view is repo-only.
+    </div>`;
+}
+
 export async function renderCurate(slug) {
   const host = $('enrichment-form');
   if (!host) return;
+  const entityType = apiEntityType(state.resourceType);
+  if (entityType !== 'repo') {
+    // Skip every repo-only /api/projects/{slug}/... call entirely rather
+    // than firing it and reporting whatever 404 comes back — the honest
+    // message doesn't depend on a failed round-trip to know it's not built.
+    host.innerHTML = nonRepoCurateHtml(entityType);
+    return;
+  }
   host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
   let plan;
   try {
