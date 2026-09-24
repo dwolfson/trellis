@@ -7788,13 +7788,61 @@ go-ahead, not something to do unilaterally):
   one connection visible to the survey engine's own user (via zones/security
   tags), for the surveyor role specifically.
 
-**One pyegeria call to verify, not yet done:** which read returns an
-asset's connections *together with* the `ResourceConnection` relationship's
-own properties (the `label`) rather than only the far-end `Connection`
-element — `ClassificationExplorer.get_relationships` filtered to
-`ResourceConnection` is the reply's best guess, unconfirmed against a live
-call.
+**The pyegeria enumeration call — now confirmed, was wrong in the reply.**
+Not `ClassificationExplorer.get_relationships`, and not
+`ConnectionMaker.get_endpoints_for_asset`/`find_connections` either (both
+returned empty against a real, correctly-connected asset). The right call
+is `ConnectionMaker.find_assets(search_string=..., output_format='JSON')`
+— the asset result carries a `connections` array with the full
+`ResourceConnection` relationship (including its `relationshipProperties`,
+currently `null` everywhere since nobody has populated the label
+convention yet). Verified live against `coco_pharma`'s real asset.
 
-**Candidate fix:** none until the project owner rules on item 1. Once
-ruled, items 2 and 3 follow directly from the reply's §2/§3/§6 sequencing
-and don't need a second design pass.
+**§7 (architecture session, added to the REPLY doc directly) resolved the
+three remaining open questions — the model is now fully specified, only
+the go-ahead is still the owner's:**
+
+1. **The credential-gating idea has a real signal at catalog tier and an
+   existing design home.** Design §16.2/§16.3's `preliminary_fit` already
+   runs at catalog tier (`pg_namespace`/`pg_class`/`pg_attribute`/
+   `pg_constraint`/`pg_description`/`pg_partitioned_table`/
+   `pg_stat_all_tables` — all unfiltered) and yields a disqualify/pursue
+   verdict for subject, grain, size and partition coverage without ever
+   needing `SELECT`. Where it can't decide, its envelope literally says
+   "needs read on N tables to answer" — **that state IS the elevate-
+   credentials prompt**, feeding the launcher's three choices from reply
+   §3 (run partially / pick another visible connection / raise the RFA).
+   **Recommendation: build `requires_capability` as one axis alongside
+   cost tier in the same gate, not a separate flow** — a step declares
+   `fetch_cost`, `compute_cost` and `requires_capability` together, and the
+   launcher shows one combined reason rather than two separate gates a
+   user has to reconcile.
+2. **`.omsecrets` refresh — fully resolved, safe to edit directly.** Traced
+   to `ConnectorBroker.getConnector`, `SurveyActionServiceHandler`, and
+   `SurveyAssetStore.getConnectorForAsset`: every survey run gets a **fresh**
+   connector instance, and `SecretsStoreConnector.secretsTimeout`
+   initializes to `new Date()` at construction — so the first secret read
+   of every new instance always re-reads the file. **A file edit takes
+   effect on the very next survey run, unconditionally; no restart, no
+   meaningful delay.** (The earlier "60 minutes" concern only applies
+   *within* one already-running survey, which doesn't happen — each run is
+   its own fresh instance.)
+3. **Two credential stores are structurally required, not a gap to close.**
+   pyegeria only exposes `save_client_side_secret`/`delete_client_side_secret`
+   — **there is no read API for secrets**, by design (secrets are read only
+   by connectors, never returned to a caller). RE's local execution path
+   therefore *cannot* resolve credentials through Egeria; the `.omsecrets`
+   file cannot be the single store. What §1's model unifies is **identity
+   and the writer, not storage**: one secrets-collection name per
+   `(resource, role)`, written to both places by RE in the same operation.
+   RE's own `databases.db_password` should stop being a clear-text column
+   and become RE's own store (encrypted at rest, or the OS keychain); the
+   `.omsecrets` collection becomes its projection for the engine host.
+   Drift between the two is detectable by comparing collection names
+   present on each side — the best available guarantee without a read API.
+
+**Candidate fix:** none until the project owner gives the go-ahead — the
+technical design is now complete (this entry, `ASK`/`REPLY-DATABASE-
+CREDENTIAL-CAPABILITY-VISIBILITY.md`, and its §7), not merely directional.
+Once approved, items 2 and 3 from the original list follow directly and
+don't need a second design pass.
