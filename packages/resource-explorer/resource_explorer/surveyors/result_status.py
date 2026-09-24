@@ -38,6 +38,25 @@ MEASURED = "measured"
 NOTHING_FOUND = "nothing_found"
 NOT_ESTABLISHED = "not_established"
 NEVER_RUN = "never_run"
+#: A third completeness state alongside `measured`/`not_established`
+#: (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §4, replying to
+#: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251): the surveyor DID
+#: run and DID produce a real count, but the credential it connected as
+#: cannot see the whole resource — Postgres's `information_schema` is
+#: privilege-filtered while `pg_namespace`/`pg_class` are not, so a
+#: `credential_capability` probe can state the exact fraction (e.g. "3 of 26
+#: tables, 6 of 8 schemas"). Rendering that count as a bare `measured` value
+#: ("3 tables") is the confident-wrong-answer shape find-absence-as-answer
+#: exists to catch — this state carries the fraction so the caller (facts.py)
+#: can say so instead of presenting a partial view as the whole one.
+#:
+#: Deliberately its own state rather than `PARTIAL` (facts.py): `PARTIAL`
+#: means "this run covered only part of what the analysis owns" — a gap in
+#: WHAT WAS ASKED. This means "what was asked was fully attempted, but the
+#: credential's own visibility bounds what could be seen" — a gap in WHAT
+#: COULD BE SEEN. Collapsing the two would lose the fraction, which is the
+#: whole point (the "blind spot has a known denominator" per the reply's §0).
+MEASURED_WITHIN_CREDENTIAL_SCOPE = "measured_within_credential_scope"
 #: A gate decided this step would have been the wrong question for this
 #: resource, so it never ran. Added 2026-08-24 for repo_classification's
 #: run/skip gate (docs/architecture-recovery-design.md §5.5b).

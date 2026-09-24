@@ -933,6 +933,22 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: credential_capability
+    name: "Credential Capability"
+    description: "Read-only pg_namespace/information_schema.schemata, pg_class/has_table_privilege, pg_has_role(pg_monitor) and has_table_privilege(INSERT) checks -- never a trial write. States 'connected as X -- visible N of M schemas, SELECT on N of M tables' and raises an RFA to the database owner when coverage is meaningfully thin (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md, replying to ASK-...-#251)."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForAction"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: db_resilience
     name: "Operational Resilience"
     description: "MIXED analysis (design §5.5): catalog half — primary/standby, replicas and lag, WAL archiving status, backup-tool/Citus-clustering signals — measured directly; Enrichment half (last backup date, restore-test date, RPO/RTO) is not machine-observable and stays explicitly pending, never silently omitted."

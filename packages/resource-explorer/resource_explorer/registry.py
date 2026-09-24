@@ -2115,7 +2115,8 @@ class ProjectRegistry:
                     demanded_by   TEXT DEFAULT '',
                     metrics       TEXT DEFAULT '{}',
                     declared      TEXT DEFAULT '{}',
-                    disagreement  TEXT DEFAULT ''
+                    disagreement  TEXT DEFAULT '',
+                    surveyed_as   TEXT DEFAULT ''
                 )
             """)
             # `entity_type` and `executor_ref` post-date the first shape this
@@ -2128,6 +2129,10 @@ class ProjectRegistry:
                 ("entity_type", "TEXT NOT NULL DEFAULT 'repo'"),
                 ("executor_ref", "TEXT DEFAULT ''"),
                 ("demanded_by", "TEXT DEFAULT ''"),
+                # design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+                # §4 — which credential identity this run executed as;
+                # `source`/`executor` already say WHO ran it.
+                ("surveyed_as", "TEXT DEFAULT ''"),
             ):
                 if _step_run_cols and _col not in _step_run_cols:
                     conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
@@ -2253,6 +2258,7 @@ class ProjectRegistry:
                     column_count INTEGER DEFAULT 0,
                     survey_data TEXT DEFAULT '{}',
                     source TEXT DEFAULT 'local',
+                    surveyed_as TEXT DEFAULT '',
                     FOREIGN KEY (database_slug) REFERENCES databases(slug)
                 )
             """)
@@ -2260,6 +2266,13 @@ class ProjectRegistry:
             existing_ds = self._get_table_columns(conn, "database_surveys")
             if "source" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN source TEXT DEFAULT 'local'")
+            # Migration: add surveyed_as (design REPLY-DATABASE-CREDENTIAL-
+            # CAPABILITY-VISIBILITY.md §4 — "the credential identity is
+            # recorded on every survey row"; `source` already distinguishes
+            # WHO ran it (egeria/resource-explorer/local), this is WHICH
+            # CREDENTIAL it ran as).
+            if "surveyed_as" not in existing_ds:
+                conn.execute("ALTER TABLE database_surveys ADD COLUMN surveyed_as TEXT DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_database_surveys_slug "
                 "ON database_surveys(database_slug)"
@@ -5781,7 +5794,7 @@ class ProjectRegistry:
         entity_type: str = "repo", source: str = "local", executor: str = "local",
         executor_ref: str = "", demanded_by: str = "",
         metrics: dict | None = None, declared: dict | None = None,
-        disagreement: str = "",
+        disagreement: str = "", surveyed_as: str = "",
     ) -> None:
         """One row per step EXECUTION. Append-only: a step run twice in one
         snapshot (once as a prerequisite, once on its own request) is two
@@ -5796,11 +5809,11 @@ class ProjectRegistry:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "
-                "disagreement) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "disagreement, surveyed_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (slug, entity_type, step_key, surveyed_at, source, executor,
                  executor_ref or "", demanded_by or "",
                  json.dumps(metrics or {}), json.dumps(declared or {}),
-                 disagreement or ""),
+                 disagreement or "", surveyed_as or ""),
             )
 
     def query_step_runs(
@@ -8730,6 +8743,7 @@ class ProjectRegistry:
         egeria_report_guid: str = "",
         source: str = "local",
         surveyed_at: str | None = None,
+        surveyed_as: str = "",
     ) -> None:
         """Record a database survey result.
 
@@ -8754,10 +8768,11 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO database_surveys
                    (database_slug, surveyed_at, egeria_report_guid, schema_count,
-                    table_count, column_count, survey_data, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    table_count, column_count, survey_data, source, surveyed_as)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (slug, surveyed_at, egeria_report_guid, schema_count,
-                 table_count, column_count, json.dumps(survey_data), source),
+                 table_count, column_count, json.dumps(survey_data), source,
+                 surveyed_as or ""),
             )
             # Keep the databases row in sync so API responses reflect current counts
             conn.execute(
@@ -8799,7 +8814,8 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
-                          schema_count, table_count, column_count, survey_data, source
+                          schema_count, table_count, column_count, survey_data, source,
+                          surveyed_as
                    FROM database_surveys
                    WHERE database_slug = ?
                    ORDER BY surveyed_at DESC""",

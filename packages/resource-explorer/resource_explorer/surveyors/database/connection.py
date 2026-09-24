@@ -67,6 +67,17 @@ class EngineCapabilities:
     #: distinction is the reason this is a declared capability rather than an
     #: empty result set.
     value_sampling: bool = False
+    #: Whether this engine can introspect what the CONNECTING CREDENTIAL
+    #: itself can see and do — `credential_capability` (design: REPLY-
+    #: DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §3/§4, replying to
+    #: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251). Catalog reads
+    #: and privilege-check function calls only — `pg_namespace`/`pg_class`
+    #: (unfiltered) compared against `has_schema_privilege`/
+    #: `has_table_privilege`, `pg_has_role` for the statistics role, and
+    #: `has_table_privilege(..., 'INSERT')` PROBED, never exercised, for
+    #: write. Independent of `privileges` above (which audits OTHER roles'
+    #: grants): this is about what THIS SESSION's own role can reach.
+    credential_introspection: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return asdict(self)
@@ -368,6 +379,10 @@ class PostgreSQLConnection(DatabaseConnection):
             # design §5.8 names specifically in preference to
             # `ORDER BY random() LIMIT n`.
             value_sampling=True,
+            # `credential_capability` probe — pg_namespace/pg_class,
+            # has_schema_privilege/has_table_privilege and pg_has_role all
+            # exist on every Postgres this codebase supports.
+            credential_introspection=True,
         )
 
     def get_column_stats(self) -> list[dict]:
@@ -591,6 +606,104 @@ class PostgreSQLConnection(DatabaseConnection):
             default_acl = []
 
         return {"roles": roles, "table_grants": table_grants, "default_acl": default_acl}
+
+    def get_credential_capability(self) -> dict:
+        """What THIS credential can see and do, as distinct from what the
+        database contains — the `credential_capability` probe (design: REPLY-
+        DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §0/§3/§4).
+
+        `pg_namespace` and `pg_class` are catalog metadata, readable by any
+        connected role regardless of `USAGE`/`SELECT` grants — confirmed
+        directly against the incident that prompted this (a real `coco_pharma`
+        database, connected as `egeria_user`): `information_schema.schemata`
+        showed 6 of the database's real 8 schemas, and `has_table_privilege`
+        found `SELECT` on only 3 of `coco_ods`'s real tables despite `USAGE`
+        on the schema itself. So the unfiltered pg_* counts here are the
+        honest denominator ("of M"), not an under-count — the blind spot has a
+        known size.
+
+        Every read is catalog metadata or a privilege-CHECK function call.
+        `has_table_privilege(..., 'INSERT')` is called for every visible
+        table to answer "could this credential write", but no write is ever
+        attempted — `write_capable` is a probe result, reported honestly as
+        such, never an exercised capability.
+        """
+        connected_as = ""
+        try:
+            rows = self.execute_query("SELECT current_user AS connected_as")
+            connected_as = rows[0].get("connected_as") or "" if rows else ""
+        except Exception:
+            connected_as = ""
+
+        schemas: list[dict] = []
+        try:
+            schemas = self.execute_query("""
+                SELECT n.nspname AS schema_name,
+                       has_schema_privilege(current_user, n.nspname, 'USAGE') AS usage_granted
+                FROM pg_namespace n
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY n.nspname
+            """)
+        except Exception:
+            schemas = []
+
+        tables: list[dict] = []
+        try:
+            tables = self.execute_query("""
+                SELECT n.nspname AS schema_name, c.relname AS table_name,
+                       has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
+                       has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY n.nspname, c.relname
+            """)
+        except Exception:
+            tables = []
+
+        stats_role = False
+        try:
+            # pg_monitor (PG 10+) is the standard predefined role for read
+            # access to monitoring views/functions (pg_stat_*, pg_read_all_
+            # stats implied). MEMBER (not USAGE) is the correct third
+            # argument for a role-membership check.
+            rows = self.execute_query(
+                "SELECT pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_role"
+            )
+            stats_role = bool(rows[0].get("has_role")) if rows else False
+        except Exception:
+            stats_role = False
+
+        by_schema: dict[str, dict] = {}
+        for s in schemas:
+            by_schema[s["schema_name"]] = {
+                "usage_granted": bool(s.get("usage_granted")),
+                "table_total": 0,
+                "table_select": 0,
+            }
+        for t in tables:
+            sc = by_schema.setdefault(
+                t["schema_name"],
+                {"usage_granted": False, "table_total": 0, "table_select": 0},
+            )
+            sc["table_total"] += 1
+            if t.get("can_select"):
+                sc["table_select"] += 1
+
+        return {
+            "connected_as": connected_as,
+            "schema_total": len(schemas),
+            "schema_visible": sum(1 for s in schemas if s.get("usage_granted")),
+            "table_total": len(tables),
+            "table_select": sum(1 for t in tables if t.get("can_select")),
+            "by_schema": by_schema,
+            "stats_role": stats_role,
+            #: Always True: this method never skips the write probe, it only
+            #: ever skips the write itself.
+            "write_probed": True,
+            "write_capable": any(t.get("can_insert") for t in tables),
+        }
 
     def get_replication_status(self) -> dict:
         """Whether this connection is a standby, and — if it is a primary —

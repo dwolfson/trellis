@@ -77,6 +77,24 @@ def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str
     }
 
 
+def _run_credential_capability(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+    """credential_capability (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    VISIBILITY.md §3/§4, replying to ASK-...-#251, "Piece 1"): read-only
+    catalog/privilege introspection of what THIS connection can see and do.
+    Same shape as `_run_postgres_operations` above — "schema" runs alongside
+    unconditionally, nothing else does, so this step stays at "api / low"
+    rather than paying for a full survey.
+    """
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
+    result = surveyor.survey(steps=["credential_capability"])
+    return {
+        "schema_info": result.get("schema_info", {}),
+        "credential_capability": result.get("credential_capability", {}),
+    }
+
+
 def _run_db_derived(db_entity, registry, **_) -> dict:
     """db_derived (Phase 1 slice 9, design §5.3/§5.7): the ZERO-FETCH step —
     classification, relationship graph, grain, fingerprint, structural
@@ -360,16 +378,19 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     statistics: dict = {}
     views: list = []
     operations: dict = {}
+    credential_capability: dict = {}
     for output in step_outputs:
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
         views = output.get("views") or views
         operations = output.get("operations") or operations
+        credential_capability = output.get("credential_capability") or credential_capability
 
     surveyor = EgeriaDatabaseSurveyor()
     result = surveyor.publish_step_annotations(
         entity, schema_info, statistics, surveyed_at, registry,
         views=views, operations=operations,
+        credential_capability=credential_capability,
     )
     return result.get("report_guid", "")
 
@@ -454,6 +475,12 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
          "QualityScoreAnnotation", "RequestForAction", "DataClassAnnotation"],
         fetch_cost="api", compute_cost="low",
     ),
+    "credential_capability": StepInfo(
+        "credential_capability", None,
+        "Read-only catalog/privilege introspection: what this credential can see and do.",
+        ["ResourceMeasureAnnotation", "RequestForAction"],
+        fetch_cost="api", compute_cost="low",
+    ),
 }
 
 
@@ -484,6 +511,7 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_column_profile": _run_postgres_column_profile,
         "postgres_nested_columns": _run_postgres_nested_columns,
         "sql_analysis": _run_postgres_sql_analysis,
+        "credential_capability": _run_credential_capability,
     },
     get_entity=_get_database_entity,
     publish=_publish,
@@ -587,6 +615,20 @@ _ADAPTER = ResourceTypeAdapter(
                 "DataClassAnnotation",
             ],
         },
+        "credential_capability": {
+            "description": (
+                "Read-only pg_namespace/information_schema.schemata, pg_class/"
+                "has_table_privilege, pg_has_role(pg_monitor) and "
+                "has_table_privilege(INSERT) checks — never a trial write. "
+                "States 'connected as X — visible N of M schemas, SELECT on N "
+                "of M tables' and raises an RFA to the database owner when "
+                "coverage is meaningfully thin."
+            ),
+            "annotation_types": [
+                "ResourceMeasureAnnotation",
+                "RequestForAction",
+            ],
+        },
     },
     other_engine_handlers={
         "egeria": _trigger_egeria_native_survey,
@@ -651,6 +693,7 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "reference_data_match": ["postgres_column_profile"],
     "nested_column_profile": ["postgres_nested_columns"],
     "egeria_db_survey": ["egeria_db_survey"],
+    "credential_capability": ["credential_capability"],
 }
 
 
@@ -760,6 +803,67 @@ def _operations_section_reader(section: str):
     return _read
 
 
+def _credential_capability_results(registry, slug: str) -> dict:
+    """Results reader for `credential_capability`, read back from the latest
+    survey's stored `survey_data` blob — same "no dedicated detail table"
+    shape `_operations_section_reader` uses, but at the top level rather than
+    nested under "operations" (`DatabaseSurveyor.survey()` stores it as its
+    own top-level `results["credential_capability"]` key).
+    """
+    import json as _json
+
+    get_latest = getattr(registry, "get_latest_database_survey", None)
+    if not callable(get_latest):
+        # A registry stub that answers query_detail_rows()/get() but not
+        # this survey-blob read (test_fact_layer_resource_type_dispatch.py's
+        # minimal stub is exactly this shape) has simply never been asked
+        # about credential capability — "nothing to say" is the correct
+        # degradation, the same one an absent probe produces.
+        return {}
+    survey = get_latest(slug)
+    if not survey:
+        return {}
+    try:
+        survey_data = _json.loads(survey.get("survey_data") or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return survey_data.get("credential_capability") or {}
+
+
+def _credential_scope_status(registry, slug: str) -> dict | None:
+    """The third fact-envelope state's trigger (design REPLY-DATABASE-
+    CREDENTIAL-CAPABILITY-VISIBILITY.md §4): when the latest
+    `credential_capability` probe for this database shows less than full
+    schema/table visibility, every catalog-derived fact for this database is
+    scoped to what that credential could see — not to the whole database —
+    and the envelope must say so, with the fraction, rather than presenting a
+    partial count as complete. Returns None when there is no probe yet
+    (nothing to say) or when the probe found full coverage (nothing to
+    caveat) — both are "stay silent", not "measured_within_credential_scope".
+    """
+    cap = _credential_capability_results(registry, slug)
+    if not cap:
+        return None
+    schema_total = cap.get("schema_total", 0)
+    schema_visible = cap.get("schema_visible", 0)
+    table_total = cap.get("table_total", 0)
+    table_select = cap.get("table_select", 0)
+    if not table_total:
+        return None
+    if table_select >= table_total and schema_visible >= schema_total:
+        return None
+    from resource_explorer.surveyors.result_status import MEASURED_WITHIN_CREDENTIAL_SCOPE
+
+    return {
+        "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
+        "connected_as": cap.get("connected_as", ""),
+        "fraction": (
+            f"{table_select} of {table_total} tables in "
+            f"{schema_visible} of {schema_total} schemas"
+        ),
+    }
+
+
 def _schema_inventory_results(registry, slug: str) -> dict:
     """Last-measured schema shape, read from the structured detail tables
     every local survey's `postgres_schema_and_stats` step already writes
@@ -772,7 +876,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     for c in columns:
         key = (c.get("schema_name"), c.get("table_name"))
         columns_by_table[key] = columns_by_table.get(key, 0) + 1
-    return {
+    value = {
         "table_count": len(tables),
         "column_count": len(columns),
         "tables": [
@@ -788,6 +892,13 @@ def _schema_inventory_results(registry, slug: str) -> dict:
             for t in tables
         ],
     }
+    # The third fact-envelope state (design §4): "3 tables, 32 columns" is a
+    # confident wrong answer when `egeria_user` can only reach 3 of the
+    # database's real 26 — see _credential_scope_status.
+    status = _credential_scope_status(registry, slug)
+    if status:
+        value["_status"] = status
+    return value
 
 
 def _row_count_snapshot_results(registry, slug: str) -> dict:
@@ -808,7 +919,7 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
         return {}
     measured = [t for t in tables if t.get("row_count") is not None]
     sized = [t for t in tables if t.get("size_bytes") is not None]
-    return {
+    value = {
         "tables": [
             {"schema_name": t.get("schema_name"), "table_name": t.get("table_name"),
              "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes")}
@@ -819,6 +930,13 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
         "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
         "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
     }
+    # The third fact-envelope state (design §4) — same caveat schema_inventory
+    # carries, since both read the same credential-scoped `database_tables`
+    # detail rows.
+    status = _credential_scope_status(registry, slug)
+    if status:
+        value["_status"] = status
+    return value
 
 
 def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
@@ -872,6 +990,7 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "db_change_rates": (_db_derived_field_reader("db_change_rates"), None),
     "schema_diff": (_db_derived_field_reader("schema_diff"), None),
     "grant_change": (_db_derived_field_reader("grant_change"), None),
+    "credential_capability": (_credential_capability_results, None),
 }
 
 #: Headline readers (Tier 1 stat tiles) — an additional, optional

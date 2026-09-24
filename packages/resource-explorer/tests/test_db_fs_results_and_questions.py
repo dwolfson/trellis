@@ -58,6 +58,10 @@ class TestDatabaseResultsMapCoverage:
     analyses)."""
 
     def test_covers_the_fourteen_documented_analyses(self):
+        # Now fifteen: credential_capability (design REPLY-DATABASE-
+        # CREDENTIAL-CAPABILITY-VISIBILITY.md §3/§4, replying to
+        # ASK-...-#251) has its own results reader from the start, unlike
+        # the three genuinely-still-unbacked ids in expected_absent below.
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_STEP_MAP,
         )
@@ -67,7 +71,7 @@ class TestDatabaseResultsMapCoverage:
             "egeria_db_survey",
         }
         assert set(DATABASE_ANALYSIS_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 14
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 15
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

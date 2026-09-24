@@ -66,6 +66,13 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     # same per-table row counts the sample's provenance is stated against —
     # exactly slice 10's reasoning above, not a new invariant.
     "nested_column_profile": ["schema", "statistics", "nested_columns"],
+    # credential_capability (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    # VISIBILITY.md §3/§4, replying to ASK-...-#251): opt-in, same shape as
+    # "operations" above — "schema" is not actually read by this step, but
+    # every other database step needs it and the shared invariant in
+    # DatabaseSurveyor.survey() adds it regardless, so listing it here keeps
+    # this map an honest description of what actually runs.
+    "credential_capability": ["schema", "credential_capability"],
 }
 
 
@@ -268,7 +275,8 @@ class DatabaseSurveyor:
         """Run a database survey.
 
         steps : optional subset of {"schema", "statistics", "views",
-            "operations", "column_profile", "nested_columns"} — None (default)
+            "operations", "column_profile", "nested_columns",
+            "credential_capability"} — None (default)
             runs the original three (_ALL_STEPS), exactly as before
             "operations" existed; "operations" must be requested explicitly
             (see _ALL_STEPS's comment). "schema" always runs even if
@@ -382,6 +390,11 @@ class DatabaseSurveyor:
             #: postgres_nested_columns output (Phase 1 slice 11), built only
             #: when "nested_columns" runs — see nested_columns_step.py.
             "nested_columns": {},
+            #: credential_capability output (design REPLY-DATABASE-
+            #: CREDENTIAL-CAPABILITY-VISIBILITY.md §3/§4), built only when
+            #: "credential_capability" runs — see
+            #: _survey_credential_capability().
+            "credential_capability": {},
         }
         if catalog_load_error:
             results["errors"].append(
@@ -453,6 +466,23 @@ class DatabaseSurveyor:
                         )
                     except Exception as ops_err:
                         results["errors"].append(f"Operations query failed (non-fatal): {ops_err}")
+
+                # credential_capability (design REPLY-DATABASE-CREDENTIAL-
+                # CAPABILITY-VISIBILITY.md §3/§4, replying to ASK-...-#251):
+                # read-only catalog/privilege introspection of what THIS
+                # connection can see and do. Non-fatal, opt-in — same shape
+                # as "operations" above.
+                if "credential_capability" in requested:
+                    try:
+                        cred_info = self._survey_credential_capability(conn, capabilities)
+                        results["credential_capability"] = cred_info or {}
+                        results["annotations"].extend(
+                            self._create_credential_capability_annotations(cred_info)
+                        )
+                    except Exception as cred_err:
+                        results["errors"].append(
+                            f"Credential-capability query failed (non-fatal): {cred_err}"
+                        )
 
                 # postgres_column_profile: value sampling, data_class_match,
                 # reference_data_match (design §5.4, §5.7, §5.8 — Phase 1
@@ -1214,6 +1244,148 @@ class DatabaseSurveyor:
 
         return annotations
 
+    #: "Meaningfully thin" (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    #: VISIBILITY.md §4's worked example: 3 of 26 tables, 6 of 8 schemas — both
+    #: well under this line). A judgement call, not a derivation: below half
+    #: the database's real tables selectable, OR at least one whole schema
+    #: with no USAGE grant at all, is enough to name specific objects and ask
+    #: the database owner for a broader grant or connection, per the design's
+    #: RFA example ("grant SELECT on coco_ods.* or register a broader
+    #: connection on this asset").
+    CREDENTIAL_CAPABILITY_RFA_TABLE_FRACTION = 0.5
+
+    def _survey_credential_capability(self, conn, capabilities: EngineCapabilities) -> dict | None:
+        """Fetch what THIS connection can see and do (design §3/§4). `None`
+        means "not supported by this engine's capability declaration" — the
+        same not-established convention `_survey_operations` uses for each of
+        its four sections, never an empty dict indistinguishable from
+        "measured, and it turns out this credential can see everything".
+        """
+        if not capabilities.credential_introspection:
+            return None
+        return conn.get_credential_capability()
+
+    def _create_credential_capability_annotations(self, info: dict | None) -> list:
+        """Turn `_survey_credential_capability()`'s fetched dict into
+        annotations: one `ResourceMeasureAnnotation` stating the visibility
+        fraction, and — when coverage is thin — a `RequestForActionAnnotation`
+        to the database owner naming the worst-covered schema. Kept as a pure
+        function of already-fetched data (no `conn` argument), the same shape
+        `_create_operations_annotations` uses, so
+        `EgeriaDatabaseSurveyor.publish_step_annotations` can call it directly
+        on a Survey-Definition step's stored output without re-opening a
+        connection.
+        """
+        annotations: list = []
+
+        if info is None:
+            annotations.append(
+                ResourceMeasureAnnotation(
+                    summary="Credential-capability probe not supported by this engine",
+                    analysis_step="DatabaseCredentialCapability",
+                    confidence=0,
+                    resource_properties={
+                        "capability": "credential_introspection",
+                        "supported": False,
+                    },
+                    explanation=(
+                        "This connection's engine capability declaration does not "
+                        "include credential_introspection — the finding is not "
+                        "established, not a measurement of full visibility."
+                    ),
+                )
+            )
+            return annotations
+
+        connected_as = info.get("connected_as") or "(unknown)"
+        schema_total = info.get("schema_total", 0)
+        schema_visible = info.get("schema_visible", 0)
+        table_total = info.get("table_total", 0)
+        table_select = info.get("table_select", 0)
+        by_schema = info.get("by_schema") or {}
+        stats_role = bool(info.get("stats_role"))
+        write_capable = bool(info.get("write_capable"))
+
+        annotations.append(
+            ResourceMeasureAnnotation(
+                summary=(
+                    f"Connected as {connected_as}: visible {schema_visible} of "
+                    f"{schema_total} schema(s), SELECT on {table_select} of "
+                    f"{table_total} table(s)"
+                ),
+                analysis_step="DatabaseCredentialCapability",
+                confidence=100,
+                resource_properties={
+                    "connected_as": connected_as,
+                    "schema_total": schema_total,
+                    "schema_visible": schema_visible,
+                    "table_total": table_total,
+                    "table_select": table_select,
+                    "by_schema": by_schema,
+                    "stats_role": stats_role,
+                    "write_probed": True,
+                    "write_capable": write_capable,
+                },
+                explanation=(
+                    "pg_namespace/pg_class (unfiltered — catalog metadata visible "
+                    "to any connected role) compared against "
+                    "has_schema_privilege(current_user, schema, 'USAGE') and "
+                    "has_table_privilege(current_user, table, 'SELECT'); "
+                    "pg_has_role(current_user, 'pg_monitor', 'MEMBER') for the "
+                    "statistics capability; has_table_privilege(..., 'INSERT') "
+                    "probed for write — never exercised as an actual write."
+                ),
+            )
+        )
+
+        # RFA when coverage is thin (design §2/§4's worked example) — grouped
+        # to name the single worst-covered schema, same "one actionable item,
+        # not one per gap" shape _create_operations_annotations uses for
+        # PUBLIC grants.
+        thin = table_total > 0 and (
+            (table_select / table_total) < self.CREDENTIAL_CAPABILITY_RFA_TABLE_FRACTION
+            or schema_visible < schema_total
+        )
+        if thin:
+            worst_schema = None
+            worst_gap = -1
+            for name, sc in sorted(by_schema.items()):
+                total = sc.get("table_total", 0)
+                selected = sc.get("table_select", 0)
+                gap = total - selected
+                if not sc.get("usage_granted") and total == 0:
+                    # A schema with no USAGE and no visible tables at all is
+                    # the most severe gap this probe can name, even though
+                    # pg_class shows it has zero (rather than "unknown")
+                    # tables from this connection's vantage point.
+                    gap = max(gap, 1)
+                if gap > worst_gap:
+                    worst_gap, worst_schema = gap, name
+            target = f"{worst_schema}.*" if worst_schema else "this database"
+            annotations.append(
+                RequestForActionAnnotation(
+                    summary=(
+                        f"connected as {connected_as}: SELECT on {table_select} of "
+                        f"{table_total} table(s)"
+                    ),
+                    analysis_step="DatabaseCredentialCapability",
+                    confidence=100,
+                    action_requested=(
+                        f"Grant SELECT on {target} or register a broader connection "
+                        "on this asset."
+                    ),
+                    action_target_name=target,
+                    explanation=(
+                        "This credential's visible coverage is well below what this "
+                        "database's own catalog (pg_namespace/pg_class, unfiltered) "
+                        "shows exists — every fact this survey reports is scoped to "
+                        "what this credential can reach, not to the whole database."
+                    ),
+                )
+            )
+
+        return annotations
+
     def _create_schema_annotations(self, schema_info: dict) -> list:
         """Create annotations from schema information."""
         annotations = []
@@ -1393,8 +1565,22 @@ class DatabaseSurveyor:
                 #: didn't run" convention as `views` above; not a new
                 #: structured table, folded into this existing blob.
                 "operations": results.get("operations", {}),
+                #: credential_capability (design §3/§4) — empty dict when the
+                #: step was not requested, same "step didn't run" convention
+                #: as "operations"/"views" above.
+                "credential_capability": results.get("credential_capability", {}),
             },
             surveyed_at=results["surveyed_at"],
+            # `surveyed_as`: the credential identity this run connected as
+            # (design §4 — "the credential identity is recorded on every
+            # survey row"). Falls back to the stored db_user when the
+            # credential_capability step did not run this time, so a plain
+            # schema/statistics-only survey still records who ran it.
+            surveyed_as=(
+                (results.get("credential_capability") or {}).get("connected_as")
+                or self.credentials.get("user", "")
+                or ""
+            ),
         )
 
         # pg_stats / pg_stat_user_tables extension (design §5.1, §5.7 —
