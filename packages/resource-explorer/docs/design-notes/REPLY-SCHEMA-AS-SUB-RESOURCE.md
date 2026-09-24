@@ -103,3 +103,63 @@ and the capability probe. Shape 2 is D3 for this layer and belongs
 immediately after, because the navigation, the per-schema credential state
 and per-schema lens fit all read from `sub_resources`. Neither needs a new
 project-owner ruling; D3 already gave it.
+
+---
+
+## 5 · "Schema" is a level, and engines disagree about it — declare containment per engine
+
+**Project owner, 2026-09-24:** different databases have or do not have
+schemas, and their semantics differ. Everything above assumed Postgres's
+hierarchy; this section removes that assumption.
+
+| Engine | Levels above table | What the middle level *is* |
+|---|---|---|
+| PostgreSQL | server → database → schema | a namespace with its own privilege (`USAGE`); `public` default; extensions and `pg_toast` own schemas |
+| MySQL / MariaDB | server → database | schema *is* the database; no middle level |
+| SQLite | file | none; `main`/`temp` are attach names |
+| DuckDB | file (catalog) → schema | the catalog is a file; `ATTACH` adds other files as catalogs |
+| Oracle | database → schema | schema *is* a user: an owner, not a namespace |
+| SQL Server | server → database → schema | `dbo` default; schema and ownership are separate concepts |
+| Snowflake, BigQuery | account → database / project → schema / dataset | three levels, each a billing or security boundary |
+| Unity Catalog | metastore → catalog → schema | three levels; Egeria has native surveys for each |
+| Cassandra, MongoDB, Kafka | keyspace / database / — → collection or topic | one grouping level, no tables |
+
+Four changes to §1–§3:
+
+1. **Containment is declared per engine**, in the engine capability
+   declaration design §5.1 already calls for on `DatabaseConnection`. Each
+   level carries: its name in that engine's vocabulary, its Egeria
+   technology type, semantic flags (`namespace`, `owner`,
+   `security_boundary`, `physical_unit`), the default container, and the
+   system containers to exclude. Egeria's technology types already encode
+   this per engine (the seven Postgres types are one instance;
+   `DUCKDB_DATABASE`/`DUCKDB_DATABASE_SCHEMA` another), so the declaration
+   maps onto rule A rather than inventing a hierarchy.
+2. **The aggregation grain is derived, not fixed:** the lowest `namespace`
+   level above table. Postgres → schema. MySQL → the database itself, so
+   per-namespace output *equals* whole-database output and the interesting
+   comparison moves up to the server. Oracle → the owner, which turns
+   "what kind of schema" into "whose", and the classification vocabulary
+   should say so. Three-level engines → two rollups, each labelled. §3's
+   fixed-versus-discovered distinction becomes *fixed per engine* for
+   databases.
+3. **The credential probe is per engine.** The four-value requirement
+   vocabulary (`catalog` / `read` / `stats` / `write`) is stable; how each
+   is checked is declared with the engine: Postgres `has_schema_privilege`
+   / `has_table_privilege`; MySQL `SHOW GRANTS` per database or table;
+   Oracle `ALL_TAB_PRIVS` and role membership; SQL Server
+   `fn_my_permissions` at database, schema and object level. "Measured
+   within credential scope" is reported at the engine's namespace level.
+4. **Cross-container references are edges between resources, not
+   sub-resources.** DuckDB `ATTACH`, Postgres foreign servers and `dblink`,
+   SQL Server cross-database queries, Snowflake shares: all cross the
+   hierarchy and belong to `db_external_dependencies`, rendered as edges to
+   another registered resource where one exists and as an RFA "unregistered
+   dependency" where none does.
+
+D3's chain — server, database, schema, table — then reads as **every
+declared containment level is addressable**, which holds for every engine
+above, including the ones with one level and the ones with three. The
+`sub_resources` rows carry the level's engine name and its Egeria type, so
+the navigation control in the designer brief renders "catalog → schema"
+for DuckDB and "database" alone for MySQL without special cases.
