@@ -342,8 +342,26 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     
     # Register in registry
     registry.register_database(database)
-    
+
+    _project_credential_to_omsecrets(req.slug, req.db_user, req.db_password)
+
     return _to_summary(database)
+
+
+def _project_credential_to_omsecrets(slug: str, db_user: str, db_password: str) -> None:
+    """Write the same credential to the `.omsecrets` file's projection for
+    this database, per design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    VISIBILITY.md §7: "one secrets-collection name per (resource, role),
+    written to both places by RE in the same operation." A no-op when either
+    no password was supplied or no local `.omsecrets` path is configured
+    (`EGERIA_SECRETS_STORE_LOCAL_PATH`) — most deployments have neither the
+    file nor a host-visible path to it, and that must never surface as an
+    error on what is otherwise a successful registry write."""
+    if not db_password:
+        return
+    from resource_explorer.omsecrets_store import secrets_collection_name, write_credential
+
+    write_credential(secrets_collection_name(slug), db_user, db_password)
 
 
 @router.patch("/{slug}/credentials", response_model=DatabaseSummary)
@@ -351,7 +369,13 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
     """Update the stored db_user/db_password for an already-registered database,
     without disturbing its registration history (slug, egeria_asset_guid,
     survey history, etc.). The only supported way to repoint credentials today —
-    see registry.py's update_database_credentials docstring."""
+    see registry.py's update_database_credentials docstring.
+
+    Also projects the same credential into the `.omsecrets` file (design
+    REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §7) via
+    `_project_credential_to_omsecrets`, in the same operation as the
+    registry write — a no-op when no local `.omsecrets` path is configured.
+    """
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -361,6 +385,7 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     registry.update_database_credentials(slug, req.db_user, req.db_password)
+    _project_credential_to_omsecrets(slug, req.db_user, req.db_password)
 
     updated = registry.get_database(slug)
     return _to_summary(updated)
