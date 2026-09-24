@@ -2172,11 +2172,11 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids:
-    - schema_inventory
+    analysis_ids: []
     checks: []
-    note: 'GAP: schema_inventory records the column types but derives no semi-structured-column check
-      from them.'
+    note: 'GAP: no analysis classifies a column as semi-structured (JSON/JSONB/XML/array/hstore) or measures
+      the share of stored bytes it accounts for -- the catalog reads that already capture column types
+      perform no such derivation, and no id in the database analysis catalog performs it either.'
   answering_mechanism: Database Catalog Query
   rationale: Zero new fetch — the column types are already in the catalog read; what is derived is which
     columns are semi-structured and what share of the stored bytes they account for. The contents themselves
@@ -2266,12 +2266,14 @@ database_questions:
   - Assess
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - reference_data_match
     checks: []
-    note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
-      or proposes a new set.'
+    note: 'reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values)'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
     every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises
@@ -2289,12 +2291,13 @@ database_questions:
   - Assess
   - Learn
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - nested_column_profile
     checks: []
-    note: 'GAP: nested_column_profile (proposed) — semi-structured column contents are never sampled or
-      shape-inferred.'
+    note: 'nested_column_profile (design §5.4/§5.7, postgres_nested_columns — samples every JSON/JSONB/XML
+      column and infers a nested schema: per-key presence frequency and JSON-type consistency, or for
+      XML the root element and element/attribute name frequency, plus nesting depth)'
   answering_mechanism: Value Profiling
   rationale: JSONB via jsonb_object_keys and jsonb_typeof over a bounded sample, giving key frequency,
     nesting depth and type consistency across rows; XML via the root element and xpath key sampling. The
@@ -2429,13 +2432,14 @@ database_questions:
   - Assess
   - Share
   answering:
-    kind: gap
+    kind: partial
     analysis_ids:
     - schema_conventions
     checks: []
-    note: 'GAP: neither the proposed database comment-coverage measure nor schema_conventions exists yet,
-      so there is nothing to score. See the Scouting comment-coverage row for why the proposed id is not
-      written out here.'
+    note: 'PARTIAL: schema_conventions supplies the completeness half (tables and columns with no comment,
+      banded against nothing-captured); it checks presence only -- no analysis scores comment quality
+      or consistency (e.g. a comment that only repeats the table name), so that half of the question stays
+      a gap.'
   answering_mechanism: Database Catalog Query
   rationale: Scores the coverage measure against criteria and adds the convention checks — a database
     where every table has a comment but half of them repeat the table name is not well documented.
@@ -2475,12 +2479,15 @@ database_questions:
   purposes:
   - Assess
   answering:
-    kind: gap
+    kind: mixed
     analysis_ids:
+    - db_relationship_graph
     - grain_determination
     - schema_conventions
     checks: []
-    note: 'GAP: schema_conventions and grain_determination are both proposed.'
+    note: 'MIXED: schema_conventions (keys and constraints -- tables with no primary key, tables with
+      no foreign key) + db_relationship_graph (foreign-key coverage, connected components, isolated/orphan
+      tables) + grain_determination (per-table grain clarity, or a named modelling gap where none exists)'
   answering_mechanism: Database Catalog Query
   rationale: 'Scores the convention checks together with grain clarity: a table whose grain cannot be
     stated is a modelling defect even when its constraints are all present.'
@@ -2496,11 +2503,14 @@ database_questions:
   - Assess
   - Certify
   answering:
-    kind: gap
+    kind: partial
     analysis_ids:
     - reference_data_match
     checks: []
-    note: 'GAP: reference_data_match (proposed) supplies the checks, and nothing measures the bound share.'
+    note: 'PARTIAL: reference_data_match supplies the per-column checks (built, not proposed) -- which
+      columns are low-cardinality, and whether each is matched, partially matched or unmatched against
+      a ValidValueSet -- but nothing aggregates those verdicts into the governance share this question
+      asks for.'
   answering_mechanism: Egeria Queries
   rationale: The denominator is the columns whose cardinality makes them reference-data candidates; the
     numerator is those bound to an Egeria ValidValueSet. Both come from the reference-data matching analysis.
@@ -3171,8 +3181,11 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
-      or proposes a new set.'
+    note: 'GAP: reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values) -- reference_data_match is not a real analysis for filesystem resources (absent
+      from analysis_catalog.yaml''s filesystem_analyses section).'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
     every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises
