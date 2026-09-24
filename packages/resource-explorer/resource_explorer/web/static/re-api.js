@@ -297,9 +297,18 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
 /** Save ONE enrichment field. The server stamps author and date from the
  *  signed-in identity and does the read-modify-write, so two people setting
  *  two fields do not clobber each other. 401 when anonymous: a judgement
- *  needs an author. */
-export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}) =>
-  patch(`/api/context/repo/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+ *  needs an author.
+ *
+ *  `entityType` defaults to 'repo' for existing callers — pass the
+ *  `apiEntityType(state.resourceType)`-translated value for a database/
+ *  filesystem, same as `getContext`/`saveContext` above. The backend route
+ *  (`context.py`) is already generic (`PATCH /{entity_type}/{slug}/field`);
+ *  this wrapper used to hardcode 'repo' regardless of the resource actually
+ *  being enriched, so a database/filesystem Enrichment save silently landed
+ *  in the repo context bucket under that slug instead of its own bucket —
+ *  a real write to the wrong place, not just a wrong read. */
+export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType = 'repo') =>
+  patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
 
 /* ── The journal ──────────────────────────────────────────────────────────
  * Append-only prose on a resource, with a server-stamped author. A
