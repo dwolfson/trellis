@@ -1625,6 +1625,35 @@ def database_register(
     console.print(f"  Database: {database}")
 
 
+@database_app.command(name="update-credentials")
+def database_update_credentials(
+    slug: str = typer.Argument(help="Database slug to update"),
+    user: str = typer.Option(..., "--user", "-u", help="New database username"),
+    password: str = typer.Option(..., "--password", "-p", help="New database password", hide_input=True),
+):
+    """Update the stored db_user/db_password for an already-registered database.
+
+    The registration itself (slug, egeria_asset_guid, survey history) is
+    untouched -- this only repoints which role/password future surveys connect
+    with.
+
+    Example:
+        resource-explorer database update-credentials my-postgres \\
+            --user surveyor --password secret
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+
+    if not registry.database_exists(slug):
+        console.print(f"[red]Database '{slug}' not found. Register it first with 'database register'.[/red]")
+        raise typer.Exit(1)
+
+    registry.update_database_credentials(slug, user, password)
+    console.print(f"[green]✓ Credentials updated for database '{slug}'.[/green]")
+    console.print(f"  User: {user}")
+
+
 @database_app.command(name="list")
 def database_list(
     db_type: Optional[str] = typer.Option(None, "--type", help="Filter by database type"),
