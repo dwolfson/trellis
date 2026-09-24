@@ -89,6 +89,261 @@ class EngineCapabilities:
 NO_CAPABILITIES = EngineCapabilities()
 
 
+@dataclass(frozen=True)
+class ContainmentLevel:
+    """One level of an engine's containment hierarchy ABOVE the table.
+
+    REPLY-SCHEMA-AS-SUB-RESOURCE.md §5 (project owner, 2026-09-24): *"different
+    databases have or do not have schemas, and their semantics differ...
+    Containment is declared per engine, in the engine capability declaration
+    design §5.1 already calls for on `DatabaseConnection`. Each level carries:
+    its name in that engine's vocabulary, its Egeria technology type, semantic
+    flags (`namespace`, `owner`, `security_boundary`, `physical_unit`), the
+    default container, and the system containers to exclude."*
+
+    Declared per engine rather than assumed, for exactly the reason
+    `EngineCapabilities` above is: an engine that has not been taught to this
+    codebase must produce an honest "nothing declared" rather than silently
+    inheriting Postgres's hierarchy. "Schema" is the word Postgres uses; MySQL
+    has no such level at all, Oracle's is an *owner* rather than a namespace,
+    and DuckDB's parent is a file. Hardcoding `"schema"` anywhere downstream
+    would make all four read alike.
+
+    The four semantic flags are independent on purpose — §5's table has an
+    engine for nearly every combination:
+
+    - `namespace` — can a table be qualified by this level inside one
+      connection (`schema.table`)? This is the flag the aggregation grain is
+      derived from (see `EngineContainment.aggregation_grain`).
+    - `owner` — is the level a *principal* rather than a container? Oracle's
+      schema is a user; Postgres's is not.
+    - `security_boundary` — does the level carry its own privilege? Postgres
+      schemas do (`USAGE`), which is why the credential probe is per schema.
+    - `physical_unit` — is the level a separate physical artifact (a file, a
+      database with its own connection)?
+    """
+
+    #: The level's name in THIS engine's vocabulary — "schema" for Postgres,
+    #: "catalog" for DuckDB, "owner" for Oracle. Never assumed by a caller.
+    name: str
+    #: Egeria's technology type for this level, so a `sub_resources` row (shape
+    #: 2, not built here) and the native survey read-back agree on what they
+    #: are naming. §5: *"Egeria's technology types already encode this per
+    #: engine... so the declaration maps onto rule A rather than inventing a
+    #: hierarchy."*
+    egeria_technology_type: str = ""
+    namespace: bool = False
+    owner: bool = False
+    security_boundary: bool = False
+    physical_unit: bool = False
+    #: The container every engine of this kind has by default — `public` for
+    #: Postgres, `dbo` for SQL Server. Treated as an ORDINARY container, never
+    #: special-cased away (REPLY §1: *"treat `public` as a schema like any
+    #: other"*); declared so a reader can see which one it is, not so it can
+    #: be skipped.
+    default_container: str = ""
+    #: Exact container names that are the engine's own plumbing and are
+    #: excluded from analysis output by default.
+    system_containers: tuple[str, ...] = ()
+    #: Prefixes for the same, for engines that generate them (`pg_toast`,
+    #: `pg_toast_temp_1`, `pg_temp_3`). A prefix rather than a pattern because
+    #: every real case is a prefix and a regex here would be a licence to put
+    #: matching logic in a declaration.
+    system_container_prefixes: tuple[str, ...] = ()
+
+    def is_system_container(self, name: str | None) -> bool:
+        """Is `name` one of this level's system containers?
+
+        The single place that question is answered, so a call site cannot
+        drift into its own hardcoded `('pg_catalog', 'information_schema')`
+        list — there were four such lists in `connection.py`'s own SQL before
+        this declaration existed, and each is correct only for Postgres.
+        """
+        if not name:
+            return False
+        if name in self.system_containers:
+            return True
+        return any(name.startswith(p) for p in self.system_container_prefixes)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+#: The engine has genuinely unprivileged catalog objects a credential can read
+#: whatever its table grants — Postgres's `pg_class`/`pg_namespace`. This is
+#: what `#257`'s catalog-only fallback already relies on, and what makes
+#: "structure only" a reachable state for a schema with `USAGE` and no
+#: `SELECT`.
+STRUCTURAL_FLOOR_UNPRIVILEGED = "unprivileged"
+#: A structural floor exists, but only with a specific elevated role or grant
+#: — Oracle's `SELECT_CATALOG_ROLE` / `SELECT ANY DICTIONARY`, SQL Server's
+#: `VIEW DEFINITION` at database scope. A database owner can grant it without
+#: exposing row data, so it is a real ask to make; it is just not free.
+STRUCTURAL_FLOOR_ROLE_GRANT = "role_grant"
+#: No floor short of per-table grants — MySQL/MariaDB, whose
+#: `information_schema` shows only objects the user already holds some
+#: privilege on. There, an unreadable table is also an INVISIBLE one, so the
+#: denominator ("of M tables") is not established either.
+STRUCTURAL_FLOOR_NONE = "none"
+
+
+@dataclass(frozen=True)
+class EngineContainment:
+    """An engine's containment levels above the table, outermost first.
+
+    `levels` is ordered — `(database, schema)` for Postgres — so that
+    `aggregation_grain` can be *derived* rather than declared twice. §5 point
+    2: *"The aggregation grain is derived, not fixed: the lowest `namespace`
+    level above table. Postgres → schema. MySQL → the database itself, so
+    per-namespace output equals whole-database output and the interesting
+    comparison moves up to the server."*
+
+    An engine with no declaration gets `NO_CONTAINMENT`, whose
+    `aggregation_grain` is `None`. That is not "this engine has one flat
+    namespace" — it is "nobody has declared this engine's hierarchy", and the
+    callers treat it as an absence (whole-database output only, labelled as
+    such) rather than guessing.
+    """
+
+    engine: str = ""
+    levels: tuple[ContainmentLevel, ...] = ()
+    #: How much STRUCTURE this engine lets a credential see when it cannot
+    #: read the data (architecture session, 2026-09-24). Postgres's
+    #: "`information_schema` is privilege-filtered but `pg_class` is not"
+    #: property — the one `#257`'s catalog-only fallback and the
+    #: `structure_only` credential state both rest on — does NOT generalize:
+    #: Oracle and SQL Server have a floor only behind a role grant, and MySQL
+    #: has none at all. Declared per engine so a future engine says which of
+    #: the three it is instead of silently inheriting Postgres's.
+    #:
+    #: The empty default is deliberate on `NO_CONTAINMENT`: an engine nobody
+    #: has declared has not been found to have no floor — nobody looked.
+    structural_floor: str = ""
+
+    @property
+    def declared(self) -> bool:
+        return bool(self.levels)
+
+    @property
+    def aggregation_grain(self) -> ContainmentLevel | None:
+        """The innermost `namespace` level above table, or None if undeclared.
+
+        Derived, per §5 point 2. For Postgres the database level is NOT a
+        namespace (you cannot write `database.schema.table` in one Postgres
+        connection), so this resolves to `schema`; for a hypothetical MySQL
+        declaration the database level would be the namespace and this would
+        resolve to it, which is the correct answer there — per-namespace output
+        then equals whole-database output, honestly rather than by accident.
+        """
+        for level in reversed(self.levels):
+            if level.namespace:
+                return level
+        return None
+
+    def level(self, name: str) -> ContainmentLevel | None:
+        for level in self.levels:
+            if level.name == name:
+                return level
+        return None
+
+    def is_system_container(self, name: str | None) -> bool:
+        """System-container test at the aggregation grain (no grain → False).
+
+        False when nothing is declared is deliberate: with no declaration
+        there is no grain to group by either, so no name can be excluded at a
+        level that does not exist. The caller's own "is there a grain" check is
+        what stops it from reporting per-container output — not this.
+        """
+        grain = self.aggregation_grain
+        return bool(grain and grain.is_system_container(name))
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "engine": self.engine,
+            "structural_floor": self.structural_floor,
+            "levels": [level.as_dict() for level in self.levels],
+            "aggregation_grain": (
+                self.aggregation_grain.name if self.aggregation_grain else None
+            ),
+        }
+
+
+#: Nothing declared. The honest default for an engine this codebase has not
+#: been taught, and NOT a claim that the engine is flat.
+NO_CONTAINMENT = EngineContainment()
+
+#: A Postgres database: a physical unit with its own connection and its own
+#: `CONNECT` privilege, but NOT a namespace — one connection cannot qualify a
+#: table with it, which is exactly why cross-database references need a
+#: foreign server or `dblink` (§5 point 4) and why the grain below is `schema`.
+POSTGRES_DATABASE_LEVEL = ContainmentLevel(
+    name="database",
+    egeria_technology_type="PostgreSQL Relational Database",
+    namespace=False,
+    owner=False,
+    security_boundary=True,
+    physical_unit=True,
+)
+
+#: A Postgres schema: §5's table, row 1 — *"a namespace with its own privilege
+#: (`USAGE`); `public` default; extensions and `pg_toast` own schemas"*.
+#: `owner=False` distinguishes it from Oracle, where the same level IS a user;
+#: a Postgres schema has an owner but is not itself a principal.
+POSTGRES_SCHEMA_LEVEL = ContainmentLevel(
+    name="schema",
+    # Egeria's own technology type for the level (its open-metadata type is
+    # `DeployedDatabaseSchema`, which REPLY §5 names as already separate from
+    # the database). Only the database-level type above is exercised by this
+    # codebase today — the schema one is declared for shape 2's
+    # `sub_resources` rows and the native read-back, neither of which is built
+    # in this slice.
+    egeria_technology_type="PostgreSQL Relational Database Schema",
+    namespace=True,
+    owner=False,
+    security_boundary=True,
+    physical_unit=False,
+    default_container="public",
+    system_containers=("pg_catalog", "information_schema"),
+    # `pg_toast`, `pg_toast_temp_1`, `pg_temp_3` — generated, one per backend.
+    system_container_prefixes=("pg_toast", "pg_temp"),
+)
+
+POSTGRES_CONTAINMENT = EngineContainment(
+    engine="postgresql",
+    levels=(POSTGRES_DATABASE_LEVEL, POSTGRES_SCHEMA_LEVEL),
+    # `pg_class`/`pg_namespace` are readable by any connected role regardless
+    # of `USAGE`/`SELECT`, which is what `get_credential_capability()`'s own
+    # docstring establishes against a live instance and what `#257`'s
+    # catalog-only fallback recovers tables through. Stated here rather than
+    # assumed, because it is a Postgres property and not a database one.
+    structural_floor=STRUCTURAL_FLOOR_UNPRIVILEGED,
+)
+
+#: `DatabaseEntity.db_type` spellings that mean Postgres. Postgres is the ONLY
+#: engine declared in this slice, deliberately (REPLY §5 gives the shape for
+#: eight more; building them without a live instance to check against would
+#: declare semantics nobody verified). Anything else resolves to
+#: `NO_CONTAINMENT` and reports whole-database output labelled as
+#: "containment not declared for this engine" — never Postgres's hierarchy
+#: applied to an engine that does not have it.
+_CONTAINMENT_BY_ENGINE: dict[str, EngineContainment] = {
+    "postgresql": POSTGRES_CONTAINMENT,
+    "postgres": POSTGRES_CONTAINMENT,
+    "pgsql": POSTGRES_CONTAINMENT,
+}
+
+
+def containment_for_engine(engine: str | None) -> EngineContainment:
+    """Resolve a `DatabaseEntity.db_type` to its containment declaration.
+
+    Takes the engine NAME rather than a connection because the one caller that
+    needs it most — `db_derived`, the zero-fetch step — has no connection by
+    construction and must still be able to group by the right level for a
+    database whose credentials are gone.
+    """
+    return _CONTAINMENT_BY_ENGINE.get((engine or "").strip().lower(), NO_CONTAINMENT)
+
+
 class DatabaseConnection(ABC):
     """Abstract base class for database connections."""
 
@@ -122,6 +377,17 @@ class DatabaseConnection(ABC):
         than an AttributeError.
         """
         return NO_CAPABILITIES
+
+    @property
+    def containment(self) -> EngineContainment:
+        """This engine's containment levels above the table (REPLY-SCHEMA-AS-
+        SUB-RESOURCE.md §5).
+
+        Not abstract, for the same reason `capabilities` is not: an engine
+        nobody has declared reports `NO_CONTAINMENT` — "the hierarchy is not
+        declared" — rather than raising, or inheriting Postgres's.
+        """
+        return NO_CONTAINMENT
 
 
 class PostgreSQLConnection(DatabaseConnection):
@@ -525,6 +791,12 @@ class PostgreSQLConnection(DatabaseConnection):
             # exist on every Postgres this codebase supports.
             credential_introspection=True,
         )
+
+    @property
+    def containment(self) -> EngineContainment:
+        """server → database → schema, per REPLY-SCHEMA-AS-SUB-RESOURCE.md §5's
+        first table row. The one engine declared in this slice."""
+        return POSTGRES_CONTAINMENT
 
     def get_column_stats(self) -> list[dict]:
         """Per-column `pg_stats` — populated only after `ANALYZE` has run.

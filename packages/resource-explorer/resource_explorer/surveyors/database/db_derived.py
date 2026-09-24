@@ -50,6 +50,7 @@ from resource_explorer.registry import (
     STATE_MEASURED,
     STATE_NOT_MEASURED,
 )
+from resource_explorer.surveyors.database import schema_scope
 from resource_explorer.surveyors.survey_report import (
     ClassificationAnnotation,
     DataGrainAnnotation,
@@ -1924,6 +1925,636 @@ def propose_data_scope(inputs: DerivedInputs) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 9. The aggregation grain  (REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1, §1/§5)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every check above answers for the whole database. REPLY §1: that is the wrong
+# grain — *"'Edge count 0, component count 3' for `coco_pharma` is correct for
+# three single-table schemas and meaningless as a statement about the
+# database"*. So each of the four structural checks gains a per-container
+# breakdown and a rollup that is LABELLED as a rollup, computed by running the
+# same pure check function over container-scoped inputs. Nothing about the
+# checks themselves changes; only what they are handed.
+#
+# §5's correction is why none of this says "schema": the container level comes
+# from the engine's `ContainmentLevel` declaration
+# (`connection.containment_for_engine`), and an engine with no declaration gets
+# whole-database output labelled as undeclared rather than Postgres's
+# hierarchy applied to it.
+#
+# `grain_determination` is untouched, per §1's own table ("already per table;
+# nothing to do") — confirmed by reading it: every entry it emits already
+# carries `schema_name`, `table_name` and `qualified_name`. It gains only the
+# declarative marker below, so the fact that it was checked is visible rather
+# than inferred from silence.
+
+
+def containment_for_database(registry, slug: str):
+    """The containment declaration for this database's engine.
+
+    Reads `DatabaseEntity.db_type` from the registry — no connection, which is
+    the point: this module must keep working for a database whose credentials
+    are gone or whose server is down.
+    """
+    from .connection import NO_CONTAINMENT, containment_for_engine
+
+    try:
+        entity = registry.get_database(slug)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("db_derived: could not read engine for %s: %s", slug, exc)
+        return NO_CONTAINMENT
+    return containment_for_engine(getattr(entity, "db_type", None) if entity else None)
+
+
+def scope_inputs(inputs: DerivedInputs, container: str) -> DerivedInputs:
+    """`inputs`, restricted to one container. REPLY §1's `WHERE` clause."""
+    return DerivedInputs(
+        slug=inputs.slug,
+        surveyed_at=inputs.surveyed_at,
+        source=inputs.source,
+        schemas=schema_scope.rows_in_container(inputs.schemas, container),
+        tables=schema_scope.rows_in_container(inputs.tables, container),
+        columns=schema_scope.rows_in_container(inputs.columns, container),
+        profiles=schema_scope.rows_in_container(inputs.profiles, container),
+        activity=schema_scope.rows_in_container(inputs.activity, container),
+    )
+
+
+def _containers(inputs: DerivedInputs, containment) -> list[str]:
+    return schema_scope.containers_in_rows(
+        containment, inputs.schemas, inputs.tables, inputs.columns,
+    )
+
+
+def _excluded(inputs: DerivedInputs, containment) -> list[str]:
+    return schema_scope.system_containers_in_rows(
+        containment, inputs.schemas, inputs.tables, inputs.columns,
+    )
+
+
+# ── db_fingerprint, per container ───────────────────────────────────────────
+#
+# §1's table calls this the important one: *"the list of schema signatures —
+# this is what will show that `coco_pharma.coco_ods` is a copy of the
+# `coco_ods` database, the finding the whole-database version buries"*.
+
+def _relative_signature(scoped: DerivedInputs) -> tuple[set[str], set[str]]:
+    """A container's signature with the container's own name stripped out.
+
+    `_signature` above qualifies every entry with `schema_name`, which is
+    correct for comparing two whole databases and fatally wrong for comparing
+    two containers: `coco_pharma.coco_ods` and the `coco_ods` database's
+    `public` share every table and column and would score a Jaccard of 0.0,
+    because every single entry differs in its prefix. Container-relative
+    signatures are what make the buried finding surface.
+    """
+    table_sig = {
+        t.get("table_name") or "" for t in scoped.tables if _is_base_table(t)
+    }
+    column_sig = {
+        f"{c.get('table_name') or ''}.{c.get('column_name') or ''}:"
+        f"{(c.get('base_type') or c.get('data_type') or '').lower()}"
+        for c in scoped.columns
+    }
+    return table_sig - {""}, column_sig
+
+
+def _signature_verdict(
+    column_sig: set[str], peer_sig: set[str],
+) -> tuple[str, dict] | None:
+    """The same four thresholds `fingerprint_database` uses, applied to two
+    container-relative signatures.
+
+    Reusing `_COPY_JACCARD`/`_SUBSET_CONTAINMENT`/`_RELATED_JACCARD`/
+    `_REPORTABLE_JACCARD` rather than picking new numbers is a judgement call
+    the REPLY left open — it names the finding to surface but no threshold. One
+    set of thresholds for "are these two collections of tables the same thing"
+    means a reader disputing a container-level verdict reads the same published
+    line as for a database-level one; a second, container-only set would be a
+    number nobody could compare against anything.
+    """
+    col_jaccard = _jaccard(column_sig, peer_sig)
+    containment_ratio = _ratio(len(column_sig & peer_sig), len(column_sig))
+    reverse = _ratio(len(column_sig & peer_sig), len(peer_sig))
+    if col_jaccard >= _COPY_JACCARD:
+        verdict = "likely_copy"
+    elif containment_ratio >= _SUBSET_CONTAINMENT and len(peer_sig) > len(column_sig):
+        verdict = "likely_subset_of"
+    elif reverse >= _SUBSET_CONTAINMENT and len(column_sig) > len(peer_sig):
+        verdict = "likely_superset_of"
+    elif col_jaccard >= _RELATED_JACCARD:
+        verdict = "shares_structure"
+    elif col_jaccard >= _REPORTABLE_JACCARD:
+        verdict = "incidental_overlap"
+    else:
+        return None
+    return verdict, {
+        "column_jaccard": round(col_jaccard, 4),
+        "containment": round(containment_ratio, 4),
+        "reverse_containment": round(reverse, 4),
+        "shared_columns": len(column_sig & peer_sig),
+        "peer_columns": len(peer_sig),
+    }
+
+
+def fingerprint_by_container(registry, inputs: DerivedInputs, containment) -> dict:
+    """Per-container signatures, plus every container-to-container match —
+    inside this database and against every other database's containers.
+
+    Both directions matter and they are reported separately: two containers of
+    the SAME database with matching signatures is a copy inside one database
+    (the case §1's rollup exists to stop averaging away), while a container
+    matching another DATABASE's container is `coco_pharma.coco_ods` vs the
+    `coco_ods` database.
+
+    Zero-fetch, like everything else here: peers' signatures come from their
+    own stored rows. It walks the peer list a second time (after
+    `fingerprint_database`) rather than threading container state through that
+    function, which is a real cost in registry reads and no fetch at all —
+    worth it to leave the whole-database check exactly as it was.
+    """
+    containers = _containers(inputs, containment)
+    signatures: dict[str, tuple[set[str], set[str]]] = {}
+    per_container: dict[str, dict] = {}
+    for name in containers:
+        scoped = scope_inputs(inputs, name)
+        tsig, csig = _relative_signature(scoped)
+        signatures[name] = (tsig, csig)
+        per_container[name] = {
+            "state": STATE_MEASURED if csig or tsig else STATE_NOT_MEASURED,
+            "container": name,
+            "digest": hashlib.sha256(
+                "\n".join(sorted(csig)).encode("utf-8")
+            ).hexdigest(),
+            "table_count": len(tsig),
+            "column_count": len(csig),
+            "matches": [],
+        }
+
+    # Inside this database.
+    for i, name in enumerate(containers):
+        for other in containers[i + 1:]:
+            verdict = _signature_verdict(signatures[name][1], signatures[other][1])
+            if not verdict:
+                continue
+            kind, metrics = verdict
+            per_container[name]["matches"].append({
+                "target_slug": inputs.slug, "target_container": other,
+                "same_database": True, "verdict": kind, **metrics,
+            })
+            reverse_kind = {
+                "likely_subset_of": "likely_superset_of",
+                "likely_superset_of": "likely_subset_of",
+            }.get(kind, kind)
+            per_container[other]["matches"].append({
+                "target_slug": inputs.slug, "target_container": name,
+                "same_database": True, "verdict": reverse_kind,
+                "column_jaccard": metrics["column_jaccard"],
+                "containment": metrics["reverse_containment"],
+                "reverse_containment": metrics["containment"],
+                "shared_columns": metrics["shared_columns"],
+                "peer_columns": len(signatures[name][1]),
+            })
+
+    # Against every other database's containers.
+    comparable_peers = 0
+    undeclared_peers: list[str] = []
+    try:
+        peers = registry.list_databases()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("db_derived: could not list databases for container fingerprint: %s", exc)
+        peers = []
+    for peer in peers:
+        peer_slug = getattr(peer, "slug", None) or (
+            peer.get("slug") if isinstance(peer, dict) else None
+        )
+        if not peer_slug or peer_slug == inputs.slug:
+            continue
+        peer_containment = containment_for_database(registry, peer_slug)
+        if peer_containment.aggregation_grain is None:
+            # Its engine declares no containment level, so it has no containers
+            # to compare against. Named, not silently skipped: "not comparable
+            # at this grain" is not "no match".
+            undeclared_peers.append(peer_slug)
+            continue
+        peer_inputs = load_inputs(registry, peer_slug)
+        peer_containers = _containers(peer_inputs, peer_containment)
+        if not peer_containers:
+            continue
+        comparable_peers += 1
+        for peer_container in peer_containers:
+            _, peer_csig = _relative_signature(
+                scope_inputs(peer_inputs, peer_container)
+            )
+            if not peer_csig:
+                continue
+            for name in containers:
+                verdict = _signature_verdict(signatures[name][1], peer_csig)
+                if not verdict:
+                    continue
+                kind, metrics = verdict
+                per_container[name]["matches"].append({
+                    "target_slug": peer_slug, "target_container": peer_container,
+                    "same_database": False, "verdict": kind, **metrics,
+                })
+
+    for entry in per_container.values():
+        entry["matches"].sort(key=lambda m: m["column_jaccard"], reverse=True)
+        entry["best_similarity"] = (
+            entry["matches"][0]["column_jaccard"] if entry["matches"] else None
+        )
+
+    cross = [
+        {"container": name, **match}
+        for name, entry in per_container.items()
+        for match in entry["matches"]
+        if match["verdict"] in ("likely_copy", "likely_subset_of", "likely_superset_of")
+    ]
+    cross.sort(key=lambda m: m["column_jaccard"], reverse=True)
+
+    grain_name = containment.aggregation_grain.name
+    if cross:
+        lead = cross[0]
+        where = (
+            f"{lead['target_container']} in this same database"
+            if lead["same_database"]
+            else f"{lead['target_container']} in {lead['target_slug']}"
+        )
+        explanation = (
+            f"Per-{grain_name} signatures, listed rather than averaged into one "
+            f"digest. {len(cross)} copy/subset relationship(s) surfaced that a "
+            f"single whole-database signature buries — closest: "
+            f"{lead['container']} is a {lead['verdict']} of {where} "
+            f"(container-relative column Jaccard {lead['column_jaccard']:.2f}). "
+            f"Thresholds: copy ≥ {_COPY_JACCARD}, subset containment ≥ "
+            f"{_SUBSET_CONTAINMENT}, related ≥ {_RELATED_JACCARD}."
+        )
+    else:
+        explanation = (
+            f"Per-{grain_name} signatures, listed rather than averaged into one "
+            f"digest. Compared every {grain_name} against every other "
+            f"{grain_name} in this database and against {comparable_peers} "
+            f"other database(s) with stored rows; none crossed the copy "
+            f"(≥ {_COPY_JACCARD}) or subset (≥ {_SUBSET_CONTAINMENT}) line."
+        )
+
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="list_of_signatures",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            signatures=[
+                {
+                    "container": name,
+                    "digest": per_container[name]["digest"],
+                    "table_count": per_container[name]["table_count"],
+                    "column_count": per_container[name]["column_count"],
+                }
+                for name in containers
+            ],
+            cross_container_matches=cross,
+            comparable_peer_databases=comparable_peers,
+            peers_without_declared_containment=undeclared_peers,
+        ),
+    }
+
+
+# ── db_classification, per container ────────────────────────────────────────
+
+def classify_by_container(
+    inputs: DerivedInputs, containment, fingerprints: dict,
+) -> dict:
+    """Each container's kind, and the SET of kinds present as the rollup.
+
+    §1: *"the set of kinds present, with counts"* — never one averaged verdict,
+    because a database that is legitimately several kinds at once has no single
+    right answer and picking one is a confident wrong answer.
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+    per_container: dict[str, dict] = {}
+    for name in containers:
+        scoped = scope_inputs(inputs, name)
+        per_container[name] = classify_database(
+            scoped, fingerprints.get(name) or {"state": STATE_NOT_MEASURED},
+        )
+
+    kinds: dict[str, int] = {}
+    undecided: list[str] = []
+    not_measured: list[str] = []
+    for name, result in per_container.items():
+        if result.get("state") != STATE_MEASURED:
+            not_measured.append(name)
+        elif result.get("kind"):
+            kinds[result["kind"]] = kinds.get(result["kind"], 0) + 1
+        else:
+            undecided.append(name)
+
+    if kinds:
+        spread = ", ".join(
+            f"{count} {kind}" for kind, count in sorted(kinds.items())
+        )
+        explanation = (
+            f"A rollup, not a verdict: across {len(containers)} {grain_name}(s) "
+            f"the kinds present are {spread}"
+            + (f"; {len(undecided)} too close to call" if undecided else "")
+            + (f"; {len(not_measured)} with insufficient signal" if not_measured else "")
+            + ". No single kind describes the database when more than one is "
+              "listed here — that is the finding, not a gap."
+        )
+    else:
+        explanation = (
+            f"A rollup, not a verdict: no {grain_name} in this database "
+            f"reached a confident classification "
+            f"({len(undecided)} too close to call, {len(not_measured)} with "
+            f"insufficient signal). Not a finding that the database is of no "
+            f"particular kind."
+        )
+
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="set_of_kinds",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            kinds=kinds,
+            undecided_containers=sorted(undecided),
+            not_measured_containers=sorted(not_measured),
+        ),
+    }
+
+
+# ── db_relationship_graph, per container ────────────────────────────────────
+
+def relationship_graph_by_container(inputs: DerivedInputs, containment) -> dict:
+    """Components and FK density WITHIN each container, plus cross-container FK
+    edges as a database-level fact in their own right.
+
+    §1: *"per-schema summaries **plus cross-schema FK edges reported as a
+    database-level fact in their own right**"* — explicitly not folded into
+    either container's count. An edge from `sales.order` to `core.customer`
+    belongs to neither schema's internal model; counting it in `sales` would
+    overstate that schema's connectedness and counting it in both would
+    double-count it.
+
+    Handed the scoped rows unchanged, the check would count such an edge in
+    the container it leaves from (it is a column of that container's table)
+    and then report it as a `dangling_reference`, because the target table is
+    not in scope. Both are wrong for a reader: the edge is not part of that
+    container's internal model, and it is not dangling — it resolves in
+    another container of the same database. So the crossing columns are
+    withheld from the scoped run and reported separately, as
+    `cross_container_references` per container and as the rollup's
+    `cross_container_edges` for the database.
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+
+    per_container: dict[str, dict] = {}
+    for name in containers:
+        scoped = scope_inputs(inputs, name)
+        internal_columns: list[dict] = []
+        crossing: list[dict] = []
+        for col in scoped.columns:
+            fk = col.get("foreign_key_json")
+            target_schema = (
+                (fk.get("foreign_schema") or name) if isinstance(fk, dict) else name
+            )
+            if isinstance(fk, dict) and fk.get("foreign_table") and target_schema != name:
+                crossing.append({
+                    "from_schema": name,
+                    "from_table": col.get("table_name") or "",
+                    "from_column": col.get("column_name") or "",
+                    "to_schema": target_schema,
+                    "to_table": fk.get("foreign_table") or "",
+                    "to_column": fk.get("foreign_column") or "",
+                })
+                stripped = dict(col)
+                stripped["foreign_key_json"] = None
+                internal_columns.append(stripped)
+            else:
+                internal_columns.append(col)
+        result = derive_relationship_graph(
+            DerivedInputs(
+                slug=scoped.slug, surveyed_at=scoped.surveyed_at,
+                source=scoped.source, schemas=scoped.schemas,
+                tables=scoped.tables, columns=internal_columns,
+                profiles=scoped.profiles, activity=scoped.activity,
+            )
+        )
+        result["cross_container_references"] = crossing
+        result["container"] = name
+        if crossing:
+            # Withholding the crossing columns makes the scoped run's own
+            # "not one declares a foreign key" sentence false for a table that
+            # declares one pointing elsewhere. Restated rather than left to
+            # read as a measured negative it is not.
+            base = result.get("explanation", "")
+            if result.get("verdict") == "bag_of_tables":
+                base = (
+                    f"Measured: no foreign key relates {name}'s own "
+                    f"{result.get('table_count')} table(s) to each other."
+                )
+            result["explanation"] = (
+                f"{base} {len(crossing)} foreign key(s) leave {name} for "
+                f"another {grain_name}; they are reported as a database-level "
+                f"fact and are NOT counted in {name}'s own edge count."
+            )
+        per_container[name] = result
+
+    cross_edges = [
+        edge for edge in _foreign_key_edges(inputs.columns)
+        if (edge["from_schema"] != edge["to_schema"]
+            and not containment.is_system_container(edge["from_schema"])
+            and not containment.is_system_container(edge["to_schema"]))
+    ]
+    pairs: dict[str, int] = {}
+    for edge in cross_edges:
+        key = f"{edge['from_schema']} → {edge['to_schema']}"
+        pairs[key] = pairs.get(key, 0) + 1
+
+    summaries = {
+        name: {
+            "verdict": result.get("verdict"),
+            "state": result.get("state"),
+            "table_count": result.get("table_count"),
+            "edge_count": result.get("edge_count"),
+            "component_count": result.get("component_count"),
+            "largest_component": result.get("largest_component"),
+            "connected_tables": result.get("connected_tables"),
+            "cross_container_reference_count": len(
+                result.get("cross_container_references") or []
+            ),
+        }
+        for name, result in per_container.items()
+    }
+
+    verdicts = sorted({
+        s["verdict"] for s in summaries.values() if s.get("verdict")
+    })
+    explanation = (
+        f"A rollup of {len(containers)} {grain_name}-level graph(s), not one "
+        f"database-wide graph"
+        + (f" — verdicts present: {', '.join(verdicts)}." if verdicts else ".")
+        + (
+            f" {len(cross_edges)} foreign key(s) cross a {grain_name} boundary "
+            f"({', '.join(f'{k} ×{v}' for k, v in sorted(pairs.items()))}); "
+            f"they are a database-level fact and are counted in NO "
+            f"{grain_name}'s own edge count."
+            if cross_edges else
+            f" No foreign key crosses a {grain_name} boundary — measured, and a "
+            f"real finding about how independent these {grain_name}s are."
+        )
+    )
+
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="per_container_summaries_plus_cross_edges",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            summaries=summaries,
+            cross_container_edges=cross_edges,
+            cross_container_edge_count=len(cross_edges),
+            cross_container_pairs=pairs,
+        ),
+    }
+
+
+# ── schema_conventions, per container ───────────────────────────────────────
+
+def conventions_by_container(inputs: DerivedInputs, containment) -> dict:
+    """Each container's checks and ratios; the rollup names the spread.
+
+    §1: *"totals, with the per-schema spread"*. The totals are the existing
+    whole-database `checks` block, left exactly as it was; what is added is the
+    per-container breakdown and, per check, which containers carry the gaps —
+    "4 of 23 tables in `coco_ods`, 0 of 1 in `eu_sales`" rather than "4 of 26".
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+    per_container = {
+        name: check_conventions(scope_inputs(inputs, name)) for name in containers
+    }
+
+    spread: dict[str, list[dict]] = {}
+    for name, result in per_container.items():
+        for check, payload in (result.get("checks") or {}).items():
+            spread.setdefault(check, []).append({
+                "container": name,
+                "state": payload.get("state"),
+                "count": payload.get("count"),
+                "total": payload.get("total"),
+                "fraction": payload.get("fraction"),
+                "label": payload.get("label"),
+            })
+    for entries in spread.values():
+        entries.sort(key=lambda e: e["container"])
+
+    gapped = sorted({
+        f"{entry['container']} ({check} {entry['count']}/{entry['total']})"
+        for check, entries in spread.items()
+        for entry in entries
+        if entry.get("label") == "gap" and entry.get("count")
+    })
+    explanation = (
+        f"A rollup: the whole-database `checks` block above is the total, and "
+        f"this names the spread across {len(containers)} {grain_name}(s)"
+        + (f" — gaps in {', '.join(gapped)}." if gapped else
+           f" — no {grain_name} carries a gap on any check.")
+    )
+
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="totals_plus_spread",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            spread=spread,
+        ),
+    }
+
+
+def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dict:
+    """Attach the per-container breakdown and rollup to each structural check.
+
+    Mutates and returns `derived`. The existing whole-database fields on every
+    payload are left untouched — this ADDS a grain rather than replacing one,
+    so an existing consumer (the publish path, the results cards, the fact
+    layer) keeps working while a new one can read `by_<level>` and
+    `aggregation`.
+    """
+    containment = containment_for_database(registry, inputs.slug)
+    grain = containment.aggregation_grain
+    targets = (
+        "db_classification", "db_relationship_graph",
+        "db_fingerprint", "schema_conventions",
+    )
+
+    if grain is None:
+        envelope = schema_scope.undeclared_envelope(containment)
+        for key in targets:
+            derived[key]["aggregation"] = dict(envelope)
+        derived["grain_determination"]["aggregation"] = dict(envelope)
+        return derived
+
+    fingerprint_block = fingerprint_by_container(registry, inputs, containment)
+    derived["db_fingerprint"].update(fingerprint_block)
+    per_container_fingerprints = fingerprint_block[f"by_{grain.name}"]
+
+    derived["db_classification"].update(
+        classify_by_container(inputs, containment, per_container_fingerprints)
+    )
+    derived["db_relationship_graph"].update(
+        relationship_graph_by_container(inputs, containment)
+    )
+    derived["schema_conventions"].update(
+        conventions_by_container(inputs, containment)
+    )
+    # The screen relays `explanation` (the fact layer's "prose" rung in
+    # `next/app.js`'s `readEnvelope`) and skips nested objects, so a breakdown
+    # that lives only in `by_<level>` would be invisible to the reader who
+    # raised this — the whole-database sentence they saw would still be the
+    # whole story on screen. The rollup's own sentence is appended to it, so
+    # the spread reaches the surface without any consumer change.
+    for key in targets:
+        payload = derived[key]
+        rollup_sentence = (payload.get("aggregation") or {}).get("explanation")
+        if rollup_sentence and payload.get("explanation"):
+            payload["explanation"] = f"{payload['explanation']} {rollup_sentence}"
+        elif rollup_sentence:
+            payload["explanation"] = rollup_sentence
+    # §1: "already per table; nothing to do". Confirmed by reading
+    # `determine_grain` — every entry carries schema_name/table_name/
+    # qualified_name already. The marker records that this was checked at the
+    # declared grain and needed no breakdown, so a later reader does not have
+    # to re-derive that conclusion from the absence of a `by_schema` key.
+    derived["grain_determination"]["aggregation"] = {
+        "is_rollup": False,
+        "averaged": False,
+        "grain": "table",
+        "grain_level": "table",
+        "engine": containment.engine,
+        "container_level": grain.name,
+        "explanation": (
+            f"Already finer than the {grain.name} grain: every entry names its "
+            f"{grain.name} and its table, so there is no rollup here to label "
+            f"and nothing was averaged."
+        ),
+    }
+    return derived
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # The step
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1962,6 +2593,13 @@ def run_db_derived(
         "grant_change": grant_change,
         _PROPOSED_SCOPE_CHECK: scope,
     }
+
+    # REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1: the four structural checks above
+    # answered for the whole database; this adds the per-container breakdown
+    # and the labelled rollup at the engine's declared grain. Runs after the
+    # whole-database pass and never in place of it — `annotations` below is
+    # still built from the same fields it always was.
+    apply_container_grain(registry, inputs, derived)
 
     return {
         "database_slug": slug,
