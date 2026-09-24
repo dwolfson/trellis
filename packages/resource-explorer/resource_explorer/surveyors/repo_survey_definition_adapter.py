@@ -210,7 +210,13 @@ VIEW_HISTORY = "history"
 class StepInfo:
     """One SurveyOrchestrator step — a single sub-surveyor unit."""
     step_key: str
-    surveyor_cls: type
+    #: The sub-surveyor class `SurveyOrchestrator` constructs for this step.
+    #: `None` for a step that has no surveyor class of its own — the database
+    #: family's steps are plain callables registered in the adapter's
+    #: `re_analysis_steps`, and they declare a StepInfo (2026-09-23, §17.1)
+    #: purely to carry the cost/precondition/PRODUCES metadata the resolver
+    #: needs. Only the orchestrator's repo path ever instantiates this.
+    surveyor_cls: type | None
     description: str
     annotation_types: list[str]
     # Extra kwargs re_analysis_steps' Survey-Definition-triggered runners
@@ -249,6 +255,24 @@ class StepInfo:
     #: that vanishes from a report is indistinguishable from one that ran and
     #: found nothing.
     requires_context: dict[str, str] = field(default_factory=dict)
+    #: The stored tables this step WRITES — design §17.1 condition 2's
+    #: declarative registry. `requires_context` names stored data a step
+    #: READS; nothing until now knew which step FILLS it, so an unmet
+    #: precondition could say "no parsed dependencies" and not "…and
+    #: `repo_manifest_parse` is what would fix that" except by a producer
+    #: string hardcoded beside each check in `step_preconditions.PRECONDITIONS`.
+    #:
+    #: Declared HERE, on the producing step, because that is where the fact
+    #: lives: a step's author knows what it writes, and a precondition's
+    #: author should not have to. `step_produces.producer_of()` derives the
+    #: inverse (table -> producing step) at import, and
+    #: `step_preconditions` reads producers from that inverse rather than
+    #: carrying its own copy — one declaration, two directions.
+    #:
+    #: Two steps declaring the same table is a real error, not a merge:
+    #: the inverse map cannot answer "run which one?" and
+    #: `step_produces.validate()` raises rather than picking.
+    produces: tuple[str, ...] = ()
     requires_resources: dict[str, str] = field(default_factory=dict)
     # {resource_name: view} — what this step actually READS from that
     # resource. Checked against the provider's `provides` at import by
@@ -408,6 +432,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — the table four content-reading steps gate on
+        # (`has_file_inventory`), declared here so the gate can name its
+        # own remedy without repeating this step's key.
+        produces=("project_file_inventory",),
         # One of the 4 zipball steps (D3/D4) — a real download, so "none"
         # is invalid here. Walking the extracted tree is cheap.
         fetch_cost="download",
@@ -444,6 +472,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — `project_dependencies` is what `repo_cve_scan`'s
+        # `has_versioned_dependencies` gate reads. Note what is NOT claimed:
+        # producing the table is not the same as producing a *version* on
+        # every row (CLAUDE.md's Gradle/BOM case), so an auto-run of this
+        # step can legitimately leave that gate still unmet — the resolver
+        # treats that as `nothing_found`, not as a reason to run it again.
+        produces=("project_dependencies",),
         # One of the zipball steps (D3/D4) — a real download, so "none" is
         # invalid here.
         #
@@ -955,6 +990,8 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — the table `has_code_symbols` gates on.
+        produces=("project_code_symbols", "project_code_relationships"),
         # One of the 4 zipball steps. compute_cost="medium", not "low":
         # unlike repo_api_structure (a read of already-extracted symbols),
         # this step does the tree-sitter/ast extraction itself, across
@@ -5076,6 +5113,13 @@ _ADAPTER = ResourceTypeAdapter(
     entity_type="repo",
     technology_type="Git Repository",
     re_analysis_steps=_build_re_analysis_steps(),
+    # §17.1/§17.2 — the same STEP_REGISTRY the orchestrator already walks,
+    # exposed to the shared prerequisite resolver so the Survey-Definition
+    # path checks the same preconditions the orchestrator path does. Before
+    # this, `step_preconditions.evaluate()` had exactly one call site
+    # (SurveyOrchestrator.run), so a repo step run through a Survey
+    # Definition was never gated at all.
+    step_registry=lambda: STEP_REGISTRY,
     get_entity=_get_project_entity,
     publish=_publish,
     re_analysis_step_info=_RE_ANALYSIS_STEP_INFO,

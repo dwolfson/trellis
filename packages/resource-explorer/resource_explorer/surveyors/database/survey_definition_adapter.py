@@ -37,6 +37,7 @@ from resource_explorer.surveyors.survey_definition_executor import (
 from resource_explorer.surveyors.repo_survey_definition_adapter import (
     AnalysisKind,
     AnalysisKindResults,
+    StepInfo,
 )
 
 log = logging.getLogger(__name__)
@@ -373,6 +374,89 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     return result.get("report_guid", "")
 
 
+#: Cost, preconditions and PRODUCES for each database step — design §5.7's own
+#: cost table, made machine-readable (2026-09-23, §17.1/§17.2).
+#:
+#: **Why a StepInfo for steps that have no surveyor class.** The database
+#: family's steps are plain callables in `re_analysis_steps`, and before this
+#: nothing anywhere declared what any of them cost. §17.1's resolver has to
+#: compare a prerequisite's tier against the tier the caller is already
+#: operating at, and §17.2's observer has to record declared-vs-observed — both
+#: need exactly the two fields `StepInfo` already carries for repo steps, so
+#: this reuses that dataclass rather than inventing a second vocabulary for the
+#: same two axes. `surveyor_cls=None`: nothing constructs these.
+#:
+#: The costs are not guesses — they are design §5.7's published table, row for
+#: row. The observer will now check them, which is the point: an under-declared
+#: database step has been unfalsifiable until today.
+#:
+#: `postgres_column_profile` → `has_schema_inventory` → `postgres_schema_and_
+#: stats` is §17.4's named first real chain, and the reason this slice was
+#: sequenced with the DB steps rather than the repo ones.
+DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
+    "postgres_schema_and_stats": StepInfo(
+        "postgres_schema_and_stats", None,
+        "Schema, table and column inventory plus row-count/size statistics.",
+        ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation", "RequestForAction"],
+        # The catalog read every other database step's stored input comes from.
+        produces=("database_schemas", "database_tables", "database_columns"),
+        fetch_cost="api", compute_cost="low",
+    ),
+    "postgres_operations": StepInfo(
+        "postgres_operations", None,
+        "privilege_audit, db_activity_signals, db_resilience, db_external_dependencies.",
+        ["ResourceMeasureAnnotation", "ResourcePhysicalStatusAnnotation",
+         "SchemaAnalysisAnnotation", "RequestForAction"],
+        produces=("database_grants",),
+        fetch_cost="api", compute_cost="low",
+    ),
+    "db_derived": StepInfo(
+        "db_derived", None,
+        "Zero-fetch derivation over already-stored rows.",
+        ["ClassificationAnnotation", "SchemaAnalysisAnnotation", "DataGrainAnnotation",
+         "FingerprintAnnotation", "ResourceMeasureAnnotation"],
+        requires_context={
+            "has_schema_inventory":
+                "every derivation here reads stored table/column rows; with none "
+                "it returns not_measured for all eight fields, which is an "
+                "absence, not a finding",
+        },
+        fetch_cost="none", compute_cost="low",
+    ),
+    "postgres_column_profile": StepInfo(
+        "postgres_column_profile", None,
+        "Bounded value sampling, data_class_match, reference_data_match.",
+        ["ResourceMeasureAnnotation", "DataClassAnnotation",
+         "RelationshipAnnotation", "RequestForAction"],
+        requires_context={
+            "has_schema_inventory":
+                "the profile samples the columns a stored inventory names; with "
+                "none it would sample nothing and report an empty profile as if "
+                "it had looked",
+        },
+        fetch_cost="api_heavy", compute_cost="medium",
+    ),
+    "postgres_nested_columns": StepInfo(
+        "postgres_nested_columns", None,
+        "Bounded sampling and nested-schema inference for JSON/JSONB/XML columns.",
+        ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation"],
+        requires_context={
+            "has_schema_inventory":
+                "it finds the JSON/XML columns from the stored inventory before "
+                "sampling any of them",
+        },
+        fetch_cost="api_heavy", compute_cost="medium",
+    ),
+    "sql_analysis": StepInfo(
+        "sql_analysis", None,
+        "SQL view dependencies, column-level lineage and complexity scores.",
+        ["SchemaAnalysisAnnotation", "RelationshipAnnotation",
+         "QualityScoreAnnotation", "RequestForAction", "DataClassAnnotation"],
+        fetch_cost="api", compute_cost="low",
+    ),
+}
+
+
 _ADAPTER = ResourceTypeAdapter(
     entity_type="database",
     technology_type="PostgreSQL Database",
@@ -392,6 +476,7 @@ _ADAPTER = ResourceTypeAdapter(
     analysis_source_steps=lambda: DATABASE_ANALYSIS_STEP_MAP,
     analysis_kinds=lambda: DATABASE_ANALYSIS_KINDS,
     analysis_headline_map=lambda: DATABASE_ANALYSIS_HEADLINE_MAP,
+    step_registry=lambda: DATABASE_STEP_REGISTRY,
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,
