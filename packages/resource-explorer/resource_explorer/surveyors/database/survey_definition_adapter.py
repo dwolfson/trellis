@@ -868,6 +868,8 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     """Last-measured schema shape, read from the structured detail tables
     every local survey's `postgres_schema_and_stats` step already writes
     (`result_materializer.database_rows_from_survey_data`) — no re-fetch."""
+    from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+
     tables = registry.query_detail_rows("database_tables", slug)
     if not tables:
         return {}
@@ -876,9 +878,18 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     for c in columns:
         key = (c.get("schema_name"), c.get("table_name"))
         columns_by_table[key] = columns_by_table.get(key, 0) + 1
+    catalog_only_count = sum(1 for t in tables if t.get("state") == STATE_CATALOG_ESTIMATE)
     value = {
         "table_count": len(tables),
         "column_count": len(columns),
+        # How many of the tables above are counted at all only because of
+        # the pg_class/pg_attribute catalog-only fallback (connection.py's
+        # `_catalog_only_fallback`) — never SELECT-visible via
+        # information_schema. Zero on a fully-measured database; present so
+        # a reader can distinguish "23 tables, all fully measured" from "23
+        # tables, but 20 of them only via catalog metadata, unverified
+        # names/estimated counts".
+        "catalog_only_table_count": catalog_only_count,
         "tables": [
             {
                 "schema_name": t.get("schema_name"),
@@ -888,6 +899,12 @@ def _schema_inventory_results(registry, slug: str) -> dict:
                     (t.get("schema_name"), t.get("table_name")), 0
                 ),
                 "row_count": t.get("row_count"),
+                # STATE_CATALOG_ESTIMATE marks a table found only via the
+                # catalog-only fallback — its row_count (when present at
+                # all) is a pg_class.reltuples estimate, not a live count,
+                # and its columns carry the same marking.
+                "state": t.get("state"),
+                "row_count_is_estimate": t.get("state") == STATE_CATALOG_ESTIMATE,
             }
             for t in tables
         ],
@@ -914,21 +931,32 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
     never showing a size, despite the number sitting in the same row the
     reader already selects.
     """
+    from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+
     tables = registry.query_detail_rows("database_tables", slug)
     if not tables:
         return {}
     measured = [t for t in tables if t.get("row_count") is not None]
     sized = [t for t in tables if t.get("size_bytes") is not None]
+    estimated = [t for t in measured if t.get("state") == STATE_CATALOG_ESTIMATE]
     value = {
         "tables": [
             {"schema_name": t.get("schema_name"), "table_name": t.get("table_name"),
-             "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes")}
+             "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes"),
+             "row_count_is_estimate": t.get("state") == STATE_CATALOG_ESTIMATE}
             for t in tables
         ],
         "table_count": len(tables),
         "measured_count": len(measured),
         "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
         "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
+        # Of `measured_count` above, how many are pg_class.reltuples
+        # estimates (catalog-only fallback) rather than a live count —
+        # folded into `total_row_count` today (both are integers, and
+        # keeping the sum exact-only would silently drop coverage a reader
+        # cannot see any other way), so this count is what lets a reader
+        # tell "this total is exact" from "part of this total is estimated".
+        "estimated_count": len(estimated),
     }
     # The third fact-envelope state (design §4) — same caveat schema_inventory
     # carries, since both read the same credential-scoped `database_tables`
@@ -959,7 +987,12 @@ def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
         return {"label": f"No row counts recorded for any of {total} table(s).",
                 "status": "info"}
     coverage = "" if measured == total else f" ({measured} of {total} tables measured)"
-    return {"label": f"{' · '.join(parts)}{coverage}.", "status": "info"}
+    estimated = value.get("estimated_count") or 0
+    caveat = (
+        f" {estimated} of {measured} row count(s) are catalog estimates, not exact."
+        if estimated else ""
+    )
+    return {"label": f"{' · '.join(parts)}{coverage}.{caveat}", "status": "info"}
 
 
 def _format_bytes(n: int) -> str:

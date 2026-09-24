@@ -74,6 +74,7 @@ from resource_explorer.registry import (
     SOURCE_LOCAL,
     STATS_SOURCE_DATABASE,
     STATS_SOURCE_RESOURCE_EXPLORER,
+    STATE_CATALOG_ESTIMATE,
     STATE_MEASURED,
     STATE_NOT_MEASURED,
 )
@@ -698,15 +699,30 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
             if not table_name:
                 continue
             table_columns = table.get("columns") or []
+            # A table `_catalog_only_fallback()` (connection.py) supplied
+            # because `information_schema` came back thin for its schema —
+            # see STATE_CATALOG_ESTIMATE's docstring (registry.py). Its row
+            # count, when it has one at all, is `pg_class.reltuples` (an
+            # ANALYZE-time estimate carried in `row_count_estimate`, never
+            # the plain `row_count` key a fully-measured table would carry),
+            # unless a later enrichment pass (database_surveyor.py's
+            # `_store_results`, reading `pg_stat_user_tables`) found a real
+            # one for it after all — that pass writes straight into
+            # `row_count` when it does, which is why `row_count` is still
+            # checked first below.
+            is_catalog_fallback = table.get("source") == "catalog_fallback"
+            row_count = table.get("row_count")
+            if row_count is None and is_catalog_fallback:
+                row_count = table.get("row_count_estimate")
             tables.append({
                 "schema_name": schema_name,
                 "table_name": table_name,
                 "table_type": table.get("type") or "",
                 "description": table.get("description") or "",
                 "column_count": len(table_columns),
-                "row_count": _blob_int(table.get("row_count")),
+                "row_count": _blob_int(row_count),
                 "size_bytes": _blob_int(table.get("size_bytes")),
-                "state": STATE_MEASURED,
+                "state": STATE_CATALOG_ESTIMATE if is_catalog_fallback else STATE_MEASURED,
             })
 
             last_analyzed = table.get("last_analyzed") or ""
@@ -730,6 +746,15 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
                 if not column_name:
                     continue
                 foreign_key = column.get("foreign_key")
+                # connection.py's catalog-only fallback (`_catalog_columns_
+                # for_table`) deliberately leaves `nullable`/`is_primary_key`
+                # as None rather than guessing — those lookups need
+                # information_schema/pg_description, which is exactly what
+                # was unavailable. Preserve that as NULL in the stored row
+                # (not a coerced False/0), so a reader cannot mistake "not
+                # established" for "confirmed not nullable / not a PK".
+                nullable = column.get("nullable")
+                is_pk = column.get("is_primary_key")
                 columns.append({
                     "schema_name": schema_name,
                     "table_name": table_name,
@@ -737,12 +762,16 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
                     "ordinal_position": _blob_int(column.get("position")),
                     "data_type": column.get("type") or "",
                     "base_type": column.get("base_type") or "",
-                    "is_nullable": 1 if column.get("nullable") else 0,
+                    "is_nullable": None if nullable is None else (1 if nullable else 0),
                     "column_default": _text(column.get("default")),
                     "description": column.get("description") or "",
-                    "is_primary_key": 1 if column.get("is_primary_key") else 0,
+                    "is_primary_key": None if is_pk is None else (1 if is_pk else 0),
                     "foreign_key_json": foreign_key if foreign_key else None,
-                    "state": STATE_MEASURED,
+                    "state": (
+                        STATE_CATALOG_ESTIMATE
+                        if column.get("source") == "catalog_fallback"
+                        else STATE_MEASURED
+                    ),
                 })
 
     for view in (survey_data or {}).get("views") or []:

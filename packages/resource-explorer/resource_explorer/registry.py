@@ -434,9 +434,28 @@ STATE_NOT_SUPPORTED = "not_supported"
 #: commonest case for a back-filled row, where the old blob simply never
 #: carried the field.
 STATE_NOT_MEASURED = "not_measured"
+#: The row exists, and something WAS measured — but by the catalog-only
+#: fallback (design: REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §0,
+#: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251), not by the normal
+#: `information_schema` path. `PostgreSQLConnection._get_tables_for_schema()`
+#: falls back to `pg_class`/`pg_attribute`/`pg_namespace` — catalog metadata
+#: any connected role can read regardless of grants — for a table/column
+#: `information_schema` came back thin on (no `SELECT` on the underlying
+#: table). That gives a table/column NAME and a Postgres TYPE name for
+#: certain, but never real PK/FK detail, `is_nullable`, `column_default` or
+#: an exact comment (those lookups are themselves privilege-filtered), and
+#: any row count attached to a catalog-only row is `pg_class.reltuples` — an
+#: ANALYZE-time estimate, not a live count.
+#:
+#: Deliberately NOT in `STATES_WITHOUT_A_MEASUREMENT` below: a catalog-only
+#: row is not absent, it is just less precise than one measured the normal
+#: way. Collapsing "we have an approximate answer" into "we have nothing"
+#: would be its own confident-wrong-answer shape, in the opposite direction
+#: from the one this state exists to prevent.
+STATE_CATALOG_ESTIMATE = "catalog_estimate"
 
-#: Every state other than STATE_MEASURED/STATE_EMPTY means the number beside
-#: it is absent rather than zero.
+#: Every state other than STATE_MEASURED/STATE_EMPTY/STATE_CATALOG_ESTIMATE
+#: means the number beside it is absent rather than zero.
 STATES_WITHOUT_A_MEASUREMENT = frozenset({
     STATE_NOT_PERMITTED,
     STATE_NOT_COLLECTED,

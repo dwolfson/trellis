@@ -899,6 +899,22 @@ class FactLayer:
             fraction = status.get("fraction") or ""
             connected_as = status.get("connected_as") or ""
             who = f" as `{connected_as}`" if connected_as else ""
+            # When the catalog-only fallback (connection.py's
+            # `_catalog_only_fallback`, STATE_CATALOG_ESTIMATE) recovered
+            # tables `information_schema` alone would have hidden entirely,
+            # say so with the real total — "23 tables visible via catalog
+            # (SELECT access: 3 of 23)" is the honest answer this whole
+            # mechanism exists to produce, not a bare "3 tables".
+            catalog_only = (value or {}).get("catalog_only_table_count") or 0
+            table_count = (value or {}).get("table_count")
+            if catalog_only and table_count:
+                select_count = table_count - catalog_only
+                catalog_note = (
+                    f"{table_count} table(s) visible via catalog (SELECT access: "
+                    f"{select_count} of {table_count}){who}; row counts for the "
+                    f"catalog-only ones are estimates, not exact."
+                )
+                return catalog_note
             if fraction:
                 return (
                     f"Measured within this credential's visibility only — connected{who}, "
