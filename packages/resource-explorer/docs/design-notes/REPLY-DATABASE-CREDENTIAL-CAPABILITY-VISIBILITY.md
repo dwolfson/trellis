@@ -284,3 +284,50 @@ without a read API. Asking Egeria for a secret-read endpoint is the wrong
 request; the right one, if any, is a *verify* call ("does collection X
 resolve for asset Y") that returns a boolean, which is what `CHECK_ASSET`
 already approximates.
+
+---
+
+## 8 · The structural floor is a Postgres property — declare it per engine
+
+From the multi-engine catalog survey (branch
+`re/database-engine-catalog-capability-survey`, 2026-09-24), which audited
+MySQL/MariaDB, DuckDB, Oracle, SQL Server and SQLite against §3's
+vocabulary. The finding that changes this reply: the "still see structure
+with zero SELECT" fallback that #257 built on rests on `pg_class` and
+`pg_namespace` being unprivileged. **That does not hold generally.**
+
+| Engine | Structural floor without table `SELECT` | Value of `structural_floor` |
+|---|---|---|
+| PostgreSQL | yes — `pg_class`, `pg_namespace`, `pg_attribute` are readable by any role | `unprivileged` |
+| DuckDB, SQLite | trivially — no per-user privileges; the file opens or it does not | `unprivileged` (degenerate: `catalog`/`read`/`stats` collapse to "opens", `write` to "not read-only") |
+| Oracle | only with `SELECT_CATALOG_ROLE` or `SELECT ANY DICTIONARY`, which make `ALL_*`/`DBA_*` fully visible without row access | `role_grant` |
+| SQL Server | only with `VIEW DEFINITION` at database scope | `role_grant` |
+| MySQL / MariaDB | none — `information_schema` shows only objects the user holds *some* privilege on | `none` |
+
+Three consequences, all now part of the design:
+
+1. **The per-engine declaration (`REPLY-SCHEMA-AS-SUB-RESOURCE.md` §5)
+   gains `structural_floor ∈ {unprivileged, role_grant, none}`**, with the
+   grant named for `role_grant`. Default `unprivileged` for Postgres only.
+2. **"Measured within credential scope" needs a denominator flag.** On
+   `unprivileged` engines, and on `role_grant` engines where the grant is
+   held, it reads "3 of 26 tables". On `none`, or `role_grant` without the
+   grant, it reads **"3 tables visible; total not established"** — never a
+   fraction, because M is unknown. That is a fourth completeness state and
+   the envelope must render it distinctly from the other three.
+3. **The RFA to the database owner is engine-specific.** Postgres: `SELECT`.
+   Oracle: `SELECT_CATALOG_ROLE` first (structure, no rows), `SELECT`
+   second. SQL Server: `VIEW DEFINITION`, then `SELECT`. MySQL: a surveyor
+   account with `SELECT` on the databases of interest, because nothing
+   cheaper exists. The `role_grant` path is the one to recommend to owners
+   wherever it exists: it gives the probe an exact denominator without
+   exposing a single row.
+
+And a limit on §7.1: the catalog-tier "worth pursuing" gate works as
+designed only on engines with a floor. On MySQL it degrades to "what this
+credential can see", and the gate must say so rather than present a partial
+inventory as the database.
+
+Also confirmed from the Egeria source tree: native survey connectors exist
+for Postgres, Oracle, SQL Server, DuckDB, DB2 and Unity Catalog; none for
+MySQL/MariaDB or SQLite, so those two are rule-C engines end to end.
