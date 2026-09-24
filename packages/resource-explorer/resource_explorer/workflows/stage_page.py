@@ -151,7 +151,7 @@ def _age_seconds(run_at: str) -> float | None:
     return (datetime.now(UTC) - ts).total_seconds()
 
 
-def _last_run_info(registry, slug: str, analysis_id: str) -> dict:
+def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
     """`{last_run_at, last_run_status, last_run_via}` for one analysis,
     widened to its derivation sources exactly the way
     `workflows/depth_offer.py::_has_run` widens presence: `analysis_id`'s own
@@ -160,12 +160,16 @@ def _last_run_info(registry, slug: str, analysis_id: str) -> dict:
     of its own — see `AnalysisKind.derives_from`) and its SOURCE has run
     directly, that source's run is reported with `last_run_via` naming the
     source — never a bare "never run" for a derived id whose data is, in
-    fact, current."""
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        repo_analysis_derived_sources,
-    )
+    fact, current.
 
-    last_run = registry.get_analysis_last_run("repo", slug)
+    `entity_type` defaults to "repo" for backward compatibility. The
+    derives-from widening below is a repo-only concept today — database and
+    filesystem adapters declare no `derives_from` analyses (same as
+    `registry._analysis_derived_sources`, which returns `{}` for every
+    entity_type but "repo") — so it is skipped for any other entity_type
+    rather than importing repo's own derivation table for a resource it does
+    not describe."""
+    last_run = registry.get_analysis_last_run(entity_type, slug)
     own = last_run.get(analysis_id)
     if own:
         return {
@@ -173,35 +177,84 @@ def _last_run_info(registry, slug: str, analysis_id: str) -> dict:
             "last_run_status": own.get("last_run_status", ""),
             "last_run_via": own.get("last_run_via") or analysis_id,
         }
-    for source_id in repo_analysis_derived_sources(analysis_id):
-        source = last_run.get(source_id)
-        if source:
-            return {
-                "last_run_at": source.get("last_run_at", ""),
-                "last_run_status": source.get("last_run_status", ""),
-                "last_run_via": source_id,
-            }
+    if entity_type == "repo":
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            repo_analysis_derived_sources,
+        )
+
+        for source_id in repo_analysis_derived_sources(analysis_id):
+            source = last_run.get(source_id)
+            if source:
+                return {
+                    "last_run_at": source.get("last_run_at", ""),
+                    "last_run_status": source.get("last_run_status", ""),
+                    "last_run_via": source_id,
+                }
     return {"last_run_at": "", "last_run_status": "", "last_run_via": ""}
 
 
-def build_measurements(registry, slug: str, analysis_id: str) -> dict:
+def build_measurements(registry, slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
     """GET /api/projects/{slug}/analyses/{analysis_id}/measurements payload.
 
     Raises `LookupError` for an unknown slug or an analysis_id not in the
-    local catalog (`ANALYSIS_KINDS`) — routes translate both to 404, kept out
+    local catalog for `entity_type` — routes translate both to 404, kept out
     of this pure function so it stays FastAPI-free (same convention as
-    `workflows/depth_offer.py::build_depth_offer`)."""
-    from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
+    `workflows/depth_offer.py::build_depth_offer`).
 
-    project = registry.get(slug)
-    if not project:
-        raise LookupError(f"Project {slug!r} not found")
-    if analysis_id not in ANALYSIS_KINDS:
+    `entity_type` defaults to "repo" for backward compatibility (same
+    default `answer_question()` in `web/routes/analyses.py` and
+    `compile_endpoint()` in `web/routes/compile_context.py` use). Fixed
+    2026-09-23: this used to call `registry.get(slug)` — a repo-only
+    `Project` lookup — and import `ANALYSIS_KINDS` directly from
+    `repo_survey_definition_adapter`, so a database/filesystem slug 404'd as
+    "Project ... not found" even when it existed, and a database/filesystem
+    analysis_id 404'd as "Unknown analysis" even when it was a real entry in
+    that type's own catalog (the same "resource-type never threaded through"
+    bug PR #226/#233/#236 fixed in the answer/chat routes).
+
+    The existence check and the analysis-kind lookup now go through the same
+    per-type `ResourceTypeAdapter` (`survey_definition_executor.get_adapter`)
+    those routes use. The metrics assembly below stays repo-specific
+    (`_METRICS_KINDS`/`registry.query_metrics`, unchanged from before this
+    fix) for `entity_type == "repo"` — database/filesystem analyses do not
+    write to the generic `project_analysis_metrics` table at all; their
+    measurements live behind each `AnalysisKind.results.results_reader`
+    already registered per-type (`DATABASE_ANALYSIS_RESULTS_MAP` etc.), so a
+    non-repo `entity_type` reads its measurements from that reader instead —
+    the exact live-data path "How big is this database" already uses for its
+    headline sentence (`_row_count_snapshot_headline`), just flattened into
+    rows here rather than summarized into one sentence.
+    """
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        get_adapter,
+    )
+
+    adapter = get_adapter(entity_type)
+    try:
+        entity = adapter.get_entity(registry, slug)
+    except SurveyDefinitionExecutorError:
+        entity = None
+    if entity is None:
+        # Same per-type label the resource's own not-found errors use
+        # (databases.py/filesystems.py's "Database '...'"/"FileSystem
+        # '...'"), not a bare `entity_type` — "Repo" would be a new label
+        # nothing else in the codebase uses for entity_type == "repo".
+        label = {"database": "Database", "filesystem": "FileSystem"}.get(entity_type, "Project")
+        raise LookupError(f"{label} {slug!r} not found")
+
+    kinds_provider = adapter.analysis_kinds
+    kinds_map = kinds_provider() if kinds_provider else {}
+    if analysis_id not in kinds_map:
         raise LookupError(f"Unknown analysis {analysis_id!r}")
 
-    run_info = _last_run_info(registry, slug, analysis_id)
+    run_info = _last_run_info(registry, slug, analysis_id, entity_type=entity_type)
     run_at = run_info["last_run_at"]
     source = run_info["last_run_via"] or analysis_id
+
+    if entity_type != "repo":
+        return _build_measurements_via_results_reader(
+            registry, slug, analysis_id, kinds_map, run_at, source)
 
     kinds = _METRICS_KINDS.get(analysis_id)
 
@@ -251,6 +304,61 @@ def build_measurements(registry, slug: str, analysis_id: str) -> dict:
         "analysis_id": analysis_id, "run_at": run_at, "source": source,
         "measurements": measurements, "not_applicable": False, "reason": "",
         "footer": _footer(analysis_id, run_at, notes_seen),
+    }
+
+
+def _build_measurements_via_results_reader(
+    registry, slug: str, analysis_id: str, kinds_map: dict, run_at: str, source: str,
+) -> dict:
+    """The non-repo counterpart of the `_METRICS_KINDS` branch above.
+
+    Database and filesystem analyses have no `project_analysis_metrics`
+    rows to read — each has its own `AnalysisKindResults.results_reader`
+    (e.g. `_row_count_snapshot_results`, registered on
+    `DATABASE_ANALYSIS_KINDS`) returning a plain dict already read by the
+    Results/Chat surfaces for that type. This flattens that same dict into
+    the same `{name, value, opens, note}` row shape `build_measurements`
+    returns for repo, so the frontend's one table renderer works for both.
+
+    A nested value (a list or dict — e.g. `row_count_snapshot`'s own
+    per-table `"tables"` breakdown) is skipped here rather than rendered:
+    this table is for scalar measurements, and a per-table breakdown is
+    exactly what `opens` and the members drill-down are for, not a row of
+    its own. `opens` is always `None` — no per-type `_READERS`-style
+    members table exists for these analyses yet (repo's `_opens_for` reads
+    `resource_explorer.members._READERS`, which is repo-only), so nothing
+    is invented here; that stays a real, separate gap.
+    """
+    kind = kinds_map.get(analysis_id)
+    reader = kind.results.results_reader if kind and kind.results else None
+    if not reader:
+        return {
+            "analysis_id": analysis_id, "run_at": run_at, "source": source,
+            "measurements": [], "not_applicable": True,
+            "reason": (f"{analysis_id} records findings, not measurements — "
+                       "see the findings list."),
+            "footer": _footer(analysis_id, run_at, []),
+        }
+
+    raw = reader(registry, slug) or {}
+    measurements = [
+        {"name": name, "value": value, "opens": None, "note": ""}
+        for name, value in raw.items()
+        if not isinstance(value, (list, dict))
+    ]
+
+    if not measurements:
+        return {
+            "analysis_id": analysis_id, "run_at": run_at, "source": source,
+            "measurements": [], "not_applicable": False,
+            "reason": f"{analysis_id} has not recorded measurements on this resource yet.",
+            "footer": _footer(analysis_id, run_at, []),
+        }
+
+    return {
+        "analysis_id": analysis_id, "run_at": run_at, "source": source,
+        "measurements": measurements, "not_applicable": False, "reason": "",
+        "footer": _footer(analysis_id, run_at, []),
     }
 
 
@@ -322,28 +430,56 @@ def runnable_and_reason(analysis_id: str) -> tuple[bool, str]:
     )
 
 
-def build_analyses_index(registry, slug: str) -> dict:
+def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict:
     """GET /api/projects/{slug}/analyses-index payload.
 
-    One row per `get_analyses("repo", include_egeria_live=False)` entry,
+    One row per `get_analyses(entity_type, include_egeria_live=False)` entry,
     excluding `action == "publish"` (that's an explicit write action, not
     something with results or a cost to preview — same exclusion
     `_offerable_repo_analyses` makes in `workflows/depth_offer.py`).
 
+    `entity_type` defaults to "repo" for backward compatibility, same as
+    `build_measurements` above. Fixed alongside it (2026-09-23) — this
+    carried the identical repo-only bug: `registry.get(slug)` for the
+    existence check and a direct `ANALYSIS_KINDS` import (repo's own) for
+    the "does this analysis have a results reader" check, both now routed
+    through the same per-type `ResourceTypeAdapter` `build_measurements`
+    uses.
+
+    `runnable_and_reason()` below still gates through repo-only
+    `resolve_analysis_plan()` — that is a genuinely separate, wider gap (the
+    run route itself, `web/routes/projects.py::run_single_analysis`, is
+    repo-only for the same reason) and out of scope for this fix; a
+    database/filesystem row here reports "runnable" using repo's step map,
+    which happens to work today (an id resolvable there also happens to
+    resolve for other types) but is not a fix, just an unclaimed pre-existing
+    gap.
+
     Raises `LookupError` for an unknown slug — routes translate to 404."""
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
     from resource_explorer.surveyors.question_catalog_reader import get_questions
-    from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        get_adapter,
+    )
     from resource_explorer.workflows.analysis import estimate_run_cost
     from resource_explorer.workflows.depth_offer import run_cost_as_dict
 
-    project = registry.get(slug)
-    if not project:
-        raise LookupError(f"Project {slug!r} not found")
+    adapter = get_adapter(entity_type)
+    try:
+        entity = adapter.get_entity(registry, slug)
+    except SurveyDefinitionExecutorError:
+        entity = None
+    if entity is None:
+        label = {"database": "Database", "filesystem": "FileSystem"}.get(entity_type, "Project")
+        raise LookupError(f"{label} {slug!r} not found")
 
-    entries = [a for a in get_analyses("repo", include_egeria_live=False)
+    kinds_provider = adapter.analysis_kinds
+    kinds_map = kinds_provider() if kinds_provider else {}
+
+    entries = [a for a in get_analyses(entity_type, include_egeria_live=False)
                if a.get("action") != "publish"]
-    questions = get_questions("repo")
+    questions = get_questions(entity_type)
 
     rows: list[dict] = []
     never_run = 0
@@ -361,7 +497,7 @@ def build_analyses_index(registry, slug: str) -> dict:
         # — a reader is data chat can answer FROM, whether or not any
         # authored question names this id. Only an analysis with neither a
         # question nor a reader serves nothing yet.
-        kind = ANALYSIS_KINDS.get(aid)
+        kind = kinds_map.get(aid)
         has_results_reader = bool(kind and kind.results is not None)
         if matched_questions:
             serves = "question"
@@ -370,14 +506,14 @@ def build_analyses_index(registry, slug: str) -> dict:
         else:
             serves = "nothing-yet"
 
-        run_info = _last_run_info(registry, slug, aid)
+        run_info = _last_run_info(registry, slug, aid, entity_type=entity_type)
         if not run_info["last_run_at"]:
             never_run += 1
         if serves != "question":
             no_question += 1
 
         runnable, runnable_reason = runnable_and_reason(aid)
-        cost = run_cost_as_dict(estimate_run_cost(registry, aid, resource_type="repo"))
+        cost = run_cost_as_dict(estimate_run_cost(registry, aid, resource_type=entity_type))
 
         rows.append({
             "analysis_id": aid,

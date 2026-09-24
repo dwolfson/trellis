@@ -1408,36 +1408,53 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
 
 
 @router.get("/{slug}/analyses/{analysis_id}/measurements")
-async def get_analysis_measurements(slug: str, analysis_id: str) -> dict:
+async def get_analysis_measurements(slug: str, analysis_id: str,
+                                     entity_type: str = "repo") -> dict:
     """The numbers behind one analysis's answer — see
     resource_explorer/workflows/stage_page.py::build_measurements and the
     designer's round (STAGE-PAGE-ROUND.md point 10, "the fact opens under
     the answer"). Thin wrapper; the route only translates the pure
-    function's LookupError into a 404."""
+    function's LookupError into a 404.
+
+    `entity_type` defaults to "repo" (same query-param convention as
+    `answer_question()` in `routes/analyses.py`) — trusted as given, same as
+    that route and `compile_endpoint()` in `routes/compile_context.py`. This
+    used to be unaccepted here, so "the numbers behind this" always 404'd
+    for a database/filesystem slug: `build_measurements()` always did a
+    repo-only `registry.get()` lookup and always checked the analysis id
+    against repo's own `ANALYSIS_KINDS`, regardless of what kind of resource
+    the caller actually asked about (see that function's docstring, fixed
+    2026-09-23 — the fourth instance of PR #226/#233/#236's "resource-type
+    never threaded through" bug class)."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_measurements
 
     registry = ProjectRegistry()
     try:
-        return await asyncio.to_thread(build_measurements, registry, slug, analysis_id)
+        return await asyncio.to_thread(
+            build_measurements, registry, slug, analysis_id, entity_type)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/{slug}/analyses-index")
-async def get_analyses_index(slug: str) -> dict:
+async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
     """Every catalog analysis for this resource, with the questions that
     name it, last run, price, and what it serves — see
     resource_explorer/workflows/stage_page.py::build_analyses_index and the
     designer's round (STAGE-PAGE-ROUND.md points 1-3, "AnalysesIndex").
     Thin wrapper; the route only translates the pure function's LookupError
-    into a 404."""
+    into a 404.
+
+    `entity_type` defaults to "repo", same convention and same fix date as
+    `get_analysis_measurements` above — `build_analyses_index()` carried the
+    identical repo-only bug (its own docstring has the detail)."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_analyses_index
 
     registry = ProjectRegistry()
     try:
-        return await asyncio.to_thread(build_analyses_index, registry, slug)
+        return await asyncio.to_thread(build_analyses_index, registry, slug, entity_type)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
