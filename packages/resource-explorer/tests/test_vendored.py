@@ -170,6 +170,7 @@ class TestEveryWalkReadsTheRule:
         ("surveyors/arch_recovery/spring_app.py", "_properties_files"): "arch recovery has its own exclusion module",
         ("surveyors/arch_recovery/spring_app.py", "_style_references"): "arch recovery has its own exclusion module",
         ("github/source_cache.py", "_entries"): "sums the on-disk size of cache entries; not a measurement of repository content",
+        ("github/source_cache.py", "_tree_bytes"): "same reason as _entries: sizes ONE freshly acquired artifact for the bytes_fetched cost axis (design 17.2). Excluding vendored directories would understate what was actually downloaded, which is the opposite of what this number is for",
     }
     RULE_NAMES = {"is_vendored", "is_vendored_abs", "VENDORED_DIRS"}
 

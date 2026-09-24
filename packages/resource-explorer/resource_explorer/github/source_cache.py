@@ -37,6 +37,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from resource_explorer.observability import external_calls
+
 log = logging.getLogger(__name__)
 
 #: Total cache budget, evicted least-recently-used first. A zipball is tens of
@@ -44,6 +46,18 @@ log = logging.getLogger(__name__)
 #: whole 60-repo corpus at one SHA each. `data/repos/` is already ~1 GB for
 #: eight checkouts, so this is not the biggest thing on disk by a distance.
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _tree_bytes(path: Path) -> int:
+    """Total size of a file, or of everything under a directory. 0 when it
+    cannot be walked — an unsizeable artifact contributes nothing rather than
+    failing an acquisition over instrumentation."""
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    except OSError:
+        return 0
 
 #: Where entries live. Under `data/` beside the registry databases, so a
 #: checkout stays self-contained and `rm -rf data/source-cache` is a complete,
@@ -126,6 +140,18 @@ class SourceCache:
         try:
             target = staging / "artifact"
             produce(target)
+            # §17.2's `bytes_fetched`, the git/zipball half. What landed on
+            # disk, which is a proxy for what came over the wire and not the
+            # same number — a treeless clone unpacks larger than it
+            # transfers, an extracted zipball much larger. Recorded anyway
+            # rather than left at zero: the axis exists to separate "slow
+            # because it downloaded" from "slow because it thought", and for
+            # that question the on-disk size of a fresh acquisition is the
+            # right order of magnitude. It is only recorded on a MISS, since
+            # `put` is what materialises an artifact — a warm run adds
+            # nothing here, which is exactly the distinction `cache_hits`
+            # and this axis are both for.
+            external_calls.record_bytes(_tree_bytes(target))
             try:
                 target.rename(final)
             except OSError:

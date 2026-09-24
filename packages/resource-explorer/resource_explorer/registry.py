@@ -2039,6 +2039,70 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
                 "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
+            # ── step_runs — one row per step execution (design §17.2) ──────
+            #
+            # What a step actually COST, as a vector, replacing the
+            # `<step>_elapsed`/`<step>_connects` metrics scattered across
+            # project_analysis_metrics rows. Those measured one axis, seconds,
+            # which is the axis the funnel argument is not really about: a
+            # step that waits on the network is cheap in CPU and slow in wall
+            # time, and for repositories the scarce resource is the GitHub
+            # rate budget rather than either.
+            #
+            # **No FOREIGN KEY on `slug`, deliberately.** Every other table
+            # here keys to `projects(slug)`, and this one records runs for
+            # repositories, databases AND filesystems — three different
+            # parent tables. A FK to one of them would reject two thirds of
+            # the rows; `entity_type` carries which one instead.
+            #
+            # **`metrics`/`declared` are TEXT holding JSON, not `jsonb`.**
+            # §17.2 writes `jsonb`, and this registry runs on Postgres in
+            # production and SQLite as a fallback (CLAUDE.md's tech-stack
+            # table) with one DDL for both — `PostgresCursorWrapper.
+            # _translate_sql` translates AUTOINCREMENT and GROUP_CONCAT and
+            # has no jsonb story, and every other JSON column in this file is
+            # TEXT (`detail_json`, `survey_data`, the `_json` suffix the
+            # detail-table reader keys off). One backend-specific column type
+            # here would mean two read paths — psycopg2 hands back a dict,
+            # sqlite3 a string — for a table whose whole purpose is to be
+            # queried uniformly. Recorded as a knowing deviation.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS step_runs (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug          TEXT NOT NULL,
+                    entity_type   TEXT NOT NULL DEFAULT 'repo',
+                    step_key      TEXT NOT NULL,
+                    surveyed_at   TEXT NOT NULL,
+                    source        TEXT NOT NULL DEFAULT 'local',
+                    executor      TEXT NOT NULL DEFAULT 'local',
+                    executor_ref  TEXT DEFAULT '',
+                    demanded_by   TEXT DEFAULT '',
+                    metrics       TEXT DEFAULT '{}',
+                    declared      TEXT DEFAULT '{}',
+                    disagreement  TEXT DEFAULT ''
+                )
+            """)
+            # `entity_type` and `executor_ref` post-date the first shape this
+            # table shipped in during development — the same seam
+            # `_DB_FS_DETAIL_TABLE_MIGRATIONS` exists for, and for the same
+            # reason: CREATE TABLE IF NOT EXISTS is a no-op against a table
+            # that already exists in the shared registry.
+            _step_run_cols = self._get_table_columns(conn, "step_runs")
+            for _col, _ddl in (
+                ("entity_type", "TEXT NOT NULL DEFAULT 'repo'"),
+                ("executor_ref", "TEXT DEFAULT ''"),
+                ("demanded_by", "TEXT DEFAULT ''"),
+            ):
+                if _step_run_cols and _col not in _step_run_cols:
+                    conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_runs_step "
+                "ON step_runs(step_key, surveyed_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_runs_slug "
+                "ON step_runs(slug, surveyed_at)"
+            )
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -5608,6 +5672,100 @@ class ProjectRegistry:
                 (slug, kind),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── step_runs (design §17.2) ─────────────────────────────────────────
+    def record_step_run(
+        self, slug: str, step_key: str, surveyed_at: str, *,
+        entity_type: str = "repo", source: str = "local", executor: str = "local",
+        executor_ref: str = "", demanded_by: str = "",
+        metrics: dict | None = None, declared: dict | None = None,
+        disagreement: str = "",
+    ) -> None:
+        """One row per step EXECUTION. Append-only: a step run twice in one
+        snapshot (once as a prerequisite, once on its own request) is two
+        facts, and collapsing them would lose the `demanded_by` attribution
+        that §17.1 exists to record.
+
+        `demanded_by` is empty for a directly-requested step and carries the
+        requesting step's key for an auto-run prerequisite — the field that
+        answers "why did Scouting take three minutes".
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
+                "source, executor, executor_ref, demanded_by, metrics, declared, "
+                "disagreement) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (slug, entity_type, step_key, surveyed_at, source, executor,
+                 executor_ref or "", demanded_by or "",
+                 json.dumps(metrics or {}), json.dumps(declared or {}),
+                 disagreement or ""),
+            )
+
+    def query_step_runs(
+        self, slug: str | None = None, step_key: str | None = None,
+        surveyed_at: str | None = None, entity_type: str | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Rows with `metrics`/`declared` already decoded to dicts.
+
+        Decoded here rather than at each call site: the column is TEXT-holding-
+        JSON on both backends (see the CREATE TABLE's own note), and leaving
+        the decode to callers is how a `metrics.get(...)` against a string
+        silently returns nothing.
+        """
+        where, params = [], []
+        for column, value in (("slug", slug), ("step_key", step_key),
+                              ("surveyed_at", surveyed_at),
+                              ("entity_type", entity_type)):
+            if value is not None:
+                where.append(f"{column} = ?")
+                params.append(value)
+        sql = "SELECT * FROM step_runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += f" ORDER BY surveyed_at DESC, id DESC LIMIT {int(limit)}"
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for row in rows:
+            record = dict(row)
+            for column in ("metrics", "declared"):
+                raw = record.get(column)
+                if isinstance(raw, str):
+                    try:
+                        record[column] = json.loads(raw or "{}")
+                    except (ValueError, TypeError):
+                        record[column] = {}
+                elif raw is None:
+                    record[column] = {}
+            out.append(record)
+        return out
+
+    def median_step_wall_ms(self, step_key: str) -> float | None:
+        """Median observed `wall_ms` for a step across every resource, or None
+        when it has never been measured.
+
+        None is a real answer the caller must render as one — a proposal built
+        on a tier default says so (`Proposal.estimated_is_measured`) rather
+        than presenting a guess as a measurement.
+
+        Across ALL resources, for the same reason `step_cost_observer.
+        _step_ever_measured` reads that way: "what does this step usually
+        cost" is a fact about the step.
+        """
+        try:
+            rows = self.query_step_runs(step_key=step_key, limit=500)
+        except Exception:
+            return None
+        values = sorted(
+            float(r["metrics"]["wall_ms"]) for r in rows
+            if isinstance(r.get("metrics"), dict)
+            and isinstance(r["metrics"].get("wall_ms"), (int, float))
+        )
+        if not values:
+            return None
+        mid = len(values) // 2
+        return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
     def upsert_metric(
         self, slug: str, kind: str, metrics: dict[str, float],
