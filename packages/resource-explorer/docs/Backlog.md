@@ -7727,3 +7727,74 @@ openapi/proto/graphql. Empirically dead in this specific corpus as of this
 writing — leave as `declared`-only unless a specific target resource is
 known to use SOAP, at which point revisit `_DEPENDENCY_SIGNALS` and
 framework-marker coverage together.
+
+---
+
+## Database credential-capability model — awaiting the project owner's ruling
+
+**From:** `docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`
+(architecture session, 2026-09-24), replying to
+`ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` (`#251`). Read both in
+full before picking this up — this entry is a pointer, not a substitute.
+
+Piece 1 of the ask (a `credential_capability` probe, a persistent
+"connected as X — sees N of M schemas, SELECT on N of M tables" banner, a
+third fact-envelope state — "measured within credential scope" — and an RFA
+to the database owner when coverage is thin) needed no ruling and was
+dispatched immediately; see the PR that follows this entry once merged.
+
+**What's genuinely blocked on the project owner, and why it can't be
+guessed at:**
+
+1. **The connection/credential model itself.** The reply's finding from the
+   actual Egeria Java source (`ConnectionHandler.java`,
+   `OpenMetadataAccessSecurityConnector.java`): Egeria already supports any
+   number of `Connection` elements per asset, each with its own secrets
+   collection, with the credential's *role* (surveyor/reader/admin) sitting
+   as the `label` on the `ResourceConnection` relationship — not a new
+   concept RE needs to invent. The recommendation is a `database_credentials`
+   registry table that **indexes** Egeria's own connections (guid, role,
+   secrets collection, last probe) rather than owning credentials itself,
+   and retiring `databases.db_password` (`registry.py:2185`, clear-text
+   `TEXT`) in favor of the secrets store `#185` already built. This changes
+   `DatabaseEntity`'s shape and a live column's fate — a schema/data
+   migration decision, not something to build speculatively.
+2. **`requires_capability` on `StepInfo` and the launcher gate.** Declaring
+   what each database step needs (`catalog`/`read`/`stats`/`write`, per the
+   reply's §3 vocabulary) and gating survey execution on whether the
+   connected credential satisfies it — mirroring `#241`/`#247`'s cost-tier
+   gating — depends on (1) existing first: the gate needs to know which
+   connection is even in play.
+3. **Connection choice for RE-local survey runs** (letting a signed-in user
+   pick among an asset's visible connections) — also downstream of (1).
+
+**Two upstream Egeria defects found while answering this, not yet filed**
+(filing on `odpi/egeria`'s public tracker needs the project owner's
+go-ahead, not something to do unilaterally):
+
+- `OpenMetadataAccessSecurityConnector.selectConnection`
+  (`:2666-2669`) returns `connectionEntities.get(0)` — the first of the
+  *unfiltered* list — when exactly one connection is visible to the
+  requesting user, instead of `visibleConnections.get(0)`. An asset with an
+  admin connection listed first and a surveyor connection second, where the
+  requesting user can only see the surveyor one, gets the admin connection.
+- Same method, `:2670-2674`: when **several** connections are visible, the
+  selection is random (the code comment says so). No way to request "the
+  surveyor connection" deterministically.
+
+  Both affect Egeria-native surveys only (`executes_at: egeria`) — RE-local
+  runs choose their own connection and are unaffected. Until fixed, the
+  reply's operational rule is: an asset surveyed natively must have exactly
+  one connection visible to the survey engine's own user (via zones/security
+  tags), for the surveyor role specifically.
+
+**One pyegeria call to verify, not yet done:** which read returns an
+asset's connections *together with* the `ResourceConnection` relationship's
+own properties (the `label`) rather than only the far-end `Connection`
+element — `ClassificationExplorer.get_relationships` filtered to
+`ResourceConnection` is the reply's best guess, unconfirmed against a live
+call.
+
+**Candidate fix:** none until the project owner rules on item 1. Once
+ruled, items 2 and 3 follow directly from the reply's §2/§3/§6 sequencing
+and don't need a second design pass.
