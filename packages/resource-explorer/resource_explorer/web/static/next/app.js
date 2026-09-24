@@ -468,6 +468,62 @@ export function icon(name, { size = 15, cls = '', title = '' } = {}) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+ * Shared "was this right?" feedback control (2026-09-23 consolidation)
+ *
+ * chat.js's per-turn vote (thumbs-up/minus/thumbs-down, Lucide icons) and
+ * feedback.js's per-question "Was this right?" bar (plain "Right/Partly/
+ * Wrong" text links) were built independently against the IDENTICAL
+ * agree/partly/disagree vocabulary, posting to the SAME `/api/feedback/
+ * answer` endpoint — never unified. This is the one shared renderer both
+ * now use for the button markup + icons; each caller keeps its own click
+ * wiring, its own recording logic, and its own "what happened" message
+ * (chat.js's `vote()`/feedback.js's `_sendAnswerVerdict()` are genuinely
+ * different beyond the buttons themselves — feedback.js also prompts for an
+ * optional comment on "Wrong" and surfaces the server's gap sentence).
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** [vote value, Lucide icon name, title/aria-label, tone] — `tone` is 'ok'
+ *  or 'warn', resolved to a theme-appropriate class by `feedbackVotesHtml`
+ *  below rather than baked in here, since chat's dark rail and feedback.js's
+ *  light question row need different hover colors for the same state (see
+ *  `STATE_CHIP_CLASSES`'s own paper/chrome pairing above for the same
+ *  reasoning applied to row states). */
+export const FEEDBACK_VOTES = [
+  [1, 'thumbs-up', 'Right', 'ok'],
+  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'warn'],
+  [-1, 'thumbs-down', 'Wrong', 'warn'],
+];
+
+/**
+ * Markup for the three vote buttons, `data-vote="<value>"` on each — that
+ * attribute is the one thing every caller's click-wiring agrees on.
+ *
+ * `theme`: 'paper' (light question row, feedback.js's default) or 'chrome'
+ * (dark chat rail, chat.js's own background) — picks the same
+ * text-state-ok(-on-dark)/text-state-warn(-on-dark)/text-ink(-chrome)-muted
+ * pairing used elsewhere for exactly this light/dark split.
+ *
+ * `dataAttr`/`dataValue`: an extra `data-*` attribute stamped onto every
+ * button besides `data-vote`, so a caller's own delegated or per-render
+ * listener can find what the vote is FOR without this function knowing
+ * anything about turns or question rows — chat.js passes `{dataAttr:
+ * 'turn', dataValue: i}`, feedback.js needs none (its bar already carries
+ * `data-fb-answer` on the ancestor).
+ */
+export function feedbackVotesHtml({ theme = 'paper', dataAttr = '', dataValue = '' } = {}) {
+  const mutedCls = theme === 'chrome' ? 'text-chrome-muted' : 'text-ink-muted';
+  const hoverCls = {
+    ok: theme === 'chrome' ? 'text-state-ok-on-dark' : 'text-state-ok',
+    warn: theme === 'chrome' ? 'text-state-warn-on-dark' : 'text-state-warn',
+  };
+  const extraAttr = dataAttr ? ` data-${dataAttr}="${esc(String(dataValue))}"` : '';
+  return FEEDBACK_VOTES.map(([v, ic, title, tone]) => `<button type="button" data-vote="${v}"${extraAttr}
+      title="${esc(title)}" aria-label="${esc(title)}"
+      class="cursor-pointer bg-transparent ${mutedCls} hover:${hoverCls[tone]}"
+      >${icon(ic, { size: 16 })}</button>`).join('');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
  * Reading an envelope — the honest part
  * ════════════════════════════════════════════════════════════════════════ */
 
@@ -3854,7 +3910,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   if (!host) return;
   let data;
   try {
-    data = await getAnalysesIndex(slug);
+    data = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
   } catch (err) {
     if (slug === state.selectedSlug && state.subTab === 'survey') {
       host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
@@ -5950,7 +6006,7 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
   let data;
   try {
-    data = await getMeasurements(slug, analysisId);
+    data = await getMeasurements(slug, analysisId, apiEntityType(state.resourceType));
   } catch (err) {
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-state-warn">The measurements could not be read: ${esc(err.message)}</div>`;
     return;

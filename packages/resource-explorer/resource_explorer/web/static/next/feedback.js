@@ -1,12 +1,23 @@
 // Floating "Feedback" button + modal for the /next UI.
 //
-// Deliberately independent of app.js and re-api.js (another agent is editing
-// app.js concurrently) — plain `fetch`, no shared session-id helper, no
-// imported ApiError. Self-initialises on import: builds the button, appends
-// it, and lazily builds the modal the first time it's opened.
+// The product-feedback modal below is deliberately independent of app.js and
+// re-api.js (a historical choice, from when another agent was editing app.js
+// concurrently) — plain `fetch`, no shared session-id helper, no imported
+// ApiError. Self-initialises on import: builds the button, appends it, and
+// lazily builds the modal the first time it's opened.
+//
+// The PER-ANSWER feedback bar further down (the "Was this right?" control on
+// Questions-checklist rows) is a different story: it now imports
+// `feedbackVotesHtml` from app.js (2026-09-23 consolidation) so its buttons
+// are the SAME icon-based markup chat.js's per-turn vote uses, rather than
+// its own independent "Right/Partly/Wrong" text links — the two had been
+// built against the identical agree/partly/disagree vocabulary, posting to
+// the same endpoint, and never unified. See that section's own comment.
 //
 // Field names below are read from resource_explorer/web/routes/feedback.py's
 // FeedbackSubmission model — verify there before changing any key.
+
+import { feedbackVotesHtml } from '/static/next/app.js';
 
 const CATEGORIES = [
   { value: '', label: 'Category (optional)' },
@@ -240,11 +251,20 @@ _buildButton();
  * sentence that makes no claim.
  * ════════════════════════════════════════════════════════════════════════ */
 
-const ANSWER_VERDICTS = [
-  ['agree', 'Right'],
-  ['partly', 'Partly'],
-  ['disagree', 'Wrong'],
-];
+/** vote value (chat.js's own vocabulary — see its own VOTE_VERDICT) -> the
+ *  verdict `/api/feedback/answer` takes (feedback.py's `VALID_VERDICTS`).
+ *  Both surfaces record all three; only `disagree` raises a gap. */
+const VOTE_VERDICT = { 1: 'agree', 0: 'partly', '-1': 'disagree' };
+
+/** The bar's original content — "Was this right?" plus the three shared
+ *  icon buttons (app.js's `feedbackVotesHtml`, 'paper' theme for this light
+ *  question row). Pulled out on its own so a cancelled "Wrong" comment
+ *  prompt (see `_sendAnswerVerdict` below) can rebuild exactly this rather
+ *  than stranding the bar in whatever state was left when `window.prompt`
+ *  was dismissed. */
+function _barButtonsHtml() {
+  return `<span>Was this right?</span>${feedbackVotesHtml({ theme: 'paper' })}`;
+}
 
 function _rowQuestion(row) {
   const el = row.querySelector('span.font-heading.text-question');
@@ -273,10 +293,7 @@ function _attachTo(row) {
   const bar = document.createElement('div');
   bar.className = 'ml-[22px] mt-[6px] flex flex-wrap items-center gap-s2 text-provenance text-ink-muted';
   bar.dataset.fbAnswer = question;
-  bar.innerHTML = `<span>Was this right?</span>${ANSWER_VERDICTS.map(
-    ([v, label]) => `<button type="button" data-fb-verdict="${v}"
-      class="cursor-pointer bg-transparent text-accent-ink underline">${label}</button>`,
-  ).join('')}`;
+  bar.innerHTML = _barButtonsHtml();
   row.appendChild(bar);
 }
 
@@ -293,7 +310,17 @@ function _said(bar, text, warn) {
   bar.innerHTML = `<span class="${warn ? 'text-state-warn' : ''}">${_escapeHtml(text)}</span>`;
 }
 
-async function _sendAnswerVerdict(bar, verdict) {
+/** Like `_said`, but puts the three vote buttons back afterward instead of
+ *  leaving the bar a dead end — used when nothing was recorded and the
+ *  person should be able to try again immediately (the cancelled-comment-
+ *  prompt path below), as opposed to `_said`'s terminal states (recorded,
+ *  or failed against the server) where there is nothing left to retry. */
+function _saidAndReset(bar, text) {
+  bar.innerHTML = `<div class="mb-[2px] text-state-warn">${_escapeHtml(text)}</div>${_barButtonsHtml()}`;
+}
+
+async function _sendAnswerVerdict(bar, vote) {
+  const verdict = VOTE_VERDICT[String(vote)];
   const question = bar.dataset.fbAnswer || '';
   const slug = _currentSlug();
   if (!slug) { _said(bar, 'No resource selected — not recorded.', true); return; }
@@ -304,7 +331,17 @@ async function _sendAnswerVerdict(bar, verdict) {
   let comment = '';
   if (verdict === 'disagree') {
     const typed = window.prompt('What is wrong with this answer? (optional)', '');
-    if (typed === null) return;        // cancelled — record nothing
+    if (typed === null) {
+      // Cancelled. This function's own design principle (see `_said`'s doc
+      // comment above) is that every path through it ends in a visible,
+      // honest statement of what happened — a bare `return` here left the
+      // bar showing whatever the native prompt left behind, which reads
+      // exactly like the "Wrong" click did nothing. Say plainly that
+      // nothing was recorded, and put the buttons back so the person is not
+      // stranded with no way to record a verdict.
+      _saidAndReset(bar, 'Cancelled — not recorded. Click "Wrong" again to record it without a comment.');
+      return;
+    }
     comment = typed.trim();
   }
 
@@ -338,11 +375,16 @@ async function _sendAnswerVerdict(bar, verdict) {
 }
 
 document.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-fb-verdict]');
+  // `data-vote` (not the old `data-fb-verdict`) since the buttons are now
+  // the shared `feedbackVotesHtml()` markup chat.js's per-turn vote also
+  // uses — `closest('[data-fb-answer]')` is what still scopes this listener
+  // to feedback.js's own bars and leaves chat.js's own [data-vote] buttons
+  // (which carry no [data-fb-answer] ancestor) to chat.js's own listener.
+  const btn = e.target.closest('[data-vote]');
   if (!btn) return;
   const bar = btn.closest('[data-fb-answer]');
   if (!bar) return;
-  _sendAnswerVerdict(bar, btn.dataset.fbVerdict);
+  _sendAnswerVerdict(bar, Number(btn.dataset.vote));
 });
 
 function _watchRows() {

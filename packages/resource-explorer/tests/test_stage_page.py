@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from resource_explorer.members import _READERS
-from resource_explorer.registry import Project
+from resource_explorer.registry import DatabaseEntity, Project
 from resource_explorer.workflows.stage_page import (
     build_analyses_index,
     build_measurements,
@@ -157,6 +157,108 @@ class TestBuildMeasurements:
     def test_footer_says_run_date_not_recorded_when_never_run(self, reg, slug):
         m = build_measurements(reg, slug, "api_structure")
         assert "run date not recorded" in m["footer"]
+
+
+@pytest.fixture
+def db_slug(request):
+    """Same disambiguation trick as `slug` above, for a database row in the
+    same shared `databases` table."""
+    import hashlib
+    import re as _re
+    h = hashlib.sha1(request.node.nodeid.encode()).hexdigest()[:8]
+    base = _re.sub(r"[^a-z0-9]+", "_", request.node.name.lower())[:24]
+    return f"spdb_{base}_{h}"
+
+
+@pytest.fixture
+def db_reg(pg_registry, db_slug):
+    pg_registry.register_database(DatabaseEntity(
+        slug=db_slug, display_name=db_slug, db_type="postgresql",
+        host="localhost", port=5442, database_name=db_slug,
+    ))
+    return pg_registry
+
+
+class TestBuildMeasurementsForADatabase:
+    """Bug report 2026-09-23: "the numbers behind this" 404'd for a database
+    slug with "Project '<slug>' not found" — `build_measurements()` always
+    did a repo-only `registry.get()` lookup and always checked the analysis
+    id against repo's own `ANALYSIS_KINDS`, regardless of `entity_type`. The
+    fourth instance of PR #226/#233/#236's "resource-type never threaded
+    through" bug class. These pin the fix for the exact repro case: a
+    database slug, `row_count_snapshot`/`schema_inventory`."""
+
+    def test_unknown_database_slug_raises_lookup_error(self, pg_registry):
+        with pytest.raises(LookupError):
+            build_measurements(pg_registry, "no-such-database-at-all",
+                              "row_count_snapshot", entity_type="database")
+
+    def test_a_real_database_slug_is_found_not_404d_as_a_project(self, db_reg, db_slug):
+        # Before the fix this raised LookupError("Project '...' not found")
+        # even though the slug is a real, registered database.
+        m = build_measurements(db_reg, db_slug, "row_count_snapshot", entity_type="database")
+        assert m["analysis_id"] == "row_count_snapshot"
+
+    def test_unknown_analysis_id_for_database_raises_lookup_error(self, db_reg, db_slug):
+        with pytest.raises(LookupError):
+            build_measurements(db_reg, db_slug, "not_a_real_analysis", entity_type="database")
+
+    def test_repo_only_analysis_id_is_unknown_for_a_database(self, db_reg, db_slug):
+        # api_structure is real, but it's a REPO analysis id -- a database's
+        # own catalog (DATABASE_ANALYSIS_KINDS) must not recognise it.
+        with pytest.raises(LookupError):
+            build_measurements(db_reg, db_slug, "api_structure", entity_type="database")
+
+    def test_row_count_snapshot_returns_real_scalar_measurements(self, db_reg, db_slug):
+        # database_tables detail rows are what _row_count_snapshot_results
+        # (the database's own results_reader) reads -- no
+        # project_analysis_metrics/query_metrics involved at all, unlike repo.
+        db_reg.write_detail_rows(
+            "database_tables", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[
+                {"schema_name": "public", "table_name": "orders",
+                 "table_type": "BASE TABLE", "row_count": 100, "size_bytes": 200000},
+                {"schema_name": "public", "table_name": "customers",
+                 "table_type": "BASE TABLE", "row_count": 50, "size_bytes": 152320},
+            ],
+        )
+        m = build_measurements(db_reg, db_slug, "row_count_snapshot", entity_type="database")
+        assert m["not_applicable"] is False
+        by_name = {row["name"]: row for row in m["measurements"]}
+        assert by_name["table_count"]["value"] == 2
+        assert by_name["measured_count"]["value"] == 2
+        assert by_name["total_row_count"]["value"] == 150
+        assert by_name["total_size_bytes"]["value"] == 352320
+        # The per-table breakdown ("tables") is a nested list -- it belongs
+        # to the members drill-down, not a scalar measurement row.
+        assert "tables" not in by_name
+
+    def test_schema_inventory_returns_real_scalar_measurements(self, db_reg, db_slug):
+        db_reg.write_detail_rows(
+            "database_tables", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[{"schema_name": "public", "table_name": "orders",
+                   "table_type": "BASE TABLE", "row_count": 100}],
+        )
+        db_reg.write_detail_rows(
+            "database_columns", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[
+                {"schema_name": "public", "table_name": "orders", "column_name": "id"},
+                {"schema_name": "public", "table_name": "orders", "column_name": "total"},
+            ],
+        )
+        m = build_measurements(db_reg, db_slug, "schema_inventory", entity_type="database")
+        assert m["not_applicable"] is False
+        by_name = {row["name"]: row for row in m["measurements"]}
+        assert by_name["table_count"]["value"] == 1
+        assert by_name["column_count"]["value"] == 2
+
+    def test_no_data_yet_is_not_applicable_false_with_a_reason(self, db_reg, db_slug):
+        # Nothing written to database_tables yet -- "not recorded", not a
+        # findings-only analysis.
+        m = build_measurements(db_reg, db_slug, "row_count_snapshot", entity_type="database")
+        assert m["not_applicable"] is False
+        assert m["measurements"] == []
+        assert "has not recorded measurements" in m["reason"]
 
 
 class TestFetchStepCounts:

@@ -830,17 +830,26 @@ export const getAnalysisTrend = (slug, analysisId, metric = '') =>
  * where a value opens (a members list, or nothing to open). One call fills
  * both the in-pane table and the "the numbers behind this N" link's count.
  */
-export const getMeasurements = (slug, analysisId) =>
+// `entityType` defaults to 'repo' for existing callers — pass
+// `apiEntityType(state.resourceType)`-translated value at every /next
+// boundary crossing, same as `getAnswer`/`ask`/`askStream` above. Omitting
+// it used to mean this always 404'd for a database/filesystem slug (the
+// backend always did a repo-only lookup regardless of what was asked for);
+// see `build_measurements()`'s own docstring in stage_page.py.
+export const getMeasurements = (slug, analysisId, entityType = 'repo') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
-    encodeURIComponent(analysisId)}/measurements`);
+    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(entityType)}`);
 
 /** Every analysis this repo could run — the row plus what feeds its popover
  *  (stage, declared run time, availability, perspectives, ruleset link, the
  *  full description) in one call, so a description popover needs no second
- *  fetch (stage-page round, points 1-3). */
-export const getAnalysesIndex = (slug, stage = '') =>
-  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index${
-    stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
+ *  fetch (stage-page round, points 1-3).
+ *
+ *  `entityType` defaults to 'repo', same reasoning and same fix date as
+ *  `getMeasurements` above. */
+export const getAnalysesIndex = (slug, stage = '', entityType = 'repo') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index?entity_type=${encodeURIComponent(entityType)}${
+    stage ? `&stage=${encodeURIComponent(stage)}` : ''}`);
 
 /** Latest structured results for one analysis -- a raw dict whose shape
  *  differs per analysis_id (REPO_ANALYSIS_RESULTS_MAP's own reader
