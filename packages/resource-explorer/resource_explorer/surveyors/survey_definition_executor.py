@@ -1197,19 +1197,55 @@ class SurveyDefinitionExecutor:
         A step tagged `executes_at="egeria"` (or anything else that isn't
         "resource-explorer"/"prefect") has no business here; see that
         function's docstring for the live incident this guard fixes.
+
+        Passes the adapter's step registry into `build_plan` so PRODUCES
+        edges get folded into the Prefect task graph (§17.1's Prefect-side
+        gap — see `survey_execution_plan._add_produces_edges`). Callers
+        already route a definition with anything for the runtime resolver to
+        actually DO (`_any_step_needs_prerequisites`) to the local loop
+        instead of here, so what reaches this function is: definitions with
+        no unmet precondition today, plus whatever this folding now corrects
+        structurally at build time.
         """
         from resource_explorer.surveyors.survey_execution_plan import (
             CyclicPlanError,
+            MissingPrerequisiteError,
+            PrerequisiteTierError,
             build_plan,
             serialise,
         )
 
+        adapter = get_adapter(entity_type)
+        provider = getattr(adapter, "step_registry", None)
+        step_registry = None
+        if provider is not None:
+            try:
+                step_registry = provider() or {}
+            except Exception as exc:  # pragma: no cover - provider guard
+                log.debug("could not read the step registry for %s: %s",
+                          entity_type, exc)
+                # Explicit, not redundant: a registry that failed to load is
+                # the same as "not declared" for this call's purposes — no
+                # PRODUCES-folding, no tier check, `build_plan` behaves as it
+                # did before this change — and that fallback must be a
+                # decision this line makes, not merely a log line implying
+                # one.
+                step_registry = None
+
         try:
-            plan = build_plan(survey_def)
+            plan = build_plan(survey_def, step_registry=step_registry)
         except CyclicPlanError as exc:
             # Not a fallback case: the local loop would run a cyclic definition
             # in list order and report success for a survey that cannot be
             # ordered at all.
+            raise SurveyDefinitionExecutorError(str(exc)) from exc
+        except (MissingPrerequisiteError, PrerequisiteTierError) as exc:
+            # Also not a fallback case, and deliberately so (see
+            # `PrerequisiteTierError`'s docstring): silently falling back to
+            # the local loop here would hide a build-time-detectable problem
+            # behind "Prefect just wasn't reachable", which is exactly the
+            # ambiguity this function's own docstring says a silent fallback
+            # must not create.
             raise SurveyDefinitionExecutorError(str(exc)) from exc
 
         if not plan.steps:

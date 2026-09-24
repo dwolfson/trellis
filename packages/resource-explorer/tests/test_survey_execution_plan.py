@@ -17,6 +17,8 @@ import pytest
 
 from resource_explorer.surveyors.survey_execution_plan import (
     CyclicPlanError,
+    MissingPrerequisiteError,
+    PrerequisiteTierError,
     build_plan,
     serialise,
 )
@@ -140,6 +142,155 @@ def test_serialise_carries_exactly_what_the_flow_needs():
                        "executes_at": "resource-explorer",
                        "depends_on": ["triage"],
                        "guarded_by": {"triage": "needs_deep"}}
+
+
+# ── PRODUCES edges (design §17.1's Prefect-side gap) ────────────────────────
+#
+# Same technique test_prerequisite_resolver.py uses: a constructed registry
+# and a monkeypatched `step_produces._registries`/`step_preconditions.
+# PRECONDITIONS`, so these pin the ALGORITHM in `_add_produces_edges` rather
+# than any real step's declared cost or table.
+
+
+def _precondition(name, table, monkeypatch):
+    from resource_explorer.surveyors import step_preconditions as sp
+
+    monkeypatch.setitem(sp.PRECONDITIONS, name, sp.Precondition(
+        sp._needs_rows(table, name), table=table))
+
+
+@pytest.fixture
+def produces_world(monkeypatch):
+    """`consumer` needs `producer`'s table. Both api/low, so nothing here
+    should ever cross a tier by default — each test that wants a tier
+    mismatch changes exactly one cost."""
+    from resource_explorer.surveyors import step_produces
+    from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
+
+    registry = {
+        "consumer": StepInfo("consumer", None, "", [], fetch_cost="api", compute_cost="low",
+                             requires_context={"needs_thing": "consumer reads producer's rows"}),
+        "producer": StepInfo("producer", None, "", [], fetch_cost="api", compute_cost="low",
+                             produces=("thing_table",)),
+    }
+    _precondition("needs_thing", "thing_table", monkeypatch)
+    monkeypatch.setattr(step_produces, "_registries", lambda: {"repo": registry})
+    return registry
+
+
+def test_a_producer_already_scheduled_earlier_gets_no_new_edge(produces_world):
+    """The authored graph already runs `producer` before `consumer` — nothing
+    for PRODUCES-folding to add."""
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer")]
+    links = [FakeLink("producer", "consumer")]
+    plan = build_plan(FakeDefinition(steps=steps, links=links),
+                      step_registry=produces_world)
+    assert plan.by_key["consumer"].depends_on == ["producer"]
+    assert [s.step_key for s in plan.steps] == ["producer", "consumer"]
+
+
+def _no_op_steps_and_link():
+    """Two steps with nothing to do with `producer`/`consumer`, linked to each
+    other, present only so `links` is non-empty. `build_plan` infers a chain
+    from list order ONLY when a definition declares NO links at all — an
+    empty `links` list on a 2+-step definition would silently create its own
+    producer->consumer edge via that fallback, making a test pass for the
+    wrong reason. A harmless real link elsewhere keeps the "genuinely no
+    authored edge between these two" case honest."""
+    return ([FakeStep(guid="noop_a", re_analysis_step="noop_a"),
+             FakeStep(guid="noop_b", re_analysis_step="noop_b")],
+            FakeLink("noop_a", "noop_b"))
+
+
+def test_a_missing_producer_edge_is_added(produces_world):
+    """No authored link between the two at all — PRODUCES-folding must add
+    one, so Prefect schedules `producer` first."""
+    noop_steps, noop_link = _no_op_steps_and_link()
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer"), *noop_steps]
+    plan = build_plan(FakeDefinition(steps=steps, links=[noop_link]),
+                      step_registry=produces_world)
+    assert plan.by_key["consumer"].depends_on == ["producer"]
+    assert plan.by_key["producer"].depends_on == []
+    order = [s.step_key for s in plan.steps]
+    assert order.index("producer") < order.index("consumer")
+    # Not a guard — an unconditional dependency, same as an authored `Any` edge.
+    assert plan.by_key["consumer"].guarded_by == {}
+
+
+def test_a_producer_outside_the_definition_is_a_build_time_error(produces_world):
+    """`producer` is never one of this definition's own steps. Prefect cannot
+    schedule a task for a step it was not authored with — this cannot be
+    silently skipped the way the local resolver's dead-end can, because
+    nothing here re-checks stored data at runtime."""
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    with pytest.raises(MissingPrerequisiteError, match="producer"):
+        build_plan(FakeDefinition(steps=steps, links=[]),
+                  step_registry=produces_world)
+
+
+def test_a_cycle_between_produces_edges_raises_the_existing_cycle_error(
+    produces_world, monkeypatch,
+):
+    """`producer` itself needs `consumer`'s table — a cycle PRODUCES-folding
+    creates rather than one authored directly. Reuses `CyclicPlanError`
+    rather than inventing a second cycle error, since the failure mode (an
+    unorderable graph) is identical."""
+    from resource_explorer.surveyors import step_preconditions as sp
+    from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
+
+    produces_world["producer"] = StepInfo(
+        "producer", None, "", [], fetch_cost="api", compute_cost="low",
+        produces=("thing_table",),
+        requires_context={"needs_other": "producer reads consumer's rows"})
+    produces_world["consumer"] = StepInfo(
+        "consumer", None, "", [], fetch_cost="api", compute_cost="low",
+        produces=("other_table",),
+        requires_context={"needs_thing": "consumer reads producer's rows"})
+    _precondition("needs_other", "other_table", monkeypatch)
+
+    noop_steps, noop_link = _no_op_steps_and_link()
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer"), *noop_steps]
+    with pytest.raises(CyclicPlanError):
+        build_plan(FakeDefinition(steps=steps, links=[noop_link]),
+                  step_registry=produces_world)
+
+
+def test_a_producer_above_the_definitions_tier_is_a_build_time_error(produces_world):
+    """`producer` is raised to `download`, above `consumer`'s `api` tier. On
+    the local path this becomes a proposal the user confirms; a Prefect plan
+    has no such surface at build time, so this is the judgement call this
+    change makes: fail loudly, naming the mismatch, rather than silently
+    adding a tier the caller never budgeted for."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
+
+    produces_world["producer"] = StepInfo(
+        "producer", None, "", [], fetch_cost="download", compute_cost="low",
+        produces=("thing_table",))
+    noop_steps, noop_link = _no_op_steps_and_link()
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer"), *noop_steps]
+    with pytest.raises(PrerequisiteTierError, match="download"):
+        build_plan(FakeDefinition(steps=steps, links=[noop_link]),
+                  step_registry=produces_world)
+
+
+def test_no_step_registry_keeps_the_old_behaviour(produces_world):
+    """Omitting `step_registry` (every call site before this change) must not
+    start folding PRODUCES edges in — the whole point of the parameter being
+    optional. Authored here in the "wrong" order from PRODUCES' point of view
+    (`consumer` before `producer`) precisely so a silent reorder would be
+    caught: with no registry passed, `build_plan` has no way to know
+    `consumer` needs `producer`'s table at all, so the authored order must
+    survive untouched."""
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer")]
+    links = [FakeLink("consumer", "producer")]
+    plan = build_plan(FakeDefinition(steps=steps, links=links))
+    assert plan.by_key["producer"].depends_on == ["consumer"]
+    assert [s.step_key for s in plan.steps] == ["consumer", "producer"]
 
 
 def test_every_live_definition_plans_to_its_existing_order():
