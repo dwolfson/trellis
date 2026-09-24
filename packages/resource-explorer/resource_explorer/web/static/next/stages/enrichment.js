@@ -13,7 +13,7 @@
  */
 import { ago, whenMs } from '/static/next/format.js';
 import { getBulkFacts, saveEnrichmentField } from '/static/re-api.js';
-import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim } from '/static/next/app.js';
+import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -216,7 +216,7 @@ function renderEnrichmentForm(slug) {
         // naming themself -- not a blank. A blank owner is no owner.
         interim: key === 'owner' && !!value && value === me,
         source: kind === 'observation' ? 'user' : '',
-      });
+      }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
       renderEnrichmentForm(slug);
     } catch (err) {
@@ -229,7 +229,7 @@ function renderEnrichmentForm(slug) {
     try {
       const out = await saveEnrichmentField(slug, 'owner', {
         value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
-      });
+      }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), owner: out.field };
       renderEnrichmentForm(slug);
     } catch (err) {
@@ -242,7 +242,7 @@ function renderEnrichmentForm(slug) {
     try {
       const out = await saveEnrichmentField(slug, b.dataset.confirm, {
         value: b.dataset.value, kind: 'observation', source: b.dataset.source,
-      });
+      }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
       renderEnrichmentForm(slug);
     } catch (err) {

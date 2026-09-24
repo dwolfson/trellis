@@ -277,6 +277,15 @@ function _currentSlug() {
   return s && s !== 'no resource selected' ? s : '';
 }
 
+/** `#scope-slug`'s `data-entity-type`, set by app.js's `renderTopBar()`
+ *  alongside the slug it already reads from that same element — a plain DOM
+ *  read, not an app.js import, matching this module's stated independence
+ *  above. Defaults to 'repo': existing pages predate this attribute. */
+function _currentEntityType() {
+  const el = document.getElementById('scope-slug');
+  return (el && el.dataset.entityType) || 'repo';
+}
+
 function _attachTo(row) {
   if (!row) return;
   // Idempotence is keyed on the BAR, not on a flag on the row. app.js
@@ -355,6 +364,7 @@ async function _sendAnswerVerdict(bar, vote) {
         slug, question, verdict, comment,
         session_id: _sessionId(),
         page: location.pathname + location.search,
+        entity_type: _currentEntityType(),
       }),
     });
     if (!res.ok) {

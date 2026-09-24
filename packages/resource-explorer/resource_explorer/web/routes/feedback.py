@@ -144,16 +144,25 @@ class AnswerFeedback(BaseModel):
     analysis_id: str = ""
     session_id: str = ""
     page: str = ""
+    # Resource type of `slug` ('repo' | 'database' | 'filesystem'), same
+    # convention as `entity_type` elsewhere in this codebase. Defaults to
+    # "repo" for existing callers. Before this field existed, the route always
+    # resolved `slug` against `registry.get()` (the repo-only `projects`
+    # table) and `_analyses_for_question` always read the repo question
+    # catalog — so disagreeing with a database/filesystem question's answer
+    # 404'd the whole route outright, regardless of what the catalog actually
+    # names for that question.
+    entity_type: str = "repo"
 
 
-def _analyses_for_question(question: str) -> list[str]:
+def _analyses_for_question(question: str, entity_type: str = "repo") -> list[str]:
     """Which analyses the catalog says answer this question. Empty is a real
     answer — several questions are answered by a person or a direct field and
     name no analysis at all (see QuestionChecklistEntry.kind)."""
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     wanted = (question or "").strip().casefold()
-    for e in get_questions("repo"):
+    for e in get_questions(entity_type):
         if (e.get("question") or "").strip().casefold() == wanted:
             return list((e.get("answering") or {}).get("analysis_ids") or [])
     return []
@@ -171,6 +180,7 @@ async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
     """
     from resource_explorer.gaps import record_disagreement
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     verdict = (payload.verdict or "").strip().lower()
     if verdict not in VALID_VERDICTS:
@@ -183,10 +193,13 @@ async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
         raise HTTPException(status_code=400, detail="question is required")
 
     registry = ProjectRegistry()
-    if registry.get(payload.slug) is None:
-        raise HTTPException(status_code=404, detail=f"Project '{payload.slug}' not found")
+    entity_type = (payload.entity_type or "repo").strip()
+    if get_adapter(entity_type).get_entity(registry, payload.slug) is None:
+        raise HTTPException(
+            status_code=404, detail=f"{entity_type} '{payload.slug}' not found"
+        )
 
-    catalogued = _analyses_for_question(question)
+    catalogued = _analyses_for_question(question, entity_type)
     analysis_id = (payload.analysis_id or "").strip()
     if analysis_id and analysis_id not in catalogued:
         raise HTTPException(

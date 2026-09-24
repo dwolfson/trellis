@@ -772,6 +772,12 @@ function readEnvelope(entry, env) {
 
 function renderTopBar() {
   $('scope-slug').textContent = state.selectedSlug || 'no resource selected';
+  // `data-entity-type` lets feedback.js's Questions-checklist "Was this
+  // right?" bar (deliberately independent of this module, plain DOM reads
+  // only) attribute an answer-feedback POST to the right resource type
+  // without importing state itself. Kept alongside the slug it already reads
+  // off this same element so the two can never fall out of sync.
+  $('scope-slug').dataset.entityType = apiEntityType(state.resourceType) || 'repo';
   const inv = state.investigations.find((i) => i.slug === state.investigation);
   $('investigation-name').textContent = state.investigation
     ? (inv?.display_name || state.investigation)
@@ -4298,7 +4304,7 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
     b.disabled = true;
     b.textContent = 'Queueing…';
     try {
-      await enqueueBatch(analysisId, [slug], '');
+      await enqueueBatch(analysisId, [slug], '', apiEntityType(state.resourceType));
       b.textContent = 'Queued';
     } catch (err) {
       b.textContent = err.status === 401 ? 'Not signed in' : `Refused: ${err.message}`;
@@ -6139,7 +6145,7 @@ async function rerun(entry, i, { background = false } = {}) {
     // Enqueue and stop watching. The row says it is queued in the worker
     // and how to see the result; nothing here pretends to know when.
     try {
-      await runAnalysis(slug, analysisId);
+      await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
       state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
     } catch (err) {
       state.runsInFlight.delete(entry.question);
@@ -6150,7 +6156,7 @@ async function rerun(entry, i, { background = false } = {}) {
   }
 
   try {
-    const started = await runAnalysis(slug, analysisId);
+    const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
     const activityId = started.activity_id;
     state.runsInFlight.set(entry.question, { analysisId, activityId, label: `Running · ${analysisId}` });
     replaceRow(entry, i, state.answers.get(entry.question));

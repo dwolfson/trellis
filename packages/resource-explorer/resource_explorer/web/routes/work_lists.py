@@ -59,6 +59,13 @@ class BatchRunRequest(BaseModel):
     #: wins — the caller may be running over a filtered subset of the list.
     entity_slugs: list[str] | None = None
     work_list_slug: str = ""
+    #: Resource type of `entity_slugs` ('repo' | 'database' | 'filesystem').
+    #: Only consulted when `entity_slugs` is given explicitly — when the run
+    #: is over `work_list_slug`'s own members instead, that work list's own
+    #: `entity_type` column is authoritative and this is ignored, since a
+    #: work list is homogeneous by construction (`WorkListCreate.entity_type`).
+    #: Defaults to "repo" for existing callers, same as `WorkListCreate`.
+    entity_type: str = "repo"
 
 
 @router.get("/")
@@ -97,6 +104,7 @@ async def enqueue_batch(body: BatchRunRequest) -> dict:
     """
     wls = WorkLists()
     slugs = body.entity_slugs
+    entity_type = body.entity_type
     if slugs is None:
         if not body.work_list_slug:
             raise HTTPException(
@@ -107,15 +115,25 @@ async def enqueue_batch(body: BatchRunRequest) -> dict:
             raise HTTPException(
                 status_code=404, detail=f"work list {body.work_list_slug!r} not found")
         slugs = [m["entity_slug"] for m in wl["members"]]
+        # The work list's OWN entity_type is authoritative here — a work list
+        # is homogeneous by construction, and `body.entity_type` was never
+        # asked for when the caller is running over the list's own members
+        # rather than an explicit `entity_slugs` subset.
+        entity_type = wl["entity_type"]
     if not slugs:
         raise HTTPException(status_code=400, detail="nothing to run — the set is empty")
 
     # Validate the analysis BEFORE queueing anything, so an unknown id is one
     # 400 rather than N rows that each fail a minute later in another process.
+    #
+    # `entity_type` — resolved against THIS resource type's catalog and step
+    # map, not always the repo's. Before this, a database/filesystem batch
+    # validated (and, worse, resolved steps to run) against the repo catalog
+    # regardless of what `entity_slugs` actually were.
     from resource_explorer.workflows.analysis import resolve_analysis_plan
 
     try:
-        resolve_analysis_plan(body.analysis_id)
+        resolve_analysis_plan(body.analysis_id, entity_type)
     except Exception as exc:
         raise HTTPException(
             status_code=400,
@@ -123,7 +141,8 @@ async def enqueue_batch(body: BatchRunRequest) -> dict:
 
     return wls.enqueue_batch(
         body.analysis_id, slugs,
-        work_list_slug=body.work_list_slug, requested_by=_requested_by())
+        work_list_slug=body.work_list_slug, requested_by=_requested_by(),
+        entity_type=entity_type)
 
 
 @router.get("/runs/sets/{set_id}")

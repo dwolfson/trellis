@@ -385,7 +385,7 @@ async function loadGrid(ctx) {
   // `measured_at`, so the grid can say how current it is before it knows what
   // it says.
   try {
-    const proj = await getBulkStates(slugs, needed);
+    const proj = await getBulkStates(slugs, needed, wl.entity_type || 'repo');
     grid.states = proj.states || {};
     renderGrid();
   } catch (err) {
@@ -399,7 +399,7 @@ async function loadGrid(ctx) {
 
   // PASS 2 — the full read for the analyses that are cheap to read.
   try {
-    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); }
+    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick, wl.entity_type || 'repo')); }
   } catch (err) {
     grid.slowError = err.message;
   }
@@ -440,7 +440,7 @@ async function resolveInBackground(ctx, slugs, analyses) {
     const chunk = slugs.slice(i, i + CHUNK);
     const started = Date.now();
     try {
-      const bulk = await getBulkFacts(chunk, analyses);
+      const bulk = await getBulkFacts(chunk, analyses, grid.workList?.entity_type || 'repo');
       if (token !== grid.bgToken) return;
       for (const slug of chunk) {
         const facts = bulk.subjects?.[slug];
@@ -1514,7 +1514,7 @@ async function openCellDetail(slug, qi, ctx) {
   }
   let facts;
   try {
-    const res = await getBulkFacts([slug], ids);
+    const res = await getBulkFacts([slug], ids, grid.workList?.entity_type || 'repo');
     facts = res.subjects?.[slug] || [];
   } catch (err) {
     body.innerHTML = why + `<p class="text-state-warn">Could not read the results:

@@ -314,7 +314,8 @@ class WorkLists:
     # ── Batch runs ──────────────────────────────────────────────────────
 
     def enqueue_batch(self, analysis_id: str, entity_slugs: Iterable[str], *,
-                      work_list_slug: str = "", requested_by: str = "") -> dict:
+                      work_list_slug: str = "", requested_by: str = "",
+                      entity_type: str = "repo") -> dict:
         """Enqueue one analysis across a SET of resources, and return a set id.
 
         The queue already does the hard half of this — `SKIP LOCKED` claims
@@ -325,6 +326,12 @@ class WorkLists:
         One row per resource, so a single failure is one row's failure and the
         rest still run. The set id is ours, not the queue's: the queue has no
         concept of a set and does not need one.
+
+        `entity_type` defaults to "repo" for existing callers — a batch is
+        homogeneous (one work list, one entity_type, same as the `work_lists`
+        table's own column), and this is stored on each row's `target` dict
+        so `run_queue.py::_handle_analysis_run` resolves the right resource
+        type's analysis steps instead of always the repo's.
         """
         slugs = list(dict.fromkeys(entity_slugs))
         if not slugs:
@@ -335,7 +342,7 @@ class WorkLists:
         for entity_slug in slugs:
             run_id = self.registry.enqueue_run(
                 "analysis_run",
-                {"slug": entity_slug, "analysis_id": analysis_id},
+                {"slug": entity_slug, "analysis_id": analysis_id, "entity_type": entity_type},
                 requested_by=requested_by,
             )
             enqueued.append({"run_id": run_id, "entity_slug": entity_slug})

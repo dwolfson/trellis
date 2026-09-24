@@ -146,6 +146,10 @@ def _handle_analysis_run(target: dict, result_ref: str) -> RunOutcome:
     result = execute_and_record_analysis(
         target["slug"], target["analysis_id"], result_ref,
         publish=target.get("publish"),
+        # Default "repo" for a row enqueued before `entity_type` was added to
+        # `WorkLists.enqueue_batch`'s target dict — unchanged behaviour for
+        # any row already queued.
+        entity_type=target.get("entity_type", "repo"),
     )
     return RunOutcome(
         state="succeeded" if result.status == "ok" else "failed",
