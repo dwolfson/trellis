@@ -464,6 +464,163 @@ def execute_and_record_stage_batch(slug: str, stage: str, step_keys: list[str],
     return result
 
 
+@dataclass
+class DatabaseAnalysisRunResult:
+    """What one database per-card analysis run concluded.
+
+    Deliberately its own (smaller) dataclass rather than a reuse of
+    `AnalysisRunResult` above: that one's `published`/`steps_seconds`/
+    `publish_mode`/`publish_run_id` fields all describe repo's auto-publish-
+    on-run behaviour (`run_analysis`'s `has_assigned_egeria_project("repo",
+    slug)` gate), which a database analysis run does not have — publishing a
+    database survey to Egeria stays its own explicit `POST /{slug}/publish`
+    action (`web/routes/databases.py`), unchanged by this. Reusing the repo
+    dataclass would either carry fields that are always `None`/`"not-
+    attempted"` for every database row, or invite a future edit to wire up
+    auto-publish for database runs by copying repo's gate verbatim — which
+    would be wrong, since it is a genuinely different, deliberate design
+    choice, not a gap.
+    """
+
+    status: str  # "ok" | "error"
+    summary: str = ""
+    error: str = ""
+    annotations: list[dict] = field(default_factory=list)
+
+
+def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run one database per-card analysis's mapped step(s) — the database
+    equivalent of `run_analysis` above.
+
+    Two local shapes, mirroring `web/routes/databases.py`'s
+    `run_single_database_analysis` (which now only validates synchronously
+    and enqueues; this is what actually runs, from the run queue worker):
+
+    * `db_derived` (Phase 1 slice 9) — zero-fetch, reads stored rows only,
+      needs no credentials. `run_db_derived` persists nothing itself (it
+      never has — see its own module docstring); this function's only new
+      behaviour versus the old inline route is recording the run onto the
+      activity entry.
+    * Everything in `DATABASE_ANALYSIS_STEP_MAP` — needs the database's
+      stored credentials and actually opens a connection via
+      `run_database_survey`.
+
+    Never raises for an analysis-level failure — that comes back as
+    `status="error"`, exactly like `run_analysis` — only for something
+    genuinely unexpected, which the caller (`execute_and_record_database_
+    analysis` below) catches and records.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_ANALYSIS_STEP_MAP,
+        run_database_survey,
+    )
+    from resource_explorer.surveyors.database.db_derived import (
+        DB_DERIVED_ANALYSES,
+        run_db_derived,
+    )
+
+    registry = registry or ProjectRegistry()
+    db = registry.get_database(slug)
+    if not db:
+        # Can't happen when the route checked synchronously first — but this
+        # now also runs from a queue worker after the enqueue, so "the world
+        # has not moved" is a weaker assumption than it was, same reasoning
+        # as run_analysis's own re-check above.
+        return DatabaseAnalysisRunResult(status="error", error=f"Database '{slug}' not found")
+
+    from resource_explorer.surveyors.survey_report import summarise_annotations
+
+    if analysis_id in DB_DERIVED_ANALYSES:
+        try:
+            derived_result = run_db_derived(registry, slug)
+        except Exception as exc:
+            return DatabaseAnalysisRunResult(status="error", error=str(exc))
+        check = (derived_result.get("derived") or {}).get(analysis_id) or {}
+        annotations = derived_result.get("annotations") or []
+        try:
+            ann_summary = summarise_annotations(annotations)
+        except Exception as exc:  # a display-summary failure must not fail a real result
+            log.warning("Could not summarise db_derived annotations for %s/%s: %s", slug, analysis_id, exc)
+            ann_summary = []
+        return DatabaseAnalysisRunResult(
+            status="ok",
+            summary=(
+                f"{len(annotations)} annotation(s) derived from stored rows (no fetch). "
+                f"{analysis_id}: {check.get('state', 'unknown')}."
+            ),
+            annotations=ann_summary,
+        )
+
+    if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+        return DatabaseAnalysisRunResult(
+            status="error",
+            error=f"Analysis '{analysis_id}' has no local survey step(s) mapped.",
+        )
+
+    if not db.db_user or not db.db_password:
+        return DatabaseAnalysisRunResult(
+            status="error",
+            error="No stored database credentials — register the database with "
+                  "db_user/db_password, or run a full survey with credentials, first.",
+        )
+
+    steps = DATABASE_ANALYSIS_STEP_MAP[analysis_id]
+    try:
+        result = run_database_survey(
+            slug, credentials={"user": db.db_user, "password": db.db_password},
+            registry=registry, steps=steps,
+        )
+    except Exception as exc:
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+
+    non_fatal = result.get("errors") or []
+    annotations = result.get("annotations") or []
+    try:
+        ann_summary = summarise_annotations(annotations)
+    except Exception as exc:
+        log.warning("Could not summarise database annotations for %s/%s: %s", slug, analysis_id, exc)
+        ann_summary = []
+    return DatabaseAnalysisRunResult(
+        status="ok",
+        summary=f"{len(annotations)} annotation(s)." + (
+            f" ({len(non_fatal)} non-fatal error(s))" if non_fatal else ""
+        ),
+        annotations=ann_summary,
+    )
+
+
+def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_id: str,
+                                          *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run one database analysis and write its terminal status onto
+    `activity_id` — the database equivalent of `execute_and_record_analysis`
+    above, called from the run queue's `database_analysis_run` handler
+    (run_queue.py::_handle_database_analysis_run)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = registry or ProjectRegistry()
+    try:
+        result = run_database_analysis(slug, analysis_id, registry=registry)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected
+        log.exception("Database analysis run crashed for %s/%s", slug, analysis_id)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
+            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}),
+        )
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+
+    detail = {"analysis_id": analysis_id, "published": None}
+    if result.status == "error":
+        detail["error"] = result.error or result.summary
+    else:
+        detail["message"] = result.summary
+    registry.update_activity_status(
+        activity_id, result.status, summary=result.summary or result.error or "",
+        detail=json.dumps(detail), annotations=result.annotations or None,
+    )
+    return result
+
+
 def _humanise_age(seconds: float) -> str:
     """"3 minutes ago" / "2 hours ago" / "6 days ago" — coarse on purpose. The
     first version printed minutes at every scale and produced "1827 minutes

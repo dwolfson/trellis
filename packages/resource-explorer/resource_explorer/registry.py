@@ -3482,6 +3482,7 @@ class ProjectRegistry:
     #: whose kind has no handler fails loudly rather than sitting queued for ever.
     RUN_KINDS = (
         "analysis_run",
+        "database_analysis_run",
         "survey_definition_run",
         "scouting_scan",
         "stage_batch",
