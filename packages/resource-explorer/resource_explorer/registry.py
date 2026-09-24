@@ -1577,6 +1577,42 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_symbols_parent_class "
                 "ON project_code_symbols(project_slug, parent_class)"
             )
+            # project_code_markers — DESIGN-INTERFACE-SURFACE-IMPLEMENTED-
+            # RUNG.md §3.1/Decisions §2. A separate table from
+            # project_code_symbols, not columns on it: that table's key is
+            # UNIQUE(project_slug, file_path, qualified_name), one row per
+            # symbol, and a single handler can carry several registrations
+            # (`@app.get(...)` and `@app.post(...)` on one function is
+            # ordinary FastAPI) — columns would force a lossy flattening on
+            # day one. A marker is a fact ABOUT a symbol, the same
+            # relationship project_code_relationships already models with
+            # its own table.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_code_markers (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug   TEXT NOT NULL,
+                    file_path      TEXT NOT NULL,
+                    start_line     INTEGER DEFAULT 0,
+                    language       TEXT NOT NULL,
+                    marker_kind    TEXT NOT NULL,
+                    framework      TEXT DEFAULT '',
+                    interface_kind TEXT NOT NULL,
+                    detail         TEXT DEFAULT '',
+                    qualified_name TEXT DEFAULT '',
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            # (project_slug, interface_kind) — how interface_surface reads;
+            # (project_slug, qualified_name) — the join back to
+            # project_code_symbols.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_markers_slug_interface_kind "
+                "ON project_code_markers(project_slug, interface_kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_markers_slug_qualified_name "
+                "ON project_code_markers(project_slug, qualified_name)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_code_relationships (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4757,6 +4793,71 @@ class ProjectRegistry:
                     "DELETE FROM project_code_relationships WHERE project_slug = ?", (slug,)
                 )
 
+    def upsert_code_markers(self, resource_slug: str, markers: list) -> None:
+        """Insert extracted code markers (route/annotation registrations —
+        DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md §3.1). markers is a list
+        of CodeMarker dataclasses (resource_explorer/ingestion/
+        code_symbol_extractor.py). No UNIQUE constraint / ON CONFLICT here,
+        unlike project_code_symbols: one symbol legitimately carries several
+        registrations (`@app.get(...)` and `@app.post(...)` on the same
+        handler), so plain INSERT after clear_code_markers()'s per-language
+        DELETE is the whole rewrite — no upsert to merge."""
+        if not markers:
+            return
+        slug = self._normalize_slug(resource_slug)
+        rows = [
+            (
+                slug, m.file_path, m.start_line, m.language, m.marker_kind,
+                m.framework, m.interface_kind, m.detail, m.qualified_name,
+            )
+            for m in markers
+        ]
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_code_markers
+                   (project_slug, file_path, start_line, language, marker_kind,
+                    framework, interface_kind, detail, qualified_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+
+    def clear_code_markers(self, resource_slug: str, language: str | None = None) -> None:
+        """Remove marker rows — mirrors clear_code_symbols exactly (delete-
+        then-reinsert per language keeps a rerun from accumulating stale
+        duplicate markers)."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            if language:
+                conn.execute(
+                    "DELETE FROM project_code_markers WHERE project_slug = ? AND language = ?",
+                    (slug, language),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM project_code_markers WHERE project_slug = ?", (slug,)
+                )
+
+    def get_code_markers(self, resource_slug: str, interface_kind: str | None = None) -> list[dict]:
+        """Marker rows for a project, optionally filtered to one
+        interface_kind — interface_surface's primary read path."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            if interface_kind:
+                rows = conn.execute(
+                    "SELECT file_path, start_line, language, marker_kind, framework, "
+                    "interface_kind, detail, qualified_name FROM project_code_markers "
+                    "WHERE project_slug = ? AND interface_kind = ?",
+                    (slug, interface_kind),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT file_path, start_line, language, marker_kind, framework, "
+                    "interface_kind, detail, qualified_name FROM project_code_markers "
+                    "WHERE project_slug = ?",
+                    (slug,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_code_symbol_file_paths(self, resource_slug: str) -> list[str]:
         """Distinct file paths with at least one indexed code symbol —
         D2(c) (docs/repo-survey-catalog-completion-plan.md): a confirmed
@@ -4825,6 +4926,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_commits WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_symbols WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_relationships WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_code_markers WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
@@ -4875,7 +4977,7 @@ class ProjectRegistry:
     # because nothing enforces referential integrity on them.
     _PROJECT_SLUG_TABLES: tuple[str, ...] = (
         "project_stats", "project_commits", "project_code_symbols",
-        "project_code_relationships", "project_aliases",
+        "project_code_relationships", "project_code_markers", "project_aliases",
         "project_contributor_stats", "conversation_history", "context_compiles",
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",

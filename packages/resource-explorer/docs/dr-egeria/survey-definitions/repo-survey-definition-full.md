@@ -671,7 +671,7 @@ Full Survey (all steps) — Repo Symbol Extraction
 GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
 
 ### Description
-Extracts class/function/method symbols (tree-sitter/ast) for every supported language, refreshing project_code_symbols/project_code_relationships — D5's self-contained microflow closing the bug where those tables were only ever populated by RAG ingestion, never by a survey step.
+Extracts class/function/method symbols (tree-sitter/ast) for every supported language, refreshing project_code_symbols/project_code_relationships — D5's self-contained microflow closing the bug where those tables were only ever populated by RAG ingestion, never by a survey step. Also extracts decorator/annotation registrations (route/rpc/resolver/message-handler) for Python and Java into project_code_markers.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

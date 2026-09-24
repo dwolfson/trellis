@@ -38,14 +38,23 @@ producing a confident sentence the repository itself contradicts.
                `__main__.py` under the distribution's own package
                (deployment_evidence's `dunder_main` evidence, itself
                path-only, no content read) is implemented-CLI evidence with
-               no declared entry point. Where no prior step recorded the
-               fact (FastAPI/Flask/Starlette route decorators, grpc service
-               methods, graphql resolvers — nothing in this codebase records
-               those; `arch_recovery`'s ast-grep code markers do, but that
-               walk fetches a fresh zipball and is not Discovery-tier, so
-               its output is not a fact this zero-fetch analysis may read),
-               the rung is reported `could_not_check` with the reason, and
-               the finding SAYS SO rather than silently guessing `implied`.
+               no declared entry point. For the five route-like kinds
+               (http_api, grpc, graphql, messaging, soap), evidence is read
+               from `project_code_markers` — decorator/annotation
+               registrations `repo_symbol_extraction` records for Python and
+               Java (DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md) — and,
+               as a secondary source, `architecture_interfaces` port
+               findings (`arch_recovery`'s FastAPI route count). Both are
+               reads of rows another step already wrote — never a second
+               fetch or a second parse — same shape as `distribution`/
+               `deployment_evidence` above. Where neither source has a row
+               for this repo (`repo_symbol_extraction` has not run, or its
+               languages are outside marker coverage), the rung is reported
+               `could_not_check` with the reason, and the finding SAYS SO
+               rather than silently guessing `implied`. Where the capture
+               HAS run and covered a marker-capable language but found no
+               registration for a kind, that is a real measured zero, not a
+               could_not_check.
   implied      a dependency suggests an interface and nothing confirms it —
                and only reached when neither higher rung applies for that
                interface kind.
@@ -62,6 +71,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from resource_explorer.ingestion.code_symbol_extractor import MARKER_CAPABLE_LANGUAGES
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
@@ -132,20 +142,99 @@ _DEPENDENCY_SIGNALS = {
     "cli": {"typer", "click", "clap", "cobra", "commander", "picocli"},
 }
 
-#: Interface kinds for which "implemented" would mean route/handler/service-
-#: method registrations in code — no survey step at Discovery tier records
-#: this (see module docstring). `cli` is deliberately absent: a `__main__.py`
-#: under the distribution's own package IS recorded, by deployment_evidence's
-#: `dunder_main` evidence, so cli's implemented rung can actually be checked.
-_ROUTE_LIKE_KINDS = {"http_api", "grpc", "graphql", "messaging", "soap"}
+#: Interface kinds for which "implemented" means route/handler/service-
+#: method registrations in code (see module docstring). `cli` is
+#: deliberately absent: a `__main__.py` under the distribution's own package
+#: IS recorded, by deployment_evidence's `dunder_main` evidence, so cli's
+#: implemented rung can actually be checked without project_code_markers.
+#:
+#: Renamed from `_ROUTE_LIKE_KINDS` (DESIGN-INTERFACE-SURFACE-IMPLEMENTED-
+#: RUNG.md §3.2) — it was doing two jobs, naming the kinds that need
+#: registration evidence AND standing in for "cannot be checked". Now that
+#: project_code_markers can answer some of these, the two are split: this
+#: set still names exactly the same kinds, and `_could_not_check_reason()`
+#: below computes the second job per repo instead of being baked in here.
+_REGISTRATION_KINDS = {"http_api", "grpc", "graphql", "messaging", "soap"}
 
-_COULD_NOT_CHECK_REASON = {
-    "http_api": "route decorators are not recorded",
-    "grpc": "gRPC service method registrations are not recorded",
-    "graphql": "GraphQL resolver registrations are not recorded",
-    "messaging": "message-handler/consumer registrations are not recorded",
-    "soap": "SOAP service-method bindings are not recorded",
+#: `architecture_interfaces` port protocol -> the interface_surface kind it
+#: proves (§1b/§3.2). Thrift has no dedicated interface_surface kind of its
+#: own — mapped to "grpc" as the closest existing bucket (both are IDL-based
+#: binary RPC frameworks); a judgement call, not a specified mapping.
+_PORT_PROTOCOL_TO_INTERFACE_KIND = {
+    "HTTP/REST": "http_api",
+    "gRPC": "grpc",
+    "GraphQL": "graphql",
+    "Thrift": "grpc",
 }
+
+
+def _could_not_check_reason(capture_coverage: dict) -> str:
+    """Per-repo reason a route-like kind's `implemented` rung could not be
+    checked — replaces the old permanent, pipeline-wide strings (§3.2: this
+    was "the part most at risk of being cleaned up during implementation").
+
+    `capture_coverage` is {"has_run": bool, "languages_present": [...],
+    "marker_capable_languages_present": [...]} — see
+    InterfaceSurfaceSurveyor._capture_coverage()."""
+    if not capture_coverage.get("has_run"):
+        return "no code-marker extraction has run for this repository"
+    uncovered = sorted(
+        l for l in capture_coverage.get("languages_present", [])
+        if l not in MARKER_CAPABLE_LANGUAGES
+    )
+    if uncovered:
+        return f"route registrations are not captured for {', '.join(uncovered)}"
+    # has_run but no languages at all recorded — an edge case (e.g. a repo
+    # with a populated file inventory but no source files any extractor
+    # recognized), stated rather than defaulting to a stale-sounding reason.
+    return "route registrations are not captured for this repository's languages"
+
+
+_NO_CAPTURE_COVERAGE = {"has_run": False, "languages_present": [],
+                          "marker_capable_languages_present": []}
+
+
+def _registrations(marker_rows: list[dict] | None,
+                    arch_interface_details: list[dict] | None) -> dict[str, list[dict]]:
+    """Registration evidence keyed by interface_kind, read in preference
+    order (§3.2):
+
+    1. `project_code_markers` rows for the slug — the new, general fact.
+    2. `architecture_interfaces` findings with `detail.kind == "port"` and a
+       protocol in `_PORT_PROTOCOL_TO_INTERFACE_KIND` — §1b, a real,
+       already-computed fact from `arch_recovery` (FastAPI route counts via
+       ast-grep), worth reading on its own even before markers exist for a
+       given repo, but FastAPI-only and gated on `repo_arch_detect` having
+       run.
+
+    Both are reads of already-stored rows, never a fetch or a re-parse.
+    Where a marker-derived finding already answers a kind, the arch-
+    interfaces count for that SAME kind is skipped rather than duplicated —
+    project_code_markers is the general-purpose, multi-framework source."""
+    out: dict[str, list[dict]] = {}
+    for row in marker_rows or []:
+        kind = row.get("interface_kind")
+        if not kind:
+            continue
+        value = row.get("detail") or row.get("qualified_name") or row.get("file_path", "")
+        out.setdefault(kind, []).append({
+            "kind": "code_marker", "value": value,
+            "source_analysis": "project_code_markers", "path": row.get("file_path", ""),
+            "framework": row.get("framework", ""),
+        })
+    for detail in arch_interface_details or []:
+        if detail.get("kind") != "port":
+            continue
+        kind = _PORT_PROTOCOL_TO_INTERFACE_KIND.get(detail.get("protocol") or "")
+        if not kind or kind in out:
+            continue
+        out.setdefault(kind, []).append({
+            "kind": "architecture_interfaces_port",
+            "value": detail.get("component", ""),
+            "source_analysis": "architecture_interfaces", "path": "",
+            "operation_count": (detail.get("additionalProperties") or {}).get("operationCount"),
+        })
+    return out
 
 #: Trees whose contents are not this project's published contract.
 #:
@@ -211,21 +300,31 @@ def detect(
     file_paths: list, dependency_names: list,
     distribution_details: list | None = None,
     deployment_evidence_details: list | None = None,
+    marker_rows: list | None = None,
+    arch_interface_details: list | None = None,
+    capture_coverage: dict | None = None,
 ) -> list:
     """Interface findings from paths, dependencies, and the entry-point/
-    deployment facts other walks already recorded — evidence kept apart, and
-    every finding's `detail` keeps `evidence` as a list of {kind, value,
-    source_analysis} so a reader can see WHERE a rung came from, not just
-    which rung it landed on.
+    deployment/registration facts other walks already recorded — evidence
+    kept apart, and every finding's `detail` keeps `evidence` as a list of
+    {kind, value, source_analysis} so a reader can see WHERE a rung came
+    from, not just which rung it landed on.
 
     `distribution_details` / `deployment_evidence_details` are the `detail`
     dicts from `project_analysis_findings` kind="distribution" / kind=
-    "deployment_evidence" rows — never re-parsed manifests or re-walked
-    trees. Both default to `None` (treated as empty) so every existing call
-    site — and the pre-existing tests written before those parameters
+    "deployment_evidence" rows. `marker_rows` are `project_code_markers`
+    rows for the slug; `arch_interface_details` are the `detail` dicts from
+    kind="architecture_interfaces" rows. `capture_coverage` is
+    {"has_run": bool, "languages_present": [...],
+    "marker_capable_languages_present": [...]} — see
+    InterfaceSurfaceSurveyor._capture_coverage(). None/absence for any of
+    these is treated as empty/never-run, never re-parsed manifests, re-
+    walked trees or a second fetch. All default to `None` so every existing
+    call site — and the pre-existing tests written before these parameters
     existed — keeps working unchanged.
     """
     out: list = []
+    capture_coverage = capture_coverage or _NO_CAPTURE_COVERAGE
 
     # ── specs: declared via a committed contract ─────────────────────────
     specs: dict = {}
@@ -268,8 +367,30 @@ def detect(
             {"evidence": cli_implemented, "spec_path": "", "routes": None},
         ))
 
+    # ── route-like kinds: implemented via code-marker/arch-interface
+    # registrations, when not already declared via a spec ────────────────
+    registrations = _registrations(marker_rows, arch_interface_details)
+    implemented_registration_kinds: set = set()
+    for interface in sorted(_REGISTRATION_KINDS):
+        regs = registrations.get(interface)
+        if not regs or interface in specs:
+            continue
+        implemented_registration_kinds.add(interface)
+        modules = sorted({r["path"] for r in regs if r.get("path")})
+        summary = (f"{len(regs)} registration(s) found in code"
+                   + (f", across {', '.join(modules[:3])}"
+                      + (" …" if len(modules) > 3 else "") if modules else ""))
+        out.append(_finding(
+            interface, IMPLEMENTED, summary,
+            {"evidence": regs, "spec_path": "",
+             "routes": {"count": len(regs), "modules": modules[:20],
+                        "could_not_check_reason": None}},
+        ))
+
     # ── dependencies: weaker evidence, only when no higher rung landed ────
-    already_ranked = specs.keys() | ({"cli"} if (cli_declared or cli_implemented) else set())
+    already_ranked = (specs.keys()
+                       | ({"cli"} if (cli_declared or cli_implemented) else set())
+                       | implemented_registration_kinds)
     names = {(n or "").lower().split("[")[0] for n in dependency_names}
     for interface, signals in sorted(_DEPENDENCY_SIGNALS.items()):
         matched = sorted(names & signals)
@@ -283,14 +404,22 @@ def detect(
         summary = (f"Depends on {', '.join(matched[:3])} — suggests a "
                    f"{interface.replace('_', ' ')}, but nothing in the repo "
                    "declares or implements one.")
-        if interface in _ROUTE_LIKE_KINDS:
-            # The honest gap this rewrite exists to name: whether the
-            # dependency is actually EXPOSED as a route/handler/service
-            # method needs code content no Discovery-tier step recorded.
-            # Reported, not guessed past.
-            reason = _COULD_NOT_CHECK_REASON[interface]
-            detail["routes"] = {"count": None, "modules": [], "could_not_check_reason": reason}
-            summary += f" Whether it is implemented could not be checked: {reason}."
+        if interface in _REGISTRATION_KINDS:
+            # Three outcomes, not two (§3.2's table) — collapsing this back
+            # to a permanent could_not_check string is exactly the
+            # regression the design doc calls out as most likely.
+            if (capture_coverage.get("has_run")
+                    and capture_coverage.get("marker_capable_languages_present")):
+                # The capture ran and covered a marker-capable language, and
+                # genuinely found no registration for this kind — a real
+                # finding about the repository, not about our coverage of it.
+                detail["routes"] = {"count": 0, "modules": [], "could_not_check_reason": None}
+                summary += (" Code-marker extraction has run and found no "
+                            "route/handler registration for this dependency.")
+            else:
+                reason = _could_not_check_reason(capture_coverage)
+                detail["routes"] = {"count": None, "modules": [], "could_not_check_reason": reason}
+                summary += f" Whether it is implemented could not be checked: {reason}."
         else:
             detail["routes"] = None
         out.append(_finding(interface, IMPLIED, summary, detail))
@@ -347,6 +476,31 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    @staticmethod
+    def _capture_coverage(metrics: dict) -> dict:
+        """From `registry.query_metrics(slug, "symbol_extraction")` — the
+        backfill-flag read (DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md
+        Decisions §2). `metrics` is `{}` when repo_symbol_extraction has
+        never run for this repo.
+
+        `has_run` keys on the `markers_captured` flag the surveyor writes
+        into its metric's `detail`, NOT on the metric row merely existing:
+        a repo surveyed before project_code_markers shipped has a
+        symbol_extraction metric row with no such flag, and reading that
+        as "capture ran" would misreport a pre-existing repo's genuine
+        absence-of-capture as a measured zero — the exact backfill trap the
+        design doc names."""
+        if not metrics:
+            return dict(_NO_CAPTURE_COVERAGE)
+        detail = metrics.get("detail") or {}
+        has_run = bool(detail.get("markers_captured"))
+        languages_present = sorted((detail.get("by_language") or {}).keys())
+        capable_present = sorted(
+            l for l in languages_present if l in MARKER_CAPABLE_LANGUAGES
+        )
+        return {"has_run": has_run, "languages_present": languages_present,
+                "marker_capable_languages_present": capable_present}
+
     def run(self) -> list[Annotation]:
         out: list[Annotation] = []
         try:
@@ -367,6 +521,21 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
             deployment_evidence_details = [self._detail(r) for r in
                                            (self.registry.query_findings(slug, "deployment_evidence") or [])
                                            if r.get("check_name") == "distribution"]
+
+            # project_code_markers + architecture_interfaces — the two
+            # sources §3.2 reads for the implemented rung on the five
+            # route-like kinds, in preference order. Both are second READS
+            # of tables another step already wrote (repo_symbol_extraction,
+            # repo_arch_detect respectively) — no fetch here either way.
+            # capture_coverage backs the three-outcome could_not_check vs.
+            # measured-zero split; see _capture_coverage's own docstring for
+            # why it keys on the metric's markers_captured flag rather than
+            # the metric row's mere existence.
+            marker_rows = self.registry.get_code_markers(slug)
+            arch_interface_details = [self._detail(r) for r in
+                                      (self.registry.query_findings(slug, "architecture_interfaces") or [])]
+            capture_coverage = self._capture_coverage(
+                self.registry.query_metrics(slug, "symbol_extraction"))
 
             if not paths and not deps:
                 # Neither input exists. "No interfaces" would be a finding about
@@ -393,7 +562,8 @@ summary=_NOTHING_TO_ASSESS,
                 ))
                 return out
 
-            findings = detect(paths, deps, distribution_details, deployment_evidence_details)
+            findings = detect(paths, deps, distribution_details, deployment_evidence_details,
+                              marker_rows, arch_interface_details, capture_coverage)
             self.registry.upsert_finding(slug, "interface_surface", findings,
                                          surveyed_at=self._surveyed_at)
 
@@ -415,8 +585,10 @@ summary=_NOTHING_TO_ASSESS,
             # generated at build time is invisible here.
             summary += (f" Read from {len(paths)} recorded file(s), "
                         f"{len(deps)} declared dependenc(ies), "
-                        f"{len(distribution_details)} distribution(s), and "
-                        f"{len(deployment_evidence_details)} deployment-evidence row(s).")
+                        f"{len(distribution_details)} distribution(s), "
+                        f"{len(deployment_evidence_details)} deployment-evidence row(s), "
+                        f"{len(marker_rows)} code marker(s), and "
+                        f"{len(arch_interface_details)} architecture-interface row(s).")
 
             # A zero here has two very different meanings and they were
             # reported identically. Detection reads the recorded file inventory

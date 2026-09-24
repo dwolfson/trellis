@@ -31,6 +31,42 @@ class CodeSymbol:
     bases: list[str] = field(default_factory=list)  # class-kind only: raw base-class expressions, not FQN-resolved
 
 
+@dataclass
+class CodeMarker:
+    """A registration fact about a symbol — DESIGN-INTERFACE-SURFACE-
+    IMPLEMENTED-RUNG.md §3.1. Not a symbol itself: it is a fact ABOUT one
+    (which `qualified_name` joins back to in project_code_symbols), and one
+    symbol can carry several registrations (`@app.get(...)` and
+    `@app.post(...)` on the same handler is ordinary FastAPI) — the reason
+    this is a separate table/dataclass rather than columns bolted onto
+    CodeSymbol."""
+
+    resource_slug: str
+    file_path: str
+    start_line: int
+    language: str
+    marker_kind: str      # route | rpc_method | resolver | message_handler | soap_operation
+    framework: str         # fastapi, flask, django, django-rest-framework, celery,
+                            # strawberry, graphene, grpc, spring-mvc, kafka, …
+    interface_kind: str    # http_api | grpc | graphql | messaging | soap
+    detail: str             # "GET /assets/{guid}", topic name, etc. — '' if none
+    qualified_name: str     # the decorated/annotated symbol, or '' when there is none
+                            # (e.g. a Django urls.py path() call)
+
+
+#: Languages whose marker extraction is real — Python via `ast.decorator_list`
+#: (exact, free) and Java via the existing tree-sitter grammar's annotation
+#: nodes (`@GetMapping`, `@KafkaListener`, …). JS/TS and Go have no decorator
+#: equivalent for their common frameworks (Express registers routes by method
+#: call, Go by `mux.HandleFunc`) and would need call-site capture, which is a
+#: larger change than this pass — see DESIGN-INTERFACE-SURFACE-IMPLEMENTED-
+#: RUNG.md §3.1. Same precedent as `_COMPLEXITY_CAPABLE_LANGUAGES`
+#: (api_structure.py) / `_DOCSTRING_CAPABLE_LANGUAGES` (documentation.py): a
+#: language absent here must be NAMED as uncovered, never silently reported
+#: as a measured zero.
+MARKER_CAPABLE_LANGUAGES = frozenset({"python", "java"})
+
+
 class CodeSymbolExtractor:
     """
     Extract structured symbol information from source files at ingestion time.
@@ -63,6 +99,28 @@ class CodeSymbolExtractor:
             pass
         return []
 
+    def extract_markers(
+        self, file_path: str, content: str, resource_slug: str, language: str
+    ) -> list[CodeMarker]:
+        """Decorator/annotation registrations — the fourth stored-row input
+        `interface_surface` reads (DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md
+        §3.1). Only languages in MARKER_CAPABLE_LANGUAGES are attempted;
+        anything else returns [] and the caller is responsible for recording
+        the language as uncovered rather than reading the empty list as a
+        measured zero."""
+        try:
+            if language == "python":
+                return self._extract_python_markers(file_path, content, resource_slug)
+            if language == "java":
+                return self._extract_java_markers(file_path, content, resource_slug)
+        except Exception:
+            pass
+        return []
+
+    def _extract_java_markers(self, file_path: str, content: str, resource_slug: str) -> list[CodeMarker]:
+        from resource_explorer.ingestion.java_symbol_extractor import JavaMarkerExtractor
+        return JavaMarkerExtractor().extract(file_path, content, resource_slug)
+
     # ── Java — tree-sitter (see ingestion/java_symbol_extractor.py) ────────
 
     def _extract_java_tree_sitter(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
@@ -79,6 +137,15 @@ class CodeSymbolExtractor:
         visitor = _PythonVisitor(file_path, resource_slug)
         visitor.visit(tree)
         return visitor.symbols
+
+    def _extract_python_markers(self, file_path: str, content: str, resource_slug: str) -> list[CodeMarker]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return []
+        visitor = _PythonMarkerVisitor(file_path, resource_slug)
+        visitor.visit(tree)
+        return visitor.markers
 
     # ── JavaScript / TypeScript — tree-sitter, regex fallback ──────────────
 
@@ -345,3 +412,173 @@ class _PythonVisitor(ast.NodeVisitor):
 
         ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
         return f"({', '.join(parts)}){ret}"
+
+
+# ── Python AST marker visitor ──────────────────────────────────────────────
+#
+# Covered (decorator/base-class patterns, checked against real framework
+# usage rather than invented):
+#   http_api  — @app.get/post/put/delete/patch/options/head(...) (FastAPI/
+#               Starlette-style, whatever the receiver object is named);
+#               @app.route(...) / @bp.route(...) (Flask, verb from `methods=`
+#               or GET by default); @api_view([...]) (DRF); Django's
+#               path(...)/re_path(...) calls inside a urls.py-shaped file.
+#   messaging — @app.task / @shared_task (Celery).
+#   graphql   — @strawberry.field/mutation/subscription; a class deriving
+#               from a base containing "ObjectType" (graphene), one marker
+#               per resolve_* method.
+#   grpc      — a class whose base-class expression contains "Servicer"
+#               (the generated *_pb2_grpc.py base), one marker per public
+#               method.
+#
+# Explicitly NOT covered, and not guessed at: Kafka consumer registration
+# (aiokafka/kafka-python have no single common decorator or call-site
+# convention detectable from decorators alone — would need import- and
+# call-site tracking, which is a larger change, see the design doc §3.1);
+# SOAP (no Python framework in the surveyed catalog uses one); Django
+# middleware-based routing (only the ordinary path()/re_path() shape is
+# read).
+class _PythonMarkerVisitor(ast.NodeVisitor):
+    _HTTP_VERBS = frozenset({"get", "post", "put", "delete", "patch", "options", "head"})
+
+    def __init__(self, file_path: str, resource_slug: str) -> None:
+        self._file_path = file_path
+        self._project_slug = resource_slug
+        self._is_urls_file = file_path.rsplit("/", 1)[-1] == "urls.py"
+        self.markers: list[CodeMarker] = []
+        self._class_stack: list[str] = []
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _dotted(node: ast.AST) -> str:
+        """Best-effort dotted name for a decorator's receiver/callee —
+        "app" from `app.get`, "strawberry" from `strawberry.field`."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            base = _PythonMarkerVisitor._dotted(node.value)
+            return f"{base}.{node.attr}" if base else node.attr
+        return ""
+
+    @staticmethod
+    def _const_str(node: ast.AST | None) -> str:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return ""
+
+    @staticmethod
+    def _const_list_str(node: ast.AST | None) -> list[str]:
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [_PythonMarkerVisitor._const_str(e) for e in node.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        return []
+
+    def _marker(self, node: ast.AST, marker_kind: str, framework: str,
+                interface_kind: str, detail: str, name: str = "") -> CodeMarker:
+        qualified_name = ".".join(self._class_stack + ([name] if name else []))
+        return CodeMarker(
+            resource_slug=self._project_slug, file_path=self._file_path,
+            start_line=getattr(node, "lineno", 0), language="python",
+            marker_kind=marker_kind, framework=framework,
+            interface_kind=interface_kind, detail=detail,
+            qualified_name=qualified_name,
+        )
+
+    # ── classes: gRPC servicers, graphene ObjectType resolvers ──────────────
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        bases = [ast.unparse(b) for b in node.bases]
+        is_servicer = any("Servicer" in b for b in bases)
+        is_graphene_type = any("ObjectType" in b for b in bases)
+
+        self._class_stack.append(node.name)
+        if is_servicer or is_graphene_type:
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if item.name.startswith("_"):
+                    continue
+                if is_servicer:
+                    self.markers.append(self._marker(
+                        item, "rpc_method", "grpc", "grpc", "", item.name))
+                elif is_graphene_type and item.name.startswith("resolve_"):
+                    self.markers.append(self._marker(
+                        item, "resolver", "graphene", "graphql", item.name, item.name))
+        self.generic_visit(node)
+        self._class_stack.pop()
+
+    # ── functions/methods: decorator-based registrations ────────────────────
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_func(node)
+
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for dec in node.decorator_list:
+            marker = self._classify_decorator(dec, node)
+            if marker is not None:
+                self.markers.append(marker)
+        # No recursion into nested functions — matches _PythonVisitor's own
+        # choice; a decorated nested function is not a public registration.
+
+    def _classify_decorator(self, dec: ast.expr, node) -> CodeMarker | None:
+        call = dec if isinstance(dec, ast.Call) else None
+        func = call.func if call is not None else dec
+        args = call.args if call is not None else []
+        kwargs = {kw.arg: kw.value for kw in (call.keywords if call is not None else [])
+                  if kw.arg}
+
+        if isinstance(func, ast.Attribute):
+            attr = func.attr
+            receiver = self._dotted(func.value)
+        elif isinstance(func, ast.Name):
+            attr = func.id
+            receiver = ""
+        else:
+            return None
+
+        if attr in self._HTTP_VERBS:
+            path = self._const_str(args[0]) if args else ""
+            detail = f"{attr.upper()} {path}".strip()
+            return self._marker(node, "route", "fastapi", "http_api", detail, node.name)
+
+        if attr == "route":
+            path = self._const_str(args[0]) if args else ""
+            methods = self._const_list_str(kwargs.get("methods"))
+            verb = methods[0] if methods else "GET"
+            detail = f"{verb} {path}".strip()
+            return self._marker(node, "route", "flask", "http_api", detail, node.name)
+
+        if attr == "api_view":
+            methods = self._const_list_str(args[0]) if args else []
+            verb = methods[0] if methods else "GET"
+            return self._marker(node, "route", "django-rest-framework",
+                                 "http_api", verb, node.name)
+
+        if attr in ("task", "shared_task"):
+            return self._marker(node, "message_handler", "celery",
+                                 "messaging", "", node.name)
+
+        if attr in ("field", "mutation", "subscription") and receiver.split(".")[0] == "strawberry":
+            return self._marker(node, "resolver", "strawberry", "graphql", attr, node.name)
+
+        return None
+
+    # ── Django urls.py: path()/re_path() call sites ─────────────────────────
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if self._is_urls_file:
+            name = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else "")
+            if name in ("path", "re_path"):
+                pattern = self._const_str(node.args[0]) if node.args else ""
+                self.markers.append(CodeMarker(
+                    resource_slug=self._project_slug, file_path=self._file_path,
+                    start_line=getattr(node, "lineno", 0), language="python",
+                    marker_kind="route", framework="django", interface_kind="http_api",
+                    detail=pattern, qualified_name="",
+                ))
+        self.generic_visit(node)

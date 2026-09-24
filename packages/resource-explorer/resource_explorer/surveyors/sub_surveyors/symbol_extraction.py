@@ -100,12 +100,16 @@ class SymbolExtractionSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
-            from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
+            from resource_explorer.ingestion.code_symbol_extractor import (
+                MARKER_CAPABLE_LANGUAGES,
+                CodeSymbolExtractor,
+            )
 
             slug = self.project.slug
             local_root = Path(self._local_path)
             extractor = CodeSymbolExtractor()
             counts_by_language: dict[str, int] = {}
+            marker_counts_by_language: dict[str, int] = {}
 
             # How many candidate source files were actually READ, not just how
             # many symbols came out. Without this the step cannot tell "this
@@ -125,13 +129,21 @@ class SymbolExtractionSurveyor(BaseSurveyor):
                 # this run correctly ends up with zero symbols, not stale
                 # ones from a file that was since deleted/renamed.
                 self.registry.clear_code_symbols(slug, language)
+                self.registry.clear_code_markers(slug, language)
                 symbols = []
+                markers = []
+                marker_capable = language in MARKER_CAPABLE_LANGUAGES
                 for path, content in _local_files(local_root, ctype.file_extensions):
                     files_scanned += 1
                     symbols.extend(extractor.extract(path, content, slug, language))
+                    if marker_capable:
+                        markers.extend(extractor.extract_markers(path, content, slug, language))
                 if symbols:
                     self.registry.upsert_code_symbols(slug, symbols)
                     counts_by_language[language] = len(symbols)
+                if markers:
+                    self.registry.upsert_code_markers(slug, markers)
+                    marker_counts_by_language[language] = len(markers)
 
             total = sum(counts_by_language.values())
             relationships = self.registry.get_code_relationships(slug)
@@ -164,6 +176,7 @@ class SymbolExtractionSurveyor(BaseSurveyor):
                         "symbol_counts_by_language": counts_by_language,
                         "relationship_count": len(relationships),
                         "files_scanned": files_scanned,
+                        "marker_counts_by_language": marker_counts_by_language,
                     },
                     json_properties=outcome.as_row(),
                 )
@@ -176,10 +189,27 @@ class SymbolExtractionSurveyor(BaseSurveyor):
                 # "symbol_extraction" kind so this step's own run history
                 # (independently schedulable, see ANALYSIS_KINDS) is
                 # trendable on its own.
+                #
+                # `markers_captured: True` is the backfill flag DESIGN-
+                # INTERFACE-SURFACE-IMPLEMENTED-RUNG.md's Decisions §2 calls
+                # for: every repo surveyed before project_code_markers
+                # existed has zero marker rows despite extraction having
+                # genuinely run, and interface_surface must not read that as
+                # a measured zero. A run under this code always writes this
+                # flag (even when marker_counts_by_language is empty because
+                # no marker-capable language had matching files), so its
+                # ABSENCE on the latest symbol_extraction metric row — not
+                # the marker table being empty — is what means "predates
+                # marker capture, or never ran". `by_language` (the file
+                # inventory's own count) travels alongside so interface_
+                # surface can also tell "no python/java in this repo" apart
+                # from "python ran and found nothing".
                 self.registry.upsert_metric(
                     slug, "symbol_extraction",
                     {"symbol_count": total, "relationship_count": len(relationships)},
-                    detail={"by_language": counts_by_language},
+                    detail={"by_language": counts_by_language,
+                            "marker_counts_by_language": marker_counts_by_language,
+                            "markers_captured": True},
                     surveyed_at=self._surveyed_at,
                 )
             except Exception as exc:

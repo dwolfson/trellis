@@ -22,6 +22,7 @@
   "resource_explorer/github/stats_fetcher.py::_license_info": 1,
   "resource_explorer/ingestion/code_parser.py::_split": 1,
   "resource_explorer/ingestion/code_symbol_extractor.py::extract": 1,
+  "resource_explorer/ingestion/code_symbol_extractor.py::extract_markers": 1,
   "resource_explorer/ingestion/dependency_parser.py::_parse_go_mod": 1,
   "resource_explorer/ingestion/dependency_parser.py::_parse_package_json": 1,
   "resource_explorer/ingestion/dependency_parser.py::_parse_pom_xml": 1,

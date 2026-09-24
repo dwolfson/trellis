@@ -985,13 +985,20 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "supported language, refreshing project_code_symbols/"
         "project_code_relationships — D5's self-contained microflow closing "
         "the bug where those tables were only ever populated by RAG "
-        "ingestion, never by a survey step.",
+        "ingestion, never by a survey step. Also extracts decorator/"
+        "annotation registrations (route/rpc/resolver/message-handler) for "
+        "Python and Java into project_code_markers.",
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
-        # §17.1 — the table `has_code_symbols` gates on.
-        produces=("project_code_symbols", "project_code_relationships"),
+        # §17.1 — the table `has_code_symbols` gates on. project_code_markers
+        # added per DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md Decisions
+        # §2 — no precondition wired to it today (Decisions §1: no
+        # precondition, no bundling), but a future one can reach it here
+        # without further plumbing.
+        produces=("project_code_symbols", "project_code_relationships",
+                  "project_code_markers"),
         # One of the 4 zipball steps. compute_cost="medium", not "low":
         # unlike repo_api_structure (a read of already-extracted symbols),
         # this step does the tree-sitter/ast extraction itself, across
