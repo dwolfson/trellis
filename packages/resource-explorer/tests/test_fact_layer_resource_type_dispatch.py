@@ -141,10 +141,10 @@ class TestTheDatabaseAdapterNowDeclaresResults:
     adapter and passing the caller's resource_type into FactLayer at the
     `/facts/{slug}/answer` route (`web/routes/analyses.py`).
 
-    `analysis_source_steps`/`analysis_kinds`/`state_sources` stay
-    undeclared for the database adapter for now -- this only closes the gap
-    that made every prior database-catalog fix invisible on screen, not
-    every gap in the database fact layer.
+    `analysis_source_steps`/`analysis_kinds` are declared too, as of the
+    follow-up below -- see TestTheDatabaseAdapterDeclaresLiveRead. `state_sources`
+    stays undeclared: no database question is answered directly off a
+    state-source table the way repo's "actively maintained?" is.
     """
 
     def test_the_results_map_is_the_database_one(self):
@@ -156,13 +156,60 @@ class TestTheDatabaseAdapterNowDeclaresResults:
 
     def test_a_known_database_analysis_is_no_longer_reported_undeclared(self, registry):
         f = FactLayer(registry, resource_type="database").fact("coco_ods", "schema_inventory")
-        # No analysis_kinds map means the live-read path never fires and no
-        # run is recorded by this stub registry, so the honest state here is
-        # NEVER_RUN -- a claim about the resource this stub's `coco_ods` has
-        # never made a survey run for. The point being pinned is what it is
-        # NOT: the "no results map declared" note this analysis_id used to
-        # get regardless of which database was asked about.
+        # This stub registry has no query_detail_rows, so the live-read
+        # attempt below finds nothing and falls through to the run-gate --
+        # the honest state here is NEVER_RUN, a claim about the resource
+        # this stub's `coco_ods` has never made a survey run for. The point
+        # being pinned is what it is NOT: the "no results map declared" note
+        # this analysis_id used to get regardless of which database was
+        # asked about.
         assert "no analysis results are registered" not in f.note.lower()
+
+
+class TestTheDatabaseAdapterDeclaresLiveRead:
+    """Reported live 2026-09-23: `coco_ods`, surveyed 76 times (all
+    predating per-step run recording), showed "cannot say" for
+    `row_count_snapshot` despite the reader returning real, non-empty data
+    -- the database adapter declared `analysis_results_map` (above) but not
+    `analysis_kinds`, so `live_read` never applied and every database
+    analysis gated on per-step run attribution regardless of whether its
+    data actually existed. Same failure api_structure hit for repo,
+    documented in facts.py's own comment on the `live` branch.
+    """
+
+    @pytest.fixture
+    def registry_with_tables(self, registry):
+        """The bare `registry` fixture above has no query_detail_rows at
+        all; this one answers it the way a real database survey's stored
+        detail rows would, with exactly one table."""
+        registry.detail_rows = {
+            "database_tables": [
+                {"schema_name": "public", "table_name": "widgets",
+                 "row_count": 42, "size_bytes": 8192},
+            ],
+            "database_columns": [],
+        }
+        registry.query_detail_rows = lambda table, slug: registry.detail_rows.get(table, [])
+        return registry
+
+    def test_a_survey_with_no_per_step_attribution_still_reads_real_data(self, registry_with_tables):
+        f = FactLayer(registry_with_tables, resource_type="database").fact(
+            "coco_ods", "row_count_snapshot")
+        assert f.state == MEASURED
+        assert f.value["total_row_count"] == 42
+        assert f.value["total_size_bytes"] == 8192
+
+    def test_the_headline_names_the_row_count_and_size(self, registry_with_tables):
+        f = FactLayer(registry_with_tables, resource_type="database").fact(
+            "coco_ods", "row_count_snapshot")
+        assert "42" in f.headline
+        assert "8" in f.headline  # 8192 bytes -> "8.0 KB"
+
+    def test_schema_inventory_is_also_live_read(self, registry_with_tables):
+        f = FactLayer(registry_with_tables, resource_type="database").fact(
+            "coco_ods", "schema_inventory")
+        assert f.state == MEASURED
+        assert f.value["table_count"] == 1
 
 
 class TestAnUnknownResourceType:

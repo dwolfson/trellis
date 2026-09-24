@@ -34,6 +34,10 @@ from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
 )
+from resource_explorer.surveyors.repo_survey_definition_adapter import (
+    AnalysisKind,
+    AnalysisKindResults,
+)
 
 log = logging.getLogger(__name__)
 
@@ -372,14 +376,21 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 _ADAPTER = ResourceTypeAdapter(
     entity_type="database",
     technology_type="PostgreSQL Database",
-    # Declared lazily (the map is defined later in this module) so FactLayer
-    # can read a database's own results instead of silently falling through
-    # to "no results map declared for this resource type" — see
-    # RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0: `analysis_source_steps`/
-    # `analysis_kinds` stay undeclared for now (FactLayer degrades those to
-    # "no can_run steps offered"/"no kind info", not a hard failure), so this
-    # is the minimal fix, not the complete one.
+    # Declared lazily (the maps are defined later in this module) so
+    # FactLayer can read a database's own results instead of silently
+    # falling through to "no results map declared for this resource type"
+    # — see RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0. `analysis_kinds`
+    # (added after §0's own fix) carries `live_read=True` for every entry —
+    # every reader queries a table already populated by a completed survey
+    # step, not a fresh fetch, so none of them should gate on per-STEP run
+    # attribution (see DATABASE_ANALYSIS_KINDS's own comment for why, and
+    # the api_structure precedent facts.py already documents this pattern
+    # for). `state_sources` stays undeclared for now — no database question
+    # is answered directly off a state-source table the way repo's
+    # "actively maintained?" is.
     analysis_results_map=lambda: DATABASE_ANALYSIS_RESULTS_MAP,
+    analysis_source_steps=lambda: DATABASE_ANALYSIS_STEP_MAP,
+    analysis_kinds=lambda: DATABASE_ANALYSIS_KINDS,
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
         "postgres_operations": _run_postgres_operations,
@@ -694,23 +705,70 @@ def _schema_inventory_results(registry, slug: str) -> dict:
 
 
 def _row_count_snapshot_results(registry, slug: str) -> dict:
-    """Row counts by table, from the same `database_tables` detail rows
-    schema_inventory reads — its own catalog entry, since a row count is a
-    different question ("how much data") from a schema shape ("what tables
-    exist"), even though both are read from the same stored snapshot."""
+    """Row counts and sizes by table, from the same `database_tables` detail
+    rows schema_inventory reads — its own catalog entry, since "how much
+    data" (rows and bytes) is a different question from "what tables exist"
+    (schema shape), even though both are read from the same stored snapshot.
+
+    `size_bytes` is stored on every `database_tables` row
+    (`database_surveyor.py` populates it from `pg_total_relation_size`) but
+    was dropped here until this row's question ("How big is this database —
+    schemas, tables, views, columns, rows and bytes?") was reported live as
+    never showing a size, despite the number sitting in the same row the
+    reader already selects.
+    """
     tables = registry.query_detail_rows("database_tables", slug)
     if not tables:
         return {}
     measured = [t for t in tables if t.get("row_count") is not None]
+    sized = [t for t in tables if t.get("size_bytes") is not None]
     return {
         "tables": [
             {"schema_name": t.get("schema_name"), "table_name": t.get("table_name"),
-             "row_count": t.get("row_count")}
+             "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes")}
             for t in tables
         ],
         "table_count": len(tables),
         "measured_count": len(measured),
+        "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
+        "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
     }
+
+
+def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
+    """The one-sentence summary `scalarMeasures()` on the frontend cannot
+    produce on its own, since it skips the `tables` array entirely (by
+    design — a per-table breakdown is not a scalar) and so has nothing to
+    say beyond the bare `measured_count`/`table_count` numbers."""
+    value = _row_count_snapshot_results(registry, slug)
+    if not value or not value.get("table_count"):
+        return None
+    total_rows = value.get("total_row_count")
+    total_bytes = value.get("total_size_bytes")
+    measured, total = value["measured_count"], value["table_count"]
+    parts = []
+    if total_rows is not None:
+        parts.append(f"{total_rows:,} row(s)")
+    if total_bytes is not None:
+        parts.append(_format_bytes(total_bytes))
+    if not parts:
+        return {"label": f"No row counts recorded for any of {total} table(s).",
+                "status": "info"}
+    coverage = "" if measured == total else f" ({measured} of {total} tables measured)"
+    return {"label": f"{' · '.join(parts)}{coverage}.", "status": "info"}
+
+
+def _format_bytes(n: int) -> str:
+    """Same thresholds as every other byte-formatting spot in this codebase
+    (KB/MB/GB, 1024-based) — kept local rather than imported to avoid a new
+    cross-module dependency for one three-line function; consolidate if a
+    third caller shows up."""
+    value = float(n)
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:,.0f} {unit}" if unit == "bytes" else f"{value:,.1f} {unit}"
+        value /= 1024
+    return f"{value:,.1f} TB"
 
 
 DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
@@ -730,10 +788,49 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "grant_change": (_db_derived_field_reader("grant_change"), None),
 }
 
-#: No headline readers yet (Tier 1 stat tiles) — every entry above is real,
-#: full results, and a headline is an additional, optional summarization repo
-#: builds per analysis (see AnalysisKindResults.headline_reader). Not
-#: building it is a smaller, self-contained gap than the map itself and does
-#: not block "By analysis" or the Questions checklist, which only consult
-#: DATABASE_ANALYSIS_RESULTS_MAP.
-DATABASE_ANALYSIS_HEADLINE_MAP: dict = {}
+#: Headline readers (Tier 1 stat tiles) — an additional, optional
+#: summarization sentence per analysis (see AnalysisKindResults.
+#: headline_reader). Most entries have none yet; that is a smaller,
+#: self-contained gap than the results map itself and does not block "By
+#: analysis" or the Questions checklist, which only consult
+#: DATABASE_ANALYSIS_RESULTS_MAP directly. row_count_snapshot has one
+#: because its own results (a per-table array) are exactly the shape
+#: `scalarMeasures()` on the frontend skips by design — without a written
+#: sentence here, the Questions row for "How big is this database" showed
+#: only `table_count`/`measured_count`, never an actual row count or size.
+DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
+    "row_count_snapshot": _row_count_snapshot_headline,
+}
+
+#: RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0 declared `analysis_results_map`
+#: but left `analysis_kinds` undeclared "for now" — every entry here is a
+#: results reader querying a table already populated by a completed survey
+#: step (`_schema_inventory_results`/`_row_count_snapshot_results` read
+#: `database_tables`; `_operations_section_reader` reads the latest survey's
+#: stored `survey_data` blob; `_db_derived_field_reader`'s own docstring
+#: says "it reads already-stored detail rows... exactly the trade repo's own
+#: architecture_diagram live_read reader makes") — so every one of them
+#: qualifies for `live_read=True` on the identical grounds repo's
+#: `api_structure`/`architecture_diagram` do (facts.py's own comment: a
+#: live-read analysis does not depend on a survey step having run; it reads
+#: a table populated elsewhere and is current by construction).
+#:
+#: Reported live 2026-09-23: a database surveyed 76 times, all predating
+#: per-step run recording, showed "cannot say" for `row_count_snapshot`
+#: despite the reader returning real, non-empty data — exactly the failure
+#: mode `live_read` exists to prevent, and exactly the api_structure
+#: incident facts.py's own comment describes.
+DATABASE_ANALYSIS_KINDS: dict[str, AnalysisKind] = {
+    analysis_id: AnalysisKind(
+        analysis_id,
+        step_keys,
+        results=AnalysisKindResults(
+            *DATABASE_ANALYSIS_RESULTS_MAP[analysis_id],
+            render="custom",
+            headline_reader=DATABASE_ANALYSIS_HEADLINE_MAP.get(analysis_id),
+            live_read=True,
+        ),
+    )
+    for analysis_id, step_keys in DATABASE_ANALYSIS_STEP_MAP.items()
+    if analysis_id in DATABASE_ANALYSIS_RESULTS_MAP
+}
