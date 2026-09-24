@@ -3854,7 +3854,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   if (!host) return;
   let data;
   try {
-    data = await getAnalysesIndex(slug);
+    data = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
   } catch (err) {
     if (slug === state.selectedSlug && state.subTab === 'survey') {
       host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
@@ -5950,7 +5950,7 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
   let data;
   try {
-    data = await getMeasurements(slug, analysisId);
+    data = await getMeasurements(slug, analysisId, apiEntityType(state.resourceType));
   } catch (err) {
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-state-warn">The measurements could not be read: ${esc(err.message)}</div>`;
     return;
