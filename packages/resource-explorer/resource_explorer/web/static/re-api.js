@@ -653,8 +653,8 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
  * the per-resource gaps collection. Callers should skip this call rather
  * than let it throw when `slug` is empty.
  */
-export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '' }) =>
-  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page });
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType = 'repo' }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: entityType });
 
 /**
  * SSE variant of `ask()` — POST /api/query/stream, yielding one event per
@@ -828,7 +828,14 @@ export const getSurveySummary = (slug, stage = '') =>
  * which the `'probe'` incident proved by hiding real runs underneath one.
  * Every measurement therefore already has a series; nothing displayed it.
  */
-export const getAnalysisTrend = (slug, analysisId, metric = '') =>
+/** FOUND, NOT FIXED (Tier 1 audit, 2026-09-23): `/api/projects/{slug}/analyses/
+ *  {analysis_id}/trend` has no database/filesystem equivalent today —
+ *  confirmed by grepping `databases.py`/`filesystems.py` for `/trend`, no
+ *  match. `entityType` is accepted here so callers are ready the moment a
+ *  generic route exists, but it is NOT sent — there is nowhere to send it —
+ *  and this still always hits the repo-only path. Needs its own scoping
+ *  pass: a per-type results-history reader, not just a routing fix. */
+export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 'repo') => // eslint-disable-line no-unused-vars
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
     encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
 
@@ -855,7 +862,10 @@ export const getMeasurements = (slug, analysisId, entityType = 'repo') =>
  *  fetch (stage-page round, points 1-3).
  *
  *  `entityType` defaults to 'repo', same reasoning and same fix date as
- *  `getMeasurements` above. */
+ *  `getMeasurements` above. Was this Tier 1 pass's own "found, not fixed"
+ *  item — superseded here by `re/measurements-feedback-fix` (PR #237, merged
+ *  ahead of this branch), which built the real `entity_type` dispatch into
+ *  `build_analyses_index()` itself rather than routing per entity type. */
 export const getAnalysesIndex = (slug, stage = '', entityType = 'repo') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses-index?entity_type=${encodeURIComponent(entityType)}${
     stage ? `&stage=${encodeURIComponent(stage)}` : ''}`);
@@ -929,7 +939,16 @@ export function isShapeCompatible(targetShape, kind) {
  * all) — and the response says whether the scope was honoured, since only
  * symbols carry a public/internal marker today.
  */
-export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}) => {
+/** FOUND, NOT FIXED (Tier 1 audit, 2026-09-23): `/api/projects/{slug}/members/
+ *  {analysis_id}` (and its `/children`/`/promote` siblings below) have no
+ *  database/filesystem equivalent — confirmed by grepping `databases.py`/
+ *  `filesystems.py`, no match. `entityType` is accepted on all three so
+ *  callers are ready once one exists, but none of the three send it — there
+ *  is nowhere to send it — and all three still always hit the repo-only
+ *  path. `members.py`'s member model may or may not generalize cleanly to a
+ *  database's rows/tables or a filesystem's files; that question is exactly
+ *  why this needs its own scoping pass rather than being built here. */
+export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}, entityType = 'repo') => { // eslint-disable-line no-unused-vars
   const qs = new URLSearchParams({ scope, limit: String(limit) });
   if (metric) qs.set('metric', metric);
   return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
@@ -938,12 +957,13 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
 /** Promote a member-list selection. Three acts, one provenance line
  *  composed on the server: work_list (I will deal with this), rfa (someone
  *  must), journal (worth knowing). `members` is a snapshot of names, never
- *  a query. 401 when anonymous. */
-export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }) =>
+ *  a query. 401 when anonymous. See `getMembers`'s found-not-fixed note
+ *  above — same gap, same reason. */
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType = 'repo') => // eslint-disable-line no-unused-vars
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote`,
     { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
 
-export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}) =>
+export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType = 'repo') => // eslint-disable-line no-unused-vars
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
     new URLSearchParams({ key, scope, limit: String(limit) })}`);
 
@@ -989,18 +1009,30 @@ export const publishWorkList = (slug) =>
  * Returns a `set_id` to poll. One queue row per resource, so one failure is
  * one row — the rest still run.
  */
-export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '') =>
+/** `entityType` only matters when `entitySlugs` is given with no
+ *  `workListSlug` — the server derives entity_type from the work list's own
+ *  column when one is named, since a work list is homogeneous by
+ *  construction (`WorkListCreate.entity_type`); it defaults to 'repo'
+ *  otherwise, same as `BatchRunRequest.entity_type`. */
+export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '', entityType = 'repo') =>
   post('/api/work-lists/runs/batch', {
     analysis_id: analysisId, entity_slugs: [...entitySlugs], work_list_slug: workListSlug,
+    entity_type: entityType,
   });
 
 /** Progress for one batch, derived from the run rows on every read. */
 export const getBatchProgress = (setId) =>
   get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);
 
-/** Every fact known about ONE resource, already judged. */
-export const getResourceFacts = (slug) =>
-  get(`/api/analyses/facts/${encodeURIComponent(slug)}`);
+/** Every fact known about ONE resource, already judged. `entityType`
+ *  defaults to 'repo' for existing callers — pass the
+ *  `apiEntityType(state.resourceType)`-translated value for a database/
+ *  filesystem work-list member (worklist.js already carries `wl.entity_type`
+ *  per member), same convention as `getQuestions`/`getAnswer` above. Omitting
+ *  it used to mean the backend always built its FactLayer against the repo's
+ *  own maps regardless of the resource's real type. */
+export const getResourceFacts = (slug, entityType = 'repo') =>
+  get(`/api/analyses/facts/${encodeURIComponent(slug)}?entity_type=${encodeURIComponent(entityType)}`);
 
 /**
  * Facts for SEVERAL resources, in one call.
@@ -1027,22 +1059,56 @@ export const getResourceFacts = (slug) =>
  * It cannot tell `measured` from `partial`; the response says so. Render the
  * difference as not-yet-read, never as a state nobody established.
  */
-export const getBulkStates = (slugs, analysisIds = []) => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true' });
+/** `entityType` defaults to 'repo' — a work-list comparison grid mixing
+ *  resource types must call this once per entity type (the route builds one
+ *  `FactLayer` for the whole batch), the same constraint `getMeasurements`'s
+ *  fix already documented for the per-resource measurements route. */
+export const getBulkStates = (slugs, analysisIds = [], entityType = 'repo') => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true', entity_type: entityType });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
 
-export const getBulkFacts = (slugs, analysisIds = []) => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(',') });
+export const getBulkFacts = (slugs, analysisIds = [], entityType = 'repo') => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), entity_type: entityType });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
 
 /* ── Running an analysis ─────────────────────────────────────────────── */
 
-export const runAnalysis = (slug, analysisId) =>
-  post(`/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
+/** repo -> /api/projects/, database -> /api/databases/ — the per-card "Run"
+ *  action's per-analysis route, same dispatch shape as `_questionsPath`/
+ *  `_surveyResultsPath` above.
+ *
+ *  FILESYSTEM HAS NO EQUIVALENT ROUTE YET (audited 2026-09-23): unlike
+ *  database, `web/routes/filesystems.py` has no
+ *  `POST /{slug}/analyses/{analysis_id}/run` at all — its only survey
+ *  trigger is the whole-resource `POST /{slug}/survey`, not a per-analysis
+ *  dispatch the way `databases.py`'s `run_single_database_analysis` and
+ *  `run_analysis`/`resolve_analysis_plan` (repo) are. Building one needs a
+ *  filesystem-side per-analysis step runner first (there is no
+ *  `run_filesystem_survey(..., steps=[...])` equivalent of
+ *  `run_database_survey` to call) — a real, separate piece of work, not a
+ *  routing fix, so it is named here as found-but-deferred rather than
+ *  built. Until it exists, a filesystem's "Run"/"re-run" falls back to the
+ *  repo path below, which 404s (`registry.get(slug)` against the repo-only
+ *  `projects` table) — a loud failure, not a silent wrong-resource write. */
+function _runAnalysisPath(entityType, slug, analysisId) {
+  const enc = encodeURIComponent(slug);
+  const aid = encodeURIComponent(analysisId);
+  if (entityType === 'database') return `/api/databases/${enc}/analyses/${aid}/run`;
+  return `/api/projects/${enc}/analyses/${aid}/run`;
+}
+
+/** `entityType` defaults to 'repo' for every existing caller — pass
+ *  `apiEntityType(state.resourceType)` at every /next boundary crossing,
+ *  same convention as `getQuestions` above. Before this, EVERY caller
+ *  (including a database/filesystem's own "Run"/"re-run" button on a
+ *  Questions-checklist row) posted to the repo-only route regardless of the
+ *  resource's real type. */
+export const runAnalysis = (slug, analysisId, entityType = 'repo') =>
+  post(_runAnalysisPath(entityType, slug, analysisId));
 
 export const getActivityEntry = (entryId) =>
   get(`/api/activity/${encodeURIComponent(entryId)}`);

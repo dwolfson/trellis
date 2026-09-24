@@ -357,6 +357,7 @@ async function vote(i, value) {
       const res = await submitAnswerFeedback({
         slug: turn.slug, question: turn.question, verdict: VOTE_VERDICT[String(value)],
         sessionId: sessionId(), page: location.pathname + location.search,
+        entityType: turn.entityType,
       });
       turn.gapReason = res.gap
         ? `in this project's gaps, marked ${res.gap.destination}`
@@ -592,7 +593,15 @@ export async function submitAsk() {
   if (!q) return;
   input.value = '';
 
-  const turn = { question: q, slug: state.selectedSlug, pending: true, streaming: true, answer: '' };
+  // `entityType` is pinned at the moment the turn is asked, same as `slug` —
+  // `state.resourceType` can change before the vote handler below reads it
+  // back (the person can switch resources while an answer sits in the
+  // pane), and a feedback POST must attribute the disagreement to the
+  // resource type the question was actually asked about.
+  const turn = {
+    question: q, slug: state.selectedSlug, entityType: apiEntityType(state.resourceType),
+    pending: true, streaming: true, answer: '',
+  };
   state.chat.push(turn);
   renderTurnList();
   // Open the pane on this turn immediately — the whole point is that the
