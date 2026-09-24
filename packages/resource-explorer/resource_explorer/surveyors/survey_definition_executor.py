@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
-from resource_explorer.surveyors import result_status
+from resource_explorer.surveyors import result_status, step_cost_observer
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
 log = logging.getLogger(__name__)
@@ -135,6 +135,18 @@ class ResourceTypeAdapter:
     #: own `DATABASE_ANALYSIS_HEADLINE_MAP`/`FILESYSTEM_ANALYSIS_HEADLINE_MAP`
     #: constants being empty dicts.
     analysis_headline_map: Callable | None = None
+    #: () -> {step_key: StepInfo} — what each of this type's steps COSTS,
+    #: what stored data it REQUIRES, and what tables it PRODUCES (design
+    #: §17.1/§17.2). A provider for the same import-cycle reason as the four
+    #: above.
+    #:
+    #: None means NOT DECLARED, and the prerequisite resolver treats it as
+    #: such: a resource type with no step registry has no preconditions it
+    #: can check and no costs it can compare, so every step dispatches
+    #: exactly as it did before §17.1 existed. That is deliberately different
+    #: from an empty registry, which would be a claim that this type's steps
+    #: have no prerequisites.
+    step_registry: Callable | None = None
 
 
 _ADAPTERS: dict = {}
@@ -179,6 +191,7 @@ class SurveyDefinitionExecutor:
         refresh_definition: bool = False,
         publish: str | None = None,
         engine_override: str | None = None,
+        demanded_by: str = "",
         **runner_kwargs: Any,
     ) -> dict:
         """
@@ -271,6 +284,7 @@ class SurveyDefinitionExecutor:
         publish: str | None,
         engine_override: str | None,
         runner_kwargs: dict,
+        demanded_by: str = "",
     ) -> dict:
         """Run an already-resolved Survey Definition's steps.
 
@@ -292,6 +306,13 @@ class SurveyDefinitionExecutor:
         steps_report: list = []
         step_outputs: list = []
         errors: list = []
+        #: §17.1 — chains this run wants the user to confirm, and prerequisite
+        #: steps it ran on its own initiative. Both are returned so the caller
+        #: (the classic UI's survey response) can offer "run it?" without a
+        #: second request, and so an auto-run is visible as a result rather
+        #: than as three unexplained extra minutes.
+        proposals: list = []
+        auto_ran: set = set()
 
         def _stamp_definition_provenance(output) -> None:
             """Give every keyless annotation this call's `output` carries an
@@ -342,7 +363,11 @@ class SurveyDefinitionExecutor:
         # the activity entry, the assembled result — is shared, so the two
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
-        if _prefect_orchestration_enabled(engine_override) and _all_steps_prefect_runnable(survey_def):
+        if (
+            _prefect_orchestration_enabled(engine_override)
+            and _all_steps_prefect_runnable(survey_def)
+            and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
+        ):
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
@@ -575,7 +600,23 @@ class SurveyDefinitionExecutor:
 
             if use_prefect:
                 try:
-                    output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                    # Measured like any other step (§17.2's `executor` axis is
+                    # "local / prefect / egeria / remote … so native and
+                    # remote runs sit on the same board"). Only the PER-STEP
+                    # Prefect route is covered: a whole definition handed to
+                    # `_run_via_prefect` runs inside the flow and writes no
+                    # vector — a known gap, of a piece with the one
+                    # `_any_step_needs_prerequisites` documents, and the same
+                    # fix closes both.
+                    _pf_info = self._step_info(adapter, step.re_analysis_step)
+                    with step_cost_observer.observe(
+                        step.re_analysis_step,
+                        getattr(_pf_info, "fetch_cost", ""),
+                        getattr(_pf_info, "compute_cost", ""),
+                        executor="prefect", source="prefect",
+                    ) as _pf_observed:
+                        output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                    self._record_cost(_pf_observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok", "engine": "prefect"})
@@ -608,8 +649,52 @@ class SurveyDefinitionExecutor:
                     steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "unknown_step"})
                     i += 1
                     continue
+                # §17.1 — prerequisites, on the shared path.
+                #
+                # `step_preconditions.evaluate` had exactly ONE call site
+                # before today (`SurveyOrchestrator.run`), so a step run
+                # through a Survey Definition was never gated at all: the
+                # database steps, whose chain §17.4 names as the reason this
+                # slice exists, had no precondition mechanism reaching them.
+                # This is deliberately the SAME resolver the orchestrator
+                # calls, not a parallel one — the design's intent is one
+                # mechanism, and two would drift the way the two guard
+                # evaluations in this file already had to be kept in step.
+                resolution = self._resolve_prerequisites(
+                    adapter, entity_type, entity, step.re_analysis_step,
+                    surveyed_at, runner_kwargs, steps_report, step_outputs,
+                    errors, auto_ran,
+                )
+                if resolution is not None and not resolution.may_run:
+                    entry = {
+                        "step": step.qualified_name,
+                        "re_analysis_step": _step_key(step),
+                        "status": result_status.SKIPPED_BY_DESIGN,
+                        "detail": resolution.reason,
+                    }
+                    if resolution.proposal is not None:
+                        entry["proposal"] = resolution.proposal.as_dict()
+                        proposals.append(resolution.proposal.as_dict())
+                    log.info("Skipping %s — %s", step.qualified_name, resolution.reason)
+                    steps_report.append(entry)
+                    i += 1
+                    continue
+                info = self._step_info(adapter, step.re_analysis_step)
                 try:
-                    output = runner(entity, self.registry, **runner_kwargs)
+                    with step_cost_observer.observe(
+                        step.re_analysis_step,
+                        getattr(info, "fetch_cost", ""),
+                        getattr(info, "compute_cost", ""),
+                        executor="local", source="local",
+                        # Carries §17.1's attribution when this whole run IS
+                        # an accepted prerequisite proposal — otherwise the
+                        # accepted chain's cost lands on the board with no
+                        # trace of the question that caused it, which is the
+                        # one thing `demanded_by` exists to prevent.
+                        demanded_by=demanded_by,
+                    ) as observed:
+                        output = runner(entity, self.registry, **runner_kwargs)
+                    self._record_cost(observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok"})
@@ -805,12 +890,219 @@ class SurveyDefinitionExecutor:
             "surveyed_at": surveyed_at,
             "steps": steps_report,
             "errors": errors,
+            # §17.1 — chains awaiting consent, and prerequisites this run took
+            # on itself. Returned rather than only logged: a proposal nobody
+            # can see is a skip with extra words, and "run it?" has to be
+            # offerable from the response the UI already has.
+            "proposals": proposals,
+            "auto_ran_steps": sorted(auto_ran),
             "egeria_report_guid": report_guid,
             "published": published,
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.
             "run_recorded": run_recorded,
         }
+
+    # ── §17.1: prerequisites, shared across every resource type ──────────
+    def _any_step_needs_prerequisites(self, adapter, entity, survey_def,
+                                      surveyed_at: str) -> bool:
+        """Whether §17.1 has anything to say about this definition. Runs nothing.
+
+        **This is a GAP being contained, and it is worth saying so plainly.**
+        Design §17.1 states that "on the Prefect path this is task
+        dependencies and Prefect renders the chain itself". Checked against
+        the code (2026-09-23) that is **not true today**:
+        `survey_execution_plan.build_plan` builds Prefect's task graph from
+        the definition's authored `Link Next Process Step` edges and their
+        guards — the graph an author drew. It has never read
+        `requires_context`, and `PRODUCES` did not exist until this change, so
+        a Prefect-orchestrated definition would dispatch a step whose stored
+        input is absent, exactly as the local loop did before
+        `step_preconditions` was written. The design's sentence describes
+        where the mechanism BELONGS, not where it is.
+
+        Rather than build a second resolver inside the Prefect flow — the
+        thing §17.1 is explicit about not wanting — this keeps one resolver
+        and routes a definition that needs it down the local loop, which
+        handles all three outcomes (auto-run, proposal, skip) correctly and
+        still calls `run_prefect_step` per step where `executes_at` asks for
+        it. A definition with nothing to resolve, which is every definition
+        that exists today, goes to Prefect unchanged.
+
+        The real fix is for the plan builder to fold `PRODUCES` edges into the
+        task graph, so Prefect renders the prerequisite chain the way the
+        design describes. That is a change to `survey_execution_plan` and to
+        the flow, and it is a slice of its own.
+        """
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return False
+        try:
+            registry_map = provider() or {}
+        except Exception:  # pragma: no cover - provider guard
+            return False
+        from resource_explorer.surveyors import prerequisite_resolver
+
+        for step in survey_def.steps:
+            key = getattr(step, "re_analysis_step", "") or ""
+            if not registry_map.get(key):
+                continue
+            try:
+                if prerequisite_resolver.resolve(
+                    self.registry, entity, key, registry_map,
+                    surveyed_at=surveyed_at,
+                ).status != prerequisite_resolver.SATISFIED:
+                    return True
+            except prerequisite_resolver.PrerequisiteCycleError:
+                # A declaration bug. Take the local loop, where it will be
+                # raised at dispatch with the step it belongs to, rather than
+                # silently handing the definition to Prefect as if nothing
+                # were wrong.
+                return True
+        return False
+
+    @staticmethod
+    def _step_info(adapter, step_key: str):
+        """This step's declared costs/preconditions/PRODUCES, or None when its
+        resource type has not declared a step registry. None is honest: a type
+        with no declarations has no preconditions to check and no tier to
+        compare against, and every step of it dispatches exactly as it did
+        before §17.1 existed."""
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return None
+        try:
+            return (provider() or {}).get(step_key)
+        except Exception as exc:  # pragma: no cover - provider guard
+            log.debug("could not read the step registry: %s", exc)
+            return None
+
+    def _resolve_prerequisites(
+        self, adapter, entity_type: str, entity, step_key: str,
+        surveyed_at: str, runner_kwargs: dict, steps_report: list,
+        step_outputs: list, errors: list, auto_ran: set,
+    ):
+        """Resolve, auto-run what the budget covers, and return the (re-checked)
+        Resolution. None when this resource type declares no step registry.
+
+        The re-check after an auto-run is not defensive noise: a producer that
+        ran and legitimately found nothing leaves the precondition still unmet
+        (CLAUDE.md's Gradle/BOM case, where `repo_manifest_parse` recovers 216
+        coordinates and zero versions), and the demanding step must then be
+        skipped with a reason rather than dispatched because a producer
+        "succeeded".
+        """
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return None
+        try:
+            registry_map = provider() or {}
+        except Exception as exc:  # pragma: no cover - provider guard
+            log.debug("could not read the step registry: %s", exc)
+            return None
+
+        from resource_explorer.surveyors import prerequisite_resolver
+
+        def _resolve():
+            return prerequisite_resolver.resolve(
+                self.registry, entity, step_key, registry_map,
+                surveyed_at=surveyed_at, already_ran=auto_ran,
+            )
+
+        resolution = _resolve()
+        for producer in resolution.auto_run:
+            self._auto_run_producer(
+                adapter, entity_type, entity, producer, step_key, resolution,
+                surveyed_at, runner_kwargs, steps_report, step_outputs, errors)
+            auto_ran.add(producer)
+        if resolution.auto_run:
+            resolution = _resolve()
+        return resolution
+
+    def _auto_run_producer(
+        self, adapter, entity_type: str, entity, producer: str,
+        demanding_step: str, resolution, surveyed_at: str, runner_kwargs: dict,
+        steps_report: list, step_outputs: list, errors: list,
+    ) -> None:
+        """Run one prerequisite and record that it happened (§17.1 condition 3).
+
+        Three records, because an auto-run is a result and not an omission:
+        its own entry in `steps_report` carrying `demanded_by`, an activity-log
+        entry (CLAUDE.md rule 16), and a `step_runs` row whose `demanded_by`
+        attributes the cost to the step that asked for it as well as to the
+        step that paid it.
+        """
+        runner = adapter.re_analysis_steps.get(producer)
+        precondition = (resolution.proposal.preconditions[0]
+                        if resolution.proposal and resolution.proposal.preconditions
+                        else (resolution.dead_ends[0] if resolution.dead_ends else ""))
+        why = (f"ran {producer} because {demanding_step} required "
+               f"{precondition or 'its stored output'}")
+        if runner is None:
+            msg = (f"prerequisite {producer!r} for {demanding_step!r} is declared but "
+                   f"the {entity_type} adapter has no runner for it")
+            log.error(msg)
+            errors.append(msg)
+            return
+        info = self._step_info(adapter, producer)
+        output = None
+        try:
+            with step_cost_observer.observe(
+                producer, getattr(info, "fetch_cost", ""),
+                getattr(info, "compute_cost", ""),
+                executor="local", source="local", demanded_by=demanding_step,
+            ) as observed:
+                output = runner(entity, self.registry, **runner_kwargs)
+            self._record_cost(observed, entity_type, entity.slug, output, surveyed_at)
+        except Exception as exc:
+            # Reported, not raised: the demanding step's precondition is then
+            # simply still unmet, which the re-check sees, and it is skipped
+            # with a reason — the outcome it would have had anyway.
+            msg = f"prerequisite step '{producer}' failed: {exc}"
+            log.exception(msg)
+            errors.append(msg)
+            steps_report.append({
+                "step": producer, "re_analysis_step": producer, "status": "error",
+                "detail": msg, "demanded_by": demanding_step, "auto_run": True,
+            })
+            return
+        if isinstance(output, dict):
+            step_outputs.append(output)
+        steps_report.append({
+            "step": producer, "re_analysis_step": producer, "status": "ok",
+            "auto_run": True, "demanded_by": demanding_step, "detail": why,
+        })
+        log.info("%s", why)
+        try:
+            log_survey(
+                self.registry, entity_type, entity.slug,
+                getattr(entity, "display_name", "") or entity.slug,
+                getattr(entity, "github_url", "") or "",
+                intent="analysis", status="ok", summary=why,
+                detail=json.dumps({"prerequisite_auto_run": producer,
+                                   "demanded_by": demanding_step,
+                                   "precondition": precondition}),
+            )
+        except Exception as exc:
+            log.warning("could not log the prerequisite auto-run: %s", exc)
+
+    def _record_cost(self, observed, entity_type: str, slug: str, output,
+                     surveyed_at: str) -> None:
+        """Attach what the step produced, then persist the vector.
+
+        Yield is attached BEFORE the disagreement is judged, for the reason
+        `step_cost_observer` states at length: a duration taken while the
+        thing being measured was not happening is not evidence about a
+        declaration.
+        """
+        if not observed:
+            return
+        obs = observed[0]
+        annotations = (output or {}).get("annotations") if isinstance(output, dict) else None
+        obs.annotations, obs.outcomes = step_cost_observer.describe_work(annotations)
+        obs.disagreement = step_cost_observer._disagreement(obs)
+        step_cost_observer.record(self.registry, slug, obs, surveyed_at,
+                                  entity_type=entity_type)
 
     def run_synthetic_step(
         self,
@@ -820,6 +1112,8 @@ class SurveyDefinitionExecutor:
         executes_at: str,
         display_name: str | None = None,
         publish: str | None = None,
+        engine_override: str | None = None,
+        demanded_by: str = "",
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -879,8 +1173,13 @@ class SurveyDefinitionExecutor:
             process_guid="",
             process_qn=survey_def.qualified_name,
             publish=publish,
-            engine_override=None,
+            # Passed through rather than hardcoded to None (2026-09-23): an
+            # accepted prerequisite proposal (§17.1) names
+            # "resource-explorer", so the run the user consented to is the
+            # run they were quoted a cost for, and is measured.
+            engine_override=engine_override,
             runner_kwargs=runner_kwargs,
+            demanded_by=demanded_by,
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):

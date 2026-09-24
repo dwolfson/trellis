@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -203,6 +203,10 @@ app.include_router(investigations.router, prefix="/api/investigations", tags=["i
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
 app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
 app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
+# Design §17.1 — "answering this needs X first; run it?" The plan is
+# read-only; the run is the user's consent, and goes through the same
+# executor (and so the same cost observation) as any other step.
+app.include_router(prerequisite_routes.router, prefix="/api/prerequisites", tags=["prerequisites"])
 app.include_router(work_lists_routes.router, prefix="/api/work-lists", tags=["work-lists"])
 
 _STATIC = Path(__file__).parent / "static"

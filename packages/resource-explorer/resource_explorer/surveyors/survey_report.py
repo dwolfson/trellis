@@ -320,6 +320,17 @@ class SurveyResult:
     #: with it, because a skip without one is indistinguishable from a failure on
     #: a screen. See surveyors/step_preconditions.py.
     skipped_steps: dict[str, str] = field(default_factory=dict)
+    #: {step_key: reason} for prerequisite steps this run executed on its own
+    #: initiative (design §17.1). A FOURTH bucket for the same reason
+    #: `skipped_steps` is a third: an auto-run step ran, so it IS in
+    #: `steps_run`, but it was not asked for, and "why did this take three
+    #: minutes" is unanswerable without the distinction. The annotation says
+    #: the same thing in the report; this is the branchable form.
+    auto_ran_steps: dict[str, str] = field(default_factory=dict)
+    #: {step_key: proposal} for chains that need the user's consent before
+    #: running (design §17.1). Carried beside `skipped_steps`, not instead of
+    #: it: the step WAS skipped, and the proposal is what to offer next.
+    proposals: dict[str, dict] = field(default_factory=dict)
     # Same failures as `errors`, keyed by the step that raised. Needed because a
     # single run can now carry steps belonging to several different scheduled
     # analyses (scheduler.py coalesces same-repo due schedules into one run so
