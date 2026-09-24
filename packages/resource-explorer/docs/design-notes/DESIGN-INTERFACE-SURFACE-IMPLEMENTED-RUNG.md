@@ -302,24 +302,99 @@ rather than about the pipeline never recording it.
 
 ---
 
-## Open questions for the project owner
+## Decisions (project owner, 2026-09-24)
 
-1. **Does `repo_interface_surface` gain a declared precondition on
-   `repo_symbol_extraction`?** This is the tier question with real teeth. A
-   precondition makes the answer reliably available, and puts a
-   `fetch_cost="download"`, `compute_cost="medium"` step in front of a step whose
-   entire justification is that it is cheap enough to gate the expensive tiers
-   (CLAUDE.md rule 17). The alternative — no precondition, `could_not_check`
-   whenever extraction happens not to have run — keeps Discovery cheap and makes
-   the answer's availability depend on survey ordering. **Recommended: no hard
-   precondition**; bundle the two under the `interface_surface` ANALYSIS_KINDS
-   entry the way `api_structure` already bundles `repo_symbol_extraction`, so
-   *asking for* interfaces is self-refreshing while the Discovery step itself
-   stays free-standing. Owner's call.
-2. **Separate `project_code_markers` table, or columns on
-   `project_code_symbols`?** Recommended above as a separate table (the unique
-   key cannot hold N registrations per symbol). Worth confirming, since it is a
-   migration either way.
-3. **Phase-1 language scope: Python alone, or Python + Java together?** Python
-   alone is exact, free, and self-demonstrating on this repo. Java/Spring is
-   where the surveyed corpus's weight actually sits.
+**1. No hard precondition — and the "bundle like `api_structure`" framing above
+was wrong, not just unconfirmed.** Checked `analysis_catalog.yaml` directly
+rather than trusting the earlier paragraph's memory of it: `api_structure` is
+tagged `intent: analysis`, and the comment immediately above its sibling
+`AnalysisKind` entry says it was **deliberately NOT bundled** with
+`repo_symbol_extraction` — *"bundling would silently force a full, unscoped,
+real zipball-download extraction into every scoped 'API Structure' request.
+Symbol Extraction stays its own `AnalysisKind` instead — independently
+run/scheduled."* That is the opposite of what this doc claimed. The real
+precedent argues for the same shape `interface_surface` already uses for
+`distribution` today (a fact that may or may not exist yet, read honestly,
+never triggered): no precondition, no bundling. `project_code_markers` becomes
+a fourth optional stored-row input, exactly like the third.
+
+Cost framing for the record, since "are they similar?" was asked directly:
+they are **not**. `repo_symbol_extraction` is `fetch_cost="download"`,
+`compute_cost="medium"` — a real zipball fetch plus a full-tree AST walk, not
+a cheap call. A precondition would impose that cost (or a propose/confirm
+interruption) on every Discovery-tier request for a resource that hasn't run
+extraction yet — which, for an analysis meant to be part of Discovery's cheap
+gate (CLAUDE.md rule 17), defeats the point structurally, not just
+occasionally, and at the exact scale (bulk/multi-resource Discovery scans)
+where it would matter most. No precondition costs nothing extra beyond what
+today's code already costs.
+
+**2. Separate `project_code_markers` table — confirmed.** Implications, so
+they're not rediscovered during implementation:
+
+- **Migration**: new table in `registry.py`, SQLite + Postgres DDL (this
+  repo's established TEXT-not-`jsonb` convention for JSON-ish columns),
+  indices on `(project_slug, interface_kind)` (how `interface_surface` reads)
+  and `(project_slug, qualified_name)` (the join back to
+  `project_code_symbols`).
+- **`PRODUCES`**: `repo_symbol_extraction`'s `StepInfo.produces` gains
+  `"project_code_markers"` — this is exactly the §17 `PRODUCES` mechanism
+  (PR #241), so if a precondition is ever wanted later the resolver already
+  knows the producer without further plumbing.
+- **Rewrite semantics**: replace-not-append per rerun (delete-then-reinsert
+  for the slug/file scope touched), matching whatever
+  `project_code_symbols`/`project_code_relationships` already do — confirm
+  and mirror that exactly, or reruns pile up stale duplicate markers.
+- **Backfill trap — the one that actually matters**: every repo already
+  surveyed *before* this table exists will have zero marker rows even though
+  extraction genuinely ran for it. Without a capability flag distinguishing
+  "extraction predates marker capture" from "extraction ran and found
+  nothing," `interface_surface` would misread old repos as a false measured
+  zero instead of an honest "never captured." Same shape as the
+  `min_value`/`max_value` backfill gap already in `docs/Backlog.md` for a
+  different feature — same fix applies: track capability-per-run (e.g. a
+  `markers_captured_at`/schema-version marker on the `repo_symbol_extraction`
+  run itself, or gate on `surveyed_at` against the date this table shipped),
+  not presence-of-any-row-ever.
+- **Test surface**: a migration test following the pattern used for the
+  recent disposition migration in `test_registry.py`, plus fixtures covering
+  `interface_surface`'s expanded read path.
+
+**3. Phase-1 language scope: Python + Java/Spring, not Python alone.** Python
+via `ast.decorator_list` ships first (exact, free, self-demonstrating on this
+repo); Java via the existing tree-sitter grammar (`@GetMapping`,
+`@RequestMapping`, `@KafkaListener`) lands in the same phase rather than a
+follow-up, since that is where the surveyed corpus's weight actually sits —
+shipping Python alone would leave the majority of real repos still reporting
+`could_not_check`. `_MARKER_CAPABLE_LANGUAGES` names exactly these two at
+launch; Go/JS/TS stay excluded and named, per §3.1's precedent
+(`_COMPLEXITY_CAPABLE_LANGUAGES`/`_DOCSTRING_CAPABLE_LANGUAGES`).
+
+**4. `interface_surface` stays `intent: discovery` — no tier move.** Raised
+directly: if doing this properly costs more, should the question move
+downstream? Checked the two closest precedents in `analysis_catalog.yaml`
+before answering:
+
+- `api_structure` is tagged `intent: analysis` (comment: *"was 'assessment' —
+  structural extraction, not evaluative"*) — but it has **zero floor**: a repo
+  that hasn't been ingested "reports nothing" from it at all, so parking it
+  downstream costs nothing.
+- `interface_surface` has a **real floor** that doesn't depend on
+  `project_code_markers` at all: spec-file detection (`openapi.yaml`/`.proto`)
+  is zero-fetch off the raw file inventory; dependency-implied guesses are
+  zero-fetch; and its existing `declared` CLI rung has *already* depended on
+  `distribution` (itself sourced from `repo_manifest_parse`, `fetch_cost=
+  "download"`) since `#103`, at Discovery tier, without incident — because the
+  analysis already degrades honestly (absent input → no finding for that
+  kind) rather than blocking on it.
+
+Moving the whole analysis to Analysis tier would take real, currently-useful,
+already-free signal away from cheap Discovery-tier scans, for the sake of the
+one portion (`implemented` for the five route-like kinds) whose absence is
+already handled honestly via `could_not_check` — the same shape `distribution`
+already uses today, and the same reasoning `architecture_recovery`'s
+2026-08-30 re-tiering (CLAUDE.md rule 17) turned on: move the *step whose own
+cost is the issue*, not a step that only reads another step's output. Here
+that step is `repo_symbol_extraction`, and it is **already** correctly tagged
+`intent: analysis`. Nothing about `interface_surface` needs to move to fix
+that.
