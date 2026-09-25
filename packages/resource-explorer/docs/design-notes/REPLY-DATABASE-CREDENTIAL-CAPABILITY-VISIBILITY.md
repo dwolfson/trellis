@@ -332,3 +332,83 @@ inventory as the database.
 Also confirmed from the Egeria source tree: native survey connectors exist
 for Postgres, Oracle, SQL Server, DuckDB, DB2 and Unity Catalog; none for
 MySQL/MariaDB or SQLite, so those two are rule-C engines end to end.
+
+---
+
+## 9 · Two identities, not one credential with more or fewer grants
+
+**Project owner, 2026-09-25**, from an investigation summarised as *Database
+Security & Access Architecture for Egeria Discovery and Survey* (multi-tier
+access model; statistics as a privilege boundary; catalog estimates versus
+pushdown profiling; how Atlan, Alation, Collibra, OpenMetadata and Unity
+Catalog do it). This section adopts that model and revises §1 and §3
+accordingly. Where the summary and this reply differ, the differences are
+listed at the end so they can be settled by a probe rather than by
+preference.
+
+### 9.1 The model
+
+| Identity | Holds | Scope | Owner and lifecycle | Asked for |
+|---|---|---|---|---|
+| **A — catalog** (`METADATA_READ`) | `catalog` + `stats`: topology, definitions, keys, ownership metadata, row and partition *estimates*, activity and session statistics | zero access to table records; on Oracle `SELECT_CATALOG_ROLE`, on SQL Server `VIEW ANY DEFINITION` + `VIEW SERVER STATE`, on Postgres `CONNECT` + `USAGE` + `pg_read_all_stats` | infrastructure; granted once, held long-term; the one Egeria's own surveys use | **at registration**, always — "surveying the unknown" (point 4) asks for this and nothing more |
+| **B — data** (`DATA_READ`) | `read`: `SELECT` on target tables **including column statistics** (histograms, most-common values), which are derived from values and leak them | scoped to schemas or tables; default/future privileges so it survives migrations; timeouts, memory quotas and `TABLESAMPLE` as guardrails; a replica where one exists | the data owner; often time-limited and revocable independently of A | **at the gate**, when a `read`-tier step needs it and the user can see why |
+| (C — export) | bulk extraction | a different risk class from B; its own connection and replica | — | only as dataset download from portals (design §7); out of scope for surveys |
+| `write` | — | belongs to no survey identity, ever; inferred from grants, never exercised | — | — |
+
+**Steps bind to an identity, not to a capability.** §3's four values remain
+the vocabulary, but they resolve to two bindings: `catalog` and `stats` →
+A; `read` → B. A survey that spans both binds two connections. On engines
+with no privilege model (DuckDB, SQLite) A and B are the same "file opens"
+boolean and the declaration says so.
+
+**Estimated versus measured.** Catalog estimates (`reltuples`,
+`n_distinct`, `null_frac`, histogram bounds where visible) are labelled
+*estimated* in every envelope and annotation; pushdown aggregates
+(`COUNT(*)`, `COUNT(DISTINCT)`, `MIN`/`MAX`, pattern checks) are *measured*.
+That is the two-stage pipeline the summary recommends, and it maps onto
+the design's existing envelope states with one new label.
+
+### 9.2 What this changes in §1, §3 and §6
+
+- §1's "one Connection per credential set" becomes **one Connection per
+  identity, with two identity roles labelled on the `ResourceConnection`
+  link: `catalog` and `data`.** RE's catalogue step creates A always and B
+  only when supplied; each has its own secrets collection.
+- §3's gate names the identity a step binds to as well as the capability:
+  "needs the data identity (SELECT on 23 of 26 tables) — supply one, pick
+  a broader connection, or run the catalog-tier steps only."
+- §6's sequence: registration collects A only, with the form saying so in
+  plain words ("a read-only account that can see the catalog and
+  statistics; table data access is not needed yet"); the probe confirms
+  what was given; B is requested later, at the gate.
+- Native surveys and dual connections (summary §5 versus Egeria as it runs):
+  with A and B both attached to an asset, the default security connector
+  picks at random among what the engine host's user can see (§0 fact 4).
+  **Until that is fixed upstream, B must be zoned away from the engine
+  host's user**, so Egeria's survey always lands on A. Point 3 of the
+  project owner's note — Egeria has surveyor-level, not user-level, access
+  — is then true by construction, not by luck.
+
+### 9.3 Where the summary and this reply differ — settle by probe
+
+| Claim in the summary | This reply | How to settle |
+|---|---|---|
+| Postgres: membership in `pg_read_all_stats` "enables `pg_stats` without table read" (§1 and §2) | Probably not. `pg_stats` is filtered by `has_column_privilege(…, 'select')`; `pg_read_all_stats` grants the `pg_stat_*` activity views and extensions, not column `SELECT`. The role that exposes statistics on every table is `pg_read_all_data`, which *is* table read | one query on the dev platform: grant `pg_read_all_stats` to a scratch role, `SELECT … FROM pg_stats` for a table it cannot read. If rows appear, the summary is right and column statistics move to A on Postgres |
+| MySQL: Tier 1 as "`SELECT` on `information_schema.*`" | not grantable as written; MySQL derives information-schema visibility from privileges on the underlying objects (the engine survey's *no floor* finding). Tier 1 needs `PROCESS` + `SHOW VIEW`, or in practice a reader account | already recorded in the engine survey; a one-line correction to the summary |
+| Column statistics belong to Tier 2 (summary §2 implication) | agreed — and this **corrects the coverage design** (`multi-resource-questions-design.md` §16.2), which called `pg_stats` bounds "free at Scouting". They are free only on tables identity A can read, which by definition is none; the catalog-tier coverage estimate comes from partition bounds, names, file-name dates and Parquet footers, and everything else waits for B | fixed on branch `re/design-coverage-needs-data-identity` |
+
+### 9.4 Additions the summary should carry
+
+- **Identities have owners and lifecycles**: `granted_by`, `expires_at` on
+  the registry index; an expired B is `unresolvable_secret`, not a resource
+  failure.
+- **Application name on every connection** ("resource-explorer scouting
+  as egeria_user"), so the target's audit log shows who and why — the thing
+  that makes owners willing to grant A.
+- **Identity is provenance**: every survey row and published annotation
+  records the identity that produced it; two runs under different
+  identities are never diffed as if the database changed.
+- **Server scope** (listing databases) is A with server scope, not a fourth
+  identity.
+- **RE stores no secret it did not create**: for identities Egeria already
+  holds, RE keeps the collection name and role only.
