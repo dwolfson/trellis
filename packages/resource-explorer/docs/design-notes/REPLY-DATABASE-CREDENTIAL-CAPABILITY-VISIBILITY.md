@@ -129,7 +129,7 @@ cost.
 |---|---|---|
 | `catalog` | system-catalog reads only | always true for a connected role |
 | `read` | SELECT on the target tables | `has_table_privilege(role, t, 'SELECT')` per table; `has_schema_privilege(role, s, 'USAGE')` per schema |
-| `stats` | the monitoring and statistics views (`pg_stat_*`, `pg_stats` beyond one's own tables) | `pg_has_role(role, 'pg_monitor', 'member')` or `pg_read_all_stats` |
+| `stats` | the **monitor-gated** views only: `pg_stat_replication` standby rows, `pg_stat_statements`, other sessions' query text in `pg_stat_activity`, WAL/archiver detail — *not* the per-table activity counters (`pg_stat_all_tables`/`_indexes`), which are unprivileged and belong to `catalog` (live-verified as `egeria_user` on 2026-09-24, correcting this row's first wording); and *not* `pg_stats`, whose column statistics are gated by `SELECT` on the column and so belong to `read` | `pg_has_role(role, 'pg_monitor', 'member')` or `pg_read_all_stats`; verify each view empirically, per `DATABASE-STEP-CAPABILITY-AUDIT.md` |
 | `write` | never for a survey; only for a future repair step | `has_table_privilege(…, 'INSERT')` — probed, never exercised |
 
 Finer vocabularies (per-schema, per-table) are **results of the probe**,
@@ -199,8 +199,9 @@ operational rule in §2 is relied on in a multi-connection deployment.
    index; retire `db_password`; migrate `coco_ods`/`coco_pharma`, which
    need delete-and-recreate anyway (`PROBES-2026-09-21.md`).
 3. **Then:** `requires_capability` on `StepInfo` for the database steps
-   that exist (`postgres_schema_and_stats` → `catalog`; column profile and
-   data-class matching → `read`; `postgres_operations` → `stats`); the
+   that exist (`postgres_schema_and_stats` and `db_activity_signals` →
+   `catalog`; column profile, data-class matching and the `pg_stats`
+   coverage estimate → `read`; `db_resilience` → `stats`); the
    launcher gate; connection choice for local runs.
 4. **Alongside:** file the two Egeria issues; verify the pyegeria read.
 
