@@ -293,6 +293,80 @@ class TestRunnableAndReasonThreadsEntityType:
         assert row["runnable_reason"] == ""
 
 
+class TestSlice17DbDerivedRunnabilityFromCatalog:
+    """Slice 17 (docs/design-notes/SLICE-17-RUNNABILITY-FROM-CATALOG-
+    IMPLEMENTED.md), replying to REVIEW-SURVEY-PANE-285.md §5(a).
+
+    `subject_signals`, `coverage_signals` and `preliminary_fit` (design
+    §16.3's Scouting/Discovery rows, added to `db_derived.DB_DERIVED_
+    ANALYSES` 2026-09-24) had a real results reader and a real run-route
+    dispatch (both keyed off `DB_DERIVED_ANALYSES` directly) from the day
+    they were added — but `survey_definition_adapter.py`'s OWN, separately
+    hand-maintained `DATABASE_ANALYSIS_STEP_MAP` (now `DATABASE_ANALYSIS_RE_
+    STEP_MAP`, and now derived from `DB_DERIVED_ANALYSES` rather than
+    hand-listed) was never updated to include them, so `resolve_analysis_
+    plan`/`runnable_and_reason` — the ONLY thing standing between "has a
+    reader and a route" and "the Run button actually renders enabled" —
+    reported "no mapped survey step(s)" for exactly these three ids,
+    live-reproduced against `coco_pharma`. These pin the fix by name, not
+    just "some id works now", per the coordinator brief's own instruction
+    for this slice."""
+
+    @pytest.mark.parametrize(
+        "analysis_id", ["subject_signals", "coverage_signals", "preliminary_fit"],
+    )
+    def test_the_three_previously_broken_ids_are_runnable(self, analysis_id):
+        runnable, reason = runnable_and_reason(analysis_id, "database")
+        assert runnable is True
+        assert reason == ""
+
+    @pytest.mark.parametrize(
+        "analysis_id", ["subject_signals", "coverage_signals", "preliminary_fit"],
+    )
+    def test_build_analyses_index_reports_them_runnable(self, db_reg, db_slug, analysis_id):
+        idx = build_analyses_index(db_reg, db_slug, entity_type="database")
+        row = next(r for r in idx["analyses"] if r["analysis_id"] == analysis_id)
+        assert row["runnable"] is True
+        assert row["runnable_reason"] == ""
+
+    def test_every_db_derived_id_agrees_between_the_two_step_maps(self):
+        """Structural guard against this exact bug recurring: every id in
+        `DB_DERIVED_ANALYSES` (the run route's and the results map's own
+        source of truth) must also be `"db_derived"`-mapped in
+        `DATABASE_ANALYSIS_RE_STEP_MAP` (the runnability precheck's source),
+        by construction rather than by two lists happening to agree."""
+        from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_RE_STEP_MAP,
+        )
+
+        for analysis_id in DB_DERIVED_ANALYSES:
+            assert DATABASE_ANALYSIS_RE_STEP_MAP.get(analysis_id) == ["db_derived"], analysis_id
+
+    def test_every_local_survey_database_id_has_a_re_step_map_entry(self):
+        """The catalog cross-check the brief asked for: every
+        `analysis_catalog.yaml` database entry with `source: local, action:
+        survey` (i.e. every id the Run route and the Questions tab could
+        conceivably offer) resolves to a real step here — a database entry
+        added to the catalog without a corresponding entry here is exactly
+        how this bug happened the first time, so this is a standing guard,
+        not a one-off regression pin."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_RE_STEP_MAP,
+        )
+
+        local_survey_ids = {
+            a["id"] for a in get_analyses("database", include_egeria_live=False)
+            if a.get("source") == "local" and a.get("action") == "survey"
+        }
+        assert local_survey_ids
+        assert local_survey_ids <= set(DATABASE_ANALYSIS_RE_STEP_MAP)
+        for analysis_id in local_survey_ids:
+            runnable, reason = runnable_and_reason(analysis_id, "database")
+            assert runnable is True, f"{analysis_id}: {reason}"
+
+
 class TestFetchStepCounts:
     def test_mixed_step_list_splits_correctly_and_surfaces_unregistered(self):
         # repo_file_inventory and repo_manifest_parse both declare
