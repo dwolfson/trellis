@@ -176,6 +176,11 @@ def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "re
             "last_run_at": own.get("last_run_at", ""),
             "last_run_status": own.get("last_run_status", ""),
             "last_run_via": own.get("last_run_via") or analysis_id,
+            # See registry.get_analysis_last_run's own comment — only ever
+            # present for a directly-run analysis_run row; absent (not "")
+            # for a derived/survey-attributed one, so callers can tell "we
+            # checked and there is no summary" from "we never asked".
+            "last_run_summary": own.get("last_run_summary", ""),
         }
     if entity_type == "repo":
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
@@ -189,8 +194,9 @@ def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "re
                     "last_run_at": source.get("last_run_at", ""),
                     "last_run_status": source.get("last_run_status", ""),
                     "last_run_via": source_id,
+                    "last_run_summary": source.get("last_run_summary", ""),
                 }
-    return {"last_run_at": "", "last_run_status": "", "last_run_via": ""}
+    return {"last_run_at": "", "last_run_status": "", "last_run_via": "", "last_run_summary": ""}
 
 
 def build_measurements(registry, slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
@@ -410,17 +416,167 @@ def _first_sentence(text: str) -> str:
     return text[: idx + 1]
 
 
-def runnable_and_reason(analysis_id: str) -> tuple[bool, str]:
-    """Whether `POST /api/projects/{slug}/analyses/{analysis_id}/run` would
-    accept this id, and the reason when it would not — the SAME check and the
-    SAME text `run_single_analysis` (web/routes/projects.py) uses via
-    `resolve_analysis_plan`, so this row and that route can never disagree.
-    A pure wrapper (no registry/slug needed — the gate is id-only), so it's
-    also the boundary a test can call directly for an id the index itself
-    never lists (`egeria_publish`, excluded below as `action: "publish"`)."""
+def _humanize_count_key(key: str) -> str:
+    """`"entry_count"` -> `"entries"`, `"table_count"` -> `"tables"` — crude
+    but adequate pluralization for the generic fallback summary below (no
+    irregulars handled; the readers this feeds are a closed, known set)."""
+    word = key
+    for suffix in ("_count", "_total"):
+        if word.endswith(suffix):
+            word = word[: -len(suffix)]
+            break
+    word = word.replace("_", " ")
+    if word.endswith("y") and not word.endswith(("ay", "ey", "oy", "uy")):
+        return word[:-1] + "ies"
+    if not word.endswith("s"):
+        return word + "s"
+    return word
+
+
+def _generic_result_fallback(data) -> str | None:
+    """Best-effort one-line result summary for an analysis with NO
+    `headline_reader` (REPLY-SURVEY-ANALYSES-PANE-USER-FACING-MODEL.md
+    §1.1: "the summary text comes from each analysis's existing results
+    reader / result_materializer summary — no new summariser"). This reads
+    ONLY what a `results_reader` already returned — list lengths and any
+    scalar `*_count`/`*_total` field — it does not query anything new and it
+    does not understand any analysis's shape beyond that generic contract.
+
+    A handful of readers (the four `_operations_section_reader` sections,
+    `credential_capability`, most of `_db_derived_field_reader`'s eight
+    fields) return a nested/blob shape with no top-level count field at all
+    — those fall through to the bare "measured — see full result" sentence
+    below. That is a real, reported gap (see the PR description's §1.1
+    table), not a silent guess: a real per-analysis sentence belongs in that
+    analysis's own `headline_reader` entry, which this function is
+    deliberately not trying to become.
+
+    Returns None for an empty/falsy payload — the caller distinguishes
+    "never measured" from "measured, found nothing" itself."""
+    if not data or not isinstance(data, dict):
+        return None
+    counts: list[tuple[str, int]] = []
+    for key, value in data.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, list):
+            counts.append((key, len(value)))
+        elif isinstance(value, int) and not isinstance(value, bool) and (
+            key.endswith("_count") or key.endswith("_total")
+        ):
+            counts.append((key, value))
+    if not counts:
+        return "measured — see full result"
+    nonzero = [(k, v) for k, v in counts if v]
+    if not nonzero:
+        nouns = " or ".join(_humanize_count_key(k) for k, _ in counts[:2])
+        return f"no {nouns} found"
+    return " · ".join(f"{v:,} {_humanize_count_key(k)}" for k, v in nonzero[:4])
+
+
+def build_result_summary(
+    registry, slug: str, entity_type: str, entry: dict, kind, run_info: dict,
+    matched_questions: list[dict],
+) -> dict:
+    """The row's line-2 state (REPLY-SURVEY-ANALYSES-PANE-USER-FACING-MODEL.md
+    §1.1) — `{"state": ..., "text": ...}`. `state` picks the sentence's verb
+    on the frontend (`"Ran {ago}: "` / `"Last run failed {ago}: "` / a bare
+    `"answers: "` for never-run) and its own visual/textual treatment; `text`
+    is the rest of the line. Never invents data: `text` is built only from
+    `entry`'s own catalog fields, `matched_questions` (already computed by
+    the caller from the question catalog), and whatever `kind.results`'
+    existing `results_reader`/`headline_reader` already return — no new
+    summarizer, per §1.1.
+
+    Six states, matching the design table: `never_run`, `ok` (found
+    something), `empty` (ran, found nothing — kept visually/textually
+    distinct from `never_run`, per `find-absence-as-answer`), `credential_
+    scoped` (a specialization of `ok` — the reader's own `_status` envelope
+    said the read was partial), and `failed`. `just_now` is NOT decided
+    here — this always reports the stored last-run truth; the frontend adds
+    the one live "just ran in this browser session" state on top after a
+    run completes (existing pollActivity/re-render pattern), same division
+    of responsibility the design doc draws in its own state table.
+    """
+    if not run_info.get("last_run_at"):
+        if matched_questions:
+            answers = "; ".join(q["question"] for q in matched_questions[:3])
+        else:
+            answers = _first_sentence(entry.get("description", "")) or "nothing catalogued yet"
+        return {"state": "never_run", "text": answers}
+
+    status = str(run_info.get("last_run_status") or "").lower()
+    if status in ("error", "failure", "failed"):
+        text = run_info.get("last_run_summary") or "the run did not complete"
+        return {"state": "failed", "text": text}
+
+    reader = kind.results.results_reader if kind and kind.results else None
+    headline_reader = kind.results.headline_reader if kind and kind.results else None
+
+    data = None
+    if reader is not None:
+        try:
+            data = reader(registry, slug)
+        except Exception:
+            data = None
+
+    if headline_reader is not None:
+        try:
+            headline = headline_reader(registry, slug)
+        except Exception:
+            headline = None
+        if headline and headline.get("label"):
+            return {"state": "ok", "text": headline["label"]}
+
+    if data:
+        status_marker = data.get("_status") if isinstance(data, dict) else None
+        if isinstance(status_marker, dict) and status_marker.get("state") == "measured_within_credential_scope":
+            base = _generic_result_fallback(data) or "measured"
+            connected_as = status_marker.get("connected_as", "")
+            fraction = status_marker.get("fraction", "")
+            who = f" — as `{connected_as}`" if connected_as else ""
+            scope = f", {fraction}" if fraction else ""
+            return {"state": "credential_scoped", "text": f"{base}{who}{scope}"}
+        fallback = _generic_result_fallback(data)
+        if fallback:
+            return {"state": "ok", "text": fallback}
+
+    if reader is not None:
+        # A real results_reader ran and returned nothing — this IS the
+        # distinct "ran, found nothing" state, not "never run" rendered the
+        # same way (find-absence-as-answer).
+        return {"state": "empty", "text": "nothing found"}
+
+    # No results_reader registered for this analysis at all (chat-only or
+    # nothing-yet, per `serves` above) — we know it ran, we have no reader
+    # to ask what it found. Bare, honest fallback.
+    return {"state": "ok", "text": ""}
+
+
+def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bool, str]:
+    """Whether this entity type's run route would accept this id, and the
+    reason when it would not — the SAME check and the SAME text
+    `run_single_analysis` (web/routes/projects.py) uses via
+    `resolve_analysis_plan`, so this row and that route can never disagree
+    FOR REPO. A pure wrapper (no registry/slug needed — the gate is id-only),
+    so it's also the boundary a test can call directly for an id the index
+    itself never lists (`egeria_publish`, excluded below as `action:
+    "publish"`).
+
+    `entity_type` used to be unaccepted here (defaulting `resolve_analysis_
+    plan` to "repo" regardless of caller) — every database/filesystem row in
+    `build_analyses_index` reported "no mapped survey step(s)" for a real,
+    runnable analysis (`db_activity_signals`, `schema_inventory`, …), because
+    none of those ids resolve against repo's own step map. Live-reproduced
+    2026-09-25: every "run"/"re-run" button on a database's Survey & Analyses
+    pane was disabled with that message, including `schema_inventory`, which
+    had run successfully (and produced 63 real annotations) moments earlier
+    via a direct API call that bypasses this check entirely — the run route
+    itself (`databases.py::run_single_database_analysis`) was never broken,
+    only this precheck's idea of which catalog to resolve against."""
     from resource_explorer.workflows.analysis import resolve_analysis_plan
 
-    is_ingest, steps = resolve_analysis_plan(analysis_id)
+    is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
     runnable = bool(is_ingest or steps)
     if runnable:
         return True, ""
@@ -446,14 +602,15 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict
     through the same per-type `ResourceTypeAdapter` `build_measurements`
     uses.
 
-    `runnable_and_reason()` below still gates through repo-only
-    `resolve_analysis_plan()` — that is a genuinely separate, wider gap (the
-    run route itself, `web/routes/projects.py::run_single_analysis`, is
-    repo-only for the same reason) and out of scope for this fix; a
-    database/filesystem row here reports "runnable" using repo's step map,
-    which happens to work today (an id resolvable there also happens to
-    resolve for other types) but is not a fix, just an unclaimed pre-existing
-    gap.
+    `runnable_and_reason()` below now takes `entity_type` too (fixed
+    2026-09-25, live-reproduced against a database's Survey & Analyses pane
+    — see its own docstring) — every button on that pane was disabled with
+    "no mapped survey step(s)" because `resolve_analysis_plan` always
+    resolved against repo's own catalog. `web/routes/projects.py::
+    run_single_analysis`, the actual REPO run route, is unaffected (it was
+    already repo-only by design); a database's real run route is
+    `databases.py::run_single_database_analysis`, which never shared this
+    bug — only this precheck's idea of which catalog to resolve against.
 
     Raises `LookupError` for an unknown slug — routes translate to 404."""
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
@@ -512,8 +669,11 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict
         if serves != "question":
             no_question += 1
 
-        runnable, runnable_reason = runnable_and_reason(aid)
+        runnable, runnable_reason = runnable_and_reason(aid, entity_type)
         cost = run_cost_as_dict(estimate_run_cost(registry, aid, resource_type=entity_type))
+        result_summary = build_result_summary(
+            registry, slug, entity_type, entry, kind, run_info, matched_questions,
+        )
 
         rows.append({
             "analysis_id": aid,
@@ -531,6 +691,7 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict
             "runnable": runnable,
             "runnable_reason": runnable_reason,
             "catalog": entry,
+            "result_summary": result_summary,
         })
 
     return {

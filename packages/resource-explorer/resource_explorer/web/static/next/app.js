@@ -3635,10 +3635,6 @@ function paneNeedsRepo() {
  *  removed rather than kept as dead code a future gate might reach for
  *  again without re-verifying the backend actually needs it. */
 
-/** The tiers, in the order a funnel is worked through. */
-const SURVEY_TIERS = ['scouting', 'discovery', 'assessment', 'analysis',
-                      'refresh', 'automate_full'];
-
 /** Placeholder, like the matrix's — see STALE_DAYS there. */
 const SURVEY_STALE_DAYS = 7;
 
@@ -3659,19 +3655,6 @@ function onePurpose(text) {
   return first.length > 160 ? `${first.slice(0, 157)}…` : first;
 }
 
-/** Last run, with the matrix's own staleness treatment — a rule, not a colour. */
-function lastRunHtml(c) {
-  const when = c.last_run_at || '';
-  if (!when) return '<span class="text-ink-muted">never run</span>';
-  const days = (Date.now() - Date.parse(when)) / 86400000;
-  const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
-  const ok = (c.last_run_status || '') === 'ok';
-  return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
-    ${ok ? '<span class="text-state-ok">✓</span> '
-         : c.last_run_status ? `<span class="text-state-warn">⚠</span> ` : ''}
-    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
-}
-
 /** The union of annotation types a definition's steps declare — RE steps carry
  *  their own `annotation_types`, native (Egeria-executed) steps carry theirs
  *  nested one level down, in `egeria_produced_annotation_types[].annotation_type`.
@@ -3685,39 +3668,11 @@ function producesTypes(c) {
   return [...seen];
 }
 
-function surveyRowHtml(c) {
-  const steps = (c.steps || []).length || c.step_count || 0;
-  const produces = producesTypes(c);
-  return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
-    <div class="min-w-0 flex-1">
-      <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
-      ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
-      <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
-        c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
-          class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
-      <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
-        produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
-    </div>
-    <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step${steps === 1 ? '' : 's'}${
-      // Point 2 (SPEC-THE-STAGE-PAGE.md): the axis tiering itself turns on --
-      // "4 steps · 2 fetch" beside "7 steps · none fetch" reads as peers with
-      // one that fetches twice and one that doesn't. `fetch_steps` is not on
-      // every definition row yet (re/stage-page-backend); say nothing rather
-      // than a false zero until it is.
-      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
-    <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
-    <button data-run-survey="${esc(c.qualified_name || c.guid)}"
-      class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >Run →</button>
-  </div>`;
-}
-
 // Human-readable labels for `NativeProcess.kind` (technology_type_processes.py
 // / configdata/technology_type_processes.yaml). Raw enum values rendered
 // directly -- "(survey_existing)" -- meant nothing to a reader who hasn't read
-// that config file (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §5). A
-// fallback keeps an unmapped or future kind from disappearing rather than
-// crashing the render.
+// that config file. A fallback keeps an unmapped or future kind from
+// disappearing rather than crashing the render.
 const NATIVE_PROCESS_KIND_LABELS = {
   survey_existing: 'surveys an existing catalog entry',
   catalog_and_survey: 'catalogues, then surveys',
@@ -3727,35 +3682,160 @@ function nativeProcessKindLabel(kind) {
   return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
 }
 
-/** Renders `egeria_native_processes` -- real, Egeria-native survey/governance
- *  processes for this technology type that have no RE-authored Survey
- *  Definition candidate (that's `candidates`, a separate list). Ported from
- *  classic's `nativeProcessesHtml` (index.html) into /next's own visual
- *  idiom. Informational only: no "run" affordance, even for `survey_existing`
- *  processes -- wiring one of these to run from this pane is a separate,
- *  already-flagged follow-up (Backlog.md, #244), not part of this fix.
+/* ── Survey & analyses: ONE unified, flat, runnable-first list ───────────────
  *
- *  Three copy/visual fixes per REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
- *  LANGUAGE.md §5, all inherited from the classic port: (1) the house caps
- *  style is for short labels, not a whole sentence, and the parenthetical
- *  carrying the fact that matters most here (these can't run from this pane)
- *  read worst in caps -- split into a caps label and a normal-case caveat
- *  below it; (2) `display_name` no longer renders in `text-accent-ink`, the
- *  same "click me" colour as the *Run →* buttons on candidate rows right
- *  above it, for a name that isn't runnable; (3) raw enum `kind` values are
- *  mapped to plain language via `nativeProcessKindLabel`. */
-function nativeProcessesSectionHtml(nativeProcesses) {
-  nativeProcesses = nativeProcesses || [];
-  if (!nativeProcesses.length) return '';
-  return `<div class="mt-s3 text-caveat text-ink-muted">
-    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria</div>
-    <div class="text-ink-muted">Not runnable from here yet — listed so you know they exist.</div>
-    ${nativeProcesses.map((p) => `
-      <div class="mt-s1 border-l border-rule pl-s2">
-        <span class="font-mono text-ink">${esc(p.display_name)}</span>
-        <span class="text-ink-muted">(${esc(nativeProcessKindLabel(p.kind))})</span>
-        ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
-      </div>`).join('')}
+ * REPLY-SURVEY-ANALYSES-PANE-USER-FACING-MODEL.md §0-§3: every pane's opening
+ * sentence leads with the user's verb (run/answer), not with a fact about
+ * RE's own construction (who authored it, where it runs, how the candidate
+ * list was scoped). This merges THREE data sources that used to render as
+ * four/five separate visual pieces (a scope banner, an "Also known to
+ * Egeria" section with no run affordance, tier-grouped RE-authored Survey
+ * Definition rows, and a wholly separate "Analyses" index below with its own
+ * run buttons) into rows of one shape:
+ *
+ *   - `data.candidates` (survey_definitions.py) -- RE-authored Survey
+ *     Definitions this resource's Technology Type has, each real work Egeria
+ *     and/or RE can run.
+ *   - `data.egeria_native_processes` (same response) -- real Egeria-native
+ *     processes for the technology with NO RE-authored candidate and no run
+ *     affordance today. §1: dissolves into rows like any other, with a gate
+ *     reason ("not runnable from Resource Explorer yet") instead of a
+ *     standing informational section this pane used to render above
+ *   - `analyses-index` rows (stage_page.py::build_analyses_index) -- RE's own
+ *     local analyses, each already runnable with its own cost/last-run/
+ *     result-summary.
+ *
+ * No fake correspondence is invented between a Survey Definition candidate
+ * and an analysis-index row: a candidate's `analysis_ids` (survey_
+ * definitions.py::_derived_from_steps, a real trace from its steps'
+ * `re_analysis_step` keys to catalog entries) is the ONLY join used, and only
+ * when it is non-empty -- a candidate with no analysis_ids gets its own
+ * fallback summary from its declared `produces` types, not a borrowed one.
+ */
+
+/** `runs in Egeria` / `runs here` / `either` -- secondary, per §3: the ONLY
+ *  three places "which engine" appears are this tag, the popover sentence,
+ *  and the result record after a run. `localCount`/`nativeCount` are steps
+ *  for a survey (`_execution_split`) or just a source flag for a local
+ *  analysis (`source: 'egeria' | 'local'`). */
+function engineTagFromCounts(localCount, nativeCount) {
+  if (localCount > 0 && nativeCount > 0) return 'either';
+  if (nativeCount > 0) return 'runs in Egeria';
+  return 'runs here';
+}
+
+/** The rule-B sentence (REPLY §1's Action column): only shown when there is
+ *  a REAL engine choice (both local and native steps exist), never as
+ *  standing copy on every row. */
+function engineChoiceSentenceHtml(localCount, nativeCount) {
+  if (!(localCount > 0 && nativeCount > 0)) return '';
+  return `<span class="text-provenance text-ink-muted">Egeria can reach this —
+    <span class="tnum">${localCount}</span> step${localCount === 1 ? '' : 's'} run here,
+    <span class="tnum">${nativeCount}</span> coordinated by Egeria.</span>`;
+}
+
+/** Session-local "just ran" memory, keyed `${slug}::${kind}::${key}` -- the
+ *  live-update half of §1.1's state table ("just ran in this session" / "Just
+ *  now: … (line updates live)"). Deliberately in-memory only: it answers
+ *  "did THIS browser tab just watch this finish", not a fact any storage
+ *  needs to survive a reload -- a reload re-reads the real last-run state
+ *  from the server, which is by then no longer "this session" anyway. */
+const justRanKeys = new Set();
+function justRanKey(slug, kind, key) { return `${slug}::${kind}::${key}`; }
+
+/** The row's line-2 state, for either a survey candidate or an analysis-
+ *  index row (REPLY §1.1's six states). `summary` is `{state, text}` as
+ *  `build_result_summary` on the backend returns for analyses; for a survey
+ *  candidate (which has no single results_reader of its own) the caller
+ *  passes a client-built fallback of the same shape -- see
+ *  `surveyResultSummary` below. */
+function resultSummaryLineHtml(summary, lastRunAt, justNow) {
+  const state = justNow ? 'just_now' : (summary && summary.state) || 'never_run';
+  const text = (summary && summary.text) || '';
+  if (state === 'never_run') {
+    return `<span class="text-ink-muted">${esc(text || 'nothing catalogued yet')}</span>`;
+  }
+  if (state === 'just_now') {
+    return `<span class="text-state-ok">Just now:</span> ${esc(text || 'measured')}`;
+  }
+  const when = lastRunAt ? ago(lastRunAt) : '';
+  const days = lastRunAt ? (Date.now() - Date.parse(lastRunAt)) / 86400000 : 0;
+  const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
+  if (state === 'failed') {
+    return `<span class="text-state-warn">Last run failed <span class="tnum ${stale ? 'wl-age-text' : ''}">${esc(when)}</span>:</span>
+      ${esc(text || 'the run did not complete')}`;
+  }
+  // 'ok' | 'empty' | 'credential_scoped' -- all share the "Ran …:" prefix;
+  // 'empty'/'credential_scoped' are kept textually distinct from `never_run`
+  // (find-absence-as-answer) by the TEXT (§1.1's exact examples: "no views or
+  // functions found", "56 tables — as `egeria_user`, …"), not by a different
+  // prefix -- the prefix's job is only "was this measured at all".
+  return `<span class="text-ink">Ran <span class="tnum ${stale ? 'wl-age-text' : ''}">${esc(when)}</span>:</span>
+    ${esc(text || (state === 'empty' ? 'nothing found' : 'measured'))}`;
+}
+
+/** The client-side equivalent of `stage_page.py::build_result_summary`, for
+ *  a Survey Definition candidate. A survey has no single `results_reader` --
+ *  it is several steps -- so this REUSES the real per-analysis summaries the
+ *  analyses-index endpoint already computed for the `analysis_ids` this
+ *  survey's own steps write to (`_derived_from_steps`), joining the two data
+ *  sources on that real, backend-derived id list. Only when a candidate
+ *  writes to NO tracked analysis_id (fully Egeria-native survey with no
+ *  `re_analysis_step` at all) does this fall back to the survey's own
+ *  declared `produces` types -- a coarser FALLBACK, not a real per-run
+ *  count, and reported as such. */
+function surveyResultSummary(c, analysesById) {
+  if (!c.last_run_at) {
+    const ids = c.analysis_ids || [];
+    const answers = ids.length
+      ? ids.map((id) => analysesById.get(id)?.name || id).join(', ')
+      : (onePurpose(c.description) || 'nothing catalogued yet');
+    return { state: 'never_run', text: `answers: ${answers}` };
+  }
+  const status = String(c.last_run_status || '').toLowerCase();
+  if (status === 'error' || status === 'failure' || status === 'failed') {
+    return { state: 'failed', text: 'the run did not complete' };
+  }
+  const ownSummaries = (c.analysis_ids || [])
+    .map((id) => analysesById.get(id)?.result_summary)
+    .filter((s) => s && s.text);
+  if (ownSummaries.length) {
+    const worstState = ownSummaries.some((s) => s.state === 'failed') ? 'failed'
+      : ownSummaries.some((s) => s.state === 'credential_scoped') ? 'credential_scoped'
+      : ownSummaries.every((s) => s.state === 'empty') ? 'empty' : 'ok';
+    return { state: worstState, text: ownSummaries.map((s) => s.text).join(' · ') };
+  }
+  const produces = producesTypes(c);
+  return { state: 'ok', text: produces.length ? `produces ${produces.join(', ')}` : '' };
+}
+
+/** One unified row -- Name / result-summary (or "what it answers") / "what
+ *  it needs" (only when ungateable) / engine tag / Action / Detail. Shared
+ *  by all three row kinds (`kind`: 'survey' | 'native' | 'analysis' handled
+ *  separately by `analysisIndexRowHtml`, below, which already had its own
+ *  richer per-analysis furniture -- questions link, cost, sub-resource
+ *  toggle -- worth keeping intact rather than flattened into this generic
+ *  shape). This renders survey-candidate and native-process rows. */
+function unifiedSurveyRowHtml(row) {
+  const gate = !row.runnable
+    ? `<div class="mt-[2px] text-provenance text-state-warn">needs: ${esc(row.gateReason)}</div>` : '';
+  const engineNote = row.engineChoiceHtml || '';
+  return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2" data-unified-row="${esc(row.rowKey)}">
+    <div class="min-w-0 flex-1">
+      <div class="flex flex-wrap items-baseline gap-s2">
+        <span class="text-answer text-ink">${esc(row.name)}</span>
+        <span class="text-provenance text-ink-muted">${esc(row.engineTag)}</span>
+        ${row.detailHandlerAttr ? `<button type="button" ${row.detailHandlerAttr}
+          class="cursor-pointer bg-transparent p-0 text-caveat text-ink-muted underline">what it does</button>` : ''}
+      </div>
+      <div class="mt-[2px] text-caveat">${resultSummaryLineHtml(row.summary, row.lastRunAt, row.justNow)}</div>
+      ${gate}
+      ${engineNote ? `<div class="mt-[2px]">${engineNote}</div>` : ''}
+    </div>
+    ${row.runnable ? `<button data-unified-run="${esc(row.rowKey)}"
+        class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+        >${esc(row.actionLabel)}</button>`
+      : `<span class="shrink-0 text-caveat text-ink-muted">not runnable</span>`}
   </div>`;
 }
 
@@ -3773,11 +3853,10 @@ async function loadSurveyPane() {
   } catch (err) {
     el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
       `${err.message}. This is a fact about the request, not about ${slug} — nothing
-       here says the repo has no surveys.`);
+       here says the resource has no surveys.`);
     bindSubTabs();
     return;
   }
-  const all = data.candidates || [];
   const stage = data.phase || state.stage;
 
   // Point 2: step_count/fetch_steps live on the catalog-wide definitions
@@ -3788,111 +3867,26 @@ async function loadSurveyPane() {
   try {
     const defs = await listSurveyDefinitions();
     const byName = new Map(defs.map((d) => [d.qualified_name, d]));
-    for (const c of all) {
+    for (const c of data.candidates || []) {
       const d = byName.get(c.qualified_name);
       if (d) { c.step_count = d.step_count; c.fetch_steps = d.fetch_steps; c.unregistered_steps = d.unregistered_steps; }
     }
   } catch { /* the row still has everything the candidates call gave it */ }
 
-  // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
-  // paragraph. The four-line cold-server warning becomes a chip that says
-  // which scope you are looking at, with a retry.
-  // Informational only, matching classic's index.html: Egeria knows real,
-  // runnable-elsewhere processes for this technology that have no RE-authored
-  // Survey Definition candidate here. That is a separate fact from
-  // `candidates` (RE-authored definitions) and is shown regardless of whether
-  // `candidates` is empty -- not a fallback for the empty state.
-  const nativeProcessesHtml = nativeProcessesSectionHtml(data.egeria_native_processes);
+  // D2 (docs/survey-model.md) stays true on the wire: `data.scoping` is
+  // still a real backend fact (survey_definitions.py never stopped
+  // computing it) -- REPLY-SURVEY-ANALYSES-PANE-USER-FACING-MODEL.md §2
+  // only removes it from THIS pane's rendering. "Tiers"/"scoping" as a
+  // reader-facing concept moves to a future Discovery question
+  // (docs/Backlog.md) instead of a standing banner with a retry that could
+  // never succeed against a permanent catalog fact.
 
-  const heavy = all.filter((c) => c.survey_kind === 'automate_full');
-  const rest = all.filter((c) => c.survey_kind !== 'automate_full');
-  const byTier = new Map();
-  for (const c of rest) {
-    const t = c.survey_kind || 'unclassified';
-    byTier.set(t, [...(byTier.get(t) || []), c]);
-  }
-  const tierOrder = [...byTier.keys()].sort(
-    (a, b) => (SURVEY_TIERS.indexOf(a) + 1 || 99) - (SURVEY_TIERS.indexOf(b) + 1 || 99));
-  const here = tierOrder.filter((t) => t === stage);
-  const elsewhere = tierOrder.filter((t) => t !== stage);
-  const nElsewhere = elsewhere.reduce((n, t) => n + byTier.get(t).length, 0);
-
-  el.innerHTML = subTabsHtml() + `
-    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
-      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
-        ${esc(data.technology_type || 'unknown technology type')}</span>
-      <span class="ml-auto rounded-sm border ${
-        data.scoping === 'full-scan' ? 'border-state-warn text-state-warn' : 'border-rule-strong text-ink-muted'}
-        px-2 py-[1px] text-provenance">
-        Scope: ${data.scoping === 'full-scan'
-          ? `all tiers — stage filter unavailable · <button type="button" data-act="rescope"
-              class="cursor-pointer bg-transparent underline">retry</button>`
-          : esc(stage)}</span>
-    </div>
-
-    ${nativeProcessesHtml}
-
-    ${here.map((t) => `
-      <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
-        <span class="tnum">${byTier.get(t).length}</span></div>
-      ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
-
-    ${nElsewhere ? `
-      <details class="mt-s3">
-        <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
-          Other stages · <span class="tnum">${nElsewhere}</span>
-          <span class="normal-case tracking-normal">— ${esc(elsewhere.map(
-            (t) => `${t} ${byTier.get(t).length}`).join(' · '))}</span>
-        </summary>
-        ${elsewhere.map((t) => `
-          <div class="mt-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(t)}</div>
-          ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
-      </details>` : ''}
-
-    ${heavy.map((c) => {
-      // SET APART, GIVEN A PLAN VERB, AND NOT PLACED FIRST. Its own
-      // description says it scales poorly by construction and is meant as a
-      // scheduled choice; a row that argues against being clicked should not
-      // be the most default-looking row on the pane.
-      const steps = (c.steps || []).length;
-      return `<div class="mt-s4 border border-rule bg-[rgba(32,31,29,.03)] p-s3">
-        <div class="flex flex-wrap items-baseline gap-s2">
-          <span class="text-answer text-ink">${esc(c.display_name)}</span>
-          <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
-            >${steps} steps · all tiers</span>
-          <button data-plan-survey="${esc(c.qualified_name)}"
-            class="ml-auto cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
-            >Plan a run…</button>
-        </div>
-        <div class="mt-s1 max-w-[60ch] text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>
-      </div>`;
-    }).join('')}
-
-    ${!all.length ? paneMessage('No survey definitions for this resource',
-        'The adapter registered none for this technology type. That is a fact about '
-        + 'the catalog, not about the repository.') : ''}
-    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
-
-    <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
-      <div class="text-caveat text-ink-muted">Reading the analyses…</div>
-    </div>`;
+  el.innerHTML = subTabsHtml() + `<div id="unified-survey-section">
+    <div class="text-caveat text-ink-muted">Reading the analyses…</div>
+  </div>`;
   bindSubTabs();
 
-  el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
-  el.querySelectorAll('[data-defhist]').forEach((b) => b.addEventListener('click', () => {
-    const c = all.find((x) => x.qualified_name === b.dataset.defhist);
-    const d = openDialog(c.display_name || c.qualified_name, c.qualified_name);
-    d.querySelector('#wl-detail-body').innerHTML = `
-      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Definition history</div>
-      <p class="max-w-[70ch] whitespace-pre-line">${esc(c.description || '')}</p>`;
-  }));
-  el.querySelectorAll('[data-run-survey], [data-plan-survey]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const ref = b.dataset.runSurvey || b.dataset.planSurvey;
-      planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
-    }));
-
-  renderAnalysesIndexSection(slug, stage);
+  await renderAnalysesIndexSection(slug, stage, data);
 }
 
 /* ── Survey & analyses: the analyses half (SPEC-THE-STAGE-PAGE.md, points
@@ -3946,23 +3940,30 @@ function analysisIndexRowHtml(row) {
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
   const isSubRes = row.analysis_id === SUBRES_ANALYSIS_ID;
+  // §3: the engine tag is one of exactly three places "which engine" may
+  // appear -- `catalog.source` ('egeria' | 'local', analysis_catalog_
+  // reader.py) is the real, already-catalogued fact this reads, not a guess.
+  const engineTag = (row.catalog && row.catalog.source === 'egeria') ? 'runs in Egeria' : 'runs here';
+  const justNow = justRanKeys.has(justRanKey(state.selectedSlug, 'analysis', row.analysis_id));
   return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
     <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-baseline gap-s2">
         <span class="text-answer text-ink">${esc(row.name || row.analysis_id)}</span>
+        <span class="text-provenance text-ink-muted">${esc(engineTag)}</span>
         <button type="button" data-analysis-popover="${esc(row.analysis_id)}"
           class="cursor-pointer bg-transparent p-0 text-caveat text-ink-muted underline">what it does</button>
         ${row.recommended ? `<span class="rounded-pill border border-accent px-2 py-[1px] text-provenance text-accent-ink">recommended</span>` : ''}
       </div>
+      <div class="mt-[2px] text-caveat">${resultSummaryLineHtml(row.result_summary, row.last_run_at, justNow)}</div>
       <div class="mt-[2px] text-provenance text-ink-muted">
         ${qn
           ? `<button type="button" data-analysis-questions="${esc(row.analysis_id)}"
                class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${qn} question${qn === 1 ? '' : 's'} ›</button>`
           : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
-        · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
         · ${analysisRowPrice(row.cost)}
       </div>
+      ${!row.runnable ? `<div class="mt-[2px] text-provenance text-state-warn">needs: ${esc(row.runnable_reason)}</div>` : ''}
     </div>
     ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
       class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
@@ -3970,6 +3971,8 @@ function analysisIndexRowHtml(row) {
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
+    <span data-analysis-run-error="${esc(row.analysis_id)}"
+      class="hidden w-full text-provenance text-state-warn"></span>
   </div>
   ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
@@ -4017,12 +4020,60 @@ function openAnalysisQuestionsPopover(row) {
   }));
 }
 
-async function renderAnalysesIndexSection(slug, stage) {
-  const host = $('analyses-index-section');
+/** The unified pane's empty state (REPLY §2) -- adapted from the actual
+ *  `surveyData`/`aData` in hand, never hardcoded to database/PostgreSQL.
+ *  Two shapes: Egeria has something for this technology (native processes
+ *  exist) even though RE has authored no Survey Definition, versus neither
+ *  side has anything. `docs/extending-resource-explorer.md` is a real,
+ *  existing doc -- checked, not invented -- so the second shape's pointer
+ *  resolves. */
+function surveyEmptyStateHtml(surveyData, nativeProcesses, answerableCount) {
+  const tech = surveyData.technology_type || 'this technology';
+  const questionsNote = answerableCount
+    ? ` Questions already answerable from what has been measured here:
+       <span class="tnum">${answerableCount}</span> →
+       <button type="button" data-goto-questions-tab class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Questions</button>.`
+    : '';
+  if (nativeProcesses.length) {
+    // Honest about today's actual capability boundary (survey_definitions.py:
+    // only `survey_existing` is even nominally wired, and this pane does not
+    // offer to trigger it yet — see the native-process rows above, each
+    // carrying its own "not runnable from Resource Explorer yet" reason).
+    // REPLY §2's own example copy ("… Survey PostgreSQL Database — Run")
+    // reads as though that button exists today; it does not, so this says
+    // what IS true (Egeria has real native process(es) for this technology,
+    // listed above, not yet runnable from here) rather than promising a
+    // button this build does not add.
+    return `<p class="mt-s3 max-w-[70ch] text-answer text-ink">
+      No RE-authored surveys are defined for ${esc(tech)} yet. Egeria itself has
+      <span class="tnum">${nativeProcesses.length}</span> native survey process(es) for ${esc(tech)} —
+      see the row(s) above.${questionsNote}</p>`;
+  }
+  return `<p class="mt-s3 max-w-[70ch] text-answer text-ink">
+    No surveys exist for ${esc(tech)} yet. Authoring one is developer work —
+    see <span class="font-mono">docs/extending-resource-explorer.md</span> ("Extending Resource Explorer").${questionsNote}</p>`;
+}
+
+/** The Survey & analyses pane's one flat list (REPLY-SURVEY-ANALYSES-PANE-
+ *  USER-FACING-MODEL.md §1-§3), for BOTH database and filesystem resources
+ *  (§5) -- nothing here is specific to a technology name; `surveyData`
+ *  (survey-definitions candidates response) carries whatever the real
+ *  resource's own technology_type is.
+ *
+ * `surveyData` is `loadSurveyPane`'s already-fetched GET .../candidates
+ * response (candidates, egeria_native_processes, technology_type, scoping --
+ * scoping is read by nothing here, per D2/§2: it stays a backend fact this
+ * UI simply does not render). This function makes the SECOND call
+ * (analyses-index) itself, exactly as it always has, so a run-triggered
+ * re-render can refresh just the local-analyses half without re-asking
+ * Egeria for candidates -- `surveyData` is threaded through, not refetched.
+ */
+async function renderAnalysesIndexSection(slug, stage, surveyData) {
+  const host = $('unified-survey-section');
   if (!host) return;
-  let data;
+  let aData;
   try {
-    data = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
+    aData = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
   } catch (err) {
     if (slug === state.selectedSlug && state.subTab === 'survey') {
       host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
@@ -4031,39 +4082,91 @@ async function renderAnalysesIndexSection(slug, stage) {
   }
   if (slug !== state.selectedSlug || state.subTab !== 'survey') return;   // a faster click, or a different pane, won
 
-  const rows = data.analyses || [];
+  const rows = aData.analyses || [];
+  const analysesById = new Map(rows.map((r) => [r.analysis_id, r]));
+  const candidates = surveyData.candidates || [];
+  const nativeProcesses = surveyData.egeria_native_processes || [];
   const sort = analysesIndexSort();
-  const sorted = [...rows].sort((a, b) => {
+
+  // ── merge the three sources into ONE flat, runnable-first list (§1) ──────
+  // sortRank: 0 = normal runnable, 1 = runnable but deliberately not the
+  // default-looking choice (an `automate_full` survey — its own description
+  // says it scales poorly by construction), 2 = not runnable (gated).
+  const items = [];
+  for (const c of candidates) {
+    const localCount = c.steps_local || 0;
+    const nativeCount = c.steps_native || 0;
+    const heavy = c.survey_kind === 'automate_full';
+    const runnable = !c.error;
+    const engineTag = engineTagFromCounts(localCount, nativeCount);
+    const row = {
+      rowKey: c.qualified_name || c.guid,
+      name: c.display_name || c.qualified_name,
+      runnable, gateReason: c.error || '',
+      engineTag,
+      engineChoiceHtml: engineTag === 'either' ? engineChoiceSentenceHtml(localCount, nativeCount) : '',
+      summary: surveyResultSummary(c, analysesById),
+      lastRunAt: c.last_run_at,
+      justNow: justRanKeys.has(justRanKey(slug, 'survey', c.qualified_name || c.guid)),
+      actionLabel: heavy ? 'Plan a run…' : (c.last_run_at ? 'Re-run' : 'Run'),
+      detailHandlerAttr: c.description ? `data-detail-survey="${esc(c.qualified_name || c.guid)}"` : '',
+    };
+    items.push({ sortRank: !runnable ? 2 : heavy ? 1 : 0, name: row.name, html: unifiedSurveyRowHtml(row), _candidate: c, _kind: 'survey' });
+  }
+  for (const p of nativeProcesses) {
+    const row = {
+      rowKey: `native::${p.qualified_name}`,
+      name: p.display_name,
+      runnable: false,
+      // Its own runnable-elsewhere fact folds into the row's gate reason
+      // instead of standing above every row in its own separate section (§1,
+      // §3): dissolved into a row like any other blocked one.
+      gateReason: 'not runnable from Resource Explorer yet',
+      engineTag: 'runs in Egeria',
+      engineChoiceHtml: '',
+      summary: { state: 'never_run', text: `answers: ${nativeProcessKindLabel(p.kind)}` },
+      lastRunAt: '', justNow: false,
+      actionLabel: '',
+      detailHandlerAttr: `data-detail-native="${esc(p.qualified_name)}"`,
+    };
+    items.push({ sortRank: 2, name: row.name, html: unifiedSurveyRowHtml(row), _native: p, _kind: 'native' });
+  }
+  const sortedRows = [...rows].sort((a, b) => {
     if (sort === 'never_run') return (b.last_run_at ? 0 : 1) - (a.last_run_at ? 0 : 1);
     if (sort === 'cost') return (a.cost?.seconds ?? Infinity) - (b.cost?.seconds ?? Infinity);
     return (a.name || a.analysis_id).localeCompare(b.name || b.analysis_id);
   });
-  const here = sorted.filter((r) => r.tier === stage);
-  const elsewhere = sorted.filter((r) => r.tier !== stage);
+  for (const r of sortedRows) {
+    items.push({ sortRank: r.runnable ? 0 : 2, name: r.name || r.analysis_id, html: analysisIndexRowHtml(r), _kind: 'analysis' });
+  }
+  // Stable-ish: runnable-first, then the caller's chosen sort order/name
+  // within each rank (Array.prototype.sort is stable, so ties keep the
+  // per-source order already established above).
+  items.sort((a, b) => a.sortRank - b.sortRank);
+
+  const answerableCount = new Set(
+    rows.filter((r) => r.last_run_at).flatMap((r) => (r.questions || []).map((q) => q.question)),
+  ).size;
 
   host.innerHTML = `
     <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
-      <span class="text-caps uppercase tracking-caps text-ink-muted">Analyses ·
-        <span class="tnum">${rows.length}</span> ·
-        <span class="tnum">${data.counts?.never_run ?? 0}</span> never run ·
-        <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</span>
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Survey & analyses ·
+        ${esc(surveyData.technology_type || 'unknown technology type')} ·
+        <span class="tnum">${items.length}</span></span>
       <span class="ml-auto flex gap-[6px] text-caveat">
         ${[['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
           <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
             class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">${esc(label)}</button>`).join('')}
       </span>
     </div>
-    ${here.map(analysisIndexRowHtml).join('') || `<p class="text-caveat text-ink-muted">No analyses run at this stage.</p>`}
-    ${elsewhere.length ? `
-      <details class="mt-s3">
-        <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
-          Other stages · <span class="tnum">${elsewhere.length}</span></summary>
-        ${elsewhere.map(analysisIndexRowHtml).join('')}
-      </details>` : ''}`;
+    ${items.map((i) => i.html).join('') || surveyEmptyStateHtml(surveyData, nativeProcesses, answerableCount)}
+    ${items.length && !candidates.length
+      ? surveyEmptyStateHtml(surveyData, nativeProcesses, answerableCount) : ''}
+    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>`;
 
   host.querySelectorAll('[data-analyses-sort]').forEach((b) => b.addEventListener('click', () => {
     try { localStorage.setItem(ANALYSES_SORT_KEY, b.dataset.analysesSort); } catch { /* per-viewer convenience only */ }
-    renderAnalysesIndexSection(slug, stage);
+    renderAnalysesIndexSection(slug, stage, surveyData);
   }));
   host.querySelectorAll('[data-analysis-popover]').forEach((b) => b.addEventListener('click', () => {
     openAnalysisPopover(rows.find((r) => r.analysis_id === b.dataset.analysisPopover));
@@ -4071,6 +4174,38 @@ async function renderAnalysesIndexSection(slug, stage) {
   host.querySelectorAll('[data-analysis-questions]').forEach((b) => b.addEventListener('click', () => {
     openAnalysisQuestionsPopover(rows.find((r) => r.analysis_id === b.dataset.analysisQuestions));
   }));
+  host.querySelectorAll('[data-detail-survey]').forEach((b) => b.addEventListener('click', () => {
+    const c = candidates.find((x) => (x.qualified_name || x.guid) === b.dataset.detailSurvey);
+    if (!c) return;
+    const d = openDialog(c.display_name || c.qualified_name, c.qualified_name);
+    d.querySelector('#wl-detail-body').innerHTML = `
+      <p class="max-w-[70ch] whitespace-pre-line">${esc(c.description || '')}</p>
+      <table class="mt-s3 w-full max-w-[50ch] border-collapse text-caveat">
+        <tr class="border-b border-rule"><td class="py-[4px] pr-s3 text-ink-muted">engine</td>
+          <td class="py-[4px] text-ink">${esc(engineTagFromCounts(c.steps_local || 0, c.steps_native || 0))}</td></tr>
+        <tr class="border-b border-rule"><td class="py-[4px] pr-s3 text-ink-muted">qualified name</td>
+          <td class="py-[4px] font-mono text-ink">${esc(c.qualified_name || '')}</td></tr>
+      </table>`;
+  }));
+  host.querySelectorAll('[data-detail-native]').forEach((b) => b.addEventListener('click', () => {
+    const p = nativeProcesses.find((x) => x.qualified_name === b.dataset.detailNative);
+    if (!p) return;
+    const d = openDialog(p.display_name, p.qualified_name);
+    d.querySelector('#wl-detail-body').innerHTML = `
+      <p class="max-w-[70ch] whitespace-pre-line">${esc(p.description || nativeProcessKindLabel(p.kind))}</p>
+      <p class="mt-s2 text-caveat text-ink-muted">Not runnable from Resource Explorer yet.</p>`;
+  }));
+  host.querySelectorAll('[data-unified-run]').forEach((b) => b.addEventListener('click', () => {
+    const key = b.dataset.unifiedRun;
+    const c = candidates.find((x) => (x.qualified_name || x.guid) === key);
+    if (c) planSurveyRun(c, slug);
+  }));
+  host.querySelector('[data-goto-questions-tab]')?.addEventListener('click', () => {
+    state.subTab = 'questions';
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  });
   const subresToggle = host.querySelector('[data-subres-toggle]');
   const subresPanel = host.querySelector('#subres-panel');
   subresToggle?.addEventListener('click', async () => {
@@ -4082,11 +4217,13 @@ async function renderAnalysesIndexSection(slug, stage) {
   });
   host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
     const aid = b.dataset.analysisRun;
+    const errEl = host.querySelector(`[data-analysis-run-error="${CSS.escape(aid)}"]`);
+    if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
     b.disabled = true;
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      const started = await runAnalysis(slug, aid);
+      const started = await runAnalysis(slug, aid, apiEntityType(state.resourceType));
       // Watch it rather than tell the user to reload — pollActivity is the
       // same mechanism the Questions checklist's run button already uses
       // (rerun(), above). A five-minute timeout still redraws the section
@@ -4100,18 +4237,28 @@ async function renderAnalysesIndexSection(slug, stage) {
             b.textContent = s === 'queued' || s === 'pending' ? 'Queued…' : 'Running…';
           },
         });
+        // §1.1's live-update state ("Just now: … line updates live") -- this
+        // browser watched the run reach a terminal state, so the very next
+        // re-render (right below) can say "Just now" instead of waiting for
+        // a reload to notice the new last_run_at.
+        justRanKeys.add(justRanKey(slug, 'analysis', aid));
       } catch (err) {
         if (err.name !== 'PollTimeout') throw err;
         // Not a failure — this browser stopped watching, the run itself
         // has not failed (same distinction rerun() draws for questions).
       }
       if (slug === state.selectedSlug && state.subTab === 'survey') {
-        await renderAnalysesIndexSection(slug, stage);
+        await renderAnalysesIndexSection(slug, stage, surveyData);
       }
     } catch (err) {
       b.disabled = false;
       b.textContent = original;
-      b.title = err.status === 401 ? 'Sign in to run an analysis' : err.message;
+      const msg = err.status === 401 ? 'Sign in to run an analysis' : `Could not start: ${err.message}`;
+      b.title = msg;
+      // A tooltip alone is invisible unless the reader hovers -- reported as
+      // "the button works but doesn't do anything", because Queueing… reverts
+      // to run → the instant the request fails, with nothing else on screen.
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
     }
   }));
 }
