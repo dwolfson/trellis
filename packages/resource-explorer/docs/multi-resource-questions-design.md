@@ -500,6 +500,26 @@ conformance — sampled and time-boxed per §5.8. The gate then reads
 "estimated from statistics 40 days old (4,120 rows changed since) — run
 the measured pass?", which is a better prompt than a bare Run.
 
+**A third basis: recorded at write.** Estimated and measured are not the
+only two. Some sources maintain statistics as a byproduct of writing, so
+the numbers are exact as of the write and readable without touching data:
+Delta Lake and Iceberg keep per-file min, max and null counts in the
+transaction log or manifests, stamped with a version or snapshot id;
+Parquet and ORC footers carry per-row-group column bounds; Snowflake
+micro-partition metadata and BigQuery storage metadata give exact row
+counts with no `ANALYZE` concept; Unity Catalog exposes column summaries
+to `BROWSE` users alone; and OpenLineage run facets carry output row
+counts and sizes emitted by the writing pipeline, which Egeria's Lovelace
+service already consumes. For these there is no estimate-versus-actual
+gap. So every value carries one of three bases — `estimated` (catalog,
+with the freshness stamp above), `measured` (pushdown, identity B, sampled
+and time-boxed), `recorded_at_write` (format or pipeline metadata, exact,
+with the version or snapshot stamp where one exists) — and the envelope
+names it. `recorded_at_write` needs no data identity, is the cheapest
+source of exact numbers where it exists, and a comparator over its
+version stamp is exact change detection for free. The engine and format
+declaration says which basis each source can offer.
+
 **Two consequences.** Egeria's native Postgres survey reads `pg_stats` too
 (`PROBES-2026-09-21.md`: *Most Common Values* comes from
 `pg_stats.most_common_vals`), so native annotations are estimates with the
