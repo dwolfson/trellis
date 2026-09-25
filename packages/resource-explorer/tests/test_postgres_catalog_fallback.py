@@ -403,9 +403,15 @@ class TestFactsNoteCarriesTheCatalogCaveat:
             },
         }
         note = FactLayer._note_for(MEASURED_WITHIN_CREDENTIAL_SCOPE, value, {})
-        assert "23 table(s) visible via catalog" in note
-        assert "SELECT access: 3 of 23" in note
-        assert "estimates, not exact" in note
+        # REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §3: the headline
+        # (the count and who can read how much of it) leads, not the
+        # parenthetical, and "catalog-only ones" -- a term coined in the same
+        # sentence it's used -- became "the other N", computed rather than
+        # left for the reader to work out.
+        assert "23 tables, of which" in note
+        assert "can read 3" in note
+        assert "the other 20" in note
+        assert "planner estimates, not exact" in note
 
     def test_note_falls_back_to_the_bare_fraction_with_no_catalog_recovery(self):
         from resource_explorer.facts import FactLayer

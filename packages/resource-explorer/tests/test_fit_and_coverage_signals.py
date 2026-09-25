@@ -42,6 +42,7 @@ from resource_explorer.surveyors.database.db_derived import (
     FIT_DOES_NOT_FIT,
     FIT_FITS,
     FIT_NO_REQUIREMENT,
+    FIT_NOTHING_MEASURED,
     GRAIN_INTERVAL_BASIS_COLUMN_NAME,
     GRAIN_INTERVAL_BASIS_COLUMN_NAME_UNTYPED,
     GRAIN_INTERVAL_BASIS_PARTITION_SUFFIX,
@@ -750,8 +751,11 @@ class TestPreliminaryFit:
         result = compute_preliminary_fit(*_signals(registry), lens=None)
         assert result["state"] == STATE_NOT_MEASURED
         assert result["reason"] == "no_estimates_established"
-        # Never a fit and never a miss, whatever a consumer reads.
-        assert result["verdict"] == FIT_COULD_NOT_CHECK
+        # Never a fit and never a miss, whatever a consumer reads. Its own
+        # verdict, not `could_not_check` — a never-surveyed resource and a
+        # lens whose named inputs weren't measured are different absences
+        # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §4).
+        assert result["verdict"] == FIT_NOTHING_MEASURED
         assert "has not been surveyed" in result["explanation"]
 
     def test_the_unsurveyed_state_hides_the_card_rather_than_answering(

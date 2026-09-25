@@ -515,7 +515,10 @@ class TestAnUndeclaredEngineIsAnAbsenceNotAFlatNamespace:
             assert agg["grain"] is None, key
             assert agg["reason"] == schema_scope.REASON_UNDECLARED, key
             assert "by_schema" not in derived[key], key
-            assert "NOT a finding" in agg["explanation"], key
+            # Lower-case "not", to match house voice (REPLY-COPY-REVIEW-
+            # CREDENTIAL-AND-FIT-LANGUAGE.md §6(a)) -- the emphasis is real
+            # without shouting it.
+            assert "not a finding" in agg["explanation"], key
 
 
 # ── 5. credential capability, per schema (REPLY §2) ─────────────────────────

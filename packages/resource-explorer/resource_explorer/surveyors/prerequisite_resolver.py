@@ -264,8 +264,7 @@ class Proposal:
         return "capability" in kinds and bool(kinds - {"capability"})
 
     def sentence(self) -> str:
-        """The §17.1 prompt, as one line: what is needed, what it costs, and
-        why it is being asked rather than simply done.
+        """The §17.1 prompt, as one line: what is needed and what it costs.
 
         ONE sentence however many axes fired. A cost-tier shortfall and a
         capability shortfall are two clauses of the same `why`, joined like
@@ -273,26 +272,40 @@ class Proposal:
         reason", made literal here rather than left to the renderer, so the
         API, the CLI and the UI cannot drift into three different phrasings
         of the same gate.
+
+        Ends with a full stop, not the decision. `REPLY-COPY-REVIEW-
+        CREDENTIAL-AND-FIT-LANGUAGE.md` §1 defect 3: the part a reader has to
+        act on was the last seven words of a 60-80 word sentence. This stays
+        the single source of the full explanation — that reasoning doesn't
+        change — and `question()` alongside it carries the short, actionable
+        ask a button or a CLI prompt puts in front of someone. One source
+        still; nothing can drift between the two.
         """
         why = "; ".join(r.detail for r in self.reasons) or "it crosses the tier you chose"
         if not self.steps:
             # Capability-only: nothing runs first, so there is no chain to
             # name and no estimate to quote. Saying "answering this needs
             # first — estimated 0s" would be three claims that are all false.
-            return (
-                f"`{self.demanding_step}` can run, but not completely — {why}; "
-                "run it anyway and report what was measured within this "
-                "credential's scope?"
-            )
+            return f"`{self.demanding_step}` can run, but not completely — {why}."
         steps = ", ".join(f"`{s}`" for s in self.steps)
-        tail = ("run it anyway and report what was measured within this "
-                "credential's scope?") if self.run_partially else "run it?"
         return (
             f"answering this needs {steps} first — estimated "
             f"{self.estimated_seconds:.0f}s"
-            f"{'' if self.estimated_is_measured else ' (estimated from its declared tier, never yet measured)'}"
-            f", {why}; {tail}"
+            f"{'' if self.estimated_is_measured else ' (not yet measured — estimated from declared tiers)'}"
+            f", {why}."
         )
+
+    def question(self) -> str:
+        """The short, actionable question `sentence()` no longer ends with.
+
+        `sentence()` stays the single source of the full explanation; this is
+        the other half of REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md
+        §1 defect 3 — the UI puts this on the confirm button, the CLI prints
+        it after `sentence()`.
+        """
+        if self.run_partially:
+            return "Run it within this credential's scope?"
+        return "Run it?"
 
     def as_dict(self) -> dict:
         return {
@@ -309,6 +322,7 @@ class Proposal:
             "capability": dict(self.capability) if self.capability else None,
             "advisory": self.advisory,
             "sentence": self.sentence(),
+            "question": self.question(),
         }
 
 
@@ -395,21 +409,26 @@ class Budget:
 
 
 def _exceeds(budget: Budget, info) -> str:
-    """"" when `info` fits inside `budget`, else which axis it crosses."""
+    """"" when `info` fits inside `budget`, else which axis it crosses, in
+    plain language.
+
+    No field names and no Python `repr` quotes — this lands verbatim in a
+    sentence a person reads, not a log line (REPLY-COPY-REVIEW-CREDENTIAL-
+    AND-FIT-LANGUAGE.md §1 defect 4).
+    """
     fetch_order, compute_order = _cost_orders()
     fetch = getattr(info, "fetch_cost", "none") or "none"
     compute = getattr(info, "compute_cost", "low") or "low"
+    where = "the ceiling this run set" if budget.source == "ceiling" else "the step you asked for"
     try:
         if fetch_order.index(fetch) > fetch_order.index(budget.fetch_cost):
-            return (f"fetch_cost {fetch!r} is above the {budget.fetch_cost!r} "
-                    f"{'ceiling this run set' if budget.source == 'ceiling' else 'tier the step you asked for sits in'}")
+            return f"needs a more expensive fetch than {where} ({fetch}; you're at {budget.fetch_cost})"
         if compute_order.index(compute) > compute_order.index(budget.compute_cost):
-            return (f"compute_cost {compute!r} is above the {budget.compute_cost!r} "
-                    f"{'ceiling this run set' if budget.source == 'ceiling' else 'tier the step you asked for sits in'}")
+            return f"needs more compute than {where} ({compute}; you're at {budget.compute_cost})"
     except ValueError:
         # An unrecognised tier string cannot be ordered. Ask rather than
         # assume cheap — the failure direction that spends nothing.
-        return f"declares an unrecognised cost tier ({fetch!r}/{compute!r})"
+        return f"declares a cost tier this run doesn't recognise ({fetch}/{compute})"
     return ""
 
 
@@ -432,9 +451,14 @@ def _consent_reasons(step_key: str, info, budget: Budget,
             f"`{step_key}` needs {', '.join(sorted(unresolved))} — a download or clone "
             "this run has not already acquired"))
     if getattr(info, "needs_credentials", False):
+        # Provenance ("rule B", the module docstring's naming for this
+        # condition) belongs to the maintainer reading this code, not to the
+        # sentence a user reads — REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
+        # LANGUAGE.md §1 defect 1 / §0's "provenance belongs in the evidence,
+        # not in the sentence".
         out.append(ConsentReason(
             step_key, "credentials",
-            f"`{step_key}` needs credentials this executor cannot resolve (rule B)"))
+            f"`{step_key}` needs credentials this executor cannot resolve"))
     if getattr(info, "answering_kind", "") == "human":
         out.append(ConsentReason(
             step_key, "human",
@@ -456,7 +480,8 @@ def _declares_capability(step_registry: Mapping[str, Any], keys) -> bool:
     return False
 
 
-def _capability_reason(step_key: str, info, probe, consented: bool = False) -> tuple:
+def _capability_reason(step_key: str, info, probe, consented: bool = False,
+                       demanding: bool = False) -> tuple:
     """`(ConsentReason | None, CapabilityAssessment)` for one step.
 
     The whole of the capability axis's per-step logic, kept beside
@@ -469,6 +494,15 @@ def _capability_reason(step_key: str, info, probe, consented: bool = False) -> t
     change, and the run's own envelope still has to say so
     (`result_status.MEASURED_WITHIN_CREDENTIAL_SCOPE`). Consent is permission
     to proceed, never permission to stop mentioning it.
+
+    `demanding` is true only when `step_key` is `Proposal.demanding_step` AND
+    the resulting proposal has no producers to run first (`Proposal.steps`
+    empty) — the capability-only template in `Proposal.sentence()` already
+    opens with that same step name, so repeating it in the detail said the
+    subject twice (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect
+    2). When producers ARE involved, the combined sentence never otherwise
+    names the demanding step, so the prefix stays — only the capability-only
+    case is redundant.
     """
     from resource_explorer.surveyors import credential_capability
 
@@ -476,10 +510,8 @@ def _capability_reason(step_key: str, info, probe, consented: bool = False) -> t
     assessment = credential_capability.assess(requirement, probe)
     if consented or not assessment.blocks:
         return None, assessment
-    return (
-        ConsentReason(step_key, "capability", f"`{step_key}` {assessment.detail}"),
-        assessment,
-    )
+    detail = assessment.detail if demanding else f"`{step_key}` {assessment.detail}"
+    return ConsentReason(step_key, "capability", detail), assessment
 
 
 def _estimate(registry, slug: str, step_keys: list[str],
@@ -691,7 +723,11 @@ def resolve(
     # a step does not widen a grant, so the shortfall survives the request and
     # has to be said out loud.
     own_reason, own_assessment = _capability_reason(
-        step_key, info, capability_probe, consented=capability_consented)
+        step_key, info, capability_probe, consented=capability_consented,
+        # No producers to run first (`auto_run` empty) means `sentence()`
+        # will use the capability-only template, which already opens with
+        # `step_key` — see `_capability_reason`'s own docstring.
+        demanding=not auto_run)
     if own_reason is not None:
         consent.append(own_reason)
 

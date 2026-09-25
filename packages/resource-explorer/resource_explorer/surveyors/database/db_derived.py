@@ -2857,6 +2857,16 @@ FIT_DOES_NOT_FIT = "does_not_fit"
 #: §16.2's ANALYZE warning makes unavoidable: with `coverage_signals`
 #: unknown, "does not fit" and "fits" are both unsupported claims.
 FIT_COULD_NOT_CHECK = "could_not_check"
+#: NONE of the three Scouting estimates is established — a never-surveyed
+#: database. Distinct from `FIT_COULD_NOT_CHECK`: that one names specific
+#: inputs the lens needed that weren't measured FOR THIS ANALYSIS; this one
+#: is that nothing about the resource has been surveyed at all. Both are
+#: statements about OUR measurement, not the resource, but they call for
+#: different remedies — a lens tweak or an ANALYZE vs. running a survey at
+#: all — so REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §4 gives them
+#: separate verdicts rather than collapsing the never-surveyed case into
+#: "could not check".
+FIT_NOTHING_MEASURED = "nothing_measured"
 #: No lens, or a lens that declares nothing this tier can compare.
 FIT_NO_REQUIREMENT = "no_requirement_declared"
 #: Per-input only: the lens declares nothing on this axis, but does declare
@@ -3148,21 +3158,29 @@ def compute_preliminary_fit(
     changing the lens recomputes fit over every already-surveyed resource at
     no fetch cost.
 
-    Four verdicts, and the third is the one this exists to get right:
+    Five verdicts, and the third and fourth are the ones this exists to get
+    right — REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §4 groups them
+    into three different KINDS of statement, not five flavours of one:
 
-    - `fits` — every criterion the lens declares and this tier can check does.
+    - `fits` — every criterion the lens declares and this tier can check
+      does. **About the resource.**
     - `does_not_fit` — at least one checkable criterion definitely fails.
-    - `could_not_check` — no criterion fails, and at least one could not be
-      evaluated because its input was not established. §16.2's ANALYZE case
-      lands here, and it must NEVER render as either of the two above.
+      **About the resource.**
+    - `could_not_check` — no criterion fails, and at least one NAMED input
+      this lens needed could not be evaluated because it was not established.
+      §16.2's ANALYZE case lands here, and it must NEVER render as either of
+      the two above. **About our measurement for THIS analysis.**
+    - `nothing_measured` — NONE of the three Scouting estimates is
+      established at all (a never-surveyed database): not "this lens'
+      inputs", but nothing about the resource. A different absence from
+      `could_not_check`, and a different remedy (run a survey, not tweak the
+      lens or run ANALYZE). **Also about our measurement, but of the whole
+      resource rather than named inputs.**
     - `no_requirement_declared` — no lens, or a lens declaring nothing
       comparable at this tier. Carries `achievable` instead of a pass.
-
-    Plus one state that is not a verdict at all: when NONE of the three
-    estimates is established (a never-surveyed database), the payload is
-    `STATE_NOT_MEASURED` with `reason: no_estimates_established`, because "no
-    requirement declared" is a statement about the *lens* and what is needed
-    there is a statement about the *resource*. See the branch below.
+      **About the lens**, not the resource and not our measurement — see the
+      branch below and `_fit_annotations`' docstring for why that distinction
+      has to survive into the rendered sentence, not just the data.
     """
     normalised = normalise_lens(lens)
     achievable = _achievable(subject, coverage, grain)
@@ -3174,8 +3192,10 @@ def compute_preliminary_fit(
     # "Preliminary fit: no requirement declared" would be an answer about a
     # resource nobody has looked at, and "no requirement declared" is a
     # statement about the LENS, not about the resource. The verdict field is
-    # still filled in with `could_not_check` so no consumer reading it sees a
-    # fit or a miss.
+    # `nothing_measured`, its own verdict rather than `could_not_check`
+    # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §4) — a never-surveyed
+    # resource and a lens whose named inputs weren't measured are different
+    # absences with different remedies, and neither reads as a fit or a miss.
     nothing_established = not (
         (subject or {}).get("state") == STATE_MEASURED
         or (coverage or {}).get("state") == STATE_MEASURED
@@ -3184,7 +3204,7 @@ def compute_preliminary_fit(
     if nothing_established:
         return {
             "state": STATE_NOT_MEASURED,
-            "verdict": FIT_COULD_NOT_CHECK,
+            "verdict": FIT_NOTHING_MEASURED,
             "reason": "no_estimates_established",
             "label": "unverified",
             "confidence": 0,
@@ -3192,6 +3212,8 @@ def compute_preliminary_fit(
             "lens_source": str((normalised or {}).get("lens_source") or ""),
             "lens_version": str((normalised or {}).get("lens_version") or ""),
             "inputs": {},
+            "failed_inputs": [],
+            "unchecked_inputs": [],
             "achievable": achievable,
             "deferred_criteria": [],
             "unused_criteria": [],
@@ -3230,6 +3252,8 @@ def compute_preliminary_fit(
             "lens_source": "",
             "lens_version": "",
             "inputs": {},
+            "failed_inputs": [],
+            "unchecked_inputs": [],
             "achievable": achievable,
             "deferred_criteria": [],
             "unused_criteria": [],
@@ -4901,24 +4925,57 @@ def _coverage_annotations(result: dict) -> list:
 def _fit_annotations(result: dict) -> list:
     """One annotation for `preliminary_fit` (§16.3's Discovery gate).
 
-    The four verdicts map to four different summaries and labels, deliberately
-    — a `could_not_check` rendered like a `does_not_fit` would be the exact
-    collapse §16.2's ANALYZE warning is about, one level up.
+    Five verdicts, and they are not five flavours of one summary —
+    REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §4. Putting
+    "Preliminary fit:" in front of every one of them made all five read as a
+    verdict on the RESOURCE, which is only true of two of them:
+
+    - `fits` / `does_not_fit` — about the resource.
+    - `could_not_check` / `nothing_measured` — about OUR measurement, and two
+      different absences: `could_not_check` means named inputs this lens
+      needed weren't measured for THIS analysis; `nothing_measured` means
+      nothing about the resource has been surveyed at all. Collapsing them
+      would be the exact `could_not_check`-reads-like-`does_not_fit` mistake
+      §16.2's ANALYZE warning is about, one level up.
+    - `no_requirement_declared` — about the LENS (`db_derived.py`'s own
+      docstring on `compute_preliminary_fit`), which is why its sentence
+      leads with "No preliminary fit" rather than "Preliminary fit:" — there
+      is no fit verdict to prefix.
+
+    A `could_not_check` rendered like a `does_not_fit` would be the exact
+    collapse §16.2's ANALYZE warning is about, one level up — the reason
+    every branch below is its own sentence rather than one shared template.
     """
     verdict = result["verdict"]
-    summaries = {
-        FIT_FITS: "Preliminary fit: in scope — worth the full pass",
-        FIT_DOES_NOT_FIT: "Preliminary fit: out of scope",
-        FIT_COULD_NOT_CHECK: "Preliminary fit: could not check",
-        FIT_NO_REQUIREMENT: "Preliminary fit: no requirement declared",
-    }
-    if result.get("reason") == "no_estimates_established":
-        # Its own sentence, not the generic "could not check": nothing about
-        # this resource has been measured, and the remedy is a survey rather
-        # than a lens or an ANALYZE.
-        summary = "Preliminary fit: nothing measured to compare"
+    failed = result.get("failed_inputs") or []
+    unchecked = result.get("unchecked_inputs") or []
+
+    if verdict == FIT_FITS:
+        summary = "Preliminary fit: in scope — worth the full pass"
+    elif verdict == FIT_DOES_NOT_FIT:
+        # The first failed input, not silence — "out of scope" with no reason
+        # is a dismissal nobody can check (§4).
+        summary = (
+            f"Preliminary fit: out of scope — {failed[0]}" if failed
+            else "Preliminary fit: out of scope"
+        )
+    elif verdict == FIT_COULD_NOT_CHECK:
+        n = len(unchecked)
+        summary = (
+            f"Preliminary fit not checked — {n} input{'' if n == 1 else 's'} "
+            f"not measured: {', '.join(unchecked)}"
+        ) if unchecked else "Preliminary fit not checked"
+    elif verdict == FIT_NOTHING_MEASURED:
+        summary = ("No preliminary fit yet — nothing about this resource has "
+                   "been measured; run a survey ›")
+    elif verdict == FIT_NO_REQUIREMENT:
+        summary = ("No preliminary fit — no fit requirement is declared; "
+                   "declare one ›")
     else:
-        summary = summaries.get(verdict, "Preliminary fit")
+        # A blank label with no answer is worse than naming the surprise —
+        # find_absence_as_answer's rule applies to our own defensive
+        # fallback, not only to the data we're summarising.
+        summary = f"Preliminary fit: unrecognised verdict `{verdict}`"
     return [ResourceMeasureAnnotation(
         summary=summary,
         analysis_step=ANALYSIS_STEP,
