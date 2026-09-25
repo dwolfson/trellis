@@ -3712,6 +3712,27 @@ function surveyRowHtml(c) {
   </div>`;
 }
 
+/** Renders `egeria_native_processes` -- real, Egeria-native survey/governance
+ *  processes for this technology type that have no RE-authored Survey
+ *  Definition candidate (that's `candidates`, a separate list). Ported from
+ *  classic's `nativeProcessesHtml` (index.html) into /next's own visual
+ *  idiom. Informational only: no "run" affordance, even for `survey_existing`
+ *  processes -- wiring one of these to run from this pane is a separate,
+ *  already-flagged follow-up (Backlog.md, #244), not part of this fix. */
+function nativeProcessesSectionHtml(nativeProcesses) {
+  nativeProcesses = nativeProcesses || [];
+  if (!nativeProcesses.length) return '';
+  return `<div class="mt-s3 text-caveat text-ink-muted">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria for this technology (not yet runnable from here)</div>
+    ${nativeProcesses.map((p) => `
+      <div class="mt-s1 border-l border-rule pl-s2">
+        <span class="font-mono text-accent-ink">${esc(p.display_name)}</span>
+        <span class="text-ink-muted">(${esc(p.kind)})</span>
+        ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
+      </div>`).join('')}
+  </div>`;
+}
+
 async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -3750,6 +3771,13 @@ async function loadSurveyPane() {
   // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
   // paragraph. The four-line cold-server warning becomes a chip that says
   // which scope you are looking at, with a retry.
+  // Informational only, matching classic's index.html: Egeria knows real,
+  // runnable-elsewhere processes for this technology that have no RE-authored
+  // Survey Definition candidate here. That is a separate fact from
+  // `candidates` (RE-authored definitions) and is shown regardless of whether
+  // `candidates` is empty -- not a fallback for the empty state.
+  const nativeProcessesHtml = nativeProcessesSectionHtml(data.egeria_native_processes);
+
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
   const byTier = new Map();
@@ -3775,6 +3803,8 @@ async function loadSurveyPane() {
               class="cursor-pointer bg-transparent underline">retry</button>`
           : esc(stage)}</span>
     </div>
+
+    ${nativeProcessesHtml}
 
     ${here.map((t) => `
       <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
