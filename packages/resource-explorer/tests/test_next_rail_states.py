@@ -95,8 +95,10 @@ class TestTheListSentence:
         end = app.index("function renderTurnList(")
         src = app[start:end]
         mod = tmp_path / "lists.mjs"
-        mod.write_text("const esc = (s) => String(s); const icon = (n) => `<svg data-icon='${n}'/>`;\n" + src + "\nexport { listSources, listSentences, listSentenceHtml };\n")
-        script = f"import {{ listSources, listSentences, listSentenceHtml }} from '{mod.as_uri()}';\nconsole.log(JSON.stringify({expr}));"
+        mod.write_text("const esc = (s) => String(s); const icon = (n) => `<svg data-icon='${n}'/>`;\n" + src
+                       + "\nexport { listSources, listSentences, listSentenceHtml, evidenceFooterListsHtml };\n")
+        script = (f"import {{ listSources, listSentences, listSentenceHtml, evidenceFooterListsHtml }} "
+                  f"from '{mod.as_uri()}';\nconsole.log(JSON.stringify({expr}));")
         out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
         return json.loads(out.stdout)
 
@@ -119,11 +121,35 @@ class TestTheListSentence:
         assert '›' not in html and 'chevron-right' in html
 
     def test_a_section_without_a_member_view_says_so_rather_than_omitting_the_link(self, tmp_path):
+        """One readerless section still gets its own honest sentence -- the
+        wall-of-repeats fix (below) only changes what happens once there is
+        more than one."""
         import json
         body = {"compiled": {"manifest": {"packed": [{"key": "security_scan", "role": "evidence", "rung": "FULL"}],
                                           "lists": {"security_scan": {"findings": {"total": 3, "shown": {"FULL": 3, "SUMMARY": 3}}}}}}}
-        html = self._run(f"listSentenceHtml(listSentences({json.dumps(body)})[0], 'p')", tmp_path)
+        html = self._run(f"evidenceFooterListsHtml(listSentences({json.dumps(body)}), 'p')", tmp_path)
         assert "No list to open — <span class=\"font-mono\">security_scan</span> has no member reader yet." in html and "data-list-source" not in html
+
+    def test_several_readerless_sections_collapse_into_one_line_not_a_wall(self, tmp_path):
+        """Live-reproduced 2026-09-25 (REVIEW-SURVEY-PANE-285.md): a
+        database's compiled evidence packs many sections with list-shaped
+        fields and NONE of them has a member reader (MEMBER_LISTED is
+        repo-shaped analyses only), so the per-section fallback rendered a
+        dozen near-identical "No list to open" lines for one answer."""
+        import json
+        body = {"compiled": {"manifest": {
+            "packed": [{"key": "coverage_signals", "role": "evidence", "rung": "FULL"},
+                       {"key": "subject_signals", "role": "evidence", "rung": "FULL"},
+                       {"key": "grain_determination", "role": "evidence", "rung": "FULL"}],
+            "lists": {"coverage_signals": {"gaps": {"total": 2, "shown": {"FULL": 2, "SUMMARY": 2}}},
+                      "subject_signals": {"terms": {"total": 4, "shown": {"FULL": 4, "SUMMARY": 4}}},
+                      "grain_determination": {"grains": {"total": 3, "shown": {"FULL": 3, "SUMMARY": 3}}}},
+        }}}
+        html = self._run(f"evidenceFooterListsHtml(listSentences({json.dumps(body)}), 'p')", tmp_path)
+        assert html.count("No list to open") == 1, "must not repeat the sentence once per readerless section"
+        for key in ("coverage_signals", "subject_signals", "grain_determination"):
+            assert key in html, f"{key} must still be named somewhere in the combined line"
+        assert "data-list-source" not in html
 
     def test_a_manifest_without_lists_falls_back_to_the_bare_link(self, tmp_path):
         body = {"compiled": {"manifest": {"packed": [{"key": "cve_scan", "role": "evidence", "rung": "FULL"}]}}}

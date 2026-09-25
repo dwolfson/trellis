@@ -45,6 +45,7 @@ from resource_explorer.surveyors.result_status import (
     MEASURED,
     MEASURED_WITHIN_CREDENTIAL_SCOPE,
     NEVER_RUN,
+    NO_READER,
     NOT_ESTABLISHED,
     NOTHING_FOUND,
 )
@@ -815,6 +816,17 @@ class FactLayer:
                 note=f"Results could not be read ({type(exc).__name__}).",
             )
 
+        if value is None:
+            # No results_reader registered for this analysis at all -- not to
+            # be confused with a reader that ran and measured a real zero
+            # (NOTHING_FOUND, below). See NO_READER's own docstring.
+            return Fact(
+                analysis_id=analysis_id, state=NO_READER, can_run=can_run,
+                last_run_at=run.get("last_run_at", ""),
+                note="This analysis ran; no summary reader exists yet for its "
+                     "results.",
+            )
+
         state = self._state_for(value, run)
         return Fact(
             analysis_id=analysis_id, state=state, value=value,
@@ -841,12 +853,16 @@ class FactLayer:
             return ""
         return str(head.get("label") or "")
 
-    def _read_results(self, slug: str, analysis_id: str, entry) -> dict:
+    def _read_results(self, slug: str, analysis_id: str, entry) -> dict | None:
+        """The reader's own result, or `None` when no reader is registered at
+        all -- `{}` (falsy but not `None`) still means "a reader ran and
+        returned nothing", which `_state_for` must tell apart from this."""
         reader = entry[0] if isinstance(entry, (tuple, list)) else entry
-        if callable(reader):
-            return reader(self._registry, slug) or {}
-        reader = getattr(entry, "results_reader", None)
-        return (reader(self._registry, slug) or {}) if callable(reader) else {}
+        if not callable(reader):
+            reader = getattr(entry, "results_reader", None)
+        if not callable(reader):
+            return None
+        return reader(self._registry, slug) or {}
 
     @staticmethod
     def _state_for(value: dict, run: dict) -> str:

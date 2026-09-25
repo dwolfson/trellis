@@ -242,19 +242,53 @@ function listSentenceHtml(l, i) {
   // internal and "at full" read as "shown fully"; a section with no member
   // reader rendered nothing where the link would be (the silent-omission
   // rule); and › was a text glyph doing an icon's job.
+  //
+  // A missing member reader is rendered ONLY here, per-section, when this is
+  // called at all -- see `evidenceFooterListsHtml` below, which stops calling
+  // this for readerless sections once there is more than one, so the reader
+  // is not shown a wall of near-identical "no member reader" lines. This
+  // function assumes `l.members` is true; a readerless `l` reaching it is a
+  // caller bug, not a state to render.
   return `<div class="mt-s2 text-chip text-chrome-ink">
     ${head}${
       partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
-      l.members
-        // The control says what pressing it does; it is the only clickable
-        // part of the line, and the middot before it does the sentence
-        // break's work.
-        ? ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
-            class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`
-        // Case four on the sheet: metadata, not a control, in the slot the
-        // link would occupy -- the absence becomes a fact about that
-        // analysis, and a list of which readers to write next.
-        : ` · <span class="text-chrome-muted">No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.</span>`}
+      // The control says what pressing it does; it is the only clickable
+      // part of the line, and the middot before it does the sentence
+      // break's work.
+      ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
+          class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`}
+  </div>`;
+}
+
+/** `turn.lists`, split into "has a member reader" (one line each, as before)
+ *  and "does not" (one COMBINED line, naming every such key).
+ *
+ *  Live-reproduced 2026-09-25 (REVIEW-SURVEY-PANE-285.md): a database's
+ *  compiled evidence packs many sections with list-shaped fields
+ *  (coverage_signals, grain_determination, preliminary_fit, subject_signals,
+ *  schema_conventions, ...) and NONE of them are in `MEMBER_LISTED` --
+ *  that set is repo-shaped analyses only. `listSentenceHtml`'s per-section
+ *  fallback then rendered "No list to open — X has no member reader yet."
+ *  once per section, degenerating into a dozen near-identical lines for one
+ *  answer. Case four on the design sheet this fallback implements ("the
+ *  absence becomes a fact about that analysis") is still right for ONE
+ *  analysis; it stops being informative once every analysis says the same
+ *  thing, so the case for more than one collapses into a single line naming
+ *  them all, rather than repeating the sentence. */
+function evidenceFooterListsHtml(lists, slug) {
+  const withReader = lists.filter((l) => l.members);
+  const withoutReader = lists.filter((l) => !l.members);
+  const rendered = withReader.map((l) => listSentenceHtml(l, slug)).join('');
+  if (!withoutReader.length) return rendered;
+  if (withoutReader.length === 1) {
+    const l = withoutReader[0];
+    return rendered + `<div class="mt-s2 text-chip text-chrome-muted">
+      No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.
+    </div>`;
+  }
+  const keys = withoutReader.map((l) => `<span class="font-mono">${esc(l.key)}</span>`).join(', ');
+  return rendered + `<div class="mt-s2 text-chip text-chrome-muted">
+    No list to open for ${withoutReader.length} of this answer's sections — none has a member reader yet: ${keys}.
   </div>`;
 }
 
@@ -525,7 +559,7 @@ function renderPromotedFooter(turn, i) {
   // was written to stop.
   footer.innerHTML = `
     ${structuredTableHtml(turn)}
-    ${(turn.lists || []).map((l) => listSentenceHtml(l, turn.slug || '')).join('')}
+    ${evidenceFooterListsHtml(turn.lists || [], turn.slug || '')}
     ${listButtons ? `<div class="mt-s2 flex flex-wrap gap-s2">${listButtons}</div>` : ''}
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-caveat">
       <button data-act="open-compile"
