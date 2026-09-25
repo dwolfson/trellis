@@ -3868,9 +3868,13 @@ async function loadSurveyPane() {
       </div>`;
     }).join('')}
 
-    ${!all.length ? paneMessage('No survey definitions for this resource',
-        'The adapter registered none for this technology type. That is a fact about '
-        + 'the catalog, not about the repository.') : ''}
+    ${!all.length ? paneMessage('No local or RE-authored survey definitions for this resource',
+        'The adapter registered none for this technology type.'
+        + ((data.egeria_native_processes || []).length
+            ? ' Egeria itself still knows real survey processes for this technology — see '
+              + '"Also known to Egeria" above. That is a fact about what RE has authored, '
+              + 'not about what Egeria can run.'
+            : ' That is a fact about the catalog, not about the repository.')) : ''}
     <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
 
     <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
