@@ -241,10 +241,14 @@ def test_a_step_whose_capability_is_not_satisfied_proposes_partially(world):
     assert "can run, but not completely" in sentence
     assert "3 of 26 table(s)" in sentence
     assert "egeria_user" in sentence
-    assert "within this credential's scope" in sentence
+    assert sentence.endswith("."), (
+        "sentence() ends with a full stop, not the decision -- see question()")
     assert "estimated 0s" not in sentence, (
         "a capability-only proposal has no chain, so quoting an estimate "
         "states a cost for work that does not exist")
+    # The actionable question moved out of sentence() into its own method
+    # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect 3).
+    assert res.proposal.question() == "Run it within this credential's scope?"
 
 
 def test_both_axes_insufficient_produce_ONE_combined_message(world):
@@ -273,14 +277,24 @@ def test_both_axes_insufficient_produce_ONE_combined_message(world):
     sentence = res.proposal.sentence()
     # One sentence, both clauses. Not two sentences, and not one that drops
     # the other axis — a reader told only about the download would accept a
-    # run whose answer is bounded by a credential nobody mentioned.
-    assert sentence.count("; run it") == 1, sentence
+    # run whose answer is bounded by a credential nobody mentioned. Ends with
+    # a full stop; the single actionable question is question()'s job.
+    assert sentence.endswith("."), sentence
+    assert sentence.count(".") == 1, (
+        "one sentence, not two run together -- exactly one full stop", sentence)
     assert "download" in sentence, "the cost axis vanished from the combined ask"
     assert "3 of 26 table(s)" in sentence, "the capability axis vanished"
+    # The combined template never otherwise names the demanding step, so
+    # `asker`'s own capability reason keeps its step-name prefix here (unlike
+    # the capability-only case above) -- REPLY-COPY-REVIEW-CREDENTIAL-AND-
+    # FIT-LANGUAGE.md §1 defect 2 only calls out the capability-ONLY
+    # template's redundancy, not this one.
+    assert "`asker` needs" in sentence
     # And it still offers the capability-shaped accept, because the chain
     # running does not widen the grant.
     assert res.proposal.run_partially == "asker"
     assert res.proposal.steps == ["filler"]
+    assert res.proposal.question() == "Run it within this credential's scope?"
 
 
 def test_a_producer_short_on_capability_is_named_too(world):

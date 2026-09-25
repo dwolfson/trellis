@@ -902,17 +902,26 @@ class FactLayer:
             # When the catalog-only fallback (connection.py's
             # `_catalog_only_fallback`, STATE_CATALOG_ESTIMATE) recovered
             # tables `information_schema` alone would have hidden entirely,
-            # say so with the real total — "23 tables visible via catalog
-            # (SELECT access: 3 of 23)" is the honest answer this whole
-            # mechanism exists to produce, not a bare "3 tables".
+            # say so with the real total — "23 tables, of which `analyst_ro`
+            # can read 3" is the honest answer this whole mechanism exists to
+            # produce, not a bare "3 tables". Previously led with the
+            # parenthetical instead of the headline, and coined "catalog-only
+            # ones" in the same sentence it used the term
+            # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §3) — the
+            # reader had to work out that meant "the ones it can't read".
             catalog_only = (value or {}).get("catalog_only_table_count") or 0
             table_count = (value or {}).get("table_count")
             if catalog_only and table_count:
                 select_count = table_count - catalog_only
+                who_name = f"`{connected_as}`" if connected_as else "this credential"
+                # Pluralisation computed here, not baked in as "(s)" — N is
+                # always known at render time (§0's pluralisation complaint).
+                tables_word = "table" if table_count == 1 else "tables"
+                other_verb = "is" if catalog_only == 1 else "are"
                 catalog_note = (
-                    f"{table_count} table(s) visible via catalog (SELECT access: "
-                    f"{select_count} of {table_count}){who}; row counts for the "
-                    f"catalog-only ones are estimates, not exact."
+                    f"{table_count} {tables_word}, of which {who_name} can read "
+                    f"{select_count}; row counts for the other {catalog_only} "
+                    f"{other_verb} planner estimates, not exact."
                 )
                 return catalog_note
             if fraction:
@@ -923,7 +932,9 @@ class FactLayer:
             return f"Measured within this credential's visibility only{who} — broader access may reveal more."
         unverified = (value or {}).get("unverified") or []
         if unverified:
-            return f"{len(unverified)} item(s) in this result are unverified."
+            item_word = "item" if len(unverified) == 1 else "items"
+            verb = "is" if len(unverified) == 1 else "are"
+            return f"{len(unverified)} {item_word} in this result {verb} unverified."
         return ""
 
     # ── many analyses ───────────────────────────────────────────────────────

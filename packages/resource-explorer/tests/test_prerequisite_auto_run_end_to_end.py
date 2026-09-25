@@ -201,7 +201,11 @@ def test_a_proposal_reaches_the_caller_rather_than_only_the_log(
     proposal = result["proposals"][0]
     assert proposal["steps"] == ["postgres_schema_and_stats"]
     assert proposal["demanding_step"] == "db_derived"
-    assert "run it?" in proposal["sentence"]
+    # sentence() ends with a full stop, not the decision; question() -- also
+    # on the serialised plan -- carries the actionable ask
+    # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect 3).
+    assert proposal["sentence"].endswith(".")
+    assert proposal["question"] == "Run it?"
     entry = next(s for s in result["steps"] if s["re_analysis_step"] == "db_derived")
     assert entry["status"] == "skipped_by_design"
     assert entry["proposal"]["steps"] == ["postgres_schema_and_stats"]

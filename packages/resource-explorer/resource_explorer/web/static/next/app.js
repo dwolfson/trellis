@@ -3712,22 +3712,48 @@ function surveyRowHtml(c) {
   </div>`;
 }
 
+// Human-readable labels for `NativeProcess.kind` (technology_type_processes.py
+// / configdata/technology_type_processes.yaml). Raw enum values rendered
+// directly -- "(survey_existing)" -- meant nothing to a reader who hasn't read
+// that config file (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §5). A
+// fallback keeps an unmapped or future kind from disappearing rather than
+// crashing the render.
+const NATIVE_PROCESS_KIND_LABELS = {
+  survey_existing: 'surveys an existing catalog entry',
+  catalog_and_survey: 'catalogues, then surveys',
+  delete: 'deletes a catalog entry',
+};
+function nativeProcessKindLabel(kind) {
+  return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
+}
+
 /** Renders `egeria_native_processes` -- real, Egeria-native survey/governance
  *  processes for this technology type that have no RE-authored Survey
  *  Definition candidate (that's `candidates`, a separate list). Ported from
  *  classic's `nativeProcessesHtml` (index.html) into /next's own visual
  *  idiom. Informational only: no "run" affordance, even for `survey_existing`
  *  processes -- wiring one of these to run from this pane is a separate,
- *  already-flagged follow-up (Backlog.md, #244), not part of this fix. */
+ *  already-flagged follow-up (Backlog.md, #244), not part of this fix.
+ *
+ *  Three copy/visual fixes per REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
+ *  LANGUAGE.md §5, all inherited from the classic port: (1) the house caps
+ *  style is for short labels, not a whole sentence, and the parenthetical
+ *  carrying the fact that matters most here (these can't run from this pane)
+ *  read worst in caps -- split into a caps label and a normal-case caveat
+ *  below it; (2) `display_name` no longer renders in `text-accent-ink`, the
+ *  same "click me" colour as the *Run →* buttons on candidate rows right
+ *  above it, for a name that isn't runnable; (3) raw enum `kind` values are
+ *  mapped to plain language via `nativeProcessKindLabel`. */
 function nativeProcessesSectionHtml(nativeProcesses) {
   nativeProcesses = nativeProcesses || [];
   if (!nativeProcesses.length) return '';
   return `<div class="mt-s3 text-caveat text-ink-muted">
-    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria for this technology (not yet runnable from here)</div>
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria</div>
+    <div class="text-ink-muted">Not runnable from here yet — listed so you know they exist.</div>
     ${nativeProcesses.map((p) => `
       <div class="mt-s1 border-l border-rule pl-s2">
-        <span class="font-mono text-accent-ink">${esc(p.display_name)}</span>
-        <span class="text-ink-muted">(${esc(p.kind)})</span>
+        <span class="font-mono text-ink">${esc(p.display_name)}</span>
+        <span class="text-ink-muted">(${esc(nativeProcessKindLabel(p.kind))})</span>
         ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
       </div>`).join('')}
   </div>`;

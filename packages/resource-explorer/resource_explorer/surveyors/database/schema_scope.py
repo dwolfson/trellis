@@ -121,8 +121,23 @@ def rollup_envelope(
     at least be able to see that what it is showing is a rollup over N
     containers — and `averaged: False` is a claim this code can be held to:
     every rollup below is a set, a list or a total, never a mean.
+
+    Every rollup explanation opens with the count it rolled up — "Across N
+    schemas: …" — rather than leaving the reader to notice `container_count`
+    is a separate field from the sentence. REPLY-COPY-REVIEW-CREDENTIAL-AND-
+    FIT-LANGUAGE.md §6(b) calls this "one rule that costs nothing": both
+    `container_count` and the containment level's name are already on hand
+    here, so every one of this function's callers gets the prefix for free
+    instead of writing it into each `explanation` string separately, which is
+    exactly the sort of thing one call site would eventually forget. That is
+    the failure #266 was built to prevent — "a rollup that reads as a single
+    measured verdict" — held in text as well as in the `is_rollup` field.
     """
     grain = containment.aggregation_grain
+    grain_name = grain.name if grain else "container"
+    count = len(containers)
+    plural_grain = grain_name if count == 1 else f"{grain_name}s"
+    full_explanation = f"Across {count} {plural_grain}: {explanation}"
     envelope = {
         "is_rollup": True,
         "averaged": False,
@@ -130,14 +145,14 @@ def rollup_envelope(
         "grain_level": grain.name if grain else None,
         "engine": containment.engine,
         "rollup_kind": rollup_kind,
-        "container_count": len(containers),
+        "container_count": count,
         "containers": list(containers),
-        "explanation": explanation,
+        "explanation": full_explanation,
     }
     if excluded_system_containers:
         envelope["excluded_system_containers"] = list(excluded_system_containers)
         envelope["explanation"] = (
-            f"{explanation} Excluded {containment.engine}'s own system "
+            f"{full_explanation} Excluded {containment.engine}'s own system "
             f"containers: {', '.join(excluded_system_containers)}."
         )
     envelope.update(extra)
@@ -151,6 +166,14 @@ def undeclared_envelope(containment: EngineContainment) -> dict:
     "measured, and there are no containers". This says the hierarchy was never
     declared, which is why there is no breakdown — the absence-as-answer
     distinction this codebase is built around, applied to the grain itself.
+
+    The declaration lives in `connection.py` (only PostgreSQL declares a
+    containment hierarchy today; REPLY-SCHEMA-AS-SUB-RESOURCE.md §5 is why
+    engine-by-engine is the plan) — that provenance is for whoever maintains
+    this code, not for the sentence a user reads, so it stays in this
+    docstring rather than in `explanation` (REPLY-COPY-REVIEW-CREDENTIAL-AND-
+    FIT-LANGUAGE.md §6(a) / §0's "provenance belongs in the evidence, not in
+    the sentence").
     """
     return {
         "is_rollup": False,
@@ -160,12 +183,10 @@ def undeclared_envelope(containment: EngineContainment) -> dict:
         "engine": containment.engine,
         "reason": REASON_UNDECLARED,
         "explanation": (
-            "This engine has no declared containment hierarchy in "
-            "`connection.py` (REPLY-SCHEMA-AS-SUB-RESOURCE.md §5 declares "
-            "containment per engine, and only PostgreSQL is declared today), "
-            "so this result is for the whole database and no per-container "
-            "breakdown was attempted. That is an undeclared hierarchy, NOT a "
-            "finding that the database has one flat namespace."
+            f"Resource Explorer doesn't yet know how {containment.engine} "
+            "groups its tables, so this result covers the whole database "
+            "with no per-schema breakdown. That is an undeclared hierarchy, "
+            "not a finding that the database has one flat namespace."
         ),
     }
 
