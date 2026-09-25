@@ -1723,7 +1723,8 @@ whole-database questions to a model that could only answer at that level.
 |---|---|---|---|
 | **Containment level** | the engine's declared hierarchy: server → database → schema → table → column (per engine, `REPLY-SCHEMA-AS-SUB-RESOURCE.md` §5) | `sub_resources` rows, `kind` = the level, `locator` = the path, created deterministically from the inventory | the survey, not the user |
 | **Focus** | *what the funnel pages currently show and surveys currently run against*: the whole database, one schema, a set of tables, or a cluster. A selection, not a resource | a locator set on the investigation (`investigation_scope`: resource, locators, set at, by whom); the current focus is a URL state and a header crumb | the user, by clicking in the tree or accepting a proposed cluster |
-| **Cluster** | a logical set of related tables — the working unit of the later stages. The database analogue of architecture recovery's *components* for repositories | `sub_resources` row with `kind = cluster`, members in `detail_json`; in Egeria a `Collection` with `CollectionMembership` over the table assets (the `blueprint_materializer.py` precedent) | proposed by Discovery, accepted by a curator, editable |
+| **Proposed cluster** | a logical set of related tables that Discovery *infers* from structure and use — the database analogue of architecture recovery's *components* for repositories, and the one piece here the field does not do (§18.9) | a Discovery finding: `sub_resources` row with `kind = proposed_cluster`, members and evidence in `detail_json` | Discovery; never a decision |
+| **Domain / data product** | the *accepted* form of a cluster: what every catalog calls a domain (organisational, owned, hierarchical) or a data product (curated, contracted, subscribed). Not a third concept | in Egeria, exactly its existing types: a `Collection` with `CollectionMembership` over the table assets, a `SubjectArea` classification (model 0425) where the grouping is by meaning, a `DigitalProduct` when it is offered (§4); locally the same `sub_resources` row promoted to `kind = domain` with the Egeria GUID | a curator, in Curate, from a proposal or by hand |
 
 Focus is not registration. A schema or cluster in focus is still a
 sub-resource of the database; D3's *first-class on direct registration*
@@ -1736,7 +1737,7 @@ and says so.
 | Stage | Scope | What the page shows |
 |---|---|---|
 | Scouting | the whole database, **always broken down by containment level** — never a rollup without its parts | the tree: schemas with table counts, rows, bytes, activity, credential visibility per schema; system schemas folded away |
-| Discovery | per schema, plus **proposed clusters** | `db_classification` per schema; `db_relationship_graph` components become cluster proposals (FK-connected sets, naming prefixes, shared key columns, co-access from `pg_stat_statements` where held); `preliminary_fit` per schema and per cluster; the *worth pursuing* verdict is what tells the user where to focus |
+| Discovery | per schema, **tables ranked by importance**, then **proposed clusters** | first a ranked list of tables — the entry point at scale is not the tree (§18.9) — from signals RE already has or can read cheaply: activity counters and scan counts (catalog identity), FK degree from `db_relationship_graph`, row estimates, query statistics where `stats` is held, OpenLineage run facets where an emitter exists, and **declared or measured `DataScope` and `DataGrain`** (a table whose scope and grain match the investigation's lens ranks above one that merely has traffic — the project owner's point that scope and grain are strong focus signals, §16.5). Then `db_relationship_graph` components become cluster proposals (FK-connected sets, naming prefixes, shared key columns, co-access); `db_classification` per schema; `preliminary_fit` per schema and per cluster. The *worth pursuing* verdict tells the user where to focus |
 | Analysis | a cluster or a few tables | column profiles, data-class and reference-set matches, coverage and grain per table; the cost vector per focus so a 400-table warehouse is never profiled whole by accident |
 | Assessment | a cluster | quality dimensions, exposure, fit against the lens, readiness — per cluster, with the tables listed |
 | Curate | a table or cluster | declare scope, grain, classes, ownership per table; accept or reshape clusters; promote to first-class if wanted |
@@ -1787,18 +1788,40 @@ was the only shape available.
   "profile the warehouse" is a proposal with a summed cost, never a click.
 - Clusters are the unit of work in Analysis and beyond; a table outside any
   cluster is reachable by search, not by scrolling.
+- **Include and exclude patterns at registration**, at schema, table, view
+  and column level — the one control every crawler and profiler in the
+  field exposes and ours has none. Egeria already defines the vocabulary
+  (`includeSchemaNames`/`excludeSchemaNames`, `…TableNames`, `…ViewNames`,
+  `…ColumnNames` on the JDBC integration connector; catalog/schema/table on
+  Unity) and RE should use the same names so a pattern set travels with the
+  asset into Egeria's own cataloguing. Note the Postgres *survey* service
+  takes only the generic `finalAnalysisStep`/`ignoreAnalysisSteps`; the
+  include/exclude lives on the cataloguing side, which is where scope is
+  decided anyway.
+- **A per-table profiling policy** persisted on the sub-resource — sample
+  strategy and bounds (§5.8), schedule, or *never* — so cost is set once per
+  table the way every profiler does it, instead of per resource and
+  analysis.
 
-### 18.6 Egeria
+### 18.6 Egeria already has most of this — use it rather than mirror it
 
-Egeria already models the levels: `DeployedDatabaseSchema` and
-`RelationalTable` assets, which the native Postgres survey creates and
-annotates per schema and table. `sub_resources.egeria_guid` links each row
-to its asset. A cluster is a `Collection` with `CollectionMembership` over
-its tables, the same shape `blueprint_materializer.py` uses for
-`SolutionBlueprint`, and a `DigitalProduct` candidate later (§4). Declared
-scope and grain (§16) land on the table asset; lens fit (§16.5) runs per
-cluster, which is where "does this data fit what I am looking for" is
-actually answerable.
+**Project owner, 2026-09-25:** Egeria addresses several of these issues
+itself. Mapped, with what each is for in this model:
+
+| Need | Egeria mechanism | Where it applies |
+|---|---|---|
+| the levels | `DeployedDatabaseSchema`, `RelationalTable`, `RelationalColumn` assets — the native Postgres survey creates and annotates them per schema and table; `sub_resources.egeria_guid` links each local row to its asset | Scouting onward |
+| scoping what is catalogued and surveyed | include/exclude name lists on the JDBC integration connector and Unity catalog config (schema, table, view, column; catalog for Unity) — **which RE does not use today** | registration |
+| accepted clusters by meaning | `SubjectArea` classification (0425) with `SubjectAreaHierarchy`; `SubjectAreaDefinition` as the governance definition behind it | Curate |
+| accepted clusters as bundles | `Collection` + `CollectionMembership` (the `blueprint_materializer.py` shape) | Curate |
+| offered clusters | `DigitalProduct`, `DigitalProductCatalog`, `DigitalSubscription` (§4, §16.7) | Curate → product |
+| meaning on tables and columns | `SemanticAssignment` to glossary terms, `DataClassAssignment`, `ValidValuesAssignment` — the accepted forms of `semantic_suggestions`, `data_class_match`, `reference_data_match` (§5.4); applies once catalogued, so it is Curate work | Curate |
+| who may see a scope | governance zones and security tags on the assets and collections — the same mechanism §5 of `security-model.md` relies on for connections | Curate; also the draft-visibility answer for proposals (§14) |
+| what other tools know | OpenLineage: Egeria's event-receiver integration connector ingests runs, and Lovelace derives `DataScope`, run profiles and data-quality summaries from them. A co-located Marquez is the cheap way to have that history for resources RE surveys. **Nothing says this must wait for cataloguing**: RE can ask Marquez what it knows about a table by name during Scouting, as a signal, and Egeria consumes the same events after cataloguing | Scouting (pre-catalogue signal) and Curate (post) |
+
+Declared scope and grain (§16) land on the table asset; lens fit (§16.5)
+runs per cluster or domain, which is where "does this data fit what I am
+looking for" is actually answerable.
 
 ### 18.7 For the designer
 
@@ -1807,6 +1830,21 @@ The tree navigation with focus; a **focus crumb** in the header
 rendering (top N with "and M more", the calendar strip and profile card per
 table from §11); cluster proposals as a Discovery result the user accepts,
 edits or dismisses; the survey pane rows scoped to the focus and saying so.
+
+### 18.9 How other products handle this, and what is borrowed
+
+Reviewed 2026-09-25 at the project owner's request before executing, from
+knowledge of the products rather than fresh verification. We are not
+unique; the shape of the answer is stable across the field.
+
+| Question | What the field does | Borrowed into §18 |
+|---|---|---|
+| Navigating below the database | every catalog (Unity, Purview, Alation, Atlan, DataHub, OpenMetadata) renders the engine hierarchy as a tree with each level a first-class page; trees collapse past a threshold and rely on search and facets; Alation and Atlan show usage-derived popularity on the node | the tree with counts and search (§18.5); focus behaves like *being on a node's page*, persisted only as where you were, not as a mode |
+| Scoping what is profiled | include/exclude patterns at schema and table level on every crawler (OpenMetadata filter patterns, Purview scan rule sets, Glue include paths, DataHub allow/deny); profiling on a chosen subset with sampling and a size cap; a per-table schedule | include/exclude at registration using Egeria's own names; per-table profiling policy (§18.5) |
+| Logical clusters | three distinct mechanisms, kept distinct: **domains** (organisational, owned, hierarchical: DataHub, Atlan, OpenMetadata, Collibra, Purview collections), **data products** (curated, contracted, subscribed: DataHub, OpenMetadata, Atlan), **subject areas** (data-modelling tools: erwin, ER/Studio submodels, drawn by a modeller). None *infers* clusters from FK graphs; schema-summarisation research does, and is not productised | proposed cluster stays (RE surveys the unknown and has nobody to assign domains yet); the accepted form is Egeria's SubjectArea / Collection / DigitalProduct, not a third concept (§18.1, §18.6) |
+| Level of answers | catalogs show table statistics on the table page and only counts and lists above it; observability tools (Monte Carlo, Bigeye, Elementary) keep row count, freshness and volume as per-table series and make the database view a **ranked list**, never an aggregate | the distribution answer with ranking (§18.3) |
+| Prioritising at scale | Monte Carlo key assets, Bigeye importance, Alation popularity, DataHub usage, Select Star "most queried / most joined": rank by query volume, lineage fan-out, recency of use | Discovery's ranked table list first (§18.2), from activity counters, FK degree, query statistics where held, OpenLineage — **and DataScope / DataGrain fit against the lens**, which the field does not have and which is RE's differentiator |
+| Meaning and stewardship | glossary assignment, classification and ownership are curation steps after cataloguing, everywhere | Egeria's `SemanticAssignment`, `DataClassAssignment`, zones (§18.6) as the Curate-tier acceptance of what Discovery and Analysis proposed |
 
 ### 18.8 Where it goes in the plan
 
@@ -1821,9 +1859,12 @@ because the pane, the Questions tab and the answers all take a scope:
    `row_count_snapshot`, `db_relationship_graph`.
 3. `Level` on the question CSV and the distribution envelope; the Questions
    tab scoped to the focus.
-4. Cluster proposals from `db_relationship_graph`, accept/edit in Curate,
-   `Collection` in Egeria.
-5. Then the pane re-land, per focus.
+4. Include/exclude at registration (Egeria's names) and the per-table
+   profiling policy.
+5. Table ranking in Discovery from the signals RE holds; then cluster
+   proposals from `db_relationship_graph`; accept in Curate as
+   `SubjectArea` / `Collection` / `DigitalProduct`.
+6. Then the pane re-land, per focus.
 
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
