@@ -295,6 +295,24 @@ class EgeriaConfig(BaseSettings):
         default="/deployments/secrets/resource-explorer.omsecrets",
         alias="EGERIA_SECRETS_STORE_PATH_NAME",
     )
+    # The SAME physical .omsecrets file as secrets_store_path_name above, but
+    # named from RE's own (bare-host) filesystem rather than from inside the
+    # engine host container. secrets_store_path_name is a value RE hands to
+    # Egeria (SecretsStorePathName, resolved container-side, e.g.
+    # /deployments/secrets/resource-explorer.omsecrets) — RE itself is not on
+    # that filesystem and cannot open that path directly. This is the bind
+    # mount's host-side path (e.g. .../runtime-volumes/quickstart-platform-
+    # data/secrets/resource-explorer.omsecrets) that lets RE read/write the
+    # file directly for the credential-storage/drift-detection work in
+    # docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+    # §7 ("one secrets-collection name per (resource, role), written to both
+    # places by RE in the same operation"). Empty by default — most
+    # deployments (CI, a from-scratch checkout, a remote engine host) have no
+    # host-visible path to this file at all, and every caller of
+    # omsecrets_store must treat that as a plain no-op, never an error.
+    secrets_store_local_path: str = Field(
+        default="", alias="EGERIA_SECRETS_STORE_LOCAL_PATH"
+    )
 
     model_config = _ENV_FILE_CONFIG
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from resource_explorer.registry import Project, ProjectRegistry, ProjectStatus
+from resource_explorer.registry import DatabaseEntity, Project, ProjectRegistry, ProjectStatus
 
 
 @pytest.fixture
@@ -1427,3 +1427,46 @@ class TestMaterializedPorts:
         all_ports = db.get_materialized_ports("repo", "myproj")
         assert set(all_ports.keys()) == {"src/web::http", "src/web::metrics"}
         assert all_ports["src/web::http"]["guid"] == "guid-http"
+
+
+class TestUpdateDatabaseCredentials:
+    """update_database_credentials -- the only supported way to repoint an
+    already-registered database's db_user/db_password (e.g. from a narrow
+    role to a broader one) without losing its registration history."""
+
+    def test_updates_only_credentials_leaves_everything_else_untouched(self, db):
+        db.register_database(DatabaseEntity(
+            slug="mydb", display_name="My DB", db_type="postgresql",
+            host="localhost", port=5432, database_name="mydb",
+            db_user="egeria_user", db_password="old-secret",
+            egeria_asset_guid="guid-123", description="a database",
+        ))
+        db.update_database_surveyed_at("mydb")
+        before = db.get_database("mydb")
+        assert before.db_user == "egeria_user"
+
+        db.update_database_credentials("mydb", "surveyor", "new-secret")
+
+        after = db.get_database("mydb")
+        assert after.db_user == "surveyor"
+        assert after.db_password == "new-secret"
+        # Everything else survives untouched.
+        assert after.slug == before.slug
+        assert after.display_name == before.display_name
+        assert after.egeria_asset_guid == before.egeria_asset_guid
+        assert after.description == before.description
+        assert after.last_surveyed_at == before.last_surveyed_at
+
+    def test_normalizes_slug_like_other_database_updates(self, db):
+        db.register_database(DatabaseEntity(
+            slug="my-db", display_name="My DB", db_type="postgresql",
+            host="localhost", port=5432, database_name="mydb",
+        ))
+        db.update_database_credentials("my-db", "newuser", "newpass")
+        assert db.get_database("my_db").db_user == "newuser"
+
+    def test_unknown_slug_is_a_no_op_like_other_update_by_slug_methods(self, db):
+        # Matches update_database_status's precedent: an UPDATE that matches
+        # no row is silently a no-op, not an error.
+        db.update_database_credentials("nope", "user", "pass")
+        assert db.get_database("nope") is None

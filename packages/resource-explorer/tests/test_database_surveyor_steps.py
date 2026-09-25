@@ -203,10 +203,14 @@ class TestDatabaseAnalysisStepMap:
         # Phase 1 slice 11 (postgres_nested_columns) added
         # nested_column_profile and the "nested_columns" step it maps to,
         # gated on slice 10's sampling infrastructure the same way.
+        # credential_capability (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+        # VISIBILITY.md §3/§4, replying to ASK-...-#251) added the
+        # credential_capability id and its own opt-in step.
         assert set(DATABASE_ANALYSIS_STEP_MAP) == {
             "schema_inventory", "row_count_snapshot", "privilege_audit",
             "db_activity_signals", "db_resilience", "db_external_dependencies",
             "data_class_match", "reference_data_match", "nested_column_profile",
+            "credential_capability",
         }
 
     def test_privilege_audit_now_runs_the_dedicated_operations_step(self):

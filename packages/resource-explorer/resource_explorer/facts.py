@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 from resource_explorer.resource_types import DEFAULT_RESOURCE_TYPE
 from resource_explorer.surveyors.result_status import (
     MEASURED,
+    MEASURED_WITHIN_CREDENTIAL_SCOPE,
     NEVER_RUN,
     NOT_ESTABLISHED,
     NOTHING_FOUND,
@@ -106,7 +107,9 @@ class Fact:
         `nothing_found` counts: a measured zero is knowledge. `never_run` and
         `not_established` do not.
         """
-        return self.state in (MEASURED, NOTHING_FOUND, PARTIAL)
+        return self.state in (
+            MEASURED, NOTHING_FOUND, PARTIAL, MEASURED_WITHIN_CREDENTIAL_SCOPE,
+        )
 
     def as_dict(self) -> dict:
         # destination/destination_basis (SPEC-ACTIONABLE-AND-HONEST.md §3,
@@ -891,9 +894,47 @@ class FactLayer:
             return "This analysis ran and found nothing — a measured zero, not a gap in coverage."
         if state == PARTIAL:
             return "This run covered only part of what the analysis reports on."
+        if state == MEASURED_WITHIN_CREDENTIAL_SCOPE:
+            status = (value or {}).get("_status") or {}
+            fraction = status.get("fraction") or ""
+            connected_as = status.get("connected_as") or ""
+            who = f" as `{connected_as}`" if connected_as else ""
+            # When the catalog-only fallback (connection.py's
+            # `_catalog_only_fallback`, STATE_CATALOG_ESTIMATE) recovered
+            # tables `information_schema` alone would have hidden entirely,
+            # say so with the real total — "23 tables, of which `analyst_ro`
+            # can read 3" is the honest answer this whole mechanism exists to
+            # produce, not a bare "3 tables". Previously led with the
+            # parenthetical instead of the headline, and coined "catalog-only
+            # ones" in the same sentence it used the term
+            # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §3) — the
+            # reader had to work out that meant "the ones it can't read".
+            catalog_only = (value or {}).get("catalog_only_table_count") or 0
+            table_count = (value or {}).get("table_count")
+            if catalog_only and table_count:
+                select_count = table_count - catalog_only
+                who_name = f"`{connected_as}`" if connected_as else "this credential"
+                # Pluralisation computed here, not baked in as "(s)" — N is
+                # always known at render time (§0's pluralisation complaint).
+                tables_word = "table" if table_count == 1 else "tables"
+                other_verb = "is" if catalog_only == 1 else "are"
+                catalog_note = (
+                    f"{table_count} {tables_word}, of which {who_name} can read "
+                    f"{select_count}; row counts for the other {catalog_only} "
+                    f"{other_verb} planner estimates, not exact."
+                )
+                return catalog_note
+            if fraction:
+                return (
+                    f"Measured within this credential's visibility only — connected{who}, "
+                    f"which can read {fraction}. Broader access may reveal more."
+                )
+            return f"Measured within this credential's visibility only{who} — broader access may reveal more."
         unverified = (value or {}).get("unverified") or []
         if unverified:
-            return f"{len(unverified)} item(s) in this result are unverified."
+            item_word = "item" if len(unverified) == 1 else "items"
+            verb = "is" if len(unverified) == 1 else "are"
+            return f"{len(unverified)} {item_word} in this result {verb} unverified."
         return ""
 
     # ── many analyses ───────────────────────────────────────────────────────

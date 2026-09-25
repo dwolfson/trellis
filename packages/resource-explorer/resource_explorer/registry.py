@@ -434,9 +434,28 @@ STATE_NOT_SUPPORTED = "not_supported"
 #: commonest case for a back-filled row, where the old blob simply never
 #: carried the field.
 STATE_NOT_MEASURED = "not_measured"
+#: The row exists, and something WAS measured — but by the catalog-only
+#: fallback (design: REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §0,
+#: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251), not by the normal
+#: `information_schema` path. `PostgreSQLConnection._get_tables_for_schema()`
+#: falls back to `pg_class`/`pg_attribute`/`pg_namespace` — catalog metadata
+#: any connected role can read regardless of grants — for a table/column
+#: `information_schema` came back thin on (no `SELECT` on the underlying
+#: table). That gives a table/column NAME and a Postgres TYPE name for
+#: certain, but never real PK/FK detail, `is_nullable`, `column_default` or
+#: an exact comment (those lookups are themselves privilege-filtered), and
+#: any row count attached to a catalog-only row is `pg_class.reltuples` — an
+#: ANALYZE-time estimate, not a live count.
+#:
+#: Deliberately NOT in `STATES_WITHOUT_A_MEASUREMENT` below: a catalog-only
+#: row is not absent, it is just less precise than one measured the normal
+#: way. Collapsing "we have an approximate answer" into "we have nothing"
+#: would be its own confident-wrong-answer shape, in the opposite direction
+#: from the one this state exists to prevent.
+STATE_CATALOG_ESTIMATE = "catalog_estimate"
 
-#: Every state other than STATE_MEASURED/STATE_EMPTY means the number beside
-#: it is absent rather than zero.
+#: Every state other than STATE_MEASURED/STATE_EMPTY/STATE_CATALOG_ESTIMATE
+#: means the number beside it is absent rather than zero.
 STATES_WITHOUT_A_MEASUREMENT = frozenset({
     STATE_NOT_PERMITTED,
     STATE_NOT_COLLECTED,
@@ -2115,7 +2134,8 @@ class ProjectRegistry:
                     demanded_by   TEXT DEFAULT '',
                     metrics       TEXT DEFAULT '{}',
                     declared      TEXT DEFAULT '{}',
-                    disagreement  TEXT DEFAULT ''
+                    disagreement  TEXT DEFAULT '',
+                    surveyed_as   TEXT DEFAULT ''
                 )
             """)
             # `entity_type` and `executor_ref` post-date the first shape this
@@ -2128,6 +2148,10 @@ class ProjectRegistry:
                 ("entity_type", "TEXT NOT NULL DEFAULT 'repo'"),
                 ("executor_ref", "TEXT DEFAULT ''"),
                 ("demanded_by", "TEXT DEFAULT ''"),
+                # design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+                # §4 — which credential identity this run executed as;
+                # `source`/`executor` already say WHO ran it.
+                ("surveyed_as", "TEXT DEFAULT ''"),
             ):
                 if _step_run_cols and _col not in _step_run_cols:
                     conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
@@ -2253,6 +2277,7 @@ class ProjectRegistry:
                     column_count INTEGER DEFAULT 0,
                     survey_data TEXT DEFAULT '{}',
                     source TEXT DEFAULT 'local',
+                    surveyed_as TEXT DEFAULT '',
                     FOREIGN KEY (database_slug) REFERENCES databases(slug)
                 )
             """)
@@ -2260,6 +2285,13 @@ class ProjectRegistry:
             existing_ds = self._get_table_columns(conn, "database_surveys")
             if "source" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN source TEXT DEFAULT 'local'")
+            # Migration: add surveyed_as (design REPLY-DATABASE-CREDENTIAL-
+            # CAPABILITY-VISIBILITY.md §4 — "the credential identity is
+            # recorded on every survey row"; `source` already distinguishes
+            # WHO ran it (egeria/resource-explorer/local), this is WHICH
+            # CREDENTIAL it ran as).
+            if "surveyed_as" not in existing_ds:
+                conn.execute("ALTER TABLE database_surveys ADD COLUMN surveyed_as TEXT DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_database_surveys_slug "
                 "ON database_surveys(database_slug)"
@@ -3450,6 +3482,7 @@ class ProjectRegistry:
     #: whose kind has no handler fails loudly rather than sitting queued for ever.
     RUN_KINDS = (
         "analysis_run",
+        "database_analysis_run",
         "survey_definition_run",
         "scouting_scan",
         "stage_batch",
@@ -5781,7 +5814,7 @@ class ProjectRegistry:
         entity_type: str = "repo", source: str = "local", executor: str = "local",
         executor_ref: str = "", demanded_by: str = "",
         metrics: dict | None = None, declared: dict | None = None,
-        disagreement: str = "",
+        disagreement: str = "", surveyed_as: str = "",
     ) -> None:
         """One row per step EXECUTION. Append-only: a step run twice in one
         snapshot (once as a prerequisite, once on its own request) is two
@@ -5796,11 +5829,11 @@ class ProjectRegistry:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "
-                "disagreement) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "disagreement, surveyed_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (slug, entity_type, step_key, surveyed_at, source, executor,
                  executor_ref or "", demanded_by or "",
                  json.dumps(metrics or {}), json.dumps(declared or {}),
-                 disagreement or ""),
+                 disagreement or "", surveyed_as or ""),
             )
 
     def query_step_runs(
@@ -8618,9 +8651,20 @@ class ProjectRegistry:
     # ── database entity management ────────────────────────────────────────────
 
     def register_database(self, database: DatabaseEntity) -> None:
-        """Register a database entity in the registry."""
+        """Register a database entity in the registry.
+
+        `db_password` is encrypted at rest (`credential_crypto.
+        encrypt_db_password`) before it ever reaches the `databases` table —
+        see that module's docstring and design REPLY-DATABASE-CREDENTIAL-
+        CAPABILITY-VISIBILITY.md §7. Callers (web/routes/databases.py,
+        cli/main.py) always pass the plaintext password they received from
+        the operator; encryption is the registry's job, not theirs.
+        """
+        from resource_explorer.credential_crypto import encrypt_db_password
+
         data = asdict(database)
         data["slug"] = self._normalize_slug(data["slug"])
+        data["db_password"] = encrypt_db_password(data.get("db_password") or "")
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO databases (
@@ -8676,6 +8720,87 @@ class ProjectRegistry:
                 (status.value, error, slug),
             )
 
+    def update_database_credentials(self, slug: str, db_user: str, db_password: str) -> None:
+        """Update the stored connection credentials for a database entity.
+
+        Repoints an already-registered database at a different DB role/password
+        without disturbing its registration history (slug, egeria_asset_guid,
+        survey history, etc.) — the only supported way to change credentials;
+        there is deliberately no broader multi-connection/credential-store model
+        here (see docs/Backlog.md's "Database credential-capability model —
+        awaiting the project owner's ruling").
+
+        `db_password` is encrypted at rest (`credential_crypto.
+        encrypt_db_password`), same as `register_database` — this is the
+        registry-side half of the write; projecting the same credential into
+        the `.omsecrets` file (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+        VISIBILITY.md §7) is the caller's job (web/routes/databases.py,
+        cli/main.py) via `omsecrets_store.write_credential`, since this
+        method only knows about the registry, not the deployment's
+        `.omsecrets` path.
+        """
+        from resource_explorer.credential_crypto import encrypt_db_password
+
+        slug = self._normalize_slug(slug)
+        encrypted = encrypt_db_password(db_password or "")
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
+                (db_user, encrypted, slug),
+            )
+
+    def check_credential_drift(self, slug: str) -> dict:
+        """Compare RE's registry against the `.omsecrets` file for one
+        database's credential collection — design REPLY-DATABASE-CREDENTIAL-
+        CAPABILITY-VISIBILITY.md §7's closing line: "Drift between the two
+        is detectable by comparing collection names present on each side."
+
+        This is deliberately a narrow point check, not a reconciliation
+        UI: it answers "does this one database's collection name show up on
+        both sides", not "repair the mismatch" or "scan every database" (a
+        caller wanting the latter loops this over `list_databases()`). It
+        also does not (yet) compare the actual `userId`/`clearPassword`
+        values on each side, only whether both sides know about the same
+        named collection at all — value-level drift (same collection name,
+        different password on each side, e.g. one side rotated without the
+        other) is a real gap left for later, noted rather than silently
+        assumed away.
+
+        Returns a dict rather than a dataclass so CLI/web callers can
+        `json.dumps` it directly:
+            {
+                "slug": ..., "collection_name": ...,
+                "in_registry": bool,   # RE has a non-empty db_password for this slug
+                "in_omsecrets": bool,  # the collection name is a key in the .omsecrets file
+                "omsecrets_configured": bool,  # False when no local path is set at all —
+                                                # distinguishes "checked, and it's missing"
+                                                # from "couldn't check" (find-absence-as-answer)
+                "in_sync": bool,       # in_registry == in_omsecrets, only meaningful
+                                       # when omsecrets_configured is True
+            }
+        """
+        from resource_explorer.omsecrets_store import (
+            collection_names,
+            local_path,
+            secrets_collection_name,
+        )
+
+        slug = self._normalize_slug(slug)
+        database = self.get_database(slug)
+        in_registry = bool(database and database.db_password)
+        collection = secrets_collection_name(slug)
+        configured = bool(local_path())
+        present = collection_names()
+        in_omsecrets = collection in present
+        return {
+            "slug": slug,
+            "collection_name": collection,
+            "in_registry": in_registry,
+            "in_omsecrets": in_omsecrets,
+            "omsecrets_configured": configured,
+            "in_sync": (in_registry == in_omsecrets) if configured else None,
+        }
+
     def update_database_surveyed_at(self, slug: str) -> None:
         """Update the last_surveyed_at timestamp for a database."""
         slug = self._normalize_slug(slug)
@@ -8730,6 +8855,7 @@ class ProjectRegistry:
         egeria_report_guid: str = "",
         source: str = "local",
         surveyed_at: str | None = None,
+        surveyed_as: str = "",
     ) -> None:
         """Record a database survey result.
 
@@ -8754,10 +8880,11 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO database_surveys
                    (database_slug, surveyed_at, egeria_report_guid, schema_count,
-                    table_count, column_count, survey_data, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    table_count, column_count, survey_data, source, surveyed_as)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (slug, surveyed_at, egeria_report_guid, schema_count,
-                 table_count, column_count, json.dumps(survey_data), source),
+                 table_count, column_count, json.dumps(survey_data), source,
+                 surveyed_as or ""),
             )
             # Keep the databases row in sync so API responses reflect current counts
             conn.execute(
@@ -8799,7 +8926,8 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
-                          schema_count, table_count, column_count, survey_data, source
+                          schema_count, table_count, column_count, survey_data, source,
+                          surveyed_as
                    FROM database_surveys
                    WHERE database_slug = ?
                    ORDER BY surveyed_at DESC""",
@@ -9056,10 +9184,59 @@ class ProjectRegistry:
         return self.get_database(slug) is not None
 
     def _row_to_database(self, row: sqlite3.Row) -> DatabaseEntity:
-        """Convert a database row to a DatabaseEntity dataclass."""
+        """Convert a database row to a DatabaseEntity dataclass.
+
+        Decrypts `db_password` (`credential_crypto.decrypt_db_password`) so
+        every caller of `get_database`/`list_databases`/etc. sees plaintext,
+        exactly as before encryption was added — the ciphertext never
+        escapes the registry layer.
+
+        Lazy migration: a row written before encryption shipped stores
+        `db_password` as clear text, which `decrypt_db_password` detects by
+        format (no `enc:v1:` prefix) and returns unchanged. When that
+        happens here, the row is re-encrypted and written back immediately,
+        so the migration is "on next read" rather than a separate startup
+        pass — chosen over a `_init_schema()` ALTER-TABLE-style migration
+        (the `surveyed_as` pattern, #253) because encrypting a column's
+        existing values needs the encryption key and the plaintext at the
+        same time, and by `_init_schema()` time neither this call path's
+        `db_password` values nor a guarantee the key is configured yet are
+        available in the same way a simple `ADD COLUMN` is. A row that is
+        never read again (e.g. an abandoned/never-surveyed database) stays
+        clear-text until it is; this only matters for rows still in active
+        use, which are exactly the ones a lazy migration reaches.
+        """
         import dataclasses
+
+        from resource_explorer.credential_crypto import (
+            decrypt_db_password,
+            is_encrypted,
+        )
+
         d = dict(row)
         d["status"] = ProjectStatus(d["status"])
+        raw_password = d.get("db_password") or ""
+        if raw_password and not is_encrypted(raw_password):
+            plaintext = raw_password
+            try:
+                slug = d.get("slug")
+                if slug:
+                    self.update_database_credentials(slug, d.get("db_user") or "", plaintext)
+            except (sqlite3.Error, OSError) as exc:
+                # Narrowed to the write-back failing (DB error, e.g. a
+                # locked file or a Postgres connection hiccup) — not a bare
+                # `except Exception`, so a bug in `encrypt_db_password`
+                # itself (a real, unrelated defect) still propagates instead
+                # of being swallowed here. The read must still succeed even
+                # when the migration write-back fails: the row simply stays
+                # clear-text and is retried on the next read.
+                log.warning(
+                    "registry: failed to lazily migrate db_password to "
+                    "encrypted storage for database slug=%r: %s", d.get("slug"), exc
+                )
+            d["db_password"] = plaintext
+        else:
+            d["db_password"] = decrypt_db_password(raw_password)
         # Filter to only known DatabaseEntity fields
         known = {f.name for f in dataclasses.fields(DatabaseEntity)}
         return DatabaseEntity(**{k: v for k, v in d.items() if k in known})

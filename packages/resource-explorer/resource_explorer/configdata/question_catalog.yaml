@@ -2089,13 +2089,20 @@ database_questions:
     - grain_determination
     checks: []
     note: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
-      column profile whose distinct count matches the row count, plus any date column in the key; published
-      as a DataGrainAnnotation proposal)
+      column profile whose distinct count matches the row count, plus any date column in the key; extended
+      2026-09-24 with §16.3's time grain from naming — a period word or date-shaped suffix in the table
+      name, or a column named like a date whatever its type — each interval carrying the basis it came
+      from and a confidence for it, so a key-declared period is no longer indistinguishable from a guess
+      about a naming habit; published as a DataGrainAnnotation proposal)
   answering_mechanism: Database Catalog Query + Agent-Based Analysis
   rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
     and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
     Shared with the filesystem path, where the same inference runs over a data file's columns.
-  catalog_history: ''
+  catalog_history: '2026-09-24: extended with multi-resource-questions-design.md §16.3''s time grain from
+    naming (table-name period words, Postgres child-partition date suffixes, date-named columns of non-temporal
+    type), each with an explicit interval_basis and interval_confidence. The entity-grain-from-keys half
+    of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
+    a filesystem layout and are not looked for here.'
   retired: false
 - question: Does this look like a copy or a subset of a database we already know?
   stage: Discovery
@@ -2172,16 +2179,116 @@ database_questions:
   - Assess
   answering:
     kind: gap
-    analysis_ids:
-    - schema_inventory
+    analysis_ids: []
     checks: []
-    note: 'GAP: schema_inventory records the column types but derives no semi-structured-column check
-      from them.'
+    note: 'GAP: no analysis classifies a column as semi-structured (JSON/JSONB/XML/array/hstore) or measures
+      the share of stored bytes it accounts for -- the catalog reads that already capture column types
+      perform no such derivation, and no id in the database analysis catalog performs it either.'
   answering_mechanism: Database Catalog Query
   rationale: Zero new fetch — the column types are already in the catalog read; what is derived is which
     columns are semi-structured and what share of the stored bytes they account for. The contents themselves
     are a separate, more expensive Analysis question.
   catalog_history: ''
+  retired: false
+- question: What is this data about — which subjects, business terms or data classes does it appear to
+    hold?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Explore
+  - Learn
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - subject_signals
+    checks: []
+    note: 'subject_signals (design §16.2, §16.3 — candidate subject terms from stored table/column names
+      and pg_description comments, each carrying its basis: a comment outranks a name and a term in both
+      outranks either. NOT matched against Egeria''s glossary or a data-class registry, because the step
+      opens no connection — an unmatched term means "not looked up". A database whose names are wholly
+      structural is a real finding pointing at Enrichment; a database with no comment anywhere reads as
+      "comments not captured")'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Free at Scouting cost (design §16.2): table and column names plus pg_description comments
+    already sit in RE''s stored rows, so candidate subject terms need no new fetch. Confidence is low-medium
+    on purpose — §16.2''s "a name is a claim".'
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Scouting/Discovery
+    rows. §16.3 files this question under Scouting; it is recorded as Discovery here (and tagged intent:
+    discovery in analysis_catalog.yaml) because CLAUDE.md rule 17''s axis is "does this collect, or reason
+    over what is already collected" and this reasons over stored rows — the same judgement that already
+    placed grain_determination, also a §16.3 Scouting row, in Discovery. §16.2''s Scouting placement is
+    about the signal being free, and it is: no fetch is added.'
+  retired: false
+- question: What period and places does this appear to cover, from catalog statistics and names alone?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Consumer
+  purposes:
+  - Explore
+  - Select
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - coverage_signals
+    checks: []
+    note: 'coverage_signals (design §16.2, §16.3 — period from pg_stats histogram bounds and exact min/max
+      where a native survey stored them; absence of bounds is reported as "run ANALYZE / credential cannot
+      see pg_stats", NEVER as "no dates", and "no date column at all" is a separate, measured negative.
+      Places are the NAMES of place-bearing columns only — which regions are present needs the values,
+      deferred to coverage_profile. PARTIAL: partition bounds would be exact and free and nothing in RE
+      collects them, reported as a collection gap; Parquet footers and DCAT temporal/spatial descriptors
+      are filesystem/dataset work, not attempted here)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'design §16.2: pg_stats histogram bounds give a date column''s min and max WITHOUT reading
+    rows. Its own warning is the load-bearing part — "absent means ''run ANALYZE'', not ''no dates''"
+    — so the two states are separately named rather than collapsed.'
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Scouting/Discovery
+    rows. §16.3 files this question under Scouting; it is recorded as Discovery here (and tagged intent:
+    discovery in analysis_catalog.yaml) because CLAUDE.md rule 17''s axis is "does this collect, or reason
+    over what is already collected" and this reasons over stored rows — the same judgement that already
+    placed grain_determination, also a §16.3 Scouting row, in Discovery. §16.2''s Scouting placement is
+    about the signal being free, and it is: no fetch is added.'
+  retired: false
+- question: Could this be in scope for what I am looking for — worth the full pass?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Consumer
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - grain_determination
+    - subject_signals
+    - coverage_signals
+    - preliminary_fit
+    checks: []
+    note: 'preliminary_fit (design §16.3, §16.5 — zero-fetch comparison of subject_signals, coverage_signals
+      and grain_determination''s time grain against a supplied data requirement, with per-input confidence.
+      Four verdicts kept distinct: fits; does not fit; could_not_check when an input was itself not established
+      — the pg_stats/ANALYZE case, never rendered as either of the first two; and "no requirement declared"
+      when none is supplied, which carries what the resource COULD satisfy instead of a vacuous pass.
+      Regions, data classes and grain statements are carried through as deferred criteria naming the analysis
+      that answers them, never scored here. GAP, deliberate and scoped: the full DataLens governance definition
+      — versioned, investigation-scoped, with Curate-tier "make this my lens" actions, §16.5 points 3-5
+      — is not built; this takes a plain lens mapping or none, on §16.6''s own authority)'
+  answering_mechanism: Database Catalog Query + Local Registry Query
+  rationale: design §16.3's Discovery gate and §16.5 point 2 — fit is a query over stored measurements,
+    not a survey, so changing the requirement recomputes fit across every already-surveyed resource at
+    zero fetch cost, and the same question works with no requirement at all as a comparison across resources.
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Discovery gate.
+    Built WITHOUT the full DataLens governance-definition model (§16.5 points 3–5), on §16.6''s own authority
+    — "preliminary_fit works before it exists, as a comparison across resources". It takes a plain lens
+    mapping using §16.6''s scopeElements key names, or none at all, in which case it renders "no requirement
+    declared" plus what the resource could satisfy.'
   retired: false
 - question: What is the full schema — tables, columns, types, keys, constraints and indexes?
   stage: Analysis
@@ -2266,12 +2373,14 @@ database_questions:
   - Assess
   - Remediate
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - reference_data_match
     checks: []
-    note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
-      or proposes a new set.'
+    note: 'reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values)'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
     every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises
@@ -2289,12 +2398,13 @@ database_questions:
   - Assess
   - Learn
   answering:
-    kind: gap
+    kind: analysis
     analysis_ids:
     - nested_column_profile
     checks: []
-    note: 'GAP: nested_column_profile (proposed) — semi-structured column contents are never sampled or
-      shape-inferred.'
+    note: 'nested_column_profile (design §5.4/§5.7, postgres_nested_columns — samples every JSON/JSONB/XML
+      column and infers a nested schema: per-key presence frequency and JSON-type consistency, or for
+      XML the root element and element/attribute name frequency, plus nesting depth)'
   answering_mechanism: Value Profiling
   rationale: JSONB via jsonb_object_keys and jsonb_typeof over a bounded sample, giving key frequency,
     nesting depth and type consistency across rows; XML via the root element and xpath key sampling. The
@@ -2429,13 +2539,14 @@ database_questions:
   - Assess
   - Share
   answering:
-    kind: gap
+    kind: partial
     analysis_ids:
     - schema_conventions
     checks: []
-    note: 'GAP: neither the proposed database comment-coverage measure nor schema_conventions exists yet,
-      so there is nothing to score. See the Scouting comment-coverage row for why the proposed id is not
-      written out here.'
+    note: 'PARTIAL: schema_conventions supplies the completeness half (tables and columns with no comment,
+      banded against nothing-captured); it checks presence only -- no analysis scores comment quality
+      or consistency (e.g. a comment that only repeats the table name), so that half of the question stays
+      a gap.'
   answering_mechanism: Database Catalog Query
   rationale: Scores the coverage measure against criteria and adds the convention checks — a database
     where every table has a comment but half of them repeat the table name is not well documented.
@@ -2475,12 +2586,15 @@ database_questions:
   purposes:
   - Assess
   answering:
-    kind: gap
+    kind: mixed
     analysis_ids:
+    - db_relationship_graph
     - grain_determination
     - schema_conventions
     checks: []
-    note: 'GAP: schema_conventions and grain_determination are both proposed.'
+    note: 'MIXED: schema_conventions (keys and constraints -- tables with no primary key, tables with
+      no foreign key) + db_relationship_graph (foreign-key coverage, connected components, isolated/orphan
+      tables) + grain_determination (per-table grain clarity, or a named modelling gap where none exists)'
   answering_mechanism: Database Catalog Query
   rationale: 'Scores the convention checks together with grain clarity: a table whose grain cannot be
     stated is a modelling defect even when its constraints are all present.'
@@ -2496,11 +2610,14 @@ database_questions:
   - Assess
   - Certify
   answering:
-    kind: gap
+    kind: partial
     analysis_ids:
     - reference_data_match
     checks: []
-    note: 'GAP: reference_data_match (proposed) supplies the checks, and nothing measures the bound share.'
+    note: 'PARTIAL: reference_data_match supplies the per-column checks (built, not proposed) -- which
+      columns are low-cardinality, and whether each is matched, partially matched or unmatched against
+      a ValidValueSet -- but nothing aggregates those verdicts into the governance share this question
+      asks for.'
   answering_mechanism: Egeria Queries
   rationale: The denominator is the columns whose cardinality makes them reference-data candidates; the
     numerator is those bound to an Egeria ValidValueSet. Both come from the reference-data matching analysis.
@@ -3119,14 +3236,22 @@ filesystem_questions:
     analysis_ids: []
     checks: []
     note: 'GAP: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
-      column profile whose distinct count matches the row count, plus any date column in the key; published
-      as a DataGrainAnnotation proposal) -- grain_determination is not a real analysis for filesystem
-      resources (absent from analysis_catalog.yaml''s filesystem_analyses section).'
+      column profile whose distinct count matches the row count, plus any date column in the key; extended
+      2026-09-24 with §16.3''s time grain from naming — a period word or date-shaped suffix in the table
+      name, or a column named like a date whatever its type — each interval carrying the basis it came
+      from and a confidence for it, so a key-declared period is no longer indistinguishable from a guess
+      about a naming habit; published as a DataGrainAnnotation proposal) -- grain_determination is not
+      a real analysis for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses
+      section).'
   answering_mechanism: Database Catalog Query + Agent-Based Analysis
   rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
     and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
     Shared with the filesystem path, where the same inference runs over a data file's columns.
-  catalog_history: ''
+  catalog_history: '2026-09-24: extended with multi-resource-questions-design.md §16.3''s time grain from
+    naming (table-name period words, Postgres child-partition date suffixes, date-named columns of non-temporal
+    type), each with an explicit interval_basis and interval_confidence. The entity-grain-from-keys half
+    of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
+    a filesystem layout and are not looked for here.'
   retired: false
 - question: Which columns conform to a known Data Class, with what confidence, and which look like a class
     we do not have yet?
@@ -3171,8 +3296,11 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: reference_data_match (proposed) — nothing compares distinct values against ValidValueSets
-      or proposes a new set.'
+    note: 'GAP: reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values) -- reference_data_match is not a real analysis for filesystem resources (absent
+      from analysis_catalog.yaml''s filesystem_analyses section).'
   answering_mechanism: Value Profiling + Egeria Queries
   rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
     every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises

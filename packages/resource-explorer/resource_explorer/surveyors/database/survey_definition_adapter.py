@@ -77,6 +77,24 @@ def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str
     }
 
 
+def _run_credential_capability(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+    """credential_capability (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    VISIBILITY.md §3/§4, replying to ASK-...-#251, "Piece 1"): read-only
+    catalog/privilege introspection of what THIS connection can see and do.
+    Same shape as `_run_postgres_operations` above — "schema" runs alongside
+    unconditionally, nothing else does, so this step stays at "api / low"
+    rather than paying for a full survey.
+    """
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
+    result = surveyor.survey(steps=["credential_capability"])
+    return {
+        "schema_info": result.get("schema_info", {}),
+        "credential_capability": result.get("credential_capability", {}),
+    }
+
+
 def _run_db_derived(db_entity, registry, **_) -> dict:
     """db_derived (Phase 1 slice 9, design §5.3/§5.7): the ZERO-FETCH step —
     classification, relationship graph, grain, fingerprint, structural
@@ -360,16 +378,19 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     statistics: dict = {}
     views: list = []
     operations: dict = {}
+    credential_capability: dict = {}
     for output in step_outputs:
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
         views = output.get("views") or views
         operations = output.get("operations") or operations
+        credential_capability = output.get("credential_capability") or credential_capability
 
     surveyor = EgeriaDatabaseSurveyor()
     result = surveyor.publish_step_annotations(
         entity, schema_info, statistics, surveyed_at, registry,
         views=views, operations=operations,
+        credential_capability=credential_capability,
     )
     return result.get("report_guid", "")
 
@@ -393,6 +414,47 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 #: `postgres_column_profile` → `has_schema_inventory` → `postgres_schema_and_
 #: stats` is §17.4's named first real chain, and the reason this slice was
 #: sequenced with the DB steps rather than the repo ones.
+# ── requires_capability, per DATABASE-STEP-CAPABILITY-AUDIT.md ───────────
+#
+# The audit (`docs/design-notes/DATABASE-STEP-CAPABILITY-AUDIT.md`) traced
+# every step here to its actual SQL and classified each sub-piece. It
+# deliberately stopped short of one decision, and said so: three of these
+# steps bundle several tiers under one step id, and "one step, one tier does
+# not hold here without a decision about which failure mode the field is
+# meant to describe" (§1). That decision is made here, once, and applied to
+# all three rather than case by case:
+#
+#   **A step declares the strongest tier its own DECLARED OUTPUT depends on
+#   — not the strongest tier its code path happens to touch.**
+#
+# Both halves of that rule are load-bearing, and each rules out one of the
+# two obvious alternatives:
+#
+#   * "the weakest tier it needs to do anything" would have `postgres_schema_
+#     and_stats` declare `catalog`, since schema enumeration alone would
+#     survive, even though its declared output also depends on `information_
+#     schema.*` enumeration and `pg_stats` column profiling — both genuinely
+#     privilege-filtered (**read**-tier). Declaring `catalog` there would
+#     raise nothing on a credential without `SELECT` on most tables, even
+#     though that credential's enumeration and column-profile output would be
+#     silently thin — the silent under-report the axis exists to surface.
+#     Under-declaring is invisible; that is what makes it the worse error.
+#   * "the strongest tier the code touches" is the mirror error and collapses
+#     the field's signal. `postgres_column_profile` pulls `statistics` in as a
+#     ride-along for sampling provenance (audit §5), and `sql_analysis` runs
+#     the whole default survey though its own output uses none of it (audit
+#     §7, flagged there as a code smell to fix separately). Scoring both on
+#     the ride-along would declare `stats` on nearly every step and the field
+#     would distinguish nothing.
+#
+# Applying the rule leaves the distribution the audit's own numbers imply —
+# **corrected 2026-09-24/25** (see the per-step notes below and
+# `DATABASE-STEP-CAPABILITY-AUDIT.md`'s "Correction" section: `pg_stat_user_
+# tables`/`pg_stat_user_indexes` were live-verified NOT to need `pg_monitor`,
+# which changes `postgres_schema_and_stats` from `stats` to `read` and
+# narrows why `postgres_operations` still declares `stats` at all) — now one
+# `catalog`, four `read`, one `stats`, one undeclared, and each judgement it
+# decides is noted on the step it decides.
 DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "postgres_schema_and_stats": StepInfo(
         "postgres_schema_and_stats", None,
@@ -401,6 +463,25 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         # The catalog read every other database step's stored input comes from.
         produces=("database_schemas", "database_tables", "database_columns"),
         fetch_cost="api", compute_cost="low",
+        # JUDGEMENT CALL (audit §1's open question, decided by the rule above)
+        # — CORRECTED 2026-09-24/25, see `DATABASE-STEP-CAPABILITY-AUDIT.md`'s
+        # "Correction" section and `credential_capability.py`'s module
+        # docstring. This was declared `stats` on the belief that this step's
+        # row-count/activity statistics come from `pg_stat_user_tables`/
+        # `pg_stat_user_indexes`, which need `pg_monitor` membership. Live
+        # verification against `coco_pharma` as `egeria_user` (not a
+        # `pg_monitor` member) found those views fully visible — unfiltered,
+        # not even schema-`USAGE`-gated. They are `catalog`-tier, not `stats`.
+        #
+        # With that removed, the strongest tier this step's own declared
+        # output still depends on is `read`: the core table/column
+        # enumeration goes through `information_schema.*`, which genuinely IS
+        # privilege-filtered (live-verified during the original incident: 6
+        # of 8 schemas), and the column-profile piece reads `pg_stats`, which
+        # is genuinely filtered by column-level `SELECT` (re-verified here:
+        # 441 of 481 rows visible to `egeria_user`). No sub-piece this step's
+        # output depends on needs `pg_monitor`.
+        requires_capability="read",
     ),
     "postgres_operations": StepInfo(
         "postgres_operations", None,
@@ -409,6 +490,41 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
          "SchemaAnalysisAnnotation", "RequestForAction"],
         produces=("database_grants",),
         fetch_cost="api", compute_cost="low",
+        # JUDGEMENT CALL (the audit's "genuine four-way bundle", §2) —
+        # CORRECTED 2026-09-24/25, same false premise as `postgres_schema_
+        # and_stats` above. This was declared `stats` for THREE of its four
+        # sub-analyses (`db_activity_signals` on the belief that `pg_stat_
+        # user_tables` needs `pg_monitor`; `db_resilience` bundled in partly
+        # for the same reason). Live verification found `pg_stat_user_tables`
+        # (and, checked while fixing this, `pg_stat_database`/`pg_stat_
+        # archiver`/`pg_stat_bgwriter`/`pg_stat_wal`) unfiltered and visible
+        # to any connected role — `catalog`-tier, not `stats`. What
+        # `pg_monitor` DOES gate, confirmed live the same way (another
+        # session's query text came back `<insufficient privilege>` in
+        # `pg_stat_activity` for a non-member role): visibility into OTHER
+        # sessions/connections, which is exactly `pg_stat_replication`
+        # (`db_resilience` reads this) — not per-table/per-database counters.
+        #
+        # So the split is now three-and-one, not two-and-two:
+        # `privilege_audit`, `db_external_dependencies` AND `db_activity_
+        # signals` are `catalog`; only `db_resilience` is `stats`, and only
+        # because it reads `pg_stat_replication` — its other three queries
+        # (`pg_is_in_recovery()`, `SHOW archive_mode`, `pg_stat_archiver`,
+        # `pg_extension`) are individually `catalog` too, same as audit §2
+        # already noted.
+        #
+        # `stats` remains the step-level answer, now for one reason instead
+        # of two: `db_resilience` alone is the strongest tier among the
+        # bundle's declared output, so the rule above still reduces to it.
+        # The other three sub-analyses are not lost by this: the gate
+        # proposes rather than blocks, and `_survey_operations` already gates
+        # each sub-analysis independently on `EngineCapabilities`, so running
+        # partially yields the privilege audit, the activity signals AND the
+        # dependency list in full, reporting only resilience as not
+        # established when `pg_monitor` is missing — an improvement over the
+        # pre-correction behaviour, which reported activity signals as
+        # unestablished too even though nothing ever gated it.
+        requires_capability="stats",
     ),
     "db_derived": StepInfo(
         "db_derived", None,
@@ -422,6 +538,15 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
                 "absence, not a finding",
         },
         fetch_cost="none", compute_cost="low",
+        # UNDECLARED, and the audit (§4) is explicit that this is the honest
+        # answer rather than a gap: this step "never constructs a
+        # DatabaseSurveyor and never opens a connection". The weakest value,
+        # `catalog`, still implies a live connection to something, so
+        # declaring it would state a requirement this step does not have —
+        # "a small instance of the same collapse the credential-capability
+        # work exists to prevent elsewhere", in the audit's own words. Left
+        # at the field's `""` default on purpose; see `StepInfo.
+        # requires_capability` for why `""` is not "satisfied by anything".
     ),
     "postgres_column_profile": StepInfo(
         "postgres_column_profile", None,
@@ -435,6 +560,13 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
                 "it had looked",
         },
         fetch_cost="api_heavy", compute_cost="medium",
+        # The clearest case in the audit (§5): "the floor, not a choice".
+        # This step issues a literal `SELECT <col> FROM <table>` against real
+        # user tables, so `SELECT` on the target table is not this
+        # implementation's preference but the only way the step can exist.
+        # The `statistics` ride-along that reaches `stats`-tier views is
+        # provenance for the sample, not output — excluded by the rule above.
+        requires_capability="read",
     ),
     "postgres_nested_columns": StepInfo(
         "postgres_nested_columns", None,
@@ -446,6 +578,12 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
                 "sampling any of them",
         },
         fetch_cost="api_heavy", compute_cost="medium",
+        # Same floor, same reason (audit §6): it reuses
+        # `postgres_column_profile`'s exact sampling machinery and samples
+        # real JSON/JSONB/XML values. It finds the CANDIDATE columns from the
+        # stored schema catalog, which needs nothing — the sampling is what
+        # needs `SELECT`.
+        requires_capability="read",
     ),
     "sql_analysis": StepInfo(
         "sql_analysis", None,
@@ -453,6 +591,41 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         ["SchemaAnalysisAnnotation", "RelationshipAnnotation",
          "QualityScoreAnnotation", "RequestForAction", "DataClassAnnotation"],
         fetch_cost="api", compute_cost="low",
+        # JUDGEMENT CALL, and the one case where the rule above runs the
+        # opposite way to `postgres_schema_and_stats`. The audit (§7) records
+        # that this step's CODE PATH is byte-for-byte the same default
+        # `DatabaseSurveyor.survey()` call that step makes — so it does reach
+        # `stats`-tier views — while its declared output is view definitions
+        # and lineage only, from `information_schema.views`, which is
+        # privilege-filtered like `information_schema.tables`.
+        #
+        # `read`, therefore: `requires_capability` describes what the step's
+        # ANSWER depends on, and none of this step's output is derived from a
+        # `pg_stat_*` view. The mismatch is real and belongs to the step, not
+        # to this field — the audit's "worth a second look" §1 names the fix
+        # (scope the call to `steps=["views"]`), which is a code change
+        # outside this change's scope. Declaring `stats` here would instead
+        # make the field describe an accident of implementation, and would
+        # quietly bless the over-fetch by encoding it as a requirement.
+        requires_capability="read",
+    ),
+    "credential_capability": StepInfo(
+        "credential_capability", None,
+        "Read-only catalog/privilege introspection: what this credential can see and do.",
+        ["ResourceMeasureAnnotation", "RequestForAction"],
+        fetch_cost="api", compute_cost="low",
+        # `catalog`, live-verified (audit §3). Every read it makes is either
+        # unfiltered catalog metadata (`pg_namespace`, `pg_class`) or a
+        # privilege-CHECK function (`has_schema_privilege`,
+        # `has_table_privilege`, `pg_has_role`) — callable by any role about
+        # any object, which is exactly why this step can measure the boundary
+        # between the tiers without being able to cross it.
+        #
+        # The step every other step's capability answer comes from, so its own
+        # requirement must be the one that cannot fail for a connected role.
+        # If this declared anything stronger, a credential too narrow to run
+        # it would be gated out of the one probe that could have said so.
+        requires_capability="catalog",
     ),
 }
 
@@ -484,6 +657,7 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_column_profile": _run_postgres_column_profile,
         "postgres_nested_columns": _run_postgres_nested_columns,
         "sql_analysis": _run_postgres_sql_analysis,
+        "credential_capability": _run_credential_capability,
     },
     get_entity=_get_database_entity,
     publish=_publish,
@@ -587,6 +761,20 @@ _ADAPTER = ResourceTypeAdapter(
                 "DataClassAnnotation",
             ],
         },
+        "credential_capability": {
+            "description": (
+                "Read-only pg_namespace/information_schema.schemata, pg_class/"
+                "has_table_privilege, pg_has_role(pg_monitor) and "
+                "has_table_privilege(INSERT) checks — never a trial write. "
+                "States 'connected as X — visible N of M schemas, SELECT on N "
+                "of M tables' and raises an RFA to the database owner when "
+                "coverage is meaningfully thin."
+            ),
+            "annotation_types": [
+                "ResourceMeasureAnnotation",
+                "RequestForAction",
+            ],
+        },
     },
     other_engine_handlers={
         "egeria": _trigger_egeria_native_survey,
@@ -651,6 +839,7 @@ DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
     "reference_data_match": ["postgres_column_profile"],
     "nested_column_profile": ["postgres_nested_columns"],
     "egeria_db_survey": ["egeria_db_survey"],
+    "credential_capability": ["credential_capability"],
 }
 
 
@@ -729,9 +918,54 @@ def _db_derived_field_reader(field: str):
         data = run_db_derived(registry, slug).get("derived", {}).get(field) or {}
         if isinstance(data, dict) and data.get("state") == STATE_NOT_MEASURED:
             return {}
+        if isinstance(data, dict):
+            _attach_container_credential_scope(registry, slug, data)
         return data
 
     return _read
+
+
+def _attach_container_credential_scope(registry, slug: str, data: dict) -> None:
+    """Mark each per-container payload with that container's credential state.
+
+    REPLY-SCHEMA-AS-SUB-RESOURCE.md §2: "measured within credential scope"
+    becomes a per-schema state. `db_derived` itself cannot do this — it is the
+    zero-fetch step and the probe's result lives in a survey blob it does not
+    read — so the two are joined here, at the same seam
+    `_schema_inventory_results` already attaches the database-wide `_status` at.
+
+    A container whose credential state is a shortfall gets `_status`; a fully
+    readable one gets nothing, the same "stay silent when there is nothing to
+    caveat" contract `_credential_scope_status` follows. Without this, a schema
+    RE has `USAGE` but no `SELECT` on renders its (structure-only) findings
+    exactly like a schema that was fully read.
+    """
+    from resource_explorer.surveyors.database import schema_scope
+    from resource_explorer.surveyors.result_status import MEASURED_WITHIN_CREDENTIAL_SCOPE
+
+    grain = (data.get("aggregation") or {}).get("grain")
+    per_container = data.get(f"by_{grain}") if grain else None
+    if not isinstance(per_container, dict) or not per_container:
+        return
+    states = schema_scope.container_scope_states(
+        _credential_capability_results(registry, slug)
+    )
+    if not states:
+        return
+    for name, payload in per_container.items():
+        state = states.get(name)
+        if not isinstance(payload, dict) or not state:
+            continue
+        if state["state"] == schema_scope.SCOPE_READABLE:
+            continue
+        payload["_status"] = {
+            "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
+            "container_state": state["state"],
+            "fraction": (
+                f"{state['table_select']} of {state['table_total']} tables"
+            ),
+            "explanation": state["explanation"],
+        }
 
 
 def _operations_section_reader(section: str):
@@ -760,10 +994,97 @@ def _operations_section_reader(section: str):
     return _read
 
 
+def _credential_capability_results(registry, slug: str) -> dict:
+    """Results reader for `credential_capability`, read back from the latest
+    survey's stored `survey_data` blob — same "no dedicated detail table"
+    shape `_operations_section_reader` uses, but at the top level rather than
+    nested under "operations" (`DatabaseSurveyor.survey()` stores it as its
+    own top-level `results["credential_capability"]` key).
+    """
+    import json as _json
+
+    get_latest = getattr(registry, "get_latest_database_survey", None)
+    if not callable(get_latest):
+        # A registry stub that answers query_detail_rows()/get() but not
+        # this survey-blob read (test_fact_layer_resource_type_dispatch.py's
+        # minimal stub is exactly this shape) has simply never been asked
+        # about credential capability — "nothing to say" is the correct
+        # degradation, the same one an absent probe produces.
+        return {}
+    survey = get_latest(slug)
+    if not survey:
+        return {}
+    try:
+        survey_data = _json.loads(survey.get("survey_data") or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return survey_data.get("credential_capability") or {}
+
+
+def _credential_scope_status(registry, slug: str) -> dict | None:
+    """The third fact-envelope state's trigger (design REPLY-DATABASE-
+    CREDENTIAL-CAPABILITY-VISIBILITY.md §4): when the latest
+    `credential_capability` probe for this database shows less than full
+    schema/table visibility, every catalog-derived fact for this database is
+    scoped to what that credential could see — not to the whole database —
+    and the envelope must say so, with the fraction, rather than presenting a
+    partial count as complete. Returns None when there is no probe yet
+    (nothing to say) or when the probe found full coverage (nothing to
+    caveat) — both are "stay silent", not "measured_within_credential_scope".
+    """
+    cap = _credential_capability_results(registry, slug)
+    if not cap:
+        return None
+    schema_total = cap.get("schema_total", 0)
+    schema_visible = cap.get("schema_visible", 0)
+    table_total = cap.get("table_total", 0)
+    table_select = cap.get("table_select", 0)
+    if not table_total:
+        return None
+    if table_select >= table_total and schema_visible >= schema_total:
+        return None
+    from resource_explorer.surveyors.database import schema_scope
+    from resource_explorer.surveyors.database.connection import containment_for_engine
+    from resource_explorer.surveyors.result_status import MEASURED_WITHIN_CREDENTIAL_SCOPE
+
+    status = {
+        "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
+        "connected_as": cap.get("connected_as", ""),
+        "fraction": (
+            f"{table_select} of {table_total} tables in "
+            f"{schema_visible} of {schema_total} schemas"
+        ),
+    }
+
+    # REPLY-SCHEMA-AS-SUB-RESOURCE.md §2: this state becomes a PER-CONTAINER
+    # one. A schema with USAGE and no SELECT is "structure only" for that
+    # schema specifically — folding it into the database-wide fraction above
+    # is exactly the silent counting §2 names. The fraction stays (it is what
+    # the existing banner and fact envelope render); `by_container` and
+    # `shortfall` are what a reader needs to act, since a grant is made per
+    # schema.
+    entity = None
+    try:
+        entity = registry.get_database(slug)
+    except Exception:  # pragma: no cover - defensive
+        entity = None
+    containment = containment_for_engine(getattr(entity, "db_type", None) if entity else None)
+    shortfall = schema_scope.credential_shortfall(cap, containment)
+    if shortfall:
+        status["shortfall"] = shortfall
+        status["by_container"] = shortfall["by_container"]
+        # §2's own example wording — the schema clause first, because that is
+        # what a database owner grants on.
+        status["schema_fraction"] = shortfall["phrase"]
+    return status
+
+
 def _schema_inventory_results(registry, slug: str) -> dict:
     """Last-measured schema shape, read from the structured detail tables
     every local survey's `postgres_schema_and_stats` step already writes
     (`result_materializer.database_rows_from_survey_data`) — no re-fetch."""
+    from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+
     tables = registry.query_detail_rows("database_tables", slug)
     if not tables:
         return {}
@@ -772,9 +1093,18 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     for c in columns:
         key = (c.get("schema_name"), c.get("table_name"))
         columns_by_table[key] = columns_by_table.get(key, 0) + 1
-    return {
+    catalog_only_count = sum(1 for t in tables if t.get("state") == STATE_CATALOG_ESTIMATE)
+    value = {
         "table_count": len(tables),
         "column_count": len(columns),
+        # How many of the tables above are counted at all only because of
+        # the pg_class/pg_attribute catalog-only fallback (connection.py's
+        # `_catalog_only_fallback`) — never SELECT-visible via
+        # information_schema. Zero on a fully-measured database; present so
+        # a reader can distinguish "23 tables, all fully measured" from "23
+        # tables, but 20 of them only via catalog metadata, unverified
+        # names/estimated counts".
+        "catalog_only_table_count": catalog_only_count,
         "tables": [
             {
                 "schema_name": t.get("schema_name"),
@@ -784,10 +1114,23 @@ def _schema_inventory_results(registry, slug: str) -> dict:
                     (t.get("schema_name"), t.get("table_name")), 0
                 ),
                 "row_count": t.get("row_count"),
+                # STATE_CATALOG_ESTIMATE marks a table found only via the
+                # catalog-only fallback — its row_count (when present at
+                # all) is a pg_class.reltuples estimate, not a live count,
+                # and its columns carry the same marking.
+                "state": t.get("state"),
+                "row_count_is_estimate": t.get("state") == STATE_CATALOG_ESTIMATE,
             }
             for t in tables
         ],
     }
+    # The third fact-envelope state (design §4): "3 tables, 32 columns" is a
+    # confident wrong answer when `egeria_user` can only reach 3 of the
+    # database's real 26 — see _credential_scope_status.
+    status = _credential_scope_status(registry, slug)
+    if status:
+        value["_status"] = status
+    return value
 
 
 def _row_count_snapshot_results(registry, slug: str) -> dict:
@@ -803,22 +1146,40 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
     never showing a size, despite the number sitting in the same row the
     reader already selects.
     """
+    from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+
     tables = registry.query_detail_rows("database_tables", slug)
     if not tables:
         return {}
     measured = [t for t in tables if t.get("row_count") is not None]
     sized = [t for t in tables if t.get("size_bytes") is not None]
-    return {
+    estimated = [t for t in measured if t.get("state") == STATE_CATALOG_ESTIMATE]
+    value = {
         "tables": [
             {"schema_name": t.get("schema_name"), "table_name": t.get("table_name"),
-             "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes")}
+             "row_count": t.get("row_count"), "size_bytes": t.get("size_bytes"),
+             "row_count_is_estimate": t.get("state") == STATE_CATALOG_ESTIMATE}
             for t in tables
         ],
         "table_count": len(tables),
         "measured_count": len(measured),
         "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
         "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
+        # Of `measured_count` above, how many are pg_class.reltuples
+        # estimates (catalog-only fallback) rather than a live count —
+        # folded into `total_row_count` today (both are integers, and
+        # keeping the sum exact-only would silently drop coverage a reader
+        # cannot see any other way), so this count is what lets a reader
+        # tell "this total is exact" from "part of this total is estimated".
+        "estimated_count": len(estimated),
     }
+    # The third fact-envelope state (design §4) — same caveat schema_inventory
+    # carries, since both read the same credential-scoped `database_tables`
+    # detail rows.
+    status = _credential_scope_status(registry, slug)
+    if status:
+        value["_status"] = status
+    return value
 
 
 def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
@@ -841,7 +1202,12 @@ def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
         return {"label": f"No row counts recorded for any of {total} table(s).",
                 "status": "info"}
     coverage = "" if measured == total else f" ({measured} of {total} tables measured)"
-    return {"label": f"{' · '.join(parts)}{coverage}.", "status": "info"}
+    estimated = value.get("estimated_count") or 0
+    caveat = (
+        f" {estimated} of {measured} row count(s) are catalog estimates, not exact."
+        if estimated else ""
+    )
+    return {"label": f"{' · '.join(parts)}{coverage}.{caveat}", "status": "info"}
 
 
 def _format_bytes(n: int) -> str:
@@ -872,6 +1238,16 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "db_change_rates": (_db_derived_field_reader("db_change_rates"), None),
     "schema_diff": (_db_derived_field_reader("schema_diff"), None),
     "grant_change": (_db_derived_field_reader("grant_change"), None),
+    # Design §16.3's Scouting/Discovery rows (2026-09-24). Same reader as every
+    # other `db_derived` field — including for `preliminary_fit`, which is
+    # read with NO lens on this path and therefore renders "no requirement
+    # declared" plus what the resource could satisfy (§16.5 point 2). That is
+    # the designed behaviour, not a missing wire: a lens is supplied by a
+    # caller that has one, and none of RE's stored state carries one yet.
+    "subject_signals": (_db_derived_field_reader("subject_signals"), None),
+    "coverage_signals": (_db_derived_field_reader("coverage_signals"), None),
+    "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
+    "credential_capability": (_credential_capability_results, None),
 }
 
 #: Headline readers (Tier 1 stat tiles) — an additional, optional

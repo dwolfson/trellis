@@ -201,7 +201,11 @@ def test_a_proposal_reaches_the_caller_rather_than_only_the_log(
     proposal = result["proposals"][0]
     assert proposal["steps"] == ["postgres_schema_and_stats"]
     assert proposal["demanding_step"] == "db_derived"
-    assert "run it?" in proposal["sentence"]
+    # sentence() ends with a full stop, not the decision; question() -- also
+    # on the serialised plan -- carries the actionable ask
+    # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect 3).
+    assert proposal["sentence"].endswith(".")
+    assert proposal["question"] == "Run it?"
     entry = next(s for s in result["steps"] if s["re_analysis_step"] == "db_derived")
     assert entry["status"] == "skipped_by_design"
     assert entry["proposal"]["steps"] == ["postgres_schema_and_stats"]
@@ -245,3 +249,72 @@ def test_the_plan_endpoint_runs_nothing(registry, adapter, monkeypatch):
     assert calls == []
     assert plan["status"] == "auto_run"
     assert plan["auto_run"] == ["postgres_schema_and_stats"]
+
+
+def test_run_forwards_demanded_by_to_the_step_runs_row(registry, monkeypatch):
+    """`run()` — a real, Egeria-hosted Survey Definition — is the OTHER way a
+    step gets executed, alongside `run_synthetic_step()` (exercised by every
+    test above). `run()` accepts `demanded_by` on its own signature, but used
+    to drop it on the floor before calling `_execute()`, so any caller of
+    `run(demanded_by=...)` lost attribution silently — the cost landed on the
+    board with no trace of the question that caused it, exactly what
+    `demanded_by` exists to prevent. `run_synthetic_step()` forwards it
+    correctly, which is why this went unnoticed: the auto-run end-to-end
+    tests, and the `/api/prerequisites/run` accept path, only ever exercise
+    the synthetic path.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from resource_explorer.surveyors import survey_definition_executor as sde_module
+    from resource_explorer.surveyors.survey_definition_executor import (
+        ResourceTypeAdapter,
+        SurveyDefinitionExecutor,
+        register_adapter,
+    )
+    from resource_explorer.surveyors.survey_definition_reader import (
+        SurveyDefinition,
+        SurveyStep,
+    )
+
+    def known_runner(entity, reg, **kwargs):
+        return {"ok": True}
+
+    adapter = ResourceTypeAdapter(
+        entity_type="demanded_via_run",
+        technology_type="Fake Tech",
+        re_analysis_steps={"postgres_column_profile": known_runner},
+        get_entity=lambda reg, slug: reg.get_database(slug),
+        publish=MagicMock(return_value="report-guid"),
+    )
+    register_adapter(adapter)
+
+    survey_def = SurveyDefinition(
+        process_guid="proc-run-demanded",
+        display_name="Fake Survey",
+        qualified_name="GovActionProcess::FakeRunDemanded",
+        supported_technology_type="Fake Tech",
+        steps=[SurveyStep(
+            guid="s1", display_name="Known", qualified_name="Step::Known",
+            executes_at="resource-explorer", re_analysis_step="postgres_column_profile",
+        )],
+    )
+    reader = MagicMock()
+    reader.fetch.return_value = survey_def
+    reader.find_process_guid_by_name.return_value = "proc-run-demanded"
+
+    executor = SurveyDefinitionExecutor(registry, reader=reader)
+    # Force the local dispatch loop, same technique TestEngineOverride uses,
+    # so this doesn't depend on a real Prefect server being reachable.
+    with patch.object(sde_module, "_prefect_orchestration_enabled", return_value=False):
+        executor.run(
+            entity_type="demanded_via_run", slug="testdb",
+            survey_definition_ref=survey_def.qualified_name,
+            engine_override="resource-explorer",
+            demanded_by="some_other_step",
+        )
+
+    rows = registry.query_step_runs(step_key="postgres_column_profile", slug="testdb")
+    assert rows, "no step_runs row was recorded for the run() path"
+    assert rows[0]["demanded_by"] == "some_other_step", (
+        "run(demanded_by=...) did not reach the step_runs row — the parameter "
+        "was accepted but never forwarded to _execute()")

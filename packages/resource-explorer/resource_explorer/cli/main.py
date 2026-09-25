@@ -1625,6 +1625,84 @@ def database_register(
     console.print(f"  Database: {database}")
 
 
+@database_app.command(name="update-credentials")
+def database_update_credentials(
+    slug: str = typer.Argument(help="Database slug to update"),
+    user: str = typer.Option(..., "--user", "-u", help="New database username"),
+    password: str = typer.Option(..., "--password", "-p", help="New database password", hide_input=True),
+):
+    """Update the stored db_user/db_password for an already-registered database.
+
+    The registration itself (slug, egeria_asset_guid, survey history) is
+    untouched -- this only repoints which role/password future surveys connect
+    with.
+
+    Example:
+        resource-explorer database update-credentials my-postgres \\
+            --user surveyor --password secret
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+
+    if not registry.database_exists(slug):
+        console.print(f"[red]Database '{slug}' not found. Register it first with 'database register'.[/red]")
+        raise typer.Exit(1)
+
+    registry.update_database_credentials(slug, user, password)
+
+    # Project the same credential into the .omsecrets file, in the same
+    # operation as the registry write — design REPLY-DATABASE-CREDENTIAL-
+    # CAPABILITY-VISIBILITY.md §7. A no-op when no local .omsecrets path is
+    # configured (EGERIA_SECRETS_STORE_LOCAL_PATH unset).
+    from resource_explorer.omsecrets_store import secrets_collection_name, write_credential
+
+    write_credential(secrets_collection_name(slug), user, password)
+
+    console.print(f"[green]✓ Credentials updated for database '{slug}'.[/green]")
+    console.print(f"  User: {user}")
+
+
+@database_app.command(name="check-credential-drift")
+def database_check_credential_drift(
+    slug: str = typer.Argument(help="Database slug to check"),
+):
+    """Report whether RE's registry and the `.omsecrets` file agree on
+    which secrets collection exists for this database.
+
+    Design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §7: "Drift
+    between the two is detectable by comparing collection names present on
+    each side." This is a point check for one database, not a full
+    reconciliation sweep or repair -- see `ProjectRegistry.
+    check_credential_drift`'s docstring for what it deliberately does not
+    cover (value-level drift, a scan across every database).
+
+    Example:
+        resource-explorer database check-credential-drift my-postgres
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+
+    if not registry.database_exists(slug):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+
+    result = registry.check_credential_drift(slug)
+    console.print(f"Collection: [cyan]{result['collection_name']}[/cyan]")
+    console.print(f"  In registry:   {'yes' if result['in_registry'] else 'no'}")
+    if not result["omsecrets_configured"]:
+        console.print(
+            "  In .omsecrets: [dim]not checked — EGERIA_SECRETS_STORE_LOCAL_PATH is unset[/dim]"
+        )
+        return
+    console.print(f"  In .omsecrets: {'yes' if result['in_omsecrets'] else 'no'}")
+    if result["in_sync"]:
+        console.print("[green]✓ In sync.[/green]")
+    else:
+        console.print("[yellow]⚠ Drift detected — the two sides disagree.[/yellow]")
+
+
 @database_app.command(name="list")
 def database_list(
     db_type: Optional[str] = typer.Option(None, "--type", help="Filter by database type"),

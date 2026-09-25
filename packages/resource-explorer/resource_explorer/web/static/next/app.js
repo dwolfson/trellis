@@ -132,6 +132,7 @@ import {
   pollActivity,
   planPrerequisites,
   runPrerequisites,
+  raiseCapabilityRfa,
   removeInvestigationMember,
   removeProject,
   removeEntity,
@@ -2831,6 +2832,31 @@ export function resourceHeaderHtml(slug) {
       + ` publish again from the Analysis pane</span>`;
   }
 
+  // Persistent credential-visibility banner (design REPLY-DATABASE-
+  // CREDENTIAL-CAPABILITY-VISIBILITY.md §4, Piece 1 of ASK-...-#251): a
+  // database's `credential_capability` probe result, when one has run, is
+  // carried on the summary row (`p.credential_capability` — see
+  // `databases.py`'s `DatabaseSummary`) the same way `github_url`/
+  // `is_published` are, and simply comes back undefined for a repo/
+  // filesystem row, same convention `selectedProject()`'s own comment
+  // documents for those two fields. Shown here rather than only inside a
+  // Questions-row envelope so it stays visible regardless of which question
+  // is open — "connected as X" is a fact about the WHOLE resource, not one
+  // answer among many.
+  let credentialBanner = '';
+  const cap = p?.credential_capability;
+  if (cap && (cap.table_total || cap.schema_total)) {
+    const thin = (cap.table_select ?? 0) < (cap.table_total ?? 0)
+      || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
+    credentialBanner = `
+      <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
+        connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
+        sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
+        SELECT on ${esc(String(cap.table_select ?? 0))} of ${esc(String(cap.table_total ?? 0))} table(s)
+        ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
+      </div>`;
+  }
+
   return `
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(name)}</h3>
@@ -2853,6 +2879,7 @@ export function resourceHeaderHtml(slug) {
       </span>
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
+    ${credentialBanner}
     <div id="resource-action" class="mt-s2"></div>`;
 }
 
@@ -3685,6 +3712,53 @@ function surveyRowHtml(c) {
   </div>`;
 }
 
+// Human-readable labels for `NativeProcess.kind` (technology_type_processes.py
+// / configdata/technology_type_processes.yaml). Raw enum values rendered
+// directly -- "(survey_existing)" -- meant nothing to a reader who hasn't read
+// that config file (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §5). A
+// fallback keeps an unmapped or future kind from disappearing rather than
+// crashing the render.
+const NATIVE_PROCESS_KIND_LABELS = {
+  survey_existing: 'surveys an existing catalog entry',
+  catalog_and_survey: 'catalogues, then surveys',
+  delete: 'deletes a catalog entry',
+};
+function nativeProcessKindLabel(kind) {
+  return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
+}
+
+/** Renders `egeria_native_processes` -- real, Egeria-native survey/governance
+ *  processes for this technology type that have no RE-authored Survey
+ *  Definition candidate (that's `candidates`, a separate list). Ported from
+ *  classic's `nativeProcessesHtml` (index.html) into /next's own visual
+ *  idiom. Informational only: no "run" affordance, even for `survey_existing`
+ *  processes -- wiring one of these to run from this pane is a separate,
+ *  already-flagged follow-up (Backlog.md, #244), not part of this fix.
+ *
+ *  Three copy/visual fixes per REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
+ *  LANGUAGE.md §5, all inherited from the classic port: (1) the house caps
+ *  style is for short labels, not a whole sentence, and the parenthetical
+ *  carrying the fact that matters most here (these can't run from this pane)
+ *  read worst in caps -- split into a caps label and a normal-case caveat
+ *  below it; (2) `display_name` no longer renders in `text-accent-ink`, the
+ *  same "click me" colour as the *Run →* buttons on candidate rows right
+ *  above it, for a name that isn't runnable; (3) raw enum `kind` values are
+ *  mapped to plain language via `nativeProcessKindLabel`. */
+function nativeProcessesSectionHtml(nativeProcesses) {
+  nativeProcesses = nativeProcesses || [];
+  if (!nativeProcesses.length) return '';
+  return `<div class="mt-s3 text-caveat text-ink-muted">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria</div>
+    <div class="text-ink-muted">Not runnable from here yet — listed so you know they exist.</div>
+    ${nativeProcesses.map((p) => `
+      <div class="mt-s1 border-l border-rule pl-s2">
+        <span class="font-mono text-ink">${esc(p.display_name)}</span>
+        <span class="text-ink-muted">(${esc(nativeProcessKindLabel(p.kind))})</span>
+        ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
+      </div>`).join('')}
+  </div>`;
+}
+
 async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -3723,6 +3797,13 @@ async function loadSurveyPane() {
   // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
   // paragraph. The four-line cold-server warning becomes a chip that says
   // which scope you are looking at, with a retry.
+  // Informational only, matching classic's index.html: Egeria knows real,
+  // runnable-elsewhere processes for this technology that have no RE-authored
+  // Survey Definition candidate here. That is a separate fact from
+  // `candidates` (RE-authored definitions) and is shown regardless of whether
+  // `candidates` is empty -- not a fallback for the empty state.
+  const nativeProcessesHtml = nativeProcessesSectionHtml(data.egeria_native_processes);
+
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
   const byTier = new Map();
@@ -3748,6 +3829,8 @@ async function loadSurveyPane() {
               class="cursor-pointer bg-transparent underline">retry</button>`
           : esc(stage)}</span>
     </div>
+
+    ${nativeProcessesHtml}
 
     ${here.map((t) => `
       <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
@@ -3785,9 +3868,13 @@ async function loadSurveyPane() {
       </div>`;
     }).join('')}
 
-    ${!all.length ? paneMessage('No survey definitions for this resource',
-        'The adapter registered none for this technology type. That is a fact about '
-        + 'the catalog, not about the repository.') : ''}
+    ${!all.length ? paneMessage('No local or RE-authored survey definitions for this resource',
+        'The adapter registered none for this technology type.'
+        + ((data.egeria_native_processes || []).length
+            ? ' Egeria itself still knows real survey processes for this technology — see '
+              + '"Also known to Egeria" above. That is a fact about what RE has authored, '
+              + 'not about what Egeria can run.'
+            : ' That is a fact about the catalog, not about the repository.')) : ''}
     <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
 
     <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
@@ -3887,6 +3974,8 @@ function analysisIndexRowHtml(row) {
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
+    <span data-analysis-run-error="${esc(row.analysis_id)}"
+      class="hidden w-full text-provenance text-state-warn"></span>
   </div>
   ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
@@ -3999,11 +4088,13 @@ async function renderAnalysesIndexSection(slug, stage) {
   });
   host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
     const aid = b.dataset.analysisRun;
+    const errEl = host.querySelector(`[data-analysis-run-error="${CSS.escape(aid)}"]`);
+    if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
     b.disabled = true;
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      const started = await runAnalysis(slug, aid);
+      const started = await runAnalysis(slug, aid, apiEntityType(state.resourceType));
       // Watch it rather than tell the user to reload — pollActivity is the
       // same mechanism the Questions checklist's run button already uses
       // (rerun(), above). A five-minute timeout still redraws the section
@@ -4028,7 +4119,12 @@ async function renderAnalysesIndexSection(slug, stage) {
     } catch (err) {
       b.disabled = false;
       b.textContent = original;
-      b.title = err.status === 401 ? 'Sign in to run an analysis' : err.message;
+      const msg = err.status === 401 ? 'Sign in to run an analysis' : `Could not start: ${err.message}`;
+      b.title = msg;
+      // A tooltip alone is invisible unless the reader hovers -- reported as
+      // "the button works but doesn't do anything", because Queueing… reverts
+      // to run → the instant the request fails, with nothing else on screen.
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
     }
   }));
 }
@@ -5826,13 +5922,55 @@ function prerequisiteProposalHtml(entry, i, indent) {
     ? '<span class="text-ink-muted">(median of previous runs)</span>'
     : '<span class="text-ink-muted">(from its declared cost, never yet measured)</span>';
   const reasons = (p.reasons || []).map((r) => `<li>${esc(r.detail)}</li>`).join('');
-  return `<div class="${indent} text-answer text-ink">Answering this needs ${steps} first —
-      estimated <span class="tnum">${est}s</span> ${basis}.</div>
+
+  // The second axis (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+  // §7.1). Rendered INSIDE this same proposal rather than as a surface of its
+  // own, because §7.1's words are "one axis beside cost tier in the same
+  // gate… the launcher shows one combined reason". A proposal carrying both a
+  // tier reason and a capability reason is therefore one block with two
+  // bullets and one lead line -- never two prompts to reconcile. The bullets
+  // above already carry both; what changes below is only the LEAD sentence
+  // (a capability-only proposal has no chain to name and no estimate to
+  // quote) and the button row (a shortfall the credential cannot fix is
+  // worth an RFA, which a cost-tier proposal has no use for).
+  const cap = p.capability;
+  const partial = !!p.run_partially;
+  const frac = cap && cap.of
+    ? ` <span class="tnum">${cap.have}</span> of <span class="tnum">${cap.of}</span> table(s)`
+    : '';
+  const lead = steps
+    ? `Answering this needs ${steps} first —
+        estimated <span class="tnum">${est}s</span> ${basis}.`
+    // No chain, so no "needs X first" and no estimate. Saying either would be
+    // a claim about work that does not exist.
+    : `<code class="text-accent-ink">${esc(p.demanding_step || '')}</code> `
+      + `can run, but not completely`
+      + `${cap && cap.connected_as ? ` as <code>${esc(cap.connected_as)}</code>` : ''}${frac}.`;
+
+  // §7.1 names three choices. Two are offered; the third is deliberately
+  // absent and says so rather than appearing as a dead control.
+  // "pick another visible connection" needs the multi-connection model that
+  // is still gated on the project owner's ruling, and an enabled-looking
+  // button that cannot do anything is worse than none.
+  const accept = partial
+    ? 'Run it anyway — and say so'
+    : 'Run it';
+  const rfa = partial
+    ? `<button type="button" data-prereq-rfa="${i}"
+        class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
+        title="Raise a request to the database owner naming this step and the privilege it needs"
+        >ask for broader access</button>`
+    : '';
+  return `<div class="${indent} text-answer text-ink">${lead}</div>
     ${reasons ? `<ul class="${indent} mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
+    ${partial ? `<div class="${indent} mt-[4px] text-caveat text-ink-muted">Running it anyway is not wrong —
+      the result is marked as measured within this credential's scope, never as a
+      measurement of the whole database.</div>` : ''}
     <div class="${indent} mt-s2 flex flex-wrap items-center gap-s2">
       <button type="button" data-prereq-accept="${i}"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[1px] text-caveat text-accent-ink"
-        >Run it</button>
+        >${accept}</button>
+      ${rfa}
       <button type="button" data-prereq-decline="${i}"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">not now — nothing has run</button>
     </div>`;
@@ -5984,6 +6122,7 @@ function bindRowActions(el, entry, i) {
   el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
   el.querySelector(`[data-prereq-accept="${i}"]`)?.addEventListener('click', () => acceptPrerequisiteProposal(entry, i));
   el.querySelector(`[data-prereq-decline="${i}"]`)?.addEventListener('click', () => declinePrerequisiteProposal(entry, i));
+  el.querySelector(`[data-prereq-rfa="${i}"]`)?.addEventListener('click', () => raisePrerequisiteCapabilityRfa(entry, i));
 }
 
 /** The user's yes on a pending §17.1 proposal. Runs exactly the steps the
@@ -5997,17 +6136,32 @@ async function acceptPrerequisiteProposal(entry, i) {
   if (!pending) return;
   const { proposal, background, entityType } = pending;
   state.pendingProposals.delete(entry.question);
+  // A capability-only proposal names no producers at all: the thing to run
+  // IS the demanding step, and `run_partially` is where the server put it
+  // (`steps` means "producers to run FIRST", which would read as nonsense
+  // about the step the user just asked for). Appended rather than
+  // substituted so a proposal carrying BOTH axes runs the chain and then the
+  // step, in one accepted action -- §7.1's combined gate accepted as one.
+  const toRun = proposal.run_partially
+    ? [...(proposal.steps || []), proposal.run_partially]
+    : (proposal.steps || []);
   state.runsInFlight.set(entry.question, {
     analysisId: pending.analysisId,
-    label: `Running ${proposal.steps.join(', ')}…`,
+    label: `Running ${toRun.join(', ')}…`,
   });
   replaceRow(entry, i, state.answers.get(entry.question));
   try {
-    const body = await runPrerequisites(entityType, state.selectedSlug, proposal.steps, proposal.demanding_step);
+    const body = await runPrerequisites(entityType, state.selectedSlug, toRun,
+                                        proposal.demanding_step,
+                                        !!proposal.run_partially);
     if (body.status === 'error') {
       throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
     }
-    state.autoRanNotes.set(entry.question, `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`);
+    state.autoRanNotes.set(entry.question, proposal.steps.length
+      ? `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`
+      // Not "ran X first, then X". What happened is one step, run knowingly
+      // within a credential that cannot see all of what it reads.
+      : `Ran ${proposal.demanding_step} within this credential's scope.`);
   } catch (err) {
     state.runsInFlight.delete(entry.question);
     state.answers.set(entry.question, { __error: `The prerequisite could not be run: ${err.message}` });
@@ -6026,6 +6180,35 @@ async function acceptPrerequisiteProposal(entry, i) {
 function declinePrerequisiteProposal(entry, i) {
   state.pendingProposals.delete(entry.question);
   replaceRow(entry, i, state.answers.get(entry.question));
+}
+
+/** §7.1's third choice at the capability gate: raise an RFA to the database
+ *  owner naming THIS step and the privilege it needs.
+ *
+ *  Leaves the proposal pending on purpose. Asking for access is not a
+ *  decision about the run -- the user can still choose "run it anyway" or
+ *  "not now" afterwards, and clearing the row here would silently make the
+ *  RFA read as a third answer to a two-answer question. */
+async function raisePrerequisiteCapabilityRfa(entry, i) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return;
+  const { proposal, entityType } = pending;
+  const btn = document.querySelector(`[data-prereq-rfa="${i}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'asking…'; }
+  try {
+    const body = await raiseCapabilityRfa(entityType, state.selectedSlug,
+                                          proposal.run_partially);
+    if (btn) {
+      // Says which of the two outcomes happened. "not_raised" is a real,
+      // honest answer (the shortfall is gone, or was never measured) and must
+      // not render as if a request had been filed.
+      btn.textContent = body.status === 'ok'
+        ? 'asked — see the RFA drawer'
+        : 'nothing to ask for';
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = `could not ask: ${err.message}`; }
+  }
 }
 
 /**

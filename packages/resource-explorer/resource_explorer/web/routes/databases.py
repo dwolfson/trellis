@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -50,6 +53,14 @@ class DatabaseSummary(BaseModel):
     # select-mode "hide" bulk action and "Show hidden" toggle work for
     # databases the same way they do for repos.
     working_set_hidden: bool = False
+    # The `credential_capability` probe's last result (design REPLY-DATABASE-
+    # CREDENTIAL-CAPABILITY-VISIBILITY.md §4, Piece 1 of ASK-...-#251), None
+    # when the probe has never run for this database. Carried on the summary
+    # row (rather than requiring a separate fetch) so /next's shared
+    # `resourceHeaderHtml()` can render the persistent visibility banner from
+    # the same row it already reads for every other resource type — a repo or
+    # filesystem row simply never sets this field.
+    credential_capability: dict | None = None
 
 
 class DatabaseRegistration(BaseModel):
@@ -73,6 +84,12 @@ class DatabaseRegistration(BaseModel):
     egeria_user: str = ""
     egeria_password: str = ""
     group_slug: str = ""
+
+
+class DatabaseCredentialsUpdate(BaseModel):
+    """Request body for updating a registered database's stored credentials."""
+    db_user: str = ""
+    db_password: str = ""
 
 
 class SurveyRequest(BaseModel):
@@ -134,11 +151,30 @@ class EgeriaAnnotationItem(BaseModel):
 def _to_summary(db) -> DatabaseSummary:
     """Convert DatabaseEntity to DatabaseSummary."""
     # Get latest survey data if available
+    import json
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     surveys = registry.get_database_surveys(db.slug)
     latest = surveys[0] if surveys else None
     disp = registry.get_disposition_for_entity("database", db.slug) or {}
+
+    # The credential_capability probe's last result, if the survey_data blob
+    # (from ANY prior survey, not just the most recent one) carries one —
+    # see credential_capability's own results reader
+    # (_credential_capability_results) for why this reads the same blob
+    # rather than a dedicated table. Checked across all stored surveys, most
+    # recent first, since a plain schema/statistics-only run after the probe
+    # ran would otherwise silently hide a still-current capability reading.
+    credential_capability: dict | None = None
+    for row in surveys:
+        try:
+            data = json.loads(row.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        cap = data.get("credential_capability")
+        if cap:
+            credential_capability = cap
+            break
 
     return DatabaseSummary(
         slug=db.slug,
@@ -165,6 +201,7 @@ def _to_summary(db) -> DatabaseSummary:
         disposition=disp.get("disposition", "undecided"),
         is_published=bool(getattr(db, "egeria_asset_guid", "") or ""),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
+        credential_capability=credential_capability,
     )
 
 
@@ -308,8 +345,53 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     
     # Register in registry
     registry.register_database(database)
-    
+
+    _project_credential_to_omsecrets(req.slug, req.db_user, req.db_password)
+
     return _to_summary(database)
+
+
+def _project_credential_to_omsecrets(slug: str, db_user: str, db_password: str) -> None:
+    """Write the same credential to the `.omsecrets` file's projection for
+    this database, per design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    VISIBILITY.md §7: "one secrets-collection name per (resource, role),
+    written to both places by RE in the same operation." A no-op when either
+    no password was supplied or no local `.omsecrets` path is configured
+    (`EGERIA_SECRETS_STORE_LOCAL_PATH`) — most deployments have neither the
+    file nor a host-visible path to it, and that must never surface as an
+    error on what is otherwise a successful registry write."""
+    if not db_password:
+        return
+    from resource_explorer.omsecrets_store import secrets_collection_name, write_credential
+
+    write_credential(secrets_collection_name(slug), db_user, db_password)
+
+
+@router.patch("/{slug}/credentials", response_model=DatabaseSummary)
+async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate) -> DatabaseSummary:
+    """Update the stored db_user/db_password for an already-registered database,
+    without disturbing its registration history (slug, egeria_asset_guid,
+    survey history, etc.). The only supported way to repoint credentials today —
+    see registry.py's update_database_credentials docstring.
+
+    Also projects the same credential into the `.omsecrets` file (design
+    REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §7) via
+    `_project_credential_to_omsecrets`, in the same operation as the
+    registry write — a no-op when no local `.omsecrets` path is configured.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+
+    database = registry.get_database(slug)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    registry.update_database_credentials(slug, req.db_user, req.db_password)
+    _project_credential_to_omsecrets(slug, req.db_user, req.db_password)
+
+    updated = registry.get_database(slug)
+    return _to_summary(updated)
 
 
 @router.post("/{slug}/survey", response_model=SurveyResult)
@@ -467,11 +549,39 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
 
 
 class AnalysisRunResult(BaseModel):
-    status: str  # "ok" | "error"
+    """The response `POST /{slug}/analyses/{analysis_id}/run` returns.
+
+    Was a fully-resolved synchronous result — this handler used to run the
+    survey inline (`await asyncio.to_thread(_run)`) and hand back `status`/
+    `message`/`error` for a run that had, by the time this returns, already
+    finished. It never wrote an activity_log entry at all, and this model
+    carried no `activity_id`. `/next`'s shared `rerun()` (app.js) calls this
+    route the same way it calls the repo route
+    (`resource_explorer/web/static/re-api.js`'s `runAnalysis`), reads
+    `started.activity_id`, and polls `GET /api/activity/{activity_id}` — so
+    `activity_id` came back `undefined`, that GET 404'd with "Activity entry
+    not found", and the run's own real result (which had already succeeded)
+    was thrown away and reported as a failure. Reproduced live via
+    `db_activity_signals`'s "Is this database alive…" Questions-checklist
+    card, but not specific to it — every analysis_id in
+    `DATABASE_ANALYSIS_STEP_MAP` (and every `db_derived` id) went through
+    this same handler.
+
+    Matches `projects.py`'s `run_single_analysis` or `run_stage_batch`'s
+    response shape (`{"status": "started", "activity_id": ..., "run_id":
+    ...}`) as closely as this route's own response model allows: `status` is
+    now `"started"` on success, and `activity_id`/`run_id` are populated so
+    the frontend's existing poll works unchanged. `slug`/`analysis_id` are
+    kept for compatibility with `tests/test_database_analysis_run_route.py`'s
+    pre-existing assertions and any other reader of this response.
+    """
+    status: str  # "started" | "error" (validation failures still raise HTTPException)
     slug: str
     analysis_id: str
     message: str = ""
     error: str | None = None
+    activity_id: str = ""
+    run_id: str = ""
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
@@ -488,81 +598,79 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
 
     Two local shapes now, not one: the DatabaseSurveyor step path below, and
     the zero-fetch `db_derived` path (Phase 1 slice 9), which reads stored
-    rows and so takes neither a step nor credentials."""
+    rows and so takes neither a step nor credentials.
+
+    **Enqueues; does not run** (activity-tracking fix — see AnalysisRunResult's
+    docstring for the bug this closes). Matches `projects.py`'s
+    `run_single_analysis`: validation stays synchronous (an unmapped/unknown
+    analysis_id, or missing credentials, is still a 400 here rather than a
+    queued row that fails later in the worker), a real 'running' activity
+    entry is written up front via `log_analysis_run` (already generic across
+    entity_type — no change needed there), and the actual work is handed to
+    the run queue's `database_analysis_run` kind
+    (`run_queue.py::_handle_database_analysis_run` ->
+    `workflows.analysis.execute_and_record_database_analysis`), which writes
+    the terminal status onto the same activity entry when it finishes.
+
+    The two branches get the same activity tracking, but not the same
+    dispatch: `db_derived` reads stored rows only (no connection opened, no
+    credentials needed — see db_derived.py's own module docstring) and was
+    already fast enough to run inline before this fix, so it is *still*
+    queued here for consistency and because a database that has never been
+    reachable must not be treated specially by this route — but see
+    `workflows.analysis.run_database_analysis` for confirmation it does no
+    fetch of its own. The DATABASE_ANALYSIS_STEP_MAP branch opens a real
+    connection and can legitimately take a while (the same shape that made
+    the repo path's `architecture_recovery` worth backgrounding), so it is
+    the one this fix is actually for.
+    """
+    from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_queue import requested_by as _requested_by
     from resource_explorer.surveyors.database.database_surveyor import (
         DATABASE_ANALYSIS_STEP_MAP,
-        run_database_survey,
     )
-    from resource_explorer.surveyors.database.db_derived import (
-        DB_DERIVED_ANALYSES,
-        run_db_derived,
-    )
+    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     registry = ProjectRegistry()
     db = registry.get_database(slug)
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    # db_derived (Phase 1 slice 9) is handled before the step map and before
-    # the credentials check below, because it is zero-fetch: it reads stored
-    # rows only, so it neither needs a DatabaseSurveyor step nor stored
-    # credentials. Requiring credentials here would refuse the one database
-    # analysis that can still answer when the server is unreachable.
+    # Validation stays synchronous — an unknown/unmapped analysis_id, or
+    # missing credentials, must be a 400 here, not a queued row that fails a
+    # minute later in a different process where nobody is looking (same rule
+    # projects.py's run_single_analysis follows).
     if analysis_id in DB_DERIVED_ANALYSES:
-        def _run_derived():
-            return run_db_derived(registry, slug)
-
-        try:
-            derived_result = await asyncio.to_thread(_run_derived)
-        except Exception as exc:
-            return AnalysisRunResult(
-                status="error", slug=slug, analysis_id=analysis_id, error=str(exc),
-            )
-        check = (derived_result.get("derived") or {}).get(analysis_id) or {}
-        return AnalysisRunResult(
-            status="ok", slug=slug, analysis_id=analysis_id,
-            message=(
-                f"{len(derived_result.get('annotations', []))} annotation(s) "
-                f"derived from stored rows (no fetch). "
-                f"{analysis_id}: {check.get('state', 'unknown')}."
-            ),
-        )
-
-    if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+        pass  # zero-fetch — no credentials check needed
+    elif analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
                    "either it's Egeria-native/publish (use the appropriate dedicated "
                    "action instead) or an unknown id.",
         )
-
-    if not db.db_user or not db.db_password:
+    elif not db.db_user or not db.db_password:
         raise HTTPException(
             status_code=400,
             detail="No stored database credentials — register the database with "
                    "db_user/db_password, or run a full survey with credentials, first.",
         )
 
-    steps = DATABASE_ANALYSIS_STEP_MAP[analysis_id]
+    activity_id = log_analysis_run(
+        registry, "database", slug, db.display_name, "running",
+        f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
+    )
+    run_id = registry.enqueue_run(
+        "database_analysis_run", {"slug": slug, "analysis_id": analysis_id},
+        result_ref=activity_id, requested_by=_requested_by(),
+    )
+    log.info("enqueued database_analysis_run %s for %s/%s (activity %s)",
+             run_id, slug, analysis_id, activity_id)
 
-    def _run():
-        return run_database_survey(
-            slug, credentials={"user": db.db_user, "password": db.db_password},
-            registry=registry, steps=steps,
-        )
-
-    try:
-        result = await asyncio.to_thread(_run)
-    except Exception as exc:
-        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
-
-    non_fatal = result.get("errors") or []
     return AnalysisRunResult(
-        status="ok", slug=slug, analysis_id=analysis_id,
-        message=f"{len(result.get('annotations', []))} annotation(s)." + (
-            f" ({len(non_fatal)} non-fatal error(s))" if non_fatal else ""
-        ),
+        status="started", slug=slug, analysis_id=analysis_id,
+        activity_id=activity_id, run_id=run_id,
     )
 
 

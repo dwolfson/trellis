@@ -168,7 +168,11 @@ def test_a_chain_that_crosses_tier_becomes_one_proposal_with_summed_cost(world):
     assert res.proposal.estimated_is_measured is True
     assert res.proposal.demanding_step == "top"
     assert "needs_mid" in res.proposal.preconditions
-    assert "run it?" in res.proposal.sentence()
+    # sentence() ends with a full stop, not the decision (REPLY-COPY-REVIEW-
+    # CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect 3) -- the actionable question
+    # is question()'s job, kept as a single separate source.
+    assert res.proposal.sentence().endswith(".")
+    assert res.proposal.question() == "Run it?"
 
 
 def test_an_unmeasured_chain_says_its_estimate_is_not_a_measurement(world):
@@ -176,8 +180,12 @@ def test_an_unmeasured_chain_says_its_estimate_is_not_a_measurement(world):
                              compute_cost="low", produces=("base_table",))
     res = pr.resolve(_Reg(), _ENTITY, "top", world)
     assert res.proposal.estimated_is_measured is False
-    assert "never yet measured" in res.proposal.sentence(), (
+    # "its declared tier" (singular, ambiguous over a multi-step chain) became
+    # "declared tiers" (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1
+    # defect 4's ambiguous "its").
+    assert "not yet measured" in res.proposal.sentence(), (
         "a tier default was quoted as though it had been observed")
+    assert "its declared tier" not in res.proposal.sentence()
 
 
 def test_a_compute_tier_crossing_also_proposes(world):

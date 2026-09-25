@@ -58,6 +58,37 @@ preconditions, recursively, with:
     user's time and then ask permission for the rest, which is the worst
     ordering available.
 
+**A second axis, in the same gate (2026-09-24).** `REPLY-DATABASE-CREDENTIAL-
+CAPABILITY-VISIBILITY.md` §7.1, which the project owner approved building:
+"Build it as one axis beside cost tier in the same gate, not as a separate
+flow: a step declares `fetch_cost`, `compute_cost` and `requires_capability`,
+and the launcher shows one combined reason."
+
+So `requires_capability` is checked HERE, by the same `resolve()`, producing
+the same `Proposal` with an extra `ConsentReason(kind="capability")` — not a
+second resolver and not a second prompt. When both axes fire, the two reasons
+land in ONE proposal and `Proposal.sentence()` joins them into one sentence;
+a reader is never handed two gates to reconcile.
+
+Two things about the capability axis are genuinely different from cost, and
+both are deliberate:
+
+  * it applies to the **demanding step itself**, not only to producers. The
+    budget reading above says a step the user asked for by name is inside its
+    own budget by definition — true of cost, false of capability. Asking for
+    a step does not widen a grant;
+  * the measurement comes from a **probe that already ran**
+    (`credential_capability.stored_probe`), never from a fresh connection.
+    "Never probed" is a third answer and does not block — see that module.
+
+§7.1 names three choices at the gate: run partially and say so; pick another
+visible connection; raise the RFA. The first is `Proposal.run_partially`, the
+third is `credential_capability.capability_rfa`. **The second is deliberately
+not built here** — it needs the multi-connection model of §1/§2, which is
+separately gated on the project owner's ruling (`docs/Backlog.md`) and has no
+registry table, no enumeration call and no UI yet. Offering a choice that
+cannot be taken would be worse than offering two that can.
+
 **3. An auto-run is a result, not an omission.** The caller writes the
 annotation, the activity-log entry and the `step_runs` attribution — see
 `auto_run_annotation()` and `Resolution.demanded_by`. This module decides; it
@@ -118,7 +149,22 @@ class PrerequisiteCycleError(RuntimeError):
 class ConsentReason:
     """Why one step in a chain cannot run unasked."""
     step_key: str
-    #: `tier` / `download` / `credentials` / `human`
+    #: `tier` / `download` / `credentials` / `human` / `capability`
+    #:
+    #: `capability` is the second axis (REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    #: VISIBILITY.md §7.1), and it is a `ConsentReason` like the other four
+    #: rather than a parallel mechanism ON PURPOSE — §7.1's words are "one
+    #: axis beside cost tier in the same gate, not a separate flow… the
+    #: launcher shows one combined reason". A step short on both cost tier
+    #: and capability therefore produces two reasons inside ONE `Proposal`,
+    #: which renders as one sentence with two clauses, not two prompts the
+    #: reader has to reconcile.
+    #:
+    #: It differs from the other four in one way worth knowing: those are all
+    #: properties of a PRODUCER the resolver would auto-run, so they only ever
+    #: appear for steps in `Proposal.steps`. A capability shortfall can also
+    #: be a property of the DEMANDING step itself, which no amount of "the
+    #: user asked for it" fixes — asking for a step does not widen a grant.
     kind: str
     detail: str
 
@@ -141,18 +187,125 @@ class Proposal:
     #: What the demanding step is, and which precondition(s) started this.
     demanding_step: str = ""
     preconditions: list[str] = field(default_factory=list)
+    #: The demanding step, repeated here ONLY when a capability reason
+    #: applies to it — §7.1's first choice, "run partially and say so".
+    #:
+    #: It is a separate field rather than an entry in `steps` because the two
+    #: mean different things to the accept path: `steps` are PRODUCERS to run
+    #: BEFORE the demanding step, and the client posts them to
+    #: `/api/prerequisites/run` verbatim. A capability-only proposal has no
+    #: producers at all — nothing needs running first; the question is whether
+    #: to run the demanding step itself knowing its answer will be bounded by
+    #: the credential. Folding it into `steps` would make the existing UI say
+    #: "answering this needs `postgres_column_profile` first" about the step
+    #: the reader just asked for.
+    #:
+    #: Empty when the proposal is purely about cost tier, which leaves every
+    #: pre-existing proposal byte-identical.
+    run_partially: str = ""
+    #: The measured shortfall behind `run_partially`, as
+    #: `credential_capability.CapabilityAssessment.as_dict()`. Carried so the
+    #: launcher can render the fraction ("SELECT on 3 of 26") and offer the
+    #: RFA without re-deriving either.
+    capability: dict | None = None
+
+    @property
+    def advisory(self) -> bool:
+        """Every reason here is a capability one, so nothing is being SPENT.
+
+        **The judgement call that makes this axis safe to add to an existing
+        gate, and the one place the two axes deliberately behave
+        differently.**
+
+        A cost-tier proposal asks permission to spend something the user has
+        not agreed to spend — a download, a clone, an hour of CPU. Declining
+        costs them nothing; proceeding unasked is the harm, so the safe
+        default is to stop.
+
+        A capability proposal spends nothing. It says the answer will be
+        bounded by what the credential can reach. Here the safe default is
+        the opposite: declining costs the user their answer entirely, and
+        stopping would mean a database whose credential lacks `pg_monitor`
+        gets NO survey at all — strictly worse than today's under-report,
+        and worse still on every path with nobody there to ask (the
+        scheduler, the CLI, a Survey Definition run), which would silently
+        produce nothing where they used to produce something.
+
+        So a capability-only proposal is ADVISORY: `Resolution.may_run` stays
+        true, the step runs, and the run says so — `MEASURED_WITHIN_
+        CREDENTIAL_SCOPE` on the envelope (#253) and the proposal itself
+        attached to the step's report entry. That is §7.1's own first choice,
+        "run partially and say so", taken as the default rather than offered
+        only to someone watching.
+
+        The launcher still asks, because it asks FIRST: `/next` calls
+        `/api/prerequisites/plan` before dispatching and stops on
+        `status == "proposal"` whatever `may_run` says. So an interactive
+        user is shown the combined reason and chooses; an unattended run
+        proceeds and is labelled. Neither is silent.
+
+        False as soon as ANY non-capability reason joins — a proposal
+        carrying both axes blocks on the cost half, as it did before.
+        """
+        kinds = {r.kind for r in self.reasons}
+        return bool(kinds) and kinds == {"capability"}
+
+    @property
+    def combines_cost_and_capability(self) -> bool:
+        """Both axes fired for this one proposal.
+
+        Not used to change behaviour — both kinds already live in `reasons`
+        and render together. It exists so a test can pin §7.1's "one combined
+        reason" as a property of the object rather than by string-matching the
+        sentence, and so a reader can see that the combination is a designed
+        state and not an accident of two features overlapping.
+        """
+        kinds = {r.kind for r in self.reasons}
+        return "capability" in kinds and bool(kinds - {"capability"})
 
     def sentence(self) -> str:
-        """The §17.1 prompt, as one line: what is needed, what it costs, and
-        why it is being asked rather than simply done."""
-        steps = ", ".join(f"`{s}`" for s in self.steps)
+        """The §17.1 prompt, as one line: what is needed and what it costs.
+
+        ONE sentence however many axes fired. A cost-tier shortfall and a
+        capability shortfall are two clauses of the same `why`, joined like
+        any other two reasons — §7.1's "the launcher shows one combined
+        reason", made literal here rather than left to the renderer, so the
+        API, the CLI and the UI cannot drift into three different phrasings
+        of the same gate.
+
+        Ends with a full stop, not the decision. `REPLY-COPY-REVIEW-
+        CREDENTIAL-AND-FIT-LANGUAGE.md` §1 defect 3: the part a reader has to
+        act on was the last seven words of a 60-80 word sentence. This stays
+        the single source of the full explanation — that reasoning doesn't
+        change — and `question()` alongside it carries the short, actionable
+        ask a button or a CLI prompt puts in front of someone. One source
+        still; nothing can drift between the two.
+        """
         why = "; ".join(r.detail for r in self.reasons) or "it crosses the tier you chose"
+        if not self.steps:
+            # Capability-only: nothing runs first, so there is no chain to
+            # name and no estimate to quote. Saying "answering this needs
+            # first — estimated 0s" would be three claims that are all false.
+            return f"`{self.demanding_step}` can run, but not completely — {why}."
+        steps = ", ".join(f"`{s}`" for s in self.steps)
         return (
             f"answering this needs {steps} first — estimated "
             f"{self.estimated_seconds:.0f}s"
-            f"{'' if self.estimated_is_measured else ' (estimated from its declared tier, never yet measured)'}"
-            f", {why}; run it?"
+            f"{'' if self.estimated_is_measured else ' (not yet measured — estimated from declared tiers)'}"
+            f", {why}."
         )
+
+    def question(self) -> str:
+        """The short, actionable question `sentence()` no longer ends with.
+
+        `sentence()` stays the single source of the full explanation; this is
+        the other half of REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md
+        §1 defect 3 — the UI puts this on the confirm button, the CLI prints
+        it after `sentence()`.
+        """
+        if self.run_partially:
+            return "Run it within this credential's scope?"
+        return "Run it?"
 
     def as_dict(self) -> dict:
         return {
@@ -165,7 +318,11 @@ class Proposal:
             "estimated_is_measured": self.estimated_is_measured,
             "demanding_step": self.demanding_step,
             "preconditions": list(self.preconditions),
+            "run_partially": self.run_partially,
+            "capability": dict(self.capability) if self.capability else None,
+            "advisory": self.advisory,
             "sentence": self.sentence(),
+            "question": self.question(),
         }
 
 
@@ -190,9 +347,20 @@ class Resolution:
         """Whether the demanding step itself should be dispatched now.
 
         True for SATISFIED and for AUTO_RUN (after the producers have run).
-        False for PROPOSAL and UNSATISFIABLE — in both cases the step is
-        skipped with a reason, exactly as it was before §17.1.
+        False for UNSATISFIABLE, and for a PROPOSAL that asks to spend
+        something — the step is skipped with a reason, exactly as it was
+        before §17.1.
+
+        **One exception, added with the capability axis (2026-09-24): an
+        ADVISORY proposal still runs.** A proposal whose every reason is a
+        capability shortfall is not asking to spend anything; it is saying
+        the answer will be bounded. Blocking on it would leave a narrow
+        credential with no survey at all, which is worse than the bounded
+        answer it is warning about. See `Proposal.advisory` for the full
+        reasoning and for why the interactive launcher still asks.
         """
+        if self.status == PROPOSAL and self.proposal is not None:
+            return self.proposal.advisory
         return self.status in (SATISFIED, AUTO_RUN)
 
     def as_plan(self) -> dict:
@@ -241,21 +409,26 @@ class Budget:
 
 
 def _exceeds(budget: Budget, info) -> str:
-    """"" when `info` fits inside `budget`, else which axis it crosses."""
+    """"" when `info` fits inside `budget`, else which axis it crosses, in
+    plain language.
+
+    No field names and no Python `repr` quotes — this lands verbatim in a
+    sentence a person reads, not a log line (REPLY-COPY-REVIEW-CREDENTIAL-
+    AND-FIT-LANGUAGE.md §1 defect 4).
+    """
     fetch_order, compute_order = _cost_orders()
     fetch = getattr(info, "fetch_cost", "none") or "none"
     compute = getattr(info, "compute_cost", "low") or "low"
+    where = "the ceiling this run set" if budget.source == "ceiling" else "the step you asked for"
     try:
         if fetch_order.index(fetch) > fetch_order.index(budget.fetch_cost):
-            return (f"fetch_cost {fetch!r} is above the {budget.fetch_cost!r} "
-                    f"{'ceiling this run set' if budget.source == 'ceiling' else 'tier the step you asked for sits in'}")
+            return f"needs a more expensive fetch than {where} ({fetch}; you're at {budget.fetch_cost})"
         if compute_order.index(compute) > compute_order.index(budget.compute_cost):
-            return (f"compute_cost {compute!r} is above the {budget.compute_cost!r} "
-                    f"{'ceiling this run set' if budget.source == 'ceiling' else 'tier the step you asked for sits in'}")
+            return f"needs more compute than {where} ({compute}; you're at {budget.compute_cost})"
     except ValueError:
         # An unrecognised tier string cannot be ordered. Ask rather than
         # assume cheap — the failure direction that spends nothing.
-        return f"declares an unrecognised cost tier ({fetch!r}/{compute!r})"
+        return f"declares a cost tier this run doesn't recognise ({fetch}/{compute})"
     return ""
 
 
@@ -278,14 +451,67 @@ def _consent_reasons(step_key: str, info, budget: Budget,
             f"`{step_key}` needs {', '.join(sorted(unresolved))} — a download or clone "
             "this run has not already acquired"))
     if getattr(info, "needs_credentials", False):
+        # Provenance ("rule B", the module docstring's naming for this
+        # condition) belongs to the maintainer reading this code, not to the
+        # sentence a user reads — REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
+        # LANGUAGE.md §1 defect 1 / §0's "provenance belongs in the evidence,
+        # not in the sentence".
         out.append(ConsentReason(
             step_key, "credentials",
-            f"`{step_key}` needs credentials this executor cannot resolve (rule B)"))
+            f"`{step_key}` needs credentials this executor cannot resolve"))
     if getattr(info, "answering_kind", "") == "human":
         out.append(ConsentReason(
             step_key, "human",
             f"`{step_key}` is answered by a person, not by a run"))
     return out
+
+
+def _declares_capability(step_registry: Mapping[str, Any], keys) -> bool:
+    """Whether any of `keys` declares a `requires_capability` at all.
+
+    The guard that keeps this axis free for every resource type that has no
+    credential model — repositories and filesystems declare none, so the probe
+    is never read and not one registry call is made on their path.
+    """
+    for key in keys:
+        info = step_registry.get(key)
+        if info is not None and (getattr(info, "requires_capability", "") or ""):
+            return True
+    return False
+
+
+def _capability_reason(step_key: str, info, probe, consented: bool = False,
+                       demanding: bool = False) -> tuple:
+    """`(ConsentReason | None, CapabilityAssessment)` for one step.
+
+    The whole of the capability axis's per-step logic, kept beside
+    `_consent_reasons` (the cost axis's) because the two are one gate and a
+    reader looking for "why can this step not just run" should find both in
+    the same place.
+
+    `consented` still returns the ASSESSMENT — only the reason is dropped. The
+    shortfall is a fact about the credential that a consented run does not
+    change, and the run's own envelope still has to say so
+    (`result_status.MEASURED_WITHIN_CREDENTIAL_SCOPE`). Consent is permission
+    to proceed, never permission to stop mentioning it.
+
+    `demanding` is true only when `step_key` is `Proposal.demanding_step` AND
+    the resulting proposal has no producers to run first (`Proposal.steps`
+    empty) — the capability-only template in `Proposal.sentence()` already
+    opens with that same step name, so repeating it in the detail said the
+    subject twice (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §1 defect
+    2). When producers ARE involved, the combined sentence never otherwise
+    names the demanding step, so the prefix stays — only the capability-only
+    case is redundant.
+    """
+    from resource_explorer.surveyors import credential_capability
+
+    requirement = getattr(info, "requires_capability", "") or ""
+    assessment = credential_capability.assess(requirement, probe)
+    if consented or not assessment.blocks:
+        return None, assessment
+    detail = assessment.detail if demanding else f"`{step_key}` {assessment.detail}"
+    return ConsentReason(step_key, "capability", detail), assessment
 
 
 def _estimate(registry, slug: str, step_keys: list[str],
@@ -361,6 +587,8 @@ def resolve(
     max_compute_cost: str | None = None,
     resolved_resources: set[str] | None = None,
     already_ran: set[str] | None = None,
+    capability_probe: dict | None = None,
+    capability_consented: bool = False,
 ) -> Resolution:
     """What to do about `step_key`'s preconditions. Runs nothing.
 
@@ -375,12 +603,36 @@ def resolve(
     `already_ran` names producers this run has run itself (the resolver's
     caller records them), so a second demanding step does not re-run a
     producer the first one just triggered.
+
+    `capability_probe` is the stored `credential_capability` result for this
+    resource (`credential_capability.stored_probe`). Passed in rather than
+    read here so this function stays pure and testable without a registry —
+    the same reason it takes `resolved_resources` instead of inspecting a
+    run. `None` means "not supplied", and the resolver fetches it itself, but
+    ONLY when some step actually declares a `requires_capability`: a repo or
+    filesystem resolve makes no registry call for an axis none of its steps
+    use.
+
+    `capability_consented` is §7.1's first choice already taken: the user was
+    shown the shortfall and chose to run partially anyway. It suppresses the
+    capability reasons ONLY — the cost axis is untouched, because the two
+    consents are about different things and one is not evidence of the other.
+    It is the exact analogue of `/api/prerequisites/run` naming the steps the
+    user was shown: without it, an accepted "run it anyway" would re-resolve,
+    re-raise the same shortfall and skip the very step the user just approved,
+    which is the one outcome the accept path exists to prevent.
     """
     if not step_registry:
         return Resolution(step_key, SATISFIED)
     info = step_registry.get(step_key)
     if info is None:
         return Resolution(step_key, SATISFIED)
+
+    if (not capability_consented and capability_probe is None
+            and _declares_capability(step_registry, step_registry.keys())):
+        from resource_explorer.surveyors import credential_capability
+
+        capability_probe = credential_capability.stored_probe(registry, entity)
 
     budget = Budget.for_step(info, max_fetch_cost, max_compute_cost)
     auto_run: list[str] = []
@@ -451,11 +703,35 @@ def resolve(
             walk(producer, (*path, key))
             consent.extend(_consent_reasons(producer, producer_info, budget,
                                             resolved_resources))
+            # The capability axis applies to a producer too: auto-running a
+            # step whose credential cannot see what it reads would fill the
+            # demanding step's input with a bounded answer and then present
+            # the result as if the input were whole.
+            producer_reason, _ = _capability_reason(
+                producer, producer_info, capability_probe,
+                consented=capability_consented)
+            if producer_reason is not None:
+                consent.append(producer_reason)
             auto_run.append(producer)
 
     walk(step_key, ())
 
-    if not auto_run and not dead_ends:
+    # The demanding step's OWN capability — the part with no cost-tier
+    # equivalent. A step's cost tier IS the budget when the user asked for it
+    # by name (module docstring, reading b), so a demanding step never
+    # consents to its own cost. Capability does not work that way: asking for
+    # a step does not widen a grant, so the shortfall survives the request and
+    # has to be said out loud.
+    own_reason, own_assessment = _capability_reason(
+        step_key, info, capability_probe, consented=capability_consented,
+        # No producers to run first (`auto_run` empty) means `sentence()`
+        # will use the capability-only template, which already opens with
+        # `step_key` — see `_capability_reason`'s own docstring.
+        demanding=not auto_run)
+    if own_reason is not None:
+        consent.append(own_reason)
+
+    if not auto_run and not dead_ends and not consent:
         return Resolution(step_key, SATISFIED)
 
     if consent:
@@ -475,6 +751,11 @@ def resolve(
             estimated_is_measured=measured,
             demanding_step=step_key,
             preconditions=list(dict.fromkeys(started_by)),
+            # §7.1's first choice. Set only when the DEMANDING step is the one
+            # short on capability — a producer's shortfall is answered by
+            # running the chain, which `steps` already names.
+            run_partially=step_key if own_reason is not None else "",
+            capability=own_assessment.as_dict() if own_reason is not None else None,
         )
         return Resolution(step_key, PROPOSAL, proposal=proposal,
                           reason=proposal.sentence(), dead_ends=dead_ends)

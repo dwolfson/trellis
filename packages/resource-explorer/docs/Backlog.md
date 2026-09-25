@@ -7727,3 +7727,208 @@ openapi/proto/graphql. Empirically dead in this specific corpus as of this
 writing — leave as `declared`-only unless a specific target resource is
 known to use SOAP, at which point revisit `_DEPENDENCY_SIGNALS` and
 framework-marker coverage together.
+
+---
+
+## Database credential-capability model — item 2 BUILT, items 1 and 3 still awaiting the project owner's ruling
+
+**Decision (project owner, 2026-09-24):** build item 2 below
+(`requires_capability` on `StepInfo` and the launcher gate) now, ahead of
+item 1, on the strength of §7.1 of the reply doc — which the architecture
+session added after this entry was written and which closes the question
+item 2 was said to depend on. Its words, which the build follows: "Build it
+as one axis beside cost tier in the same gate, not as a separate flow: a
+step declares `fetch_cost`, `compute_cost` and `requires_capability`, and
+the launcher shows one combined reason."
+
+**Status, so the dependency note below is not read as still blocking:**
+
+- **Item 2 — BUILT** on `re/requires-capability-combined-gate`.
+  `requires_capability` is declared on every `DATABASE_STEP_REGISTRY` entry
+  from `DATABASE-STEP-CAPABILITY-AUDIT.md`'s trace; the gate is the SAME
+  `prerequisite_resolver.resolve` the cost tier already goes through, adding
+  a `ConsentReason(kind="capability")` to the SAME `Proposal` rather than a
+  second flow; the credential's actual capability is read back from the
+  `credential_capability` probe's stored result, never re-probed.
+  Item 2's stated dependency on item 1 ("the gate needs to know which
+  connection is even in play") turned out not to bind: with one connection
+  per database there is exactly one credential in play, and the probe
+  already measures it. The gate becomes multi-connection-aware when item 1
+  lands; it does not need item 1 to be correct today.
+- **§7.1's three launcher choices: two built, one deliberately not.** "Run
+  partially and say so" (`Proposal.run_partially`, carrying
+  `MEASURED_WITHIN_CREDENTIAL_SCOPE`) and "raise the RFA"
+  (`POST /api/prerequisites/capability-rfa`, a step-naming RFA distinct from
+  the probe's standing resource-level one) are live. **"Pick another visible
+  connection" is not built** — it needs item 1's multi-connection model, and
+  a control that cannot do anything is worse than its absence.
+- **Items 1 and 3 — still blocked**, unchanged, and still needing a ruling.
+
+**Note on where §7 lives.** §7 was added to the reply doc by commit
+`990d7d61` on `re/reply-database-credential-capability`, which is **not
+merged to `main`** — `main` carries the doc through §6 only (`98e8c137`,
+PR #255). Anyone reading the doc from `main` will not find the §7 this build
+implements; read it with `git show 990d7d61:packages/resource-explorer/docs/
+design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` until that
+branch lands. Not cherry-picked onto the build branch on purpose: the doc
+commit belongs to its own PR and duplicating it would give one design note
+two histories.
+
+---
+
+## Database credential-capability model — awaiting the project owner's ruling
+
+**From:** `docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`
+(architecture session, 2026-09-24), replying to
+`ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` (`#251`). Read both in
+full before picking this up — this entry is a pointer, not a substitute.
+
+Piece 1 of the ask (a `credential_capability` probe, a persistent
+"connected as X — sees N of M schemas, SELECT on N of M tables" banner, a
+third fact-envelope state — "measured within credential scope" — and an RFA
+to the database owner when coverage is thin) needed no ruling and was
+dispatched immediately; see the PR that follows this entry once merged.
+
+**What's genuinely blocked on the project owner, and why it can't be
+guessed at:**
+
+1. **The connection/credential model itself.** The reply's finding from the
+   actual Egeria Java source (`ConnectionHandler.java`,
+   `OpenMetadataAccessSecurityConnector.java`): Egeria already supports any
+   number of `Connection` elements per asset, each with its own secrets
+   collection, with the credential's *role* (surveyor/reader/admin) sitting
+   as the `label` on the `ResourceConnection` relationship — not a new
+   concept RE needs to invent. The recommendation is a `database_credentials`
+   registry table that **indexes** Egeria's own connections (guid, role,
+   secrets collection, last probe) rather than owning credentials itself,
+   and retiring `databases.db_password` (`registry.py:2185`, clear-text
+   `TEXT`) in favor of the secrets store `#185` already built. This changes
+   `DatabaseEntity`'s shape and a live column's fate — a schema/data
+   migration decision, not something to build speculatively.
+2. **`requires_capability` on `StepInfo` and the launcher gate.** Declaring
+   what each database step needs (`catalog`/`read`/`stats`/`write`, per the
+   reply's §3 vocabulary) and gating survey execution on whether the
+   connected credential satisfies it — mirroring `#241`/`#247`'s cost-tier
+   gating — depends on (1) existing first: the gate needs to know which
+   connection is even in play.
+3. **Connection choice for RE-local survey runs** (letting a signed-in user
+   pick among an asset's visible connections) — also downstream of (1).
+
+**Two upstream Egeria defects found while answering this, not yet filed**
+(filing on `odpi/egeria`'s public tracker needs the project owner's
+go-ahead, not something to do unilaterally):
+
+- `OpenMetadataAccessSecurityConnector.selectConnection`
+  (`:2666-2669`) returns `connectionEntities.get(0)` — the first of the
+  *unfiltered* list — when exactly one connection is visible to the
+  requesting user, instead of `visibleConnections.get(0)`. An asset with an
+  admin connection listed first and a surveyor connection second, where the
+  requesting user can only see the surveyor one, gets the admin connection.
+- Same method, `:2670-2674`: when **several** connections are visible, the
+  selection is random (the code comment says so). No way to request "the
+  surveyor connection" deterministically.
+
+  Both affect Egeria-native surveys only (`executes_at: egeria`) — RE-local
+  runs choose their own connection and are unaffected. Until fixed, the
+  reply's operational rule is: an asset surveyed natively must have exactly
+  one connection visible to the survey engine's own user (via zones/security
+  tags), for the surveyor role specifically.
+
+**The pyegeria enumeration call — now confirmed, was wrong in the reply.**
+Not `ClassificationExplorer.get_relationships`, and not
+`ConnectionMaker.get_endpoints_for_asset`/`find_connections` either (both
+returned empty against a real, correctly-connected asset). The right call
+is `ConnectionMaker.find_assets(search_string=..., output_format='JSON')`
+— the asset result carries a `connections` array with the full
+`ResourceConnection` relationship (including its `relationshipProperties`,
+currently `null` everywhere since nobody has populated the label
+convention yet). Verified live against `coco_pharma`'s real asset.
+
+**§7 (architecture session, added to the REPLY doc directly) resolved the
+three remaining open questions — the model is now fully specified, only
+the go-ahead is still the owner's:**
+
+1. **The credential-gating idea has a real signal at catalog tier and an
+   existing design home.** Design §16.2/§16.3's `preliminary_fit` already
+   runs at catalog tier (`pg_namespace`/`pg_class`/`pg_attribute`/
+   `pg_constraint`/`pg_description`/`pg_partitioned_table`/
+   `pg_stat_all_tables` — all unfiltered) and yields a disqualify/pursue
+   verdict for subject, grain, size and partition coverage without ever
+   needing `SELECT`. Where it can't decide, its envelope literally says
+   "needs read on N tables to answer" — **that state IS the elevate-
+   credentials prompt**, feeding the launcher's three choices from reply
+   §3 (run partially / pick another visible connection / raise the RFA).
+   **Recommendation: build `requires_capability` as one axis alongside
+   cost tier in the same gate, not a separate flow** — a step declares
+   `fetch_cost`, `compute_cost` and `requires_capability` together, and the
+   launcher shows one combined reason rather than two separate gates a
+   user has to reconcile.
+2. **`.omsecrets` refresh — fully resolved, safe to edit directly.** Traced
+   to `ConnectorBroker.getConnector`, `SurveyActionServiceHandler`, and
+   `SurveyAssetStore.getConnectorForAsset`: every survey run gets a **fresh**
+   connector instance, and `SecretsStoreConnector.secretsTimeout`
+   initializes to `new Date()` at construction — so the first secret read
+   of every new instance always re-reads the file. **A file edit takes
+   effect on the very next survey run, unconditionally; no restart, no
+   meaningful delay.** (The earlier "60 minutes" concern only applies
+   *within* one already-running survey, which doesn't happen — each run is
+   its own fresh instance.)
+3. **Two credential stores are structurally required, not a gap to close.**
+   pyegeria only exposes `save_client_side_secret`/`delete_client_side_secret`
+   — **there is no read API for secrets**, by design (secrets are read only
+   by connectors, never returned to a caller). RE's local execution path
+   therefore *cannot* resolve credentials through Egeria; the `.omsecrets`
+   file cannot be the single store. What §1's model unifies is **identity
+   and the writer, not storage**: one secrets-collection name per
+   `(resource, role)`, written to both places by RE in the same operation.
+   RE's own `databases.db_password` should stop being a clear-text column
+   and become RE's own store (encrypted at rest, or the OS keychain); the
+   `.omsecrets` collection becomes its projection for the engine host.
+   Drift between the two is detectable by comparing collection names
+   present on each side — the best available guarantee without a read API.
+
+**Candidate fix:** none until the project owner gives the go-ahead — the
+technical design is now complete (this entry, `ASK`/`REPLY-DATABASE-
+CREDENTIAL-CAPABILITY-VISIBILITY.md`, and its §7), not merely directional.
+Once approved, items 2 and 3 from the original list follow directly and
+don't need a second design pass.
+
+## `stats` capability tier's `pg_monitor` premise was wrong for per-table/per-database counters — corrected (2026-09-24/25)
+
+`DATABASE-STEP-CAPABILITY-AUDIT.md`'s original classification (`#262`'s
+basis for the `requires_capability` field) said `pg_stat_user_tables`/`pg_
+stat_user_indexes` need `pg_monitor` membership. **Live-verified by the
+coordinating session, 2026-09-24/25, not to be true**: connected as
+`egeria_user` against `coco_pharma` (confirmed not a `pg_monitor` member),
+`pg_stat_user_tables` returned all 58 rows — matching an independent `pg_
+class`/`pg_namespace` count exactly — with real non-null `n_tup_ins`/`last_
+vacuum` values even for schemas (`demo`, `demo_auth`) the credential has no
+`USAGE` grant on. Same result for `pg_stat_user_indexes` (28/28),
+`pg_stat_database`, `pg_stat_archiver`, `pg_stat_bgwriter`, `pg_stat_wal` —
+all unfiltered. What `pg_monitor` genuinely gates, confirmed the same way: a
+second session's query text/state in `pg_stat_activity` came back
+`<insufficient privilege>` for the non-member role; `pg_stat_replication`
+shares that same masking mechanism per Postgres's own view definitions
+(not independently reproduced here — no standby attached to the dev
+instance). `pg_stats` (column statistics) is unaffected by any of this — it
+was already correctly `read`-tier, and was re-confirmed genuinely
+column-`SELECT`-filtered (441 of 481 rows visible to the same credential).
+
+**Fixed:** `credential_capability.py`'s module docstring and `STATS`
+branch/detail text; `DATABASE-STEP-CAPABILITY-AUDIT.md` (a "Correction"
+section plus inline corrections to the vocabulary table, §1, §2, the
+summary table, and "Worth a second look" #3); `survey_definition_adapter.
+py`'s `requires_capability` declarations — `postgres_schema_and_stats`
+`stats`→`read`, `postgres_operations`'s bundle comment corrected from
+two-stats-of-four to one (`db_activity_signals` is now `catalog`;
+`db_resilience` keeps `stats`, now solely because it reads `pg_stat_
+replication`); `db_derived.py`'s `COVERAGE_ANALYZE_REMEDY` (wrongly called
+the gap "a pg_monitor-class credential" issue — it's actually `pg_stats`,
+column-`SELECT`-gated); a stale comment in `database_surveyor.py`'s
+`_store_results` claiming `pg_stat_user_tables` is privilege-filtered; and
+`tests/test_requires_capability_gate.py`'s pinned expectations. Copy
+language in `docs/design-notes/ASK-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.
+md` §1's quoted `stats` sentence should be re-checked by whoever runs that
+designer pass, since the sentence quoted there is the pre-correction
+wording — not edited here since that doc is a point-in-time transcript of
+what shipped, not living copy.

@@ -410,17 +410,30 @@ def _first_sentence(text: str) -> str:
     return text[: idx + 1]
 
 
-def runnable_and_reason(analysis_id: str) -> tuple[bool, str]:
-    """Whether `POST /api/projects/{slug}/analyses/{analysis_id}/run` would
-    accept this id, and the reason when it would not — the SAME check and the
-    SAME text `run_single_analysis` (web/routes/projects.py) uses via
-    `resolve_analysis_plan`, so this row and that route can never disagree.
-    A pure wrapper (no registry/slug needed — the gate is id-only), so it's
-    also the boundary a test can call directly for an id the index itself
-    never lists (`egeria_publish`, excluded below as `action: "publish"`)."""
+def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bool, str]:
+    """Whether this entity type's run route would accept this id, and the
+    reason when it would not — the SAME check and the SAME text
+    `run_single_analysis` (web/routes/projects.py) uses via
+    `resolve_analysis_plan`, so this row and that route can never disagree
+    FOR REPO. A pure wrapper (no registry/slug needed — the gate is id-only),
+    so it's also the boundary a test can call directly for an id the index
+    itself never lists (`egeria_publish`, excluded below as `action:
+    "publish"`).
+
+    `entity_type` used to be unaccepted here (defaulting `resolve_analysis_
+    plan` to "repo" regardless of caller) — every database/filesystem row in
+    `build_analyses_index` reported "no mapped survey step(s)" for a real,
+    runnable analysis (`db_activity_signals`, `schema_inventory`, …), because
+    none of those ids resolve against repo's own step map. Live-reproduced
+    2026-09-25: every "run"/"re-run" button on a database's Survey & Analyses
+    pane was disabled with that message, including `schema_inventory`, which
+    had run successfully (and produced 63 real annotations) moments earlier
+    via a direct API call that bypasses this check entirely — the run route
+    itself (`databases.py::run_single_database_analysis`) was never broken,
+    only this precheck's idea of which catalog to resolve against."""
     from resource_explorer.workflows.analysis import resolve_analysis_plan
 
-    is_ingest, steps = resolve_analysis_plan(analysis_id)
+    is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
     runnable = bool(is_ingest or steps)
     if runnable:
         return True, ""
@@ -446,14 +459,15 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict
     through the same per-type `ResourceTypeAdapter` `build_measurements`
     uses.
 
-    `runnable_and_reason()` below still gates through repo-only
-    `resolve_analysis_plan()` — that is a genuinely separate, wider gap (the
-    run route itself, `web/routes/projects.py::run_single_analysis`, is
-    repo-only for the same reason) and out of scope for this fix; a
-    database/filesystem row here reports "runnable" using repo's step map,
-    which happens to work today (an id resolvable there also happens to
-    resolve for other types) but is not a fix, just an unclaimed pre-existing
-    gap.
+    `runnable_and_reason()` below now takes `entity_type` too (fixed
+    2026-09-25, live-reproduced against a database's Survey & Analyses pane
+    — see its own docstring) — every button on that pane was disabled with
+    "no mapped survey step(s)" because `resolve_analysis_plan` always
+    resolved against repo's own catalog. `web/routes/projects.py::
+    run_single_analysis`, the actual REPO run route, is unaffected (it was
+    already repo-only by design); a database's real run route is
+    `databases.py::run_single_database_analysis`, which never shared this
+    bug — only this precheck's idea of which catalog to resolve against.
 
     Raises `LookupError` for an unknown slug — routes translate to 404."""
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
@@ -512,7 +526,7 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo") -> dict
         if serves != "question":
             no_question += 1
 
-        runnable, runnable_reason = runnable_and_reason(aid)
+        runnable, runnable_reason = runnable_and_reason(aid, entity_type)
         cost = run_cost_as_dict(estimate_run_cost(registry, aid, resource_type=entity_type))
 
         rows.append({
