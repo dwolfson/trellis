@@ -895,9 +895,54 @@ def _db_derived_field_reader(field: str):
         data = run_db_derived(registry, slug).get("derived", {}).get(field) or {}
         if isinstance(data, dict) and data.get("state") == STATE_NOT_MEASURED:
             return {}
+        if isinstance(data, dict):
+            _attach_container_credential_scope(registry, slug, data)
         return data
 
     return _read
+
+
+def _attach_container_credential_scope(registry, slug: str, data: dict) -> None:
+    """Mark each per-container payload with that container's credential state.
+
+    REPLY-SCHEMA-AS-SUB-RESOURCE.md §2: "measured within credential scope"
+    becomes a per-schema state. `db_derived` itself cannot do this — it is the
+    zero-fetch step and the probe's result lives in a survey blob it does not
+    read — so the two are joined here, at the same seam
+    `_schema_inventory_results` already attaches the database-wide `_status` at.
+
+    A container whose credential state is a shortfall gets `_status`; a fully
+    readable one gets nothing, the same "stay silent when there is nothing to
+    caveat" contract `_credential_scope_status` follows. Without this, a schema
+    RE has `USAGE` but no `SELECT` on renders its (structure-only) findings
+    exactly like a schema that was fully read.
+    """
+    from resource_explorer.surveyors.database import schema_scope
+    from resource_explorer.surveyors.result_status import MEASURED_WITHIN_CREDENTIAL_SCOPE
+
+    grain = (data.get("aggregation") or {}).get("grain")
+    per_container = data.get(f"by_{grain}") if grain else None
+    if not isinstance(per_container, dict) or not per_container:
+        return
+    states = schema_scope.container_scope_states(
+        _credential_capability_results(registry, slug)
+    )
+    if not states:
+        return
+    for name, payload in per_container.items():
+        state = states.get(name)
+        if not isinstance(payload, dict) or not state:
+            continue
+        if state["state"] == schema_scope.SCOPE_READABLE:
+            continue
+        payload["_status"] = {
+            "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
+            "container_state": state["state"],
+            "fraction": (
+                f"{state['table_select']} of {state['table_total']} tables"
+            ),
+            "explanation": state["explanation"],
+        }
 
 
 def _operations_section_reader(section: str):
@@ -975,9 +1020,11 @@ def _credential_scope_status(registry, slug: str) -> dict | None:
         return None
     if table_select >= table_total and schema_visible >= schema_total:
         return None
+    from resource_explorer.surveyors.database import schema_scope
+    from resource_explorer.surveyors.database.connection import containment_for_engine
     from resource_explorer.surveyors.result_status import MEASURED_WITHIN_CREDENTIAL_SCOPE
 
-    return {
+    status = {
         "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
         "connected_as": cap.get("connected_as", ""),
         "fraction": (
@@ -985,6 +1032,28 @@ def _credential_scope_status(registry, slug: str) -> dict | None:
             f"{schema_visible} of {schema_total} schemas"
         ),
     }
+
+    # REPLY-SCHEMA-AS-SUB-RESOURCE.md §2: this state becomes a PER-CONTAINER
+    # one. A schema with USAGE and no SELECT is "structure only" for that
+    # schema specifically — folding it into the database-wide fraction above
+    # is exactly the silent counting §2 names. The fraction stays (it is what
+    # the existing banner and fact envelope render); `by_container` and
+    # `shortfall` are what a reader needs to act, since a grant is made per
+    # schema.
+    entity = None
+    try:
+        entity = registry.get_database(slug)
+    except Exception:  # pragma: no cover - defensive
+        entity = None
+    containment = containment_for_engine(getattr(entity, "db_type", None) if entity else None)
+    shortfall = schema_scope.credential_shortfall(cap, containment)
+    if shortfall:
+        status["shortfall"] = shortfall
+        status["by_container"] = shortfall["by_container"]
+        # §2's own example wording — the schema clause first, because that is
+        # what a database owner grants on.
+        status["schema_fraction"] = shortfall["phrase"]
+    return status
 
 
 def _schema_inventory_results(registry, slug: str) -> dict:
