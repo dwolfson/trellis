@@ -1696,6 +1696,135 @@ the vector has a few weeks of rows in it.
 | Optional collectors: `pg_stat_statements` delta, LLM tokens | half a day each, behind config | when the first board shows a gap |
 | Admin "Performance" panel, four views | designer round 2 | after two weeks of rows |
 
+## 18. Scope, focus and clusters — working below the database
+
+**Added 2026-09-25 at the project owner's direction**, after the live test of
+`coco_pharma`: *"many of the questions and surveys are talking about the
+database level but really the discussion should be (or include) the schema
+and table level — e.g. #rows … users [need] to focus on specific schemas for
+some of their surveys rather than entire databases … When faced with a large
+database, like a data warehouse, there could be hundreds of tables — in
+later funnel stages you probably will focus on a few at a time — a logical
+cluster of related tables. The design as is doesn't support more than a few
+of anything."*
+
+That last sentence is accurate, and the catalog shows why: **49 of 62
+analyses declare `target_shape: whole_resource_only`**, 12 `corpus`, 1
+`single_container`. The question rows are phrased at database level. The
+left navigation lists resources and never their parts. So every answer is a
+rollup of the whole database, every survey runs against all of it, and a
+warehouse with 400 tables produces the same one-line answers as a demo with
+three. The §16 coverage and grain work made this worse by adding more
+whole-database questions to a model that could only answer at that level.
+
+### 18.1 Three things, kept distinct
+
+| Concept | What it is | Persisted as | Made by |
+|---|---|---|---|
+| **Containment level** | the engine's declared hierarchy: server → database → schema → table → column (per engine, `REPLY-SCHEMA-AS-SUB-RESOURCE.md` §5) | `sub_resources` rows, `kind` = the level, `locator` = the path, created deterministically from the inventory | the survey, not the user |
+| **Focus** | *what the funnel pages currently show and surveys currently run against*: the whole database, one schema, a set of tables, or a cluster. A selection, not a resource | a locator set on the investigation (`investigation_scope`: resource, locators, set at, by whom); the current focus is a URL state and a header crumb | the user, by clicking in the tree or accepting a proposed cluster |
+| **Cluster** | a logical set of related tables — the working unit of the later stages. The database analogue of architecture recovery's *components* for repositories | `sub_resources` row with `kind = cluster`, members in `detail_json`; in Egeria a `Collection` with `CollectionMembership` over the table assets (the `blueprint_materializer.py` precedent) | proposed by Discovery, accepted by a curator, editable |
+
+Focus is not registration. A schema or cluster in focus is still a
+sub-resource of the database; D3's *first-class on direct registration*
+remains the only way it becomes a top-level resource. What changes is that
+**every stage page, question, survey row and answer is scoped to the focus**,
+and says so.
+
+### 18.2 The funnel narrows scope as it goes
+
+| Stage | Scope | What the page shows |
+|---|---|---|
+| Scouting | the whole database, **always broken down by containment level** — never a rollup without its parts | the tree: schemas with table counts, rows, bytes, activity, credential visibility per schema; system schemas folded away |
+| Discovery | per schema, plus **proposed clusters** | `db_classification` per schema; `db_relationship_graph` components become cluster proposals (FK-connected sets, naming prefixes, shared key columns, co-access from `pg_stat_statements` where held); `preliminary_fit` per schema and per cluster; the *worth pursuing* verdict is what tells the user where to focus |
+| Analysis | a cluster or a few tables | column profiles, data-class and reference-set matches, coverage and grain per table; the cost vector per focus so a 400-table warehouse is never profiled whole by accident |
+| Assessment | a cluster | quality dimensions, exposure, fit against the lens, readiness — per cluster, with the tables listed |
+| Curate | a table or cluster | declare scope, grain, classes, ownership per table; accept or reshape clusters; promote to first-class if wanted |
+| Automate | the focus | comparators scoped to the tables the user cares about, not the database |
+
+This is the repository path's *scope narrowing* (`scoping.py`,
+`target_shape: corpus` with a `scope_locator` path-prefix filter;
+architecture recovery's components → blueprints) applied to databases with
+the engine's containment levels as the axis. The mechanism exists; the
+catalog tagging, the questions and the navigation do not use it.
+
+### 18.3 Questions carry a level, and answers carry a distribution
+
+Add a **`Level`** column to the question CSV: `database`, `schema`,
+`table`, `column`, or several. "How many rows?" is a *table* question; at
+database or schema level its answer is a **distribution**, not a sum: "23
+tables in `coco_ods`: `customers` 20 rows … top 10 shown, 13 more; 3,526
+rows across the schema (7 of 23 catalog estimates as of 2026-09-18)". The
+envelope gains `scope` (the locator set answered for) and `shown_of`
+(N of M), and the rule from §16.3 stands: **every answer names its scope**.
+A whole-database ✓ on a question whose level is `schema` is not an answer.
+
+Cross-type questions (§4) stay at database level; §5's database questions
+are re-levelled row by row when the column is added, and the answering
+analysis for a `table`-level question must produce per-table rows, which
+the structured tables (§5.7) already hold.
+
+### 18.4 Analyses accept a scope
+
+`target_shape: whole_resource_only` becomes the exception, not the default,
+for database analyses. Each declares the levels it can run at (`scopes:
+[database, schema, cluster, table]`), the API takes a locator set, results
+are stored **with the scope on the row** (rule D's key gains `scope`), and
+`schema_scope.py`'s grouping by containment level is the filter. Rollups
+are computed from scoped rows and labelled as rollups (`REPLY-SCHEMA-AS-SUB-
+RESOURCE.md` §1); nothing runs whole-database because a whole-database run
+was the only shape available.
+
+### 18.5 Scale rules, so hundreds of tables are a normal case
+
+- The left navigation is a **tree with counts**, not a list: database →
+  schemas (table count, rows, visibility) → tables, with search, paging past
+  50, and clusters shown first once they exist. Nothing renders hundreds of
+  rows flat.
+- Every list says **N of M shown**; every survey row says what scope it ran
+  on; every rollup names what it rolled up.
+- Sampling (§5.8) and the cost vector (§17.2) are per table and per focus;
+  "profile the warehouse" is a proposal with a summed cost, never a click.
+- Clusters are the unit of work in Analysis and beyond; a table outside any
+  cluster is reachable by search, not by scrolling.
+
+### 18.6 Egeria
+
+Egeria already models the levels: `DeployedDatabaseSchema` and
+`RelationalTable` assets, which the native Postgres survey creates and
+annotates per schema and table. `sub_resources.egeria_guid` links each row
+to its asset. A cluster is a `Collection` with `CollectionMembership` over
+its tables, the same shape `blueprint_materializer.py` uses for
+`SolutionBlueprint`, and a `DigitalProduct` candidate later (§4). Declared
+scope and grain (§16) land on the table asset; lens fit (§16.5) runs per
+cluster, which is where "does this data fit what I am looking for" is
+actually answerable.
+
+### 18.7 For the designer
+
+The tree navigation with focus; a **focus crumb** in the header
+("coco_pharma › coco_ods › 23 tables") that every page carries; distribution
+rendering (top N with "and M more", the calendar strip and profile card per
+table from §11); cluster proposals as a Discovery result the user accepts,
+edits or dismisses; the survey pane rows scoped to the focus and saying so.
+
+### 18.8 Where it goes in the plan
+
+Before any re-land of the survey pane (`REVIEW-SURVEY-PANE-285.md` §4),
+because the pane, the Questions tab and the answers all take a scope:
+
+1. `investigation_scope` and the focus crumb; the tree navigation over
+   `sub_resources` for the levels the inventory already produces.
+2. `scopes` on the database analyses and the locator-set parameter; results
+   keyed by scope; `schema_scope.py` as the filter. Convert the §5 analyses
+   from `whole_resource_only` one by one, starting with `schema_inventory`,
+   `row_count_snapshot`, `db_relationship_graph`.
+3. `Level` on the question CSV and the distribution envelope; the Questions
+   tab scoped to the focus.
+4. Cluster proposals from `db_relationship_graph`, accept/edit in Curate,
+   `Collection` in Egeria.
+5. Then the pane re-land, per focus.
+
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
 `facts.py`, `registry.py`, `configdata/analysis_catalog.yaml`, both question
