@@ -146,11 +146,11 @@ Current database steps (after the 2026-09-25 correction):
 
 | Step | Requires | Binds to |
 |---|---|---|
-| `postgres_schema_and_stats` (structure, counts, activity) | `catalog` | A |
-| `credential_capability` (the probe itself) | `catalog` | A |
+| `credential_capability` (the probe, and the catalog-only structural inventory it stores — the "structure with zero `SELECT`" fallback of #257) | `catalog` | A |
+| `postgres_schema_and_stats` (schema/table/column enumeration via `information_schema.*`, which is privilege-filtered, plus `pg_stats` column statistics) | `read` (#274; checked against `main` 2026-09-25) | B |
+| `postgres_operations` (bundles `db_activity_signals`, `privilege_audit`, `db_external_dependencies` — all catalog-tier — with `db_resilience`, which reads `pg_stat_replication`; a step declares the strongest requirement of its bundle) | `stats` | A |
 | `db_derived` (classification, grain from keys, fingerprint, conventions, change rates) | none — reads stored rows | — |
-| `db_resilience` (`pg_stat_replication`, archiving) | `stats` | A |
-| `postgres_column_profile`, `data_class_match`, `reference_data_match`, `coverage_profile`, `pg_stats`-based coverage estimates | `read` | B |
+| `postgres_column_profile`, `postgres_nested_columns`, `sql_analysis`, `data_class_match`, `reference_data_match`, `coverage_profile` | `read` | B |
 | any repair or write step (none exist for surveys) | `write` | never a survey identity |
 
 ### 3.3 The probe
