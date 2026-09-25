@@ -463,6 +463,71 @@ values". Value sampling (`postgres_column_profile`, §5.7) becomes the
 *fallback* for columns whose stats are stale or missing, and the only route for
 data-class and reference-data matching, which need actual values.
 
+### 5.1a Catalog values are estimates as of the last utility run — stamp them, and get actuals later
+
+**Project owner, 2026-09-25:** `pg_stats` and its relatives are refreshed
+only when a utility runs (`ANALYZE`, `VACUUM`, index builds), so the best
+they can say is "an estimate as of the last run". Everything in §5.1's
+catalog-first strategy is therefore an *estimate*, and the design needs
+three things it did not have: a freshness stamp on every estimate, a
+vocabulary for how stale it is, and the later pass that produces actuals.
+
+**The stamp is itself a catalog-tier read.** The same unprivileged activity
+view identity A already reads carries `last_analyze`, `last_autoanalyze`
+and `n_mod_since_analyze` (rows modified since statistics were taken), so
+every estimate is stamped "as of *date*, *N* rows changed since" — a
+quantified freshness, not a caveat. `reltuples`/`relpages` refresh on the
+same events; `n_live_tup`/`n_dead_tup` are running counters (more current,
+still approximate). Per engine, the freshness source goes in the engine
+declaration: SQL Server `sys.dm_db_stats_properties` (`last_updated`,
+`modification_counter`); Oracle `DBA_TAB_STATISTICS.LAST_ANALYZED` and
+`STALE_STATS`; MySQL `mysql.innodb_table_stats.last_update`; DuckDB
+computes on the fly, so no staleness.
+
+**Four freshness states**, shown in every envelope and annotation built
+from a catalog value: `fresh` · `stale` (with the modification count and
+age) · `never_collected` (statistics absent — "run ANALYZE") ·
+`not_visible` (this identity cannot see them — §9 of the credentials
+reply). A `stats_staleness` comparator (§9.1) fires when age or
+modification count crosses a threshold, because "statistics are three
+months old" is a finding in its own right.
+
+**Actuals come from the Analysis-tier pushdown pass**, bound to identity
+B and labelled *measured*: exact `COUNT(*)`, `COUNT(*) - COUNT(col)`
+(estimates can never assert zero nulls), `COUNT(DISTINCT)` or HyperLogLog,
+`MIN`/`MAX`, key uniqueness for grain, exact coverage gaps, pattern
+conformance — sampled and time-boxed per §5.8. The gate then reads
+"estimated from statistics 40 days old (4,120 rows changed since) — run
+the measured pass?", which is a better prompt than a bare Run.
+
+**A third basis: recorded at write.** Estimated and measured are not the
+only two. Some sources maintain statistics as a byproduct of writing, so
+the numbers are exact as of the write and readable without touching data:
+Delta Lake and Iceberg keep per-file min, max and null counts in the
+transaction log or manifests, stamped with a version or snapshot id;
+Parquet and ORC footers carry per-row-group column bounds; Snowflake
+micro-partition metadata and BigQuery storage metadata give exact row
+counts with no `ANALYZE` concept; Unity Catalog exposes column summaries
+to `BROWSE` users alone; and OpenLineage run facets carry output row
+counts and sizes emitted by the writing pipeline, which Egeria's Lovelace
+service already consumes. For these there is no estimate-versus-actual
+gap. So every value carries one of three bases — `estimated` (catalog,
+with the freshness stamp above), `measured` (pushdown, identity B, sampled
+and time-boxed), `recorded_at_write` (format or pipeline metadata, exact,
+with the version or snapshot stamp where one exists) — and the envelope
+names it. `recorded_at_write` needs no data identity, is the cheapest
+source of exact numbers where it exists, and a comparator over its
+version stamp is exact change detection for free. The engine and format
+declaration says which basis each source can offer.
+
+**Two consequences.** Egeria's native Postgres survey reads `pg_stats` too
+(`PROBES-2026-09-21.md`: *Most Common Values* comes from
+`pg_stats.most_common_vals`), so native annotations are estimates with the
+same staleness and the read-back labels them so — a native result is not
+authoritative because it is native. And refreshing statistics is not a
+survey identity's job (`ANALYZE` needs ownership or `MAINTAIN`), so stale
+statistics raise an RFA to the DBA, never a write.
+
 Perspectives: **Data Expert, Steward, Privacy, Security, Admin, Data Owner,
 Architecture, Governance** carry most rows. No new Perspective is needed.
 
@@ -1262,14 +1327,15 @@ with the cost of each signal stated.
 | **Subject from names and comments** — table, column, file and folder names; `pg_description`; README and descriptor text; DCAT `theme`/`keyword`; card tags | catalog / walk / descriptor | none beyond what Scouting already reads | Scouting | low–medium; a name is a claim |
 | **Time grain from naming** — columns `*_date`, `*_ts`, `day`, `hour`, `period`; tables `daily_*`, `*_hourly`; partition keys `year=/month=/day=`; file names carrying dates (`sales_2025-03.parquet`) | same | none | Scouting | medium for partitions and file names, low for column names |
 | **Entity grain from keys** — PK composition; a date column *in* the PK means per-period grain | catalog | none | Scouting | medium–high |
-| **Coverage from catalog statistics** — `pg_stats.histogram_bounds` on date and timestamp columns gives min and max **without reading rows** (after `ANALYZE`); partition bounds from `pg_partitioned_table` / check constraints give exact ranges | catalog | none | Scouting | high when stats are fresh; **absent means "run ANALYZE", not "no dates"** |
+| **Coverage from partition bounds** — `pg_partitioned_table` / check constraints give exact ranges for partitioned tables | catalog | none | Scouting | high; only for partitioned tables |
+| **Coverage from column statistics** — `pg_stats.histogram_bounds` on date and timestamp columns gives min and max without a row scan (after `ANALYZE`) — **but `pg_stats` is filtered by column `SELECT`, so this needs the data identity, not the catalog identity** (corrected 2026-09-25 per the credentials reply §9 and settled by a live probe the same day: `pg_read_all_stats` alone yields 0 `pg_stats` rows for a table without `SELECT`; the earlier wording called it free at Scouting) | data identity (B) | tiny once B exists | Discovery, when B is held; otherwise deferred to Analysis | high when stats are fresh; **absent means "run ANALYZE" or "no column access", and the envelope must say which** |
 | **Coverage from file metadata** — Parquet and Feather footers carry per-row-group min/max per column, so date range comes from the footer alone; ORC likewise | file footer read, no data | tiny | Scouting | high |
 | **Coverage from descriptors** — DCAT `temporal` and `spatial`; Croissant; HF card front matter; DataScope already declared on the asset | descriptor | none | Scouting | as good as the publisher |
 | **Geography from names and classes** — columns named country, region, state, postcode, lat/lon; data-class matches by *name only* (ISO country code, postcode) | catalog + class registry | none | Scouting | low–medium |
 | **Preliminary fit** — the above against the requirement: subject overlap, grain estimate compatible, catalog-bound coverage overlaps the window | stored rows | none | **Discovery** | stated per input; this is the gate |
 | **Measured cadence and gaps** — one aggregate query per date column (`date_trunc(period), count(*) group by 1`) rather than sampling: one scan, exact; gaps = missing periods inside the range; per-region gaps by grouping on the region column too | data read, single aggregate pass per column | api_heavy / medium; bounded by the sampling config (§5.8) when the table is large | **Analysis** | high |
 | **Measured spatial extent** — min/max of lat/lon columns; distinct values of region-typed columns matched to a reference set (`reference_data_match`) | data read | api_heavy / low–medium | Analysis | high |
-| **Measured entity grain** — `n_distinct` of candidate key ≈ row count, from `pg_stats` first, sample second | catalog then data | none, then medium | Analysis (confirms Scouting's estimate) | high |
+| **Measured entity grain** — `n_distinct` of candidate key ≈ row count, from `pg_stats` first (data identity), sample second | data | tiny, then medium | Analysis (confirms Scouting's estimate) | high |
 | **Quality by dimension** (§16.4) | mostly already-stored profiles | low once profiles exist | Analysis | per dimension |
 | **Fit** — lens versus scope, grain compatibility, thresholds | stored rows | none | **Assessment** | states which inputs were measured vs estimated |
 
@@ -1279,7 +1345,12 @@ whether the aggregate pass is worth running; Analysis runs it; Assessment
 compares against the lens.** For files, Parquet's footer statistics make the
 Scouting estimate nearly as good as the measurement; for CSV there is no
 free signal beyond names and the file's date, so CSV is where the
-Discovery gate earns its keep.
+Discovery gate earns its keep. For databases, what the *catalog identity*
+can see (structure, keys, names, comments, partition bounds, activity
+counters) is the Scouting estimate; column statistics and everything
+value-derived need the *data identity* and so arrive at Discovery only when
+that identity is held — the two-identity model in
+`design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §9.
 
 ### 16.3 The questions
 
