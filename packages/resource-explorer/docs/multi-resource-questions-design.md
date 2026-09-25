@@ -1866,6 +1866,141 @@ because the pane, the Questions tab and the answers all take a scope:
    `SubjectArea` / `Collection` / `DigitalProduct`.
 6. Then the pane re-land, per focus.
 
+## 19. Two entry paths: a resource Egeria does not know, and one it does
+
+**Added 2026-09-25 at the project owner's direction.** RE has two roles that
+look alike and are not: *determine new resources worthy of cataloguing and
+use*, and *further explore, survey and analyse things Egeria already knows
+about, at least in part*. Some RE surveys augment analyses Egeria performs
+itself through its integration daemon and integration connectors, so that
+path has to be designed through, not assumed to be the unknown path with a
+GUID attached.
+
+Pieces already in place: rule A (native results are canonical in shape),
+rule D (every result is mirrored locally), the governance read-back layer
+(§16.7), reuse-by-qualified-name in the catalogue step
+(`egeria_database_surveyor.py:285`), and a Discovery question "has this
+been catalogued in Egeria, and when?". What was missing is the entry path
+itself, and what "known" means per containment level.
+
+### 19.1 "Known" is per level and per depth, not a flag
+
+Egeria's knowledge of a database is a matrix, and RE's job differs per
+cell:
+
+| Level (§18.1) | absent | catalogued (structure exists) | surveyed (annotations exist) | curated (scope, grain, classes, owner declared) |
+|---|---|---|---|---|
+| server, database | RE registers and offers Catalog & Survey | RE adopts the GUID, reads back | RE reads back the reports; surveys only what is missing | RE reads back and respects the declarations |
+| schema, table, column | RE's inventory is the only structure; sub-resources local until published | **an integration connector probably maintains these** (§19.3): RE reads, never writes structure | RE mirrors annotations per table (rule D) | declarations bind RE's proposals: a declared grain is not re-proposed |
+
+The Discovery question becomes: *"How much of this does Egeria already know
+— catalogued, surveyed, curated — at which levels, maintained by what, and
+when was it last refreshed?"* Its answer is a small table, not a yes.
+
+### 19.2 Path A — unknown to Egeria
+
+Unchanged, and the security model's registration case: the user supplies
+the catalog identity; RE scouts locally; Discovery decides worth; *Catalog
+& Survey* creates the assets from Egeria's templates (server, database, the
+levels the inventory found, connections per identity per `security-model.md`
+§4) and runs the native survey; RE's own findings publish as annotations
+on those assets. Everything RE created, RE may later repair or delete.
+
+### 19.3 Path B — known to Egeria, in whole or in part
+
+Five rules, in the order they run:
+
+1. **Resolve identity before anything else.** Match the registration to an
+   existing asset by endpoint (host, port, database) and by the qualified
+   name convention, at every level, and adopt the GUIDs. **Never create a
+   second asset for a resource Egeria has.** The reuse path exists for the
+   database; it has to exist for schemas and tables too, and the
+   `coco_pharma` lesson applies: reuse must *repair* what it finds partial
+   (a connection with an unbound placeholder) rather than skip it.
+2. **Read back before surveying.** `governance_context_readback` (§16.7),
+   the existing survey reports and their annotations, the structure the
+   connector maintains, the declared `DataScope`, `DataGrain`, classes,
+   terms and ownership — all into RE's store as rows with `source =
+   egeria` (rule D). The Questions tab answers from those rows first.
+3. **Survey the gaps only.** With Egeria's knowledge in the store, the
+   question layer knows which questions are already answered and at what
+   freshness; the prerequisite resolver (§17.1) treats a fresh Egeria
+   answer as a satisfied producer and proposes only the steps whose
+   questions are unanswered or stale. A native survey report from
+   yesterday is not re-run locally today because RE has a local step for
+   it.
+4. **Write only what RE owns.** RE publishes survey reports, annotations,
+   proposals (`contentStatus: DRAFT`), RFAs, and — through Curate — the
+   declarations a curator makes. RE **never edits structural elements it
+   did not create**: a schema, table or column maintained by an integration
+   connector belongs to the connector, which will overwrite RE's edit on
+   its next refresh anyway.
+5. **Show provenance.** Every fact on the page says where it came from:
+   *from Egeria (connector X, refreshed 3 h ago)*, *from Egeria's survey
+   (report of 2026-09-21)*, *measured here (as `egeria_user`, just now)*,
+   *declared by a curator*. The four are different kinds of truth and the
+   design's honesty rules apply to each.
+
+### 19.4 Coexisting with the integration daemon
+
+Egeria's integration connectors (the JDBC integration connector for
+schemas, tables and columns; the Postgres server connector for databases;
+Unity, Kafka and file connectors for theirs) run in the integration daemon
+on their own schedule and **own the structural catalog** of what they
+maintain. Consequences for RE:
+
+- **Structure is rule A** when a connector maintains the asset: Egeria's
+  structure is canonical; RE's local inventory is for RE's own store and
+  for the gap check, not a competing truth. A `maintained_by` fact
+  (connector, last refresh) is part of the read-back and shown with the
+  structure.
+- **Drift between source and catalog is a finding.** RE reads the source
+  directly and Egeria's structure through the read-back; their difference
+  ("Egeria's catalog lags the source by 3 tables since the last refresh") is
+  a comparator and an RFA to whoever runs the connector — the one thing RE
+  can tell that neither the connector nor the source can.
+- **Include/exclude travel with the asset.** The connector's own include
+  and exclude lists (§18.5) define what Egeria will ever know; RE reads
+  them and does not report as "missing from Egeria" what was excluded on
+  purpose.
+- **RE's steps augment, in the same conventions.** Where a native survey
+  exists, RE reads it back; where RE's step adds what no native service
+  computes (rule C), it publishes onto the same asset under the same
+  report conventions, so a consumer sees one survey history. Longer term,
+  RE's steps register as governance services so Egeria's own processes
+  can call them (execution permutation 2), and the integration daemon's
+  refresh can trigger RE's gap survey through an engine action rather
+  than a person.
+
+### 19.5 Egeria as a discovery source
+
+Discovery sources today are repository-shaped (GitHub organisations,
+quick lists). Egeria itself is the natural source for Path B: enumerate its
+assets by technology type (`find_assets` with the technology type, which
+already returns the connections §4.1 of the security model needs), diff
+against RE's registry, and queue *"known to Egeria, never surveyed by RE"*
+and *"surveyed by Egeria, never read by RE"* as Discovery work — with
+Egeria's notifications (§9.2) telling RE when a connector adds an asset, so
+the queue fills itself.
+
+### 19.6 Questions this adds
+
+| Stage | Question | Answered by |
+|---|---|---|
+| Discovery | How much of this does Egeria already know — at which levels, maintained by what, refreshed when? | read-back (§16.7) + `maintained_by` |
+| Discovery | What has Egeria surveyed that I have not read yet? | survey-report read-back vs local rows |
+| Discovery | Does Egeria's catalog match the source, or has it drifted? | inventory vs read-back comparator |
+| Analysis | Which of my questions are already answered by Egeria's surveys, and which need a local run? | prerequisite resolver over the store |
+| Curate | What has been declared on this already (scope, grain, classes, terms, owner), and by whom? | read-back of classifications and assignments |
+
+### 19.7 Where it goes in the plan
+
+Identity resolution at every level and the read-back-before-survey rule go
+with §18.8's first item, because focus and the tree are built over
+`sub_resources` rows that must carry Egeria's GUIDs when they exist.
+`maintained_by` and the drift comparator go with the read-back slice
+(§16.7). Egeria as a discovery source is its own small slice after those.
+
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
 `facts.py`, `registry.py`, `configdata/analysis_catalog.yaml`, both question
