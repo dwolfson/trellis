@@ -97,11 +97,21 @@ said. RE's part is the **RFA to the database owner**, raised by the probe:
 `coco_ods.*` or register a broader connection on this asset." The RFA
 carries the exact object list, which the probe has.
 
-**pyegeria to verify (one probe):** which call lists an asset's
-connections with their `ResourceConnection` relationship properties, so the
-label is readable. `ClassificationExplorer.get_relationships` on the asset
-filtered to `ResourceConnection` is the likely answer; confirm it returns
-the relationship's `label` and not only the far-end element.
+**pyegeria enumeration — verified 2026-09-24 by the coordinating session,
+against `coco_pharma` (asset `5246aa50…`, the post-redeploy re-catalogue):**
+`ConnectionMaker.find_assets(search_string=…, output_format='JSON')` returns
+the asset with a `connections` array; each entry carries the relationship
+type (`ResourceConnection`, `superTypeNames: ["LabeledRelationship"]`) and
+its `relationshipProperties`, so the label *is* readable through this call.
+For `coco_pharma` today: exactly one connection, the unlabelled template
+one (`…::coco_pharma::Connection`), `relationshipProperties: null` — the
+slot exists and nothing has set it yet, as expected. **Gotcha for whoever
+builds this:** `ConnectionMaker.get_endpoints_for_asset` and
+`find_connections` both returned empty for the same asset; use
+`find_assets` and read the `connections` array. Also confirmed:
+`AutomatedCuration.initiate_postgres_server_survey(postgres_server_guid)`
+takes no connection argument, so the native route really is decided by the
+security connector alone.
 
 ---
 
@@ -119,7 +129,7 @@ cost.
 |---|---|---|
 | `catalog` | system-catalog reads only | always true for a connected role |
 | `read` | SELECT on the target tables | `has_table_privilege(role, t, 'SELECT')` per table; `has_schema_privilege(role, s, 'USAGE')` per schema |
-| `stats` | the monitoring and statistics views (`pg_stat_*`, `pg_stats` beyond one's own tables) | `pg_has_role(role, 'pg_monitor', 'member')` or `pg_read_all_stats` |
+| `stats` | the **monitor-gated** views only: `pg_stat_replication` standby rows, `pg_stat_statements`, other sessions' query text in `pg_stat_activity`, WAL/archiver detail — *not* the per-table activity counters (`pg_stat_all_tables`/`_indexes`), which are unprivileged and belong to `catalog` (live-verified as `egeria_user` on 2026-09-24, correcting this row's first wording); and *not* `pg_stats`, whose column statistics are gated by `SELECT` on the column and so belong to `read` | `pg_has_role(role, 'pg_monitor', 'member')` or `pg_read_all_stats`; verify each view empirically, per `DATABASE-STEP-CAPABILITY-AUDIT.md` |
 | `write` | never for a survey; only for a future repair step | `has_table_privilege(…, 'INSERT')` — probed, never exercised |
 
 Finer vocabularies (per-schema, per-table) are **results of the probe**,
@@ -172,7 +182,7 @@ denominator supplied by the system catalog.
 |---|---|---|
 | Egeria server | `selectConnection` returns `connectionEntities.get(0)` when exactly one connection is visible; should be `visibleConnections.get(0)` | `OpenMetadataAccessSecurityConnector.java:2666-2669` |
 | Egeria server | random selection among several visible connections; propose deterministic order (most recent, or a `ResourceConnection.label` match against a request parameter such as `connectionRole`) so a survey can ask for the surveyor connection | `:2670-2674` |
-| pyegeria | confirm or add a read of an asset's connections *with* the `ResourceConnection` relationship properties (label) | probe in §2 |
+| pyegeria | ~~confirm a read of an asset's connections with the link label~~ — **verified**: `find_assets(...)['connections']` (§2). Remaining item: `get_endpoints_for_asset` / `find_connections` return empty for an asset that has a connection; log as a gotcha or bug in `PYEGERIA_ISSUES.md` | §2 |
 
 Neither server item blocks piece 1. Both should be fixed before the
 operational rule in §2 is relied on in a multi-connection deployment.
@@ -189,7 +199,136 @@ operational rule in §2 is relied on in a multi-connection deployment.
    index; retire `db_password`; migrate `coco_ods`/`coco_pharma`, which
    need delete-and-recreate anyway (`PROBES-2026-09-21.md`).
 3. **Then:** `requires_capability` on `StepInfo` for the database steps
-   that exist (`postgres_schema_and_stats` → `catalog`; column profile and
-   data-class matching → `read`; `postgres_operations` → `stats`); the
+   that exist (`postgres_schema_and_stats` and `db_activity_signals` →
+   `catalog`; column profile, data-class matching and the `pg_stats`
+   coverage estimate → `read`; `db_resilience` → `stats`); the
    launcher gate; connection choice for local runs.
 4. **Alongside:** file the two Egeria issues; verify the pyegeria read.
+
+---
+
+## 7 · Follow-ups from `ASK-CREDENTIAL-GATING-AND-OMSECRETS-REFRESH.md` (#258), 2026-09-24
+
+### 7.1 Credential-tier gating: the catalog-tier signal is real, and it is §16's Discovery gate
+
+The project owner's idea — survey with the minimal-privilege credential
+first, disqualify early, prompt for broader credentials only for what
+survives — is the cost-tier gate of design §17.1 applied to a second axis,
+and the "worth pursuing" signal at catalog tier exists because design §16.2
+chose its Scouting/Discovery signals to need no row reads. With `catalog`
+capability alone (`pg_namespace`, `pg_class`, `pg_attribute`,
+`pg_constraint`, `pg_description`, `pg_partitioned_table`,
+`pg_stat_all_tables` — all readable by any role regardless of grants) RE
+can answer:
+
+| Answerable at `catalog` | Not answerable without `read` |
+|---|---|
+| size: `reltuples`, `relpages`, `n_live_tup` per table | `pg_stats` bounds and frequent values (privilege-filtered) |
+| structure and the FK graph; entity grain from PK composition | column profiles; data-class and reference-set matching |
+| subject signals from names and comments; documentation coverage | actual date ranges on unpartitioned tables |
+| coverage from partition bounds | gaps, cadence, spatial extent |
+| activity: `n_tup_ins/upd/del`, last vacuum and analyze | quality dimensions beyond completeness-by-structure |
+| the capability probe itself (§3) | — |
+
+So `preliminary_fit` (design §16.3, Discovery, zero fetch) runs at catalog
+tier and yields a pursue/disqualify verdict on subject, grain, size and —
+where partitioned — coverage. Where it cannot decide, its envelope says
+"needs `read` on N of M tables to answer", and **that state is the prompt
+for broader credentials.** It is also the natural first UI for the pending
+Connection model: the launcher's three choices from §3 (run partially and
+say so; pick another visible connection; raise the RFA), with "pick
+another" listing the asset's labelled connections. Build it as one axis
+beside cost tier in the same gate, not as a separate flow: a step declares
+`fetch_cost`, `compute_cost` and `requires_capability`, and the launcher
+shows one combined reason.
+
+### 7.2 `.omsecrets` refresh: a file edit takes effect on the next survey run, always
+
+Traced through the engine host rather than the connector alone:
+
+- `ConnectorBroker.getConnector` (`:314`) calls
+  `connectorProvider.getConnector(connection)` (`:460`) — a **new instance
+  on every call**.
+- `SurveyActionServiceHandler` starts a fresh survey service per engine
+  action (`:148`), and `SurveyAssetStore.getConnectorForAsset` goes through
+  `connectedAssetClient` on every call (`:146`), so the asset connector and
+  its embedded `SecretsStoreConnector` are new per survey run.
+- `SecretsStoreConnector` initialises `secretsTimeout = new Date()` at
+  construction (`:39`) and `checkSecretsStillValid` refreshes whenever
+  `!secretsTimeout.after(now)` (`:105`) — so the **first** secret read of
+  every new instance re-reads the file; the 60-minute
+  `refreshTimeInterval` (`:165-170`) only governs a long-lived instance.
+
+Net: no shared server state, no restart; an edit is live for the next
+survey, and for an already-running survey after the interval. The
+factor-of-60 correction in #258 stands and has no operational effect.
+
+### 7.3 Two credential sources: unify the identity and the writer, not the storage
+
+pyegeria has `save_client_side_secret` and `delete_client_side_secret` and
+**no read** (`automated_curation.py:2119-2269`); Egeria deliberately
+exposes no "get secret" API — secrets are read only by connectors. So RE's
+local execution path cannot resolve a credential through Egeria, and the
+`.omsecrets` file cannot be the single store for both paths.
+
+What §1's model unifies is therefore the **name and the writer**: one
+collection name per *(resource, role)*, persisted on the registry row
+(`database_credentials.secrets_collection_name`, never re-derived — the
+trap `PROBES-2026-09-21.md` filed), written to **both** places by RE in the
+same operation. The registry side stops being a clear-text column and
+becomes RE's own store — encrypted at rest, or the OS keychain on a
+developer machine — and the `.omsecrets` collection is its projection for
+the engine host. Drift is detectable by name: a collection missing on
+either side surfaces as the reachability probe's `unresolvable_secret`
+outcome (design §3 rule B), which is the strongest guarantee available
+without a read API. Asking Egeria for a secret-read endpoint is the wrong
+request; the right one, if any, is a *verify* call ("does collection X
+resolve for asset Y") that returns a boolean, which is what `CHECK_ASSET`
+already approximates.
+
+---
+
+## 8 · The structural floor is a Postgres property — declare it per engine
+
+From the multi-engine catalog survey (branch
+`re/database-engine-catalog-capability-survey`, 2026-09-24), which audited
+MySQL/MariaDB, DuckDB, Oracle, SQL Server and SQLite against §3's
+vocabulary. The finding that changes this reply: the "still see structure
+with zero SELECT" fallback that #257 built on rests on `pg_class` and
+`pg_namespace` being unprivileged. **That does not hold generally.**
+
+| Engine | Structural floor without table `SELECT` | Value of `structural_floor` |
+|---|---|---|
+| PostgreSQL | yes — `pg_class`, `pg_namespace`, `pg_attribute` are readable by any role | `unprivileged` |
+| DuckDB, SQLite | trivially — no per-user privileges; the file opens or it does not | `unprivileged` (degenerate: `catalog`/`read`/`stats` collapse to "opens", `write` to "not read-only") |
+| Oracle | only with `SELECT_CATALOG_ROLE` or `SELECT ANY DICTIONARY`, which make `ALL_*`/`DBA_*` fully visible without row access | `role_grant` |
+| SQL Server | only with `VIEW DEFINITION` at database scope | `role_grant` |
+| MySQL / MariaDB | none — `information_schema` shows only objects the user holds *some* privilege on | `none` |
+
+Three consequences, all now part of the design:
+
+1. **The per-engine declaration (`REPLY-SCHEMA-AS-SUB-RESOURCE.md` §5)
+   gains `structural_floor ∈ {unprivileged, role_grant, none}`**, with the
+   grant named for `role_grant`. Default `unprivileged` for Postgres only.
+2. **"Measured within credential scope" needs a denominator flag.** On
+   `unprivileged` engines, and on `role_grant` engines where the grant is
+   held, it reads "3 of 26 tables". On `none`, or `role_grant` without the
+   grant, it reads **"3 tables visible; total not established"** — never a
+   fraction, because M is unknown. That is a fourth completeness state and
+   the envelope must render it distinctly from the other three.
+3. **The RFA to the database owner is engine-specific.** Postgres: `SELECT`.
+   Oracle: `SELECT_CATALOG_ROLE` first (structure, no rows), `SELECT`
+   second. SQL Server: `VIEW DEFINITION`, then `SELECT`. MySQL: a surveyor
+   account with `SELECT` on the databases of interest, because nothing
+   cheaper exists. The `role_grant` path is the one to recommend to owners
+   wherever it exists: it gives the probe an exact denominator without
+   exposing a single row.
+
+And a limit on §7.1: the catalog-tier "worth pursuing" gate works as
+designed only on engines with a floor. On MySQL it degrades to "what this
+credential can see", and the gate must say so rather than present a partial
+inventory as the database.
+
+Also confirmed from the Egeria source tree: native survey connectors exist
+for Postgres, Oracle, SQL Server, DuckDB, DB2 and Unity Catalog; none for
+MySQL/MariaDB or SQLite, so those two are rule-C engines end to end.
