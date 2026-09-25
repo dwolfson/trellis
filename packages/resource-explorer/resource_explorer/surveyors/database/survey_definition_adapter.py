@@ -432,11 +432,13 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 #
 #   * "the weakest tier it needs to do anything" would have `postgres_schema_
 #     and_stats` declare `catalog`, since schema enumeration alone would
-#     survive. It would then raise nothing at all on the `egeria_user`
-#     credential of the incident that started this work, whose row counts
-#     come back empty — which is precisely the silent under-report the axis
-#     exists to surface. Under-declaring is invisible; that is what makes it
-#     the worse error.
+#     survive, even though its declared output also depends on `information_
+#     schema.*` enumeration and `pg_stats` column profiling — both genuinely
+#     privilege-filtered (**read**-tier). Declaring `catalog` there would
+#     raise nothing on a credential without `SELECT` on most tables, even
+#     though that credential's enumeration and column-profile output would be
+#     silently thin — the silent under-report the axis exists to surface.
+#     Under-declaring is invisible; that is what makes it the worse error.
 #   * "the strongest tier the code touches" is the mirror error and collapses
 #     the field's signal. `postgres_column_profile` pulls `statistics` in as a
 #     ride-along for sampling provenance (audit §5), and `sql_analysis` runs
@@ -446,8 +448,13 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 #     would distinguish nothing.
 #
 # Applying the rule leaves the distribution the audit's own numbers imply —
-# one `catalog`, three `read`, two `stats`, one undeclared — and each
-# judgement it decides is noted on the step it decides.
+# **corrected 2026-09-24/25** (see the per-step notes below and
+# `DATABASE-STEP-CAPABILITY-AUDIT.md`'s "Correction" section: `pg_stat_user_
+# tables`/`pg_stat_user_indexes` were live-verified NOT to need `pg_monitor`,
+# which changes `postgres_schema_and_stats` from `stats` to `read` and
+# narrows why `postgres_operations` still declares `stats` at all) — now one
+# `catalog`, four `read`, one `stats`, one undeclared, and each judgement it
+# decides is noted on the step it decides.
 DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "postgres_schema_and_stats": StepInfo(
         "postgres_schema_and_stats", None,
@@ -456,26 +463,25 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         # The catalog read every other database step's stored input comes from.
         produces=("database_schemas", "database_tables", "database_columns"),
         fetch_cost="api", compute_cost="low",
-        # JUDGEMENT CALL (audit §1's open question, decided by the rule above).
-        # The audit classifies this step's CORE enumeration as `read`
-        # (`information_schema.*` is privilege-filtered — live-verified during
-        # the incident: 6 of 8 schemas). `stats` rather than `read` because
-        # this step's own declared output does not stop at enumeration: its
-        # name, its description and its `ResourceMeasureAnnotation` all
-        # promise row-count and activity statistics, and those come from
-        # `pg_stat_user_tables`/`pg_stat_user_indexes`, which need `pg_monitor`
-        # membership or ownership (audit §1, rows 6/8/9).
+        # JUDGEMENT CALL (audit §1's open question, decided by the rule above)
+        # — CORRECTED 2026-09-24/25, see `DATABASE-STEP-CAPABILITY-AUDIT.md`'s
+        # "Correction" section and `credential_capability.py`'s module
+        # docstring. This was declared `stats` on the belief that this step's
+        # row-count/activity statistics come from `pg_stat_user_tables`/
+        # `pg_stat_user_indexes`, which need `pg_monitor` membership. Live
+        # verification against `coco_pharma` as `egeria_user` (not a
+        # `pg_monitor` member) found those views fully visible — unfiltered,
+        # not even schema-`USAGE`-gated. They are `catalog`-tier, not `stats`.
         #
-        # This is the one place the rule bites hardest, and it is worth being
-        # plain about the cost: this step produces the schema inventory nearly
-        # every other database step reads, so on a credential without
-        # `pg_monitor` — which is most of them — a gate fires on the common
-        # path. That is accepted rather than tuned away, for two reasons. The
-        # gate's outcome is a proposal that offers to run anyway and say so,
-        # not a block; and the alternative is the exact failure this axis was
-        # built for — "3 tables, 0 rows" reported as a fact about the
-        # database when it is a fact about the credential.
-        requires_capability="stats",
+        # With that removed, the strongest tier this step's own declared
+        # output still depends on is `read`: the core table/column
+        # enumeration goes through `information_schema.*`, which genuinely IS
+        # privilege-filtered (live-verified during the original incident: 6
+        # of 8 schemas), and the column-profile piece reads `pg_stats`, which
+        # is genuinely filtered by column-level `SELECT` (re-verified here:
+        # 441 of 481 rows visible to `egeria_user`). No sub-piece this step's
+        # output depends on needs `pg_monitor`.
+        requires_capability="read",
     ),
     "postgres_operations": StepInfo(
         "postgres_operations", None,
@@ -484,23 +490,40 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
          "SchemaAnalysisAnnotation", "RequestForAction"],
         produces=("database_grants",),
         fetch_cost="api", compute_cost="low",
-        # JUDGEMENT CALL (the audit's "genuine four-way bundle", §2). Its four
-        # sub-analyses split two and two: `privilege_audit` and
-        # `db_external_dependencies` are `catalog` (`pg_class.relacl` via
-        # `aclexplode`, `pg_extension`/`pg_foreign_*`/`pg_publication` — all
-        # unfiltered catalog metadata), while `db_activity_signals` and
-        # `db_resilience` are `stats` (`pg_stat_user_tables`,
-        # `pg_stat_replication`, `pg_stat_archiver`).
+        # JUDGEMENT CALL (the audit's "genuine four-way bundle", §2) —
+        # CORRECTED 2026-09-24/25, same false premise as `postgres_schema_
+        # and_stats` above. This was declared `stats` for THREE of its four
+        # sub-analyses (`db_activity_signals` on the belief that `pg_stat_
+        # user_tables` needs `pg_monitor`; `db_resilience` bundled in partly
+        # for the same reason). Live verification found `pg_stat_user_tables`
+        # (and, checked while fixing this, `pg_stat_database`/`pg_stat_
+        # archiver`/`pg_stat_bgwriter`/`pg_stat_wal`) unfiltered and visible
+        # to any connected role — `catalog`-tier, not `stats`. What
+        # `pg_monitor` DOES gate, confirmed live the same way (another
+        # session's query text came back `<insufficient privilege>` in
+        # `pg_stat_activity` for a non-member role): visibility into OTHER
+        # sessions/connections, which is exactly `pg_stat_replication`
+        # (`db_resilience` reads this) — not per-table/per-database counters.
         #
-        # `stats` is the step-level answer because all four are the step's
-        # declared output, so the rule above reduces here to "the strongest
-        # among them". The two `catalog` halves are not lost by this: the gate
+        # So the split is now three-and-one, not two-and-two:
+        # `privilege_audit`, `db_external_dependencies` AND `db_activity_
+        # signals` are `catalog`; only `db_resilience` is `stats`, and only
+        # because it reads `pg_stat_replication` — its other three queries
+        # (`pg_is_in_recovery()`, `SHOW archive_mode`, `pg_stat_archiver`,
+        # `pg_extension`) are individually `catalog` too, same as audit §2
+        # already noted.
+        #
+        # `stats` remains the step-level answer, now for one reason instead
+        # of two: `db_resilience` alone is the strongest tier among the
+        # bundle's declared output, so the rule above still reduces to it.
+        # The other three sub-analyses are not lost by this: the gate
         # proposes rather than blocks, and `_survey_operations` already gates
         # each sub-analysis independently on `EngineCapabilities`, so running
-        # partially yields the privilege audit and the dependency list in
-        # full and reports the other two as not established. A step-level
-        # `catalog` would instead have promised all four and delivered two in
-        # silence.
+        # partially yields the privilege audit, the activity signals AND the
+        # dependency list in full, reporting only resilience as not
+        # established when `pg_monitor` is missing — an improvement over the
+        # pre-correction behaviour, which reported activity signals as
+        # unestablished too even though nothing ever gated it.
         requires_capability="stats",
     ),
     "db_derived": StepInfo(

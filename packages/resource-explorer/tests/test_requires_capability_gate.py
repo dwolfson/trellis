@@ -160,7 +160,7 @@ def test_read_carries_the_fraction_the_probe_already_computed():
 def test_write_is_probed_and_never_a_ladder_position():
     assert cc.assess("write", NARROW).satisfied is False
     assert cc.assess("write", FULL).satisfied is True
-    assert "never exercised" in cc.assess("write", NARROW).detail
+    assert "checked without writing anything" in cc.assess("write", NARROW).detail
 
 
 def test_a_database_with_no_tables_is_not_a_read_shortfall():
@@ -410,13 +410,18 @@ def test_the_database_declarations_match_the_audit():
     )
 
     assert {k: v.requires_capability for k, v in DATABASE_STEP_REGISTRY.items()} == {
-        # audit §1 — mixed; declared at the strongest tier its own OUTPUT
-        # needs, because its declared output includes row-count/activity
-        # statistics from pg_stat_user_tables.
-        "postgres_schema_and_stats": "stats",
-        # audit §2 — the four-way bundle: privilege_audit and
-        # db_external_dependencies are catalog, db_activity_signals and
-        # db_resilience are stats. Strongest among its own output.
+        # audit §1 — CORRECTED 2026-09-24/25: `pg_stat_user_tables`/`pg_stat_
+        # user_indexes` were live-verified NOT gated by `pg_monitor` (see the
+        # audit's "Correction" section). The strongest tier this step's own
+        # output still needs is `read` (`information_schema.*` enumeration,
+        # `pg_stats` column profile — both genuinely privilege-filtered).
+        "postgres_schema_and_stats": "read",
+        # audit §2 — CORRECTED 2026-09-24/25: the four-way bundle is now
+        # three-and-one, not two-and-two. privilege_audit,
+        # db_external_dependencies AND db_activity_signals are catalog
+        # (db_activity_signals' pg_stat_user_tables read is unfiltered, same
+        # correction as above); only db_resilience is stats, and only
+        # because it reads pg_stat_replication (genuinely pg_monitor-gated).
         "postgres_operations": "stats",
         # audit §4 — opens no connection at all; not even `catalog` applies.
         "db_derived": "",

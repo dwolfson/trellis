@@ -2500,9 +2500,10 @@ COVERAGE_REASON_MEASURED = "measured"
 COVERAGE_ANALYZE_REMEDY = (
     "Run ANALYZE on the target database, then re-run the statistics step "
     "(`postgres_schema_and_stats`), which stores pg_stats histogram bounds. "
-    "Note that step needs the `stats` capability (a pg_monitor-class "
-    "credential) — if the credential cannot see pg_stats, this stays unknown "
-    "however often ANALYZE runs."
+    "Note that step needs the `read` capability for the column in question — "
+    "`pg_stats` is filtered by column-level SELECT, not by `pg_monitor` — so "
+    "if the credential cannot SELECT that column, this stays unknown however "
+    "often ANALYZE runs."
 )
 
 #: Place-bearing column-name tokens (§16.2's "geography from names and
