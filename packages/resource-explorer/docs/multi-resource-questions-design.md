@@ -1696,6 +1696,311 @@ the vector has a few weeks of rows in it.
 | Optional collectors: `pg_stat_statements` delta, LLM tokens | half a day each, behind config | when the first board shows a gap |
 | Admin "Performance" panel, four views | designer round 2 | after two weeks of rows |
 
+## 18. Scope, focus and clusters — working below the database
+
+**Added 2026-09-25 at the project owner's direction**, after the live test of
+`coco_pharma`: *"many of the questions and surveys are talking about the
+database level but really the discussion should be (or include) the schema
+and table level — e.g. #rows … users [need] to focus on specific schemas for
+some of their surveys rather than entire databases … When faced with a large
+database, like a data warehouse, there could be hundreds of tables — in
+later funnel stages you probably will focus on a few at a time — a logical
+cluster of related tables. The design as is doesn't support more than a few
+of anything."*
+
+That last sentence is accurate, and the catalog shows why: **49 of 62
+analyses declare `target_shape: whole_resource_only`**, 12 `corpus`, 1
+`single_container`. The question rows are phrased at database level. The
+left navigation lists resources and never their parts. So every answer is a
+rollup of the whole database, every survey runs against all of it, and a
+warehouse with 400 tables produces the same one-line answers as a demo with
+three. The §16 coverage and grain work made this worse by adding more
+whole-database questions to a model that could only answer at that level.
+
+### 18.1 Three things, kept distinct
+
+| Concept | What it is | Persisted as | Made by |
+|---|---|---|---|
+| **Containment level** | the engine's declared hierarchy: server → database → schema → table → column (per engine, `REPLY-SCHEMA-AS-SUB-RESOURCE.md` §5) | `sub_resources` rows, `kind` = the level, `locator` = the path, created deterministically from the inventory | the survey, not the user |
+| **Focus** | *what the funnel pages currently show and surveys currently run against*: the whole database, one schema, a set of tables, or a cluster. A selection, not a resource | a locator set on the investigation (`investigation_scope`: resource, locators, set at, by whom); the current focus is a URL state and a header crumb | the user, by clicking in the tree or accepting a proposed cluster |
+| **Proposed cluster** | a logical set of related tables that Discovery *infers* from structure and use — the database analogue of architecture recovery's *components* for repositories, and the one piece here the field does not do (§18.9) | a Discovery finding: `sub_resources` row with `kind = proposed_cluster`, members and evidence in `detail_json` | Discovery; never a decision |
+| **Domain / data product** | the *accepted* form of a cluster: what every catalog calls a domain (organisational, owned, hierarchical) or a data product (curated, contracted, subscribed). Not a third concept | in Egeria, exactly its existing types: a `Collection` with `CollectionMembership` over the table assets, a `SubjectArea` classification (model 0425) where the grouping is by meaning, a `DigitalProduct` when it is offered (§4); locally the same `sub_resources` row promoted to `kind = domain` with the Egeria GUID | a curator, in Curate, from a proposal or by hand |
+
+Focus is not registration. A schema or cluster in focus is still a
+sub-resource of the database; D3's *first-class on direct registration*
+remains the only way it becomes a top-level resource. What changes is that
+**every stage page, question, survey row and answer is scoped to the focus**,
+and says so.
+
+### 18.2 The funnel narrows scope as it goes
+
+| Stage | Scope | What the page shows |
+|---|---|---|
+| Scouting | the whole database, **always broken down by containment level** — never a rollup without its parts | the tree: schemas with table counts, rows, bytes, activity, credential visibility per schema; system schemas folded away |
+| Discovery | per schema, **tables ranked by importance**, then **proposed clusters** | first a ranked list of tables — the entry point at scale is not the tree (§18.9) — from signals RE already has or can read cheaply: activity counters and scan counts (catalog identity), FK degree from `db_relationship_graph`, row estimates, query statistics where `stats` is held, OpenLineage run facets where an emitter exists, and **declared or measured `DataScope` and `DataGrain`** (a table whose scope and grain match the investigation's lens ranks above one that merely has traffic — the project owner's point that scope and grain are strong focus signals, §16.5). Then `db_relationship_graph` components become cluster proposals (FK-connected sets, naming prefixes, shared key columns, co-access); `db_classification` per schema; `preliminary_fit` per schema and per cluster. The *worth pursuing* verdict tells the user where to focus |
+| Analysis | a cluster or a few tables | column profiles, data-class and reference-set matches, coverage and grain per table; the cost vector per focus so a 400-table warehouse is never profiled whole by accident |
+| Assessment | a cluster | quality dimensions, exposure, fit against the lens, readiness — per cluster, with the tables listed |
+| Curate | a table or cluster | declare scope, grain, classes, ownership per table; accept or reshape clusters; promote to first-class if wanted |
+| Automate | the focus | comparators scoped to the tables the user cares about, not the database |
+
+This is the repository path's *scope narrowing* (`scoping.py`,
+`target_shape: corpus` with a `scope_locator` path-prefix filter;
+architecture recovery's components → blueprints) applied to databases with
+the engine's containment levels as the axis. The mechanism exists; the
+catalog tagging, the questions and the navigation do not use it.
+
+### 18.3 Questions carry a level, and answers carry a distribution
+
+Add a **`Level`** column to the question CSV: `database`, `schema`,
+`table`, `column`, or several. "How many rows?" is a *table* question; at
+database or schema level its answer is a **distribution**, not a sum: "23
+tables in `coco_ods`: `customers` 20 rows … top 10 shown, 13 more; 3,526
+rows across the schema (7 of 23 catalog estimates as of 2026-09-18)". The
+envelope gains `scope` (the locator set answered for) and `shown_of`
+(N of M), and the rule from §16.3 stands: **every answer names its scope**.
+A whole-database ✓ on a question whose level is `schema` is not an answer.
+
+Cross-type questions (§4) stay at database level; §5's database questions
+are re-levelled row by row when the column is added, and the answering
+analysis for a `table`-level question must produce per-table rows, which
+the structured tables (§5.7) already hold.
+
+### 18.4 Analyses accept a scope
+
+`target_shape: whole_resource_only` becomes the exception, not the default,
+for database analyses. Each declares the levels it can run at (`scopes:
+[database, schema, cluster, table]`), the API takes a locator set, results
+are stored **with the scope on the row** (rule D's key gains `scope`), and
+`schema_scope.py`'s grouping by containment level is the filter. Rollups
+are computed from scoped rows and labelled as rollups (`REPLY-SCHEMA-AS-SUB-
+RESOURCE.md` §1); nothing runs whole-database because a whole-database run
+was the only shape available.
+
+### 18.5 Scale rules, so hundreds of tables are a normal case
+
+- The left navigation is a **tree with counts**, not a list: database →
+  schemas (table count, rows, visibility) → tables, with search, paging past
+  50, and clusters shown first once they exist. Nothing renders hundreds of
+  rows flat.
+- Every list says **N of M shown**; every survey row says what scope it ran
+  on; every rollup names what it rolled up.
+- Sampling (§5.8) and the cost vector (§17.2) are per table and per focus;
+  "profile the warehouse" is a proposal with a summed cost, never a click.
+- Clusters are the unit of work in Analysis and beyond; a table outside any
+  cluster is reachable by search, not by scrolling.
+- **Include and exclude patterns at registration**, at schema, table, view
+  and column level — the one control every crawler and profiler in the
+  field exposes and ours has none. Egeria already defines the vocabulary
+  (`includeSchemaNames`/`excludeSchemaNames`, `…TableNames`, `…ViewNames`,
+  `…ColumnNames` on the JDBC integration connector; catalog/schema/table on
+  Unity) and RE should use the same names so a pattern set travels with the
+  asset into Egeria's own cataloguing. Note the Postgres *survey* service
+  takes only the generic `finalAnalysisStep`/`ignoreAnalysisSteps`; the
+  include/exclude lives on the cataloguing side, which is where scope is
+  decided anyway.
+- **A per-table profiling policy** persisted on the sub-resource — sample
+  strategy and bounds (§5.8), schedule, or *never* — so cost is set once per
+  table the way every profiler does it, instead of per resource and
+  analysis.
+
+### 18.6 Egeria already has most of this — use it rather than mirror it
+
+**Project owner, 2026-09-25:** Egeria addresses several of these issues
+itself. Mapped, with what each is for in this model:
+
+| Need | Egeria mechanism | Where it applies |
+|---|---|---|
+| the levels | `DeployedDatabaseSchema`, `RelationalTable`, `RelationalColumn` assets — the native Postgres survey creates and annotates them per schema and table; `sub_resources.egeria_guid` links each local row to its asset | Scouting onward |
+| scoping what is catalogued and surveyed | include/exclude name lists on the JDBC integration connector and Unity catalog config (schema, table, view, column; catalog for Unity) — **which RE does not use today** | registration |
+| accepted clusters by meaning | `SubjectArea` classification (0425) with `SubjectAreaHierarchy`; `SubjectAreaDefinition` as the governance definition behind it | Curate |
+| accepted clusters as bundles | `Collection` + `CollectionMembership` (the `blueprint_materializer.py` shape) | Curate |
+| offered clusters | `DigitalProduct`, `DigitalProductCatalog`, `DigitalSubscription` (§4, §16.7) | Curate → product |
+| meaning on tables and columns | `SemanticAssignment` to glossary terms, `DataClassAssignment`, `ValidValuesAssignment` — the accepted forms of `semantic_suggestions`, `data_class_match`, `reference_data_match` (§5.4); applies once catalogued, so it is Curate work | Curate |
+| who may see a scope | governance zones and security tags on the assets and collections — the same mechanism §5 of `security-model.md` relies on for connections | Curate; also the draft-visibility answer for proposals (§14) |
+| what other tools know | OpenLineage: Egeria's event-receiver integration connector ingests runs, and Lovelace derives `DataScope`, run profiles and data-quality summaries from them. A co-located Marquez is the cheap way to have that history for resources RE surveys. **Nothing says this must wait for cataloguing**: RE can ask Marquez what it knows about a table by name during Scouting, as a signal, and Egeria consumes the same events after cataloguing | Scouting (pre-catalogue signal) and Curate (post) |
+
+Declared scope and grain (§16) land on the table asset; lens fit (§16.5)
+runs per cluster or domain, which is where "does this data fit what I am
+looking for" is actually answerable.
+
+### 18.7 For the designer
+
+The tree navigation with focus; a **focus crumb** in the header
+("coco_pharma › coco_ods › 23 tables") that every page carries; distribution
+rendering (top N with "and M more", the calendar strip and profile card per
+table from §11); cluster proposals as a Discovery result the user accepts,
+edits or dismisses; the survey pane rows scoped to the focus and saying so.
+
+### 18.9 How other products handle this, and what is borrowed
+
+Reviewed 2026-09-25 at the project owner's request before executing, from
+knowledge of the products rather than fresh verification. We are not
+unique; the shape of the answer is stable across the field.
+
+| Question | What the field does | Borrowed into §18 |
+|---|---|---|
+| Navigating below the database | every catalog (Unity, Purview, Alation, Atlan, DataHub, OpenMetadata) renders the engine hierarchy as a tree with each level a first-class page; trees collapse past a threshold and rely on search and facets; Alation and Atlan show usage-derived popularity on the node | the tree with counts and search (§18.5); focus behaves like *being on a node's page*, persisted only as where you were, not as a mode |
+| Scoping what is profiled | include/exclude patterns at schema and table level on every crawler (OpenMetadata filter patterns, Purview scan rule sets, Glue include paths, DataHub allow/deny); profiling on a chosen subset with sampling and a size cap; a per-table schedule | include/exclude at registration using Egeria's own names; per-table profiling policy (§18.5) |
+| Logical clusters | three distinct mechanisms, kept distinct: **domains** (organisational, owned, hierarchical: DataHub, Atlan, OpenMetadata, Collibra, Purview collections), **data products** (curated, contracted, subscribed: DataHub, OpenMetadata, Atlan), **subject areas** (data-modelling tools: erwin, ER/Studio submodels, drawn by a modeller). None *infers* clusters from FK graphs; schema-summarisation research does, and is not productised | proposed cluster stays (RE surveys the unknown and has nobody to assign domains yet); the accepted form is Egeria's SubjectArea / Collection / DigitalProduct, not a third concept (§18.1, §18.6) |
+| Level of answers | catalogs show table statistics on the table page and only counts and lists above it; observability tools (Monte Carlo, Bigeye, Elementary) keep row count, freshness and volume as per-table series and make the database view a **ranked list**, never an aggregate | the distribution answer with ranking (§18.3) |
+| Prioritising at scale | Monte Carlo key assets, Bigeye importance, Alation popularity, DataHub usage, Select Star "most queried / most joined": rank by query volume, lineage fan-out, recency of use | Discovery's ranked table list first (§18.2), from activity counters, FK degree, query statistics where held, OpenLineage — **and DataScope / DataGrain fit against the lens**, which the field does not have and which is RE's differentiator |
+| Meaning and stewardship | glossary assignment, classification and ownership are curation steps after cataloguing, everywhere | Egeria's `SemanticAssignment`, `DataClassAssignment`, zones (§18.6) as the Curate-tier acceptance of what Discovery and Analysis proposed |
+
+### 18.8 Where it goes in the plan
+
+Before any re-land of the survey pane (`REVIEW-SURVEY-PANE-285.md` §4),
+because the pane, the Questions tab and the answers all take a scope:
+
+1. `investigation_scope` and the focus crumb; the tree navigation over
+   `sub_resources` for the levels the inventory already produces.
+2. `scopes` on the database analyses and the locator-set parameter; results
+   keyed by scope; `schema_scope.py` as the filter. Convert the §5 analyses
+   from `whole_resource_only` one by one, starting with `schema_inventory`,
+   `row_count_snapshot`, `db_relationship_graph`.
+3. `Level` on the question CSV and the distribution envelope; the Questions
+   tab scoped to the focus.
+4. Include/exclude at registration (Egeria's names) and the per-table
+   profiling policy.
+5. Table ranking in Discovery from the signals RE holds; then cluster
+   proposals from `db_relationship_graph`; accept in Curate as
+   `SubjectArea` / `Collection` / `DigitalProduct`.
+6. Then the pane re-land, per focus.
+
+## 19. Two entry paths: a resource Egeria does not know, and one it does
+
+**Added 2026-09-25 at the project owner's direction.** RE has two roles that
+look alike and are not: *determine new resources worthy of cataloguing and
+use*, and *further explore, survey and analyse things Egeria already knows
+about, at least in part*. Some RE surveys augment analyses Egeria performs
+itself through its integration daemon and integration connectors, so that
+path has to be designed through, not assumed to be the unknown path with a
+GUID attached.
+
+Pieces already in place: rule A (native results are canonical in shape),
+rule D (every result is mirrored locally), the governance read-back layer
+(§16.7), reuse-by-qualified-name in the catalogue step
+(`egeria_database_surveyor.py:285`), and a Discovery question "has this
+been catalogued in Egeria, and when?". What was missing is the entry path
+itself, and what "known" means per containment level.
+
+### 19.1 "Known" is per level and per depth, not a flag
+
+Egeria's knowledge of a database is a matrix, and RE's job differs per
+cell:
+
+| Level (§18.1) | absent | catalogued (structure exists) | surveyed (annotations exist) | curated (scope, grain, classes, owner declared) |
+|---|---|---|---|---|
+| server, database | RE registers and offers Catalog & Survey | RE adopts the GUID, reads back | RE reads back the reports; surveys only what is missing | RE reads back and respects the declarations |
+| schema, table, column | RE's inventory is the only structure; sub-resources local until published | **an integration connector probably maintains these** (§19.3): RE reads, never writes structure | RE mirrors annotations per table (rule D) | declarations bind RE's proposals: a declared grain is not re-proposed |
+
+The Discovery question becomes: *"How much of this does Egeria already know
+— catalogued, surveyed, curated — at which levels, maintained by what, and
+when was it last refreshed?"* Its answer is a small table, not a yes.
+
+### 19.2 Path A — unknown to Egeria
+
+Unchanged, and the security model's registration case: the user supplies
+the catalog identity; RE scouts locally; Discovery decides worth; *Catalog
+& Survey* creates the assets from Egeria's templates (server, database, the
+levels the inventory found, connections per identity per `security-model.md`
+§4) and runs the native survey; RE's own findings publish as annotations
+on those assets. Everything RE created, RE may later repair or delete.
+
+### 19.3 Path B — known to Egeria, in whole or in part
+
+Five rules, in the order they run:
+
+1. **Resolve identity before anything else.** Match the registration to an
+   existing asset by endpoint (host, port, database) and by the qualified
+   name convention, at every level, and adopt the GUIDs. **Never create a
+   second asset for a resource Egeria has.** The reuse path exists for the
+   database; it has to exist for schemas and tables too, and the
+   `coco_pharma` lesson applies: reuse must *repair* what it finds partial
+   (a connection with an unbound placeholder) rather than skip it.
+2. **Read back before surveying.** `governance_context_readback` (§16.7),
+   the existing survey reports and their annotations, the structure the
+   connector maintains, the declared `DataScope`, `DataGrain`, classes,
+   terms and ownership — all into RE's store as rows with `source =
+   egeria` (rule D). The Questions tab answers from those rows first.
+3. **Survey the gaps only.** With Egeria's knowledge in the store, the
+   question layer knows which questions are already answered and at what
+   freshness; the prerequisite resolver (§17.1) treats a fresh Egeria
+   answer as a satisfied producer and proposes only the steps whose
+   questions are unanswered or stale. A native survey report from
+   yesterday is not re-run locally today because RE has a local step for
+   it.
+4. **Write only what RE owns.** RE publishes survey reports, annotations,
+   proposals (`contentStatus: DRAFT`), RFAs, and — through Curate — the
+   declarations a curator makes. RE **never edits structural elements it
+   did not create**: a schema, table or column maintained by an integration
+   connector belongs to the connector, which will overwrite RE's edit on
+   its next refresh anyway.
+5. **Show provenance.** Every fact on the page says where it came from:
+   *from Egeria (connector X, refreshed 3 h ago)*, *from Egeria's survey
+   (report of 2026-09-21)*, *measured here (as `egeria_user`, just now)*,
+   *declared by a curator*. The four are different kinds of truth and the
+   design's honesty rules apply to each.
+
+### 19.4 Coexisting with the integration daemon
+
+Egeria's integration connectors (the JDBC integration connector for
+schemas, tables and columns; the Postgres server connector for databases;
+Unity, Kafka and file connectors for theirs) run in the integration daemon
+on their own schedule and **own the structural catalog** of what they
+maintain. Consequences for RE:
+
+- **Structure is rule A** when a connector maintains the asset: Egeria's
+  structure is canonical; RE's local inventory is for RE's own store and
+  for the gap check, not a competing truth. A `maintained_by` fact
+  (connector, last refresh) is part of the read-back and shown with the
+  structure.
+- **Drift between source and catalog is a finding.** RE reads the source
+  directly and Egeria's structure through the read-back; their difference
+  ("Egeria's catalog lags the source by 3 tables since the last refresh") is
+  a comparator and an RFA to whoever runs the connector — the one thing RE
+  can tell that neither the connector nor the source can.
+- **Include/exclude travel with the asset.** The connector's own include
+  and exclude lists (§18.5) define what Egeria will ever know; RE reads
+  them and does not report as "missing from Egeria" what was excluded on
+  purpose.
+- **RE's steps augment, in the same conventions.** Where a native survey
+  exists, RE reads it back; where RE's step adds what no native service
+  computes (rule C), it publishes onto the same asset under the same
+  report conventions, so a consumer sees one survey history. Longer term,
+  RE's steps register as governance services so Egeria's own processes
+  can call them (execution permutation 2), and the integration daemon's
+  refresh can trigger RE's gap survey through an engine action rather
+  than a person.
+
+### 19.5 Egeria as a discovery source
+
+Discovery sources today are repository-shaped (GitHub organisations,
+quick lists). Egeria itself is the natural source for Path B: enumerate its
+assets by technology type (`find_assets` with the technology type, which
+already returns the connections §4.1 of the security model needs), diff
+against RE's registry, and queue *"known to Egeria, never surveyed by RE"*
+and *"surveyed by Egeria, never read by RE"* as Discovery work — with
+Egeria's notifications (§9.2) telling RE when a connector adds an asset, so
+the queue fills itself.
+
+### 19.6 Questions this adds
+
+| Stage | Question | Answered by |
+|---|---|---|
+| Discovery | How much of this does Egeria already know — at which levels, maintained by what, refreshed when? | read-back (§16.7) + `maintained_by` |
+| Discovery | What has Egeria surveyed that I have not read yet? | survey-report read-back vs local rows |
+| Discovery | Does Egeria's catalog match the source, or has it drifted? | inventory vs read-back comparator |
+| Analysis | Which of my questions are already answered by Egeria's surveys, and which need a local run? | prerequisite resolver over the store |
+| Curate | What has been declared on this already (scope, grain, classes, terms, owner), and by whom? | read-back of classifications and assignments |
+
+### 19.7 Where it goes in the plan
+
+Identity resolution at every level and the read-back-before-survey rule go
+with §18.8's first item, because focus and the tree are built over
+`sub_resources` rows that must carry Egeria's GUIDs when they exist.
+`maintained_by` and the drift comparator go with the read-back slice
+(§16.7). Egeria as a discovery source is its own small slice after those.
+
 *Inventory sources for §1: three read-only sweeps on 2026-09-20 over
 `resource_explorer/surveyors/{database,filesystem,file_classifier,sub_surveyors}`,
 `facts.py`, `registry.py`, `configdata/analysis_catalog.yaml`, both question
