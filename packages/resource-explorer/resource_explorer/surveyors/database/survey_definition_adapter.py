@@ -1215,6 +1215,15 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "db_change_rates": (_db_derived_field_reader("db_change_rates"), None),
     "schema_diff": (_db_derived_field_reader("schema_diff"), None),
     "grant_change": (_db_derived_field_reader("grant_change"), None),
+    # Design §16.3's Scouting/Discovery rows (2026-09-24). Same reader as every
+    # other `db_derived` field — including for `preliminary_fit`, which is
+    # read with NO lens on this path and therefore renders "no requirement
+    # declared" plus what the resource could satisfy (§16.5 point 2). That is
+    # the designed behaviour, not a missing wire: a lens is supplied by a
+    # caller that has one, and none of RE's stored state carries one yet.
+    "subject_signals": (_db_derived_field_reader("subject_signals"), None),
+    "coverage_signals": (_db_derived_field_reader("coverage_signals"), None),
+    "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
     "credential_capability": (_credential_capability_results, None),
 }
 
