@@ -46,6 +46,33 @@ trigger is a row whose gate reason says so ("not runnable from Resource
 Explorer yet") — the same shape as any other blocked row, not a separate
 class of thing.
 
+### 1.1 · The result summary line (project owner, 2026-09-25, on approving §1)
+
+*"There also needs to be a result summary line to indicate that the survey
+was just run and produced these results."* It goes **on the row**, as the
+existing second line changing state — not a fourth line and not the
+popover. The rule: **the row shows the most recent truth about that
+survey.**
+
+| State | Line 2 reads | Action |
+|---|---|---|
+| never run | *answers:* which columns hold personal data · how big is it | **Run** |
+| ran, found something | *Ran 4 d ago:* 6 schemas, 56 tables, 427 columns · answered 3 questions | **Re-run** |
+| ran, found nothing | *Ran 4 d ago:* no views or functions found | **Re-run** |
+| ran within credential scope | *Ran 4 d ago:* 56 tables — as `egeria_user`, 3 of 8 schemas readable | **Re-run** · *pick connection* |
+| ran, failed | *Last run failed 2 h ago:* Egeria could not open the asset (no secret) | **Re-run** · *fix connection* |
+| just ran in this session | *Just now:* … (line updates live) | **Re-run** |
+
+The summary text comes from each analysis's existing results reader /
+`result_materializer` summary — no new summariser — and the three
+absence states are distinct on purpose (`find-absence-as-answer`). The
+line links to the full result view; the popover keeps the full result and
+the engine sentence. It is on the row rather than in the popover because
+the popover is hidden, and "this ran, and here is what it found" is the
+one fact a returning user needs before deciding whether to run again —
+the same "open the thing a user opens" rule that caught four invisible
+extensions in September.
+
 ## 2 · Q2 — the scope concept leaves the pane
 
 Full-scan versus scoped is a fact about **how the candidate list was
