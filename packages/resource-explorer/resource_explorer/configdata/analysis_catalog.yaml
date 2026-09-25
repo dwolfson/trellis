@@ -1199,6 +1199,101 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  # ── §16's coverage/grain/fit rows (2026-09-24) ───────────────────────────
+  #
+  # `docs/multi-resource-questions-design.md` §16.3's Scouting and Discovery
+  # rows. All three are backed by the same `db_derived` step as the six above,
+  # for the same reason: they reason over already-stored rows and open no
+  # connection. §16.3 files the first two under Scouting; they are tagged
+  # `discovery` here because CLAUDE.md rule 17's axis is "does this collect, or
+  # reason over what is already collected", and these reason — the same
+  # judgement that already put `grain_determination` (also a Scouting row in
+  # §16.3) in `discovery`. §16.2's "Scouting" is about when the SIGNAL is free,
+  # and it is: no fetch is added anywhere.
+  - id: subject_signals
+    name: "Subject Signals"
+    description: >
+      What is this data about? Candidate subject terms from stored table and
+      column names and from pg_description comments, each carrying the basis
+      it came from — a comment outranks a name, and a term found in both
+      outranks either. Confidence is deliberately low-medium (design §16.2:
+      "a name is a claim"), and NOTHING is matched against Egeria's glossary
+      or a data-class registry, because this step opens no connection: an
+      unmatched term means "not looked up", never "not a known term". A
+      database whose names are entirely structural (id, created_at, value)
+      reads as a real finding pointing at Enrichment, not as a missing survey
+      step; a database where not one table or column carries a comment reads
+      as "comments not captured" rather than as undocumented.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Data Expert", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: coverage_signals
+    name: "Coverage Signals"
+    description: >
+      What period and places does this appear to cover, from catalog
+      statistics and names alone — no row read? The period comes from
+      pg_stats histogram bounds (and exact min/max where a native survey
+      stored them) on date and timestamp columns. Their ABSENCE means ANALYZE
+      has not run, or the credential cannot see pg_stats — it does NOT mean
+      the database holds no dates, and the two are separate named states
+      (design §16.2's own warning). Places are the NAMES of place-bearing
+      columns only: which regions are actually present needs the values, so
+      it is deferred to coverage_profile rather than estimated. Partition
+      bounds would be exact and free, and nothing in RE collects them yet, so
+      that block reports a collection gap rather than silence.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Governance"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: preliminary_fit
+    name: "Preliminary Fit"
+    description: >
+      Could this be in scope for what I am looking for — worth the full pass?
+      The Discovery gate of design §16.3: a zero-fetch comparison of the three
+      free estimates (subject_signals, coverage_signals, grain_determination's
+      time grain) against a supplied data requirement. Four verdicts, kept
+      distinct on purpose: fits, does not fit, COULD NOT CHECK (an input was
+      itself not established — the pg_stats/ANALYZE case, which must never
+      read as either of the first two), and "no requirement declared" when no
+      lens is supplied, which carries what this resource COULD satisfy instead
+      of a vacuous pass. Regions, data classes and grain statements are
+      carried through as deferred criteria naming the analysis that answers
+      them, never scored here.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Financial"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: reference_data_match
     name: "Reference Data Match"
     description: "Which low-cardinality columns conform to a known Egeria ValidValueSet, and which should become one. Columns whose n_distinct (from the stored pg_stats profile, sign convention resolved) falls under the reference-data gate have their sampled distinct values compared against every set in the platform: a full match becomes ValidValuesAssignment advice, a partial match raises an RFA listing the values outside the set, and no match at all proposes a new set with contentStatus: DRAFT (design §5.4). A truncated distinct-value list is inconclusive rather than a partial match, since a coverage fraction from an incomplete list is wrong in an unknown direction."

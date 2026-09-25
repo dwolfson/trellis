@@ -296,6 +296,32 @@ class StepInfo:
     # test_step_cost_tiers.py, not just by convention.
     fetch_cost: str = "none"
     compute_cost: str = "low"
+    #: What the connecting CREDENTIAL must be able to see or do for this step
+    #: to answer completely — the second axis of the same gate `fetch_cost`/
+    #: `compute_cost` form, per `REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    #: VISIBILITY.md` §7.1: "a step declares `fetch_cost`, `compute_cost` and
+    #: `requires_capability` together, and the launcher shows one combined
+    #: reason." One of `CAPABILITY_VALUES`, or `""`.
+    #:
+    #: `""` is NOT "catalog" and not "satisfied by anything" — it is
+    #: **undeclared**, and the gate makes no claim about a step carrying it.
+    #: Two different situations share it deliberately, because collapsing
+    #: either into a real tier would be the absence-as-answer failure this
+    #: whole axis exists to prevent:
+    #:
+    #:   * a step that opens no connection at all (`db_derived` — the audit's
+    #:     §4 "no tier applies"; the weakest tier, `catalog`, still implies a
+    #:     live connection to *something*, so declaring it would overstate);
+    #:   * every repo and filesystem step, which have no credential model yet.
+    #:     Database-first, exactly as `produces`/`requires_context` were
+    #:     introduced (the `#241` precedent).
+    #:
+    #: Unlike the cost axes this is NOT an ordinal ladder and the resolver
+    #: never compares two values with `<`. `stats` does not imply `read`
+    #: (a `pg_monitor` member may hold no `SELECT` grant at all) and `write`
+    #: does not imply either. Each value is a separate predicate the probe
+    #: answers on its own terms — see `credential_capability.assess`.
+    requires_capability: str = ""
 
 
 # ── D6: shared-resource providers ────────────────────────────────────────
@@ -4625,6 +4651,15 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
 # quietly admits a step it was meant to exclude.
 FETCH_COST_ORDER = ["none", "api", "api_heavy", "download"]
 COMPUTE_COST_ORDER = ["low", "medium", "high"]
+
+#: The vocabulary `StepInfo.requires_capability` draws from — `REPLY-DATABASE-
+#: CREDENTIAL-CAPABILITY-VISIBILITY.md` §3's four values, no more and no
+#: fewer. Deliberately a `frozenset` and NOT a list, unlike the two cost
+#: scales above: those are ordinal and their list *index* is load-bearing, and
+#: this one is not ordered at all. See `StepInfo.requires_capability` for why
+#: (`stats` does not imply `read`), and `credential_capability.assess` for the
+#: per-value predicates that replace an ordering.
+CAPABILITY_VALUES = frozenset({"catalog", "read", "stats", "write"})
 
 
 def analysis_cost(analysis_id: str) -> tuple[str, str]:

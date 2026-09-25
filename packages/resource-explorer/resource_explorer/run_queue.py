@@ -157,6 +157,29 @@ def _handle_analysis_run(target: dict, result_ref: str) -> RunOutcome:
     )
 
 
+def _handle_database_analysis_run(target: dict, result_ref: str) -> RunOutcome:
+    """The database equivalent of `_handle_analysis_run` above — added
+    because `run_single_database_analysis` (web/routes/databases.py) used to
+    run its survey step(s) synchronously inside the request and return a
+    response with no `activity_id` at all, so `/next`'s `pollActivity()`
+    (which every "Run" action on a database's Questions checklist goes
+    through) hit `GET /api/activity/undefined` and reported "Activity entry
+    not found" for a run that had, in fact, already completed. See
+    `workflows.analysis.execute_and_record_database_analysis`'s docstring for
+    why this is a distinct handler/dataclass from the repo path rather than a
+    reuse of `_handle_analysis_run` — database analysis runs do not
+    auto-publish to Egeria the way repo's do."""
+    from resource_explorer.workflows.analysis import execute_and_record_database_analysis
+
+    result = execute_and_record_database_analysis(
+        target["slug"], target["analysis_id"], result_ref,
+    )
+    return RunOutcome(
+        state="succeeded" if result.status == "ok" else "failed",
+        error=result.error or "",
+    )
+
+
 def _handle_stage_batch(target: dict, result_ref: str) -> RunOutcome:
     from resource_explorer.workflows.analysis import (
         execute_and_record_stage_batch,
@@ -252,6 +275,7 @@ HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "curate_commit": _handle_curate_commit,
     "materialize_components": _handle_materialize_components,
     "analysis_run": _handle_analysis_run,
+    "database_analysis_run": _handle_database_analysis_run,
     "stage_batch": _handle_stage_batch,
     "scouting_scan": _handle_scouting_scan,
     "survey_definition_run": _handle_survey_definition_run,

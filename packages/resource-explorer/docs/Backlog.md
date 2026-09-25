@@ -7730,6 +7730,52 @@ framework-marker coverage together.
 
 ---
 
+## Database credential-capability model — item 2 BUILT, items 1 and 3 still awaiting the project owner's ruling
+
+**Decision (project owner, 2026-09-24):** build item 2 below
+(`requires_capability` on `StepInfo` and the launcher gate) now, ahead of
+item 1, on the strength of §7.1 of the reply doc — which the architecture
+session added after this entry was written and which closes the question
+item 2 was said to depend on. Its words, which the build follows: "Build it
+as one axis beside cost tier in the same gate, not as a separate flow: a
+step declares `fetch_cost`, `compute_cost` and `requires_capability`, and
+the launcher shows one combined reason."
+
+**Status, so the dependency note below is not read as still blocking:**
+
+- **Item 2 — BUILT** on `re/requires-capability-combined-gate`.
+  `requires_capability` is declared on every `DATABASE_STEP_REGISTRY` entry
+  from `DATABASE-STEP-CAPABILITY-AUDIT.md`'s trace; the gate is the SAME
+  `prerequisite_resolver.resolve` the cost tier already goes through, adding
+  a `ConsentReason(kind="capability")` to the SAME `Proposal` rather than a
+  second flow; the credential's actual capability is read back from the
+  `credential_capability` probe's stored result, never re-probed.
+  Item 2's stated dependency on item 1 ("the gate needs to know which
+  connection is even in play") turned out not to bind: with one connection
+  per database there is exactly one credential in play, and the probe
+  already measures it. The gate becomes multi-connection-aware when item 1
+  lands; it does not need item 1 to be correct today.
+- **§7.1's three launcher choices: two built, one deliberately not.** "Run
+  partially and say so" (`Proposal.run_partially`, carrying
+  `MEASURED_WITHIN_CREDENTIAL_SCOPE`) and "raise the RFA"
+  (`POST /api/prerequisites/capability-rfa`, a step-naming RFA distinct from
+  the probe's standing resource-level one) are live. **"Pick another visible
+  connection" is not built** — it needs item 1's multi-connection model, and
+  a control that cannot do anything is worse than its absence.
+- **Items 1 and 3 — still blocked**, unchanged, and still needing a ruling.
+
+**Note on where §7 lives.** §7 was added to the reply doc by commit
+`990d7d61` on `re/reply-database-credential-capability`, which is **not
+merged to `main`** — `main` carries the doc through §6 only (`98e8c137`,
+PR #255). Anyone reading the doc from `main` will not find the §7 this build
+implements; read it with `git show 990d7d61:packages/resource-explorer/docs/
+design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` until that
+branch lands. Not cherry-picked onto the build branch on purpose: the doc
+commit belongs to its own PR and duplicating it would give one design note
+two histories.
+
+---
+
 ## Database credential-capability model — awaiting the project owner's ruling
 
 **From:** `docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`

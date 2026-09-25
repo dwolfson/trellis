@@ -62,6 +62,16 @@ class TestDatabaseResultsMapCoverage:
         # CREDENTIAL-CAPABILITY-VISIBILITY.md §3/§4, replying to
         # ASK-...-#251) has its own results reader from the start, unlike
         # the three genuinely-still-unbacked ids in expected_absent below.
+        #
+        # Now eighteen (2026-09-24): `subject_signals`, `coverage_signals` and
+        # `preliminary_fit` — multi-resource-questions-design.md §16.3's
+        # Scouting and Discovery rows, all three backed by the same zero-fetch
+        # `db_derived` step and so all three with a reader from the start. They
+        # are NOT in `DATABASE_ANALYSIS_STEP_MAP`, which maps an analysis id to
+        # `DatabaseSurveyor.survey()` steps — `db_derived` opens no connection
+        # and is not a `survey()` step at all, which is why none of the eight
+        # existing db_derived ids appear there either. The set difference
+        # asserted below is therefore unaffected by adding them.
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_STEP_MAP,
         )
@@ -71,7 +81,7 @@ class TestDatabaseResultsMapCoverage:
             "egeria_db_survey",
         }
         assert set(DATABASE_ANALYSIS_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 15
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 18
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

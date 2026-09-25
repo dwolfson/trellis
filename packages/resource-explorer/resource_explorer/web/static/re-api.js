@@ -1139,9 +1139,30 @@ export const planPrerequisites = (entityType, slug, stepKey) =>
  *  recomputed at accept time could differ from what was shown, so the
  *  client sends back what it displayed rather than a bare "go"). `demandedBy`
  *  is the step that asked for them, recorded on the producers' own
- *  `step_runs` rows so the accepted chain's cost is attributable. */
-export const runPrerequisites = (entityType, slug, steps, demandedBy = '') =>
-  post('/api/prerequisites/run', { entity_type: entityType, slug, steps, demanded_by: demandedBy });
+ *  `step_runs` rows so the accepted chain's cost is attributable.
+ *
+ *  `capabilityConsented` is the second axis's version of the same contract
+ *  (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §7.1's "run partially
+ *  and say so"): the user was shown a credential shortfall and accepted it.
+ *  Sent explicitly rather than inferred server-side, for exactly the reason
+ *  `steps` is — the server runs what the user was shown. Without it the
+ *  re-resolve inside the executor raises the same shortfall again and skips
+ *  the step the user just approved. */
+export const runPrerequisites = (entityType, slug, steps, demandedBy = '',
+                                 capabilityConsented = false) =>
+  post('/api/prerequisites/run', { entity_type: entityType, slug, steps,
+                                   demanded_by: demandedBy,
+                                   capability_consented: capabilityConsented });
+
+/** §7.1's third choice at the gate: raise an RFA naming the step a credential
+ *  shortfall blocked. Distinct from the standing RFA the `credential_
+ *  capability` probe raises on its own — that one says the grants are narrow,
+ *  this one says which analysis somebody could not run because of it. The
+ *  server re-resolves rather than trusting anything sent here, so a stale
+ *  client-side fraction cannot reach a database owner. */
+export const raiseCapabilityRfa = (entityType, slug, stepKey) =>
+  post('/api/prerequisites/capability-rfa',
+       { entity_type: entityType, slug, step_key: stepKey });
 
 export const getActivityEntry = (entryId) =>
   get(`/api/activity/${encodeURIComponent(entryId)}`);

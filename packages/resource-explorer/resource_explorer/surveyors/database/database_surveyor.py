@@ -1362,11 +1362,39 @@ class DatabaseSurveyor:
                 if gap > worst_gap:
                     worst_gap, worst_schema = gap, name
             target = f"{worst_schema}.*" if worst_schema else "this database"
+            # REPLY-SCHEMA-AS-SUB-RESOURCE.md §2: the shortfall message "lists
+            # them by schema, which is what a database owner grants on anyway"
+            # — "3 of 8 schemas readable; 3 of 26 tables" rather than a bare
+            # table count. The per-schema reading is
+            # `schema_scope.credential_shortfall`, shared with the analysis
+            # readers so the two surfaces cannot drift; `worst_schema` above
+            # still picks the single RFA target, since an RFA needs one
+            # actionable subject.
+            from .schema_scope import credential_shortfall
+            from .connection import containment_for_engine
+
+            # The level's name comes from the surveyed engine's own
+            # declaration, not a literal: the same probe against Oracle is
+            # reporting on owners, not schemas.
+            entity = getattr(self, "db_entity", None)
+            shortfall = credential_shortfall(
+                info, containment_for_engine(getattr(entity, "db_type", None)),
+            )
+            fraction_phrase = (
+                shortfall["phrase"] if shortfall
+                else f"SELECT on {table_select} of {table_total} table(s)"
+            )
+            short_clause = (
+                f" Short on: " + ", ".join(
+                    f"{name} ({shortfall['by_container'][name]['state']})"
+                    for name in shortfall["short_containers"]
+                ) + "."
+                if shortfall else ""
+            )
             annotations.append(
                 RequestForActionAnnotation(
                     summary=(
-                        f"connected as {connected_as}: SELECT on {table_select} of "
-                        f"{table_total} table(s)"
+                        f"connected as {connected_as}: {fraction_phrase}"
                     ),
                     analysis_step="DatabaseCredentialCapability",
                     confidence=100,
@@ -1380,6 +1408,7 @@ class DatabaseSurveyor:
                         "database's own catalog (pg_namespace/pg_class, unfiltered) "
                         "shows exists — every fact this survey reports is scoped to "
                         "what this credential can reach, not to the whole database."
+                        + short_clause
                     ),
                 )
             )

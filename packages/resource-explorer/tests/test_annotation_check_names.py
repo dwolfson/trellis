@@ -120,6 +120,29 @@ KNOWN_EXCLUSIVE = {
     # never both in one run.
     ("database/db_derived.py", "schema_diff"),
     ("database/db_derived.py", "grant_change"),
+    # Added 2026-09-24 with design §16.3's Scouting/Discovery rows. Same shape
+    # again, verified by reading each helper rather than assumed:
+    #   `_subject_annotations`         — absence/"no subject term" branch is an
+    #                                    early `return [...]`.
+    #   `_coverage_annotations`        — the whole-payload absence branch is an
+    #                                    early `return [...]`; the three
+    #                                    per-block annotations it otherwise
+    #                                    builds carry DISTINCT check names
+    #                                    (`coverage_signals_temporal`/`_spatial`
+    #                                    /`_partitions`), so they do not share
+    #                                    one and are not listed here.
+    #   `coverage_signals_temporal`    — the exception, and the one that
+    #                                    matters: two sites for ONE check, the
+    #                                    measured window and the
+    #                                    no-dates/run-ANALYZE branch, in a
+    #                                    single if/else. Mutually exclusive by
+    #                                    construction, and they must stay one
+    #                                    check because a reader following "what
+    #                                    period does this cover" needs to see
+    #                                    the answer change from unknown to
+    #                                    measured under the same name.
+    ("database/db_derived.py", "subject_signals"),
+    ("database/db_derived.py", "coverage_signals_temporal"),
 }
 
 

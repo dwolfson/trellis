@@ -192,6 +192,7 @@ class SurveyDefinitionExecutor:
         publish: str | None = None,
         engine_override: str | None = None,
         demanded_by: str = "",
+        capability_consented: bool = False,
         **runner_kwargs: Any,
     ) -> dict:
         """
@@ -270,7 +271,12 @@ class SurveyDefinitionExecutor:
             entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
             process_guid=process_guid, process_qn=process_qn,
             publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
+            # `demanded_by` used to be dropped here (a latent attribution bug
+            # named but deliberately left alone by the capability-axis change
+            # below) — fixed by re/survey-executor-demanded-by-run, forwarded
+            # like every other kwarg `_execute` already accepts.
             demanded_by=demanded_by,
+            capability_consented=capability_consented,
         )
 
     def _execute(
@@ -286,6 +292,7 @@ class SurveyDefinitionExecutor:
         engine_override: str | None,
         runner_kwargs: dict,
         demanded_by: str = "",
+        capability_consented: bool = False,
     ) -> dict:
         """Run an already-resolved Survey Definition's steps.
 
@@ -664,7 +671,7 @@ class SurveyDefinitionExecutor:
                 resolution = self._resolve_prerequisites(
                     adapter, entity_type, entity, step.re_analysis_step,
                     surveyed_at, runner_kwargs, steps_report, step_outputs,
-                    errors, auto_ran,
+                    errors, auto_ran, capability_consented,
                 )
                 if resolution is not None and not resolution.may_run:
                     entry = {
@@ -698,7 +705,19 @@ class SurveyDefinitionExecutor:
                     self._record_cost(observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok"})
+                    ok_entry = {"step": step.qualified_name,
+                                "re_analysis_step": _step_key(step), "status": "ok"}
+                    # "Run partially AND SAY SO" (REPLY-DATABASE-CREDENTIAL-
+                    # CAPABILITY-VISIBILITY.md §7.1). An advisory proposal
+                    # does not stop the step — see `Proposal.advisory` — but
+                    # the run must not then come back indistinguishable from
+                    # one made with a credential that could see everything.
+                    # Without this the step reports plain "ok" and the whole
+                    # gate is invisible on every unattended path.
+                    if (resolution is not None and resolution.proposal is not None
+                            and resolution.proposal.advisory):
+                        ok_entry["capability"] = resolution.proposal.as_dict()
+                    steps_report.append(ok_entry)
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except Exception as exc:
                     msg = f"RE step '{step.re_analysis_step}' failed: {exc}"
@@ -982,6 +1001,7 @@ class SurveyDefinitionExecutor:
         self, adapter, entity_type: str, entity, step_key: str,
         surveyed_at: str, runner_kwargs: dict, steps_report: list,
         step_outputs: list, errors: list, auto_ran: set,
+        capability_consented: bool = False,
     ):
         """Resolve, auto-run what the budget covers, and return the (re-checked)
         Resolution. None when this resource type declares no step registry.
@@ -1008,6 +1028,7 @@ class SurveyDefinitionExecutor:
             return prerequisite_resolver.resolve(
                 self.registry, entity, step_key, registry_map,
                 surveyed_at=surveyed_at, already_ran=auto_ran,
+                capability_consented=capability_consented,
             )
 
         resolution = _resolve()
@@ -1115,6 +1136,7 @@ class SurveyDefinitionExecutor:
         publish: str | None = None,
         engine_override: str | None = None,
         demanded_by: str = "",
+        capability_consented: bool = False,
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -1181,6 +1203,10 @@ class SurveyDefinitionExecutor:
             engine_override=engine_override,
             runner_kwargs=runner_kwargs,
             demanded_by=demanded_by,
+            # §7.1's first choice, carried from the user's "run it anyway".
+            # Without it the re-resolve inside `_execute` would raise the very
+            # shortfall the user just accepted and skip the step.
+            capability_consented=capability_consented,
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
