@@ -1262,14 +1262,15 @@ with the cost of each signal stated.
 | **Subject from names and comments** — table, column, file and folder names; `pg_description`; README and descriptor text; DCAT `theme`/`keyword`; card tags | catalog / walk / descriptor | none beyond what Scouting already reads | Scouting | low–medium; a name is a claim |
 | **Time grain from naming** — columns `*_date`, `*_ts`, `day`, `hour`, `period`; tables `daily_*`, `*_hourly`; partition keys `year=/month=/day=`; file names carrying dates (`sales_2025-03.parquet`) | same | none | Scouting | medium for partitions and file names, low for column names |
 | **Entity grain from keys** — PK composition; a date column *in* the PK means per-period grain | catalog | none | Scouting | medium–high |
-| **Coverage from catalog statistics** — `pg_stats.histogram_bounds` on date and timestamp columns gives min and max **without reading rows** (after `ANALYZE`); partition bounds from `pg_partitioned_table` / check constraints give exact ranges | catalog | none | Scouting | high when stats are fresh; **absent means "run ANALYZE", not "no dates"** |
+| **Coverage from partition bounds** — `pg_partitioned_table` / check constraints give exact ranges for partitioned tables | catalog | none | Scouting | high; only for partitioned tables |
+| **Coverage from column statistics** — `pg_stats.histogram_bounds` on date and timestamp columns gives min and max without a row scan (after `ANALYZE`) — **but `pg_stats` is filtered by column `SELECT`, so this needs the data identity, not the catalog identity** (corrected 2026-09-25 per the credentials reply §9; the earlier wording called it free at Scouting) | data identity (B) | tiny once B exists | Discovery, when B is held; otherwise deferred to Analysis | high when stats are fresh; **absent means "run ANALYZE" or "no column access", and the envelope must say which** |
 | **Coverage from file metadata** — Parquet and Feather footers carry per-row-group min/max per column, so date range comes from the footer alone; ORC likewise | file footer read, no data | tiny | Scouting | high |
 | **Coverage from descriptors** — DCAT `temporal` and `spatial`; Croissant; HF card front matter; DataScope already declared on the asset | descriptor | none | Scouting | as good as the publisher |
 | **Geography from names and classes** — columns named country, region, state, postcode, lat/lon; data-class matches by *name only* (ISO country code, postcode) | catalog + class registry | none | Scouting | low–medium |
 | **Preliminary fit** — the above against the requirement: subject overlap, grain estimate compatible, catalog-bound coverage overlaps the window | stored rows | none | **Discovery** | stated per input; this is the gate |
 | **Measured cadence and gaps** — one aggregate query per date column (`date_trunc(period), count(*) group by 1`) rather than sampling: one scan, exact; gaps = missing periods inside the range; per-region gaps by grouping on the region column too | data read, single aggregate pass per column | api_heavy / medium; bounded by the sampling config (§5.8) when the table is large | **Analysis** | high |
 | **Measured spatial extent** — min/max of lat/lon columns; distinct values of region-typed columns matched to a reference set (`reference_data_match`) | data read | api_heavy / low–medium | Analysis | high |
-| **Measured entity grain** — `n_distinct` of candidate key ≈ row count, from `pg_stats` first, sample second | catalog then data | none, then medium | Analysis (confirms Scouting's estimate) | high |
+| **Measured entity grain** — `n_distinct` of candidate key ≈ row count, from `pg_stats` first (data identity), sample second | data | tiny, then medium | Analysis (confirms Scouting's estimate) | high |
 | **Quality by dimension** (§16.4) | mostly already-stored profiles | low once profiles exist | Analysis | per dimension |
 | **Fit** — lens versus scope, grain compatibility, thresholds | stored rows | none | **Assessment** | states which inputs were measured vs estimated |
 
@@ -1279,7 +1280,12 @@ whether the aggregate pass is worth running; Analysis runs it; Assessment
 compares against the lens.** For files, Parquet's footer statistics make the
 Scouting estimate nearly as good as the measurement; for CSV there is no
 free signal beyond names and the file's date, so CSV is where the
-Discovery gate earns its keep.
+Discovery gate earns its keep. For databases, what the *catalog identity*
+can see (structure, keys, names, comments, partition bounds, activity
+counters) is the Scouting estimate; column statistics and everything
+value-derived need the *data identity* and so arrive at Discovery only when
+that identity is held — the two-identity model in
+`design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §9.
 
 ### 16.3 The questions
 
