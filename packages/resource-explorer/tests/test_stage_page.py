@@ -261,6 +261,38 @@ class TestBuildMeasurementsForADatabase:
         assert "has not recorded measurements" in m["reason"]
 
 
+class TestRunnableAndReasonThreadsEntityType:
+    """Live-reproduced 2026-09-25: `runnable_and_reason()` always resolved
+    against repo's own catalog (`resolve_analysis_plan` defaulting to
+    "repo"), so every database analysis row in the Survey & Analyses pane
+    showed a disabled "run" button with "has no mapped survey step(s)" --
+    including `schema_inventory`, which had just run successfully seconds
+    earlier via a direct API call to the (unaffected) database run route.
+    These pin the fix: `entity_type` must reach `resolve_analysis_plan`."""
+
+    def test_a_database_only_analysis_id_is_runnable_for_database(self):
+        # db_activity_signals exists only in the database catalog -- it is
+        # NOT a repo analysis id, so the pre-fix default ("repo") reported it
+        # as having no mapped step(s) at all.
+        runnable, reason = runnable_and_reason("db_activity_signals", "database")
+        assert runnable is True
+        assert reason == ""
+
+    def test_the_same_id_is_not_runnable_for_repo(self):
+        # Confirms the check is genuinely entity-type-scoped, not just
+        # permissive now -- a database-only id must still be rejected when
+        # asked about repo.
+        runnable, reason = runnable_and_reason("db_activity_signals", "repo")
+        assert runnable is False
+        assert "no mapped survey step(s)" in reason
+
+    def test_build_analyses_index_reports_a_database_row_as_runnable(self, db_reg, db_slug):
+        idx = build_analyses_index(db_reg, db_slug, entity_type="database")
+        row = next(r for r in idx["analyses"] if r["analysis_id"] == "db_activity_signals")
+        assert row["runnable"] is True
+        assert row["runnable_reason"] == ""
+
+
 class TestFetchStepCounts:
     def test_mixed_step_list_splits_correctly_and_surfaces_unregistered(self):
         # repo_file_inventory and repo_manifest_parse both declare
