@@ -272,6 +272,13 @@ already labels) and in the survey report's engine identity.
 **Decision (project owner, 2026-09-20):** generally yes to the reachability
 rule; and there is an efficiency question alongside it.
 
+**Credentials, identities and capabilities are specified in
+`docs/security-model.md` (2026-09-25)**, which supersedes the credential
+details below and in rule C: two identities (catalog at registration, data
+at the gate), a four-value capability vocabulary bound per step, a
+structural floor declared per engine, and the operational rule for which
+connection Egeria's own surveys receive.
+
 *Reachability.* The engine host runs in a container on the Egeria network. A
 database at `localhost:5442` from the laptop is reachable to the container only
 under a different hostname; a laptop directory is unreachable unless mounted;
