@@ -1551,11 +1551,15 @@ class DatabaseSurveyor:
         statistics  = results.get("statistics", {})
 
         # Enrich each table with row count + activity timestamps from
-        # pg_stat_user_tables. Like information_schema, this view is
-        # privilege-filtered (PG10+: a role sees a table's row here only with
-        # some privilege on that table, or pg_monitor membership) — so a
-        # catalog-fallback table (connection.py's `_catalog_only_fallback()`,
-        # added for the same reason) legitimately has no entry here either.
+        # pg_stat_user_tables. CORRECTED 2026-09-24/25: unlike information_
+        # schema, this view is NOT privilege-filtered — live-verified (see
+        # `DATABASE-STEP-CAPABILITY-AUDIT.md`'s "Correction") to be visible
+        # to any connected role regardless of grants or `pg_monitor`. So a
+        # catalog-fallback table (connection.py's `_catalog_only_fallback()`)
+        # will in practice usually still have a row here; the `elif` below
+        # exists for the residual case where it genuinely doesn't (e.g. a
+        # table Postgres has never collected stats for), not because this
+        # view is gated the way `information_schema`/`pg_tables` are.
         row_lookup: dict[tuple, dict] = {
             (rs["schemaname"], rs["tablename"]): rs
             for rs in statistics.get("row_stats", [])

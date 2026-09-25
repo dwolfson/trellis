@@ -284,8 +284,10 @@ class TestDatabaseRowsFromSurveyData:
         assert col_row["is_primary_key"] == 1
 
     def test_catalog_fallback_table_with_a_real_stats_match_uses_that_not_the_estimate(self):
-        # A rare case (design REPLY doc §3): a credential granted pg_monitor
-        # can see pg_stat_user_tables for a table it still cannot SELECT
+        # Actually the common case, not the rare one (corrected 2026-09-24/25
+        # — `pg_stat_user_tables` is unfiltered, no `pg_monitor` needed; see
+        # `DATABASE-STEP-CAPABILITY-AUDIT.md`'s "Correction"): any credential
+        # can see `pg_stat_user_tables` for a table it still cannot SELECT
         # from. database_surveyor.py's _store_results would set a real
         # `row_count` in that case; this checks the materializer prefers it
         # over `row_count_estimate` when both are present.

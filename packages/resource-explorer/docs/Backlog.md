@@ -7892,3 +7892,43 @@ technical design is now complete (this entry, `ASK`/`REPLY-DATABASE-
 CREDENTIAL-CAPABILITY-VISIBILITY.md`, and its §7), not merely directional.
 Once approved, items 2 and 3 from the original list follow directly and
 don't need a second design pass.
+
+## `stats` capability tier's `pg_monitor` premise was wrong for per-table/per-database counters — corrected (2026-09-24/25)
+
+`DATABASE-STEP-CAPABILITY-AUDIT.md`'s original classification (`#262`'s
+basis for the `requires_capability` field) said `pg_stat_user_tables`/`pg_
+stat_user_indexes` need `pg_monitor` membership. **Live-verified by the
+coordinating session, 2026-09-24/25, not to be true**: connected as
+`egeria_user` against `coco_pharma` (confirmed not a `pg_monitor` member),
+`pg_stat_user_tables` returned all 58 rows — matching an independent `pg_
+class`/`pg_namespace` count exactly — with real non-null `n_tup_ins`/`last_
+vacuum` values even for schemas (`demo`, `demo_auth`) the credential has no
+`USAGE` grant on. Same result for `pg_stat_user_indexes` (28/28),
+`pg_stat_database`, `pg_stat_archiver`, `pg_stat_bgwriter`, `pg_stat_wal` —
+all unfiltered. What `pg_monitor` genuinely gates, confirmed the same way: a
+second session's query text/state in `pg_stat_activity` came back
+`<insufficient privilege>` for the non-member role; `pg_stat_replication`
+shares that same masking mechanism per Postgres's own view definitions
+(not independently reproduced here — no standby attached to the dev
+instance). `pg_stats` (column statistics) is unaffected by any of this — it
+was already correctly `read`-tier, and was re-confirmed genuinely
+column-`SELECT`-filtered (441 of 481 rows visible to the same credential).
+
+**Fixed:** `credential_capability.py`'s module docstring and `STATS`
+branch/detail text; `DATABASE-STEP-CAPABILITY-AUDIT.md` (a "Correction"
+section plus inline corrections to the vocabulary table, §1, §2, the
+summary table, and "Worth a second look" #3); `survey_definition_adapter.
+py`'s `requires_capability` declarations — `postgres_schema_and_stats`
+`stats`→`read`, `postgres_operations`'s bundle comment corrected from
+two-stats-of-four to one (`db_activity_signals` is now `catalog`;
+`db_resilience` keeps `stats`, now solely because it reads `pg_stat_
+replication`); `db_derived.py`'s `COVERAGE_ANALYZE_REMEDY` (wrongly called
+the gap "a pg_monitor-class credential" issue — it's actually `pg_stats`,
+column-`SELECT`-gated); a stale comment in `database_surveyor.py`'s
+`_store_results` claiming `pg_stat_user_tables` is privilege-filtered; and
+`tests/test_requires_capability_gate.py`'s pinned expectations. Copy
+language in `docs/design-notes/ASK-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.
+md` §1's quoted `stats` sentence should be re-checked by whoever runs that
+designer pass, since the sentence quoted there is the pre-correction
+wording — not edited here since that doc is a point-in-time transcript of
+what shipped, not living copy.

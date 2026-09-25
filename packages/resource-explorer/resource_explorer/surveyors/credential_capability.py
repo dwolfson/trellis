@@ -39,6 +39,35 @@ table grants satisfies `stats` and fails `read`; the `egeria_user` of the
 incident that started all this is the reverse on three tables. So each value
 is its own predicate over the probe's own fields, and `assess` evaluates
 exactly one of them.
+
+**Correction (live-verified by the coordinating session, 2026-09-24/25):**
+`stats` does NOT mean "needs `pg_monitor` to see per-table activity/row-count
+counters" — that premise, baked into this module (and into
+`DATABASE-STEP-CAPABILITY-AUDIT.md`) since `#262`, is wrong. `pg_stat_user_
+tables`, `pg_stat_user_indexes` (and, checked while fixing this,
+`pg_stat_database`/`pg_stat_bgwriter`/`pg_stat_archiver`/`pg_stat_wal`) are
+plain views over catalog state with no ACL predicate at all — confirmed
+live against `coco_pharma` as `egeria_user` (not a `pg_monitor` member):
+`pg_stat_user_tables` returned all 58 rows, matching an independent
+`pg_class`/`pg_namespace` count exactly, with real non-null `n_tup_ins`/
+`last_vacuum` values even for schemas `egeria_user` has no `USAGE` grant on.
+Those views are `catalog`-tier, the same as `pg_namespace`/`pg_class`
+themselves — see `DATABASE-STEP-CAPABILITY-AUDIT.md`'s "Correction" section
+for the full per-view table.
+
+What `pg_monitor`/`pg_read_all_stats` actually gate, confirmed the same way
+(a second session's query masked to `<insufficient privilege>` in
+`pg_stat_activity` for a non-`pg_monitor` role): visibility into OTHER
+sessions/connections — `pg_stat_activity`'s query text and state for rows
+that are not your own, and (per Postgres's own view definitions, same
+mechanism, not independently reproducible in this environment because no
+standby was attached) `pg_stat_replication`. `stats` keeps that meaning; the
+probe (`stats_role`, driven by `pg_has_role(current_user, 'pg_monitor',
+'MEMBER')`) is still the right check for it, and `db_resilience` still
+correctly declares `stats` because it reads `pg_stat_replication`. What
+changed is which steps' OUTPUT actually depends on that boundary —
+`postgres_schema_and_stats`'s row-count/activity display does not, and is
+now declared `read` instead (see `survey_definition_adapter.py`).
 """
 from __future__ import annotations
 
@@ -178,14 +207,21 @@ def assess(requirement: str, probe: dict | None) -> CapabilityAssessment:
         )
 
     if requirement == STATS:
+        # `pg_stat_user_tables`/`pg_stat_user_indexes` are NOT gated by
+        # `pg_monitor` — live-verified (module docstring's "Correction").
+        # What `pg_monitor` actually restricts is visibility into OTHER
+        # sessions' activity (`pg_stat_activity` query text, `pg_stat_
+        # replication`), so the wording here describes that, not per-table
+        # counters.
         ok = bool(probe.get("stats_role"))
         return CapabilityAssessment(
             requirement=STATS, known=True, satisfied=ok, connected_as=who,
             detail="" if ok else (
                 f"needs `stats`; connected as {who}, which is not a member of "
-                "`pg_monitor`, so the per-table activity and row-count views "
-                "(`pg_stat_user_tables`, `pg_stat_user_indexes`) report only "
-                "what this role owns"),
+                "`pg_monitor`, so replication status and other sessions' "
+                "activity are not fully visible (this does NOT affect "
+                "per-table row-count/activity counters — `pg_stat_user_tables`"
+                "/`pg_stat_user_indexes` are visible to any connected role)"),
         )
 
     if requirement == WRITE:

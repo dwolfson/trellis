@@ -1,5 +1,70 @@
 # Database step capability audit — catalog / read / stats / write, traced to actual SQL
 
+## Correction (live-verified by the coordinating session, 2026-09-24/25)
+
+**This audit's `stats` classification for `pg_stat_user_tables`/`pg_stat_
+user_indexes` was wrong, and everything below that relied on it has been
+corrected in place rather than rewritten from scratch, so the "worth a
+second look" section's original numbering stays intact for anyone diffing
+against history.** The premise — "`stats` = needs `pg_monitor` membership or
+ownership" applied to the per-table/per-index activity views — does not
+hold. Those views carry no ACL predicate at all.
+
+**Empirically verified**, connected as `egeria_user` against `coco_pharma`
+(confirmed not a `pg_monitor` member: `pg_has_role('egeria_user',
+'pg_monitor', 'member')` → `false`), via `SET ROLE egeria_user` from a
+superuser session on the shared dev Postgres (`egeria-shared-postgres`,
+port 5442):
+
+| View | Visible to `egeria_user` (non-`pg_monitor`)? | Tier |
+|---|---|---|
+| `pg_stat_user_tables` | Yes — all 58 rows, exactly matching an independent `pg_class`/`pg_namespace` count, with real non-null `n_tup_ins`/`last_vacuum` even for schemas (`demo`, `demo_auth`) `egeria_user` has no `USAGE` grant on | **catalog** (not `stats`) |
+| `pg_stat_user_indexes` | Yes — all 28 rows, same unfiltered behaviour | **catalog** (not `stats`) |
+| `pg_stat_database` | Yes — full row for `coco_pharma` (`numbackends`, `xact_commit`, …), identical to the superuser's read | **catalog** (not `stats`) |
+| `pg_stat_archiver` | Yes — full single-row global counters, identical to superuser | **catalog** (not `stats`) |
+| `pg_stat_bgwriter` | Yes — full single-row global counters, identical to superuser | **catalog** (not `stats`) |
+| `pg_stat_wal` | Yes — full single-row global counters, identical to superuser | **catalog** (not `stats`) |
+| `pg_stat_activity` | **Masked** — another session's `query` and `state` columns came back `<insufficient privilege>`/null for a non-`pg_monitor` role; only `pid`/`usename`/`application_name` were visible | **stats**, confirmed |
+| `pg_stat_replication` | Not independently testable in this environment (0 rows — no standby attached to the dev instance), but built on the same `pg_stat_get_activity()`/per-session masking mechanism `pg_stat_activity` uses, per Postgres's own view definitions | **stats**, by mechanism (not directly reproduced here) |
+| `pg_stat_statements` | Not testable — extension not installed on this instance | **stats**, per Postgres documentation (query text/per-query stats need `pg_read_all_stats`/`pg_monitor`), not independently re-verified here |
+| `pg_stats` (column statistics) | **Partially filtered** — 441 of 481 rows visible to `egeria_user`, narrower than the superuser's 481; confirmed the missing rows are columns on tables (e.g. `demo_auth.users`) `egeria_user` cannot `SELECT` | **read** (unchanged — genuinely column-`SELECT`-gated, not `pg_monitor`-gated) |
+
+**The corrected model:** `pg_monitor`/`pg_read_all_stats` gate visibility
+into *other sessions'/connections'* activity (`pg_stat_activity` query
+text/state for rows that are not your own, `pg_stat_replication`, and —
+per documentation, not reproduced here — `pg_stat_statements`). They do
+**not** gate per-object/per-database counters (`pg_stat_user_tables`,
+`pg_stat_user_indexes`, `pg_stat_database`, `pg_stat_archiver`, `pg_stat_
+bgwriter`, `pg_stat_wal`), which behave exactly like `pg_namespace`/`pg_
+class` — visible to any role that can connect. `pg_stats` keeps its
+existing `read` classification, unaffected by any of this — it was never
+part of the `pg_monitor` claim; it is gated by column-level `SELECT`, and
+that gating was re-confirmed live above.
+
+**What changed as a result:**
+- `postgres_schema_and_stats` (`survey_definition_adapter.py`): `requires_
+  capability` corrected from `stats` to `read` — its declared output never
+  depended on a `pg_monitor`-gated view; the strongest tier it still touches
+  is `read` (`information_schema.*` enumeration, `pg_stats` column profile).
+- `postgres_operations`: `db_activity_signals` (`pg_stat_user_tables`, `pg_
+  stat_database`) is reclassified from `stats` to `catalog`. `db_resilience`
+  keeps `stats`, now for one reason instead of two: it reads `pg_stat_
+  replication`, which the correction above confirms is still genuinely
+  gated; its other three queries (`pg_is_in_recovery()`, `SHOW archive_
+  mode`, `pg_stat_archiver`, `pg_extension`) are `catalog`, consistent with
+  what §2 already said about them individually. The step-level declaration
+  for `postgres_operations` stays `stats` because `db_resilience` alone is
+  now the sole reason, not because two of four sub-analyses need it.
+- `credential_capability.py`'s `STATS` branch and module docstring, and
+  `db_derived.py`'s `COVERAGE_ANALYZE_REMEDY` (which wrongly called
+  `postgres_schema_and_stats` "a pg_monitor-class credential" requirement —
+  the coverage gap it describes is actually `pg_stats`, which is `read`-tier)
+  were fixed to match.
+
+The vocabulary table, §1, §2, the summary table and "Worth a second look"
+below are left as originally written except where corrected inline, so the
+audit trail of what was believed and what was found stays legible.
+
 **For:** the `requires_capability` build, once the project owner's ruling on
 the credential-model question lands (`docs/Backlog.md`, "Database
 credential-capability model — awaiting the project owner's ruling").
@@ -23,7 +88,7 @@ not re-derived):
 |---|---|---|
 | `catalog` | system-catalog reads only | visible to any connected role regardless of grants |
 | `read` | needs `SELECT` on target tables | Postgres privilege-filters the view/query by the querying role's actual grants |
-| `stats` | needs `pg_monitor` membership or object ownership for full visibility | monitoring/statistics views restricted beyond ordinary `SELECT` |
+| `stats` | needs `pg_monitor` membership for visibility into OTHER sessions/connections | `pg_stat_activity` (other rows' query/state), `pg_stat_replication`, `pg_stat_statements` — **NOT** `pg_stat_user_tables`/`pg_stat_user_indexes`/`pg_stat_database`/`pg_stat_archiver`/`pg_stat_bgwriter`/`pg_stat_wal`, which are unfiltered (corrected 2026-09-24/25 — see "Correction" above; this row originally said the per-table/per-database counters needed it too) |
 | `write` | never exercised by a survey, only probed | `has_table_privilege(..., 'INSERT')`, checked, never executed |
 
 ---
@@ -69,11 +134,11 @@ only in which keys of the same result dict it returns.
 | Table/column comments (`obj_description`/`col_description` in `_get_tables_for_schema`'s main query) | `connection.py:262-278` | `(schema.table)::regclass` cast into `pg_class`/`pg_attribute` via the comment functions | **catalog** | same functions design rule 13 already documents as needing the qualified-regclass form; the comment catalog itself (`pg_description`) is not grant-filtered |
 | Database size (`_get_database_size`) | `connection.py:907-915` | `pg_database_size()`, `pg_size_pretty()` | **catalog** | a function call over catalog metadata (database size), not a per-table grant check; requires only `CONNECT` on the database, which the credential already has by virtue of connecting |
 | Per-table byte size (`_get_table_statistics`) | `connection.py:917-931` | `pg_tables`, filtered `... AND has_schema_privilege(schemaname, 'USAGE')` | **catalog, self-filtered** | `pg_tables` itself is unfiltered catalog metadata (like `pg_class`); the query *chooses* to narrow it with an explicit `has_schema_privilege` predicate rather than Postgres filtering it for free. Worth flagging on its own — see §6 |
-| Row-count/last-activity for display (`_get_table_row_stats`) | `connection.py:933-961` | `pg_stat_user_tables` (`n_live_tup`, `last_analyze`/`last_autoanalyze`, `last_vacuum`/`last_autovacuum`, `n_mod_since_analyze`) | **stats** | full per-table visibility needs `pg_monitor` membership or ownership |
+| Row-count/last-activity for display (`_get_table_row_stats`) | `connection.py:933-961` | `pg_stat_user_tables` (`n_live_tup`, `last_analyze`/`last_autoanalyze`, `last_vacuum`/`last_autovacuum`, `n_mod_since_analyze`) | **catalog** *(corrected 2026-09-24/25 — was `stats`; live-verified unfiltered, see "Correction" above)* | no ACL predicate at all — visible to any connected role, same as `pg_class` |
 | Column profile (`get_column_stats`, feeds `_survey_extended_statistics`'s `column_profile_rows`) | `connection.py:388-429` | `pg_stats` (joined to `pg_class.reltuples` for the row-count-at-analyze-time) | **read** | `pg_stats` is defined `WHERE has_column_privilege(...)` — it is genuinely privilege-filtered by the querying role's grants, not just by convention |
-| Table activity rows (`get_table_activity`, feeds `_survey_extended_statistics`'s `table_activity_rows`) | `connection.py:431-477` | `pg_stat_user_tables` (full column set: tuple counters, scan counts, vacuum/analyze recency) | **stats** | same view as the row-stats read above, fuller projection |
-| Index usage (`get_index_stats`, part of `_survey_extended_statistics`) | `connection.py:496-519` | `pg_stat_user_indexes` joined to `pg_index` | **stats** | same visibility rule as the other `pg_stat_user_*` views |
-| Stats-reset timestamp (`get_stats_reset`) | `connection.py:479-494` | `pg_stat_database` | **catalog-like, but not the strict "stats" gate** — see note | `pg_stat_database` is a database-wide, non-per-object view with no per-user sensitive content; it is not one of the views the `stats` tier's `pg_monitor`/ownership rule targets. Included here for completeness rather than folded into `stats`, since the vocabulary's `stats` value is specifically about the monitoring views this codebase already names (`pg_stat_user_tables`/`pg_stat_user_indexes`/`pg_stat_replication`/`pg_stat_archiver`) |
+| Table activity rows (`get_table_activity`, feeds `_survey_extended_statistics`'s `table_activity_rows`) | `connection.py:431-477` | `pg_stat_user_tables` (full column set: tuple counters, scan counts, vacuum/analyze recency) | **catalog** *(corrected 2026-09-24/25 — was `stats`)* | same unfiltered view as the row-stats read above, fuller projection |
+| Index usage (`get_index_stats`, part of `_survey_extended_statistics`) | `connection.py:496-519` | `pg_stat_user_indexes` joined to `pg_index` | **catalog** *(corrected 2026-09-24/25 — was `stats`; live-verified 28 of 28 rows visible to `egeria_user`)* | no ACL predicate — same unfiltered family as `pg_stat_user_tables` |
+| Stats-reset timestamp (`get_stats_reset`) | `connection.py:479-494` | `pg_stat_database` | **catalog** *(this row's original "catalog-like, but not the strict stats gate" hedge is now resolved — live-verified fully visible to `egeria_user`, identical to superuser)* | `pg_stat_database` is a database-wide, non-per-object view with no per-user sensitive content, and — per the 2026-09-24/25 correction — the `stats` tier's `pg_monitor` gate never applied to it at all; the gate is about OTHER SESSIONS' activity (`pg_stat_activity`/`pg_stat_replication`), not per-database counters |
 | SQL view analysis (`_survey_views`) | `database_surveyor.py:1616-1633` | `information_schema.views` | **read** | privilege-filtered the same way `information_schema.tables` is |
 
 **Conclusion for this step as a whole:** it is not one tier. Its
@@ -117,15 +182,16 @@ blended tier, per the task brief's instruction.
 | Sub-analysis | Source | Postgres objects | Tier | Why |
 |---|---|---|---|---|
 | `privilege_audit` | `get_privilege_audit`, `connection.py:532-608` | `pg_roles`; `pg_class.relacl` via `aclexplode()`, joined to `pg_namespace`; `pg_default_acl` joined to `pg_namespace` | **catalog** | the method's own comment (`connection.py:569-573`) states this explicitly and gives the reason: `pg_class` ACLs are catalog metadata, visible to any connected role regardless of that role's own grants — confirmed live against a real PUBLIC grant on `coco_ods`, where `information_schema.role_table_grants` (which the code deliberately does NOT use) would have hidden it |
-| `db_activity_signals` | `get_table_activity` + `get_stats_reset`, `connection.py:431-494`, called from `_survey_operations:895-899` | `pg_stat_user_tables`, `pg_stat_database` | **stats** | `pg_stat_user_tables` is the same view §1 classifies `stats`-tier; `pg_stat_database` (the `stats_reset` value here) is broader-visibility per §1's note, but the sub-analysis as a whole is gated on `capabilities.tuple_counters`, which this codebase already ties to the `pg_stat_user_tables` read, so `stats` is the honest label for the bundle |
-| `db_resilience` | `get_replication_status` + `get_wal_archiving_status` + `get_backup_tool_signals` + `get_clustering_info`, `connection.py:708-828` | `pg_is_in_recovery()`, `pg_stat_replication`; `SHOW archive_mode`, `pg_stat_archiver`; `pg_extension` (backup-tool markers); `pg_extension` (Citus) | **stats, with a catalog-tier tail** | `pg_stat_replication` and `pg_stat_archiver` are the two views the task brief names directly as `stats`-tier; `pg_is_in_recovery()` and `SHOW archive_mode` are function/setting reads any connected role can make; `pg_extension` (used twice, for backup-tool detection and Citus detection) is ordinary catalog metadata. The sub-analysis is gated as one unit on `capabilities.resilience`, so — like `db_activity_signals` — the weakest-link tier for the bundle is `stats`, but two of its four queries (`get_backup_tool_signals`, `get_clustering_info`) would individually be `catalog` on their own |
+| `db_activity_signals` | `get_table_activity` + `get_stats_reset`, `connection.py:431-494`, called from `_survey_operations:895-899` | `pg_stat_user_tables`, `pg_stat_database` | **catalog** *(corrected 2026-09-24/25 — was `stats`)* | both views are live-verified unfiltered (see "Correction" above) — no ACL predicate, visible to any connected role. `capabilities.tuple_counters` still gates the sub-analysis on whether the engine supports it at all, not on `pg_monitor` |
+| `db_resilience` | `get_replication_status` + `get_wal_archiving_status` + `get_backup_tool_signals` + `get_clustering_info`, `connection.py:708-828` | `pg_is_in_recovery()`, `pg_stat_replication`; `SHOW archive_mode`, `pg_stat_archiver`; `pg_extension` (backup-tool markers); `pg_extension` (Citus) | **stats, with a catalog-tier tail** *(narrowed 2026-09-24/25: `pg_stat_archiver` is now confirmed `catalog`, not `stats` — see "Correction" above; `pg_stat_replication` is the only genuinely `pg_monitor`-gated query left in this bundle)* | `pg_is_in_recovery()` and `SHOW archive_mode` are function/setting reads any connected role can make; `pg_stat_archiver` is live-verified unfiltered (full single-row global counters, identical to superuser); `pg_extension` (used twice, for backup-tool detection and Citus detection) is ordinary catalog metadata. `pg_stat_replication` is the one query in this sub-analysis that is genuinely gated — built on the same per-session masking mechanism confirmed live against `pg_stat_activity` (not independently reproduced for `pg_stat_replication` itself, since this dev instance has no standby attached). The sub-analysis is gated as one unit on `capabilities.resilience`, so the weakest-link tier for the bundle is still `stats`, now because of one query instead of two |
 | `db_external_dependencies` | `get_external_dependencies`, `connection.py:830-892` | `pg_extension`; `pg_foreign_server`/`pg_foreign_data_wrapper`; `pg_foreign_table`/`pg_class`/`pg_namespace`; `pg_publication`; `pg_subscription` | **catalog** | every object queried is catalog metadata with no grant-based row filtering. One caveat the method's own comment (`connection.py:872-880`) already flags: `pg_subscription` is visible only to a superuser or the subscription-owning role on the *subscriber* database — a permission failure there degrades silently to an empty list, indistinguishable from "no subscriptions," which is a real absence-collapse the method's comment names but does not fix. That's a `find-absence-as-answer` gap independent of the capability-tier question, not something this audit's scope covers fixing |
 
 **Conclusion:** `postgres_operations` is a real four-way bundle exactly as
-the task brief anticipated, and the tiers land as expected: `privilege_
-audit` and `db_external_dependencies` at `catalog`, `db_activity_signals`
-and `db_resilience` at `stats` (the latter with two catalog-tier queries
-riding along inside the same capability gate).
+the task brief anticipated. **Corrected 2026-09-24/25:** the tiers land
+three-and-one, not two-and-two as originally written here — `privilege_
+audit`, `db_external_dependencies` **and `db_activity_signals`** are all
+`catalog`; only `db_resilience` is `stats` (and only because of its
+`pg_stat_replication` read — its other three queries are also `catalog`).
 
 ---
 
@@ -278,15 +344,15 @@ second look" below.
 | `postgres_schema_and_stats` — table/column comments | `pg_description` via `regclass` | catalog | unfiltered |
 | `postgres_schema_and_stats` — database size | `pg_database_size()` | catalog | function call |
 | `postgres_schema_and_stats` — per-table size | `pg_tables` + self-filter | catalog (self-filtered) | see §6 below |
-| `postgres_schema_and_stats` — row/last-activity display | `pg_stat_user_tables` | stats | pg_monitor/ownership |
-| `postgres_schema_and_stats` — column profile | `pg_stats` | read | privilege-filtered view |
-| `postgres_schema_and_stats` — table activity rows | `pg_stat_user_tables` | stats | pg_monitor/ownership |
-| `postgres_schema_and_stats` — index usage | `pg_stat_user_indexes` | stats | pg_monitor/ownership |
-| `postgres_schema_and_stats` — stats-reset timestamp | `pg_stat_database` | catalog-like (not gated) | see §1 note |
+| `postgres_schema_and_stats` — row/last-activity display | `pg_stat_user_tables` | catalog *(was stats, corrected)* | live-verified unfiltered |
+| `postgres_schema_and_stats` — column profile | `pg_stats` | read | privilege-filtered view (re-verified live: 441/481 rows) |
+| `postgres_schema_and_stats` — table activity rows | `pg_stat_user_tables` | catalog *(was stats, corrected)* | live-verified unfiltered |
+| `postgres_schema_and_stats` — index usage | `pg_stat_user_indexes` | catalog *(was stats, corrected)* | live-verified unfiltered, 28/28 rows |
+| `postgres_schema_and_stats` — stats-reset timestamp | `pg_stat_database` | catalog | live-verified unfiltered (was hedged "not gated" — now confirmed) |
 | `postgres_schema_and_stats` — view SQL (from default survey) | `information_schema.views` | read | privilege-filtered |
 | `postgres_operations` — privilege_audit | `pg_roles`, `pg_class.relacl`, `pg_default_acl` | catalog | confirmed by in-code comment |
-| `postgres_operations` — db_activity_signals | `pg_stat_user_tables`, `pg_stat_database` | stats | pg_monitor/ownership |
-| `postgres_operations` — db_resilience | `pg_stat_replication`, `pg_stat_archiver`, `pg_is_in_recovery()`, `SHOW archive_mode`, `pg_extension` | stats (bundle), catalog-tail | two of four queries are individually catalog |
+| `postgres_operations` — db_activity_signals | `pg_stat_user_tables`, `pg_stat_database` | catalog *(was stats, corrected)* | live-verified unfiltered |
+| `postgres_operations` — db_resilience | `pg_stat_replication`, `pg_stat_archiver`, `pg_is_in_recovery()`, `SHOW archive_mode`, `pg_extension` | stats (bundle, now for one query), catalog-tail | only `pg_stat_replication` is genuinely gated; `pg_stat_archiver` is now confirmed catalog too — three of four queries are individually catalog |
 | `postgres_operations` — db_external_dependencies | `pg_extension`, `pg_foreign_server`, `pg_foreign_table`, `pg_publication`, `pg_subscription` | catalog | `pg_subscription` visibility caveat noted |
 | `credential_capability` | `pg_namespace`, `pg_class`, `has_schema_privilege`, `has_table_privilege`, `pg_has_role` | catalog | live-verified against `coco_pharma` |
 | `db_derived` | none — no connection | n/a | no tier applies |
@@ -295,17 +361,21 @@ second look" below.
 | `sql_analysis` | `information_schema.views` + schema/statistics ride-along | read (declared), stats (actual reach) | identical code path to postgres_schema_and_stats |
 
 **Tier breakdown across the 19 rows above** (counting each sub-analysis
-once, `db_derived` counted separately as "no tier"):
+once, `db_derived` counted separately as "no tier"). **Corrected
+2026-09-24/25** — four rows moved from `stats` to `catalog`, so the counts
+below no longer match the original write-up; see "Correction" above for why:
 
-- `catalog`: 9 (schema descriptions, comments, database size, per-table
+- `catalog`: 13 (schema descriptions, comments, database size, per-table
   size, stats-reset timestamp, privilege_audit, db_external_dependencies,
   credential_capability, plus db_resilience's catalog-tail queries folded
-  into its own row rather than double-counted)
+  into its own row rather than double-counted — **plus, corrected, row/
+  last-activity display, table activity rows, index usage, and
+  db_activity_signals**, all live-verified unfiltered)
 - `read`: 6 (table/column enumeration, column profile via pg_stats, view
   SQL twice over — schema_and_stats and sql_analysis — column_profile,
   nested_columns)
-- `stats`: 4 (row/last-activity display, table activity rows, index usage,
-  db_activity_signals) plus `db_resilience` as a stats-gated bundle
+- `stats`: 0 standalone rows now — only `db_resilience` as a stats-gated
+  bundle remains, and only because of its `pg_stat_replication` read
 - `write`: 0 — confirmed nowhere in the database step family is a write
   ever exercised; the only `write`-shaped code is `credential_capability`'s
   `has_table_privilege(..., 'INSERT')` **probe**, which the vocabulary's
@@ -355,17 +425,16 @@ section).
    does the query actually filter to" would misclassify this one in either
    direction depending on which signal it trusts.
 
-3. **`pg_stat_database` (the stats-reset read) doesn't fit either `catalog`
-   or `stats` cleanly.** It's a `pg_stat_*` view, which is the family the
-   `stats` tier's `pg_monitor`/ownership rule is built around, but this
-   particular view carries no per-object or per-session sensitive data and
-   is not subject to that rule the way `pg_stat_user_tables`/`pg_stat_
-   replication`/`pg_stat_archiver` are. The four-value vocabulary has no
-   slot for "looks like a stats view, behaves like a catalog view" — this
-   audit classified it by behavior (catalog-like) rather than by view-name
-   family, but a stricter reading of the vocabulary's own table ("stats" =
-   "the monitoring and statistics views") would put it in `stats` on name
-   alone. Worth a decision, not just a footnote, before the field is built.
+3. **RESOLVED 2026-09-24/25 — was: "`pg_stat_database` doesn't fit either
+   `catalog` or `stats` cleanly."** The live verification above settles this
+   rather than just deciding it by convention: `pg_stat_database` (and, it
+   turns out, `pg_stat_user_tables`/`pg_stat_user_indexes`/`pg_stat_archiver`/
+   `pg_stat_bgwriter`/`pg_stat_wal`) are unfiltered — the `stats` tier's
+   `pg_monitor` gate was never about "looks like a `pg_stat_*` view", it is
+   specifically about visibility into OTHER sessions' activity
+   (`pg_stat_activity`, `pg_stat_replication`). `pg_stat_database` is
+   `catalog`, on the same footing as `pg_class`, not an edge case the
+   four-value vocabulary lacks a slot for.
 
 4. **`db_external_dependencies`'s `pg_subscription` read has its own
    silent absence-collapse**, independent of capability tiering: a
