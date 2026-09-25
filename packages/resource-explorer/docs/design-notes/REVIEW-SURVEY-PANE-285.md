@@ -5,7 +5,8 @@
 a live test of `coco_pharma` found the merged pane unusable ("I can't find
 anything I would view as correct or usable").
 **Read against:** `main` at `3999c4a1` (#285 merged). Code read, not
-live-tested; the screenshots were relayed in words and I did not see them.
+live-tested; the five screenshots were seen after the first draft and §6 is what
+they add.
 
 ## Verdict
 
@@ -18,7 +19,7 @@ did not work; they cannot be the gate for a user surface, and the repo's own
 rule already says so (`extending-resource-explorer.md`, "open the thing a
 user opens").
 
-But the revert fixes **one** of the five points. Three are older gaps that
+But the revert fixes **one** of the five points, and none of §6's. Three are older gaps that
 #285 made visible by putting everything on one screen, and one is a
 design-document defect of mine. Reverting and re-landing the same shape
 would reproduce four of the five complaints.
@@ -61,6 +62,84 @@ the empty state says so and names the nearest stage that has something.
    its reason, and nothing on the screen is a rollup without a name.
 
 The chat footer (#3) is its own small PR and does not wait.
+
+## §6 · What the screenshots add — three defects worse than the five points
+
+Seen 2026-09-25: *By analysis* (Scouting), *Questions* (Scouting), *Survey &
+analyses* (23 rows), and the chat answer to "What credential capabilities do
+I have?". In order of severity.
+
+**6.1 "Ran and found nothing — a measured zero, not a gap in coverage" is
+being rendered where nothing was read.** On *Questions*, "Is this database
+alive?" answers `db_activity_signals ran and found nothing — a measured
+zero`; "Is this database a primary or a replica, is WAL archiving
+configured?" answers `db_resilience ran and found nothing — a measured
+zero`. Neither can be a measured zero: a database with 3,526 rows has
+activity counters, and `pg_is_in_recovery()` always returns a value. On
+*Survey & analyses*, **Credential Capability** reads "Just now: nothing
+found" — the probe whose entire output is "connected as X, sees N of M" is
+summarised as nothing found. The pattern: an analysis with no results
+reader is rendered by a generic fallback that reports absence of a reader
+as *measured absence of findings*, in the exact wording this codebase
+reserves for a verified zero. That is `find-absence-as-answer` inverted
+and made confident. **Rule for the re-land: an analysis with no reader
+renders "ran; no summary reader yet", never "nothing found", and the ✓ is
+withheld.** This alone justifies the revert regardless of the rest.
+
+**6.2 A generic summariser is fabricating text from result keys.** "5
+rankeds · 2 signals useds · 2 signals missings" (Database Classification),
+"no grants addeds or grants revokeds found", "53 grains · 3 determineds ·
+50 undetermineds", "56 per tables" (Change Rates), and Schema Fingerprint
+and Schema Conventions both summarised as "53 tables · 427 columns", which
+is not a fingerprint and not a convention check. My reply §1.1 said the
+result line comes from each analysis's *existing* results reader and "no
+new summariser". A pluralising key-walker was built instead. **Delete it.**
+Where no reader exists, 6.1's honest state applies.
+
+**6.3 The cross-type questions carry repository answering logic on a
+database.** "What is this resource?" → `N/A — direct field
+(Project.description) … summary of the top level README`; "Who owns this
+resource?" → `GAP: repository_health + chaoss_metrics … are not a real
+analysis for database resources`; "Under what licence?" → `GitHub license
+field`. Stream 4 reworded the *question* text to be resource-neutral and
+left the *Answering Analysis* column repository-shaped, so every `*` row
+answers a database with repository prose. The catalog needs a per-type
+answering analysis for cross-type rows (a second CSV column keyed by
+resource type, or per-type resolvers in the fact layer), and until it
+exists those rows must render *not authored for databases*, which is the
+state Stream 2 built for exactly this.
+
+And the smaller ones, each real:
+
+- **Question/answer mismatch shown as answered.** "Which schemas carry the
+  data, and which are system, empty or staging?" is ✓ with "table count 56
+  · column count 427 · catalog only table count 53" — no schema named. The
+  ✓ means the mapped analysis ran, not that the question was answered.
+- **Two tabs disagree about the same run.** *By analysis* says Activity
+  Signals, Operational Resilience and Credential Capability are "Registered,
+  never run" in red; *Survey & analyses* says all three ran "just now". Two
+  readers of one state.
+- **Developer prose as user text.** Row descriptions cite "design §5.2,
+  §5.7", "MIXED analysis (design §5.5)", and "REPLY-DATABASE-CREDENTIAL-
+  CAPABILITY-VISIBILITY.md, replying to ASK-…-#251"; the blocked rows say
+  "either it's a publish action (not a survey) or an unknown id"; the chat
+  header lists JSON keys ("compile_id, resource_type, spec_id, budget, used,
+  headroom, packed, lists, coverage, instructions_variant, gaps, recorded").
+  The catalog's `description` field was written for developers and is being
+  shown to users unedited; it needs a `summary` for people or the rows need
+  the question they answer as their line, which the pane already has.
+- **The footer contradicts the list.** Twenty runnable rows above; below
+  them, "No RE-authored surveys are defined for PostgreSQL Database yet."
+- **"Recommended" on every row** carries no information; "chat-only — no
+  question asks" on Credential Capability contradicts `security-model.md`
+  §7, which makes the probe's result the banner and a question's answer.
+- **Credential scope is absent from the numbers.** "10 of 56 tables
+  measured", "0 B", and no "as `egeria_user`, 3 of 8 schemas readable" —
+  the one fact the probe exists to attach, on the same screen where the
+  probe says it found nothing.
+- **Relationship Graph: 53 tables · 53 components · 53 isolated tables** is
+  the whole-database rollup with no schema named — the aggregation-grain
+  defect #263 described, on screen.
 
 ## §5 · The process change
 
