@@ -547,6 +547,7 @@ const MEASURED = 'measured';
 const NOTHING_FOUND = 'nothing_found';
 const NOT_ESTABLISHED = 'not_established';
 const NEVER_RUN = 'never_run';
+const NO_READER = 'no_reader';
 const PARTIAL = 'partial';
 
 /**

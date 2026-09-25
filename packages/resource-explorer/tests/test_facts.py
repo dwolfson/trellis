@@ -23,6 +23,7 @@ from resource_explorer.facts import (
 from resource_explorer.surveyors.result_status import (
     MEASURED,
     NEVER_RUN,
+    NO_READER,
     NOT_ESTABLISHED,
     NOTHING_FOUND,
 )
@@ -38,6 +39,14 @@ class TestIsKnown:
     def test_never_run_and_not_established_are_not(self):
         assert Fact("x", NEVER_RUN).is_known is False
         assert Fact("x", NOT_ESTABLISHED).is_known is False
+
+    def test_no_reader_is_not_knowledge_either(self):
+        """A missing results_reader is a gap in the answering machinery, not
+        a measured zero -- live-reproduced 2026-09-25 (REVIEW-SURVEY-
+        PANE-285.md) as "db_activity_signals ran and found nothing" for an
+        analysis with no reader at all. `is_known` must stay False so the
+        checkmark and "ran and found nothing" sentence are both withheld."""
+        assert Fact("x", NO_READER).is_known is False
 
     def test_a_partial_run_still_counts(self):
         """A partial result is usable. Discarding it would throw away real work
@@ -90,6 +99,38 @@ class TestHasContent:
     def test_a_false_flag_is_not_content(self):
         """`partial: False` says a run was complete; it is not a finding."""
         assert _has_content({"partial": False}) is False
+
+
+class TestReadResultsDistinguishesNoReaderFromEmpty:
+    """Live-reproduced 2026-09-25 (REVIEW-SURVEY-PANE-285.md): `_read_results`
+    used to return `{}` both when a reader ran and found nothing AND when no
+    reader was registered at all, so `_state_for` could not tell "measured a
+    real zero" from "there is no way to measure this yet" -- rendered on
+    screen as "db_activity_signals ran and found nothing -- a measured zero,
+    not a gap in coverage" for an analysis with no results_reader."""
+
+    def _layer(self):
+        layer = object.__new__(FactLayer)
+        layer._registry = None
+        return layer
+
+    def test_no_reader_at_all_returns_none(self):
+        assert self._layer()._read_results("slug", "aid", entry=None) is None
+
+    def test_a_bare_callable_entry_with_no_results_is_not_none(self):
+        """A real reader that ran and genuinely found nothing must stay `{}`,
+        not collapse into the same signal as "no reader exists"."""
+        reader = lambda registry, slug: {}
+        assert self._layer()._read_results("slug", "aid", entry=reader) == {}
+
+    def test_a_tuple_entry_whose_first_element_is_not_callable_is_none(self):
+        assert self._layer()._read_results("slug", "aid", entry=(None, None)) is None
+
+    def test_an_object_entry_with_no_results_reader_attribute_is_none(self):
+        class NoReader:
+            pass
+
+        assert self._layer()._read_results("slug", "aid", entry=NoReader()) is None
 
 
 class TestQuestionRouting:
@@ -219,9 +260,14 @@ class TestQuestionsTabWiring:
         narrated without its state, so the wording is not left to a model."""
         html = self._html()
         table = html.split("const _FACT_STATE_TEXT = {")[1].split("};")[0]
-        for state in ("measured", "nothing_found", "never_run", "not_established", "partial"):
+        for state in ("measured", "nothing_found", "never_run", "not_established",
+                      "partial", "no_reader"):
             assert f"{state}:" in table, f"no fixed wording for {state}"
         assert "measured zero" in table, "nothing_found must not read as absence of coverage"
+        assert "no summary reader" in table, (
+            "no_reader must not borrow nothing_found's 'measured zero' wording -- "
+            "a missing reader has not measured anything"
+        )
 
     def test_a_recovered_fact_is_labelled_as_a_proposal(self):
         html = self._html()
