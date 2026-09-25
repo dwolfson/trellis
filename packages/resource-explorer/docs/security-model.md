@@ -249,7 +249,7 @@ The second is an Egeria issue (ISSUE-112 in `PYEGERIA_ISSUES.md`).
 
 | Route | Who chooses | Rule |
 |---|---|---|
-| **RE-local survey** | RE, for the signed-in user | list the asset's connections (security connector filters by user); read each link's label; bind the step to the identity its capability resolves to; among several of that role, the least-privileged whose probe satisfies the step; the user may override from the list |
+| **RE-local survey** | RE, for the signed-in user | list the asset's connections (security connector filters by user); read each link's label; bind the step to the identity its capability resolves to; among several of that role, the least-privileged whose probe satisfies the step; the user may override from the list. **Purpose-aware (project owner, 2026-09-25):** the investigation's Purpose — modelled in Egeria as a valid values list (design §10) — is an input to the choice: an Explore or Select investigation binds the catalog identity by default and asks before using a data identity; Assess and Certify bind the data identity where one is labelled for that purpose; the connection's `ResourceConnection` label may name the purposes it is intended for, and a connection labelled for a purpose wins over an unlabelled one of the same role |
 | **Egeria-native survey** | Egeria's security connector, for the engine host's user | RE cannot pass a connection — the survey call takes only the asset GUID. `ConnectionHandler.getConnectionForAsset` hands every connection on the asset to `securityVerifier.selectConnection`, which keeps those the user may read and returns one |
 
 **Two defects in the default security connector**

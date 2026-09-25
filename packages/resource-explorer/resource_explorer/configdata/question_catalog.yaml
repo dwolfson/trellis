@@ -88,6 +88,8 @@ repo_questions:
   purposes:
   - Select
   - Maintain
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -111,6 +113,8 @@ repo_questions:
   - Explore
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -130,6 +134,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -151,6 +157,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -174,6 +182,8 @@ repo_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -197,6 +207,8 @@ repo_questions:
   - Assess
   - Certify
   - Maintain
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -222,6 +234,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -245,6 +259,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -262,6 +278,8 @@ repo_questions:
   - Architecture
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -279,6 +297,8 @@ repo_questions:
   - Admin
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -298,6 +318,8 @@ repo_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -323,6 +345,8 @@ repo_questions:
   - Select
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -342,6 +366,8 @@ repo_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -370,6 +396,8 @@ repo_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -392,6 +420,8 @@ repo_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -413,6 +443,8 @@ repo_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -441,6 +473,8 @@ repo_questions:
   purposes:
   - Maintain
   - Deploy
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -460,6 +494,8 @@ repo_questions:
   purposes:
   - Deploy
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -483,6 +519,8 @@ repo_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids:
@@ -504,6 +542,8 @@ repo_questions:
   purposes:
   - Select
   - Maintain
+  levels:
+  - resource
   answering:
     kind: chart
     analysis_ids: []
@@ -526,6 +566,8 @@ repo_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: partial
     analysis_ids:
@@ -550,6 +592,8 @@ repo_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -569,6 +613,8 @@ repo_questions:
   purposes:
   - Select
   - Assess
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -592,6 +638,8 @@ repo_questions:
   purposes:
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -613,6 +661,8 @@ repo_questions:
   - Select
   - Learn
   - Share
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -641,6 +691,8 @@ repo_questions:
   purposes:
   - Select
   - Maintain
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -665,6 +717,8 @@ repo_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - resource
   answering:
     kind: mixed
     analysis_ids:
@@ -695,6 +749,8 @@ repo_questions:
   purposes:
   - Certify
   - Share
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -715,6 +771,8 @@ repo_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -742,6 +800,8 @@ repo_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -763,6 +823,8 @@ repo_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -785,6 +847,8 @@ repo_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -803,6 +867,8 @@ repo_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -822,6 +888,8 @@ repo_questions:
   - Security
   purposes:
   - Certify
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -844,6 +912,8 @@ repo_questions:
   purposes:
   - Certify
   - Deploy
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -866,6 +936,8 @@ repo_questions:
   - Architecture
   purposes:
   - Share
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -887,6 +959,8 @@ repo_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -906,6 +980,8 @@ repo_questions:
   - Admin
   purposes:
   - Explore
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -925,6 +1001,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -943,6 +1021,8 @@ repo_questions:
   - Data Expert
   purposes:
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -964,6 +1044,8 @@ repo_questions:
   purposes:
   - Explore
   - Share
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -983,6 +1065,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1004,6 +1088,8 @@ repo_questions:
   - Explore
   - Learn
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1028,6 +1114,8 @@ repo_questions:
   - Explore
   - Learn
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1051,6 +1139,8 @@ repo_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1072,6 +1162,8 @@ repo_questions:
   purposes:
   - Explore
   - Assess
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1093,6 +1185,8 @@ repo_questions:
   - Select
   - Deploy
   - Learn
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1115,6 +1209,8 @@ repo_questions:
   - Assess
   - Certify
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1139,6 +1235,8 @@ repo_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1159,6 +1257,8 @@ repo_questions:
   purposes:
   - Assess
   - Maintain
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1180,6 +1280,8 @@ repo_questions:
   purposes:
   - Assess
   - Maintain
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1212,6 +1314,8 @@ repo_questions:
   - Deploy
   - Explore
   - Learn
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -1236,6 +1340,8 @@ repo_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1262,6 +1368,8 @@ repo_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1285,6 +1393,8 @@ repo_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1308,6 +1418,8 @@ repo_questions:
   purposes:
   - Share
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1331,6 +1443,8 @@ repo_questions:
   purposes:
   - Share
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1354,6 +1468,8 @@ database_questions:
   - Explore
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1373,6 +1489,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1394,6 +1512,8 @@ database_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1421,6 +1541,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1444,6 +1566,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1461,6 +1585,8 @@ database_questions:
   - Architecture
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1478,6 +1604,8 @@ database_questions:
   - Admin
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1497,6 +1625,8 @@ database_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1519,6 +1649,8 @@ database_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -1542,6 +1674,8 @@ database_questions:
   purposes:
   - Deploy
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -1565,6 +1699,8 @@ database_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -1585,6 +1721,8 @@ database_questions:
   purposes:
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -1604,6 +1742,8 @@ database_questions:
   purposes:
   - Certify
   - Share
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -1624,6 +1764,8 @@ database_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1649,6 +1791,8 @@ database_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1668,6 +1812,8 @@ database_questions:
   - Admin
   purposes:
   - Explore
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1687,6 +1833,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1705,6 +1853,8 @@ database_questions:
   - Data Expert
   purposes:
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1726,6 +1876,8 @@ database_questions:
   purposes:
   - Explore
   - Share
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -1746,6 +1898,8 @@ database_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1772,6 +1926,8 @@ database_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1794,6 +1950,8 @@ database_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - member
   answering:
     kind: gap
     analysis_ids: []
@@ -1816,6 +1974,8 @@ database_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1839,6 +1999,8 @@ database_questions:
   purposes:
   - Share
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1862,6 +2024,8 @@ database_questions:
   purposes:
   - Share
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1883,6 +2047,9 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
+  - container
   answering:
     kind: mixed
     analysis_ids:
@@ -1903,6 +2070,8 @@ database_questions:
   - Architecture
   purposes:
   - Explore
+  levels:
+  - container
   answering:
     kind: analysis
     analysis_ids:
@@ -1924,6 +2093,9 @@ database_questions:
   purposes:
   - Maintain
   - Assess
+  levels:
+  - resource
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -1947,6 +2119,9 @@ database_questions:
   purposes:
   - Assess
   - Share
+  levels:
+  - resource
+  - container
   answering:
     kind: gap
     analysis_ids: []
@@ -1971,6 +2146,8 @@ database_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -1991,6 +2168,8 @@ database_questions:
   purposes:
   - Assess
   - Maintain
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -2016,6 +2195,8 @@ database_questions:
   - Assess
   - Attest
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids:
@@ -2038,6 +2219,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - container
   answering:
     kind: analysis
     analysis_ids:
@@ -2061,6 +2244,8 @@ database_questions:
   purposes:
   - Explore
   - Learn
+  levels:
+  - container
   answering:
     kind: analysis
     analysis_ids:
@@ -2083,6 +2268,8 @@ database_questions:
   - Explore
   - Learn
   - Assess
+  levels:
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2113,6 +2300,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - container
   answering:
     kind: analysis
     analysis_ids:
@@ -2136,6 +2325,8 @@ database_questions:
   purposes:
   - Explore
   - Learn
+  levels:
+  - container
   answering:
     kind: partial
     analysis_ids: []
@@ -2158,6 +2349,8 @@ database_questions:
   purposes:
   - Explore
   - Learn
+  levels:
+  - member
   answering:
     kind: gap
     analysis_ids: []
@@ -2177,6 +2370,8 @@ database_questions:
   purposes:
   - Explore
   - Assess
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -2201,6 +2396,9 @@ database_questions:
   - Explore
   - Learn
   - Select
+  levels:
+  - container
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2232,6 +2430,8 @@ database_questions:
   - Explore
   - Select
   - Assess
+  levels:
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2263,6 +2463,8 @@ database_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - container
   answering:
     kind: analysis
     analysis_ids:
@@ -2299,6 +2501,9 @@ database_questions:
   - Explore
   - Assess
   - Deploy
+  levels:
+  - member
+  - field
   answering:
     kind: analysis
     analysis_ids:
@@ -2321,6 +2526,8 @@ database_questions:
   purposes:
   - Assess
   - Learn
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -2345,6 +2552,8 @@ database_questions:
   - Assess
   - Certify
   - Remediate
+  levels:
+  - field
   answering:
     kind: analysis
     analysis_ids:
@@ -2372,6 +2581,8 @@ database_questions:
   purposes:
   - Assess
   - Remediate
+  levels:
+  - field
   answering:
     kind: analysis
     analysis_ids:
@@ -2397,6 +2608,8 @@ database_questions:
   purposes:
   - Assess
   - Learn
+  levels:
+  - field
   answering:
     kind: analysis
     analysis_ids:
@@ -2422,6 +2635,8 @@ database_questions:
   purposes:
   - Assess
   - Remediate
+  levels:
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2446,6 +2661,8 @@ database_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -2470,6 +2687,9 @@ database_questions:
   - Assess
   - Certify
   - Remediate
+  levels:
+  - resource
+  - member
   answering:
     kind: partial
     analysis_ids:
@@ -2495,6 +2715,8 @@ database_questions:
   purposes:
   - Maintain
   - Assess
+  levels:
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2518,6 +2740,8 @@ database_questions:
   purposes:
   - Learn
   - Share
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -2538,6 +2762,8 @@ database_questions:
   purposes:
   - Assess
   - Share
+  levels:
+  - container
   answering:
     kind: partial
     analysis_ids:
@@ -2562,6 +2788,8 @@ database_questions:
   - Assess
   - Certify
   - Remediate
+  levels:
+  - field
   answering:
     kind: partial
     analysis_ids:
@@ -2585,6 +2813,8 @@ database_questions:
   - Architecture
   purposes:
   - Assess
+  levels:
+  - container
   answering:
     kind: mixed
     analysis_ids:
@@ -2609,6 +2839,8 @@ database_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - container
   answering:
     kind: partial
     analysis_ids:
@@ -2631,6 +2863,9 @@ database_questions:
   purposes:
   - Maintain
   - Assess
+  levels:
+  - resource
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -2653,6 +2888,8 @@ database_questions:
   purposes:
   - Assess
   - Attest
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -2678,6 +2915,8 @@ filesystem_questions:
   - Explore
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2697,6 +2936,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -2718,6 +2959,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2745,6 +2988,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2768,6 +3013,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2785,6 +3032,8 @@ filesystem_questions:
   - Architecture
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2802,6 +3051,8 @@ filesystem_questions:
   - Admin
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -2821,6 +3072,8 @@ filesystem_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2843,6 +3096,8 @@ filesystem_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -2866,6 +3121,8 @@ filesystem_questions:
   purposes:
   - Deploy
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -2889,6 +3146,8 @@ filesystem_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -2909,6 +3168,8 @@ filesystem_questions:
   purposes:
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -2928,6 +3189,8 @@ filesystem_questions:
   purposes:
   - Certify
   - Share
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -2948,6 +3211,8 @@ filesystem_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -2973,6 +3238,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -2992,6 +3259,8 @@ filesystem_questions:
   - Admin
   purposes:
   - Explore
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3011,6 +3280,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3029,6 +3300,8 @@ filesystem_questions:
   - Data Expert
   purposes:
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3050,6 +3323,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Share
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3070,6 +3345,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3096,6 +3373,8 @@ filesystem_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3118,6 +3397,8 @@ filesystem_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - member
   answering:
     kind: gap
     analysis_ids: []
@@ -3140,6 +3421,8 @@ filesystem_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3163,6 +3446,8 @@ filesystem_questions:
   purposes:
   - Share
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3186,6 +3471,8 @@ filesystem_questions:
   purposes:
   - Share
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3208,6 +3495,8 @@ filesystem_questions:
   - Assess
   - Attest
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3231,6 +3520,8 @@ filesystem_questions:
   - Explore
   - Learn
   - Assess
+  levels:
+  - member
   answering:
     kind: gap
     analysis_ids: []
@@ -3265,6 +3556,8 @@ filesystem_questions:
   - Assess
   - Certify
   - Remediate
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -3292,6 +3585,8 @@ filesystem_questions:
   purposes:
   - Assess
   - Remediate
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -3317,6 +3612,8 @@ filesystem_questions:
   purposes:
   - Learn
   - Share
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -3338,6 +3635,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: analysis
     analysis_ids:
@@ -3362,6 +3661,8 @@ filesystem_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - member
   answering:
     kind: analysis
     analysis_ids:
@@ -3387,6 +3688,8 @@ dataset_questions:
   - Explore
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3406,6 +3709,8 @@ dataset_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3427,6 +3732,8 @@ dataset_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3454,6 +3761,8 @@ dataset_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3477,6 +3786,8 @@ dataset_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3494,6 +3805,8 @@ dataset_questions:
   - Architecture
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3511,6 +3824,8 @@ dataset_questions:
   - Admin
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3530,6 +3845,8 @@ dataset_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3552,6 +3869,8 @@ dataset_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3575,6 +3894,8 @@ dataset_questions:
   purposes:
   - Deploy
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3598,6 +3919,8 @@ dataset_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3618,6 +3941,8 @@ dataset_questions:
   purposes:
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3637,6 +3962,8 @@ dataset_questions:
   purposes:
   - Certify
   - Share
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -3657,6 +3984,8 @@ dataset_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3682,6 +4011,8 @@ dataset_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3701,6 +4032,8 @@ dataset_questions:
   - Admin
   purposes:
   - Explore
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3720,6 +4053,8 @@ dataset_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3738,6 +4073,8 @@ dataset_questions:
   - Data Expert
   purposes:
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3759,6 +4096,8 @@ dataset_questions:
   purposes:
   - Explore
   - Share
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3779,6 +4118,8 @@ dataset_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3805,6 +4146,8 @@ dataset_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3827,6 +4170,8 @@ dataset_questions:
   purposes:
   - Assess
   - Certify
+  levels:
+  - member
   answering:
     kind: gap
     analysis_ids: []
@@ -3849,6 +4194,8 @@ dataset_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3872,6 +4219,8 @@ dataset_questions:
   purposes:
   - Share
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3895,6 +4244,8 @@ dataset_questions:
   purposes:
   - Share
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3919,6 +4270,8 @@ dataset_questions:
   - Assess
   - Certify
   - Remediate
+  levels:
+  - field
   answering:
     kind: gap
     analysis_ids: []
@@ -3947,6 +4300,8 @@ model_questions:
   - Explore
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -3966,6 +4321,8 @@ model_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -3987,6 +4344,8 @@ model_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4014,6 +4373,8 @@ model_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4037,6 +4398,8 @@ model_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4054,6 +4417,8 @@ model_questions:
   - Architecture
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4071,6 +4436,8 @@ model_questions:
   - Admin
   purposes:
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4090,6 +4457,8 @@ model_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4112,6 +4481,8 @@ model_questions:
   purposes:
   - Select
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -4135,6 +4506,8 @@ model_questions:
   purposes:
   - Deploy
   - Maintain
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -4158,6 +4531,8 @@ model_questions:
   purposes:
   - Assess
   - Deploy
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -4178,6 +4553,8 @@ model_questions:
   purposes:
   - Select
   - Learn
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -4197,6 +4574,8 @@ model_questions:
   purposes:
   - Certify
   - Share
+  levels:
+  - resource
   answering:
     kind: human
     analysis_ids: []
@@ -4217,6 +4596,8 @@ model_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4242,6 +4623,8 @@ model_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4261,6 +4644,8 @@ model_questions:
   - Admin
   purposes:
   - Explore
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4280,6 +4665,8 @@ model_questions:
   purposes:
   - Explore
   - Select
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4298,6 +4685,8 @@ model_questions:
   - Data Expert
   purposes:
   - Maintain
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4319,6 +4708,8 @@ model_questions:
   purposes:
   - Explore
   - Share
+  levels:
+  - resource
   answering:
     kind: direct
     analysis_ids: []
@@ -4339,6 +4730,8 @@ model_questions:
   purposes:
   - Explore
   - Maintain
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4365,6 +4758,8 @@ model_questions:
   - Assess
   - Certify
   - Attest
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4388,6 +4783,8 @@ model_questions:
   purposes:
   - Select
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4411,6 +4808,8 @@ model_questions:
   purposes:
   - Share
   - Certify
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
@@ -4434,6 +4833,8 @@ model_questions:
   purposes:
   - Share
   - Select
+  levels:
+  - resource
   answering:
     kind: gap
     analysis_ids: []
