@@ -28,19 +28,30 @@ import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetai
 import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
-// Enrichment, Understanding, Curate, Automate and (item 11) Analysis have
-// something to import; the remaining canonical stage ids — investigation,
+// Enrichment, Understanding, Curate, Automate, Investigation and (item 11)
+// Analysis have something to import; the remaining canonical stage ids —
 // scouting, discovery, assessment — have a `next/stages/*.js` module too,
 // but it is empty (Discovery and Assessment deliberately, item 11: the
 // generic Questions-checklist engine below reaches both correctly with no
-// stage-specific code; Investigation and Scouting for other reasons — see
-// each stub's own header comment). Building one of them means adding real
-// exports to its stub file and one import line here — see
-// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md.
+// stage-specific code; Scouting for other reasons — see its own stub
+// header comment). Building one of them means adding real exports to its
+// stub file and one import line here — see
+// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md. Investigation's stub
+// (`stages/investigation.js`) is no longer empty — it now ports classic's
+// Investigations tab (list/create/detail: members, dispositions,
+// next-steps, purposes, classification, Egeria bind/promote/sync/
+// reclassify) into /next; see that file's own header comment.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
+import { renderInvestigation, openInvestigationDetail } from '/static/next/stages/investigation.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
-import { renderAnalysisNote } from '/static/next/stages/analysis.js';
+// Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
+// candidate-selection/catalogue UI, attached to sub_resource_survey's own
+// row in the Survey & analyses list below (analysisIndexRowHtml /
+// renderAnalysesIndexSection), not a stage-level bypass. The old one-line
+// deferral note this stage used to render from loadPane() is gone -- the
+// feature it named is now built; see stages/analysis.js's header comment.
+import { mountSubResourcePanel } from '/static/next/stages/analysis.js';
 // The RFA drawer (PLAN-FINISH-REPOS.md item 10) — chrome-level, like
 // worklist.js, not a per-resource stage; see next/rfa.js's own header
 // comment for why it lives at this level rather than under stages/.
@@ -52,6 +63,21 @@ import { renderAutomate } from '/static/next/stages/automate.js';
 // #intent-nav/currentNavIntent, NOT a STAGES entry. See next/admin/index.js's
 // own header comment for scope (five real ports, six named deferrals).
 import { openAdminPanel } from '/static/next/admin/index.js';
+// Discovery import (NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md) — the
+// corpus-level "find and import candidate repos" dialog: GitHub search,
+// the `/from-list` bulk loader, and the inventory CSV export. Chrome-level
+// like worklist.js/rfa.js, not a stage module — see that file's own header
+// comment for why (SPEC-ACTIONABLE-AND-HONEST.md point 2). Reached from the
+// sidebar's `find-repos` action below, for `state.resourceType === 'repo'`.
+import { openFindReposDialog } from '/static/next/discovery-import.js';
+// Database server discovery — classic's real mechanism for databases
+// (register a server once, then server-side introspection via
+// POST /api/db-servers/{slug}/discover), ported for `state.resourceType
+// === 'db'` in the same `find-repos` action. Chrome-level, same placement
+// rule as discovery-import.js above. Filesystems still keep the
+// old-UI-link stub — classic's own filesystem registration flow is not
+// this file's scope yet.
+import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -89,9 +115,12 @@ import {
   postDepthOfferOutcome,
   promoteMembers,
   getQuestions,
+  createSubscription,
   getScoutingOverview,
   listActivity,
   listAnalyses,
+  listDatabases,
+  listFilesystems,
   listGroups,
   listInvestigationMembers,
   listInvestigations,
@@ -99,11 +128,18 @@ import {
   listAllPerspectives,
   listProjects,
   listRfas,
+  clearCache,
   pollActivity,
+  planPrerequisites,
+  runPrerequisites,
+  raiseCapabilityRfa,
   removeInvestigationMember,
   removeProject,
+  removeEntity,
   runAnalysis,
   setDisposition,
+  setEntityDisposition,
+  getEntityDispositionHistory,
   setWorkingSetHidden,
   getContext,
   getJournal,
@@ -117,8 +153,18 @@ import {
  * ════════════════════════════════════════════════════════════════════════ */
 
 export const state = {
-  resourceType: 'repo',        // repo | db | filesystem — only repo is real here
+  resourceType: 'repo',        // repo | db | filesystem
   projects: [],
+  // Databases/filesystems are fetched lazily -- on first switch to that
+  // sidebar chip, or on boot when the URL already names that type -- not
+  // eagerly at start() like `projects`, since most sessions never touch
+  // them. The `*Loaded` flags distinguish "fetched, zero results" from
+  // "never fetched" so the sidebar can say which one it is instead of
+  // rendering an empty list either way.
+  databases: [],
+  databasesLoaded: false,
+  filesystems: [],
+  filesystemsLoaded: false,
   groups: [],
   selectedSlug: null,
   overview: null,              // the selected repo's scouting-overview, or null
@@ -142,6 +188,18 @@ export const state = {
   allQuestions: null,         // the stage's questions UNFILTERED; null = unknown
   answers: new Map(),          // question text -> envelope | {error} | 'loading'
   runsInFlight: new Map(),     // question text -> {analysisId, activityId}
+  // §17.1 prerequisite proposals -- a run the resolver would not let start
+  // unasked because it crosses the budget's tier. question -> {analysisId,
+  // entityType, proposal, background} while awaiting the user's accept/
+  // decline; cleared on either. Separate from `runsInFlight`, which is a run
+  // actually in progress -- a pending proposal is a run that has NOT started.
+  pendingProposals: new Map(),
+  // A one-shot "ran X first" note for the within-budget auto-run case (no
+  // proposal, nothing to accept -- the resolver already ran the producer by
+  // the time the demanding step's own result comes back). question -> text;
+  // read once by `bodyLines` on the next render and deleted, so it reads as
+  // what just happened rather than persisting as a stale caveat.
+  autoRanNotes: new Map(),
   me: null,
   counts: { activity: null, rfas: null },
   chat: [],                    // the transcript: one entry per turn
@@ -195,11 +253,14 @@ const STAGES = [
   // stage-specific rendering needed. Discovery's Disposition sub-tab was
   // already wired to a real write path (`POST /api/discovery/disposition`,
   // web/routes/discovery.py's set_repo_disposition) before this change; it
-  // only needed `built: true` to become reachable. Classic's
-  // org-import/repo-search/`/from-list`/CSV-export corpus-level Discovery
-  // features, and Analysis's "Sub-Resources" sub-view, are NOT ported --
-  // named, individually, as deliberate deferrals in that doc, not silently
-  // dropped.
+  // only needed `built: true` to become reachable. Classic's corpus-level
+  // repo-search/`/from-list`/CSV-export features are now ported too, as the
+  // sidebar's "Find repos" action (`next/discovery-import.js`,
+  // NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md) rather than as Discovery
+  // stage content -- see stages/discovery.js's header comment for why.
+  // Analysis's "Sub-Resources" sub-view is still NOT ported -- named as a
+  // deliberate deferral in ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md,
+  // not silently dropped.
   { id: 'discovery',     label: 'Discovery',     class: 'run', built: true },
   { id: 'assessment',    label: 'Assessment',    class: 'run', built: true },
   { id: 'analysis',      label: 'Analysis',      class: 'run', built: true },
@@ -285,6 +346,55 @@ const SUB_TABS = [
  * ════════════════════════════════════════════════════════════════════════ */
 
 export const $ = (id) => document.getElementById(id);
+
+/** `state.resourceType` ('repo' | 'db' | 'filesystem') is /next's own UI
+ *  shorthand -- the sidebar chip ids (renderSidebar's `types`) and the
+ *  `type=` URL param. Every backend route uses the canonical vocabulary
+ *  'repo' | 'database' | 'filesystem' instead (schedules.py's
+ *  `_RESOURCE_LOOKUP`, survey_definition_executor.py's `_ADAPTERS`,
+ *  analyses.py's `resource_type` param) — 'db' is not a valid entity_type
+ *  anywhere server-side. Verified live 2026-09-22 against the running dev
+ *  server: `GET /api/survey-definitions/db/.../candidates` 400s ("No Survey
+ *  Definition adapter registered for entity_type='db'"), and worse,
+ *  `GET /api/analyses/db` silently returns `[]` rather than erroring — the
+ *  exact silent-wrong-data shape this task exists to fix elsewhere
+ *  (automate.js/worklist.js's old 'repo' hardcodes). Call this at every
+ *  boundary that sends `state.resourceType` to the server; 'filesystem'
+ *  already matches on both sides and passes through unchanged. */
+export function apiEntityType(resourceType) {
+  return resourceType === 'db' ? 'database' : resourceType;
+}
+
+/** The sidebar's row data for whichever resource type is current. Databases
+ *  and filesystems now carry the same `working_set_hidden`/`disposition`/
+ *  `group_slug`/`is_published` fields repos do (`web/routes/databases.py`/
+ *  `filesystems.py`), so `visibleRows()` filters all three the same way --
+ *  this just returns the raw fetched list; filtering happens where it's
+ *  used. `state.scope`'s investigation/lifecycle chips remain repo-only
+ *  (see SCOPE_CHIPS) -- that is the one axis genuinely repo-specific. */
+function currentResourceRows() {
+  return state.resourceType === 'db' ? state.databases
+    : state.resourceType === 'filesystem' ? state.filesystems
+    : state.projects;
+}
+
+/** Fetch the database/filesystem list on first need -- repos are fetched
+ *  once at boot (`start()`), but /next never fetched either of these lists
+ *  at all until now, so there is no existing "refresh" path to extend.
+ *  Cached behind `*Loaded` rather than re-fetched on every chip click; a
+ *  session that wants fresh data can reload. No-op for 'repo' and for a
+ *  type that's already loaded. */
+export async function ensureResourceListLoaded(type) {
+  if (type === 'db' && !state.databasesLoaded) {
+    try { state.databases = (await listDatabases()) || []; }
+    catch { state.databases = []; }
+    state.databasesLoaded = true;
+  } else if (type === 'filesystem' && !state.filesystemsLoaded) {
+    try { state.filesystems = (await listFilesystems()) || []; }
+    catch { state.filesystems = []; }
+    state.filesystemsLoaded = true;
+  }
+}
 
 /** The active stage's display label, for the pane header. */
 const stageLabel = () =>
@@ -373,6 +483,62 @@ export function icon(name, { size = 15, cls = '', title = '' } = {}) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+ * Shared "was this right?" feedback control (2026-09-23 consolidation)
+ *
+ * chat.js's per-turn vote (thumbs-up/minus/thumbs-down, Lucide icons) and
+ * feedback.js's per-question "Was this right?" bar (plain "Right/Partly/
+ * Wrong" text links) were built independently against the IDENTICAL
+ * agree/partly/disagree vocabulary, posting to the SAME `/api/feedback/
+ * answer` endpoint — never unified. This is the one shared renderer both
+ * now use for the button markup + icons; each caller keeps its own click
+ * wiring, its own recording logic, and its own "what happened" message
+ * (chat.js's `vote()`/feedback.js's `_sendAnswerVerdict()` are genuinely
+ * different beyond the buttons themselves — feedback.js also prompts for an
+ * optional comment on "Wrong" and surfaces the server's gap sentence).
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** [vote value, Lucide icon name, title/aria-label, tone] — `tone` is 'ok'
+ *  or 'warn', resolved to a theme-appropriate class by `feedbackVotesHtml`
+ *  below rather than baked in here, since chat's dark rail and feedback.js's
+ *  light question row need different hover colors for the same state (see
+ *  `STATE_CHIP_CLASSES`'s own paper/chrome pairing above for the same
+ *  reasoning applied to row states). */
+export const FEEDBACK_VOTES = [
+  [1, 'thumbs-up', 'Right', 'ok'],
+  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'warn'],
+  [-1, 'thumbs-down', 'Wrong', 'warn'],
+];
+
+/**
+ * Markup for the three vote buttons, `data-vote="<value>"` on each — that
+ * attribute is the one thing every caller's click-wiring agrees on.
+ *
+ * `theme`: 'paper' (light question row, feedback.js's default) or 'chrome'
+ * (dark chat rail, chat.js's own background) — picks the same
+ * text-state-ok(-on-dark)/text-state-warn(-on-dark)/text-ink(-chrome)-muted
+ * pairing used elsewhere for exactly this light/dark split.
+ *
+ * `dataAttr`/`dataValue`: an extra `data-*` attribute stamped onto every
+ * button besides `data-vote`, so a caller's own delegated or per-render
+ * listener can find what the vote is FOR without this function knowing
+ * anything about turns or question rows — chat.js passes `{dataAttr:
+ * 'turn', dataValue: i}`, feedback.js needs none (its bar already carries
+ * `data-fb-answer` on the ancestor).
+ */
+export function feedbackVotesHtml({ theme = 'paper', dataAttr = '', dataValue = '' } = {}) {
+  const mutedCls = theme === 'chrome' ? 'text-chrome-muted' : 'text-ink-muted';
+  const hoverCls = {
+    ok: theme === 'chrome' ? 'text-state-ok-on-dark' : 'text-state-ok',
+    warn: theme === 'chrome' ? 'text-state-warn-on-dark' : 'text-state-warn',
+  };
+  const extraAttr = dataAttr ? ` data-${dataAttr}="${esc(String(dataValue))}"` : '';
+  return FEEDBACK_VOTES.map(([v, ic, title, tone]) => `<button type="button" data-vote="${v}"${extraAttr}
+      title="${esc(title)}" aria-label="${esc(title)}"
+      class="cursor-pointer bg-transparent ${mutedCls} hover:${hoverCls[tone]}"
+      >${icon(ic, { size: 16 })}</button>`).join('');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
  * Reading an envelope — the honest part
  * ════════════════════════════════════════════════════════════════════════ */
 
@@ -415,6 +581,11 @@ const GLYPH = {
   unclassified: '·',
   running: '◔',
   error: '✕',
+  // §17.1 -- "this needs something else first, and it costs enough that it
+  // needs your yes." Same glyph classic uses (⏵) for the same reason: a
+  // proposal is a decision point, not a state of the world, so it earns its
+  // own mark rather than borrowing unrun's ○ or human's ⚠.
+  proposal: '⏵',
 };
 
 /**
@@ -438,6 +609,10 @@ const STATE_TONE = {
   unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   running:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
   error:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
+  // Same role as `unrun`/`error` -- "needs your attention" -- because a
+  // proposal IS an attention-needing decision, not a different flavour of
+  // answered or automatic.
+  proposal:      { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
 };
 
 const tone = (st, ground = 'paper') =>
@@ -621,6 +796,12 @@ function readEnvelope(entry, env) {
 
 function renderTopBar() {
   $('scope-slug').textContent = state.selectedSlug || 'no resource selected';
+  // `data-entity-type` lets feedback.js's Questions-checklist "Was this
+  // right?" bar (deliberately independent of this module, plain DOM reads
+  // only) attribute an answer-feedback POST to the right resource type
+  // without importing state itself. Kept alongside the slug it already reads
+  // off this same element so the two can never fall out of sync.
+  $('scope-slug').dataset.entityType = apiEntityType(state.resourceType) || 'repo';
   const inv = state.investigations.find((i) => i.slug === state.investigation);
   $('investigation-name').textContent = state.investigation
     ? (inv?.display_name || state.investigation)
@@ -1627,13 +1808,12 @@ function markKeyHtml() {
   </div>`;
 }
 
-// The find/discover action's stub (below, 'find-repos') is a single honest
-// placeholder for three genuinely different classic mechanisms -- GitHub
-// search + list-import for repos, server-side introspection
-// (POST /api/db-servers/{slug}/discover) for databases, and whatever
-// filesystem registration classic offers. Keeping one copy that always says
-// "repos" was quietly wrong on the DBs/FS tabs; this at least names the
-// right noun per tab until each gets its own real screen (see Backlog.md).
+// The find/discover action's title per resource type. Repos and databases
+// both now have real ports of classic's mechanisms (GitHub search +
+// list-import for repos via discovery-import.js; server-side introspection,
+// POST /api/db-servers/{slug}/discover, for databases via
+// db-server-discovery.js) — filesystem is the one that still falls through
+// to the old-UI-link stub below (see Backlog.md).
 const FIND_TITLE = {
   repo: 'Find and import candidate repos',
   db: 'Discover databases on a registered server',
@@ -1670,7 +1850,7 @@ function toggleGroupCollapsed(slug) {
 // with the number the user just read. Ported from classic's
 // `_toggleGroupSelected` (index.html).
 function toggleGroupSelected(groupSlug) {
-  const members = visibleProjects()
+  const members = visibleRows()
     .filter((p) => (p.group_slug || '') === groupSlug)
     .map((p) => p.slug);
   if (!members.length) return;
@@ -1697,6 +1877,34 @@ function visibleProjects() {
   });
 }
 
+/** The database/filesystem rows passing every active filter, in list order —
+ *  the `visibleProjects()` above generalized once `DatabaseSummary`/
+ *  `FileSystemSummary` grew `working_set_hidden`/`is_published` fields
+ *  alongside the `disposition`/`group_slug` they already carried
+ *  (`web/routes/databases.py`/`filesystems.py`). There is still no
+ *  investigation-scope/lifecycle-kind concept for these rows (`state.scope`'s
+ *  chips stay repo-only — see SCOPE_CHIPS), so this mirrors `visibleProjects`
+ *  minus that one filter. */
+function visibleNonRepoRows() {
+  const f = state.filter.trim().toLowerCase();
+  return currentResourceRows().filter((r) => {
+    if (!state.showHidden && r.working_set_hidden) return false;
+    if (state.dispositionFacet !== 'all'
+        && (r.disposition || 'undecided') !== state.dispositionFacet) return false;
+    if (f && !(`${r.slug} ${r.display_name}`.toLowerCase().includes(f))) return false;
+    return true;
+  });
+}
+
+/** The current resource type's rows passing every active filter — dispatches
+ *  to `visibleProjects()` for repos (the lifecycle/scope-aware original) and
+ *  `visibleNonRepoRows()` for databases/filesystems. The single entry point
+ *  the grouped list, the "N shown" count and `toggleGroupSelected` all read,
+ *  so a resource type only ever has one notion of "currently visible". */
+function visibleRows() {
+  return state.resourceType === 'repo' ? visibleProjects() : visibleNonRepoRows();
+}
+
 function renderSidebar() {
   const el = $('sidebar');
   const types = [
@@ -1712,8 +1920,12 @@ function renderSidebar() {
 
   // Disposition counts over everything the filters have NOT already removed
   // by disposition, so the numbers describe the list you are choosing from.
+  // `currentResourceRows()` generalizes this over whichever resource type is
+  // current -- `DatabaseSummary`/`FileSystemSummary` carry `disposition` the
+  // same way `ProjectSummary` does (Backlog.md, "Disposition is NOT fixed
+  // here", 2026-09-22), so this is no longer repo-only.
   const counts = {};
-  for (const p of state.projects) {
+  for (const p of currentResourceRows()) {
     if (!state.showHidden && p.working_set_hidden) continue;
     const d = p.disposition || 'undecided';
     counts[d] = (counts[d] || 0) + 1;
@@ -1724,11 +1936,16 @@ function renderSidebar() {
   const present = Object.keys(counts).sort();
   const absent = VALID_DISPOSITIONS.filter((d) => !counts[d]);
 
-  const visible = visibleProjects();
-  const hiddenCount = state.projects.filter((p) => p.working_set_hidden).length;
+  const visible = visibleRows();
+  const hiddenCount = currentResourceRows().filter((p) => p.working_set_hidden).length;
+  const loaded = state.resourceType === 'repo' ? true
+    : state.resourceType === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
+  const nonRepoLabel = state.resourceType === 'db' ? 'database' : 'filesystem';
 
-  // Grouped by the repo's group. Group display names come from the groups
-  // endpoint; a repo with no group lands in Ungrouped.
+  // Grouped by the resource's group. Group display names come from the
+  // groups endpoint; a resource with no group lands in Ungrouped. Generic
+  // across all three resource types since `group_slug` is on all three
+  // summary shapes (`web/routes/projects.py`/`databases.py`/`filesystems.py`).
   const groups = new Map();
   for (const p of visible) {
     const g = p.group_slug || '';
@@ -1764,7 +1981,8 @@ function renderSidebar() {
 
     ${investigationBarHtml()}
 
-    <input id="resource-filter" placeholder="Filter repos…" value="${esc(state.filter)}"
+    <input id="resource-filter" placeholder="Filter ${
+      state.resourceType === 'repo' ? 'repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}…" value="${esc(state.filter)}"
       class="mb-s2 w-full rounded-sm border border-chrome-line bg-transparent px-[9px] py-[5px]
              text-chip text-chrome-ink placeholder:text-chrome-muted">
 
@@ -1781,11 +1999,6 @@ function renderSidebar() {
       title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
       Disposition · ${state.resourceType === 'repo' ? 'all registered repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}
     </div>
-    ${state.resourceType !== 'repo' ? `
-    <div class="mb-s2 text-chip text-chrome-ink">
-      No verdict can be recorded for a ${state.resourceType === 'db' ? 'database' : 'filesystem'} yet — dispositions exist for repositories only.
-      <span class="text-chrome-muted">That is a fact about the mechanism, not about the data.</span>
-    </div>` : `
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
       <button data-facet="all" class="${chip(state.dispositionFacet === 'all')}">all</button>
       ${present.map((d) => `<button data-facet="${esc(d)}" class="${chip(state.dispositionFacet === d)}"
@@ -1799,7 +2012,7 @@ function renderSidebar() {
           ? `<button data-act="show-empty-facets" class="cursor-pointer bg-transparent text-chrome-muted underline"
               ><span class="tnum">${absent.length}</span> more…</button>`
           : ''}
-    </div>`}
+    </div>
 
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
       <button data-act="select-mode" class="cursor-pointer bg-transparent ${
@@ -1827,16 +2040,13 @@ function renderSidebar() {
             w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
       </div>` : ''}
 
-    ${state.resourceType !== 'repo' ? `
-      <div class="text-chip text-chrome-ink" style="border-bottom:1px dashed currentColor;padding-bottom:2px">
-        Databases and filesystems · not built in /next
-      </div>
-      <div class="mt-s2 text-chip text-chrome-ink">
-        This experiment covers one pane for one resource type.
-        <a href="/" class="text-accent-on-dark underline">Open the current UI ↗</a>
-      </div>`
+    ${!loaded ? `
+      <div class="text-chip text-chrome-ink">Loading ${nonRepoLabel}s…</div>`
     : visible.length === 0 ? `
-      <div class="text-chip text-chrome-ink">Nothing matches these filters.</div>`
+      <div class="text-chip text-chrome-ink">${
+        currentResourceRows().length
+          ? 'Nothing matches these filters.'
+          : state.resourceType === 'repo' ? 'Nothing matches these filters.' : `No ${nonRepoLabel}s registered.`}</div>`
     : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
         const memberSlugs = rows.map((p) => p.slug);
         const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
@@ -1877,6 +2087,67 @@ function renderSidebar() {
   `;
 
   bindSidebar();
+}
+
+/** Switch the sidebar's resource-type chip: fetches that type's list on
+ *  first visit (`ensureResourceListLoaded`), then re-selects a resource of
+ *  the NEW type -- `state.selectedSlug` otherwise keeps pointing at a
+ *  resource of the type just left, which would be a repo slug while
+ *  `state.resourceType` says 'db', mismatched in exactly the way
+ *  `apiEntityType()` call sites downstream (Survey pane, `getQuestions`,
+ *  etc.) assume can't happen. Renders once immediately (so the chip
+ *  highlight and any "loading…" row show right away) and again once the
+ *  fetch settles. */
+async function switchResourceType(type) {
+  state.resourceType = type;
+  // A selection (and select-mode) is per-resource-type: `state.selected`
+  // holds slugs, and a repo slug surviving a switch to 'db' would let a
+  // bulk action fire against `state.databases` rows that don't exist, or
+  // silently no-op against ones that share a slug by coincidence. Clearing
+  // both here is the same rule `state.selectedSlug` already follows a few
+  // lines down for the single-selection case.
+  state.selected.clear();
+  state.selectMode = false;
+  renderSidebar();
+  writeUrl();
+  await ensureResourceListLoaded(type);
+  const rows = currentResourceRows();
+  if (!rows.some((r) => r.slug === state.selectedSlug)) {
+    state.selectedSlug = rows[0]?.slug || null;
+  }
+  renderSidebar();
+  writeUrl();
+  renderTopBar();
+  renderRailScope();
+  loadPane();
+}
+
+/** Re-fetch groups and the project list and re-render the sidebar.
+ *
+ * state.groups/state.projects are otherwise only ever populated once, in
+ * start() — nothing re-fetches them on its own. Admin → Groups (group
+ * create/delete/assign, all real writes to group_slug) needs the sidebar's
+ * grouping to reflect what it just changed rather than staying stale until
+ * a full page reload, so it imports and calls this after each write. See
+ * docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md. Admin → Groups assigns
+ * groups to databases and filesystems too (admin/groups.js's own
+ * listDatabases()/listFilesystems() calls), so this also refreshes
+ * whichever of those two this session has already fetched -- not
+ * unconditionally, to avoid fetching a list this session has never shown
+ * any interest in. */
+export async function refreshGroupsAndSidebar() {
+  clearCache();
+  const [groups, projects, databases, filesystems] = await Promise.allSettled([
+    listGroups(),
+    listProjects({ includeIgnored: true, includeHidden: true }),
+    state.databasesLoaded ? listDatabases() : Promise.resolve(state.databases),
+    state.filesystemsLoaded ? listFilesystems() : Promise.resolve(state.filesystems),
+  ]);
+  if (groups.status === 'fulfilled') state.groups = groups.value || [];
+  if (state.databasesLoaded && databases.status === 'fulfilled') state.databases = databases.value || [];
+  if (state.filesystemsLoaded && filesystems.status === 'fulfilled') state.filesystems = filesystems.value || [];
+  if (projects.status === 'fulfilled') state.projects = projects.value || [];
+  renderSidebar();
 }
 
 /** The Select-mode action bar. Every action here is a bulk write, so each
@@ -1940,11 +2211,7 @@ function bindSidebar() {
   const el = $('sidebar');
   const rerender = () => { renderSidebar(); writeUrl(); };
 
-  el.querySelectorAll('button[data-type]').forEach((b) => b.addEventListener('click', () => {
-    state.resourceType = b.dataset.type;
-    rerender();
-    loadPane();
-  }));
+  el.querySelectorAll('button[data-type]').forEach((b) => b.addEventListener('click', () => switchResourceType(b.dataset.type)));
   el.querySelectorAll('button[data-scope]').forEach((b) => b.addEventListener('click', () => {
     if (b.disabled) return;
     state.scope = b.dataset.scope;
@@ -2012,9 +2279,16 @@ function bindSidebar() {
     // Corpus-level, not a stage: the same action on Scouting as on Curate,
     // so it lives beside the switcher that already scopes the whole left
     // column, not in the per-stage strip (SPEC-ACTIONABLE-AND-HONEST.md,
-    // point 2). Still not built in /next -- says so, same as the deferred
-    // stage tabs did, just from here instead.
+    // point 2). Repos: a real port (NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md)
+    // -- GitHub search, the from-list bulk loader, and the inventory CSV
+    // export. Databases: a real port too -- register a server, then
+    // server-side introspection (POST /api/db-servers/{slug}/discover) to
+    // find and add its databases (db-server-discovery.js). Filesystem keeps
+    // the old-UI-link stub; classic's own filesystem registration flow is a
+    // separate, not-yet-ported affordance.
     'find-repos': () => {
+      if (state.resourceType === 'repo') { openFindReposDialog(); return; }
+      if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
       const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
       const d = openDialog(title, title);
       d.querySelector('#wl-detail-body').innerHTML = `
@@ -2030,7 +2304,7 @@ function bindSidebar() {
       if (!state.selectMode) state.selected.clear();
       renderSidebar();
     },
-    'sel-all': () => { visibleProjects().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
+    'sel-all': () => { visibleRows().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
     'sel-none': () => { state.selected.clear(); renderSidebar(); },
     'sel-scope-add': () => bulkScope(true),
     'sel-scope-remove': () => bulkScope(false),
@@ -2062,11 +2336,12 @@ function sidebarNote(html) {
 async function bulkScope(add) {
   if (!state.investigation || !state.selected.size) return;
   const slugs = [...state.selected];
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      if (add) await addInvestigationMember(state.investigation, 'repo', slug);
-      else await removeInvestigationMember(state.investigation, 'repo', slug);
+      if (add) await addInvestigationMember(state.investigation, entityType, slug);
+      else await removeInvestigationMember(state.investigation, entityType, slug);
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
   await loadWorkingSet();
@@ -2083,11 +2358,12 @@ async function bulkScope(add) {
 async function bulkHide() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      await setWorkingSetHidden('repo', slug, true);
-      const p = state.projects.find((x) => x.slug === slug);
+      await setWorkingSetHidden(entityType, slug, true);
+      const p = currentResourceRows().find((x) => x.slug === slug);
       if (p) p.working_set_hidden = true;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
@@ -2100,16 +2376,24 @@ async function bulkHide() {
 async function bulkDisposition(disposition) {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const isRepo = state.resourceType === 'repo';
+  const entityType = apiEntityType(state.resourceType);
   const failed = [];
   const noUrl = [];
   for (const slug of slugs) {
-    const p = state.projects.find((x) => x.slug === slug);
-    // The endpoint is keyed on github_url. A repo without one cannot be
-    // dispositioned, and saying so beats a silent no-op.
-    if (!p?.github_url) { noUrl.push(slug); continue; }
+    const p = currentResourceRows().find((x) => x.slug === slug);
+    // Repos: the older endpoint is keyed on github_url, since it must also
+    // resolve a repo that has not been imported yet. A repo without one
+    // cannot be dispositioned that way, and saying so beats a silent no-op.
+    // Databases/filesystems: `setEntityDisposition` is keyed on the slug
+    // directly — no pre-import ambiguity to resolve, since a database/
+    // filesystem's slug IS its stable identity from registration (see
+    // `getEntityDisposition`'s own comment in re-api.js).
+    if (isRepo && !p?.github_url) { noUrl.push(slug); continue; }
     try {
-      await setDisposition(p.github_url, disposition);
-      p.disposition = disposition;
+      if (isRepo) await setDisposition(p.github_url, disposition);
+      else await setEntityDisposition(entityType, slug, disposition);
+      if (p) p.disposition = disposition;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
   const parts = [];
@@ -2123,16 +2407,24 @@ async function bulkDisposition(disposition) {
 
 /**
  * Delete is the one action with no undo anywhere in the stack: the endpoint
- * takes no confirmation flag, drops the repo's pgvector collections and
+ * takes no confirmation flag, drops the resource's pgvector collections and
  * removes the registry row. So the confirmation has to be here, it has to
  * name what is going, and it must not be a one-click button.
+ *
+ * Repo/database/filesystem deletion are three genuinely different registry
+ * operations (`removeProject`/`removeDatabase`/`removeFilesystem` in
+ * re-api.js, each hitting its own DELETE route) — `removeEntity()` dispatches
+ * by `apiEntityType()`-translated type, the same pattern `POST /{slug}/group`
+ * already uses server-side (projects.py).
  */
 function confirmBulkDelete() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
+  const noun = state.resourceType === 'repo' ? 'repo'
+    : state.resourceType === 'db' ? 'database' : 'filesystem';
   sidebarNote(`
     <div class="text-accent-on-dark">Unregister <span class="tnum">${slugs.length}</span>
-      ${slugs.length === 1 ? 'repo' : 'repos'} and delete all local survey data?
+      ${noun}${slugs.length === 1 ? '' : 's'} and delete all local survey data?
       This cannot be undone.</div>
     <div class="mt-s1 break-words text-chrome-muted">${esc(slugs.join(', '))}</div>
     <div class="mt-s2 flex gap-s2">
@@ -2148,11 +2440,14 @@ function confirmBulkDelete() {
 }
 
 async function bulkDelete(slugs) {
+  const entityType = apiEntityType(state.resourceType);
+  const listKey = state.resourceType === 'repo' ? 'projects'
+    : state.resourceType === 'db' ? 'databases' : 'filesystems';
   const failed = [];
   for (const slug of slugs) {
     try {
-      await removeProject(slug);
-      state.projects = state.projects.filter((p) => p.slug !== slug);
+      await removeEntity(entityType, slug);
+      state[listKey] = state[listKey].filter((p) => p.slug !== slug);
       state.selected.delete(slug);
       if (state.selectedSlug === slug) state.selectedSlug = null;
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
@@ -2182,6 +2477,7 @@ async function saveSelectionAsWorkList() {
     const wl = await saveAsWorkList(name.trim() || 'Candidates', slugs, {
       investigation: state.investigation,
       rationale: 'selected in the sidebar',
+      entityType: apiEntityType(state.resourceType),
     });
     state.workLists = await listWorkLists();
     state.workListSlug = wl.slug;
@@ -2200,7 +2496,10 @@ function currentInvestigation() {
   return LS.get(INVESTIGATION_KEY, '') || '';
 }
 
-async function setInvestigation(slug) {
+/** Exported so the Investigation pane (stages/investigation.js) can make a
+ *  freshly created or reopened investigation the current one — the same
+ *  write path the sidebar's own `<select>` uses, not a second one. */
+export async function setInvestigation(slug) {
   state.investigation = slug;
   LS.set(INVESTIGATION_KEY, slug);
   if (!slug) {
@@ -2212,6 +2511,20 @@ async function setInvestigation(slug) {
   }
   renderTopBar();
   renderSidebar();
+}
+
+/** Re-fetch the investigations list and repaint anything that shows it (the
+ *  sidebar's Investigation `<select>`, the top-bar badge). Mirrors
+ *  `refreshGroupsAndSidebar()` above — `state.investigations` is otherwise
+ *  populated once, in `start()`, so a pane that creates/closes/reopens/
+ *  renames an investigation must call this or the rest of the chrome keeps
+ *  showing stale data until a full reload. */
+export async function refreshInvestigationsAndSidebar() {
+  try {
+    state.investigations = (await listInvestigations({ includeClosed: true })) || [];
+  } catch { /* keep whatever we had; the pane calling this shows its own error */ }
+  renderSidebar();
+  renderTopBar();
 }
 
 async function loadWorkingSet() {
@@ -2450,9 +2763,15 @@ function readUrl() {
  * The resource header
  * ──────────────────────────────────────────────────────────────────────── */
 
-/** The selected resource's summary row from `GET /api/projects/`. */
+/** The selected resource's summary row -- from `GET /api/projects/` for a
+ *  repo, `GET /api/databases/`/`GET /api/filesystems/` for the others. The
+ *  callers below (resourceHeaderHtml) read fields (`display_name`,
+ *  `last_surveyed_at`) that all three summary shapes carry; `github_url`
+ *  and `is_published` simply come back undefined for db/filesystem rows,
+ *  which the rendering already treats as "no external links" / "not
+ *  published" rather than erroring. */
 function selectedProject() {
-  return state.projects.find((p) => p.slug === state.selectedSlug) || null;
+  return currentResourceRows().find((p) => p.slug === state.selectedSlug) || null;
 }
 
 /**
@@ -2513,6 +2832,31 @@ export function resourceHeaderHtml(slug) {
       + ` publish again from the Analysis pane</span>`;
   }
 
+  // Persistent credential-visibility banner (design REPLY-DATABASE-
+  // CREDENTIAL-CAPABILITY-VISIBILITY.md §4, Piece 1 of ASK-...-#251): a
+  // database's `credential_capability` probe result, when one has run, is
+  // carried on the summary row (`p.credential_capability` — see
+  // `databases.py`'s `DatabaseSummary`) the same way `github_url`/
+  // `is_published` are, and simply comes back undefined for a repo/
+  // filesystem row, same convention `selectedProject()`'s own comment
+  // documents for those two fields. Shown here rather than only inside a
+  // Questions-row envelope so it stays visible regardless of which question
+  // is open — "connected as X" is a fact about the WHOLE resource, not one
+  // answer among many.
+  let credentialBanner = '';
+  const cap = p?.credential_capability;
+  if (cap && (cap.table_total || cap.schema_total)) {
+    const thin = (cap.table_select ?? 0) < (cap.table_total ?? 0)
+      || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
+    credentialBanner = `
+      <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
+        connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
+        sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
+        SELECT on ${esc(String(cap.table_select ?? 0))} of ${esc(String(cap.table_total ?? 0))} table(s)
+        ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
+      </div>`;
+  }
+
   return `
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(name)}</h3>
@@ -2521,6 +2865,10 @@ export function resourceHeaderHtml(slug) {
         ? `<span class="flex flex-wrap gap-s3 text-caveat">${links.join('')}</span>`
         : `<span class="text-caveat text-ink-muted">no external links recorded</span>`}
       <span class="ml-auto flex flex-wrap items-baseline gap-s2 text-caveat">
+        ${state.investigation && state.workingSet.has(slug)
+          ? `<button data-act="open-investigation" class="cursor-pointer bg-transparent text-accent-ink underline"
+              title="Open the current investigation this resource is in scope for">Open Investigation →</button>`
+          : ''}
         <button data-act="disposition" class="cursor-pointer rounded-pill border border-rule-strong bg-transparent px-2 py-[1px] text-ink hover:border-accent">
           ${esc(p?.disposition || 'undecided')} ▾
         </button>
@@ -2531,6 +2879,7 @@ export function resourceHeaderHtml(slug) {
       </span>
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
+    ${credentialBanner}
     <div id="resource-action" class="mt-s2"></div>`;
 }
 
@@ -2540,12 +2889,14 @@ export function resourceHeaderHtml(slug) {
 // until 2026-09-12; getElementById found the popover's (earlier in the
 // DOM) once it had been opened, so the pane's trail never refreshed again
 // and the no-URL message landed in the popover instead of the pane.
-async function renderDispositionHistory(githubUrl, target = 'disposition-history') {
+async function renderDispositionHistory(entityType, identifier, target = 'disposition-history') {
   const el = $(target);
   if (!el) return;
   let rows;
   try {
-    rows = await getDispositionHistory(githubUrl);
+    rows = entityType === 'repo'
+      ? await getDispositionHistory(identifier)
+      : await getEntityDispositionHistory(entityType, identifier);
   } catch (err) {
     el.innerHTML = `<span class="text-state-warn">History could not be read: ${esc(err.message)}</span>`;
     return;
@@ -2675,7 +3026,11 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
     }
     box.innerHTML = `<div class="text-provenance text-ink-muted">depth offered, ${
       outcome === 'declined' ? 'declined' : `<span class="tnum">${ids.length}</span> queued in the background`} · on the verdict's record</div>`;
-    renderDispositionHistory(p.github_url);
+    // DepthOffer stays repo-only (it reasons about never-run analyses at
+    // the analysis/assessment tiers, tied to the repo analysis catalog) —
+    // `renderDepthOffer` above already gates on `p?.github_url`, so this
+    // callback only ever runs for a repo.
+    renderDispositionHistory('repo', p.github_url);
   };
   box.querySelector('[data-depth="accepted"]').addEventListener('click', () => finish('accepted', rows.map((a) => a.analysis_id)));
   box.querySelector('[data-depth="declined"]').addEventListener('click', () => finish('declined', []));
@@ -2690,15 +3045,25 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
   });
 }
 
-function wireDispositionPicker(host, p, { note, onSet }) {
+// `entityType`/`entitySlug` default to the repo shape every existing caller
+// (the header popover, and the pane before it took database/filesystem)
+// already uses. A database/filesystem caller passes both explicitly — its
+// slug IS its stable identity, unlike a repo's github_url-keyed write path.
+function wireDispositionPicker(host, p, { note, onSet }, entityType = 'repo', entitySlug = '') {
   const commit = async (value, reason = '') => {
     note('Saving…');
     try {
-      await setDisposition(p.github_url, value, reason);
+      if (entityType === 'repo') {
+        await setDisposition(p.github_url, value, reason);
+      } else {
+        await setEntityDisposition(entityType, entitySlug, value, reason);
+      }
       p.disposition = value;
       renderSidebar();
       await onSet(value);
-      // The offer, at the moment the verdict is recorded, in the pane.
+      // The offer, at the moment the verdict is recorded, in the pane —
+      // repo-only (renderDepthOffer gates on p?.github_url, a no-op
+      // otherwise, since DepthOffer is deliberately not generalized here).
       const slot = $('depth-offer') || $('resource-action');
       if (slot) renderDepthOffer(p, slot, { afterVerdict: true });
     } catch (err) {
@@ -2746,11 +3111,40 @@ export function bindResourceHeader() {
 
   const note = (html) => { slot.innerHTML = `<div class="text-caveat text-ink">${html}</div>`; };
 
+  // Classic's own "Open Investigation →" (index.html ~5779) just switches
+  // the main view to Investigations — no deep link to a resource's
+  // position within it either, since a resource can be in several at once
+  // and there is no single "the" investigation to land on beyond whichever
+  // one is current. Same shape here: switch stage, open the current
+  // investigation's detail.
+  el.querySelector('[data-act="open-investigation"]')?.addEventListener('click', () => {
+    if (!state.investigation) return;
+    openInvestigationDetail(state.investigation);
+    state.stage = 'investigation';
+    writeUrl();
+    renderIntentNav();
+    loadPane();
+  });
+
   el.querySelector('[data-act="disposition"]')?.addEventListener('click', () => {
-    if (!p?.github_url) {
-      note(`<span class="text-accent-ink">This repo has no GitHub URL recorded, and the
-        disposition endpoint is keyed on that URL — so its disposition cannot be
-        set from here.</span>`);
+    // Generalized 2026-09-23 alongside the Disposition pane (#223): a repo's
+    // disposition is keyed on its github_url (stable across import/renames —
+    // see registry.py's resolve_repo_entity_slug); a database/filesystem's is
+    // keyed on its slug directly, since that IS its stable identity from
+    // registration. This handler used to check `p?.github_url` and hard-code
+    // 'repo' regardless of the selected resource type — correct for repos,
+    // but it also fired the header's disposition button on db/fs resources,
+    // which always have a slug and never a github_url, so it always refused.
+    const entityType = apiEntityType(state.resourceType);
+    const isRepo = entityType === 'repo';
+    const identifier = isRepo ? p?.github_url : state.selectedSlug;
+    if (!identifier) {
+      note(isRepo
+        ? `<span class="text-accent-ink">This repo has no GitHub URL recorded, and the
+          disposition endpoint is keyed on that URL — so its disposition cannot be
+          set from here.</span>`
+        : `<span class="text-accent-ink">No resource is selected — its disposition
+          cannot be set from here.</span>`);
       return;
     }
     slot.innerHTML = `
@@ -2761,20 +3155,26 @@ export function bindResourceHeader() {
     // visible — which is the rationale trail, not decoration. A single
     // current value cannot say that something was abandoned and then picked
     // back up.
-    renderDispositionHistory(p.github_url, 'disposition-history-popover');
+    renderDispositionHistory(entityType, identifier, 'disposition-history-popover');
     wireDispositionPicker(slot, p, { note, onSet: async (value) => {
       el.innerHTML = '';        // rebuilt below by loadPane
       await loadPane();
       $('resource-action').innerHTML =
         `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
-    } });
+    } }, entityType, state.selectedSlug);
   });
 
   el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
     const hiding = !p?.working_set_hidden;
     note(hiding ? 'Hiding…' : 'Unhiding…');
     try {
-      await setWorkingSetHidden('repo', state.selectedSlug, hiding);
+      // Generalized alongside the sidebar's bulk "hide" action -- this used
+      // to hard-code 'repo' regardless of the selected resource type, which
+      // silently hid the WRONG row whenever a database/filesystem happened
+      // to share a slug with a repo (`resource_working_set` is keyed on
+      // (entity_type, entity_slug), so a wrong entity_type is a wrong key,
+      // not a 404).
+      await setWorkingSetHidden(apiEntityType(state.resourceType), state.selectedSlug, hiding);
       if (p) p.working_set_hidden = hiding;
       renderSidebar();
       await loadPane();
@@ -2904,9 +3304,17 @@ export function bindSubTabs() {
  */
 async function loadDispositionPane() {
   const el = $('content');
+  // Generalized 2026-09-22 (Backlog.md, "Disposition is NOT fixed here"):
+  // `repo_dispositions`' PK widened to (entity_type, entity_slug), the
+  // journal/records routes got entity-generic siblings, so this pane no
+  // longer needs a repo-only backend gate — `paneNeedsRepo()` (any
+  // resource selected) is enough, same as By-analysis/Questions since
+  // PR #220.
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
+  const entityType = apiEntityType(state.resourceType);
+  const isRepo = entityType === 'repo';
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -2927,28 +3335,39 @@ async function loadDispositionPane() {
     <div id="journal-entries" class="mt-s3 text-caveat text-ink-muted">Reading the journal…</div>`;
   bindSubTabs();
   bindResourceHeader();
-  const project = state.projects.find((x) => x.slug === slug);
-  if (project?.github_url) {
+  const resource = selectedProject();
+  // A repo's disposition is keyed on its github_url (stable across import/
+  // renames — see registry.py's resolve_repo_entity_slug); a database/
+  // filesystem's is keyed on its slug directly, since that IS its stable
+  // identity from registration. Either way `resource` must exist.
+  const canDispose = isRepo ? Boolean(resource?.github_url) : Boolean(resource);
+  if (canDispose) {
     // The picker WITH its trail, as drawn -- the header popover is a click
     // away and above the heading; this is where a verdict is considered.
     const mountPicker = () => {
       const pick = $('disposition-picker');
       if (!pick) return;
-      pick.innerHTML = dispositionPickerHtml(project);
-      wireDispositionPicker(pick, project, {
+      pick.innerHTML = dispositionPickerHtml(resource);
+      wireDispositionPicker(pick, resource, {
         note: (html) => { const h = $('disposition-history'); if (h) h.innerHTML = html; },
-        onSet: async () => { mountPicker(); await renderDispositionHistory(project.github_url); },
-      });
+        onSet: async () => { mountPicker(); await renderDispositionHistory(entityType, isRepo ? resource.github_url : slug); },
+      }, entityType, slug);
     };
     mountPicker();
-    renderDispositionHistory(project.github_url);
-    renderDepthOffer(project, $('depth-offer'));
+    renderDispositionHistory(entityType, isRepo ? resource.github_url : slug);
+    // DepthOffer stays repo-only, deliberately -- it reasons about
+    // never-run analyses at the analysis/assessment tiers against the repo
+    // analysis catalog, which has no database/filesystem equivalent here;
+    // the function itself no-ops without a github_url.
+    if (isRepo) renderDepthOffer(resource, $('depth-offer'));
   } else {
-    $('disposition-history').textContent = 'No GitHub URL, so no disposition can be keyed to this resource.';
+    $('disposition-history').textContent = isRepo
+      ? 'No GitHub URL, so no disposition can be keyed to this resource.'
+      : 'This resource could not be found.';
   }
-  renderJournalWrite(slug);
-  await renderJournalEntries(slug);
-  await renderRecords(slug);
+  renderJournalWrite(slug, entityType);
+  await renderJournalEntries(slug, entityType);
+  await renderRecords(slug, entityType);
 }
 
 /** Records under the resource, beside the journal and the verdict trail --
@@ -2956,11 +3375,11 @@ async function loadDispositionPane() {
  *  thirty-two-row table fights. A catalogue record shows its steps inline
  *  as Curate draws them; a report shows its header sentence. Same row
  *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
-async function renderRecords(slug) {
+async function renderRecords(slug, entityType = 'repo') {
   const host = $('records');
   if (!host) return;
   let recs;
-  try { recs = (await listRecords(slug)).records || []; }
+  try { recs = (await listRecords(slug, entityType)).records || []; }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
@@ -2997,7 +3416,7 @@ async function renderRecords(slug) {
     const rows = host.querySelector(`[data-record="${b.dataset.recordOpen}"] [data-record-rows]`);
     if (rows) rows.hidden = !rows.hidden;
   }));
-  wireRecordActs(host, slug, recs);
+  wireRecordActs(host, slug, recs, entityType);
 }
 
 function rowCount(rep) {
@@ -3047,7 +3466,7 @@ function recordUsesHtml(r) {
   return uses.length ? `<div class="mt-s1">${uses.join('')}</div>` : '';
 }
 
-function wireRecordActs(host, slug, recs) {
+function wireRecordActs(host, slug, recs, entityType = 'repo') {
   host.querySelectorAll('[data-record]').forEach((box) => {
     const id = box.dataset.record;
     const rec = recs.find((x) => x.id === id);
@@ -3078,10 +3497,10 @@ function wireRecordActs(host, slug, recs) {
       }
       b.disabled = true; status.textContent = '…';
       try {
-        const out = await actOnRecord(slug, id, { action, rows });
+        const out = await actOnRecord(slug, id, { action, rows }, entityType);
         const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
         status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
-        await renderRecords(slug);
+        await renderRecords(slug, entityType);
       } catch (err) {
         b.disabled = false;
         status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
@@ -3099,7 +3518,7 @@ function wireRecordActs(host, slug, recs) {
           name: `${rec.name} — corrected ${new Date().toISOString().slice(0, 10)}`, scope: 'all', corrects: id,
         });
         status.innerHTML = `<span class="text-state-ok">→ correcting record “${esc(out.record.name)}” · ${esc(out.record.report?.header || '')}</span>`;
-        await renderRecords(slug);
+        await renderRecords(slug, entityType);
       } catch (err) {
         b.disabled = false;
         status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to write a correction' : `: ${esc(err.message)}`}</span>`;
@@ -3108,7 +3527,7 @@ function wireRecordActs(host, slug, recs) {
   });
 }
 
-function renderJournalWrite(slug) {
+function renderJournalWrite(slug, entityType = 'repo') {
   const host = $('journal-write');
   if (!host) return;
   const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
@@ -3141,14 +3560,14 @@ function renderJournalWrite(slug) {
     if (person) targets.push(person);
     const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
     try {
-      const out = await writeJournal(slug, body, targets);
+      const out = await writeJournal(slug, body, targets, entityType);
       const cites = $('journal-body').dataset.citesRecord;
       if (cites) {
         // The record learns it was cited. Best effort: the entry is real
         // either way, and a failure here is not a failed write.
-        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }); } catch { /* the entry stands */ }
+        try { await actOnRecord(slug, cites, { action: 'journal', journalId: out.id || '' }, entityType); } catch { /* the entry stands */ }
         delete $('journal-body').dataset.citesRecord;
-        renderRecords(slug);
+        renderRecords(slug, entityType);
       }
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
@@ -3164,7 +3583,7 @@ function renderJournalWrite(slug) {
       note.setAttribute('data-journal-note', '1');
       note.textContent = where ? `written · suggested — now in “${where}”` : 'written';
       host.appendChild(note);
-      await renderJournalEntries(slug);
+      await renderJournalEntries(slug, entityType);
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to write' : `not written: ${err.message}`;
@@ -3172,11 +3591,11 @@ function renderJournalWrite(slug) {
   });
 }
 
-async function renderJournalEntries(slug) {
+async function renderJournalEntries(slug, entityType = 'repo') {
   const host = $('journal-entries');
   if (!host) return;
   let data;
-  try { data = await getJournal(slug); }
+  try { data = await getJournal(slug, entityType); }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   const entries = data.entries || [];
@@ -3197,18 +3616,24 @@ async function renderJournalEntries(slug) {
 }
 
 function paneNeedsRepo() {
-  if (state.resourceType !== 'repo') {
-    return paneMessage('Repos only, in /next',
-      'Surveys and dashboards are built for repositories here. Databases and '
-      + 'filesystems have their own survey endpoints, and they are live in the '
-      + 'current UI.');
-  }
   if (!state.selectedSlug) {
     return paneMessage('Select a resource',
-      'Pick a repository from the sidebar.');
+      `Pick a ${state.resourceType === 'repo' ? 'repository' : state.resourceType === 'db' ? 'database' : 'filesystem'} from the sidebar.`);
   }
   return '';
 }
+
+/** A stricter helper used to live here — a gate for panes whose BACKEND was
+ *  repo-only rather than merely un-built in /next.
+ *  By analysis and the Questions checklist came off it on 2026-09-22 (their
+ *  backends generalized: `workflows.analysis.build_survey_results`,
+ *  `workflows.scouting.build_question_checklist`) and Disposition — the
+ *  last caller — came off it the same day once `repo_dispositions`' PK
+ *  generalized from `github_url` alone to `(entity_type, entity_slug)` and
+ *  the journal/records routes grew entity-generic siblings (Backlog.md,
+ *  "Disposition is NOT fixed here"). With no callers left, that helper was
+ *  removed rather than kept as dead code a future gate might reach for
+ *  again without re-verifying the backend actually needs it. */
 
 /** The tiers, in the order a funnel is worked through. */
 const SURVEY_TIERS = ['scouting', 'discovery', 'assessment', 'analysis',
@@ -3287,6 +3712,53 @@ function surveyRowHtml(c) {
   </div>`;
 }
 
+// Human-readable labels for `NativeProcess.kind` (technology_type_processes.py
+// / configdata/technology_type_processes.yaml). Raw enum values rendered
+// directly -- "(survey_existing)" -- meant nothing to a reader who hasn't read
+// that config file (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §5). A
+// fallback keeps an unmapped or future kind from disappearing rather than
+// crashing the render.
+const NATIVE_PROCESS_KIND_LABELS = {
+  survey_existing: 'surveys an existing catalog entry',
+  catalog_and_survey: 'catalogues, then surveys',
+  delete: 'deletes a catalog entry',
+};
+function nativeProcessKindLabel(kind) {
+  return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
+}
+
+/** Renders `egeria_native_processes` -- real, Egeria-native survey/governance
+ *  processes for this technology type that have no RE-authored Survey
+ *  Definition candidate (that's `candidates`, a separate list). Ported from
+ *  classic's `nativeProcessesHtml` (index.html) into /next's own visual
+ *  idiom. Informational only: no "run" affordance, even for `survey_existing`
+ *  processes -- wiring one of these to run from this pane is a separate,
+ *  already-flagged follow-up (Backlog.md, #244), not part of this fix.
+ *
+ *  Three copy/visual fixes per REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-
+ *  LANGUAGE.md §5, all inherited from the classic port: (1) the house caps
+ *  style is for short labels, not a whole sentence, and the parenthetical
+ *  carrying the fact that matters most here (these can't run from this pane)
+ *  read worst in caps -- split into a caps label and a normal-case caveat
+ *  below it; (2) `display_name` no longer renders in `text-accent-ink`, the
+ *  same "click me" colour as the *Run →* buttons on candidate rows right
+ *  above it, for a name that isn't runnable; (3) raw enum `kind` values are
+ *  mapped to plain language via `nativeProcessKindLabel`. */
+function nativeProcessesSectionHtml(nativeProcesses) {
+  nativeProcesses = nativeProcesses || [];
+  if (!nativeProcesses.length) return '';
+  return `<div class="mt-s3 text-caveat text-ink-muted">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Also known to Egeria</div>
+    <div class="text-ink-muted">Not runnable from here yet — listed so you know they exist.</div>
+    ${nativeProcesses.map((p) => `
+      <div class="mt-s1 border-l border-rule pl-s2">
+        <span class="font-mono text-ink">${esc(p.display_name)}</span>
+        <span class="text-ink-muted">(${esc(nativeProcessKindLabel(p.kind))})</span>
+        ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
+      </div>`).join('')}
+  </div>`;
+}
+
 async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -3297,7 +3769,7 @@ async function loadSurveyPane() {
 
   let data;
   try {
-    data = await getSurveyCandidates(slug, { phase: state.stage });
+    data = await getSurveyCandidates(slug, { entityType: apiEntityType(state.resourceType), phase: state.stage });
   } catch (err) {
     el.innerHTML = subTabsHtml() + paneMessage('The survey catalog could not be read',
       `${err.message}. This is a fact about the request, not about ${slug} — nothing
@@ -3325,6 +3797,13 @@ async function loadSurveyPane() {
   // THE TIER IS ON THE ROW, so an unscoped list stops being a problem worth a
   // paragraph. The four-line cold-server warning becomes a chip that says
   // which scope you are looking at, with a retry.
+  // Informational only, matching classic's index.html: Egeria knows real,
+  // runnable-elsewhere processes for this technology that have no RE-authored
+  // Survey Definition candidate here. That is a separate fact from
+  // `candidates` (RE-authored definitions) and is shown regardless of whether
+  // `candidates` is empty -- not a fallback for the empty state.
+  const nativeProcessesHtml = nativeProcessesSectionHtml(data.egeria_native_processes);
+
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
   const byTier = new Map();
@@ -3350,6 +3829,8 @@ async function loadSurveyPane() {
               class="cursor-pointer bg-transparent underline">retry</button>`
           : esc(stage)}</span>
     </div>
+
+    ${nativeProcessesHtml}
 
     ${here.map((t) => `
       <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
@@ -3454,9 +3935,17 @@ function analysisRowPrice(cost) {
   return bits.join(' · ');
 }
 
+// sub_resource_survey is the one analysis whose Run button, alone, was a
+// dead end -- running it only produces a candidate list; deciding what to
+// DO with that list (select, catalog, dispatch a scoped analysis) is real
+// run-configuration with its own state, and that is what this toggle opens.
+// RULING-SUBRESOURCES-PLACEMENT.md: attached to this row, not a fifth tab.
+const SUBRES_ANALYSIS_ID = 'sub_resource_survey';
+
 function analysisIndexRowHtml(row) {
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
+  const isSubRes = row.analysis_id === SUBRES_ANALYSIS_ID;
   return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
     <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
     <div class="min-w-0 flex-1">
@@ -3475,10 +3964,14 @@ function analysisIndexRowHtml(row) {
         · ${analysisRowPrice(row.cost)}
       </div>
     </div>
+    ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
+      class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >🗂 select &amp; catalog</button>` : ''}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
-  </div>`;
+  </div>
+  ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
 
 /** The description popover: the full prose PLUS the catalog facts named in
@@ -3529,7 +4022,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   if (!host) return;
   let data;
   try {
-    data = await getAnalysesIndex(slug);
+    data = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
   } catch (err) {
     if (slug === state.selectedSlug && state.subTab === 'survey') {
       host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
@@ -3578,6 +4071,15 @@ async function renderAnalysesIndexSection(slug, stage) {
   host.querySelectorAll('[data-analysis-questions]').forEach((b) => b.addEventListener('click', () => {
     openAnalysisQuestionsPopover(rows.find((r) => r.analysis_id === b.dataset.analysisQuestions));
   }));
+  const subresToggle = host.querySelector('[data-subres-toggle]');
+  const subresPanel = host.querySelector('#subres-panel');
+  subresToggle?.addEventListener('click', async () => {
+    const opening = subresPanel.classList.contains('hidden');
+    subresPanel.classList.toggle('hidden', !opening);
+    subresToggle.setAttribute('aria-expanded', String(opening));
+    subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
+    if (opening) await mountSubResourcePanel(slug, subresPanel);
+  });
   host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
     const aid = b.dataset.analysisRun;
     b.disabled = true;
@@ -3687,7 +4189,7 @@ async function launchSurvey(slug, ref) {
   const note = $('survey-note');
   if (note) note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
   try {
-    const res = await runSurveyDefinition(slug, ref);
+    const res = await runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType) });
     if (note) note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
       ${res && (res.guid || res.engine_action_guid)
         ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}
@@ -3908,7 +4410,7 @@ async function openMeasurementDetail({ slug, analysisId, title, metric = '',
     b.disabled = true;
     b.textContent = 'Queueing…';
     try {
-      await enqueueBatch(analysisId, [slug], '');
+      await enqueueBatch(analysisId, [slug], '', apiEntityType(state.resourceType));
       b.textContent = 'Queued';
     } catch (err) {
       b.textContent = err.status === 401 ? 'Not signed in' : `Refused: ${err.message}`;
@@ -4483,9 +4985,15 @@ async function loadByAnalysisPane() {
 
   const live = () => token === dashToken && state.subTab === 'by_analysis';
 
+  // database/filesystem now have a real (if partial -- see docs/Backlog.md,
+  // "By analysis" was repo-only) survey-results route of their own
+  // (workflows.analysis.build_survey_results) -- apiEntityType() translates
+  // state.resourceType at this boundary the same way getSurveyCandidates/
+  // runSurveyDefinition already do, so 'db' never reaches the server
+  // untranslated.
   let data;
   try {
-    data = await getSurveyDashboards(slug, stage, { includeEmpty: true });
+    data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType: apiEntityType(state.resourceType) });
   } catch (err) {
     if (live()) $('dash-boards').innerHTML =
       `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
@@ -4933,14 +5441,31 @@ async function loadPane() {
     return;
   }
 
+  // Investigation is the frame, not a Questions-checklist stage — same
+  // bypass shape as Understanding/Automate above, not the generic engine.
+  // stages/investigation.js's own renderer (list/create/detail: members,
+  // dispositions, next-steps, purposes, classification, Egeria binding)
+  // replaces the old "not in /next" placeholder this branch used to print
+  // for `class === 'frame'`; see that file's header comment.
+  if (state.stage === 'investigation') {
+    await renderInvestigation();
+    renderPerspectiveRow();
+    return;
+  }
+
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
+  // The `class === 'frame'` half is unreachable today (Investigation, the
+  // only frame-class entry, returns above before this line is ever
+  // reached) — kept as the fallback for a FUTURE frame-class stage added
+  // without its own dedicated branch, same defensive shape as `!built`
+  // covering a stage nobody has written a renderer for yet.
   if (stageDef?.class === 'frame' || !stageDef?.built) {
     el.innerHTML = paneMessage(
       `${stageDef.label} · not in /next`,
       stageDef.class === 'frame'
-        ? 'Investigations are the frame around a body of work, and /next does not '
-          + 'implement them. They are live in the current UI.'
+        ? 'This is a frame, not a built pane, and has no dedicated renderer of '
+          + 'its own in /next yet.'
         : 'This stage has no rows in the analysis catalog or the activity log, so '
           + 'there is nothing for a questions pane to show. It is marked here '
           + 'rather than hidden, which is the point.');
@@ -4949,12 +5474,15 @@ async function loadPane() {
     return;
   }
 
-  if (state.resourceType !== 'repo') {
-    el.innerHTML = paneMessage('Repos only, in /next',
-      'The Questions pane is built for repositories. Databases and filesystems '
-      + 'are live in the current UI.');
-    bindSubTabs();
-    return;
+  {
+    // The stricter repo-only backend gate that used to sit here is
+    // gone as of the database/filesystem generalization (docs/Backlog.md,
+    // "scouting-questions was repo-only"): `GET /api/{databases,filesystems}
+    // /{slug}/questions` now exist and reach the same, already-generic
+    // question_catalog_reader.get_questions() the repo route always did.
+    // Only paneNeedsRepo() remains -- a resource must still be selected.
+    const blocked = paneNeedsRepo();
+    if (blocked) { el.innerHTML = blocked; bindSubTabs(); return; }
   }
 
   if (!state.selectedSlug) {
@@ -5007,6 +5535,7 @@ async function loadPane() {
       phase: state.stage,
       perspectives: [...state.activePerspectives],
       purposes: currentPurposes(),
+      entityType: apiEntityType(state.resourceType),
     });
   } catch (err) {
     $('question-rows').innerHTML = `<div class="py-s3 text-answer text-accent-ink">
@@ -5023,7 +5552,7 @@ async function loadPane() {
   // failure here leaves the rows answerable and unanswered, which is the
   // truthful degradation: we could not read them, so we do not claim any.
   try {
-    const ctx = await getContext('repo', slug);
+    const ctx = await getContext(apiEntityType(state.resourceType), slug);
     state.contextAnswers = ctx?.question_answers || {};
     state.enrichment = ctx?.enrichment || {};
   } catch {
@@ -5035,7 +5564,7 @@ async function loadPane() {
   // a perspective is held — the number is the whole point of the chip row.
   if (state.activePerspectives.size) {
     try {
-      const all = await getQuestions(slug, { phase: state.stage });
+      const all = await getQuestions(slug, { phase: state.stage, entityType: apiEntityType(state.resourceType) });
       state.allQuestions = all.questions || [];
     } catch {
       // Unknown, and it must stay unknown: with no unfiltered set there is
@@ -5054,10 +5583,10 @@ async function loadPane() {
   // whether or not the catalog has rows for the stage (today it has none).
   if (state.stage === 'curate') renderCurate(slug);
   // Analysis has real catalog rows (unlike Curate), so it renders through
-  // the generic engine below like any other built stage; this only adds the
-  // one honest note about what classic's Analysis carries that /next does
-  // not (next/stages/analysis.js).
-  if (state.stage === 'analysis') renderAnalysisNote(slug);
+  // the generic engine below like any other built stage, with no bypass
+  // branch here -- classic's Sub-Resources sub-tab is now ported onto the
+  // Survey & analyses pane's sub_resource_survey row instead of a stage-
+  // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
     rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
       No catalogued questions match this stage and this perspective set.
@@ -5211,7 +5740,12 @@ function rowInner(entry, i, env) {
   // the first-only version hid exactly that.
   const perspectives = entry.perspectives || [];
   const running = state.runsInFlight.get(entry.question);
+  const pending = state.pendingProposals.get(entry.question);
   const st = running ? 'running'
+    // A pending proposal takes over the row before `running` even starts --
+    // nothing has been dispatched yet, which is the entire point of §17.1:
+    // the ask happens BEFORE the run, not as a run that then fails.
+    : pending ? 'proposal'
     : env === 'loading' ? 'loading'
     : env && env.__error ? 'error'
     : rowState(entry, env);
@@ -5254,6 +5788,10 @@ function bodyLines(entry, i, st, env) {
   if (st === 'loading') {
     // A skeleton, not a spinner, and not a claim.
     return `<div class="${indent} h-[14px] w-[42%] rounded-sm bg-paper-surface"></div>`;
+  }
+
+  if (st === 'proposal') {
+    return prerequisiteProposalHtml(entry, i, indent);
   }
 
   if (st === 'running') {
@@ -5316,13 +5854,14 @@ function bodyLines(entry, i, st, env) {
     // line is the statement.
     const why = (env && env.blocked_reason) || 'Not run yet.';
     const lines = readEnvelope(entry, env);
-    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`
+    return autoRanNoteHtml(entry, indent)
+      + `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`
       + provenanceLine(entry, i, lines, st);
   }
 
   // answered | automatic
   const lines = readEnvelope(entry, env);
-  let html = '';
+  let html = autoRanNoteHtml(entry, indent);
   if (lines.answer) {
     html += `<div class="${indent} text-answer text-ink">${lines.answer}</div>`;
   }
@@ -5330,6 +5869,98 @@ function bodyLines(entry, i, st, env) {
     html += `<div class="ml-[22px] mt-[5px] text-caveat text-accent-ink">${tnum(esc(lines.caveat))}</div>`;
   }
   return html + provenanceLine(entry, i, lines, st);
+}
+
+/** §17.1's within-budget half: the resolver already ran a producer before
+ *  the demanding step, unasked, because it was cheap enough to stay inside
+ *  the tier the user was already paying for. Nothing to accept or decline --
+ *  it already happened -- but saying nothing would be the exact silent
+ *  omission the design's condition 3 forbids: a row that took longer than
+ *  usual with no visible reason.
+ *
+ *  Read-once: the note is deleted from `state.autoRanNotes` as soon as this
+ *  renders it, so the NEXT re-render of this row (a perspective filter
+ *  change, a tab switch back) shows the answer plainly rather than an
+ *  ever-present caveat about a run that is now history. */
+function autoRanNoteHtml(entry, indent) {
+  const note = state.autoRanNotes.get(entry.question);
+  if (!note) return '';
+  state.autoRanNotes.delete(entry.question);
+  return `<div class="${indent} text-caveat text-ink-muted">${tnum(esc(note))}</div>`;
+}
+
+/** §17.1's crossing-tier half: the resolver would not start the run unasked.
+ *  Three things said, same as classic's card (design §17.1's own list): WHAT
+ *  would run, WHAT it costs, and WHY it is being asked rather than simply
+ *  done -- dropping the third makes this read as the system being timid
+ *  about a cheap step, when the point is that the user's OWN budget is what
+ *  is holding it.
+ *
+ *  Rendered as the row's whole body, same convention `st === 'human'` uses
+ *  for its own decision point -- a proposal is a decision, not a finding, so
+ *  it does not share `answered`'s "answer + caveat + provenance" shape. */
+function prerequisiteProposalHtml(entry, i, indent) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return '';
+  const p = pending.proposal;
+  const steps = (p.steps || []).map((s) => `<code class="text-accent-ink">${esc(s)}</code>`).join(' → ');
+  const est = Math.round(p.estimated_seconds || 0);
+  const basis = p.estimated_is_measured
+    ? '<span class="text-ink-muted">(median of previous runs)</span>'
+    : '<span class="text-ink-muted">(from its declared cost, never yet measured)</span>';
+  const reasons = (p.reasons || []).map((r) => `<li>${esc(r.detail)}</li>`).join('');
+
+  // The second axis (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+  // §7.1). Rendered INSIDE this same proposal rather than as a surface of its
+  // own, because §7.1's words are "one axis beside cost tier in the same
+  // gate… the launcher shows one combined reason". A proposal carrying both a
+  // tier reason and a capability reason is therefore one block with two
+  // bullets and one lead line -- never two prompts to reconcile. The bullets
+  // above already carry both; what changes below is only the LEAD sentence
+  // (a capability-only proposal has no chain to name and no estimate to
+  // quote) and the button row (a shortfall the credential cannot fix is
+  // worth an RFA, which a cost-tier proposal has no use for).
+  const cap = p.capability;
+  const partial = !!p.run_partially;
+  const frac = cap && cap.of
+    ? ` <span class="tnum">${cap.have}</span> of <span class="tnum">${cap.of}</span> table(s)`
+    : '';
+  const lead = steps
+    ? `Answering this needs ${steps} first —
+        estimated <span class="tnum">${est}s</span> ${basis}.`
+    // No chain, so no "needs X first" and no estimate. Saying either would be
+    // a claim about work that does not exist.
+    : `<code class="text-accent-ink">${esc(p.demanding_step || '')}</code> `
+      + `can run, but not completely`
+      + `${cap && cap.connected_as ? ` as <code>${esc(cap.connected_as)}</code>` : ''}${frac}.`;
+
+  // §7.1 names three choices. Two are offered; the third is deliberately
+  // absent and says so rather than appearing as a dead control.
+  // "pick another visible connection" needs the multi-connection model that
+  // is still gated on the project owner's ruling, and an enabled-looking
+  // button that cannot do anything is worse than none.
+  const accept = partial
+    ? 'Run it anyway — and say so'
+    : 'Run it';
+  const rfa = partial
+    ? `<button type="button" data-prereq-rfa="${i}"
+        class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
+        title="Raise a request to the database owner naming this step and the privilege it needs"
+        >ask for broader access</button>`
+    : '';
+  return `<div class="${indent} text-answer text-ink">${lead}</div>
+    ${reasons ? `<ul class="${indent} mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
+    ${partial ? `<div class="${indent} mt-[4px] text-caveat text-ink-muted">Running it anyway is not wrong —
+      the result is marked as measured within this credential's scope, never as a
+      measurement of the whole database.</div>` : ''}
+    <div class="${indent} mt-s2 flex flex-wrap items-center gap-s2">
+      <button type="button" data-prereq-accept="${i}"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[1px] text-caveat text-accent-ink"
+        >${accept}</button>
+      ${rfa}
+      <button type="button" data-prereq-decline="${i}"
+        class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">not now — nothing has run</button>
+    </div>`;
 }
 
 function provenanceLine(entry, i, lines, st) {
@@ -5395,6 +6026,19 @@ function provenanceLine(entry, i, lines, st) {
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
   }
 
+  // Automate (Part 4) — "🔔 Notify me" attached to the question row rather
+  // than to a card, since Assessment/Analysis have no card grid in /next
+  // (see automate.js's own comment block, and PLAN-FINISH-REPOS.md item 4).
+  // A subscription watches an ANALYSIS, not a question, and `analysis_ids`
+  // is not always 1:1 with a question (MIXED:/PARTIAL: answers can name
+  // several) — gated on the array rather than `primaryId` alone so a
+  // multi-analysis row still offers the action, and openNotifyDialog below
+  // makes the reader pick rather than silently subscribing to the first.
+  if ((entry.analysis_ids || []).length && st !== 'running') {
+    actions.push(`<button data-notify="${i}" class="cursor-pointer bg-transparent text-accent-ink underline"
+      title="Notify me (via RFA) when this changes on a future scheduled run — also set ⏱ Schedule in Automate, or this never fires">🔔 notify me</button>`);
+  }
+
   if (!bits.length && !actions.length) return '';
   return `<div class="ml-[22px] mt-[7px] text-provenance text-ink-muted">${
     [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>
@@ -5423,7 +6067,7 @@ async function loadAnswer(entry, i, slug) {
   state.answers.set(entry.question, 'loading');
   let env;
   try {
-    env = await getAnswer(slug, entry.question);
+    env = await getAnswer(slug, entry.question, apiEntityType(state.resourceType));
   } catch (err) {
     // 404 means the question text is not in the catalog the FactLayer reads —
     // a real mismatch between two catalogs, said plainly rather than shown
@@ -5462,6 +6106,188 @@ function bindRowActions(el, entry, i) {
   const numbersBtn = el.querySelector(`[data-numbers="${i}"]`);
   numbersBtn?.addEventListener('click', () =>
     toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn));
+  el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
+  el.querySelector(`[data-prereq-accept="${i}"]`)?.addEventListener('click', () => acceptPrerequisiteProposal(entry, i));
+  el.querySelector(`[data-prereq-decline="${i}"]`)?.addEventListener('click', () => declinePrerequisiteProposal(entry, i));
+  el.querySelector(`[data-prereq-rfa="${i}"]`)?.addEventListener('click', () => raisePrerequisiteCapabilityRfa(entry, i));
+}
+
+/** The user's yes on a pending §17.1 proposal. Runs exactly the steps the
+ *  proposal named (`runPrerequisites`, matching `/api/prerequisites/run`'s
+ *  own contract: it re-resolves internally, so a step no longer needed by the
+ *  time this lands is reported as such rather than re-run), then re-attempts
+ *  the ORIGINAL request the proposal was blocking -- `skipPlanCheck` so the
+ *  retry does not immediately re-ask about a chain it just ran. */
+async function acceptPrerequisiteProposal(entry, i) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return;
+  const { proposal, background, entityType } = pending;
+  state.pendingProposals.delete(entry.question);
+  // A capability-only proposal names no producers at all: the thing to run
+  // IS the demanding step, and `run_partially` is where the server put it
+  // (`steps` means "producers to run FIRST", which would read as nonsense
+  // about the step the user just asked for). Appended rather than
+  // substituted so a proposal carrying BOTH axes runs the chain and then the
+  // step, in one accepted action -- §7.1's combined gate accepted as one.
+  const toRun = proposal.run_partially
+    ? [...(proposal.steps || []), proposal.run_partially]
+    : (proposal.steps || []);
+  state.runsInFlight.set(entry.question, {
+    analysisId: pending.analysisId,
+    label: `Running ${toRun.join(', ')}…`,
+  });
+  replaceRow(entry, i, state.answers.get(entry.question));
+  try {
+    const body = await runPrerequisites(entityType, state.selectedSlug, toRun,
+                                        proposal.demanding_step,
+                                        !!proposal.run_partially);
+    if (body.status === 'error') {
+      throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
+    }
+    state.autoRanNotes.set(entry.question, proposal.steps.length
+      ? `Ran ${proposal.steps.join(', ')} first, then ${proposal.demanding_step}.`
+      // Not "ran X first, then X". What happened is one step, run knowingly
+      // within a credential that cannot see all of what it reads.
+      : `Ran ${proposal.demanding_step} within this credential's scope.`);
+  } catch (err) {
+    state.runsInFlight.delete(entry.question);
+    state.answers.set(entry.question, { __error: `The prerequisite could not be run: ${err.message}` });
+    replaceRow(entry, i, state.answers.get(entry.question));
+    updateAnsweredCount();
+    renderLegend();
+    return;
+  }
+  state.runsInFlight.delete(entry.question);
+  await rerun(entry, i, { background, skipPlanCheck: true });
+}
+
+/** "not now" -- the design's own words for declining (§17.1: "or leave it —
+ *  nothing has run"). Purely local: nothing was dispatched, so there is
+ *  nothing to undo server-side, only the pending marker to clear. */
+function declinePrerequisiteProposal(entry, i) {
+  state.pendingProposals.delete(entry.question);
+  replaceRow(entry, i, state.answers.get(entry.question));
+}
+
+/** §7.1's third choice at the capability gate: raise an RFA to the database
+ *  owner naming THIS step and the privilege it needs.
+ *
+ *  Leaves the proposal pending on purpose. Asking for access is not a
+ *  decision about the run -- the user can still choose "run it anyway" or
+ *  "not now" afterwards, and clearing the row here would silently make the
+ *  RFA read as a third answer to a two-answer question. */
+async function raisePrerequisiteCapabilityRfa(entry, i) {
+  const pending = state.pendingProposals.get(entry.question);
+  if (!pending) return;
+  const { proposal, entityType } = pending;
+  const btn = document.querySelector(`[data-prereq-rfa="${i}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'asking…'; }
+  try {
+    const body = await raiseCapabilityRfa(entityType, state.selectedSlug,
+                                          proposal.run_partially);
+    if (btn) {
+      // Says which of the two outcomes happened. "not_raised" is a real,
+      // honest answer (the shortfall is gone, or was never measured) and must
+      // not render as if a request had been filed.
+      btn.textContent = body.status === 'ok'
+        ? 'asked — see the RFA drawer'
+        : 'nothing to ask for';
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = `could not ask: ${err.message}`; }
+  }
+}
+
+/**
+ * "🔔 Notify me" for a question row. Classic's own version
+ * (`_createSubscriptionFromCard` in index.html) fires straight from the
+ * button with no form — it can, because a card already names exactly one
+ * analysis_id. A question row cannot assume that: `analysis_ids` is not
+ * always 1:1 (a MIXED:/PARTIAL: answer can be produced by several), so this
+ * always shows a small dialog rather than ever guessing — a picker when
+ * there is more than one id, a single confirm when there is exactly one.
+ * Never silently subscribes to `analysis_ids[0]`, unlike `rerun`/
+ * `openRunChoice` above, which pick the first because re-running is
+ * idempotent and safe to under-target; a subscription is a standing watch
+ * on ONE analysis and picking the wrong one silently would be wrong, not
+ * just incomplete.
+ */
+async function openNotifyDialog(entry) {
+  const ids = entry.analysis_ids || [];
+  const slug = state.selectedSlug;
+  if (!ids.length || !slug) return;
+
+  // Friendly names when available, same source `openAnalysisPopover` and the
+  // "By analysis" section use (`getAnalysesIndex`) — falls back to the raw
+  // id for any id that index doesn't carry (e.g. a not-yet-run analysis),
+  // never blocks the dialog on this fetch failing.
+  let namesById = {};
+  try {
+    const idx = await getAnalysesIndex(slug);
+    namesById = Object.fromEntries(
+      (idx.analyses || []).map((r) => [r.analysis_id, r.name || r.analysis_id]));
+  } catch { /* names are a nicety; the ids alone still work */ }
+  const nameOf = (id) => namesById[id] || id;
+
+  const d = openDialog('🔔 Notify me', entry.question);
+  const body = d.querySelector('#wl-detail-body');
+  const pickerHtml = ids.length > 1
+    ? `<p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">This question is answered by
+         more than one analysis — pick the one to watch.</p>
+       <div class="mb-s2 flex flex-col gap-[4px]">
+         ${ids.map((id, n) => `<label class="inline-flex cursor-pointer items-center gap-[6px] text-caveat text-ink">
+             <input type="radio" name="notify-analysis" value="${esc(id)}" ${n === 0 ? 'checked' : ''}>
+             ${esc(nameOf(id))} <span class="font-mono text-ink-muted">${esc(id)}</span>
+           </label>`).join('')}
+       </div>`
+    : `<input type="hidden" id="notify-analysis-only" value="${esc(ids[0])}">
+       <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">Watching
+         <span class="font-mono">${esc(nameOf(ids[0]))}</span> for
+         <span class="font-mono">${esc(slug)}</span>.</p>`;
+  body.innerHTML = `
+    ${pickerHtml}
+    <label class="mb-[3px] block text-caveat text-ink-muted">Label</label>
+    <input id="notify-label" type="text" value="${esc(`${nameOf(ids[0])} changed`)}"
+      class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-answer text-ink">
+    <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">Delivered as an RFA the next time a
+      <em>scheduled</em> run of that analysis detects a change — set ⏱ Schedule for it on this
+      resource in Automate, or this never fires.</p>
+    <div id="notify-error" class="mb-s2 text-caveat text-state-warn"></div>
+    <div class="flex gap-s2">
+      <button id="notify-submit" type="button"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink">Subscribe</button>
+      <button data-act="close" type="button" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
+    </div>`;
+
+  if (ids.length > 1) {
+    body.querySelectorAll('input[name="notify-analysis"]').forEach((r) => r.addEventListener('change', () => {
+      body.querySelector('#notify-label').value = `${nameOf(r.value)} changed`;
+    }));
+  }
+
+  body.querySelector('#notify-submit').addEventListener('click', async () => {
+    const chosen = ids.length > 1
+      ? body.querySelector('input[name="notify-analysis"]:checked')?.value
+      : body.querySelector('#notify-analysis-only').value;
+    const errEl = body.querySelector('#notify-error');
+    if (!chosen) { errEl.textContent = 'Pick an analysis to watch.'; return; }
+    const label = body.querySelector('#notify-label').value.trim();
+    const btn = body.querySelector('#notify-submit');
+    btn.disabled = true;
+    btn.textContent = 'Subscribing…';
+    try {
+      // entity_type is 'repo' unconditionally: the Questions engine this
+      // dialog is attached to is itself gated to `state.resourceType ===
+      // 'repo'` a few lines up in loadPane() — there is no other value this
+      // row could carry today. See createSubscription's own doc comment.
+      await createSubscription('repo', slug, chosen, label);
+      closeCellDetail();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Subscribe';
+      errEl.textContent = err.message;
+    }
+  });
 }
 
 /**
@@ -5483,7 +6309,7 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
   let data;
   try {
-    data = await getMeasurements(slug, analysisId);
+    data = await getMeasurements(slug, analysisId, apiEntityType(state.resourceType));
   } catch (err) {
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-state-warn">The measurements could not be read: ${esc(err.message)}</div>`;
     return;
@@ -5604,10 +6430,62 @@ async function openRunChoice(entry, i, anchor) {
   if (line) line.innerHTML = priceLineHtml(cost, analysisId);
 }
 
-async function rerun(entry, i, { background = false } = {}) {
+/**
+ * §17.1's ask-before-you-run half. `analysisId` doubles as the resolver's
+ * `step_key` -- true for the common one-analysis-one-step case this wiring
+ * targets; an analysis mapped to SEVERAL survey steps (`DATABASE_ANALYSIS_
+ * STEP_MAP`'s multi-step entries, a repo analysis owning more than one
+ * `re_analysis_step`) is not resolved by this call, and `plan_prerequisites`
+ * degrades to `{status: "satisfied"}` for a `step_key` it does not recognise
+ * -- the conservative direction: the run proceeds exactly as it did before
+ * this existed, rather than a guessed step_key producing a false proposal.
+ * Known gap, named rather than silently accepted; see this PR's own report.
+ *
+ * Returns true when the caller should stop -- either a proposal is now
+ * pending the user's answer, or the plan check itself failed and calling it
+ * a second time on the same click would just repeat the failure.
+ */
+async function checkPrerequisitePlan(entry, i, analysisId, { background }) {
+  const entityType = apiEntityType(state.resourceType);
+  let plan;
+  try {
+    plan = await planPrerequisites(entityType, state.selectedSlug, analysisId);
+  } catch (err) {
+    // A plan-check failure must not silently block every run from now on --
+    // the endpoint being briefly unreachable is not the same fact as "this
+    // step is fine to run unasked", but it is also not license to wedge the
+    // whole Questions checklist. Proceeds, same as the pre-§17.1 behaviour,
+    // rather than leaving the row stuck on a question nobody can answer.
+    console.warn('prerequisite plan check failed, proceeding without it:', err);
+    return false;
+  }
+  if (plan.status === 'proposal' && plan.proposal) {
+    state.pendingProposals.set(entry.question, {
+      analysisId, entityType, background, proposal: plan.proposal,
+    });
+    replaceRow(entry, i, state.answers.get(entry.question));
+    return true;
+  }
+  // `plan.status === 'auto_run'` needs no action here: the ordinary run
+  // endpoint resolves the SAME chain again server-side and runs the
+  // producers itself (§17.1's within-budget half is unconditional, not
+  // gated on the client having asked first) -- this call only existed to
+  // find out WHETHER to stop and ask. `rerun` below leaves the auto-run
+  // note for `bodyLines` to show once the run comes back.
+  if (plan.status === 'auto_run' && (plan.auto_run || []).length) {
+    state.autoRanNotes.set(entry.question, `Ran ${plan.auto_run.join(', ')} first, then ${analysisId}.`);
+  }
+  return false;
+}
+
+async function rerun(entry, i, { background = false, skipPlanCheck = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
+
+  if (!skipPlanCheck && await checkPrerequisitePlan(entry, i, analysisId, { background })) {
+    return;
+  }
 
   state.runsInFlight.set(entry.question, { analysisId, label: `Queued · ${analysisId}` });
   replaceRow(entry, i, state.answers.get(entry.question));
@@ -5616,7 +6494,7 @@ async function rerun(entry, i, { background = false } = {}) {
     // Enqueue and stop watching. The row says it is queued in the worker
     // and how to see the result; nothing here pretends to know when.
     try {
-      await runAnalysis(slug, analysisId);
+      await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
       state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
     } catch (err) {
       state.runsInFlight.delete(entry.question);
@@ -5627,7 +6505,7 @@ async function rerun(entry, i, { background = false } = {}) {
   }
 
   try {
-    const started = await runAnalysis(slug, analysisId);
+    const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
     const activityId = started.activity_id;
     state.runsInFlight.set(entry.question, { analysisId, activityId, label: `Running · ${analysisId}` });
     replaceRow(entry, i, state.answers.get(entry.question));
@@ -5950,6 +6828,13 @@ async function start() {
     state.projects = projects.value || [];
   }
 
+  // The URL may already name a db/filesystem resource (`?type=db&resource=…`)
+  // before either list has ever been fetched -- the batch above only ever
+  // fetched repos, since most sessions never touch the other two chips.
+  if (state.resourceType !== 'repo') {
+    await ensureResourceListLoaded(state.resourceType);
+  }
+
   // The investigation may have gone away since this browser last stored it.
   if (state.investigation
       && !state.investigations.some((i) => i.slug === state.investigation)) {
@@ -5961,7 +6846,9 @@ async function start() {
   if (state.scope === 'working-set' && !state.investigation) state.scope = '';
 
   if (!state.selectedSlug) {
-    const first = visibleProjects()[0] || state.projects[0];
+    const first = state.resourceType === 'repo'
+      ? (visibleProjects()[0] || state.projects[0])
+      : currentResourceRows()[0];
     if (first) state.selectedSlug = first.slug;
   }
   writeUrl();

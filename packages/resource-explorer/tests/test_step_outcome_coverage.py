@@ -129,6 +129,12 @@ class TestSymbolExtraction:
             def upsert_code_symbols(self, *a, **k):
                 pass
 
+            def clear_code_markers(self, *a, **k):
+                pass
+
+            def upsert_code_markers(self, *a, **k):
+                pass
+
             def get_code_relationships(self, slug):
                 return []
 
@@ -146,6 +152,9 @@ class TestSymbolExtraction:
 
         class _Extractor:
             def extract(self, *a, **k):
+                return []
+
+            def extract_markers(self, *a, **k):
                 return []
 
         import resource_explorer.ingestion.code_symbol_extractor as cse

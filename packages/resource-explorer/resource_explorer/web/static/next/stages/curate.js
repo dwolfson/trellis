@@ -20,6 +20,7 @@ import {
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
+  apiEntityType,
 } from '/static/next/app.js';
 
 
@@ -163,9 +164,47 @@ function curateRecordHtml(rec) {
   </div>`;
 }
 
+/** Curate is a generic `/next` nav item (reachable for any resource type via
+ *  `#intent-nav`), but everything it does — the plan, the commit, the
+ *  component tree, the depth offers — is built entirely against
+ *  `/api/projects/{slug}/...` (curate_plan.py, `registry.get(slug)` — the
+ *  repo-only `projects` table). Clicking Curate for a database/filesystem
+ *  today 404s with no explanation, indistinguishable from a real failure.
+ *
+ *  Component-tree/branch curation is genuinely repo-shaped by design (git
+ *  branches, architecture-recovery components) — building a database/
+ *  filesystem equivalent is a real, unscoped design question (see the PR
+ *  description), not something to build speculatively here. This is the
+ *  conservative fix: detect the resource type before making any repo-only
+ *  call, and say so honestly — same pattern as Understanding's
+ *  `nonRepoChartIndexHtml`/`loadChartsPane` gate (understanding.js) and
+ *  Scouting's `renderDepthOffer` (app.js, gated on `isRepo`) for other
+ *  panes that are deliberately not generalized yet. */
+function nonRepoCurateHtml(entityType) {
+  return `<div class="text-answer text-ink">
+      Curate isn't available for ${esc(entityType)}s yet.
+    </div>
+    <div class="mt-s2 text-caveat text-ink-muted">
+      Curate's component-tree and branch-based curation actions are built
+      against repositories today (git branches, architecture-recovery
+      components) — there is no database/filesystem equivalent yet. Search
+      tags, feedback and curator notes (this project's other Curate
+      capabilities) are reachable from the resource header regardless of
+      type; only this plan/commit view is repo-only.
+    </div>`;
+}
+
 export async function renderCurate(slug) {
   const host = $('enrichment-form');
   if (!host) return;
+  const entityType = apiEntityType(state.resourceType);
+  if (entityType !== 'repo') {
+    // Skip every repo-only /api/projects/{slug}/... call entirely rather
+    // than firing it and reporting whatever 404 comes back — the honest
+    // message doesn't depend on a failed round-trip to know it's not built.
+    host.innerHTML = nonRepoCurateHtml(entityType);
+    return;
+  }
   host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
   let plan;
   try {
@@ -510,14 +549,21 @@ async function renderComponentTree(slug, prefix = '') {
   const sort = state.componentSort || 'size';
   const rows = [...tree.branches];
   // A sort, never a filter: the ⚠ count already rides on the branch, so
-  // ordering by confidence puts the weakest clusters first without hiding
+  // ordering by evidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.
   //
-  // Agreement outranks a single high confidence (RULING-WHAT-A-VERDICT-IS-
-  // ABOUT.md §2b) — two independent extractors landing on the same path is
-  // a better bet than one extractor at 90%, so it sorts first, confidence
-  // only breaking ties within the same agreement count.
-  if (sort === 'confidence') rows.sort((a, b) => (b.agreement_count || 0) - (a.agreement_count || 0)
+  // Agreement RAISES a branch's effective evidence (RULING-WHAT-A-VERDICT-
+  // IS-ABOUT.md §2b) — two independent extractors landing on the same path
+  // is a better bet than one extractor at 90%. In a weakest-first queue
+  // that means agreement must SINK a branch, the same direction lower
+  // confidence already does — not outrank confidence by sorting to the
+  // top. (Fixed 2026-09-20: the original comparator ran agreement
+  // descending and confidence ascending against each other, so the
+  // best-evidenced branches surfaced first in a queue meant to open on
+  // what needs the most attention — see SORT-DIRECTION-FIX-IMPLEMENTED.md.)
+  // Less agreement and lower confidence both sort first; agreement is the
+  // primary key, confidence breaks ties within the same agreement count.
+  if (sort === 'confidence') rows.sort((a, b) => (a.agreement_count || 0) - (b.agreement_count || 0)
     || (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
   const shown = state.componentShowAll ? rows : rows.slice(0, 8);
   host.innerHTML = `
@@ -526,7 +572,7 @@ async function renderComponentTree(slug, prefix = '') {
       ports and wires read from the deployment artifacts; the diagram shows those belonging to accepted components
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
-      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by confidence</button></div>
+      / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by evidence</button></div>
     ${selectionBarHtml(selected, shown, rows.length)}
     ${shown.map((b) => branchRowHtml(b, selected.has(b.path))).join('')}
     ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}

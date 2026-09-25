@@ -116,6 +116,39 @@ def delete_annotation_type(type_name: str) -> dict:
     return {"status": "success"}
 
 
+@router.get("/annotation-types/{type_name}/usage")
+def get_annotation_type_usage(type_name: str) -> dict:
+    """Blast-radius number for Admin's delete/rename confirmation
+    (SPEC-ADMIN-THE-FOUR-GAPS.md §4/§0): "an annotation type is referenced
+    by recorded annotations — the confirmation must say how many, and say
+    unknown rather than imply zero if that count is not cheap."
+
+    `projects_published` is `ProjectRegistry.count_projects_published_annotation_type` —
+    a real, cheap, indexed number, but a lower bound on distinct *projects*
+    that have a local record of publishing this type, not a count of
+    annotation *records* (RE keeps no durable local table of individual
+    annotation instances — see that method's docstring). `exact` is always
+    False here, on purpose: a caller (or a future test) that only checks
+    `projects_published > 0` would otherwise be tempted to treat 0 as "safe
+    to delete", which the docstring above explicitly says it is not."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get_annotation_type(type_name):
+        raise HTTPException(status_code=404, detail="Annotation type not found")
+    n = registry.count_projects_published_annotation_type(type_name)
+    return {
+        "type": type_name,
+        "projects_published": n,
+        "exact": False,
+        "note": (
+            f"Locally recorded as published for {n} project(s) — a lower bound, "
+            "not a full annotation count. RE does not keep a durable per-annotation "
+            "record of AnnotationType, so this cannot say the true number, and 0 "
+            "here means 'no local publish record', not 'unused'."
+        ),
+    }
+
+
 @router.get("/perspectives")
 def list_perspectives_route(scope: str = "catalog") -> list[str]:
     """Distinct perspective values actually in the catalog — backs the UI's
@@ -146,6 +179,73 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     return get_questions(resource_type)
+
+
+class QuestionCatalogAddRequest(BaseModel):
+    question: str
+    stage: str = ""
+    perspectives: list[str] = []
+    purposes: list[str] = []
+    why_important: str = Field("", alias="whyImportant")
+    rationale: str = ""
+    answering_mechanism: str = Field("", alias="answeringMechanism")
+
+    class Config:
+        populate_by_name = True
+
+
+class QuestionCatalogRetireRequest(BaseModel):
+    question: str
+
+
+@router.post("/question-catalog/questions")
+def add_question_catalog_entry(body: QuestionCatalogAddRequest) -> dict:
+    """Append one new question to docs/dr-egeria/resource_questions.csv and
+    regenerate configdata/question_catalog.yaml from it — the write half of
+    the append-only decision recorded in question_catalog_writer.py and
+    SPEC-ADMIN-THE-FOUR-GAPS.md §4.
+
+    **Decision (project owner, 2026-09-20):** append-only — this route ADDS,
+    it never edits. It 400s if `question` already exists in the CSV (active
+    or retired), rather than silently updating that row, which is the
+    backend half of "editing is not offered anywhere" — the UI not offering
+    an edit form is not enough on its own; this route refuses one even if
+    called directly."""
+    from resource_explorer.surveyors.question_catalog_writer import (
+        QuestionCatalogWriteError, add_question,
+    )
+    try:
+        add_question(
+            body.question,
+            stage=body.stage,
+            perspectives=body.perspectives,
+            purposes=body.purposes,
+            why_important=body.why_important,
+            rationale=body.rationale,
+            answering_mechanism=body.answering_mechanism,
+        )
+    except QuestionCatalogWriteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success"}
+
+
+@router.post("/question-catalog/questions/retire")
+def retire_question_catalog_entry(body: QuestionCatalogRetireRequest) -> dict:
+    """Flag an existing question retired — a status change, never a rewrite
+    of its text, stage, or history. Retired questions stay in the catalog
+    (and in the CSV) so a past survey answer's question is still readable
+    exactly as it was asked; the UI shows them distinctly rather than
+    hiding them (see next/admin/question_catalog.js's STATUS handling)."""
+    from resource_explorer.surveyors.question_catalog_writer import (
+        QuestionCatalogWriteError, QuestionNotFoundError, retire_question,
+    )
+    try:
+        retire_question(body.question)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except QuestionCatalogWriteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success"}
 
 
 @router.get("/{analysis_id}/cost")
@@ -186,6 +286,13 @@ def bulk_resource_facts(
         description="cheap projection: is there output and when was it measured, "
                     "without running the results readers",
     ),
+    entity_type: str = Query(
+        "repo",
+        description="resource type of the slugs above ('repo' | 'database' | "
+                     "'filesystem') — used to build FactLayer and to resolve the "
+                     "default analysis_ids list for this resource type, same "
+                     "convention as answer_question() above",
+    ),
 ) -> dict:
     """What is known about SEVERAL resources, in one call.
 
@@ -206,9 +313,7 @@ def bulk_resource_facts(
     choice is the URL length, hence the cap.
     """
     from resource_explorer.facts import FactLayer
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_RESULTS_MAP,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     subjects = [s.strip() for s in slugs.split(",") if s.strip()]
     # Deduped, order preserved: a repeated slug in the request should not mean
@@ -224,7 +329,7 @@ def bulk_resource_facts(
         )
 
     ids = [a.strip() for a in analysis_ids.split(",") if a.strip()]
-    ids = ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+    ids = ids or sorted(get_adapter(entity_type).analysis_results_map())
 
     if states_only:
         # THE CHEAP PATH. Two grouped queries for the whole matrix instead of
@@ -243,7 +348,7 @@ def bulk_resource_facts(
 
         registry = ProjectRegistry()
         summary = registry.analysis_result_summary(subjects, ids)
-        layer = FactLayer()
+        layer = FactLayer(resource_type=entity_type)
         states: dict[str, dict] = {}
         for slug in subjects:
             runs = layer._last_run(slug)
@@ -281,7 +386,7 @@ def bulk_resource_facts(
         # A FactLayer per thread rather than one shared: it holds a registry
         # handle, and a DB connection is not something to share across
         # threads on the strength of it probably being fine.
-        return slug, [f.as_dict() for f in FactLayer().facts(slug, ids)]
+        return slug, [f.as_dict() for f in FactLayer(resource_type=entity_type).facts(slug, ids)]
 
     # Fanned out across resources, because the cost here is dominated by a
     # couple of readers that are slow rather than by many that are quick —
@@ -329,7 +434,15 @@ def bulk_resource_facts(
 
 
 @router.get("/facts/{slug}")
-def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> dict:
+def resource_facts(
+    slug: str,
+    analysis_ids: list[str] | None = Query(None),
+    entity_type: str = Query(
+        "repo",
+        description="resource type of slug ('repo' | 'database' | 'filesystem') — "
+                     "same convention as answer_question() above",
+    ),
+) -> dict:
     """What is known about this resource, and how well it is known.
 
     Facts arrive already judged: each carries a state from result_status's
@@ -338,17 +451,16 @@ def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> d
     reader.
     """
     from resource_explorer.facts import FactLayer
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_RESULTS_MAP,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
-    ids = analysis_ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
-    layer = FactLayer()
+    ids = analysis_ids or sorted(get_adapter(entity_type).analysis_results_map())
+    layer = FactLayer(resource_type=entity_type)
     return {"subject": slug, "facts": [f.as_dict() for f in layer.facts(slug, ids)]}
 
 
 @router.get("/facts/{slug}/answer")
-def answer_question(slug: str, question: str = Query(...)) -> dict:
+def answer_question(slug: str, question: str = Query(...),
+                     entity_type: str = Query("repo")) -> dict:
     """An answer envelope for one catalogued question.
 
     The question is matched by its text, which is what the catalog keys on and
@@ -357,14 +469,37 @@ def answer_question(slug: str, question: str = Query(...)) -> dict:
     answer about the resource — for 30 of the 41 catalogued questions that is
     the correct outcome, and inventing an answer for them is precisely what
     this layer exists to prevent.
+
+    `entity_type` used to be unaccepted here, so every lookup searched
+    `get_questions()`'s "repo" default regardless of the resource actually
+    asked about. A database/filesystem question with wording that happens to
+    also exist under "repo" (several were authored that way — the wording
+    pass reused repo's text) silently matched the REPO catalog's entry
+    instead, answering from the repo's own analysis_ids/mechanism against a
+    non-repo slug. A database/filesystem question with NO repo-side match at
+    all 404'd outright — surfaced in `/next` as "This question is not in the
+    catalog the answer layer reads." Both are the same bug: the entity type
+    the checklist was built for never reached this lookup.
+
+    That earlier fix (this docstring's paragraph above) covers only the
+    CATALOG lookup. It shipped with `FactLayer()` still built with no
+    `resource_type`, defaulting to "repo" — so even a correctly-matched
+    database question was still answered out of the REPO's results map,
+    which holds none of the database's analyses. Caught by the designer
+    session reading this route end to end
+    (`RULING-DB-QUESTION-CATALOG-CONSISTENCY.md` §0): every prior "fix" to
+    the database question catalog (PR #226's entity-type threading, #229's
+    eleven gap-to-analysis relabels) changed what the CATALOG claims without
+    changing what this route actually READS, because nothing here ever told
+    `FactLayer` which resource type's maps to use.
     """
     from resource_explorer.facts import FactLayer
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
-    match = next((q for q in get_questions() if q.get("question") == question), None)
+    match = next((q for q in get_questions(entity_type) if q.get("question") == question), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Question not in the catalog: {question!r}")
-    return FactLayer().answer(slug, match).as_dict()
+    return FactLayer(resource_type=entity_type).answer(slug, match).as_dict()
 
 
 @router.get("/{resource_type}")

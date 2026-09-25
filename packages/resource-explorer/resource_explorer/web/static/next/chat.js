@@ -44,7 +44,8 @@ import { ask, askStream, sendFeedback, submitAnswerFeedback } from '/static/re-a
 import {
   state, esc, icon, tnum, $,
   ensureRailShowing, railFrame, railClaim, openMembers,
-  promoteToPane, answerForm, copyAsEvidence,
+  promoteToPane, answerForm, copyAsEvidence, apiEntityType,
+  feedbackVotesHtml,
 } from '/static/next/app.js';
 
 /* A browser-generated id, so the agent can keep cross-turn memory.
@@ -295,21 +296,6 @@ function renderTurnList() {
   log.scrollTop = log.scrollHeight;
 }
 
-/** Three states, not a thumb pair.
- *
- *  The endpoint records +1 / 0 / -1 as three explicit outcomes, and "partly
- *  right" is the one that actually distinguishes a routing problem from a
- *  content problem. Folding it into either neighbour loses the signal the
- *  vote exists to collect. Words rather than emoji, since emoji is not this
- *  UI's icon system. */
-const VOTES = [
-  [1, 'thumbs-up', 'Helpful', 'text-state-ok-on-dark'],
-  // "Partly right" is the value that separates a routing problem from a
-  // content problem. It is a real third state, not a midpoint.
-  [0, 'minus', 'Partly right — the right idea, incomplete or partly off', 'text-state-warn-on-dark'],
-  [-1, 'thumbs-down', 'Not helpful', 'text-state-warn-on-dark'],
-];
-
 /** vote value -> the verdict item 8's `/api/feedback/answer` endpoint takes
  *  (feedback.py's `VALID_VERDICTS`). Only `disagree` raises a gap; `agree`
  *  and `partly` still land in the feedback store, same as a checklist row's
@@ -328,13 +314,13 @@ function feedbackHtml(turn, i) {
   // Thumbs, not the words `yes / partly / no`. Substituting words for a
   // conventional pictogram turned a one-glance control into reading; the
   // objection to emoji was platform variance and non-recolourability, which
-  // a Lucide glyph inheriting currentColor does not have.
+  // a Lucide glyph inheriting currentColor does not have. Markup itself is
+  // the shared `feedbackVotesHtml()` (app.js) — chat's dark rail passes
+  // `theme: 'chrome'` and stamps `data-turn` so the click handler below
+  // (`footer.querySelectorAll('[data-vote]')`) can still find which turn.
   return `<div class="mt-s2 flex flex-wrap items-center gap-s3 text-caps">
     <span class="text-chrome-muted">Was this right?</span>
-    ${VOTES.map(([v, ic, title, cls]) => `<button data-turn="${i}" data-vote="${v}"
-      title="${esc(title)}" aria-label="${esc(title)}"
-      class="cursor-pointer bg-transparent text-chrome-muted hover:${cls}"
-      >${icon(ic, { size: 16 })}</button>`).join('')}
+    ${feedbackVotesHtml({ theme: 'chrome', dataAttr: 'turn', dataValue: i })}
   </div>`;
 }
 
@@ -371,6 +357,7 @@ async function vote(i, value) {
       const res = await submitAnswerFeedback({
         slug: turn.slug, question: turn.question, verdict: VOTE_VERDICT[String(value)],
         sessionId: sessionId(), page: location.pathname + location.search,
+        entityType: turn.entityType,
       });
       turn.gapReason = res.gap
         ? `in this project's gaps, marked ${res.gap.destination}`
@@ -606,7 +593,15 @@ export async function submitAsk() {
   if (!q) return;
   input.value = '';
 
-  const turn = { question: q, slug: state.selectedSlug, pending: true, streaming: true, answer: '' };
+  // `entityType` is pinned at the moment the turn is asked, same as `slug` —
+  // `state.resourceType` can change before the vote handler below reads it
+  // back (the person can switch resources while an answer sits in the
+  // pane), and a feedback POST must attribute the disagreement to the
+  // resource type the question was actually asked about.
+  const turn = {
+    question: q, slug: state.selectedSlug, entityType: apiEntityType(state.resourceType),
+    pending: true, streaming: true, answer: '',
+  };
   state.chat.push(turn);
   renderTurnList();
   // Open the pane on this turn immediately — the whole point is that the
@@ -615,7 +610,12 @@ export async function submitAsk() {
   const placeholder = $('promoted-body');
   if (placeholder) placeholder.innerHTML = `<div class="text-answer text-ink-muted">Answering…</div>`;
 
-  const opts = { resourceSlug: state.selectedSlug, perspectives: state.activePerspectives, sessionId: sessionId() };
+  const opts = {
+    resourceSlug: state.selectedSlug,
+    entityType: apiEntityType(state.resourceType),
+    perspectives: state.activePerspectives,
+    sessionId: sessionId(),
+  };
   let sawChunk = false;
   try {
     for await (const evt of askStream(q, opts)) {

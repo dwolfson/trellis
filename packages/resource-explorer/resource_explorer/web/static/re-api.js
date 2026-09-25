@@ -56,6 +56,13 @@ const patch = (path, body) =>
     headers: JSON_HEADERS,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+const put = (path, body) =>
+  request(path, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+const del = (path) => request(path, { method: 'DELETE' });
 
 /* ────────────────────────────────────────────────────────────────────────
  * A small TTL cache.
@@ -112,6 +119,50 @@ export const getProject = (slug) => get(`/api/projects/${encodeURIComponent(slug
 export const listDatabases = () => get('/api/databases/');
 export const listFilesystems = () => get('/api/filesystems/');
 
+/* ── Database servers (web/routes/db_servers.py) ────────────────────────
+ *
+ * Classic's (index.html) real mechanism for finding databases: a server is
+ * registered once with stored credentials, then `discoverDatabases` connects
+ * and lists what is actually on it (`DiscoveredDatabase` rows, each flagging
+ * `is_registered` so an already-added database can be shown but disabled),
+ * and `addDiscoveredDatabase` turns a chosen candidate into a real
+ * `DatabaseEntity` row (what `listDatabases` above returns). Ported for
+ * /next by db-server-discovery.js, reached from the sidebar's `find-repos`
+ * action for `state.resourceType === 'db'`.
+ */
+export const listDbServers = () => get('/api/db-servers/');
+
+export const registerDbServer = (payload) => post('/api/db-servers/register', payload);
+
+export const deleteDbServer = (slug) =>
+  request(`/api/db-servers/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+/** Test a REGISTERED server's stored credentials -- `overrides` lets a
+ *  caller test host/port/credentials that haven't been saved yet, same as
+ *  classic's `TestConnectionRequest` (all fields optional, falling back to
+ *  the stored values server-side). */
+export const testDbServer = (slug, overrides = {}) =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/test`, overrides);
+
+/** Test connection details BEFORE a server is registered at all -- classic's
+ *  `_test-inline` route, used by the registration form's own "Test" button. */
+export const testDbServerInline = (payload) => post('/api/db-servers/_test-inline', payload);
+
+/** Connects to the server right now and returns what's actually there --
+ *  read-only, like `searchDiscoveryRepos`: nothing is added to `databases`
+ *  until `addDiscoveredDatabase` is called for a chosen row. */
+export const discoverDatabases = (slug) =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/discover`);
+
+/** Registers one discovered database as a real `DatabaseEntity`. The route
+ *  takes `database_name`/`display_name` as query params, not a JSON body
+ *  (see db_servers.py's `add_database_from_server` signature) -- hence the
+ *  query string here rather than `post()`'s JSON body. */
+export const addDiscoveredDatabase = (slug, databaseName, displayName = '') =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/add-database`
+    + `?database_name=${encodeURIComponent(databaseName)}`
+    + (displayName ? `&display_name=${encodeURIComponent(displayName)}` : ''));
+
 /* ── Catalog vocabularies ────────────────────────────────────────────── */
 
 /** The perspectives that can actually narrow something — never a hardcoded
@@ -135,20 +186,38 @@ export const listAnalyses = (resourceType, { intent, perspective } = {}) => {
 
 /* ── Questions and answers ───────────────────────────────────────────── */
 
+/** repo -> /api/projects/{slug}/scouting-questions (the original, and the
+ *  only route that keeps that name — database/filesystem's equivalent
+ *  routes are just called `.../questions`, added later). Not a general-
+ *  purpose entity-type-to-path-prefix mapper: kept private and narrow to
+ *  these two routes' actual shapes rather than invented as a shared utility
+ *  nothing else needs yet. */
+function _questionsPath(entityType, slug) {
+  const enc = encodeURIComponent(slug);
+  if (entityType === 'database') return `/api/databases/${enc}/questions`;
+  if (entityType === 'filesystem') return `/api/filesystems/${enc}/questions`;
+  return `/api/projects/${enc}/scouting-questions`;
+}
+
 /**
- * The question checklist for one repo and one funnel stage.
+ * The question checklist for one resource and one funnel stage.
  *
  * `perspectives` is a Set or array; empty means all, which is the API's own
  * default — do not send an empty `perspectives=` param, it is not the same
  * thing as omitting it.
+ *
+ * `entityType` defaults to 'repo' for every existing caller — pass the
+ * `apiEntityType(state.resourceType)`-translated value at every /next
+ * boundary crossing, same as `getSurveyCandidates`/`runSurveyDefinition`
+ * already do, so a database's 'db' never reaches here untranslated.
  */
-export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [] } = {}) {
+export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [], entityType = 'repo' } = {}) {
   const qs = new URLSearchParams({ phase });
   const persp = [...perspectives];
   const purp = [...purposes];
   if (persp.length) qs.set('perspectives', persp.join(','));
   if (purp.length) qs.set('purposes', purp.join(','));
-  return get(`/api/projects/${encodeURIComponent(slug)}/scouting-questions?${qs}`);
+  return get(`${_questionsPath(entityType, slug)}?${qs}`);
 }
 
 /**
@@ -163,10 +232,19 @@ export function getQuestions(slug, { phase = 'scouting', perspectives = [], purp
  * NOT be rendered as a negative answer about the resource. For most of the
  * 41 catalogued questions that is the correct outcome, and inventing an
  * answer for them is exactly what this layer exists to prevent.
+ *
+ * `entityType` defaults to 'repo' for existing callers, same as
+ * `getQuestions()` above — pass `apiEntityType(state.resourceType)` at
+ * every /next boundary crossing. Omitting it used to mean every lookup
+ * silently searched the repo catalog regardless of the resource's real
+ * type: a database/filesystem question worded identically to a repo one
+ * matched the repo's entry (wrong analysis/mechanism, same slug); one
+ * worded differently 404'd outright ("not in the catalog the answer layer
+ * reads").
  */
-export const getAnswer = (slug, question) =>
+export const getAnswer = (slug, question, entityType = 'repo') =>
   get(`/api/analyses/facts/${encodeURIComponent(slug)}/answer`
-      + `?question=${encodeURIComponent(question)}`);
+      + `?question=${encodeURIComponent(question)}&entity_type=${encodeURIComponent(entityType)}`);
 
 /* ── Write paths ─────────────────────────────────────────────────────── */
 
@@ -185,6 +263,25 @@ export const VALID_DISPOSITIONS = [
 export const setDisposition = (githubUrl, disposition, reason = '') =>
   post('/api/discovery/disposition', { github_url: githubUrl, disposition, reason });
 
+/**
+ * A database/filesystem's disposition — the entity-generic sibling of
+ * `setDisposition`/`getDispositionHistory` above, added when
+ * `repo_dispositions`' PK generalized from github_url alone to
+ * (entity_type, entity_slug) (Backlog.md, "Disposition is NOT fixed here",
+ * 2026-09-22). Keyed on `entitySlug` directly — no pre-import ambiguity to
+ * resolve server-side the way a repo's github_url has, since a database/
+ * filesystem's slug IS its stable identity from registration. Pass the
+ * `apiEntityType()`-translated value ('database'/'filesystem'), never the
+ * UI's own 'db' shorthand.
+ */
+export const getEntityDisposition = (entityType, entitySlug) =>
+  get(`/api/discovery/disposition/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`);
+export const setEntityDisposition = (entityType, entitySlug, disposition, reason = '') =>
+  post(`/api/discovery/disposition/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
+       { disposition, reason });
+export const getEntityDispositionHistory = (entityType, entitySlug) =>
+  get(`/api/discovery/disposition-history/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`);
+
 /* ── Enrichment context ───────────────────────────────────────────────────
  *
  * Human-provided metadata for one resource. `question_answers` holds answers
@@ -200,17 +297,33 @@ export const setDisposition = (githubUrl, disposition, reason = '') =>
 /** Save ONE enrichment field. The server stamps author and date from the
  *  signed-in identity and does the read-modify-write, so two people setting
  *  two fields do not clobber each other. 401 when anonymous: a judgement
- *  needs an author. */
-export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}) =>
-  patch(`/api/context/repo/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+ *  needs an author.
+ *
+ *  `entityType` defaults to 'repo' for existing callers — pass the
+ *  `apiEntityType(state.resourceType)`-translated value for a database/
+ *  filesystem, same as `getContext`/`saveContext` above. The backend route
+ *  (`context.py`) is already generic (`PATCH /{entity_type}/{slug}/field`);
+ *  this wrapper used to hardcode 'repo' regardless of the resource actually
+ *  being enriched, so a database/filesystem Enrichment save silently landed
+ *  in the repo context bucket under that slug instead of its own bucket —
+ *  a real write to the wrong place, not just a wrong read. */
+export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType = 'repo') =>
+  patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
 
 /* ── The journal ──────────────────────────────────────────────────────────
  * Append-only prose on a resource, with a server-stamped author. A
  * suggestion is routed by perspective or person and arrives as a work-list
  * entry for them — never a notification. */
-export const getJournal = (slug) => get(`/api/journal/repo/${encodeURIComponent(slug)}`);
-export const writeJournal = (slug, body, suggestTo = []) =>
-  post(`/api/journal/repo/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+// `entityType` defaults to 'repo' for every existing caller — pass the
+// `apiEntityType(state.resourceType)`-translated value for a database/
+// filesystem, same as `getQuestions` above. The backend route was already
+// entity-generic (`/api/journal/{entity_type}/{slug}`); only this wrapper
+// was hardcoded to 'repo' (Backlog.md, "Disposition is NOT fixed here",
+// 2026-09-22).
+export const getJournal = (slug, entityType = 'repo') =>
+  get(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`);
+export const writeJournal = (slug, body, suggestTo = [], entityType = 'repo') =>
+  post(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
 
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
@@ -267,15 +380,172 @@ export const setWorkingSetHidden = (entityType, entitySlug, hidden) =>
 export const removeProject = (slug) =>
   request(`/api/projects/${encodeURIComponent(slug)}`, { method: 'DELETE' });
 
+/**
+ * Unregister a database / filesystem and delete its local survey data —
+ * the database.py `DELETE /{slug}` and filesystems.py `DELETE /{slug}/`
+ * siblings of `removeProject` above. Same caution applies: no confirmation
+ * flag, irreversible, caller must confirm before calling.
+ *
+ * The trailing slash on the filesystem route is real (filesystems.py's
+ * `delete_filesystem` is registered at `/{slug}/`, not `/{slug}`) — dropped,
+ * this 404s.
+ */
+export const removeDatabase = (slug) =>
+  request(`/api/databases/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+export const removeFilesystem = (slug) =>
+  request(`/api/filesystems/${encodeURIComponent(slug)}/`, { method: 'DELETE' });
+
+/** Dispatch to whichever of the three deletes above matches an
+ *  `apiEntityType()`-translated entity type — the frontend's equivalent of
+ *  `POST /{slug}/group`'s server-side dispatch by resource type
+ *  (projects.py), since repo/database/filesystem deletion are three
+ *  genuinely different registry operations with no single shared route. */
+export const removeEntity = (entityType, slug) =>
+  entityType === 'database' ? removeDatabase(slug)
+    : entityType === 'filesystem' ? removeFilesystem(slug)
+    : removeProject(slug);
+
 /* ── Groups ──────────────────────────────────────────────────────────── */
 
 export const listGroups = () => cached('groups', () => get('/api/projects/groups'));
+
+/** Ungrouped repos sharing a GitHub org, suggested (never auto-applied) as
+ * candidate groupings — see projects.py's `suggest_groups()` docstring. */
+export const groupSuggestions = () => get('/api/projects/groups/suggestions');
+
+export const createGroup = (slug, displayName, description = '') =>
+  post('/api/projects/groups', { slug, display_name: displayName, description });
+
+/**
+ * Delete a group. Does NOT delete its member resources — they return to
+ * Ungrouped (`resources_unassigned` in the response is the count that did).
+ * The route takes no confirmation flag of any kind, so the only
+ * confirmation that will ever exist is the caller's — same rule as
+ * `removeProject` above.
+ */
+export const deleteGroup = (slug) =>
+  request(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
 
 export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
   post(`/api/projects/${encodeURIComponent(slug)}/group`,
        { resource_type: resourceType, group_slug: groupSlug });
 
+/* ── Discovery sources ───────────────────────────────────────────────────
+ *
+ * Named, reusable "where do we scout" configs (routes/discovery.py). Two
+ * shapes share one create/list/delete surface: `source_type: 'search'`
+ * (saved GitHub search filters) and `'list'` (a curated URL list, optionally
+ * bound to a `fetch_kind` auto-fetcher like a foundation's landscape.yml).
+ *
+ * `run` is READ-ONLY — it returns candidate repos for review, exactly like
+ * a live search, and imports NOTHING on its own (checked against the route:
+ * web/routes/discovery.py's run_discovery_source calls the same search/
+ * list-enrichment helpers as /search and returns DiscoveredRepo rows).
+ * Turning those candidates into registered projects is the separate
+ * `importDiscoveredRepos` call below — the admin UI must show the run's
+ * results and let a person choose what (and where) to import rather than
+ * treating "run" as if it already wrote anything.
+ *
+ * `previewSourceRefresh`/`applySourceRefresh` split the same way, but the
+ * server enforces it: refresh (GET-shaped POST) never persists, and apply
+ * re-fetches rather than trusting a client-held diff, so the applied state
+ * always matches a fetch that just happened.
+ */
+export const listDiscoverySources = () => get('/api/discovery/sources');
+
+export const createDiscoverySource = (slug, displayName, sourceType, config) =>
+  post('/api/discovery/sources', { slug, display_name: displayName, source_type: sourceType, config });
+
+export const deleteDiscoverySource = (slug) =>
+  request(`/api/discovery/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+export const runDiscoverySource = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/run`);
+
+export const previewSourceRefresh = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh`);
+
+export const applySourceRefresh = (slug) =>
+  post(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`);
+
+/** A live, unsaved GitHub search — used both by a plain preview and by the
+ *  "save this search as a source" flow, so what you saved is provably what
+ *  you saw. */
+export const searchDiscoveryRepos = (filters) => post('/api/discovery/search', filters);
+
+export const listQuickListSources = () => cached('discovery-quick-list-sources', () => get('/api/discovery/quick-list-sources'));
+
+/** Queues a background import of the given DiscoveredRepo-shaped candidates.
+ *  Returns immediately (`{queued, skipped}`); progress lands in the activity
+ *  log, not in this response. */
+export const importDiscoveredRepos = (repos, { groupSlug = '', sourceLabel = 'search' } = {}) =>
+  post('/api/discovery/import', {
+    repos: repos.map((r) => ({
+      github_url: r.html_url, display_name: r.full_name, description: r.description || '',
+    })),
+    group_slug: groupSlug,
+    source_label: sourceLabel,
+  });
+
+/** A pasted/uploaded CSV or newline list of GitHub URLs, turned into the
+ *  same DiscoveredRepo rows a search would — read-only, same as search:
+ *  nothing is registered until the caller selects rows and calls
+ *  `importDiscoveredRepos`. An account URL in the list (e.g.
+ *  `github.com/apache`) is expanded into its member repos server-side and
+ *  reported back in `expanded_orgs`, since a bare account isn't itself a
+ *  repo — see `discovery.py`'s `discover_from_list` docstring. */
+export const discoverFromList = (text) => post('/api/discovery/from-list', { text });
+
+/** The inventory CSV export — raw text + filename, not `get()`'s JSON path,
+ *  since the response is `text/csv` with a `Content-Disposition` header.
+ *  Deliberately does not touch the DOM (no Blob, no anchor click): classic's
+ *  `_downloadInventory` (index.html) found that a plain `<a download>`
+ *  quietly saved a 404's `{"detail":"Not Found"}` body as a `.csv`-shaped
+ *  file that looked like a real export — checking `res.ok` here, before any
+ *  caller touches the response as a file, is what a blob-download helper in
+ *  the DOM layer cannot do on its own. */
+export async function fetchInventoryCsv() {
+  const res = await fetch('/api/discovery/inventory.csv');
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
+    throw new ApiError(res.status, detail, '/api/discovery/inventory.csv');
+  }
+  const text = await res.text();
+  const cd = res.headers.get('content-disposition') || '';
+  const m = cd.match(/filename="?([^";]+)"?/);
+  const filename = m ? m[1] : `re-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+  return { text, filename };
+}
+
 /* ── Investigations ──────────────────────────────────────────────────── */
+/* The full route surface lives here, in one place (a second, partial
+ * `Investigations` section used to sit further down in this file with just
+ * `listInvestigations` -- merged in here). `web/routes/investigations.py`
+ * is the source of truth for every path and body shape below. */
+
+export const listInvestigations = ({ includeClosed = false } = {}) =>
+  get(`/api/investigations/?include_closed=${includeClosed}`);
+
+export const getInvestigationPurposes = () => get('/api/investigations/purposes');
+
+export const getInvestigationClassifications = () => get('/api/investigations/classifications');
+
+export const getInvestigation = (slug) => get(`/api/investigations/${encodeURIComponent(slug)}`);
+
+export const createInvestigation = ({
+  displayName, description = '', purposes = [],
+  projectClassification = 'StudyProject', egeriaBinding = 'egeria', hypothesis = '',
+  egeriaProjectGuid = '', egeriaProjectQualifiedName = '',
+} = {}) =>
+  post('/api/investigations/', {
+    display_name: displayName, description, purposes,
+    project_classification: projectClassification, egeria_binding: egeriaBinding, hypothesis,
+    egeria_project_guid: egeriaProjectGuid, egeria_project_qualified_name: egeriaProjectQualifiedName,
+  });
+
+export const updateInvestigation = (slug, fields) =>
+  patch(`/api/investigations/${encodeURIComponent(slug)}`, fields);
 
 export const listInvestigationMembers = (slug) =>
   get(`/api/investigations/${encodeURIComponent(slug)}/members`);
@@ -291,12 +561,60 @@ export const removeInvestigationMember = (slug, entityType, entitySlug) =>
           + `${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
           { method: 'DELETE' });
 
+export const closeInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/close`);
+
+export const suspendInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/suspend`);
+
+export const reopenInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/reopen`);
+
+export const bindInvestigationEgeriaProject = (slug, {
+  status = 'unset', egeriaProjectGuid = '', egeriaProjectQualifiedName = '', freeTextName = '',
+} = {}) =>
+  put(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
+    status, egeria_project_guid: egeriaProjectGuid,
+    egeria_project_qualified_name: egeriaProjectQualifiedName, free_text_name: freeTextName,
+  });
+
+export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
+
+export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/reclassify`, {
+    project_classification: projectClassification, hypothesis,
+  });
+
+export const relinkInvestigationMembers = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/relink-members`);
+
+export const syncInvestigationEgeria = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/sync-egeria`);
+
+export const getInvestigationDispositions = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/dispositions`);
+
+export const setInvestigationDisposition = (slug, entityType, entitySlug, disposition = '', rationale = '') =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/dispositions/`
+       + `${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`
+       + `?disposition=${encodeURIComponent(disposition)}&rationale=${encodeURIComponent(rationale)}`);
+
+export const getInvestigationNextSteps = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/next-steps`);
+
 /* ── Query ───────────────────────────────────────────────────────────── */
 
-export const ask = (query, { resourceSlug, perspectives = [], sessionId } = {}) =>
+/**
+ * `entityType` defaults to 'repo' for existing callers, same convention as
+ * `getQuestions`/`getAnswer` above — pass the `apiEntityType(state.resourceType)`-
+ * translated value at every /next boundary crossing. Omitting it used to mean
+ * every chat/Ask turn silently compiled evidence from the repo catalog
+ * regardless of what resource was actually selected: a database or
+ * filesystem question always got repo-shaped sections (`foss_scorecard`,
+ * `chaoss_metrics`, ...) and reported its real answer as a gap.
+ */
+export const ask = (query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) =>
   post('/api/query/', {
     query,
     project_slug: resourceSlug || null,   // the wire key is still the old name
+    entity_type: entityType,
     perspectives: [...perspectives],
     session_id: sessionId || null,
   });
@@ -335,8 +653,8 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
  * the per-resource gaps collection. Callers should skip this call rather
  * than let it throw when `slug` is empty.
  */
-export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '' }) =>
-  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page });
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType = 'repo' }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: entityType });
 
 /**
  * SSE variant of `ask()` — POST /api/query/stream, yielding one event per
@@ -354,13 +672,14 @@ export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', se
  * old browser, a proxy that buffers SSE) should catch and retry with the
  * plain `ask()` above rather than this function pretending to stream.
  */
-export async function* askStream(query, { resourceSlug, perspectives = [], sessionId } = {}) {
+export async function* askStream(query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) {
   const res = await fetch('/api/query/stream', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({
       query,
       project_slug: resourceSlug || null,
+      entity_type: entityType,
       perspectives: [...perspectives],
       session_id: sessionId || null,
     }),
@@ -473,12 +792,27 @@ export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
  * dashboard" — an absence reported as a non-existence, which is the one thing
  * this UI is most careful not to do.
  */
-export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false } = {}) => {
+/** repo -> /api/projects/, database -> /api/databases/, filesystem ->
+ *  /api/filesystems/ — all three now expose the identically-shaped
+ *  `/{slug}/survey-results` route (see `workflows.analysis.
+ *  build_survey_results`'s docstring for what a database/filesystem
+ *  dashboard actually contains, vs. repo's curated groupings). */
+function _surveyResultsPath(entityType, slug) {
+  const enc = encodeURIComponent(slug);
+  if (entityType === 'database') return `/api/databases/${enc}/survey-results`;
+  if (entityType === 'filesystem') return `/api/filesystems/${enc}/survey-results`;
+  return `/api/projects/${enc}/survey-results`;
+}
+
+/** `entityType` defaults to 'repo' for every existing caller — pass
+ *  `apiEntityType(state.resourceType)`-translated value at every /next
+ *  boundary crossing, same as `getQuestions` above. */
+export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType = 'repo' } = {}) => {
   const qs = new URLSearchParams();
   if (stage) qs.set('stage', stage);
   if (includeEmpty) qs.set('include_empty', 'true');
   const q = qs.toString();
-  return get(`/api/projects/${encodeURIComponent(slug)}/survey-results${q ? `?${q}` : ''}`);
+  return get(`${_surveyResultsPath(entityType, slug)}${q ? `?${q}` : ''}`);
 };
 
 /** One-line headline per analysis that has results — the summary tiles. */
@@ -494,7 +828,14 @@ export const getSurveySummary = (slug, stage = '') =>
  * which the `'probe'` incident proved by hiding real runs underneath one.
  * Every measurement therefore already has a series; nothing displayed it.
  */
-export const getAnalysisTrend = (slug, analysisId, metric = '') =>
+/** FOUND, NOT FIXED (Tier 1 audit, 2026-09-23): `/api/projects/{slug}/analyses/
+ *  {analysis_id}/trend` has no database/filesystem equivalent today —
+ *  confirmed by grepping `databases.py`/`filesystems.py` for `/trend`, no
+ *  match. `entityType` is accepted here so callers are ready the moment a
+ *  generic route exists, but it is NOT sent — there is nowhere to send it —
+ *  and this still always hits the repo-only path. Needs its own scoping
+ *  pass: a per-type results-history reader, not just a routing fix. */
+export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 'repo') => // eslint-disable-line no-unused-vars
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
     encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
 
@@ -505,17 +846,90 @@ export const getAnalysisTrend = (slug, analysisId, metric = '') =>
  * where a value opens (a members list, or nothing to open). One call fills
  * both the in-pane table and the "the numbers behind this N" link's count.
  */
-export const getMeasurements = (slug, analysisId) =>
+// `entityType` defaults to 'repo' for existing callers — pass
+// `apiEntityType(state.resourceType)`-translated value at every /next
+// boundary crossing, same as `getAnswer`/`ask`/`askStream` above. Omitting
+// it used to mean this always 404'd for a database/filesystem slug (the
+// backend always did a repo-only lookup regardless of what was asked for);
+// see `build_measurements()`'s own docstring in stage_page.py.
+export const getMeasurements = (slug, analysisId, entityType = 'repo') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
-    encodeURIComponent(analysisId)}/measurements`);
+    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(entityType)}`);
 
 /** Every analysis this repo could run — the row plus what feeds its popover
  *  (stage, declared run time, availability, perspectives, ruleset link, the
  *  full description) in one call, so a description popover needs no second
- *  fetch (stage-page round, points 1-3). */
-export const getAnalysesIndex = (slug, stage = '') =>
-  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index${
-    stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
+ *  fetch (stage-page round, points 1-3).
+ *
+ *  `entityType` defaults to 'repo', same reasoning and same fix date as
+ *  `getMeasurements` above. Was this Tier 1 pass's own "found, not fixed"
+ *  item — superseded here by `re/measurements-feedback-fix` (PR #237, merged
+ *  ahead of this branch), which built the real `entity_type` dispatch into
+ *  `build_analyses_index()` itself rather than routing per entity type. */
+export const getAnalysesIndex = (slug, stage = '', entityType = 'repo') =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index?entity_type=${encodeURIComponent(entityType)}${
+    stage ? `&stage=${encodeURIComponent(stage)}` : ''}`);
+
+/** Latest structured results for one analysis -- a raw dict whose shape
+ *  differs per analysis_id (REPO_ANALYSIS_RESULTS_MAP's own reader
+ *  functions). Used directly by the sub-resource survey panel to read its
+ *  own findings list on demand, rather than waiting on the by-analysis
+ *  dashboard grouping this same data also feeds. */
+export const getAnalysisResults = (slug, analysisId) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/results`);
+
+/* ── Sub-resources -- the repo scope-narrowing funnel's Select/Catalog/Narrow
+ * stages (docs/repo-scope-narrowing-funnel.md D2-D6). Repo-only: the
+ * underlying table is generic across resource types, but SubResourceSurveyor
+ * only exists for repos (RULING-SUBRESOURCES-PLACEMENT.md §1.2) -- these
+ * routes 404 the repo slug they're given, never a resource-type check, so
+ * nothing here needs an entityType param the way survey-definitions does. */
+
+/** What's currently tracked locally for this repo -- backs the "already
+ *  catalogued" state so re-opening the panel later shows prior selections
+ *  (repeatable, not a one-time gate). */
+export const listSubResources = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/sub-resources`);
+
+/** Track the selected sub-resources locally, and (by default) publish them
+ *  to Egeria as real FileFolder/DataFile assets in the same action.
+ *  `publishToEgeria: false` is the sandbox-mode escape hatch. */
+export const catalogSubResources = (slug, items, publishToEgeria = true) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/catalog`,
+       { items, publish_to_egeria: publishToEgeria });
+
+/** Reversible -- removes only RE's local tracking record, never anything
+ *  already published to Egeria. `locator` is a query param so the repo's
+ *  own root locator ("") is representable. */
+export const uncatalogSubResource = (slug, locator) =>
+  del(`/api/projects/${encodeURIComponent(slug)}/sub-resources?locator=${encodeURIComponent(locator)}`);
+
+/** Run one analysis's step(s) scoped to a single cataloged sub-resource
+ *  (the Narrow stage, D5/D6) rather than the whole repo. Only reachable for
+ *  analyses whose target_shape is compatible with the sub-resource's kind
+ *  -- the server re-checks this; `isShapeCompatible` below is the client's
+ *  own mirror of the same rule, used to decide what to offer in the first
+ *  place. */
+export const runScopedAnalysis = (slug, analysisId, locator) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/analyses/${
+    encodeURIComponent(analysisId)}/run`, { locator });
+
+/** Latest structured results for one analysis, scoped to a single cataloged
+ *  sub-resource. Empty dict for any analysis_id that never persists scoped
+ *  metrics -- that is an absence, not an error. */
+export const getScopedAnalysisResults = (slug, analysisId, locator) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/sub-resources/analyses/${
+    encodeURIComponent(analysisId)}/results?locator=${encodeURIComponent(locator)}`);
+
+/** Mirrors analysis_catalog_reader.is_shape_compatible() -- kept in sync by
+ *  hand since this is a small, stable 4-value enum, not worth a round-trip
+ *  (same approach classic's index.html took for the same check). */
+export function isShapeCompatible(targetShape, kind) {
+  if (targetShape === 'corpus') return true;
+  if (targetShape === 'single_container') return kind === 'folder' || kind === 'schema';
+  if (targetShape === 'single_leaf') return kind === 'file' || kind === 'table' || kind === 'column';
+  return false; // whole_resource_only, or unrecognized
+}
 
 /** Recent activity for one resource — the runs, with their per-step detail. */
 /* ── Members: the things a count counted ─────────────────────────────────
@@ -525,7 +939,16 @@ export const getAnalysesIndex = (slug, stage = '') =>
  * all) — and the response says whether the scope was honoured, since only
  * symbols carry a public/internal marker today.
  */
-export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}) => {
+/** FOUND, NOT FIXED (Tier 1 audit, 2026-09-23): `/api/projects/{slug}/members/
+ *  {analysis_id}` (and its `/children`/`/promote` siblings below) have no
+ *  database/filesystem equivalent — confirmed by grepping `databases.py`/
+ *  `filesystems.py`, no match. `entityType` is accepted on all three so
+ *  callers are ready once one exists, but none of the three send it — there
+ *  is nowhere to send it — and all three still always hit the repo-only
+ *  path. `members.py`'s member model may or may not generalize cleanly to a
+ *  database's rows/tables or a filesystem's files; that question is exactly
+ *  why this needs its own scoping pass rather than being built here. */
+export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}, entityType = 'repo') => { // eslint-disable-line no-unused-vars
   const qs = new URLSearchParams({ scope, limit: String(limit) });
   if (metric) qs.set('metric', metric);
   return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
@@ -534,12 +957,13 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
 /** Promote a member-list selection. Three acts, one provenance line
  *  composed on the server: work_list (I will deal with this), rfa (someone
  *  must), journal (worth knowing). `members` is a snapshot of names, never
- *  a query. 401 when anonymous. */
-export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }) =>
+ *  a query. 401 when anonymous. See `getMembers`'s found-not-fixed note
+ *  above — same gap, same reason. */
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType = 'repo') => // eslint-disable-line no-unused-vars
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote`,
     { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
 
-export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}) =>
+export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType = 'repo') => // eslint-disable-line no-unused-vars
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
     new URLSearchParams({ key, scope, limit: String(limit) })}`);
 
@@ -557,10 +981,10 @@ export const listWorkLists = (investigation = '') =>
 
 export const getWorkList = (slug) => get(`/api/work-lists/${encodeURIComponent(slug)}`);
 
-export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '' } = {}) =>
+export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '', entityType = 'repo' } = {}) =>
   post('/api/work-lists/', {
     display_name: displayName, entity_slugs: [...entitySlugs],
-    investigation, rationale, description,
+    investigation, rationale, description, entity_type: entityType,
   });
 
 export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
@@ -585,18 +1009,30 @@ export const publishWorkList = (slug) =>
  * Returns a `set_id` to poll. One queue row per resource, so one failure is
  * one row — the rest still run.
  */
-export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '') =>
+/** `entityType` only matters when `entitySlugs` is given with no
+ *  `workListSlug` — the server derives entity_type from the work list's own
+ *  column when one is named, since a work list is homogeneous by
+ *  construction (`WorkListCreate.entity_type`); it defaults to 'repo'
+ *  otherwise, same as `BatchRunRequest.entity_type`. */
+export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '', entityType = 'repo') =>
   post('/api/work-lists/runs/batch', {
     analysis_id: analysisId, entity_slugs: [...entitySlugs], work_list_slug: workListSlug,
+    entity_type: entityType,
   });
 
 /** Progress for one batch, derived from the run rows on every read. */
 export const getBatchProgress = (setId) =>
   get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);
 
-/** Every fact known about ONE resource, already judged. */
-export const getResourceFacts = (slug) =>
-  get(`/api/analyses/facts/${encodeURIComponent(slug)}`);
+/** Every fact known about ONE resource, already judged. `entityType`
+ *  defaults to 'repo' for existing callers — pass the
+ *  `apiEntityType(state.resourceType)`-translated value for a database/
+ *  filesystem work-list member (worklist.js already carries `wl.entity_type`
+ *  per member), same convention as `getQuestions`/`getAnswer` above. Omitting
+ *  it used to mean the backend always built its FactLayer against the repo's
+ *  own maps regardless of the resource's real type. */
+export const getResourceFacts = (slug, entityType = 'repo') =>
+  get(`/api/analyses/facts/${encodeURIComponent(slug)}?entity_type=${encodeURIComponent(entityType)}`);
 
 /**
  * Facts for SEVERAL resources, in one call.
@@ -623,22 +1059,110 @@ export const getResourceFacts = (slug) =>
  * It cannot tell `measured` from `partial`; the response says so. Render the
  * difference as not-yet-read, never as a state nobody established.
  */
-export const getBulkStates = (slugs, analysisIds = []) => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true' });
+/** `entityType` defaults to 'repo' — a work-list comparison grid mixing
+ *  resource types must call this once per entity type (the route builds one
+ *  `FactLayer` for the whole batch), the same constraint `getMeasurements`'s
+ *  fix already documented for the per-resource measurements route. */
+export const getBulkStates = (slugs, analysisIds = [], entityType = 'repo') => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true', entity_type: entityType });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
 
-export const getBulkFacts = (slugs, analysisIds = []) => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(',') });
+export const getBulkFacts = (slugs, analysisIds = [], entityType = 'repo') => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), entity_type: entityType });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
 
 /* ── Running an analysis ─────────────────────────────────────────────── */
 
-export const runAnalysis = (slug, analysisId) =>
-  post(`/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
+/** repo -> /api/projects/, database -> /api/databases/ — the per-card "Run"
+ *  action's per-analysis route, same dispatch shape as `_questionsPath`/
+ *  `_surveyResultsPath` above.
+ *
+ *  FILESYSTEM HAS NO EQUIVALENT ROUTE YET (audited 2026-09-23): unlike
+ *  database, `web/routes/filesystems.py` has no
+ *  `POST /{slug}/analyses/{analysis_id}/run` at all — its only survey
+ *  trigger is the whole-resource `POST /{slug}/survey`, not a per-analysis
+ *  dispatch the way `databases.py`'s `run_single_database_analysis` and
+ *  `run_analysis`/`resolve_analysis_plan` (repo) are. Building one needs a
+ *  filesystem-side per-analysis step runner first (there is no
+ *  `run_filesystem_survey(..., steps=[...])` equivalent of
+ *  `run_database_survey` to call) — a real, separate piece of work, not a
+ *  routing fix, so it is named here as found-but-deferred rather than
+ *  built. Until it exists, a filesystem's "Run"/"re-run" falls back to the
+ *  repo path below, which 404s (`registry.get(slug)` against the repo-only
+ *  `projects` table) — a loud failure, not a silent wrong-resource write. */
+function _runAnalysisPath(entityType, slug, analysisId) {
+  const enc = encodeURIComponent(slug);
+  const aid = encodeURIComponent(analysisId);
+  if (entityType === 'database') return `/api/databases/${enc}/analyses/${aid}/run`;
+  return `/api/projects/${enc}/analyses/${aid}/run`;
+}
+
+/** `entityType` defaults to 'repo' for every existing caller — pass
+ *  `apiEntityType(state.resourceType)` at every /next boundary crossing,
+ *  same convention as `getQuestions` above. Before this, EVERY caller
+ *  (including a database/filesystem's own "Run"/"re-run" button on a
+ *  Questions-checklist row) posted to the repo-only route regardless of the
+ *  resource's real type. */
+export const runAnalysis = (slug, analysisId, entityType = 'repo') =>
+  post(_runAnalysisPath(entityType, slug, analysisId));
+
+/* ── Prerequisite proposals (design §17.1, web/routes/prerequisites.py) ───
+ *
+ * `/plan` asks what `stepKey` needs before it can answer, WITHOUT running
+ * anything — the exact question a UI has to ask before it can offer "answering
+ * this needs X first — estimated 40s; run it?" rather than dispatching a run
+ * that silently degrades to a skip. `stepKey` is the resolver's own vocabulary
+ * (`re_analysis_steps`/`step_registry` keys), not always identical to an
+ * `analysis_id` — a caller passing an `analysis_id` that happens not to be a
+ * declared step key gets back `status: "satisfied"` (prerequisite_resolver.
+ * resolve() returns SATISFIED for an unrecognised key), which is the correct,
+ * conservative answer rather than a false proposal.
+ *
+ * The response is one of `PlanRequest`'s three shapes:
+ *   {status: "satisfied"}                                   — run it, nothing to ask
+ *   {status: "auto_run", auto_run: [steps...]}               — within budget;
+ *     the ordinary run endpoint will run these first on its own, unasked
+ *   {status: "proposal", proposal: {...Proposal.as_dict()}}  — crosses tier;
+ *     needs the user's yes before anything runs (`runPrerequisites` below)
+ *   {status: "unsatisfiable", reason}                        — nothing produces
+ *     what is missing; there is no accept button for this one
+ */
+export const planPrerequisites = (entityType, slug, stepKey) =>
+  post('/api/prerequisites/plan', { entity_type: entityType, slug, step_key: stepKey });
+
+/** The user's yes on a `proposal` plan. Runs exactly the steps the plan
+ *  named, in the order it named them (`PlanRequest`'s docstring: a proposal
+ *  recomputed at accept time could differ from what was shown, so the
+ *  client sends back what it displayed rather than a bare "go"). `demandedBy`
+ *  is the step that asked for them, recorded on the producers' own
+ *  `step_runs` rows so the accepted chain's cost is attributable.
+ *
+ *  `capabilityConsented` is the second axis's version of the same contract
+ *  (REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §7.1's "run partially
+ *  and say so"): the user was shown a credential shortfall and accepted it.
+ *  Sent explicitly rather than inferred server-side, for exactly the reason
+ *  `steps` is — the server runs what the user was shown. Without it the
+ *  re-resolve inside the executor raises the same shortfall again and skips
+ *  the step the user just approved. */
+export const runPrerequisites = (entityType, slug, steps, demandedBy = '',
+                                 capabilityConsented = false) =>
+  post('/api/prerequisites/run', { entity_type: entityType, slug, steps,
+                                   demanded_by: demandedBy,
+                                   capability_consented: capabilityConsented });
+
+/** §7.1's third choice at the gate: raise an RFA naming the step a credential
+ *  shortfall blocked. Distinct from the standing RFA the `credential_
+ *  capability` probe raises on its own — that one says the grants are narrow,
+ *  this one says which analysis somebody could not run because of it. The
+ *  server re-resolves rather than trusting anything sent here, so a stale
+ *  client-side fraction cannot reach a database owner. */
+export const raiseCapabilityRfa = (entityType, slug, stepKey) =>
+  post('/api/prerequisites/capability-rfa',
+       { entity_type: entityType, slug, step_key: stepKey });
 
 export const getActivityEntry = (entryId) =>
   get(`/api/activity/${encodeURIComponent(entryId)}`);
@@ -691,10 +1215,6 @@ export async function pollActivity(entryId, {
     await sleep(intervalMs);
   }
 }
-
-/* ── Investigations ──────────────────────────────────────────────────── */
-
-export const listInvestigations = () => get('/api/investigations/');
 
 /* ── Curate ─────────────────────────────────────────────────────────────── */
 
@@ -750,16 +1270,29 @@ export const saveReport = (slug, analysisId, { question = '', metric = '', membe
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/report`,
        { question, metric, members, facet, name, scope, corrects });
 
-/** Both kinds, newest first, reports carrying out_of_date. */
-export const listRecords = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/records`);
+/** Both kinds, newest first, reports carrying out_of_date. `entityType`
+ *  defaults to 'repo' — pass the `apiEntityType()`-translated value for a
+ *  database/filesystem, routed to `list_entity_records`'s sibling endpoint
+ *  (Backlog.md, "Disposition is NOT fixed here", 2026-09-22); the repo path
+ *  is unchanged. `recordExportHref`/`getRecord` (a bare GET by record id)
+ *  needed no sibling — that route never checked entity_type at all. */
+export const listRecords = (slug, entityType = 'repo') =>
+  entityType === 'repo'
+    ? get(`/api/projects/${encodeURIComponent(slug)}/records`)
+    : get(`/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records`);
 export const recordExportHref = (slug, id, fmt) =>
   `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
 
 /** The three acts on a report: work_list | rfa | journal. `rows` null = the
- *  whole report. The server acts on the stored snapshot. */
-export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}) =>
-  post(`/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
-       { action, rows, name, suggest_to: suggestTo, journal_id: journalId });
+ *  whole report. The server acts on the stored snapshot. `entityType` as
+ *  above. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType = 'repo') =>
+  post(
+    entityType === 'repo'
+      ? `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`
+      : `/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
+    { action, rows, name, suggest_to: suggestTo, journal_id: journalId },
+  );
 
 /* ── Component review ───────────────────────────────────────────────────── */
 
@@ -811,6 +1344,16 @@ export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId
 export const setSubscriptionActive = (id, active) =>
   post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
 
+/** Create one. `entityType` is always 'repo' from every caller today — the
+ *  Questions-checklist engine (app.js) that calls this is itself gated to
+ *  `state.resourceType === 'repo'` (DEFECT-UNBUILT... no, see app.js's own
+ *  "Repos only, in /next" branch) — but the parameter stays real rather than
+ *  hardcoded in the request body, so this doesn't need to change the day
+ *  that gate is lifted. */
+export const createSubscription = (entityType, entitySlug, analysisId, label = '') =>
+  post('/api/automate/subscriptions',
+       { entity_type: entityType, entity_slug: entitySlug, analysis_id: analysisId, label });
+
 /** Every scheduled analysis across every resource — what a subscription
  *  actually needs to fire. Global by design; there is no per-resource
  *  variant because the Automate pane's own filter checkbox does that
@@ -840,11 +1383,39 @@ export const listAnnotationTypes = () => get('/api/analyses/annotation-types');
 export const getAnnotationType = (typeName) =>
   get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
 
+/** Register/edit/delete an annotation type (SPEC-ADMIN-THE-FOUR-GAPS.md §4 —
+ *  the routes already existed; next/admin/annotation_types.js made zero
+ *  write calls until this pass). `type` is immutable once registered —
+ *  editing sends only the mutable fields, matching classic's own
+ *  disabled-Type-Key-on-edit behaviour. */
+export const registerAnnotationType = (body) => post('/api/analyses/annotation-types', body);
+export const updateAnnotationType = (typeName, body) =>
+  put(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`, body);
+export const deleteAnnotationType = (typeName) =>
+  del(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}`);
+
+/** Blast-radius number for a delete/rename confirmation — a LOWER BOUND on
+ *  how many projects have a local record of publishing this type, never a
+ *  full annotation count (see the route's own docstring in analyses.py).
+ *  `exact` is always false; callers must not read `projects_published: 0`
+ *  as "unused". */
+export const getAnnotationTypeUsage = (typeName) =>
+  get(`/api/analyses/annotation-types/${encodeURIComponent(typeName)}/usage`);
+
 /** The full, unscoped Question catalog — every authored question with its
- *  funnel stage, perspectives and answering mechanism. Read-only browser;
- *  the catalog itself is edited via the source CSV, not this route. */
+ *  funnel stage, perspectives and answering mechanism. Includes retired
+ *  entries (flagged via `retired`, never hidden — see question_catalog.js). */
 export const listQuestionCatalog = (resourceType = 'repo') =>
   get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+
+/** Append-only writes (SPEC-ADMIN-THE-FOUR-GAPS.md §4, project owner
+ *  decision 2026-09-20): add a new question, or retire an existing one.
+ *  There is deliberately no "edit" call — question_catalog_writer.py
+ *  refuses a reworded add (same question text, different fields) as a
+ *  duplicate rather than upserting it. */
+export const addQuestionCatalogEntry = (body) => post('/api/analyses/question-catalog/questions', body);
+export const retireQuestionCatalogEntry = (question) =>
+  post('/api/analyses/question-catalog/questions/retire', { question });
 
 /** The in-process log ring buffer (`observability/logging_setup.py`) —
  *  bounded, in-memory, empty after a restart. The response carries buffer
@@ -866,3 +1437,52 @@ export const getPrefectStatus = () => get('/api/prefect/status');
 export const listPrefectFlowRuns = (limit = 50) => get(`/api/prefect/flow-runs?limit=${limit}`);
 export const cancelPrefectFlowRun = (flowRunId) =>
   post(`/api/prefect/flow-runs/${encodeURIComponent(flowRunId)}/cancel`);
+
+/* ── Egeria Alignment (Resync) — resource_explorer/egeria_resync.py ────────
+ * Scanning never writes; apply() runs only the step names it is given, in
+ * the module's own dependency order regardless of the order sent. */
+
+/** Four states on purpose (see admin/resync.js): enforced, settling, not
+ *  enforced, and "could not tell" all read differently — a private-zone
+ *  check that failed must never render the same as one that passed. */
+export const getPrivateZone = () => get('/api/egeria/private-zone');
+
+/** Read-only. `reachable: false` must never be presented as "no drift" — an
+ *  unread catalog is not a catalog known to be fine. */
+export const getResyncScan = () => get('/api/egeria/resync/scan');
+
+/** The scheduled scan-and-clear loop's own status — last_run_at,
+ *  consecutive_failures, etc. Cheap: reads in-process state, same contract
+ *  as getBootstrapStatus(), never calls Egeria itself. Lets the "already
+ *  scheduled" rows distinguish "ran and found nothing" from "hasn't run in
+ *  days" — otherwise identical clean rows. */
+export const getResyncStatus = () => get('/api/egeria/resync/scheduler-status');
+
+/** Runs exactly the named repair steps — nothing runs unless asked for by
+ *  name. `steps` is a plain array of `Finding.repair_step` values. */
+export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { steps });
+
+/* ── Repair — per-repository correction (resource_explorer/repair.py) ──────
+ * A different job from Resync: fixing one repo that was registered wrong,
+ * not reconciling the store against Egeria. Every mutation below is a real
+ * write and its caller is expected to confirm first, naming the blast
+ * radius from the response fields these routes already return. */
+
+export const repairRename = (slug, newSlug) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/rename`, { new_slug: newSlug });
+export const repairGithubUrl = (slug, newUrl, confirm = false) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/github-url`,
+       { new_url: newUrl, confirm });
+export const repairEnableCollection = (slug, collectionType) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/collections/enable`,
+       { collection_type: collectionType });
+export const getRepairDrift = (slug) =>
+  get(`/api/admin/repair/repos/${encodeURIComponent(slug)}/drift`);
+export const getRepairMemberships = (slug) =>
+  get(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships`);
+export const repairRepointMembership = (slug, fromInvestigation, toInvestigation) =>
+  post(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/repoint`,
+       { from_investigation: fromInvestigation, to_investigation: toInvestigation });
+export const repairDropMembership = (slug, investigationSlug) =>
+  request(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/`
+          + `${encodeURIComponent(investigationSlug)}`, { method: 'DELETE' });

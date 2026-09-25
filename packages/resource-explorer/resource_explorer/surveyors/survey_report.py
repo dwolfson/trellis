@@ -35,6 +35,29 @@ class AnnotationType(str, Enum):
     QUALITY_SCORE = "QualityScoreAnnotation"
     RELATIONSHIP = "RelationshipAnnotation"
     REQUEST_FOR_ACTION = "RequestForActionAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 8, `postgres_operations`). Egeria's
+    #: real `ResourcePhysicalStatusAnnotationProperties` type — one of the
+    #: twelve RE left unused per `docs/egeria-integration.md` §2's audit —
+    #: is the correct fit for `db_resilience`'s findings (replication role,
+    #: replica lag, WAL archiving, backup/clustering signals) rather than
+    #: publishing them as a generic ResourceMeasureAnnotation.
+    RESOURCE_PHYSICAL_STATUS = "ResourcePhysicalStatusAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 9, `db_derived`). Egeria's real
+    #: `DataGrainAnnotationProperties` type — the grain of a table, "one row
+    #: per what". Its native fields are known and typed (see
+    #: `docs/egeria-support-for-multi-resource.md` §3: `granularityBasis`,
+    #: `grainStatement`, `interval`, `candidateDataGrainGUIDs`), so unlike
+    #: FINGERPRINT below this one publishes as typed fields rather than
+    #: through `additionalProperties`.
+    DATA_GRAIN = "DataGrainAnnotation"
+    #: Added 2026-09-21 (Phase 1 slice 9, `db_derived`). Egeria's real
+    #: `FingerprintAnnotationProperties` type — "an annotation capturing
+    #: digital resource fingerprint information" (`docs/egeria-integration.md`
+    #: §2's audit of the twelve unused types). Its native field names could
+    #: NOT be verified in this environment (no Egeria Java source checkout is
+    #: present, and no probe has sent one), so its payload travels as
+    #: `additionalProperties` — see `annotation_props.py`.
+    FINGERPRINT = "FingerprintAnnotation"
 
 
 @dataclass
@@ -104,6 +127,43 @@ class Annotation:
     #: run that produces it. Consumed by Phase 2 (not implemented yet); Phase 1
     #: only adds the field so sub-surveyors can start setting it.
     evidence_of: int | None = None
+    #: Egeria's `contentStatus` — whether the annotation's CONTENT is complete,
+    #: which is a different field from the element's own lifecycle status
+    #: (`ElementStatus`). A domain property on
+    #: `AuthoredReferenceableProperties`, which `AnnotationProperties` extends.
+    #:
+    #: Added 2026-09-21 (Phase 1 slices 9/10). `"DRAFT"` marks a PROPOSAL — a
+    #: finding that asks a curator to declare a governance element that does
+    #: not exist yet (a DataGrain, a DataScope, a candidate Data Class or
+    #: reference-data set). This is the mechanism the project owner's
+    #: 2026-09-21 decision in `docs/egeria-support-for-multi-resource.md` §3
+    #: settled on, after the corrected probe 4 showed `contentStatus: DRAFT`
+    #: round-trips cleanly on both an element and an annotation — replacing
+    #: the earlier plan to carry proposals as an RFA convention or to ask
+    #: Egeria for new `candidate…Specification` fields. Verified live the same
+    #: day (probes 4/5, `docs/design-notes/PROBES-2026-09-21.md`):
+    #: `contentStatus: DRAFT` inside `properties` round-trips as `DRAFT` on
+    #: read-back, while the element's `ElementStatus` stays `ACTIVE`
+    #: throughout — the two are independent.
+    #:
+    #: NOT `initialStatus`: that sets `ElementStatus`, means something else
+    #: entirely, and is silently dropped by pyegeria's `NewElementRequestBody`
+    #: (pyegeria ISSUE-113). Probe 4's first pass tested it by mistake.
+    #:
+    #: §3's own closing paragraph flagged an open question — whether an
+    #: ordinary read path surfaces `contentStatus` at all, or whether a DRAFT
+    #: proposal renders identically to a confirmed finding — as something that
+    #: "needs its own probe" before this field is safe to rely on. Phase 1
+    #: slice 10 checked: nothing did. It added the surfacing (the survey
+    #: reader, all three `EgeriaAnnotationItem` copies, and `renderAnnotations`,
+    #: which draws an amber DRAFT badge and deliberately draws nothing for an
+    #: empty status). The older `/{slug}/annotations` read path still does not
+    #: carry it (`docs/Backlog.md`, slice 10 follow-up #3).
+    #:
+    #: Empty (the default) means "no contentStatus stated", which is what every
+    #: annotation published before this slice carries and is NOT the same as
+    #: confirmed content — a renderer must not draw a badge for "".
+    content_status: str = ""
 
 
 @dataclass
@@ -159,6 +219,75 @@ class RequestForActionAnnotation(Annotation):
 
 
 @dataclass
+class ResourcePhysicalStatusAnnotation(Annotation):
+    """Physical/operational state of a resource — Egeria's real
+    `ResourcePhysicalStatusAnnotationProperties` type.
+
+    Its own fixed fields (`resourceCreateTime`, `resourceUpdateTime`,
+    `resourceLastAccessedTime`, `size`, `encodingType`) describe a
+    filesystem-shaped resource and do not fit `postgres_operations`'
+    `db_resilience` finding (replication role, replica lag, WAL archiving,
+    backup-tool/clustering signals) — see design doc §5.5. Rather than
+    fabricating values for fields this finding does not have, this
+    dataclass carries a generic `physical_properties` bag, published under
+    `additionalProperties` (`annotation_props.py`), the same convention
+    already used for any field not yet natively typed on the wire. A
+    future filesystem use of this type (design doc §6, Phase 2) is the one
+    expected to populate the four named fields for real.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PHYSICAL_STATUS, init=False)
+    physical_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DataGrainAnnotation(Annotation):
+    """The grain of a table — "one row per what" — Egeria's real
+    `DataGrainAnnotationProperties` type.
+
+    Field names mirror the Egeria type exactly (`docs/egeria-support-for-
+    multi-resource.md` §3 quotes them from the Java source:
+    `granularityBasis`, `grainStatement`, `interval`,
+    `candidateDataGrainGUIDs`), so the mapping in `annotation_props.py` is a
+    rename-free copy and a future curator "accept this grain" action can
+    prefill `create_data_grain` key-for-key.
+
+    `candidate_data_grain_guids` stays empty in `db_derived`: the whole point
+    of the slice-9 finding is that no `DataGrain` element exists yet to point
+    at. The proposal is carried by `content_status = "DRAFT"` on the base
+    class instead, per §3's project-owner decision.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.DATA_GRAIN, init=False)
+    #: e.g. "one row per (customer_id, order_date)"
+    grain_statement: str = ""
+    #: WHAT the statement was derived from — "primary_key", "unique_column",
+    #: "temporal_key" — so a reader can weigh it without re-deriving it.
+    granularity_basis: str = ""
+    #: The temporal interval, when the grain has one (daily, monthly).
+    interval: str = ""
+    candidate_data_grain_guids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FingerprintAnnotation(Annotation):
+    """A structural signature of a resource, and its nearest known matches —
+    Egeria's real `FingerprintAnnotationProperties` type.
+
+    **The native field names are not known here.** `docs/egeria-integration.md`
+    §2 confirms the type exists and quotes its description ("an annotation
+    capturing digital resource fingerprint information"), but no Egeria Java
+    source checkout is available in this environment to read its properties
+    from, and probe 5 established only that `create_annotation` ACCEPTS the
+    type — not what fields it carries. So the payload travels as
+    `additionalProperties` (the same fallback `ResourcePhysicalStatusAnnotation`
+    uses for its own unmapped bag) rather than guessing at typed field names
+    that would silently land in the wrong place. Logged to `docs/Backlog.md`
+    as a probe worth running before anything depends on the field names.
+    """
+    annotation_type: AnnotationType = field(default=AnnotationType.FINGERPRINT, init=False)
+    fingerprint_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class SurveyResult:
     """
     Complete output of one survey run against a project.
@@ -191,6 +320,17 @@ class SurveyResult:
     #: with it, because a skip without one is indistinguishable from a failure on
     #: a screen. See surveyors/step_preconditions.py.
     skipped_steps: dict[str, str] = field(default_factory=dict)
+    #: {step_key: reason} for prerequisite steps this run executed on its own
+    #: initiative (design §17.1). A FOURTH bucket for the same reason
+    #: `skipped_steps` is a third: an auto-run step ran, so it IS in
+    #: `steps_run`, but it was not asked for, and "why did this take three
+    #: minutes" is unanswerable without the distinction. The annotation says
+    #: the same thing in the report; this is the branchable form.
+    auto_ran_steps: dict[str, str] = field(default_factory=dict)
+    #: {step_key: proposal} for chains that need the user's consent before
+    #: running (design §17.1). Carried beside `skipped_steps`, not instead of
+    #: it: the step WAS skipped, and the proposal is what to offer next.
+    proposals: dict[str, dict] = field(default_factory=dict)
     # Same failures as `errors`, keyed by the step that raised. Needed because a
     # single run can now carry steps belonging to several different scheduled
     # analyses (scheduler.py coalesces same-repo due schedules into one run so
@@ -267,7 +407,34 @@ ANNOTATION_TYPES_REGISTRY = [
         "properties": ["action_requested (str)", "action_target_name (str)"],
         "egeria_type": "RequestForActionProperties",
         "python_class": "RequestForActionAnnotation",
-    }
+    },
+    {
+        "type": "ResourcePhysicalStatusAnnotation",
+        "display_name": "Resource Physical Status",
+        "description": "Represents the physical/operational state of a resource (e.g. database replication role, replica lag, backup/archiving/clustering signals; a filesystem entry's create/update/access timestamps and size).",
+        "properties": ["physical_properties (dict)"],
+        "egeria_type": "ResourcePhysicalStatusAnnotationProperties",
+        "python_class": "ResourcePhysicalStatusAnnotation",
+    },
+    {
+        "type": "DataGrainAnnotation",
+        "display_name": "Data Grain",
+        "description": "Represents the granularity of a data collection — what one row means (e.g. one row per customer, one row per account per day). Produced as a PROPOSAL (contentStatus DRAFT) where no DataGrain element exists yet.",
+        "properties": [
+            "grain_statement (str)", "granularity_basis (str)",
+            "interval (str)", "candidate_data_grain_guids (list[str])",
+        ],
+        "egeria_type": "DataGrainAnnotationProperties",
+        "python_class": "DataGrainAnnotation",
+    },
+    {
+        "type": "FingerprintAnnotation",
+        "display_name": "Fingerprint",
+        "description": "Represents a structural signature of a resource and its nearest known matches, for duplicate/copy/subset detection across databases or files.",
+        "properties": ["fingerprint_properties (dict)"],
+        "egeria_type": "FingerprintAnnotationProperties",
+        "python_class": "FingerprintAnnotation",
+    },
 ]
 
 

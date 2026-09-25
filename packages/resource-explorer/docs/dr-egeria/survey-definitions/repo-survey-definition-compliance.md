@@ -163,7 +163,7 @@ Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_secret_scan |
 
@@ -479,7 +479,7 @@ ___
 Compliance Survey
 
 ### Scope Reference
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 

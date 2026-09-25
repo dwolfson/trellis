@@ -12,11 +12,23 @@ other_engine_handlers (added 2026-08-24, closing survey_definition_executor.py's
 Egeria-trigger stub for this resource type — see EgeriaFileSystemSurveyor.
 trigger_survey_by_guid's own docstring for the live-confirmed process/target
 names and the one real caveat: not yet exercised end-to-end, since this
-environment has no cataloged filesystem to test against).
+environment has no cataloged filesystem to test against). As of the async
+result-retrieval build, this now also waits for the triggered engine action
+to reach a terminal status and reads back its real result — see
+egeria_async_survey_result.py, shared with the database adapter's identical
+function above it, and
+docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md.
+
+A step tagged executes_at="egeria-adaptive" is a third, separate
+other_engine_handlers entry: the folded-in run_hybrid_filesystem_survey
+strategy (always local-scan-first, then best-effort publish) — see
+`_run_egeria_adaptive` below and docs/design-notes/
+EXECUTION-MODES-HYBRID-CLARIFICATION.md.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
@@ -77,11 +89,20 @@ def _get_filesystem_entity(registry, slug: str):
 
 def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
     """Trigger Egeria's own native FileDirectory survey for a step tagged
-    executes_at="egeria". Requires the filesystem to already be cataloged in
+    executes_at="egeria", then wait for it to reach a terminal status and read
+    back its real result. Requires the filesystem to already be cataloged in
     Egeria (has a stored asset guid) — this does not catalog it as a side
     effect (mirrors database/survey_definition_adapter.py's identical
-    function). The native survey is async; this only returns the triggered
-    engine action's guid, not a completed result."""
+    function, sharing the same poll/resolve/convert helper).
+
+    Raises on timeout (EgeriaEngineActionTimeoutError) or on an unresolvable
+    report attribution (SurveyReportAttributionError) — both propagate to the
+    executor's own per-step except clause, which reports them as a specific
+    error rather than a silent "triggered" success.
+    """
+    from resource_explorer.surveyors.egeria_async_survey_result import (
+        poll_trigger_and_retrieve_annotations,
+    )
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
     fs_guid = fs_entity.egeria_asset_guid
@@ -91,8 +112,103 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
             "cannot trigger Egeria's native survey for an uncataloged filesystem."
         )
     surveyor = EgeriaFileSystemSurveyor()
+    triggered_at = datetime.now(timezone.utc)
     engine_action_guid = surveyor.trigger_survey_by_guid(fs_guid)
-    return {"engine_action_guid": engine_action_guid}
+    log.info(
+        "Triggered Egeria native survey for filesystem %r: engine_action_guid=%s",
+        fs_entity.slug, engine_action_guid,
+    )
+    result = poll_trigger_and_retrieve_annotations(
+        surveyor=surveyor,
+        engine_action_guid=engine_action_guid,
+        resource_guid=fs_guid,
+        triggered_at=triggered_at,
+        analysis_step=step.re_analysis_step,
+    )
+    return {"status": "ok", **result}
+
+
+def _run_egeria_adaptive(
+    fs_entity, registry, step, force_egeria_publish: bool = False,
+    egeria_url: str | None = None, egeria_server: str | None = None,
+    egeria_user: str | None = None, egeria_password: str | None = None,
+    **_,
+) -> dict:
+    """Strategy selector for a step tagged executes_at="egeria-adaptive".
+
+    Folds in `run_hybrid_filesystem_survey`
+    (surveyors/filesystem/hybrid_filesystem_surveyor.py) — the default
+    web/CLI filesystem-survey path before this build — as a legal
+    `executes_at` value, per docs/design-notes/
+    EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+
+    The filesystem hybrid path is simpler than the database one: there is no
+    cache-or-run (EgeriaFileSystemSurveyor has no `get_latest_survey`
+    equivalent yet), so this always runs the local scan first — CLAUDE.md
+    rule 15's "local scan immediately, Egeria's result is async" constraint
+    is trivially satisfied here, since the local scan IS the synchronous
+    result and Egeria's cataloging/publish is the side channel — then
+    attempts to publish it into Egeria when credentials are configured (or
+    `force_egeria_publish` is set). A publish failure is non-fatal: the
+    local survey is still the real result, with the failure recorded on the
+    entity's status rather than losing the survey (see
+    `run_hybrid_filesystem_survey`'s own docstring).
+
+    `source` follows the same three-way vocabulary as the database handler,
+    minus "egeria" (there being no cache-or-run to ever produce a plain
+    reused-from-Egeria result here): "egeria-custom" (local scan published to
+    Egeria successfully), "custom" (local-only — either no Egeria
+    credentials were configured, or a publish was attempted and failed), or
+    "error" (the local scan itself raised).
+
+    Delegates to `run_hybrid_filesystem_survey` rather than reimplementing
+    its logic — `tests/test_execution_modes_path_c_hybrid.py` characterizes
+    that function's behavior directly (call ordering, non-fatal publish
+    failure, local-only-when-no-credentials), and this handler's job is to
+    make it reachable via `executes_at` routing and label its `source`, not
+    to duplicate the logic a second time. Not deleted here; see
+    docs/Backlog.md for the fast-follow once nothing but this handler and
+    its own tests reference it directly.
+    """
+    from resource_explorer.surveyors.filesystem.hybrid_filesystem_surveyor import (
+        run_hybrid_filesystem_survey,
+    )
+
+    has_creds = bool(
+        (egeria_url or fs_entity.egeria_url) and (egeria_server or fs_entity.egeria_server)
+        and (egeria_user or fs_entity.egeria_user) and (egeria_password or fs_entity.egeria_password)
+    )
+
+    try:
+        survey_data = run_hybrid_filesystem_survey(
+            fs_entity.slug, registry=registry, force_egeria_publish=force_egeria_publish,
+            egeria_url=egeria_url, egeria_server=egeria_server,
+            egeria_user=egeria_user, egeria_password=egeria_password,
+        )
+    except Exception as exc:
+        log.error("egeria-adaptive: filesystem survey failed for %s: %s", fs_entity.slug, exc)
+        return {
+            "source": "error",
+            "status": "error",
+            "filesystem_slug": fs_entity.slug,
+            "surveyed_at": datetime.now(timezone.utc).isoformat(),
+            "errors": [f"Filesystem survey failed: {exc}"],
+        }
+
+    egeria_publish = survey_data.pop("egeria_publish", None)
+    source = "egeria-custom" if egeria_publish is not None else "custom"
+
+    outcome = {"source": source, "status": "ok", **survey_data}
+    # Kept out of any top-level key `_publish` below recognizes (it looks
+    # for "survey_data", which this handler's local-scan fields are not, so
+    # they're actually safe at the top level as-is) — nested under "result"
+    # anyway, for the same reason the database handler relocates
+    # "schema_info"/"statistics": the Egeria publish outcome, when this
+    # handler already published it itself, must never look like fresh input
+    # for a second, generic publish pass to pick up.
+    if egeria_publish is not None:
+        outcome["result"] = {"egeria_publish": egeria_publish}
+    return outcome
 
 
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
@@ -135,8 +251,72 @@ _ADAPTER = ResourceTypeAdapter(
             ],
         },
     },
-    other_engine_handlers={"egeria": _trigger_egeria_native_survey},
+    other_engine_handlers={
+        "egeria": _trigger_egeria_native_survey,
+        "egeria-adaptive": _run_egeria_adaptive,
+    },
     egeria_technology_type_name="File System Directory",
+    # Declared lazily (the maps are defined later in this module), same
+    # reasoning as database/survey_definition_adapter.py's own comment at its
+    # `_ADAPTER` (RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0): without this,
+    # FactLayer and context_compile.py's results-reader fallback could not
+    # read a filesystem's own results at all, for the same reason a database
+    # question was invisible before that fix. `analysis_source_steps`/
+    # `analysis_kinds`/`state_sources` stay undeclared for now, same as
+    # database's.
+    analysis_results_map=lambda: FILESYSTEM_ANALYSIS_RESULTS_MAP,
+    analysis_headline_map=lambda: FILESYSTEM_ANALYSIS_HEADLINE_MAP,
 )
 
 register_adapter(_ADAPTER)
+
+
+#: analysis_id -> the re_analysis_step key(s) that produce it — the
+#: filesystem equivalent of database/survey_definition_adapter's
+#: DATABASE_ANALYSIS_STEP_MAP (see that constant's docstring for the full
+#: reasoning). Filesystem has exactly one local re_analysis_step and one
+#: analysis_catalog.yaml entry today, so this is a 1:1 map rather than a
+#: fan-out — kept as its own named constant anyway, matching the per-
+#: resource-type convention, so a second filesystem analysis added later has
+#: an obvious place to be attributed rather than a special case bolted on.
+FILESYSTEM_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+    "filesystem_inventory": ["filesystem_inventory"],
+}
+
+
+# ── Results reading — the filesystem equivalent of repo_survey_definition_
+# adapter.REPO_ANALYSIS_RESULTS_MAP / database's own DATABASE_ANALYSIS_
+# RESULTS_MAP (see that constant's docstring for the full reasoning; the
+# same "one analysis, one thin wrapper over already-stored rows" shape
+# applies here too). filesystem has exactly one analysis, and its detail
+# rows (`filesystem_entries`/`filesystem_data_files`) are already
+# materialized by every local survey (`result_materializer.
+# filesystem_rows_from_survey_data`), so this is a plain summarization —
+# no new domain logic, same as database's schema_inventory/row_count_
+# snapshot readers.
+def _filesystem_inventory_results(registry, slug: str) -> dict:
+    entries = registry.query_detail_rows("filesystem_entries", slug)
+    if not entries:
+        return {}
+    data_files = registry.query_detail_rows("filesystem_data_files", slug)
+    files = [e for e in entries if (e.get("entry_type") or "file") == "file"]
+    dirs = [e for e in entries if e.get("entry_type") == "directory"]
+    total_size = sum(e.get("size_bytes") or 0 for e in files)
+    return {
+        "entry_count": len(entries),
+        "file_count": len(files),
+        "directory_count": len(dirs),
+        "data_file_count": len(data_files),
+        "total_size_bytes": total_size,
+        "hidden_count": sum(1 for e in entries if e.get("is_hidden")),
+        "symlink_count": sum(1 for e in entries if e.get("is_symlink")),
+    }
+
+
+FILESYSTEM_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
+    "filesystem_inventory": (_filesystem_inventory_results, None),
+}
+
+#: See DATABASE_ANALYSIS_HEADLINE_MAP's docstring — same "not built yet,
+#: doesn't block the map" gap, kept explicit rather than silently absent.
+FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {}

@@ -100,29 +100,45 @@ class StageBatchResult:
     annotations: list[dict] = field(default_factory=list)
 
 
-def resolve_analysis_plan(analysis_id: str) -> tuple[bool, list[str] | None]:
-    """(is_ingest, steps) for one analysis id.
+def resolve_analysis_plan(
+    analysis_id: str, entity_type: str = "repo",
+) -> tuple[bool, list[str] | None]:
+    """(is_ingest, steps) for one analysis id, of ONE entity type.
 
     `action: "ingest"` (today only `rag_ingestion`) is not a SurveyOrchestrator
     step at all — it re-embeds content into pgvector via IncrementalIndexer.
     Resolved before the step-map lookup, the same way scheduler.py special-cases
     `action: "publish"`. Callers use the pair both to validate up front (an
     unknown id has neither) and to run.
+
+    `entity_type` used to be unaccepted here — this always resolved against
+    the repo catalog and `REPO_ANALYSIS_SOURCE_STEPS`, imported directly,
+    regardless of what the caller was actually running an analysis for. A
+    database/filesystem work-list batch run (`run_queue.py::_handle_analysis_run`,
+    a real, already-wired feature) resolved the wrong steps this way, then
+    every row in the batch failed downstream on `registry.get(slug)` — same
+    shape as `_results_map_for(entity_type)` a short distance below in this
+    same file, which already dispatches correctly; this follows that
+    template. `get_adapter(entity_type).analysis_source_steps` is None for a
+    resource type that has not declared one (filesystem, today) — treated as
+    "no known source steps" rather than an error, matching the None-means-
+    not-declared convention `ResourceTypeAdapter` documents for these
+    provider fields.
     """
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_SOURCE_STEPS,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     catalog_entry = next(
-        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id),
+        (a for a in get_analyses(entity_type, include_egeria_live=False) if a["id"] == analysis_id),
         None,
     )
     is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
     # SOURCE steps: this resolves what to RUN. An analysis that owns no steps
     # (architecture_diagram) still runs its source's — off the ownership map it
     # would resolve to [] and the caller would report it undispatchable.
-    steps = None if is_ingest else REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id)
+    source_steps_provider = get_adapter(entity_type).analysis_source_steps
+    source_steps = source_steps_provider() if source_steps_provider else {}
+    steps = None if is_ingest else source_steps.get(analysis_id)
     return is_ingest, steps
 
 
@@ -360,17 +376,24 @@ def run_stage_batch(
 
 def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
                                 *, registry=None, publish: str | None = None,
+                                entity_type: str = "repo",
                                 ) -> AnalysisRunResult:
     """Run one analysis and write its terminal status onto `activity_id`.
 
     `publish` ("wait" | "background" | None) is the per-run choice, carried
     here from the run queue's `target` dict (see run_queue.py's
     `_handle_analysis_run`) — passed straight through to `run_analysis`.
+
+    `entity_type` defaults to "repo" for every caller that predates it —
+    thread through the `target` dict's own `entity_type` (see
+    `WorkLists.enqueue_batch`) for a database/filesystem batch run, so
+    `resolve_analysis_plan` below resolves that resource type's steps rather
+    than always the repo's.
     """
     from resource_explorer.registry import ProjectRegistry
 
     registry = registry or ProjectRegistry()
-    is_ingest, steps = resolve_analysis_plan(analysis_id)
+    is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
     try:
         result = run_analysis(
             slug, analysis_id, is_ingest=is_ingest, steps=steps, registry=None,
@@ -437,6 +460,163 @@ def execute_and_record_stage_batch(slug: str, stage: str, step_keys: list[str],
         activity_id, result.status, summary=result.summary,
         detail=json.dumps({"stage": stage, "step_keys": step_keys, "errors": result.errors}),
         annotations=result.annotations,
+    )
+    return result
+
+
+@dataclass
+class DatabaseAnalysisRunResult:
+    """What one database per-card analysis run concluded.
+
+    Deliberately its own (smaller) dataclass rather than a reuse of
+    `AnalysisRunResult` above: that one's `published`/`steps_seconds`/
+    `publish_mode`/`publish_run_id` fields all describe repo's auto-publish-
+    on-run behaviour (`run_analysis`'s `has_assigned_egeria_project("repo",
+    slug)` gate), which a database analysis run does not have — publishing a
+    database survey to Egeria stays its own explicit `POST /{slug}/publish`
+    action (`web/routes/databases.py`), unchanged by this. Reusing the repo
+    dataclass would either carry fields that are always `None`/`"not-
+    attempted"` for every database row, or invite a future edit to wire up
+    auto-publish for database runs by copying repo's gate verbatim — which
+    would be wrong, since it is a genuinely different, deliberate design
+    choice, not a gap.
+    """
+
+    status: str  # "ok" | "error"
+    summary: str = ""
+    error: str = ""
+    annotations: list[dict] = field(default_factory=list)
+
+
+def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run one database per-card analysis's mapped step(s) — the database
+    equivalent of `run_analysis` above.
+
+    Two local shapes, mirroring `web/routes/databases.py`'s
+    `run_single_database_analysis` (which now only validates synchronously
+    and enqueues; this is what actually runs, from the run queue worker):
+
+    * `db_derived` (Phase 1 slice 9) — zero-fetch, reads stored rows only,
+      needs no credentials. `run_db_derived` persists nothing itself (it
+      never has — see its own module docstring); this function's only new
+      behaviour versus the old inline route is recording the run onto the
+      activity entry.
+    * Everything in `DATABASE_ANALYSIS_STEP_MAP` — needs the database's
+      stored credentials and actually opens a connection via
+      `run_database_survey`.
+
+    Never raises for an analysis-level failure — that comes back as
+    `status="error"`, exactly like `run_analysis` — only for something
+    genuinely unexpected, which the caller (`execute_and_record_database_
+    analysis` below) catches and records.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_ANALYSIS_STEP_MAP,
+        run_database_survey,
+    )
+    from resource_explorer.surveyors.database.db_derived import (
+        DB_DERIVED_ANALYSES,
+        run_db_derived,
+    )
+
+    registry = registry or ProjectRegistry()
+    db = registry.get_database(slug)
+    if not db:
+        # Can't happen when the route checked synchronously first — but this
+        # now also runs from a queue worker after the enqueue, so "the world
+        # has not moved" is a weaker assumption than it was, same reasoning
+        # as run_analysis's own re-check above.
+        return DatabaseAnalysisRunResult(status="error", error=f"Database '{slug}' not found")
+
+    from resource_explorer.surveyors.survey_report import summarise_annotations
+
+    if analysis_id in DB_DERIVED_ANALYSES:
+        try:
+            derived_result = run_db_derived(registry, slug)
+        except Exception as exc:
+            return DatabaseAnalysisRunResult(status="error", error=str(exc))
+        check = (derived_result.get("derived") or {}).get(analysis_id) or {}
+        annotations = derived_result.get("annotations") or []
+        try:
+            ann_summary = summarise_annotations(annotations)
+        except Exception as exc:  # a display-summary failure must not fail a real result
+            log.warning("Could not summarise db_derived annotations for %s/%s: %s", slug, analysis_id, exc)
+            ann_summary = []
+        return DatabaseAnalysisRunResult(
+            status="ok",
+            summary=(
+                f"{len(annotations)} annotation(s) derived from stored rows (no fetch). "
+                f"{analysis_id}: {check.get('state', 'unknown')}."
+            ),
+            annotations=ann_summary,
+        )
+
+    if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+        return DatabaseAnalysisRunResult(
+            status="error",
+            error=f"Analysis '{analysis_id}' has no local survey step(s) mapped.",
+        )
+
+    if not db.db_user or not db.db_password:
+        return DatabaseAnalysisRunResult(
+            status="error",
+            error="No stored database credentials — register the database with "
+                  "db_user/db_password, or run a full survey with credentials, first.",
+        )
+
+    steps = DATABASE_ANALYSIS_STEP_MAP[analysis_id]
+    try:
+        result = run_database_survey(
+            slug, credentials={"user": db.db_user, "password": db.db_password},
+            registry=registry, steps=steps,
+        )
+    except Exception as exc:
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+
+    non_fatal = result.get("errors") or []
+    annotations = result.get("annotations") or []
+    try:
+        ann_summary = summarise_annotations(annotations)
+    except Exception as exc:
+        log.warning("Could not summarise database annotations for %s/%s: %s", slug, analysis_id, exc)
+        ann_summary = []
+    return DatabaseAnalysisRunResult(
+        status="ok",
+        summary=f"{len(annotations)} annotation(s)." + (
+            f" ({len(non_fatal)} non-fatal error(s))" if non_fatal else ""
+        ),
+        annotations=ann_summary,
+    )
+
+
+def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_id: str,
+                                          *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run one database analysis and write its terminal status onto
+    `activity_id` — the database equivalent of `execute_and_record_analysis`
+    above, called from the run queue's `database_analysis_run` handler
+    (run_queue.py::_handle_database_analysis_run)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = registry or ProjectRegistry()
+    try:
+        result = run_database_analysis(slug, analysis_id, registry=registry)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected
+        log.exception("Database analysis run crashed for %s/%s", slug, analysis_id)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
+            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}),
+        )
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+
+    detail = {"analysis_id": analysis_id, "published": None}
+    if result.status == "error":
+        detail["error"] = result.error or result.summary
+    else:
+        detail["message"] = result.summary
+    registry.update_activity_status(
+        activity_id, result.status, summary=result.summary or result.error or "",
+        detail=json.dumps(detail), annotations=result.annotations or None,
     )
     return result
 
@@ -733,3 +913,248 @@ def assess_freshness(registry, entity_type: str, slug: str, analysis_id: str,
     fresh = 0 <= age < max_age_seconds
     return Freshness(fresh, "fresh" if fresh else "stale", age,
                      best_ts.isoformat(), best_via)
+
+
+def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
+    for every local analysis_catalog entry of `entity_type` against `slug` —
+    generalized out of `projects.py`'s `GET /{slug}/analyses/last-activity`
+    (repo-only route, added first) so database and filesystem get the same
+    per-analysis "Last run"/"Published" badge data their own Analyses cards
+    were missing entirely (docs/Backlog.md: in classic, a survey visibly ran
+    — 200 OK, confirmed via network tab — and every per-analysis card still
+    showed no run/result indicator, because `_loadAnalysisCatalogPanel()`
+    only ever fetched this for `resourceType === 'repo'`).
+
+    `last_run_*` is real, attributed data for every entity_type now that
+    `ProjectRegistry.get_analysis_last_run()` is generalized (see its
+    docstring and `database/survey_definition_adapter.py`'s
+    `DATABASE_ANALYSIS_STEP_MAP`).
+
+    `last_published_at`/`last_published_scope` are NOT yet real data for
+    database/filesystem: `record_published_annotation_types()`/
+    `record_published_analyses()` — the tables this reads — are written only
+    from `EgeriaPublisher` on the repo publish path (`surveyors/
+    egeria_publisher.py`); `EgeriaDatabaseSurveyor.publish_step_annotations`
+    and the filesystem equivalent never call them. So for database/
+    filesystem this always returns empty publish fields today — an honest
+    "not established", not a wrong "never published" — until that publish
+    path is wired up too (logged as a follow-up in docs/Backlog.md rather
+    than guessed at here; building the two-tier recorded/shared fallback the
+    repo endpoint uses on top of data that plain doesn't exist yet would be
+    exactly the "Never run"/"Published today" contradiction this endpoint
+    exists to avoid, aimed at the wrong field).
+
+    `publish_stale` is likewise always False for non-repo entity_types today:
+    nothing writes a `f"{entity_type}_publish"` Egeria linkage row for
+    database/filesystem (`get_egeria_linkage` has no such writer outside the
+    repo path), so there is no staleness signal to report — never a lie,
+    since a card only shows the flag alongside a real `last_published_at`,
+    which is itself always empty here.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    last_run = registry.get_analysis_last_run(entity_type, slug)
+    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+    published_by_analysis = registry.get_last_published_analyses(slug)
+    publish_linkage = registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}
+    publish_stale = publish_linkage.get("status") == "stale"
+
+    result: dict[str, dict] = {}
+    for a in get_analyses(entity_type, include_egeria_live=False):
+        run = last_run.get(a["id"], {})
+        recorded = published_by_analysis.get(a["id"])
+        own_types = a.get("annotation_types") or []
+        shared = [t for t in own_types if t in published_by_type]
+        if recorded:
+            pub_at, pub_scope = recorded, "analysis"
+        elif shared:
+            pub_at, pub_scope = max(published_by_type[t] for t in shared), entity_type
+        else:
+            pub_at, pub_scope = "", ""
+        result[a["id"]] = {
+            "last_run_at": run.get("last_run_at", ""),
+            "last_run_status": run.get("last_run_status", ""),
+            "last_run_basis": ("measured" if run.get("last_run_at")
+                               else "not_established" if unattributed else "never_run"),
+            "unattributed_surveys": unattributed,
+            "last_run_via": run.get("last_run_via", ""),
+            "last_run_derived_from": run.get("last_run_derived_from", ""),
+            "last_run_partial": run.get("last_run_partial", False),
+            "last_published_at": pub_at,
+            "last_published_scope": pub_scope,
+            "publish_stale": bool(pub_at) and publish_stale,
+        }
+    result["__auto_publishes__"] = {
+        "auto_publishes": registry.has_assigned_egeria_project(entity_type, slug),
+    }
+    return result
+
+
+def _results_map_for(entity_type: str):
+    """(results_map, headline_map) for `entity_type` — the three per-type
+    constants `build_survey_results` reads results/headlines from."""
+    if entity_type == "database":
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+            DATABASE_ANALYSIS_RESULTS_MAP,
+        )
+        return DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_HEADLINE_MAP
+    if entity_type == "filesystem":
+        from resource_explorer.surveyors.filesystem.survey_definition_adapter import (
+            FILESYSTEM_ANALYSIS_HEADLINE_MAP,
+            FILESYSTEM_ANALYSIS_RESULTS_MAP,
+        )
+        return FILESYSTEM_ANALYSIS_RESULTS_MAP, FILESYSTEM_ANALYSIS_HEADLINE_MAP
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_HEADLINE_MAP,
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+    return REPO_ANALYSIS_RESULTS_MAP, REPO_ANALYSIS_HEADLINE_MAP
+
+
+def build_survey_results(
+    registry, entity_type: str, slug: str, stage: str = "", include_empty: bool = False,
+) -> dict:
+    """Tier 2 — the Survey Results ("By analysis") dashboards for any
+    entity_type, generalized out of `projects.py`'s `_survey_results_sync`
+    (repo-only route, added first; see docs/Backlog.md's "By analysis" was
+    repo-only entry) the same way `build_analysis_last_activity` above
+    generalized the analyses/last-activity route.
+
+    For `entity_type == "repo"` this reproduces the original route exactly —
+    same curated `SURVEY_RESULT_DASHBOARDS` groupings, same stage/perspective/
+    publish-state derivation.
+
+    Database and filesystem have no such curated groupings (`docs/survey-
+    results-dashboard-plan.md`'s dashboard design was written for repo only,
+    and building repo's kind of multi-analysis, themed dashboard for the
+    other two entity_types is real design work, not a generalization of this
+    function). So for those two entity_types, this SYNTHESIZES one dashboard
+    per analysis_id that has an entry in the type's own *_ANALYSIS_RESULTS_MAP
+    — literally "by analysis", which is what the pane is named and what the
+    frontend gate (`paneNeedsRepoBackend` in app.js) has been describing this
+    gap as. Every other field (has_results, last_published_at, publish_stale,
+    last_surveyed_at) is computed the same way the repo branch computes it,
+    just scoped to that one analysis_id's own annotation_types instead of a
+    dashboard's union.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    results_map, headline_map = _results_map_for(entity_type)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+    publish_stale = (registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}).get("status") == "stale"
+    last_surveyed_at = ""
+    getter = {
+        "repo": registry.get, "database": registry.get_database, "filesystem": registry.get_filesystem,
+    }.get(entity_type)
+    entity = getter(slug) if getter else None
+    if entity is not None:
+        last_surveyed_at = getattr(entity, "last_surveyed_at", "") or ""
+
+    dashboards: list[dict] = []
+
+    if entity_type == "repo":
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            SURVEY_RESULT_DASHBOARDS,
+            get_dashboard_annotation_types,
+            get_dashboard_perspectives,
+            get_dashboard_stages,
+        )
+
+        for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+            stages = get_dashboard_stages(dashboard.analysis_ids)
+            if stage and stage not in stages:
+                continue
+            analyses = _read_analyses(registry, slug, dashboard.analysis_ids, results_map, headline_map)
+            has_results = any(_results_have_data(a["results"]) for a in analyses)
+            if not has_results and not include_empty:
+                continue
+            dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
+            last_published_at = max(
+                (published_by_type[t] for t in dashboard_types if t in published_by_type),
+                default="",
+            )
+            dashboards.append({
+                "id": dashboard.id,
+                "title": dashboard.title,
+                "description": dashboard.description,
+                "render": dashboard.render,
+                "custom_renderer": dashboard.custom_renderer,
+                "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+                "stages": stages,
+                "has_results": has_results,
+                "analyses": analyses,
+                "last_published_at": last_published_at,
+                "publish_stale": bool(last_published_at) and publish_stale,
+                "last_surveyed_at": last_surveyed_at,
+            })
+        return {"slug": slug, "stage": stage, "dashboards": dashboards}
+
+    # database / filesystem: one synthesized dashboard per analysis_id that
+    # this entity_type actually has a results reader for.
+    catalog_by_id = {a["id"]: a for a in get_analyses(entity_type, include_egeria_live=False)}
+    for analysis_id in results_map:
+        entry = catalog_by_id.get(analysis_id)
+        analyses = _read_analyses(registry, slug, [analysis_id], results_map, headline_map)
+        this_stage = ((entry or {}).get("intent") or "").strip().lower()
+        if stage and stage != this_stage:
+            continue
+        has_results = any(_results_have_data(a["results"]) for a in analyses)
+        if not has_results and not include_empty:
+            continue
+        annotation_types = (entry or {}).get("annotation_types") or []
+        last_published_at = max(
+            (published_by_type[t] for t in annotation_types if t in published_by_type),
+            default="",
+        )
+        dashboards.append({
+            "id": analysis_id,
+            "title": (entry or {}).get("name") or analysis_id.replace("_", " ").title(),
+            "description": (entry or {}).get("description") or "",
+            "render": "custom",
+            "custom_renderer": "",
+            "perspectives": [],
+            "stages": [this_stage] if this_stage else [],
+            "has_results": has_results,
+            "analyses": analyses,
+            "last_published_at": last_published_at,
+            "publish_stale": bool(last_published_at) and publish_stale,
+            "last_surveyed_at": last_surveyed_at,
+        })
+    return {"slug": slug, "stage": stage, "dashboards": dashboards}
+
+
+def _read_analyses(registry, slug: str, analysis_ids: list[str], results_map: dict, headline_map: dict) -> list[dict]:
+    """[{analysis_id, results, headline}] for a dashboard's analysis_ids —
+    same fail-soft shape as the original repo-only loop: a reader that
+    raises degrades to None rather than breaking the whole dashboard."""
+    analyses = []
+    for analysis_id in analysis_ids:
+        entry = results_map.get(analysis_id)
+        results = None
+        if entry:
+            results_reader, _ = entry
+            try:
+                results = results_reader(registry, slug)
+            except Exception:
+                results = None
+        headline_reader = headline_map.get(analysis_id)
+        headline = None
+        if headline_reader:
+            try:
+                headline = headline_reader(registry, slug)
+            except Exception:
+                headline = None
+        analyses.append({"analysis_id": analysis_id, "results": results, "headline": headline})
+    return analyses
+
+
+def _results_have_data(results) -> bool:
+    """The exact same "truthy but not shaped-empty" test the original
+    repo-only `_survey_results_sync` used (`workflows.scouting.
+    results_have_data` — see that function's docstring for the full
+    reasoning on why plain truthiness over-counts)."""
+    from resource_explorer.workflows.scouting import results_have_data
+    return results_have_data(results)

@@ -1,6 +1,7 @@
 """Filesystem management endpoints — list, get, register, survey, remove."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -28,6 +29,21 @@ class FileSystemSummary(BaseModel):
     egeria_server: str = ""
     egeria_user: str = ""
     group_slug: str = ""
+    # 'undecided' when nobody has ever decided — see DatabaseSummary's own
+    # comment (databases.py) for why this field exists now.
+    disposition: str = "undecided"
+    # egeria_asset_guid set — boolean only, not the raw GUID, same convention
+    # as `ProjectSummary.is_published` (projects.py). Lets /next's shared
+    # `lifecycleMark()` render the same "published to Egeria" mark for a
+    # filesystem row it already renders for a repo row, instead of a
+    # filesystem-only ad hoc egeria_asset_guid check.
+    is_published: bool = False
+    # Personal view filter, separate axis from disposition — see
+    # `ProjectSummary.working_set_hidden` (projects.py) and
+    # `registry.py`'s `resource_working_set` table. Needed so /next's
+    # select-mode "hide" bulk action and "Show hidden" toggle work for
+    # filesystems the same way they do for repos.
+    working_set_hidden: bool = False
 
 
 class FileSystemRegistration(BaseModel):
@@ -78,6 +94,13 @@ class EgeriaAnnotationItem(BaseModel):
     explanation: str
     expression: str
     json_properties: dict
+    #: Egeria's `contentStatus` — "DRAFT" marks an unconfirmed PROPOSAL
+    #: (Phase 1 slice 10). Declared here too even though no filesystem
+    #: analysis proposes anything yet: the three copies of this model are read
+    #: by ONE frontend renderer, so a field present in two of them and absent
+    #: from the third shows a badge on two tabs and silently not on the
+    #: third — the exact failure this whole chain exists to avoid.
+    content_status: str = ""
 
 
 @router.get("/", response_model=list[FileSystemSummary])
@@ -89,6 +112,7 @@ def list_filesystems():
     result = []
     for fs in filesystems:
         latest = registry.get_latest_filesystem_survey(fs.slug)
+        disp = registry.get_disposition_for_entity("filesystem", fs.slug) or {}
         result.append(
             FileSystemSummary(
                 slug=fs.slug,
@@ -105,6 +129,9 @@ def list_filesystems():
                 egeria_server=fs.egeria_server or "",
                 egeria_user=fs.egeria_user or "",
                 group_slug=getattr(fs, "group_slug", "") or "",
+                disposition=disp.get("disposition", "undecided"),
+                is_published=bool(fs.egeria_asset_guid or ""),
+                working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
             )
         )
     return result
@@ -113,8 +140,12 @@ def list_filesystems():
 @router.post("/", response_model=FileSystemSummary)
 def register_filesystem(registration: FileSystemRegistration):
     """Register a new filesystem connection."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(registration.egeria_user)
+
     registry = ProjectRegistry()
-    
+
     if registry.filesystem_exists(registration.slug):
         raise HTTPException(
             status_code=400,
@@ -171,7 +202,8 @@ def get_filesystem(slug: str):
             status_code=404,
             detail=f"FileSystem '{slug}' not found."
         )
-        
+    disp = registry.get_disposition_for_entity("filesystem", fs.slug) or {}
+
     return FileSystemSummary(
         slug=fs.slug,
         display_name=fs.display_name,
@@ -183,10 +215,71 @@ def get_filesystem(slug: str):
         egeria_asset_guid=fs.egeria_asset_guid or "",
         file_count=fs.file_count,
         data_file_count=fs.data_file_count,
+        disposition=disp.get("disposition", "undecided"),
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
         egeria_user=fs.egeria_user or "",
+        is_published=bool(fs.egeria_asset_guid or ""),
+        working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
     )
+
+
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
+    for every local filesystem AnalysisKind — the filesystem equivalent of
+    `projects.py`'s `GET /{slug}/analyses/last-activity` and `databases.py`'s
+    identically-named route. See `workflows.analysis.build_analysis_last_
+    activity`'s docstring for exactly what is real data today (run
+    attribution) and what is not yet (publish attribution — filesystem's
+    publish path does not record `project_published_analyses`/
+    `project_published_annotation_types` either, same gap as database's)."""
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    return build_analysis_last_activity(registry, "filesystem", slug)
+
+
+@router.get("/{slug}/survey-results")
+async def get_filesystem_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """The filesystem equivalent of `projects.py`'s `GET /{slug}/survey-
+    results` ("By analysis" in /next) and `databases.py`'s identically-shaped
+    route. See `workflows.analysis.build_survey_results`'s docstring — a
+    filesystem gets one synthesized dashboard, since `FILESYSTEM_ANALYSIS_
+    RESULTS_MAP` has exactly the one entry filesystem has an analysis for."""
+    from resource_explorer.workflows.analysis import build_survey_results
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    return await asyncio.to_thread(
+        build_survey_results, registry, "filesystem", slug, stage, include_empty,
+    )
+
+
+@router.get("/{slug}/questions")
+async def get_filesystem_questions(
+    slug: str,
+    phase: str = "scouting",
+    perspectives: str | None = None,
+    purposes: str | None = None,
+) -> dict:
+    """The filesystem equivalent of `projects.py`'s `GET /{slug}/scouting-
+    questions` and `databases.py`'s identically-shaped route — see that
+    route's docstring."""
+    from resource_explorer.workflows.scouting import build_question_checklist
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
+    purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
+    return build_question_checklist(registry, "filesystem", slug, phase, persp_list, purp_list)
 
 
 @router.delete("/{slug}/")
@@ -211,6 +304,10 @@ def delete_filesystem(slug: str):
 @router.post("/{slug}/survey")
 def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
     """Run a local or hybrid survey on the filesystem, optionally publishing to Egeria."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user or "")
+
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
     if not fs_entity:
@@ -268,22 +365,42 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
             }
             
         elif req.mode in ("hybrid", "egeria"):
-            from resource_explorer.surveyors.filesystem.hybrid_filesystem_surveyor import run_hybrid_filesystem_survey
-            res = run_hybrid_filesystem_survey(
-                filesystem_slug=slug,
-                registry=registry,
+            # Routed through executes_at="egeria-adaptive" (the folded-in
+            # run_hybrid_filesystem_survey strategy) via a one-step synthetic
+            # Survey Definition, rather than calling
+            # run_hybrid_filesystem_survey directly — see
+            # docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md.
+            from resource_explorer.surveyors.survey_definition_executor import (
+                SurveyDefinitionExecutor,
+            )
+
+            executor = SurveyDefinitionExecutor(registry)
+            exec_result = executor.run_synthetic_step(
+                entity_type="filesystem",
+                slug=slug,
+                re_analysis_step="filesystem_inventory",
+                executes_at="egeria-adaptive",
                 egeria_url=req.egeria_url,
                 egeria_server=req.egeria_server,
                 egeria_user=req.egeria_user,
                 egeria_password=req.egeria_password,
                 force_egeria_publish=req.force_publish or (req.mode == "egeria"),
             )
-            
+            step_report = (exec_result.get("steps") or [{}])[0]
+            # Reconstruct run_hybrid_filesystem_survey's historic flat
+            # response shape: the handler nests the Egeria publish result
+            # under "result" so the executor's own generic publish step
+            # doesn't attempt to re-publish it a second time.
+            detail = dict(step_report.get("detail") or {})
+            nested = detail.pop("result", None) or {}
+            res = {**detail, **nested}
+
             publish_info = res.get("egeria_publish") or {}
-            
+
             return {
                 "status": "ok",
                 "mode": req.mode,
+                "source": res.get("source", "custom"),
                 "total_files": res["total_files"],
                 "total_data_files": res["total_data_files"],
                 "total_size": res["total_size"],
@@ -378,6 +495,10 @@ def get_filesystem_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
 @router.post("/{slug}/publish")
 def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
     """Manually publish the latest local filesystem survey details to Egeria."""
+    from resource_explorer.web.routes._validation import validate_egeria_user
+
+    validate_egeria_user(req.egeria_user or "")
+
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
     if not fs_entity:
@@ -425,3 +546,70 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             status_code=500,
             detail=f"Publish failed: {exc}"
         )
+
+
+class ReachabilityResultModel(BaseModel):
+    """One reachability probe result, past or just-run — Phase 1 slice #13.
+    Mirrors resource_reachability's columns; see reachability.py's module
+    docstring for the outcome vocabulary and how each maps to Egeria's raw
+    CHECK_ASSET response."""
+    resource_type: str = "filesystem"
+    filesystem_slug: str
+    probed_at: str
+    probed_from: str = ""
+    outcome: str
+    error_code: str = ""
+    error_detail: str = ""
+    latency_ms: int | None = None
+    engine_action_guid: str = ""
+
+
+@router.get("/{slug}/reachability", response_model=ReachabilityResultModel | None)
+def get_filesystem_reachability(slug: str):
+    """Most recent reachability check for this filesystem, or null if it has
+    never been checked — the "never checked" state is the absence of any
+    row, not a sentinel value (see registry.get_latest_reachability's
+    docstring)."""
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    latest = registry.get_latest_reachability(slug)
+    return ReachabilityResultModel(**latest) if latest else None
+
+
+@router.get("/{slug}/reachability/history", response_model=list[ReachabilityResultModel])
+def get_filesystem_reachability_history(slug: str, limit: int = 20):
+    """Reachability probe history for this filesystem, most recent first."""
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    rows = registry.list_reachability_history(slug, limit=limit)
+    return [ReachabilityResultModel(**r) for r in rows]
+
+
+@router.post("/{slug}/reachability", response_model=ReachabilityResultModel)
+def check_filesystem_reachability_endpoint(slug: str):
+    """Trigger the fast CHECK_ASSET reachability probe for this filesystem
+    and return (and persist) its result.
+
+    Scope (Phase 1 slice #13): filesystem/folder resources only — see
+    reachability.py's module docstring for why database reachability is not
+    handled by this same code path. Never 500s for an Egeria-side failure
+    (timeout, disconnected platform, ...) — that is reported as a normal
+    `outcome: "unknown"` result, per the three-state absence discipline, not
+    an HTTP error. A 404 here means the filesystem itself isn't registered,
+    which is a different, real error.
+    """
+    from resource_explorer.reachability import ReachabilityCheckScopeError, check_filesystem_reachability
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    try:
+        result = check_filesystem_reachability(slug, registry)
+    except ReachabilityCheckScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    latest = registry.get_latest_reachability(slug)
+    return ReachabilityResultModel(**latest)

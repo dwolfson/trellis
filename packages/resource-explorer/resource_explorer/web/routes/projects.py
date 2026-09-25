@@ -507,15 +507,20 @@ async def get_scouting_questions(
     perspectives: str | None = None,
     purposes: str | None = None,
 ) -> QuestionChecklist:
-    """Per-phase Question checklist — which of the authored Scouting
+    """Per-phase Question checklist -- which of the authored Scouting
     questions (docs/dr-egeria/resource_questions.csv, via
     question_catalog_reader.py) this phase raises or can answer, filtered
     by the active Perspective set (comma-separated query param, matching
-    the UI's activePerspectives multi-select — see index.html's
+    the UI's activePerspectives multi-select -- see index.html's
     togglePerspective()), with a computed has_data flag for
-    analysis/partial/mixed-kind questions."""
+    analysis/partial/mixed-kind questions.
+
+    As of the database/filesystem generalization (docs/Backlog.md,
+    "scouting-questions was repo-only"), this is a thin wrapper over
+    `workflows.scouting.build_question_checklist` -- see that function's
+    docstring. repo's own behavior here is unchanged."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.question_catalog_reader import get_questions
+    from resource_explorer.workflows.scouting import build_question_checklist
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -524,38 +529,8 @@ async def get_scouting_questions(
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
     purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
-    entries = get_questions(
-        "repo", phase=phase,
-        perspectives=persp_list or None,
-        purposes=purp_list or None,
-    )
-
-    checklist = []
-    for e in entries:
-        answering = e["answering"]
-        has_data = (
-            _question_has_data(registry, slug, answering["analysis_ids"])
-            if answering["kind"] in ("analysis", "partial", "mixed")
-            else None
-        )
-        checklist.append(QuestionChecklistEntry(
-            question=e["question"],
-            stage=e["stage"],
-            perspectives=e["perspectives"],
-            kind=answering["kind"],
-            analysis_ids=answering["analysis_ids"],
-            checks=list(answering.get("checks") or []),
-            note=answering["note"],
-            answering_mechanism=e.get("answering_mechanism", ""),
-            rationale=e.get("rationale", ""),
-            catalog_history=e.get("catalog_history", ""),
-            has_data=has_data,
-            purposes=e.get("purposes", []),
-            derivation=e.get("derivation", {}),
-        ))
-
     return QuestionChecklist(
-        phase=phase, perspectives=persp_list, purposes=purp_list, questions=checklist
+        **build_question_checklist(registry, "repo", slug, phase, persp_list, purp_list)
     )
 
 
@@ -839,89 +814,24 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     day for the Survey Results dashboards) already has everything needed —
     each analysis_id's own annotation_types (analysis_catalog.yaml) is the
     same join key used there, just applied per-analysis instead of
-    per-dashboard-of-several-analyses."""
+    per-dashboard-of-several-analyses.
+
+    The actual attribution logic (two-tier publish attribution, the
+    measured/never_run/not_established run basis, __auto_publishes__) now
+    lives in `workflows.analysis.build_analysis_last_activity` — generalized
+    there so `GET /api/databases/{slug}/analyses/last-activity` and the
+    filesystem equivalent (`web/routes/databases.py`, `web/routes/
+    filesystems.py`) can share it rather than fork this whole function; this
+    route is now a thin 404-translating adapter, same pattern as the
+    `/depth-offer` and `/catalogue-depth-offer` routes below."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
 
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    last_run = registry.get_analysis_last_run("repo", slug)
-    # Surveys that ran but carry no step detail (older rows). Their analyses
-    # cannot be credited, but they also cannot honestly be called never-run.
-    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
-    published_by_type = registry.get_last_published_annotation_types(slug)
-    published_by_analysis = registry.get_last_published_analyses(slug)
-    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
-    # AHEAD.md §4: one flag for the whole repo (there is one publish-state
-    # resolve per project, not per analysis), carried onto every analysis's
-    # own dict so each card can show it beside its own published-at.
-    publish_linkage = registry.get_egeria_linkage("repo_publish", slug) or {}
-    publish_stale = publish_linkage.get("status") == "stale"
-
-    result: dict[str, dict] = {}
-    for a in get_analyses("repo", include_egeria_live=False):
-        run = last_run.get(a["id"], {})
-        # Publish attribution, in two tiers. Annotation types are shared --
-        # ResourceMeasureAnnotation has 15 producers, ClassificationAnnotation
-        # 13 -- so "any of my annotation types was published" credited every
-        # sibling analysis with a publish it had no part in. That is what put
-        # "Published today" on cards that had never run.
-        #
-        # A type only ONE analysis can produce is real evidence THIS analysis
-        # was published. A shared one only shows the repo was published while
-        # this analysis's types were involved, which is weaker and is labelled
-        # as such -- the same 'analysis' vs 'repo' distinction the Survey
-        # Definition cards already draw.
-        # Recorded attribution first: the publish itself said which analyses it
-        # covered (project_published_analyses). Everything below is the older
-        # inference, kept only for publishes that predate that record.
-        recorded = published_by_analysis.get(a["id"])
-        own_types = a.get("annotation_types") or []
-        shared = [t for t in own_types if t in published_by_type]
-        if recorded:
-            pub_at, pub_scope = recorded, "analysis"
-        elif shared:
-            # The inference can no longer yield an 'analysis' scope for
-            # anything: once two analyses shared a type, nothing was uniquely
-            # owned. Historical rows therefore read as the hedged 'repo'
-            # scope, which is the truth about them — we cannot say which
-            # analysis a pre-record publish covered.
-            pub_at, pub_scope = max(published_by_type[t] for t in shared), "repo"
-        else:
-            pub_at, pub_scope = "", ""
-        result[a["id"]] = {
-            "last_run_at": run.get("last_run_at", ""),
-            "last_run_status": run.get("last_run_status", ""),
-            # "measured" / "never_run" / "not_established" -- the third is a
-            # repo that WAS surveyed by runs we cannot attribute to analyses.
-            # Calling that "never run" beside an attributable publish is what
-            # produced "Never run" and "Published today" on one card.
-            "last_run_basis": ("measured" if run.get("last_run_at")
-                               else "not_established" if unattributed else "never_run"),
-            "unattributed_surveys": unattributed,
-            "last_run_via": run.get("last_run_via", ""),
-            # Which analysis's run this freshness came from, when it came from
-            # a DERIVED one (architecture_diagram running the recovery's steps).
-            # Carried so the card can name it rather than saying "ran today"
-            # about a run of something else — see get_analysis_last_run().
-            "last_run_derived_from": run.get("last_run_derived_from", ""),
-            "last_run_partial": run.get("last_run_partial", False),
-            "last_published_at": pub_at,
-            "last_published_scope": pub_scope,
-            "publish_stale": bool(pub_at) and publish_stale,
-        }
-    # Repo-level, carried under a reserved key so the per-analysis map keeps
-    # its shape — same convention get_analysis_last_run uses for
-    # __unattributed_surveys__. Cards use it to hide a Publish button that has
-    # nothing to do: a run auto-publishes whenever the resource has an
-    # assigned Egeria Project, so offering to publish again reads as though
-    # publishing still needed doing.
-    result["__auto_publishes__"] = {
-        "auto_publishes": registry.has_assigned_egeria_project("repo", slug),
-    }
-    return result
+    return build_analysis_last_activity(registry, "repo", slug)
 
 
 @router.get("/{slug}/depth-offer")
@@ -1118,128 +1028,30 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
 
 
 def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False) -> dict:
-    """Tier 2 — the Survey Results dashboards for this repo.
+    """Tier 2 -- the Survey Results dashboards for this repo.
 
     stage (optional): restrict to cards belonging to that funnel stage, so each
     intent's own Results tab shows only what it is responsible for. Omitted =
     every stage, the original repo-wide view.
 
     include_empty (optional): return cards with no stored results too. Off by
-    default — see the has_results comment below for why an empty card is worse
-    than an absent one.
+    default -- see build_survey_results' has_results comment for why an empty
+    card is worse than an absent one.
 
-    Original docstring follows.
-
-    Tier 2 — the repo-wide Survey Results dashboard
-    (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
-    entry, with its resolved analysis_ids' latest results attached (reusing
-    the exact same results_reader()s the per-analysis_id Analysis/Assessment
-    cards already call — no new persistence, this is a pure aggregation
-    layer) and its derived Perspective tags. A dashboard entry whose reader
-    raises (e.g. a step that's never been run for this repo) degrades to
-    results=None for that one analysis_id rather than failing the whole
-    dashboard list."""
+    As of the database/filesystem generalization (docs/Backlog.md, "By
+    analysis" was repo-only), this is a thin wrapper over
+    `workflows.analysis.build_survey_results` -- see that function's
+    docstring for the full picture, including what changed for the other two
+    entity_types. repo's own behavior here is unchanged."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.repo_survey_definition_adapter import (
-        REPO_ANALYSIS_HEADLINE_MAP,
-        REPO_ANALYSIS_RESULTS_MAP,
-        SURVEY_RESULT_DASHBOARDS,
-        get_dashboard_annotation_types,
-        get_dashboard_perspectives,
-        get_dashboard_stages,
-    )
+    from resource_explorer.workflows.analysis import build_survey_results
 
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    # {annotation_type: latest published_at} — one query for the whole repo,
-    # joined per-dashboard below against each dashboard's own annotation_types
-    # (get_dashboard_annotation_types). Real Egeria publish history, not a
-    # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
-    published_by_type = registry.get_last_published_annotation_types(slug)
-    # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-
-    # AHEAD.md §4 — one flag for the whole repo, same as get_analyses_last_
-    # activity above.
-    publish_stale = (registry.get_egeria_linkage("repo_publish", slug) or {}).get("status") == "stale"
-
-    dashboards = []
-    for dashboard in SURVEY_RESULT_DASHBOARDS.values():
-        stages = get_dashboard_stages(dashboard.analysis_ids)
-        # Stage filter: a card can legitimately belong to several stages
-        # (health_maturity reports repository_health/scouting *and*
-        # maturity/assessment), so this is membership, not equality.
-        if stage and stage not in stages:
-            continue
-
-        analyses = []
-        for analysis_id in dashboard.analysis_ids:
-            entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
-            results = None
-            if entry:
-                results_reader, _ = entry
-                try:
-                    results = results_reader(registry, slug)
-                except Exception:
-                    results = None
-            # headline is the same {label, tone} summary the Tier-1 stat
-            # tiles already use (get_survey_results_summary above) — added
-            # 2026-08-31 so a custom dashboard renderer (renderSecurityOverview
-            # Dashboard's scorecard) can show a tile for an analysis without
-            # re-deriving its own summary logic in JS from raw findings, which
-            # would duplicate exactly what each analysis's headline_reader
-            # already computes. Same fail-soft shape as results — a reader
-            # that raises degrades to headline=None, never breaks the card.
-            headline_reader = REPO_ANALYSIS_HEADLINE_MAP.get(analysis_id)
-            headline = None
-            if headline_reader:
-                try:
-                    headline = headline_reader(registry, slug)
-                except Exception:
-                    headline = None
-            analyses.append({"analysis_id": analysis_id, "results": results, "headline": headline})
-
-        # Only surface a card backed by something that actually ran. Previously
-        # every dashboard was returned unconditionally and a card with no data
-        # rendered as an empty shell, so the Results tab advertised analyses the
-        # repo had never been surveyed for — 6 cards covering 13 analyses when
-        # Scouting only ever runs a handful. `results=None` is what a reader
-        # returns for a step with no stored rows, so it is the honest signal.
-        has_results = any(_results_have_data(a["results"]) for a in analyses)
-        if not has_results and not include_empty:
-            continue
-
-        # Real per-dashboard publish signal (2026-08-24), not a repo-wide
-        # guess: the latest of this dashboard's own annotation_types' known
-        # publish times. Blank when has_results is true but nothing in it
-        # has ever actually been published — an honest, common state (ran
-        # locally, never sent to Egeria), distinct from never-run.
-        dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
-        last_published_at = max(
-            (published_by_type[t] for t in dashboard_types if t in published_by_type),
-            default="",
-        )
-
-        dashboards.append({
-            "id": dashboard.id,
-            "title": dashboard.title,
-            "description": dashboard.description,
-            "render": dashboard.render,
-            "custom_renderer": dashboard.custom_renderer,
-            "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
-            "stages": stages,
-            "has_results": has_results,
-            "analyses": analyses,
-            "last_published_at": last_published_at,
-            "publish_stale": bool(last_published_at) and publish_stale,
-            # Repo-wide, not per-dashboard — there's no per-analysis_id run
-            # timestamp to draw on today (unlike last_published_at above,
-            # which genuinely is per-dashboard). Still an honest "as of"
-            # signal: every dashboard's data was current no later than this.
-            "last_surveyed_at": project.last_surveyed_at or "",
-        })
-    return {"slug": slug, "stage": stage, "dashboards": dashboards}
+    return build_survey_results(registry, "repo", slug, stage, include_empty)
 
 
 @router.get("/{slug}/survey-results/summary")
@@ -1596,36 +1408,53 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
 
 
 @router.get("/{slug}/analyses/{analysis_id}/measurements")
-async def get_analysis_measurements(slug: str, analysis_id: str) -> dict:
+async def get_analysis_measurements(slug: str, analysis_id: str,
+                                     entity_type: str = "repo") -> dict:
     """The numbers behind one analysis's answer — see
     resource_explorer/workflows/stage_page.py::build_measurements and the
     designer's round (STAGE-PAGE-ROUND.md point 10, "the fact opens under
     the answer"). Thin wrapper; the route only translates the pure
-    function's LookupError into a 404."""
+    function's LookupError into a 404.
+
+    `entity_type` defaults to "repo" (same query-param convention as
+    `answer_question()` in `routes/analyses.py`) — trusted as given, same as
+    that route and `compile_endpoint()` in `routes/compile_context.py`. This
+    used to be unaccepted here, so "the numbers behind this" always 404'd
+    for a database/filesystem slug: `build_measurements()` always did a
+    repo-only `registry.get()` lookup and always checked the analysis id
+    against repo's own `ANALYSIS_KINDS`, regardless of what kind of resource
+    the caller actually asked about (see that function's docstring, fixed
+    2026-09-23 — the fourth instance of PR #226/#233/#236's "resource-type
+    never threaded through" bug class)."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_measurements
 
     registry = ProjectRegistry()
     try:
-        return await asyncio.to_thread(build_measurements, registry, slug, analysis_id)
+        return await asyncio.to_thread(
+            build_measurements, registry, slug, analysis_id, entity_type)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/{slug}/analyses-index")
-async def get_analyses_index(slug: str) -> dict:
+async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
     """Every catalog analysis for this resource, with the questions that
     name it, last run, price, and what it serves — see
     resource_explorer/workflows/stage_page.py::build_analyses_index and the
     designer's round (STAGE-PAGE-ROUND.md points 1-3, "AnalysesIndex").
     Thin wrapper; the route only translates the pure function's LookupError
-    into a 404."""
+    into a 404.
+
+    `entity_type` defaults to "repo", same convention and same fix date as
+    `get_analysis_measurements` above — `build_analyses_index()` carried the
+    identical repo-only bug (its own docstring has the detail)."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_analyses_index
 
     registry = ProjectRegistry()
     try:
-        return await asyncio.to_thread(build_analyses_index, registry, slug)
+        return await asyncio.to_thread(build_analyses_index, registry, slug, entity_type)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -1969,6 +1798,96 @@ def list_records(slug: str) -> dict:
             rec["out_of_date"] = out_of_date(rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")))
         out.append(rec)
     return {"records": out}
+
+
+def _entity_display_name(registry, entity_type: str, slug: str) -> str | None:
+    """None if no such entity exists — used as the existence check by the
+    entity-generic sibling routes below, the same role `registry.get(slug)`
+    plays for the repo-only routes above."""
+    if entity_type == "database":
+        d = registry.get_database(slug)
+        return d.display_name if d else None
+    if entity_type == "filesystem":
+        f = registry.get_filesystem(slug)
+        return f.display_name if f else None
+    p = registry.get(slug)
+    return p.display_name if p else None
+
+
+@router.get("/entity/{entity_type}/{slug}/records")
+def list_entity_records(entity_type: str, slug: str) -> dict:
+    """The database/filesystem sibling of `GET /{slug}/records` above —
+    added when Disposition generalized to database/filesystem entities
+    (Backlog.md, "Disposition is NOT fixed here", 2026-09-22).
+    `Curations.for_resource` was already entity-type-generic; only this
+    route (Project-only existence check) and `act_on_entity_record` below
+    (hardcoded entity_type='repo') were not. `GET .../records/{record_id}`
+    needed no sibling — it never checked entity_type at all."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import out_of_date
+
+    registry = ProjectRegistry()
+    if _entity_display_name(registry, entity_type, slug) is None:
+        raise HTTPException(status_code=404, detail=f"{entity_type} '{slug}' not found")
+    out = []
+    for rec in Curations(registry).for_resource(entity_type, slug):
+        if rec.get("kind") == "report":
+            rec["out_of_date"] = out_of_date(
+                rec.get("report") or {}, last_run_at(registry, slug, (rec.get("report") or {}).get("analysis_id", "")),
+            )
+        out.append(rec)
+    return {"records": out}
+
+
+@router.post("/entity/{entity_type}/{slug}/records/{record_id}/act")
+def act_on_entity_record(entity_type: str, slug: str, record_id: str, body: RecordAct, request: Request) -> dict:
+    """The database/filesystem sibling of `POST /{slug}/records/{record_id}/act`
+    above — same three acts, generalized the same way `list_entity_records`
+    is: an entity-type-aware existence check plus threading `entity_type`
+    through to `WorkLists`/`log_rfa` instead of the hardcoded 'repo'."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.members import last_run_at
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.reports import act_line, out_of_date
+    from resource_explorer.work_lists import WorkLists
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to act on a report — a work item needs someone who raised it.")
+    if body.action not in ("work_list", "rfa", "journal"):
+        raise HTTPException(status_code=400, detail="action must be work_list, rfa or journal")
+    registry = ProjectRegistry()
+    display_name = _entity_display_name(registry, entity_type, slug)
+    cur = Curations(registry)
+    rec = cur.get(record_id)
+    if display_name is None or not rec or rec["entity_slug"] != slug or rec.get("kind") != "report":
+        raise HTTPException(status_code=404, detail="No such report record")
+    rep = rec.get("report") or {}
+    stale = out_of_date(rep, last_run_at(registry, slug, rep.get("analysis_id", "")))
+    line = act_line(rec, rows=body.rows, out_of_date_sentence=stale)
+    name = body.name.strip() or rec["name"]
+    if body.action == "work_list":
+        wl = WorkLists(registry).create(name, [slug], entity_type=entity_type, created_by=author,
+                                        derived_from=f"record:{record_id}", rationale=line,
+                                        description=f'Raised from the report "{rec["name"]}".')
+        listed = WorkLists(registry).get(wl.get("slug")) if wl else None
+        target_name = (listed or {}).get("display_name") or name
+        out = cur.add_use(record_id, act="work_list", target=wl.get("slug") if wl else "", target_name=target_name, by=author)
+        return {"action": "work_list", "name": target_name, "work_list": wl.get("slug") if wl else None,
+                "provenance": line, "record": out}
+    if body.action == "rfa":
+        rfa_id = log_rfa(registry, entity_type, slug, display_name or slug, "open", name, detail=line,
+                         analysis_name=rep.get("analysis_id", ""),
+                         items=[{"kind": "record", "record_id": record_id, "name": rec["name"]}])
+        out = cur.add_use(record_id, act="rfa", target=str(rfa_id), target_name=name, by=author)
+        return {"action": "rfa", "name": name, "rfa": rfa_id, "provenance": line, "record": out}
+    out = cur.add_use(record_id, act="journal", target=body.journal_id, target_name="the journal", by=author)
+    return {"action": "journal", "provenance": line, "record": out}
 
 
 @router.get("/{slug}/records/{record_id}")

@@ -527,14 +527,30 @@ _private_zone_state: Optional[dict] = None
 def _platform_name() -> str:
     """The catalogued OMAG Server Platform the Security Officer API addresses.
 
-    `EXPLORER_EGERIA_PLATFORM_NAME` wins. Otherwise the single catalogued
-    `SoftwareServerPlatform`, ignoring the archive's `~{placeholder}~` template
-    entries — a real deployment has one, and if it somehow has several we
-    cannot pick for the operator, so we say so rather than guess.
+    Thin wrapper over `_resolve_platform()` for callers (and tests) that only
+    need the name and not the guid.
+    """
+    return _resolve_platform()[0]
+
+
+def _resolve_platform() -> "tuple[str, Optional[str]]":
+    """The catalogued OMAG Server Platform the Security Officer API addresses.
+
+    Returns `(platform_name, platform_guid)`. `platform_guid` is `None` unless
+    it was resolved from the catalogue — callers that have it should pass it
+    as pyegeria's `platform_guid=` to `get_/set_security_access_control`,
+    which bypasses the by-name lookup entirely. That matters because name
+    alone can be ambiguous in a way no operator input fixes (see below).
+
+    `EXPLORER_EGERIA_PLATFORM_NAME` wins, with no guid — the operator is
+    naming a platform, not picking one out of the catalogue. Otherwise the
+    single catalogued `SoftwareServerPlatform`, ignoring the archive's
+    `~{placeholder}~` template entries — a real deployment has one, and if
+    it somehow has several we try to identify the right one before refusing.
     """
     configured = (os.environ.get("EXPLORER_EGERIA_PLATFORM_NAME") or "").strip()
     if configured:
-        return configured
+        return configured, None
     from pyegeria import EgeriaTech
 
     from resource_explorer.config import get_config
@@ -543,23 +559,47 @@ def _platform_name() -> str:
     tech = EgeriaTech(egeria.view_server, egeria.platform_url,
                       egeria.user_id, egeria.user_password)
     tech.create_egeria_bearer_token()
-    names = []
+    entries: list[tuple[str, Optional[str], str]] = []  # (name, guid, urlRoot)
     for el in tech.get_elements("SoftwareServerPlatform", output_format="JSON") or []:
-        name = ((el.get("properties") or {}).get("displayName") or "").strip()
-        if name and not name.startswith("~"):
-            names.append(name)
-    if len(names) == 1:
-        return names[0]
-    if not names:
+        props = el.get("properties") or {}
+        name = (props.get("displayName") or "").strip()
+        if not name or name.startswith("~"):
+            continue
+        guid = ((el.get("elementHeader") or {}).get("guid") or "").strip() or None
+        url_root = ((props.get("additionalProperties") or {}).get("platformURLRoot") or "").strip()
+        entries.append((name, guid, url_root))
+    names = [e[0] for e in entries]
+    if len(entries) == 1:
+        return entries[0][0], entries[0][1]
+    if not entries:
         raise RuntimeError(
             "could not identify the platform to configure: no catalogued "
             "SoftwareServerPlatform found. Set EXPLORER_EGERIA_PLATFORM_NAME."
         )
 
-    # Several platforms are catalogued. Before refusing, ask which of them
-    # already holds OUR control — that is a fact, not a guess, and it is the
-    # common case on a deployment that has been running: the control was
-    # created on one specific platform and we only need to find it again.
+    # Several platforms are catalogued — possibly under the SAME display name.
+    # Confirmed live 2026-09-23: one quickstart boot self-registered TWICE,
+    # once per hostname it is reachable under (`host.docker.internal` beside
+    # `localhost`), producing two entries with identical displayName AND
+    # identical `identifier`. Name cannot disambiguate that case even with an
+    # operator's help, so try RE's own configured connection URL first — that
+    # is a fact about what THIS process talks to, not a guess, and unlike the
+    # holder-probe below it works even before any control has ever been
+    # created (which is exactly the situation a first-boot ambiguity like
+    # this one is in).
+    configured_url = (egeria.platform_url or "").strip().rstrip("/").lower()
+    url_matches = [e for e in entries if e[2].strip().rstrip("/").lower() == configured_url]
+    if configured_url and len(url_matches) == 1:
+        name, guid, _ = url_matches[0]
+        log.info("egeria: several platforms catalogued %s; using %r (guid %s), whose "
+                 "platformURLRoot matches this process's configured EGERIA_PLATFORM_URL",
+                 names, name, guid)
+        return name, guid
+
+    # Before refusing, ask which of them already holds OUR control — that is
+    # a fact, not a guess, and it is the common case on a deployment that has
+    # been running: the control was created on one specific platform and we
+    # only need to find it again.
     #
     # This path became real on 2026-09-08: a redeploy catalogued a second
     # platform ("Local OMAG Server Platform" beside "Quickstart OMAG Server
@@ -575,23 +615,23 @@ def _platform_name() -> str:
         probe = SecurityOfficer(egeria.view_server, egeria.platform_url,
                                 egeria.user_id, egeria.user_password)
         probe.create_egeria_bearer_token()
-        holders = []
-        for name in names:
+        holders: list[tuple[str, Optional[str]]] = []
+        for name, guid, _ in entries:
             try:
                 got = probe.get_security_access_control(name, zone)
             except Exception:
                 continue
             if got and (got.get("associatedSecurityList") or {}):
-                holders.append(name)
+                holders.append((name, guid))
         if len(holders) == 1:
             log.info("egeria: several platforms catalogued %s; using %r, which holds "
-                     "the %r control", names, holders[0], zone)
+                     "the %r control", names, holders[0][0], zone)
             return holders[0]
         if len(holders) > 1:
             raise RuntimeError(
                 f"the {zone!r} control exists on more than one catalogued platform "
-                f"({holders}), so which one governs this deployment is ambiguous. "
-                "Set EXPLORER_EGERIA_PLATFORM_NAME."
+                f"({[h[0] for h in holders]}), so which one governs this deployment is "
+                "ambiguous. Set EXPLORER_EGERIA_PLATFORM_NAME."
             )
     except RuntimeError:
         raise
@@ -683,9 +723,10 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
         client = SecurityOfficer(egeria.view_server, egeria.platform_url,
                                  egeria.user_id, egeria.user_password)
         apply_identity(client, identity)
-        platform = _platform_name()
+        platform, platform_guid = _resolve_platform()
+        guid_kwargs = {"platform_guid": platform_guid} if platform_guid else {}
 
-        existing = client.get_security_access_control(platform, zone)
+        existing = client.get_security_access_control(platform, zone, **guid_kwargs)
         if existing and (existing.get("associatedSecurityList") or {}):
             # Already there when we first looked, so it predates this process
             # and the connector has had at least as long as we have been up.
@@ -716,12 +757,12 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
                     "createdBy": "resource-explorer",
                 },
             },
-        })
+        }, **guid_kwargs)
 
         # Read back. A write that returned without raising is not evidence the
         # control exists — the same lesson as the classification read-back in
         # `egeria_investigation_publisher`.
-        back = client.get_security_access_control(platform, zone)
+        back = client.get_security_access_control(platform, zone, **guid_kwargs)
         if not (back and (back.get("associatedSecurityList") or {})):
             log.error(
                 "egeria: wrote SecurityAccessControl %r but it did not read back with "

@@ -193,7 +193,20 @@ SPECS = load_specs_from_csv()
 # the step this was written for — long enough, and network/IO-dependent
 # enough, that "is it still running or did it hang" is a real question for it
 # in a way it usually isn't for the cheaper steps.
-PREFECT_ROUTED_STEPS = frozenset({"repo_arch_coupling"})
+#
+# Widened 2026-09-19 (project owner decision, PLAN-PREFECT-OR-ALTERNATIVE.md
+# §5 phase 5) after phase 4's measurement put Prefect's fixed dispatch
+# overhead at ~8-10s (Backlog.md, "Measured 2026-09-18 — Prefect per-step
+# dispatch overhead") — small relative to the runtime of the other
+# compute_cost="high" steps in repo_survey_definition_adapter.py.
+# repo_secret_scan (277.3s measured on egeria_git) and repo_rag_ingestion
+# (embeds the repository) both qualify on the same basis as
+# repo_arch_coupling; every other step stays local.
+PREFECT_ROUTED_STEPS = frozenset({
+    "repo_arch_coupling",
+    "repo_secret_scan",
+    "repo_rag_ingestion",
+})
 
 
 def build_steps(step_keys: list[str]) -> list[PublishableStep]:
@@ -262,7 +275,7 @@ def _answered_questions(step_keys: list[str], step_key_to_questions: dict[str, l
 MANUAL_EXTRA_SCOPE_QUESTIONS: dict[str, list[str]] = {
     "RepoCoarseProfile": [
         "Is this repository actively maintained?",
-        "What does this repository do?",
+        "What is this resource, and what is it for?",
     ],
 }
 

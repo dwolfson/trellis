@@ -49,7 +49,15 @@ def test_trigger_egeria_native_survey_calls_pyegeria_with_confirmed_process_name
     initiate_file_folder_survey() default ("FileSurveys:survey-folder",
     single colon, different prefix), which is the same class of bug already
     worked around for PostgreSQL. This test would have caught a regression to
-    the (wrong) default."""
+    the (wrong) default.
+
+    Since the async result-retrieval build, this handler also polls the
+    triggered engine action to a terminal status and reads back the produced
+    report's annotations — mocked here too; the report-attribution/
+    annotation-conversion detail is covered by
+    test_egeria_async_survey_result.py instead of duplicated."""
+    from datetime import datetime, timedelta, timezone
+
     import resource_explorer.surveyors.filesystem.survey_definition_adapter as fs_adapter
 
     fs_entity = FileSystemEntity(
@@ -57,17 +65,33 @@ def test_trigger_egeria_native_survey_calls_pyegeria_with_confirmed_process_name
         local_mount_point="/tmp/x", canonical_mount_point="file://x",
         egeria_asset_guid="fs-guid-1",
     )
+    metadata_expert = MagicMock()
+    metadata_expert.get_metadata_element_by_guid.return_value = {
+        "elementProperties": {"propertyValueMap": {
+            "activityStatus": {"symbolicName": "COMPLETED"},
+        }}
+    }
     with patch.object(EgeriaFileSystemSurveyor, "connect", lambda self: None):
         e = EgeriaFileSystemSurveyor()
         e._automated_curation = MagicMock()
         e._automated_curation.initiate_file_folder_survey.return_value = "engine-action-guid-1"
+        e.get_survey_reports_by_guid = MagicMock(return_value=[
+            {"guid": "report-guid-1", "qualified_name": "SurveyReport::x",
+             "surveyed_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()},
+        ])
+        e.get_annotations_by_report_guid = MagicMock(return_value=[])
         with patch(
             "resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor.EgeriaFileSystemSurveyor",
             return_value=e,
+        ), patch(
+            "resource_explorer.surveyors.egeria_async_survey_result._get_clients",
+            return_value=(MagicMock(), metadata_expert),
         ):
             result = fs_adapter._trigger_egeria_native_survey(fs_entity, MagicMock(), step=MagicMock())
 
-    assert result == {"engine_action_guid": "engine-action-guid-1"}
+    assert result["status"] == "ok"
+    assert result["engine_action_guid"] == "engine-action-guid-1"
+    assert result["report_guid"] == "report-guid-1"
     e._automated_curation.initiate_file_folder_survey.assert_called_once_with(
         file_folder_guid="fs-guid-1", survey_name="FileSurvey::survey-folder",
     )

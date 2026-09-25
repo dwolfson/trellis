@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from resource_explorer.registry import Project, ProjectRegistry, ProjectStatus
+from resource_explorer.registry import DatabaseEntity, Project, ProjectRegistry, ProjectStatus
 
 
 @pytest.fixture
@@ -689,6 +689,249 @@ class TestRepoDispositions:
         assert disp["project_slug"] == "test-project"
 
 
+class TestResolveRepoEntitySlug:
+    """The PK generalized 2026-09-22 (Backlog.md, "Disposition is NOT fixed
+    here") from `github_url` alone to `(entity_type, entity_slug)` --
+    `resolve_repo_entity_slug` is what computes `entity_slug` for a repo
+    (database/filesystem entities pass their own slug directly, no
+    resolution needed)."""
+
+    def test_never_imported_candidate_falls_back_to_url_derived_slug(self, db):
+        # Same derivation org_importer._url_to_slug already uses elsewhere
+        # for a pre-import candidate's entity_slug.
+        assert db.resolve_repo_entity_slug("https://github.com/foo/bar") == "bar"
+
+    def test_imported_repo_uses_its_real_slug(self, db, sample_project):
+        db.add(sample_project)
+        # sample_project.slug is 'test-project' (dash); add() normalizes to
+        # 'test_project' -- resolve_repo_entity_slug must return the REAL,
+        # stored slug, not a fresh guess from the URL.
+        assert db.resolve_repo_entity_slug(sample_project.github_url) == "test_project"
+
+    def test_real_slug_can_differ_from_a_url_derived_guess(self, db):
+        # The exact shape confirmed live in the shared dev registry:
+        # odpi/egeria's project_slug is 'egeria_git', not the url-derived
+        # 'egeria' -- a manual slug choice or collision-avoidance rename.
+        db.add(Project(slug="egeria_git", display_name="egeria",
+                       github_url="https://github.com/odpi/egeria"))
+        assert db.resolve_repo_entity_slug("https://github.com/odpi/egeria") == "egeria_git"
+
+
+class TestEntityGenericDisposition:
+    """`set_disposition_for_entity`/`get_disposition_for_entity`/
+    `get_disposition_history_for_entity` -- the generalized primitive
+    database/filesystem callers use directly (no pre-import ambiguity to
+    resolve: a database/filesystem's slug IS its stable identity)."""
+
+    def test_round_trip_for_a_database(self, db):
+        db.set_disposition_for_entity("database", "mydb", "tracking", reason="worth a look")
+        disp = db.get_disposition_for_entity("database", "mydb")
+        assert disp["disposition"] == "tracking"
+        assert disp["reason"] == "worth a look"
+        assert disp["entity_type"] == "database"
+        assert disp["entity_slug"] == "mydb"
+
+    def test_round_trip_for_a_filesystem(self, db):
+        db.set_disposition_for_entity("filesystem", "myfs", "using")
+        disp = db.get_disposition_for_entity("filesystem", "myfs")
+        assert disp["disposition"] == "using"
+
+    def test_never_decided_returns_none(self, db):
+        assert db.get_disposition_for_entity("database", "nope") is None
+
+    def test_history_accumulates(self, db):
+        db.set_disposition_for_entity("database", "mydb", "tracking")
+        db.set_disposition_for_entity("database", "mydb", "using")
+        history = db.get_disposition_history_for_entity("database", "mydb")
+        assert [h["disposition"] for h in history] == ["tracking", "using"]
+
+    def test_different_entity_types_with_the_same_slug_do_not_collide(self, db):
+        # The composite key is (entity_type, entity_slug) -- a database and
+        # a filesystem could legitimately share a slug string.
+        db.set_disposition_for_entity("database", "shared", "tracking")
+        db.set_disposition_for_entity("filesystem", "shared", "ignored")
+        assert db.get_disposition_for_entity("database", "shared")["disposition"] == "tracking"
+        assert db.get_disposition_for_entity("filesystem", "shared")["disposition"] == "ignored"
+
+    def test_repo_convenience_methods_delegate_to_the_generic_ones(self, db):
+        # set_disposition/get_disposition (github_url-keyed) and
+        # set_disposition_for_entity/get_disposition_for_entity
+        # (entity_type='repo', entity_slug=<resolved>) read/write the same
+        # underlying row.
+        db.set_disposition("https://github.com/foo/bar", "tracking")
+        assert db.get_disposition_for_entity("repo", "bar")["disposition"] == "tracking"
+        db.set_disposition_for_entity("repo", "bar", "using")
+        assert db.get_disposition("https://github.com/foo/bar")["disposition"] == "using"
+
+
+class TestDispositionReconciliationOnImport:
+    """`add()`'s `_reconcile_disposition_on_import` -- the mitigation for
+    TestResolveRepoEntitySlug's divergent-slug case: a disposition set
+    before import (keyed provisionally by a url-derived slug guess) must
+    not become orphaned when the repo is later imported under a genuinely
+    different slug."""
+
+    def test_provisional_row_is_rekeyed_onto_the_real_slug_at_import(self, db):
+        db.set_disposition("https://github.com/odpi/egeria", "using", reason="core platform")
+        # Provisional: no project exists yet, so entity_slug is the
+        # url-derived guess 'egeria'.
+        assert db.get_disposition_for_entity("repo", "egeria") is not None
+        db.add(Project(slug="egeria_git", display_name="egeria",
+                       github_url="https://github.com/odpi/egeria"))
+        # Reconciled onto the real slug -- the guess is gone, the real one
+        # carries the original decision forward.
+        assert db.get_disposition_for_entity("repo", "egeria") is None
+        real = db.get_disposition_for_entity("repo", "egeria_git")
+        assert real["disposition"] == "using"
+        assert real["reason"] == "core platform"
+        assert real["project_slug"] == "egeria_git"
+        # The repo-convenience API sees the same, now-reconciled row.
+        assert db.get_disposition("https://github.com/odpi/egeria")["disposition"] == "using"
+
+    def test_history_is_rekeyed_too(self, db):
+        db.set_disposition("https://github.com/odpi/egeria", "tracking")
+        db.set_disposition("https://github.com/odpi/egeria", "using")
+        db.add(Project(slug="egeria_git", display_name="egeria",
+                       github_url="https://github.com/odpi/egeria"))
+        history = db.get_disposition_history_for_entity("repo", "egeria_git")
+        assert [h["disposition"] for h in history] == ["tracking", "using"]
+        assert db.get_disposition_history_for_entity("repo", "egeria") == []
+
+    def test_no_op_when_the_guessed_slug_already_matches(self, db):
+        # The overwhelmingly common case (org_importer's own path always
+        # lands here, since it refuses on a slug collision rather than
+        # picking an alternate) -- must not touch an unrelated row.
+        db.set_disposition("https://github.com/foo/bar", "tracking")
+        db.add(Project(slug="bar", display_name="bar", github_url="https://github.com/foo/bar"))
+        assert db.get_disposition_for_entity("repo", "bar")["disposition"] == "tracking"
+
+    def test_no_op_when_no_provisional_row_exists(self, db, sample_project):
+        # The common case of an import with no pre-existing disposition at
+        # all must not raise or fabricate a row.
+        db.add(sample_project)
+        assert db.get_disposition(sample_project.github_url) is None
+
+    def test_real_slug_already_taken_favors_the_real_row_over_the_guess(self, db):
+        # Pathological (shouldn't happen -- real_slug wasn't registered a
+        # moment before add() ran) but must not crash the import: the
+        # provisional guess is dropped rather than clobbering a row already
+        # set directly against the real slug.
+        db.set_disposition_for_entity("repo", "egeria", "tracking")
+        db.set_disposition_for_entity("repo", "egeria_git", "using")
+        db.add(Project(slug="egeria_git", display_name="egeria",
+                       github_url="https://github.com/odpi/egeria"))
+        assert db.get_disposition_for_entity("repo", "egeria") is None
+        assert db.get_disposition_for_entity("repo", "egeria_git")["disposition"] == "using"
+
+
+class TestDispositionEntityKeyMigration:
+    """The one-time migration from `github_url TEXT PRIMARY KEY` to
+    `(entity_type, entity_slug)` (`_migrate_repo_dispositions_to_entity_key`/
+    `_migrate_repo_disposition_history_to_entity_key`) -- exercised against
+    a hand-built pre-migration SQLite file, since the `db` fixture's fresh
+    database never takes this path (CREATE TABLE already declares the new
+    shape)."""
+
+    def _seed_old_schema_db(self, path: str) -> None:
+        conn = sqlite3.connect(path)
+        conn.execute("""CREATE TABLE repo_dispositions (
+            github_url   TEXT PRIMARY KEY,
+            disposition  TEXT NOT NULL DEFAULT 'undecided',
+            reason       TEXT DEFAULT '',
+            decided_by   TEXT DEFAULT '',
+            decided_at   TEXT NOT NULL,
+            project_slug TEXT DEFAULT ''
+        )""")
+        conn.execute("""CREATE TABLE repo_disposition_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            github_url TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            decided_by TEXT DEFAULT '',
+            decided_at TEXT NOT NULL
+        )""")
+        # A normal already-imported repo (project_slug resolved) and the
+        # real divergent-slug case seen live in the shared dev registry.
+        conn.execute(
+            "INSERT INTO repo_dispositions VALUES (?, ?, ?, ?, ?, ?)",
+            ("https://github.com/odpi/egeria", "using", "", "", "2026-01-01T00:00:00", "egeria_git"),
+        )
+        # Never-imported candidate: project_slug is empty.
+        conn.execute(
+            "INSERT INTO repo_dispositions VALUES (?, ?, ?, ?, ?, ?)",
+            ("https://github.com/intake/intake", "tracking", "worth watching", "dan", "2026-01-01T00:00:00", ""),
+        )
+        conn.execute(
+            "INSERT INTO repo_disposition_history (github_url, disposition, decided_at) VALUES (?, ?, ?)",
+            ("https://github.com/odpi/egeria", "using", "2026-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO repo_disposition_history (github_url, disposition, reason, decided_by, decided_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("https://github.com/intake/intake", "tracking", "worth watching", "dan", "2026-01-01T00:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_backfill_uses_project_slug_when_present(self, tmp_path):
+        db_path = str(tmp_path / "pre_migration.db")
+        self._seed_old_schema_db(db_path)
+        reg = ProjectRegistry(db_path=db_path)
+        # No Project row exists in this fixture, so the repo-convenience
+        # get_disposition (which resolves via resolve_repo_entity_slug,
+        # i.e. get_by_github_url) can't find it post-migration -- this is
+        # the one case the Backlog entry names as not fully solved by the
+        # migration alone (no Project to resolve through). The direct
+        # entity-keyed read proves the backfill itself landed correctly.
+        disp = reg.get_disposition_for_entity("repo", "egeria_git")
+        assert disp is not None
+        assert disp["disposition"] == "using"
+        assert disp["github_url"] == "https://github.com/odpi/egeria"
+
+    def test_backfill_falls_back_to_url_derived_slug_when_project_slug_is_empty(self, tmp_path):
+        db_path = str(tmp_path / "pre_migration.db")
+        self._seed_old_schema_db(db_path)
+        reg = ProjectRegistry(db_path=db_path)
+        disp = reg.get_disposition_for_entity("repo", "intake")
+        assert disp is not None
+        assert disp["disposition"] == "tracking"
+        assert disp["reason"] == "worth watching"
+
+    def test_history_is_backfilled_consistently_with_the_current_row(self, tmp_path):
+        db_path = str(tmp_path / "pre_migration.db")
+        self._seed_old_schema_db(db_path)
+        reg = ProjectRegistry(db_path=db_path)
+        history = reg.get_disposition_history_for_entity("repo", "egeria_git")
+        assert [h["disposition"] for h in history] == ["using"]
+        history2 = reg.get_disposition_history_for_entity("repo", "intake")
+        assert [h["disposition"] for h in history2] == ["tracking"]
+
+    def test_full_repo_convenience_api_works_once_the_matching_project_exists(self, tmp_path):
+        # Mirrors the real shared dev registry, where every project_slug
+        # !='' row in repo_dispositions has a matching `projects` row --
+        # confirming the migration is transparent to the existing repo API
+        # once that's true, which is the realistic, verified-live case.
+        db_path = str(tmp_path / "pre_migration.db")
+        self._seed_old_schema_db(db_path)
+        reg = ProjectRegistry(db_path=db_path)
+        reg.add(Project(slug="egeria_git", display_name="egeria",
+                        github_url="https://github.com/odpi/egeria"))
+        disp = reg.get_disposition("https://github.com/odpi/egeria")
+        assert disp is not None
+        assert disp["disposition"] == "using"
+        history = reg.get_disposition_history("https://github.com/odpi/egeria")
+        assert [h["disposition"] for h in history] == ["using"]
+
+    def test_migration_is_a_no_op_on_a_second_open(self, tmp_path):
+        db_path = str(tmp_path / "pre_migration.db")
+        self._seed_old_schema_db(db_path)
+        ProjectRegistry(db_path=db_path)
+        # Re-opening must not re-run the backfill or error on already-
+        # migrated columns.
+        reg2 = ProjectRegistry(db_path=db_path)
+        assert reg2.get_disposition_for_entity("repo", "egeria_git")["disposition"] == "using"
+
+
 class TestFileInventoryModes:
     """Assessment sub-resource cataloging plan, D9 Tier 1 — file_mode is
     optional/additive on top of the existing path+size inventory."""
@@ -1184,3 +1427,46 @@ class TestMaterializedPorts:
         all_ports = db.get_materialized_ports("repo", "myproj")
         assert set(all_ports.keys()) == {"src/web::http", "src/web::metrics"}
         assert all_ports["src/web::http"]["guid"] == "guid-http"
+
+
+class TestUpdateDatabaseCredentials:
+    """update_database_credentials -- the only supported way to repoint an
+    already-registered database's db_user/db_password (e.g. from a narrow
+    role to a broader one) without losing its registration history."""
+
+    def test_updates_only_credentials_leaves_everything_else_untouched(self, db):
+        db.register_database(DatabaseEntity(
+            slug="mydb", display_name="My DB", db_type="postgresql",
+            host="localhost", port=5432, database_name="mydb",
+            db_user="egeria_user", db_password="old-secret",
+            egeria_asset_guid="guid-123", description="a database",
+        ))
+        db.update_database_surveyed_at("mydb")
+        before = db.get_database("mydb")
+        assert before.db_user == "egeria_user"
+
+        db.update_database_credentials("mydb", "surveyor", "new-secret")
+
+        after = db.get_database("mydb")
+        assert after.db_user == "surveyor"
+        assert after.db_password == "new-secret"
+        # Everything else survives untouched.
+        assert after.slug == before.slug
+        assert after.display_name == before.display_name
+        assert after.egeria_asset_guid == before.egeria_asset_guid
+        assert after.description == before.description
+        assert after.last_surveyed_at == before.last_surveyed_at
+
+    def test_normalizes_slug_like_other_database_updates(self, db):
+        db.register_database(DatabaseEntity(
+            slug="my-db", display_name="My DB", db_type="postgresql",
+            host="localhost", port=5432, database_name="mydb",
+        ))
+        db.update_database_credentials("my-db", "newuser", "newpass")
+        assert db.get_database("my_db").db_user == "newuser"
+
+    def test_unknown_slug_is_a_no_op_like_other_update_by_slug_methods(self, db):
+        # Matches update_database_status's precedent: an UPDATE that matches
+        # no row is silently a no-op, not an error.
+        db.update_database_credentials("nope", "user", "pass")
+        assert db.get_database("nope") is None

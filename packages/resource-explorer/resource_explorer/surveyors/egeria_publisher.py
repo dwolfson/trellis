@@ -68,6 +68,12 @@ class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
 
 
+class EgeriaPublisherError(RuntimeError):
+    """Raised when an Egeria-native operation triggered through EgeriaPublisher
+    (e.g. trigger_survey_by_guid) fails — mirrors
+    EgeriaDatabaseSurveyorError/EgeriaFileSystemSurveyorError."""
+
+
 def _analyses_for_steps(step_keys) -> set:
     """The analyses whose steps these are.
 
@@ -450,6 +456,137 @@ class EgeriaPublisher:
 
         self._connect()
         return get_annotations_by_report_guid(self._asset_maker, report_guid)
+
+    # ── Egeria-native survey triggering (Backlog "Path B3") ─────────────────
+    #
+    # Repos, unlike databases and filesystems, are cataloged in Egeria as a
+    # plain generic `Asset` (see this module's own docstring, "Element type,
+    # corrected 2026-09-14") — there is no registered Egeria Technology Type
+    # for "repository" the way there is "PostgreSQL Relational Database" or
+    # "File System Directory". The one repo-specific string this codebase
+    # already uses when talking to Egeria about a repository is
+    # `additionalProperties.deployed_implementation_type = "GitHub Repository"`
+    # (set in `_find_or_create_asset` above) — that is the string used here,
+    # rather than `_ADAPTER.technology_type` ("Git Repository") in
+    # repo_survey_definition_adapter.py, which is a *different*, RE-internal
+    # convention (see ResourceTypeAdapter's own docstring in
+    # survey_definition_executor.py for why the two are deliberately not the
+    # same value and are not guaranteed to match).
+    _REPO_TECH_TYPE = "GitHub Repository"
+
+    def trigger_survey_by_guid(self, repo_guid: str, start_time: "datetime | None" = None) -> str:
+        """Initiate Egeria's own native repository survey using a stored
+        Asset GUID — the repo equivalent of
+        EgeriaDatabaseSurveyor.trigger_survey_by_guid /
+        EgeriaFileSystemSurveyor.trigger_survey_by_guid.
+
+        Use this when the repository is already cataloged in Egeria
+        (repo_guid known) — Egeria surveys the already-cataloged Asset, it
+        does not create one as a side effect.
+
+        Unlike EgeriaFileSystemSurveyor's version (which triggers a single,
+        confirmed-live GovernanceActionType by a hardcoded qualifiedName),
+        this mirrors EgeriaDatabaseSurveyor's *dynamic* discovery mechanism
+        (`_initiate_survey`/`_find_survey_process_name`, generic over a
+        `tech_type` string) rather than a repo-specific one — added
+        2026-09-20 on an explicit project-owner decision to build this
+        plumbing now even though no live repo survey action service may
+        exist in Egeria yet ("we will probably have some surveys that
+        execute there at some point"). Until such a service is authored and
+        registered in Egeria (or configured in
+        configdata/technology_type_processes.yaml), `_initiate_survey` below
+        will legitimately find zero candidates and raise a clear,
+        specific error — that is the correct, expected behavior for now,
+        not a bug (see docs/Backlog.md).
+        """
+        self._connect()
+        try:
+            action_guid = self._initiate_survey(self._REPO_TECH_TYPE, repo_guid, start_time=start_time)
+            log.info(f"Egeria repository survey initiated: {action_guid}")
+            return action_guid
+        except Exception as exc:
+            raise EgeriaPublisherError(
+                f"Failed to initiate Egeria survey for repo_guid={repo_guid}: {exc}"
+            ) from exc
+
+    def _initiate_survey(self, tech_type: str, target_guid: str, start_time: "datetime | None" = None) -> str:
+        """Dynamically find a user-authored Survey Definition process for
+        tech_type and initiate it as a GovernanceActionProcess; if none is
+        found (or it fails to initiate), fall back to the native survey
+        GovernanceActionType configured for this tech_type in
+        config/technology_type_processes.yaml (entity_type="repo").
+
+        Copied from EgeriaDatabaseSurveyor._initiate_survey rather than
+        shared via a common base class — see that method's docstring for the
+        two-step discover-then-fallback shape this mirrors exactly, generic
+        over tech_type/entity_type rather than PostgreSQL-specific.
+        """
+        process_name = self._find_survey_process_name(tech_type)
+        if process_name:
+            try:
+                targets = [
+                    {
+                        "class": "NewActionTarget",
+                        "actionTargetName": "serverToSurvey",
+                        "actionTargetGUID": target_guid,
+                    }
+                ]
+                guid = self._automated_curation.initiate_gov_action_process(
+                    action_type_qualified_name=process_name,
+                    action_targets=targets,
+                    start_time=start_time,
+                )
+                log.info(f"Initiated dynamically discovered survey process {process_name} on {target_guid}: {guid}"
+                         + (f" (start_time={start_time.isoformat()})" if start_time else ""))
+                return guid
+            except Exception as exc:
+                log.warning(f"Failed to initiate dynamically discovered survey process {process_name}: {exc}. Trying fallback...")
+
+        from resource_explorer.surveyors.technology_type_processes import (
+            KIND_SURVEY_EXISTING,
+            get_process_by_kind,
+        )
+
+        native = get_process_by_kind("repo", tech_type, KIND_SURVEY_EXISTING)
+        if not native:
+            raise RuntimeError(
+                f"No native survey process configured for technology_type={tech_type!r} "
+                "(entity_type='repo') — add an entry to "
+                "config/technology_type_processes.yaml once a repo survey action "
+                "service exists and is confirmed live against Egeria; until then "
+                "this is the expected, correct outcome, not a bug."
+            )
+        if start_time:
+            log.info(
+                f"start_time={start_time.isoformat()} requested but the native-survey fallback path "
+                f"has no start_time parameter — firing immediately."
+            )
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(
+            self._automated_curation._async_initiate_survey(native.qualified_name, target_guid)
+        )
+
+    def _find_survey_process_name(self, tech_type: str) -> str | None:
+        """Query for a user-authored Survey Definition process supporting
+        tech_type and return its qualifiedName. Delegates to
+        SurveyDefinitionReader.find_candidate_process_guids (same mechanism
+        EgeriaDatabaseSurveyor._find_survey_process_name uses), keeping this
+        method's single-result contract for _initiate_survey above."""
+        from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+        self._connect()
+        reader = SurveyDefinitionReader(
+            self.platform_url, self.view_server, self.user_id, self.user_password
+        )
+        reader._automated_curation = self._automated_curation
+        candidates = reader.find_candidate_process_guids(tech_type)
+        if candidates:
+            qn = candidates[0]["qualified_name"]
+            log.info(f"Dynamically discovered Egeria survey process for {tech_type}: {qn}")
+            return qn
+        return None
 
     # ── connection ────────────────────────────────────────────────────────────
 

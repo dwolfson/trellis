@@ -362,7 +362,15 @@ class TestResourceStateSources:
 
         catalog = {q["question"] for q in get_questions()}
         missing = [q for q in RESOURCE_STATE_SOURCES if q not in catalog]
-        assert missing == [], f"declared for questions not in the catalog: {missing}"
+        assert missing == [], (
+            f"declared for questions not in the catalog: {missing}\n"
+            "If a question was REWORDED in docs/dr-egeria/resource_questions.csv, "
+            "update its key in facts.py's RESOURCE_STATE_SOURCES in the SAME "
+            "commit -- these keys match on exact text. Four such rewordings are "
+            "expected from the multi-resource question-authoring stream; the "
+            "old -> new mapping is in RESOURCE_STATE_SOURCES' own docstring and "
+            "in docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md."
+        )
 
     def test_an_absent_value_is_a_measured_zero_not_an_unrun_analysis(self):
         """`feedback_count: 0` means nobody left feedback -- a real answer.
@@ -555,7 +563,9 @@ def test_maintainers_merge_one_person_committing_under_two_addresses(pg_registry
                 "author_name, author_email, committed_at) VALUES (?,?,?,?,?,?)",
                 ("w", f"k{i}", "x", "Karth", "k@example.com", "2026-08-01T00:00:00"))
 
-    value, _ = RESOURCE_STATE_SOURCES["Who maintains this repository?"][0](reg, reg.get("w"))
+    value, _ = RESOURCE_STATE_SOURCES[
+        "Who owns this resource (accountable owner), and who administers it?"
+    ][0](reg, reg.get("w"))
     assert value["people"] == 2, "two humans, not three commit identities"
     assert value["commit_identities"] == 3, "the split is reported, not hidden"
     top = value["top_authors"][0]

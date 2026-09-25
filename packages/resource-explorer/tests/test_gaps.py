@@ -118,6 +118,46 @@ class TestUpsertIsIdempotent:
         assert kinds == [DISAGREEMENT, NOT_MEASURABLE]
 
 
+class TestDisagreementGapsDispatchByEntityType:
+    """`_disagreement_gaps` used to call `registry.get(slug)` — the repo-only
+    `projects` table — unconditionally, so it returned `[]` for ANY
+    database/filesystem slug, silently conflating "not measured for this
+    type" with "measured, no disagreement". It now dispatches via
+    `get_adapter(entity_type)`, same pattern as other fixed call sites.
+    """
+
+    def test_repo_disagreement_detection_is_unchanged(self, reg, slug):
+        """The default (entity_type='repo') must still find what it always
+        found — a pure refactor for the case that already worked."""
+        _seed_disagreement(reg, slug)
+        gaps = collect_gaps(reg, slug, entity_type="repo")
+        hits = [g for g in gaps if g["gap_kind"] == DISAGREEMENT]
+        assert len(hits) == 1
+        assert hits[0]["analysis_id"] == "community_support"
+
+    def test_a_database_slug_returns_no_gaps_honestly_not_by_accident(self, reg, slug):
+        """Database declares no `state_sources` provider today (only repo
+        does) — `_disagreement_gaps` must say so explicitly (via logging) and
+        return `[]` because there is genuinely nothing to check, not because
+        `registry.get(slug)` failed to find a repo-shaped row for a
+        database slug (a different, non-honest reason to reach the same
+        empty list)."""
+        from resource_explorer.gaps import _disagreement_gaps
+
+        # Seed the exact disagreement shape that WOULD be found under
+        # entity_type="repo", to prove entity_type="database" is really
+        # consulting a different (empty) map rather than merely finding no
+        # data for this slug.
+        _seed_disagreement(reg, slug)
+        assert _disagreement_gaps(reg, slug, entity_type="repo") != []
+        assert _disagreement_gaps(reg, slug, entity_type="database") == []
+
+    def test_an_unregistered_entity_type_is_also_an_honest_empty_list(self, reg, slug):
+        from resource_explorer.gaps import _disagreement_gaps
+
+        assert _disagreement_gaps(reg, slug, entity_type="not-a-real-type") == []
+
+
 class TestGapsSummaryShape:
     def test_counts_and_measures_total(self, reg, slug):
         _seed_not_measurable(reg, slug)

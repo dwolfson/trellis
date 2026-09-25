@@ -874,6 +874,7 @@ def compile_context(
     slug: str,
     question: str,
     *,
+    resource_type: str = "repo",
     purposes: list[str] | None = None,
     perspectives: list[str] | None = None,
     budget: int = 8000,
@@ -883,6 +884,16 @@ def compile_context(
     instructions_variant: str = "default",
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
+
+    `resource_type` selects which resource type's question/analysis catalog
+    and fact-layer maps this compile reads from ('repo' | 'database' |
+    'filesystem', default "repo" for backward compatibility with existing
+    callers). Before this was threaded through, every compile silently read
+    the repo catalog and repo analyses regardless of what kind of resource
+    `slug` actually named — a database- or filesystem-scoped chat question
+    always got repo-shaped evidence (`foss_scorecard`, `chaoss_metrics`, ...)
+    and reported the real answer, sitting in a database analysis like
+    `row_count_snapshot`, as a gap.
 
     Every successful compile is recorded through `registry.record_compile`
     (fail-soft: a registry without it, or a write that fails, costs the caller
@@ -901,7 +912,7 @@ def compile_context(
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(
-        "repo", perspectives=perspectives or None, purposes=purposes or None,
+        resource_type, perspectives=perspectives or None, purposes=purposes or None,
     )
 
     # Rank matters: Purpose ORDERS, so the analyses reached by the highest-ranked
@@ -923,8 +934,32 @@ def compile_context(
     # excludes action == "publish" for the same reason; this is the same
     # exclusion, one layer up. Question 5 of the catalog references it, which
     # is how it reaches here at all.
-    _actions = {a["id"] for a in get_analyses("repo", include_egeria_live=False)
+    _actions = {a["id"] for a in get_analyses(resource_type, include_egeria_live=False)
                 if a.get("action") == "publish"}
+
+    # Fact-layer maps for THIS resource type, looked up once via the same
+    # per-type adapter FactLayer itself uses (resource_explorer/facts.py's
+    # `_map`) rather than importing repo's REPO_ANALYSIS_RESULTS_MAP /
+    # REPO_ANALYSIS_HEADLINE_MAP unconditionally, which is what made the
+    # results-reader/headline fallback below repo-only regardless of
+    # `resource_type`. A resource type that declares no results/headline map
+    # degrades to `{}` here, same as FactLayer does -- not an error, just
+    # nothing extra to offer beyond the findings table.
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        get_adapter,
+    )
+
+    try:
+        _adapter = get_adapter(resource_type)
+    except SurveyDefinitionExecutorError:
+        _adapter = None
+    _results_map = (
+        _adapter.analysis_results_map() if _adapter and _adapter.analysis_results_map else {}
+    ) or {}
+    _headline_map = (
+        _adapter.analysis_headline_map() if _adapter and _adapter.analysis_headline_map else {}
+    ) or {}
 
     #: The best-matching catalog entry OVER THE WHOLE CATALOG, including the
     #: entries the loop below skips for having no analysis to dispatch to.
@@ -1052,11 +1087,7 @@ def compile_context(
         # The rule is now about evidence, not precedence: consult both when the
         # findings are slight, and keep whichever says more.
         if len(rungs.get(Rung.FULL, "")) < THIN_FINDINGS_CHARS:
-            from resource_explorer.surveyors.repo_survey_definition_adapter import (
-                REPO_ANALYSIS_HEADLINE_MAP,
-                REPO_ANALYSIS_RESULTS_MAP,
-            )
-            entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+            entry = _results_map.get(analysis_id)
             reader = entry[0] if entry else None
             if reader is not None:
                 try:
@@ -1080,7 +1111,7 @@ def compile_context(
                         # the reader above: a headline that raises costs this
                         # section its verdict line, not the compile.
                         headline = None
-                        hl = REPO_ANALYSIS_HEADLINE_MAP.get(analysis_id)
+                        hl = _headline_map.get(analysis_id)
                         if hl is not None:
                             try:
                                 headline = hl(registry, slug)
@@ -1138,13 +1169,14 @@ def compile_context(
     m = packed.manifest
     from resource_explorer.facts import FactLayer
 
-    _facts = FactLayer(registry)
+    _facts = FactLayer(registry, resource_type=resource_type)
     compile_id = _compile_id(spec, candidates, budget)
     compiled = CompiledContext(
         text=packed.text(),
         compile_id=compile_id,
         manifest={
             "compile_id": compile_id,
+            "resource_type": resource_type,
             "spec_id": m.spec_id, "budget": m.budget, "used": m.used,
             "headroom": m.headroom, "packed": list(m.packed),
             "dropped": list(m.dropped),

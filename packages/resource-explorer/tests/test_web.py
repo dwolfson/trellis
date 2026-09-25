@@ -1197,6 +1197,107 @@ class TestAnnotationTypesRouter:
         res_get_deleted = client.get("/api/analyses/annotation-types/CustomTestAnnotation")
         assert res_get_deleted.status_code == 404
 
+    def test_usage_404s_for_unknown_type(self, client):
+        resp = client.get("/api/analyses/annotation-types/NoSuchAnnotation/usage")
+        assert resp.status_code == 404
+
+    def test_usage_is_an_honest_lower_bound_not_an_exact_count(self, client):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §4/§0: a delete/rename confirmation
+        must say how many annotations reference a type, or say the count is
+        unknown — never imply zero. This registers a fresh type nothing has
+        published, so `projects_published` is genuinely 0, and pins that the
+        route still marks it `exact: False` and says so in `note` rather
+        than presenting 0 as "confirmed unused"."""
+        new_type = {
+            "type": "NeverPublishedAnnotation",
+            "display_name": "Never Published",
+            "description": "Registered but never recorded as published anywhere.",
+        }
+        assert client.post("/api/analyses/annotation-types", json=new_type).status_code == 200
+
+        resp = client.get("/api/analyses/annotation-types/NeverPublishedAnnotation/usage")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["projects_published"] == 0
+        assert body["exact"] is False
+        assert "lower bound" in body["note"] or "not" in body["note"].lower()
+        assert "0" in body["note"]
+
+
+# ── /api/analyses/question-catalog/questions ────────────────────────────────
+# Route-level wiring tests for the append-only write path — writer-level
+# behavior (append works, retire works, an edit-in-place is refused) has its
+# own dedicated coverage in tests/test_question_catalog_writer.py. These
+# confirm the FastAPI routes call it correctly and translate its errors to
+# the right status codes, isolated from the real committed CSV/YAML via the
+# same monkeypatch technique that module's own tests use.
+
+class TestQuestionCatalogWriteRoutes:
+    @pytest.fixture(autouse=True)
+    def _isolated_catalog(self, tmp_path, monkeypatch):
+        import csv as csv_mod
+        from resource_explorer.surveyors import question_catalog_writer as qcw
+
+        header = ["Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+                  "Answering Analysis", "Answering Mechanism", "Steward", "Purposes",
+                  "Catalog History", "Status"]
+        row = {"Question": "Is this repository actively maintained?", "Funnel Stage": "Scouting",
+               "Why is this important?": "", "Rationale/Source": "", "Answering Analysis": "",
+               "Answering Mechanism": "", "Steward": "X", "Purposes": "Select",
+               "Catalog History": "", "Status": ""}
+        csv_path = tmp_path / "resource_questions.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv_mod.DictWriter(f, fieldnames=header)
+            w.writeheader()
+            w.writerow(row)
+
+        monkeypatch.setattr(qcw, "_CSV_PATH", csv_path)
+        monkeypatch.setattr(qcw, "_YAML_PATH", tmp_path / "question_catalog.yaml")
+        monkeypatch.setattr(qcw, "_LOCK_PATH", tmp_path / "resource_questions.csv.lock")
+
+    def test_add_question_route_succeeds(self, client):
+        resp = client.post("/api/analyses/question-catalog/questions", json={
+            "question": "Does this repository have a license?",
+            "stage": "Scouting",
+            "perspectives": ["Steward"],
+            "purposes": ["Select"],
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "success"}
+
+    def test_add_question_route_400s_on_duplicate_text(self, client):
+        """The route-level proof of the append-only refusal: posting the
+        text of an already-existing question is rejected, not upserted —
+        editing is not accepted even hitting the route directly."""
+        resp = client.post("/api/analyses/question-catalog/questions", json={
+            "question": "Is this repository actively maintained?",
+        })
+        assert resp.status_code == 400
+        assert "already exists" in resp.json()["detail"]
+
+    def test_retire_question_route_succeeds(self, client):
+        resp = client.post("/api/analyses/question-catalog/questions/retire", json={
+            "question": "Is this repository actively maintained?",
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "success"}
+
+    def test_retire_question_route_404s_on_unknown_question(self, client):
+        resp = client.post("/api/analyses/question-catalog/questions/retire", json={
+            "question": "This was never asked.",
+        })
+        assert resp.status_code == 404
+
+    def test_retire_question_route_400s_on_already_retired(self, client):
+        first = client.post("/api/analyses/question-catalog/questions/retire", json={
+            "question": "Is this repository actively maintained?",
+        })
+        assert first.status_code == 200
+        second = client.post("/api/analyses/question-catalog/questions/retire", json={
+            "question": "Is this repository actively maintained?",
+        })
+        assert second.status_code == 400
+
 
 class TestEgeriaRules:
     def test_get_dataclass_rules_fallback(self, client):

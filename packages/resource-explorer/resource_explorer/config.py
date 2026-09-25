@@ -266,13 +266,53 @@ class EgeriaConfig(BaseSettings):
     default_catalog_zones: list[str] = Field(default_factory=list)
     default_survey_zones: list[str] = Field(default_factory=list)
     # Secrets store used when Egeria's own native "catalog and survey" processes
-    # need credentials — these are deployment-specific (the GUID identifies a
-    # SecretsStore asset already configured on your Egeria server; there is no
-    # sensible default). Confirmed live 2026-07-09: secrets are written via
+    # need credentials. Confirmed live 2026-07-09: secrets are written via
     # AutomatedCuration.save_client_side_secret(secrets_store_guid, body) with
-    # secret key names "userId"/"clearPassword" for Postgres resources.
+    # secret key names "userId"/"clearPassword" for Postgres resources — but
+    # this was never wired into a caller until docs/design-notes/
+    # PROBES-2026-09-21.md's investigation (2026-09-21) found the reason a
+    # freshly-cataloged coco_pharma asset still failed its native survey with
+    # a SCRAM/no-password error: its embedded SecretsStoreConnection carried
+    # the literal unsubstituted template placeholders "~{secretsCollectionName}~"
+    # / "~{secretsStorePathName}~" — nothing had ever supplied real values for
+    # either. **Decision (project owner, 2026-09-21):** Egeria does not share
+    # secrets across clients — RE must keep its own secrets store (a YAML file
+    # via Egeria's own client-side-secret structure, see
+    # https://egeria-project.org/concepts/client-side-secret) rather than
+    # pointing at Egeria's bundled egeria-servers.omsecrets/integration
+    # .omsecrets/coco-user-directory.omsecrets, none of which are ever named
+    # for a database RE surveys. secrets_store_guid is left blank by default —
+    # EgeriaDatabaseSurveyor._ensure_own_secrets_store_guid() finds-or-creates
+    # RE's own SecretsStore Connection/Endpoint/ConnectorType graph on first
+    # use (same find-by-qualifiedName-then-create idiom as
+    # _create_postgres_element_from_template) and caches the guid — set this
+    # explicitly only to point at a pre-existing one instead. The path name
+    # default now points at RE's own file rather than reusing one of Egeria's,
+    # under the same bind-mounted directory (/deployments/secrets) every
+    # deployment profile already gives the engine host container.
     secrets_store_guid: str = Field(default="", alias="EGERIA_SECRETS_STORE_GUID")
-    secrets_store_path_name: str = Field(default="integration.omsecrets", alias="EGERIA_SECRETS_STORE_PATH_NAME")
+    secrets_store_path_name: str = Field(
+        default="/deployments/secrets/resource-explorer.omsecrets",
+        alias="EGERIA_SECRETS_STORE_PATH_NAME",
+    )
+    # The SAME physical .omsecrets file as secrets_store_path_name above, but
+    # named from RE's own (bare-host) filesystem rather than from inside the
+    # engine host container. secrets_store_path_name is a value RE hands to
+    # Egeria (SecretsStorePathName, resolved container-side, e.g.
+    # /deployments/secrets/resource-explorer.omsecrets) — RE itself is not on
+    # that filesystem and cannot open that path directly. This is the bind
+    # mount's host-side path (e.g. .../runtime-volumes/quickstart-platform-
+    # data/secrets/resource-explorer.omsecrets) that lets RE read/write the
+    # file directly for the credential-storage/drift-detection work in
+    # docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+    # §7 ("one secrets-collection name per (resource, role), written to both
+    # places by RE in the same operation"). Empty by default — most
+    # deployments (CI, a from-scratch checkout, a remote engine host) have no
+    # host-visible path to this file at all, and every caller of
+    # omsecrets_store must treat that as a plain no-op, never an error.
+    secrets_store_local_path: str = Field(
+        default="", alias="EGERIA_SECRETS_STORE_LOCAL_PATH"
+    )
 
     model_config = _ENV_FILE_CONFIG
 
@@ -316,7 +356,14 @@ class KrokiConfig(BaseSettings):
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
-    # Default False as of 2026-09-04 (was True 2026-08-26 – 2026-09-04). The
+    # True as of 2026-09-19 (project owner decision, PLAN-PREFECT-OR-ALTERNATIVE.md
+    # §5 phase 3) — the gate for this default ("once phase 2 passes") is
+    # satisfied: a live end-to-end repo_arch_coupling run through Prefect
+    # completed cleanly, with a real result via state.result() and no silent
+    # duplicate local execution (see PLAN-PREFECT-OR-ALTERNATIVE.md §5a).
+    #
+    # Was False 2026-09-04 – 2026-09-19 (and briefly True 2026-08-26 –
+    # 2026-09-04, before the root cause below was understood). That earlier
     # True default leaked: 13 orphaned `prefect.server.api.server:create_app`
     # subprocess servers were found on this machine, reparented to launchd,
     # days old. Cause was NOT run_prefect_step's own fallback (that path is
@@ -326,17 +373,21 @@ class PrefectConfig(BaseSettings):
     # itself starts an ephemeral subprocess server rather than raising —
     # and nothing in RE ever shuts that subprocess down, so every process
     # that ever dispatched a `prefect step` with Prefect enabled and no real
-    # server up left one behind. See prefect_adapter.py, which additionally
-    # forces `PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process as a second,
-    # independent guard against this regardless of this default.
+    # server up left one behind. Fixed at the root (prefect_adapter.py forces
+    # `PREFECT_SERVER_EPHEMERAL_ENABLED=false` in-process, independent of
+    # this default) before this default was flipped back on — the earlier
+    # incident was a reason to fix the leak, not a permanent reason to leave
+    # Prefect off.
     #
-    # Enable this only in a deployment where a compose service actually
-    # provides Prefect — egeria-workspaces'
-    # optional-associated-runtimes/prefect — and set both PREFECT_ENABLED=true
-    # and PREFECT_API_URL explicitly to that service's address. Steps that
-    # don't declare executes_at: prefect are unaffected regardless of this
-    # setting (see route_local_steps).
-    enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
+    # This default assumes a deployment where a compose service actually
+    # provides Prefect — egeria-workspaces' optional-associated-runtimes/
+    # prefect, or an equivalent — is reachable at PREFECT_API_URL. Without
+    # one, `run_prefect_step` still degrades to running the step locally
+    # (see the fallback branch's own comment), so a checkout with no Prefect
+    # server at all keeps working, just without Prefect's retries/telemetry.
+    # Steps that don't declare executes_at: prefect are unaffected regardless
+    # of this setting (see route_local_steps).
+    enabled: bool = Field(default=True, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
     # Route steps that explicitly declare executes_at="resource-explorer" through
     # Prefect as well. Off by default, and deliberately its own setting rather

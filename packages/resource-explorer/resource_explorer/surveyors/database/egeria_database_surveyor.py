@@ -24,10 +24,83 @@ log = logging.getLogger(__name__)
 # recognized") against any correctly-registered server (real qualifiedNames
 # use "::"). That's why _initiate_native_survey below calls the private
 # _async_initiate_survey directly instead of those two SDK methods.
+#
+# Second pyegeria gap, found live 2026-09-20 while fixing the "catalog_and_
+# survey never refreshes an existing element's connection" bug (docs/Backlog.md
+# "TIER 1 — catalog_and_survey never refreshes..."): AutomatedCuration.
+# create_postgres_server_element_from_template/create_postgres_database_
+# element_from_template build their TemplateRequestBody by hand and never set
+# "deepCopy": True. Confirmed live against qs-view-server: without deepCopy,
+# Egeria's templated cataloguing instantiates only the anchor element (the
+# server/database asset itself) and never copies the template's attached
+# Connection subgraph (a VirtualConnection embedding a SecretsStoreConnection,
+# plus Endpoint and ConnectorType) — which is exactly why a freshly-cataloged
+# asset can still end up with "no connection" (OPEN-SURVEY-0009) once a native
+# survey tries to use it. _create_postgres_element_from_template below
+# bypasses the two broken wrappers the same way _initiate_native_survey
+# bypasses initiate_postgres_*_survey, adding "deepCopy": True to the raw
+# request body. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for
+# the full investigation, including why this only helps *fresh* catalog runs
+# and not an already-broken existing asset (Egeria's own "reuse by
+# qualifiedName" match path never triggers deepCopy's child-copying at all —
+# confirmed live, see that doc).
 
 
 class EgeriaDatabaseSurveyorError(RuntimeError):
     """Raised when Egeria survey operations fail."""
+
+
+# The connector provider RE's OWN secrets-store Connection must use --
+# NOT the one Egeria's own documentation page and content-pack templates
+# show (YAMLSecretsStoreProvider). Confirmed live 2026-09-21, tracing Egeria's
+# own server source (AutomatedCurationRESTServices.saveClientSideSecret):
+# that endpoint only calls saveSecretsCollection() when the resolved
+# connector is an `instanceof YAMLSecretsFileConnector`; YAMLSecretsStoreProvider
+# instantiates the READ-ONLY base class YAMLSecretsStoreConnector, so the
+# `instanceof` check silently fails and the endpoint returns a plain success
+# VoidResponse having done nothing -- no exception, no file write, no
+# indication anything was skipped. YAMLSecretsFileProvider is the sibling
+# provider that instantiates YAMLSecretsFileConnector, the subclass that
+# actually implements saveSecretsCollection() (creates the file if missing,
+# then writes it via Jackson's YAML ObjectMapper). This distinction only
+# matters for a connector RE itself WRITES through; the per-database
+# SecretsStoreConnection embedded via deepCopy templates (read-only, at
+# native-survey time) correctly keeps YAMLSecretsStoreProvider, matching
+# Egeria's own documented pattern -- see
+# https://egeria-project.org/connectors/secrets/yaml-file-secrets-store-connector/.
+# See docs/design-notes/PROBES-2026-09-21.md for the full investigation.
+_YAML_SECRETS_FILE_PROVIDER_CLASS = (
+    "org.odpi.openmetadata.adapters.connectors.secretsstore.yaml.YAMLSecretsFileProvider"
+)
+_OWN_SECRETS_STORE_QUALIFIED_NAME = "Resource Explorer:SecretsStoreConnector:YAML File Connection"
+
+
+def _secrets_collection_name(db_slug: str) -> str:
+    """The per-database secrets collection name written to RE's own secrets
+    store and referenced back via the "secretsCollectionName" placeholder --
+    one collection per database, named for its slug so it's unambiguous which
+    database a collection belongs to inside the shared file."""
+    return f"{db_slug}::PostgreSQL Secret"
+
+
+def _build_secrets_collection_body(collection_name: str, db_user: str, db_pwd: str) -> dict:
+    """Build the SecretsCollectionRequestBody for
+    AutomatedCuration.save_client_side_secret -- see that method's docstring
+    for the shape this mirrors. Key names ("userId"/"clearPassword") are
+    fixed by the YAML secrets store connector's own convention (confirmed
+    live 2026-07-09), not a choice made here."""
+    return {
+        "class": "SecretsCollectionRequestBody",
+        "secretsCollection": {
+            "collectionName": collection_name,
+            "displayName": collection_name,
+            "refreshTimeInterval": 60,
+            "secrets": {
+                "userId": db_user,
+                "clearPassword": db_pwd,
+            },
+        },
+    }
 
 
 class EgeriaDatabaseSurveyor:
@@ -58,6 +131,7 @@ class EgeriaDatabaseSurveyor:
         self._automated_curation = None
         self._asset_maker = None
         self._discovery = None
+        self._secrets_store_guid = ""
 
     def connect(self) -> None:
         """Establish pyegeria client connections."""
@@ -135,6 +209,248 @@ class EgeriaDatabaseSurveyor:
         note_divergence(registry, "database", db_entity.slug,
                         db_entity.display_name or db_entity.slug, guid, exc)
 
+    def _create_postgres_element_from_template(self, technology_type: str, placeholder_values: dict) -> str:
+        """Create a PostgreSQL Server/Database element from Egeria's own template,
+        bypassing AutomatedCuration.create_postgres_server_element_from_template/
+        create_postgres_database_element_from_template — see the pyegeria-gap
+        note near the top of this module for why. The only difference from what
+        those two wrappers send is one extra body key: "deepCopy": True, which is
+        what actually causes Egeria to also instantiate the template's attached
+        Connection subgraph rather than just the bare server/database element.
+
+        Only fixes the *fresh catalog* case. Confirmed live 2026-09-20: calling
+        this again for an element that already exists by qualifiedName returns
+        the SAME guid (Egeria's template engine matches and reuses it) rather
+        than creating a duplicate — so this is safe to call unconditionally —
+        but that reuse path does NOT re-run deepCopy's child-copying, so it
+        cannot repair an existing element that is already missing its
+        connection. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md.
+        """
+        template_guid = self._automated_curation.get_template_guid_for_technology_type(technology_type)
+        body = {
+            "class": "TemplateRequestBody",
+            "templateGUID": template_guid,
+            "isOwnAnchor": True,
+            "deepCopy": True,
+            "placeholderPropertyValues": placeholder_values,
+        }
+        return self._automated_curation.create_elem_from_template(body)
+
+    def _ensure_own_secrets_store_guid(self) -> str:
+        """Find or create RE's own YAML-file SecretsStore Asset, and cache its
+        GUID for the lifetime of this surveyor instance.
+
+        Mirrors _create_postgres_element_from_template's find-by-qualifiedName
+        -then-create idiom, but this is a plain Asset/Connection/Endpoint/
+        ConnectorType graph (ConnectionMaker), not a template instantiation --
+        Egeria ships no reusable template for "a client's own secrets store,"
+        and there is exactly one of these per RE deployment, so hand-building
+        the four elements once is simpler than inventing one.
+
+        **Returns an Asset guid, not the Connection's.** Confirmed live
+        2026-09-21: `AutomatedCuration.save_client_side_secret` ultimately
+        calls Egeria's `ConnectedAssetClient.getConnectorForAsset`, which
+        requires an Asset (it resolves the Asset's attached Connection
+        itself) -- passing the bare Connection's own guid fails with
+        `OMAG-REPOSITORY-HANDLER-404-001 ... retrieved an object ... of type
+        Connection rather than type Asset`. The "secrets store asset" language
+        in Egeria's own client-side-secret docs and this method's docstring
+        is literal, not loose.
+
+        **Every relationship link below passes an explicit body.** Also
+        confirmed live: `ConnectionMaker.link_connection_connector_type`/
+        `link_connection_endpoint`/`link_asset_to_connection` all default
+        `body=None`, and passing that default does not raise -- it silently
+        creates no relationship at all. The first version of this method hit
+        exactly this: `save_client_side_secret` later failed with `Null
+        connectorType property passed in connection`, and separately with a
+        generic 400 on the asset link, because none of the three links had
+        actually been made despite no earlier call reporting an error.
+
+        An explicit EGERIA_SECRETS_STORE_GUID always wins, for a deployment
+        that already has one it wants reused (e.g. shared across RE and
+        another tool) rather than one RE creates for itself.
+        """
+        if self._secrets_store_guid:
+            return self._secrets_store_guid
+
+        from resource_explorer.config import get_config
+
+        cfg = get_config().egeria
+        if cfg.secrets_store_guid:
+            self._secrets_store_guid = cfg.secrets_store_guid
+            return self._secrets_store_guid
+
+        asset_qualified_name = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Asset"
+        existing = self._find_element_guid(asset_qualified_name)
+        if existing:
+            self._secrets_store_guid = existing
+            return existing
+
+        from pyegeria import ConnectionMaker
+
+        maker = ConnectionMaker(self.view_server, self.platform_url, self.user_id, self.user_password)
+        maker.create_egeria_bearer_token(self.user_id, self.user_password)
+        relationship_body = {"class": "NewRelationshipRequestBody"}
+
+        # Find-or-create each sub-element individually, not just the final
+        # Asset. Confirmed live 2026-09-21: after an Egeria wipe-and-redeploy,
+        # the ConnectorType from this method's own graph was found to already
+        # exist while the Asset did not -- gating creation on the Asset alone
+        # made the whole method blow up with a 409 duplicate-qualifiedName on
+        # the very first create call instead of finding and reusing what was
+        # already there. A partial graph (any subset of these four elements
+        # already present) must not be fatal.
+        connector_type_qn = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::ConnectorType"
+        connector_type_guid = self._find_element_guid(connector_type_qn)
+        if not connector_type_guid:
+            connector_type_guid = maker.create_connector_type({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "ConnectorTypeProperties",
+                    "qualifiedName": connector_type_qn,
+                    "displayName": "Resource Explorer YAML secrets store connector type",
+                    "connectorProviderClassName": _YAML_SECRETS_FILE_PROVIDER_CLASS,
+                },
+            })
+
+        endpoint_qn = f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Endpoint"
+        endpoint_guid = self._find_element_guid(endpoint_qn)
+        if not endpoint_guid:
+            endpoint_guid = maker.create_endpoint({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "EndpointProperties",
+                    "qualifiedName": endpoint_qn,
+                    "displayName": "Resource Explorer secrets store endpoint",
+                    "networkAddress": cfg.secrets_store_path_name,
+                },
+            })
+
+        connection_guid = self._find_element_guid(_OWN_SECRETS_STORE_QUALIFIED_NAME)
+        if not connection_guid:
+            connection_guid = maker.create_connection({
+                "class": "NewElementRequestBody",
+                "isOwnAnchor": True,
+                "properties": {
+                    "class": "ConnectionProperties",
+                    "qualifiedName": _OWN_SECRETS_STORE_QUALIFIED_NAME,
+                    "displayName": "Resource Explorer secrets store connection",
+                    # The OCF secrets-store connector framework's own start()
+                    # requires SOME non-null secretsCollectionName configuration
+                    # property before it will initialize at all (confirmed live
+                    # 2026-09-21: "OCF-CONNECTOR-400-009 ... secretsCollectionName
+                    # was not supplied" otherwise). YAMLSecretsFileConnector's own
+                    # start() override immediately nulls this back out after the
+                    # framework's check passes -- every real save call supplies
+                    # its own collectionName as a method argument -- so this
+                    # value is never actually read; it exists purely to satisfy
+                    # that startup validation.
+                    "configurationProperties": {"secretsCollectionName": "resource-explorer-admin"},
+                },
+            })
+
+        # Link unconditionally, not only on fresh-create. Confirmed live
+        # 2026-09-21: a found-but-reused Connection can be a partial leftover
+        # that was never linked to its ConnectorType/Endpoint (this is exactly
+        # what happened after a wipe-and-redeploy left this graph's Connection
+        # present but unlinked) -- gating the link calls on "just created"
+        # reproduces the same "reuse never repairs" defect this whole method
+        # exists to avoid. Both link_* calls are safe to repeat: re-linking an
+        # already-correctly-linked pair is a live-verified no-op-on-success,
+        # not a duplicate or an error.
+        maker.link_connection_connector_type(connection_guid, connector_type_guid, body=relationship_body)
+        maker.link_connection_endpoint(connection_guid, endpoint_guid, body=relationship_body)
+
+        asset_guid = maker.create_asset(asset_type=["AssetProperties"], body={
+            "class": "NewElementRequestBody",
+            "isOwnAnchor": True,
+            "properties": {
+                "class": "AssetProperties",
+                "qualifiedName": asset_qualified_name,
+                "displayName": "Resource Explorer secrets store",
+                "description": (
+                    "Wraps RE's own YAML secrets store Connection so "
+                    "AutomatedCuration.save_client_side_secret -- which "
+                    "resolves a connector from an Asset, not a bare "
+                    "Connection -- can reach it."
+                ),
+            },
+        })
+        maker.link_asset_to_connection(asset_guid, connection_guid, body=relationship_body)
+
+        log.info(f"Created Resource Explorer's own SecretsStore asset: {asset_guid}")
+        self._secrets_store_guid = asset_guid
+        return asset_guid
+
+    def _save_database_secret(self, db_slug: str, db_user: str, db_pwd: str) -> tuple[str, str]:
+        """Write this database's credentials into RE's own secrets store as a
+        named collection, and return the two placeholder values
+        ("secretsCollectionName", "secretsStorePathName") the PostgreSQL
+        template's embedded SecretsStoreConnection needs bound -- see
+        docs/design-notes/PROBES-2026-09-21.md for why both were previously
+        left as Egeria's own unsubstituted template placeholders.
+
+        Non-fatal by design, matching this method's siblings in
+        _catalog_and_survey (server/database survey initiation): a database
+        can still be cataloged and locally scanned without a working native
+        survey, and a secrets-write failure must not block that. Returns
+        ("", "") on failure so the caller omits both placeholders rather than
+        passing empty strings Egeria would still try to bind.
+        """
+        from resource_explorer.config import get_config
+
+        collection_name = _secrets_collection_name(db_slug)
+        try:
+            secrets_store_guid = self._ensure_own_secrets_store_guid()
+            body = _build_secrets_collection_body(collection_name, db_user, db_pwd)
+            self._automated_curation.save_client_side_secret(secrets_store_guid, body)
+        except Exception as exc:
+            log.warning(f"Could not save secrets for database {db_slug!r} (non-fatal): {exc}")
+            return "", ""
+        return collection_name, get_config().egeria.secrets_store_path_name
+
+    def _warn_if_database_has_no_connection(self, db_entity: "DatabaseEntity", server_name: str, db_guid: str) -> None:
+        """Non-fatal visibility check: does this database element actually have
+        a Connection attached?
+
+        Not a fix — deliberately. Repairing an already-broken element (one
+        cataloged before this module added deepCopy, or one Egeria's own
+        by-qualifiedName reuse path skipped past) needs delete-and-recatalog,
+        which changes the asset's GUID and orphans its existing Survey Reports/
+        annotations. That is a real, bigger decision than this bug fix's scope —
+        see docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md and the Backlog
+        entry — so it is not automated here. This only makes the absence
+        visible (at WARNING level) instead of letting it surface later as an
+        opaque OPEN-SURVEY-0009 from the native survey engine, the same
+        "non-fatal must not mean invisible" principle _note_stale_guid_if_any
+        already applies to stale GUIDs.
+
+        The qualifiedName pattern checked (f"{qualifiedName}::Connection")
+        matches what Egeria's own PostgreSQL templates use for their attached
+        Connection template today (confirmed live) — a heuristic tied to this
+        content pack's naming convention, not a guaranteed-stable Egeria API.
+        """
+        qualified_name = f"PostgreSQL Relational Database::{server_name}::{db_entity.database_name}"
+        connection_qn = f"{qualified_name}::Connection"
+        try:
+            has_connection = bool(self._find_element_guid(connection_qn))
+        except Exception as exc:
+            log.debug(f"Could not check for a Connection on {qualified_name!r} (non-fatal): {exc}")
+            return
+        if not has_connection:
+            log.warning(
+                f"Database element {qualified_name!r} (guid={db_guid}) has no Connection "
+                "attached — a native Egeria survey against it will fail with "
+                "OPEN-SURVEY-0009. This element was cataloged before this fix, or via "
+                "Egeria's by-qualifiedName reuse path, which does not create one. Fixing "
+                "it requires delete-and-recatalog (changes the GUID, orphans existing "
+                "Survey Reports/annotations) — see "
+                "docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md."
+            )
+
     def _catalog_and_survey(
         self,
         db_entity: "DatabaseEntity",
@@ -147,7 +463,9 @@ class EgeriaDatabaseSurveyor:
 
         Egeria's template-based creation stores the connection details (including
         credentials) so that subsequent surveys can be initiated without supplying
-        credentials again.
+        credentials again — for a *freshly-cataloged* element. See
+        docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for what this does and
+        does not fix for an already-cataloged element.
 
         Returns dict with keys: server_guid, database_guid, survey_action_guid.
         """
@@ -163,15 +481,38 @@ class EgeriaDatabaseSurveyor:
         if not server_guid:
             server_guid = self._find_element_guid(server_name)
 
+        # Look up the database element before deciding whether a secrets
+        # write is needed at all: reusing both existing elements by name is
+        # the common re-survey path, and a reused element's deepCopy already
+        # ran (or didn't) long before this call, so writing a fresh secret for
+        # it here would be a wasted live write, not a fix -- see
+        # _create_postgres_element_from_template's own docstring on why reuse
+        # never re-runs deepCopy.
+        db_guid_lookup = self._find_element_guid(db_entity.database_name)
+        secret_placeholders: dict = {}
+        if not server_guid or not db_guid_lookup:
+            secrets_collection_name, secrets_store_path = self._save_database_secret(
+                db_entity.slug, db_user, db_pwd
+            )
+            if secrets_collection_name:
+                secret_placeholders = {
+                    "secretsCollectionName": secrets_collection_name,
+                    "secretsStorePathName": secrets_store_path,
+                }
+
         if not server_guid:
             try:
-                server_guid = self._automated_curation.create_postgres_server_element_from_template(
-                    postgres_server=server_name,
-                    host_name=egeria_host,
-                    port=str(db_entity.port),
-                    db_user=db_user,
-                    db_pwd=db_pwd,
-                    description=db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                server_guid = self._create_postgres_element_from_template(
+                    "PostgreSQL Server",
+                    {
+                        "serverName": server_name,
+                        "hostIdentifier": egeria_host,
+                        "portNumber": str(db_entity.port),
+                        "databaseUserId": db_user,
+                        "description": db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                        "databasePassword": db_pwd,
+                        **secret_placeholders,
+                    },
                 )
                 log.info(f"Created PostgreSQL server element: {server_guid}")
             except Exception as exc:
@@ -180,24 +521,32 @@ class EgeriaDatabaseSurveyor:
                 ) from exc
 
         # ── 2. Create / find PostgreSQL Database element ───────────────────────
-        db_guid = self._find_element_guid(db_entity.database_name)
+        db_guid = db_guid_lookup
 
         if not db_guid:
             try:
-                db_guid = self._automated_curation.create_postgres_database_element_from_template(
-                    postgres_database=db_entity.database_name,
-                    server_name=server_name,
-                    host_identifier=egeria_host,
-                    port=str(db_entity.port),
-                    db_user=db_user,
-                    db_pwd=db_pwd,
-                    description=db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                db_guid = self._create_postgres_element_from_template(
+                    "PostgreSQL Relational Database",
+                    {
+                        "databaseName": db_entity.database_name,
+                        "serverName": server_name,
+                        "hostIdentifier": egeria_host,
+                        "portNumber": str(db_entity.port),
+                        "databaseUserId": db_user,
+                        "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        "databasePassword": db_pwd,
+                        **secret_placeholders,
+                    },
                 )
                 log.info(f"Created PostgreSQL database element: {db_guid}")
             except Exception as exc:
                 raise EgeriaDatabaseSurveyorError(
                     f"Could not create PostgreSQL database element for {db_entity.database_name}: {exc}"
                 ) from exc
+        elif db_guid:
+            # Found by name rather than just created — this is exactly the case
+            # that can't be repaired by this fix (see docstring above).
+            self._warn_if_database_has_no_connection(db_entity, server_name, db_guid)
 
         # Persist database GUID to registry
         if registry and db_guid:
@@ -298,6 +647,8 @@ class EgeriaDatabaseSurveyor:
         surveyed_at: str,
         registry=None,
         views: list | None = None,
+        operations: dict | None = None,
+        credential_capability: dict | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the database
         or triggering Egeria's own native survey as a side effect.
@@ -328,6 +679,12 @@ class EgeriaDatabaseSurveyor:
             annotations.extend(local_surveyor._create_statistics_annotations(statistics))
         if views:
             annotations.extend(local_surveyor._create_views_annotations(views))
+        if operations:
+            annotations.extend(local_surveyor._create_operations_annotations(operations))
+        if credential_capability:
+            annotations.extend(
+                local_surveyor._create_credential_capability_annotations(credential_capability)
+            )
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -370,6 +727,7 @@ class EgeriaDatabaseSurveyor:
                     "schema_info": schema_info,
                     "statistics": statistics or {},
                     "views": views or [],
+                    "operations": operations or {},
                 },
                 egeria_report_guid=report_guid,
                 source="egeria-published",

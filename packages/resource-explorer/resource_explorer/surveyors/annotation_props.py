@@ -117,6 +117,9 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
         AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
         AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
+        AnnotationType.RESOURCE_PHYSICAL_STATUS: "ResourcePhysicalStatusAnnotationProperties",
+        AnnotationType.DATA_GRAIN:         "DataGrainAnnotationProperties",
+        AnnotationType.FINGERPRINT:        "FingerprintAnnotationProperties",
     }
     egeria_class = _class_map.get(atype, "AnnotationProperties")
 
@@ -134,6 +137,21 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         props["expression"] = ann.expression
     if ann.json_properties:
         props["jsonProperties"] = json.dumps(ann.json_properties)
+    # Egeria's `contentStatus` — whether the CONTENT is complete, not whether
+    # the entity persists (that is `ElementStatus`, a different field, set by a
+    # different mechanism, and one pyegeria drops silently). A plain domain
+    # property on `AuthoredReferenceableProperties`, so it goes inside
+    # `properties` on the existing `NewElementRequestBody` with no other
+    # change; verified live 2026-09-21 to round-trip as `DRAFT` — the
+    # mechanism the project owner's 2026-09-21 decision settled on for
+    # proposing governance elements that do not exist yet
+    # (`docs/egeria-support-for-multi-resource.md` §3, corrected probe 4).
+    #
+    # Guarded on truthiness like `explanation`/`expression` above, so the wire
+    # payload stays byte-identical for every caller that does not set it.
+    content_status = getattr(ann, "content_status", "")
+    if content_status:
+        props["contentStatus"] = content_status
 
     # Subtype-specific fields — native typed fields for registered subtypes;
     # additionalProperties (map<string,string>) for unregistered types.
@@ -180,6 +198,42 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["relatedEntityName"] = ren
         if rtn:
             props["relationshipTypeName"] = rtn
+
+    elif atype == AnnotationType.RESOURCE_PHYSICAL_STATUS:
+        # No native typed field is registered for this subtype's payload yet
+        # (see ResourcePhysicalStatusAnnotation's docstring — its real fixed
+        # fields describe a filesystem resource, not this finding), so the
+        # bag travels as additionalProperties, same as any other
+        # not-yet-natively-typed field on a registered subtype.
+        pp = getattr(ann, "physical_properties", {})
+        if pp:
+            props["additionalProperties"] = to_string_map(pp)
+
+    elif atype == AnnotationType.DATA_GRAIN:
+        # Native typed fields — the names are known from the Egeria Java
+        # source (quoted in `egeria-support-for-multi-resource.md` §3), so
+        # these do NOT go through additionalProperties.
+        gs = getattr(ann, "grain_statement", "")
+        gb = getattr(ann, "granularity_basis", "")
+        iv = getattr(ann, "interval", "")
+        cg = getattr(ann, "candidate_data_grain_guids", [])
+        if gs:
+            props["grainStatement"] = gs
+        if gb:
+            props["granularityBasis"] = gb
+        if iv:
+            props["interval"] = iv
+        if cg:
+            props["candidateDataGrainGUIDs"] = cg
+
+    elif atype == AnnotationType.FINGERPRINT:
+        # The native field names for this subtype are NOT known in this
+        # environment (see FingerprintAnnotation's docstring), so the payload
+        # travels as additionalProperties rather than being guessed into
+        # typed fields that would silently land nowhere.
+        fp = getattr(ann, "fingerprint_properties", {})
+        if fp:
+            props["additionalProperties"] = to_string_map(fp)
 
     return props
 

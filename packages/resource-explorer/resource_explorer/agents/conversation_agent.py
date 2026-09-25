@@ -32,6 +32,7 @@ class ConversationAgent(BaseExplorerAgent):
     def __init__(
         self,
         resource_slug: str | None = None,
+        resource_type: str = "repo",
         rag_system=None,
         compiled_evidence: bool = True,
         instructions_variant: str = "default",
@@ -39,6 +40,13 @@ class ConversationAgent(BaseExplorerAgent):
     ) -> None:
         super().__init__(**kwargs)
         self.resource_slug = resource_slug
+        #: 'repo' | 'database' | 'filesystem' — which resource type
+        #: `resource_slug` names, passed through to compile_context() so a
+        #: database/filesystem-scoped chat pulls that type's own question
+        #: catalog and analyses instead of always defaulting to repo's.
+        #: Defaults to "repo" for backward compatibility with callers that
+        #: don't pass it.
+        self.resource_type = resource_type
         #: Which wording of the compiler's instructions this agent asks for
         #: (context_compile.INSTRUCTION_VARIANTS). Experiments only, like
         #: `compiled_evidence`: the within-run A/B answers the same question
@@ -164,8 +172,10 @@ class ConversationAgent(BaseExplorerAgent):
         except Exception:
             pass
 
-    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+    def handle(self, query: str, resource_slug: str | None = None,
+               resource_type: str | None = None, **kwargs) -> str:
         slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
+        entity_type = resource_type or self.resource_type
 
         # Delegate example generation to the specialist — BeeAI + small models produce
         # incomplete responses for this intent without the dedicated context/fallback loop.
@@ -187,7 +197,8 @@ class ConversationAgent(BaseExplorerAgent):
             collections = CollectionRouter().select(query, slug)
             if collections:
                 lines.append(f"Available collections: {', '.join(collections)}")
-            lines.extend(self._compiled_evidence(query, slug, kwargs.get("perspectives")))
+            lines.extend(self._compiled_evidence(query, slug, kwargs.get("perspectives"),
+                                                  resource_type=entity_type))
         lines.append(f"Question: {query}")
         prompt = "\n".join(lines)
 
@@ -199,7 +210,8 @@ class ConversationAgent(BaseExplorerAgent):
                 self._rag = RAGSystem()
             return self._rag.query(query, resource_slug=slug)
 
-    def _compiled_evidence(self, query: str, slug: str, perspectives) -> list[str]:
+    def _compiled_evidence(self, query: str, slug: str, perspectives,
+                            resource_type: str = "repo") -> list[str]:
         """Packed evidence for the prompt, plus the names of what is missing.
 
         This is the difference between naming collections and supplying evidence.
@@ -242,7 +254,8 @@ class ConversationAgent(BaseExplorerAgent):
 
             compiled = compile_context(
                 self.registry if hasattr(self, "registry") else _registry(),
-                slug, query, perspectives=list(perspectives or []),
+                slug, query, resource_type=resource_type,
+                perspectives=list(perspectives or []),
                 # Deliberately a fraction of the model window: this is evidence
                 # to reason over, not the whole prompt, and the agent still has
                 # tools for anything the compile could not reach.

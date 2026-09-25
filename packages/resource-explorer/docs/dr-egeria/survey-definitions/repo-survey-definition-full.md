@@ -429,7 +429,7 @@ Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_secret_scan |
 
@@ -671,7 +671,7 @@ Full Survey (all steps) — Repo Symbol Extraction
 GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
 
 ### Description
-Extracts class/function/method symbols (tree-sitter/ast) for every supported language, refreshing project_code_symbols/project_code_relationships — D5's self-contained microflow closing the bug where those tables were only ever populated by RAG ingestion, never by a survey step.
+Extracts class/function/method symbols (tree-sitter/ast) for every supported language, refreshing project_code_symbols/project_code_relationships — D5's self-contained microflow closing the bug where those tables were only ever populated by RAG ingestion, never by a survey step. Also extracts decorator/annotation registrations (route/rpc/resolver/message-handler) for Python and Java into project_code_markers.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -809,7 +809,7 @@ Refreshes the project's pgvector collections via IncrementalIndexer — the quer
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_rag_ingestion |
 
@@ -1378,7 +1378,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-Who maintains this repository?
+Who owns this resource (accountable owner), and who administers it?
 
 ___
 
@@ -1459,7 +1459,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-What explicit license does the repository use, and are there non-standard or copyleft terms?
+What explicit licence does this resource use, and are there non-standard or copyleft terms?
 
 ___
 

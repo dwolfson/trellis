@@ -20,8 +20,70 @@
 import { REPO_CHARTS, getChart } from '/static/re-api.js';
 import {
   state, esc, $, paneMessage, bindSubTabs, resourceHeaderHtml, bindResourceHeader,
-  asFigure, allPointDates, chartIsStale, drawChart,
+  asFigure, allPointDates, chartIsStale, drawChart, apiEntityType,
 } from '/static/next/app.js';
+
+/* ── Understanding for a database/filesystem (Tier 1 audit, 2026-09-23) ───
+ *
+ * Understanding is a generic nav item, reachable for any resource type, but
+ * every one of `REPO_CHARTS`' 8 kinds resolves via `/api/stats/{slug}/
+ * charts/{kind}`, which 404s through `ProjectRegistry.exists` (the repo-only
+ * `projects` table) for a database/filesystem slug — so every tile rendered
+ * "unavailable" with no way to tell "this chart genuinely does not exist
+ * for this resource type" from "nobody has wired it up yet".
+ *
+ * Chose (b) over (a): `web/routes/stats.py` DOES have real database-side
+ * routes (`/databases/{slug}/schema_distribution|table_sizes|column_types|
+ * survey_history`), but they return plain arrays, not the Plotly figure
+ * JSON (`fig.to_json()`) every repo chart route returns and `asFigure`/
+ * `drawChart` expect — wiring them for real needs either a backend change
+ * (build the Plotly figure server-side, as the repo routes already do) or a
+ * client-side chart-building adapter, either of which is a real scoping
+ * pass of its own, not a routing fix like fixes #1-#3/#6 in this same pass.
+ * Filesystem has no chart-shaped stats routes at all yet.
+ *
+ * So: no chart is actually drawn for a database/filesystem here (unchanged
+ * behaviour), but each tile now says WHICH kind of nothing it is, instead of
+ * a uniform, misleading "unavailable".
+ */
+//: repo chart kind -> real backend route that exists for it today, keyed by
+//: entity type — used only to pick the honest gap sentence below. A kind
+//: absent from an entity type's map here has no real equivalent AT ALL for
+//: that resource type (a permanent fact, not a gap).
+const CHART_GAP_ROUTE = {
+  database: {
+    // schema/table/column charts obviously map to something real; things
+    // like "commits over time" have no database equivalent at all.
+    survey_history: '/api/stats/databases/{slug}/survey_history',
+  },
+};
+//: Kinds with a genuinely no-equivalent-exists reason worth naming, rather
+//: than the generic "no database/filesystem equivalent" fallback below.
+const CHART_NO_EQUIVALENT_REASON = {
+  stars: 'GitHub stars have no database/filesystem analogue.',
+  commits: 'Commit history has no database/filesystem analogue.',
+  weekly_commits: 'Commit history has no database/filesystem analogue.',
+  top_committers: 'Git authorship has no database/filesystem analogue.',
+};
+
+/** Non-repo Understanding: every repo chart kind, each labelled as either a
+ *  genuine non-equivalence (permanent) or a real backend gap (not wired up
+ *  yet) — never the generic "unavailable" a probe failure would produce. */
+function nonRepoChartIndexHtml(entityType) {
+  return REPO_CHARTS.map(([kind, label]) => {
+    const gapRoute = CHART_GAP_ROUTE[entityType]?.[kind];
+    if (gapRoute) {
+      return `<span title="A ${entityType} equivalent exists server-side (${gapRoute}) but Understanding does not call it yet — a real gap, not a data problem."
+        class="rounded-sm border border-dashed border-rule-strong px-2 py-[3px] text-caveat text-ink-muted"
+        >${esc(label)} · not wired up yet</span>`;
+    }
+    const reason = CHART_NO_EQUIVALENT_REASON[kind]
+      || `This chart has no ${entityType} equivalent.`;
+    return `<span title="${esc(reason)}"
+      class="rounded-sm border border-dashed border-rule-strong px-2 py-[3px] text-caveat text-ink-muted"
+      >${esc(label)} · does not apply to this resource type</span>`;
+  }).join('');
+}
 
 export async function loadChartsPane() {
   const el = $('content');
@@ -50,6 +112,20 @@ export async function loadChartsPane() {
   bindResourceHeader();
 
   const index = $('chart-index');
+  const entityType = apiEntityType(state.resourceType);
+
+  // A database/filesystem's charts are never actually drawable today — see
+  // this module's top-of-file note — so skip the probe entirely and say,
+  // per kind, which of the two honest reasons applies, rather than firing
+  // 8 requests that all 404 the same uninformative way.
+  if (entityType !== 'repo') {
+    index.innerHTML = nonRepoChartIndexHtml(entityType);
+    $('chart-body').innerHTML = `<div class="text-answer text-ink">
+      Understanding has no working charts for a ${esc(entityType)} yet — see each
+      tile above for whether that is permanent or a wiring gap.</div>`;
+    return;
+  }
+
   index.innerHTML = REPO_CHARTS.map(([kind, label]) =>
     `<button data-chart="${kind}" disabled
       class="cursor-wait rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]

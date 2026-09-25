@@ -772,3 +772,67 @@ async def get_disposition_history(github_url: str) -> list[dict]:
     redesign" plan, D6)."""
     from resource_explorer.registry import ProjectRegistry
     return ProjectRegistry().get_disposition_history(github_url)
+
+
+# ── entity-generic disposition (database/filesystem) ────────────────────────
+#
+# The routes above are repo-specific and stay exactly as they are — a repo's
+# stable identity really is its github_url (it can be triaged before it's
+# ever imported, and its slug can be renamed later), so they keep taking
+# github_url in and out. These siblings are the generalized primitive
+# underneath (`registry.py`'s `set_disposition_for_entity` family, added
+# when `repo_dispositions`' PK widened from github_url alone to
+# (entity_type, entity_slug) — Backlog.md, "Disposition is NOT fixed here",
+# 2026-09-22), for entity types that have no pre-import ambiguity to worry
+# about: a database/filesystem's slug IS its stable identity, assigned at
+# registration and never resolved from a URL. Callers must pass the
+# `apiEntityType()`-translated value ('database'/'filesystem'), same as
+# every other /next boundary crossing — never the UI's own 'db' shorthand.
+
+
+class EntityDispositionRequest(BaseModel):
+    disposition: str
+    reason: str = ""
+
+
+class EntityDispositionResponse(BaseModel):
+    status: str
+    entity_type: str
+    entity_slug: str
+    disposition: str
+
+
+@router.get("/disposition/{entity_type}/{slug}")
+async def get_entity_disposition_route(entity_type: str, slug: str) -> dict:
+    """The current disposition for a database/filesystem entity, `{}` if
+    nobody has ever decided on it (the UI treats that as "undecided", same
+    as a repo with no row)."""
+    from resource_explorer.registry import ProjectRegistry
+    return ProjectRegistry().get_disposition_for_entity(entity_type, slug) or {}
+
+
+@router.post("/disposition/{entity_type}/{slug}", response_model=EntityDispositionResponse)
+async def set_entity_disposition_route(
+    entity_type: str, slug: str, body: EntityDispositionRequest,
+) -> EntityDispositionResponse:
+    """The database/filesystem sibling of `POST /disposition` above."""
+    from resource_explorer.registry import ProjectRegistry
+
+    if body.disposition not in _VALID_DISPOSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid disposition '{body.disposition}' — must be one of {sorted(_VALID_DISPOSITIONS)}",
+        )
+    ProjectRegistry().set_disposition_for_entity(
+        entity_type, slug, body.disposition, reason=body.reason,
+    )
+    return EntityDispositionResponse(
+        status="ok", entity_type=entity_type, entity_slug=slug, disposition=body.disposition,
+    )
+
+
+@router.get("/disposition-history/{entity_type}/{slug}")
+async def get_entity_disposition_history_route(entity_type: str, slug: str) -> list[dict]:
+    """The database/filesystem sibling of `GET /disposition-history` above."""
+    from resource_explorer.registry import ProjectRegistry
+    return ProjectRegistry().get_disposition_history_for_entity(entity_type, slug)

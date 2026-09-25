@@ -372,7 +372,6 @@ def _check_subscriptions(entity_type: str, entity_slug: str, analysis_id: str, e
     fires, since there's nothing recurring to compare against; this is
     surfaced to the user in the Automate UI, not silently true."""
     from resource_explorer.activity_logger import log_rfa
-    from resource_explorer.notification_detector import detect_change
 
     subs = registry.list_subscriptions(
         entity_type=entity_type, entity_slug=entity_slug, analysis_id=analysis_id, active_only=True,
@@ -381,7 +380,21 @@ def _check_subscriptions(entity_type: str, entity_slug: str, analysis_id: str, e
         return
 
     now = _now_iso()
-    result = detect_change(registry, entity_slug, analysis_id)
+    # Database analyses persist to structured tables, not to
+    # project_analysis_findings/metrics (those are repo-only — FK'd to
+    # projects(slug)), so the generic findings/metrics-backed detector has
+    # nothing to read for them and would silently report "no change" forever
+    # (Phase 1 slice 14, design §9.1 — see db_change_comparator.py's module
+    # docstring for how this was found). Dispatch database subscriptions to
+    # the dedicated comparator instead.
+    if entity_type == "database":
+        from resource_explorer.surveyors.database.db_change_comparator import (
+            detect_database_change,
+        )
+        result = detect_database_change(registry, entity_slug, analysis_id)
+    else:
+        from resource_explorer.notification_detector import detect_change
+        result = detect_change(registry, entity_slug, analysis_id)
     for sub in subs:
         registry.record_subscription_checked(sub["id"], now)
         if not result.changed:
@@ -618,6 +631,30 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
     db = registry.get_database(slug)
     if not db:
         return (slug, "", [f"Database '{slug}' not found — schedule may be stale"])
+
+    # db_derived (Phase 1 slice 9) is zero-fetch and needs no credentials —
+    # checked before the step-map/credentials path below, mirroring
+    # web/routes/databases.py's per-card "Run" route. Found while wiring
+    # slice 14's change comparators onto the scheduler: without this check,
+    # scheduling e.g. `db_change_rates` fell through to
+    # `_run_local_db_survey`, which (a) requires stored db_user/db_password
+    # even though db_derived needs none, and (b) would have run the full
+    # DatabaseSurveyor (steps=None, since db_change_rates isn't in
+    # DATABASE_ANALYSIS_STEP_MAP) instead of the zero-fetch step — the exact
+    # database-unreachable case db_derived exists to still answer for could
+    # never be scheduled at all. A real, in-scope bug: it directly blocked
+    # this slice's own comparator from ever running on a cadence.
+    from resource_explorer.surveyors.database.db_derived import (
+        DB_DERIVED_ANALYSES,
+        run_db_derived,
+    )
+
+    if analysis_id in DB_DERIVED_ANALYSES:
+        try:
+            run_db_derived(registry, slug)
+        except Exception as exc:
+            return (db.display_name, db.host, [str(exc)])
+        return (db.display_name, db.host, [])
 
     entry = _catalog_entry("database", analysis_id)
     egeria_reg = (entry or {}).get("egeria_registration") or {}

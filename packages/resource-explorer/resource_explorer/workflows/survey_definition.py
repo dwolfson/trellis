@@ -34,6 +34,12 @@ class SurveyDefinitionRunParams:
     #: The per-run choice ("wait" | "background" | None) — see
     #: SurveyDefinitionExecutor.run's `publish` parameter.
     publish: str | None = None
+    #: The per-run engine choice ("resource-explorer" | "prefect" | None) —
+    #: see SurveyDefinitionExecutor.run's `engine_override` parameter. Named
+    #: `engine_override` here (rather than `engine`, as the route's own
+    #: request body spells it) so it round-trips through the run queue's JSON
+    #: `target` column under the same name the executor itself uses.
+    engine_override: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> SurveyDefinitionRunParams:
@@ -47,6 +53,7 @@ class SurveyDefinitionRunParams:
             "db_user": self.db_user,
             "db_pwd": self.db_pwd,
             "publish": self.publish,
+            "engine_override": self.engine_override,
         }
 
 
@@ -80,6 +87,7 @@ def run_definition(entity_type: str, slug: str, params: SurveyDefinitionRunParam
         db_user=params.db_user,
         db_pwd=params.db_pwd,
         publish=params.publish,
+        engine_override=params.engine_override,
     )
 
     report_guid = result.get("egeria_report_guid", "")

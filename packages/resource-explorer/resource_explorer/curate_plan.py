@@ -25,6 +25,18 @@ Three rules from the design, held here:
 Everything here is a local read: facts, findings, enrichment, verdicts, the
 disposition. Nothing calls Egeria, so the plan renders when Egeria is down
 and says which parts it could not know.
+
+**Status note (2026-09-23):** despite the "a database answers the first two"
+line above, `build_plan`/`execute_curation` are implemented against
+`ProjectRegistry.get(slug)` (the repo-only `projects` table) only — no
+database/filesystem path exists yet. Curate is reachable as a generic
+`/next` nav item for any resource type, so clicking it for a
+database/filesystem used to reach these routes and 404 with no explanation;
+`web/static/next/stages/curate.js`'s `renderCurate` now detects the
+resource type first and shows an honest "not available for this type yet"
+message instead of calling here at all, rather than this module growing a
+speculative database/filesystem implementation. Whether/how to generalize
+this file for real is an open design question — not resolved by that fix.
 """
 from __future__ import annotations
 

@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from sqlalchemy import create_engine
 
 log = logging.getLogger(__name__)
@@ -394,6 +394,717 @@ TARGET_SURVEY = "survey"
 WITHDRAWN_LABEL = "withdrawn"
 
 
+# ── Structured DB/FS detail tables: provenance and measurement state ────────
+
+#: `source` values for the structured DB/FS detail tables. Rows are keyed by
+#: (slug, surveyed_at, source) so a native Egeria survey and an RE-local
+#: survey of the same resource on the same day coexist rather than overwrite
+#: (multi-resource-questions-design.md §3 rule D).
+SOURCE_LOCAL = "local"      #: RE's own surveyors computed this row.
+SOURCE_EGERIA = "egeria"    #: materialised from a native Egeria survey report.
+
+#: `state` values carried by every structured DB/FS detail row, and by
+#: the coverage tables.
+#:
+#: These exist to keep "we could not measure this" separate from "we measured
+#: it and there was nothing". Collapsing the two is the bug the
+#: `find-absence-as-answer` skill is about, and both Egeria's Postgres
+#: connector docs and this design doc (§5.1) call it out specifically: a
+#: native Postgres survey that returns no schemas means the survey userId
+#: lacked permission, NOT that the database has no schemas; an empty
+#: `pg_stats` means ANALYZE has never run, NOT that the column holds no
+#: values. A consumer that sees STATE_MEASURED with a zero count may say
+#: "none"; for every other state it must say why instead.
+STATE_MEASURED = "measured"
+#: Measured successfully, and the answer is genuinely empty. Distinct from
+#: every state below: this one, and only this one, licenses rendering "none".
+STATE_EMPTY = "empty"
+#: The survey user lacked permission to see this. Postgres reports it as
+#: absence, which is why it must be recorded explicitly at capture time —
+#: nothing downstream can recover the distinction later.
+STATE_NOT_PERMITTED = "not_permitted"
+#: The source of the measurement exists but has never been populated —
+#: `pg_stats` before any ANALYZE, tuple counters after a stats reset.
+#: Renders as "run ANALYZE", never as "no values".
+STATE_NOT_COLLECTED = "not_collected"
+#: The engine cannot provide this at all (design §5.1's capability
+#: declaration): a DuckDB connection asked for `pg_stat_replication`.
+STATE_NOT_SUPPORTED = "not_supported"
+#: The step that would have measured this did not run in this survey — the
+#: commonest case for a back-filled row, where the old blob simply never
+#: carried the field.
+STATE_NOT_MEASURED = "not_measured"
+#: The row exists, and something WAS measured — but by the catalog-only
+#: fallback (design: REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §0,
+#: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251), not by the normal
+#: `information_schema` path. `PostgreSQLConnection._get_tables_for_schema()`
+#: falls back to `pg_class`/`pg_attribute`/`pg_namespace` — catalog metadata
+#: any connected role can read regardless of grants — for a table/column
+#: `information_schema` came back thin on (no `SELECT` on the underlying
+#: table). That gives a table/column NAME and a Postgres TYPE name for
+#: certain, but never real PK/FK detail, `is_nullable`, `column_default` or
+#: an exact comment (those lookups are themselves privilege-filtered), and
+#: any row count attached to a catalog-only row is `pg_class.reltuples` — an
+#: ANALYZE-time estimate, not a live count.
+#:
+#: Deliberately NOT in `STATES_WITHOUT_A_MEASUREMENT` below: a catalog-only
+#: row is not absent, it is just less precise than one measured the normal
+#: way. Collapsing "we have an approximate answer" into "we have nothing"
+#: would be its own confident-wrong-answer shape, in the opposite direction
+#: from the one this state exists to prevent.
+STATE_CATALOG_ESTIMATE = "catalog_estimate"
+
+#: Every state other than STATE_MEASURED/STATE_EMPTY/STATE_CATALOG_ESTIMATE
+#: means the number beside it is absent rather than zero.
+STATES_WITHOUT_A_MEASUREMENT = frozenset({
+    STATE_NOT_PERMITTED,
+    STATE_NOT_COLLECTED,
+    STATE_NOT_SUPPORTED,
+    STATE_NOT_MEASURED,
+})
+
+# ── whose statistics, and as of when ───────────────────────────────────────
+#
+# `stats_source` on `database_column_profiles` / `filesystem_data_files`.
+# Added on designer review, 2026-09-20. `source` says who ran the *survey*;
+# `stats_source` says who computed the *numbers*, which is a different
+# question and often a different answer — a native Egeria survey and an RE
+# local survey can both report a column's frequent values straight out of the
+# database's own pg_stats, in which case neither of them computed anything.
+#
+# `stats_computed_at` is the companion: when those numbers were computed, as
+# opposed to when the survey that reports them ran. NULL means unknown, and
+# for STATS_SOURCE_DATABASE specifically it is the "ANALYZE has never run"
+# signal — which is why it is a nullable timestamp rather than a flag.
+
+#: The database computed these (Postgres `pg_stats`, populated by ANALYZE).
+#: Covers the whole table, was not computed by us, and may be far older than
+#: the survey reporting it. `stats_computed_at` should carry `last_analyze`;
+#: NULL means ANALYZE has never run and the answer is "run ANALYZE", not
+#: "this column has no values".
+STATS_SOURCE_DATABASE = "database"
+#: Resource Explorer computed these at survey time, by reading values —
+#: bounded by the sampling settings in the same row (design §5.8).
+STATS_SOURCE_RESOURCE_EXPLORER = "resource_explorer"
+
+#: Sections named by the per-type coverage tables. One row per section per
+#: (slug, surveyed_at, source), so "this survey never looked at grants" is a
+#: stored fact rather than an inference from an empty `database_grants`.
+SECTION_SCHEMAS = "schemas"
+SECTION_TABLES = "tables"
+SECTION_COLUMNS = "columns"
+SECTION_COLUMN_PROFILES = "column_profiles"
+SECTION_TABLE_ACTIVITY = "table_activity"
+SECTION_GRANTS = "grants"
+SECTION_SQL_OBJECTS = "sql_objects"
+SECTION_SETTINGS = "settings"
+SECTION_ENTRIES = "entries"
+SECTION_DATA_FILES = "data_files"
+
+
+#: DDL for the structured DB/FS detail tables (design §5.7, §6).
+#:
+#: Written in SQLite dialect like every other statement in this file;
+#: `PostgresCursorWrapper._translate_sql` rewrites `INTEGER PRIMARY KEY
+#: AUTOINCREMENT` to `SERIAL PRIMARY KEY` and `?` to `%s` on the way out.
+#: JSON is TEXT, timestamps are ISO-8601 TEXT, booleans are INTEGER — all
+#: three per this file's existing convention.
+#:
+#: Nullable numeric columns are deliberate: NULL means "not measured", and the
+#: row's `state` says why. A 0 in these columns is a real measured zero.
+#:
+#: Reachability outcome vocabulary (Phase 1 slice #13), taken verbatim from
+#: `docs/egeria-support-for-multi-resource.md` §5's "Gap and ask" section
+#: rather than invented for this table -- confirmed unchanged during this
+#: slice's build by a peer review of the design doc. `unknown` doubles as
+#: the third state of the reachability check's absence discipline: it means
+#: "checked, but the CHECK_ASSET call itself did not complete or could not
+#: be evaluated" (timeout, exception, initiation failure) -- as opposed to
+#: no row at all ("never checked") or any of the other five outcomes, which
+#: all mean "checked, and here is what Egeria said." See reachability.py's
+#: classify_check_asset_result().
+REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
+    "reachable",
+    "no_connection",
+    "unresolvable_secret",
+    "network_unreachable",
+    "auth_rejected",
+    "unknown",
+})
+
+_DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
+    # ── databases ──────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS database_schemas (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        schema_name           TEXT NOT NULL,
+        qualified_schema_name TEXT DEFAULT '',
+        description           TEXT DEFAULT '',
+        table_count           INTEGER DEFAULT NULL,
+        view_count            INTEGER DEFAULT NULL,
+        mat_view_count        INTEGER DEFAULT NULL,
+        column_count          INTEGER DEFAULT NULL,
+        total_table_size_bytes INTEGER DEFAULT NULL,
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_tables (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug        TEXT NOT NULL,
+        surveyed_at          TEXT NOT NULL,
+        source               TEXT NOT NULL DEFAULT 'local',
+        schema_name          TEXT NOT NULL,
+        table_name           TEXT NOT NULL,
+        qualified_table_name TEXT DEFAULT '',
+        table_type           TEXT DEFAULT '',
+        table_owner          TEXT DEFAULT '',
+        description          TEXT DEFAULT '',
+        column_count         INTEGER DEFAULT NULL,
+        row_count            INTEGER DEFAULT NULL,
+        size_bytes           INTEGER DEFAULT NULL,
+        is_populated         INTEGER DEFAULT NULL,
+        has_indexes          INTEGER DEFAULT NULL,
+        has_rules            INTEGER DEFAULT NULL,
+        has_triggers         INTEGER DEFAULT NULL,
+        has_row_security     INTEGER DEFAULT NULL,
+        query_definition     TEXT DEFAULT '',
+        state                TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_columns (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        schema_name           TEXT NOT NULL,
+        table_name            TEXT NOT NULL,
+        column_name           TEXT NOT NULL,
+        qualified_column_name TEXT DEFAULT '',
+        ordinal_position      INTEGER DEFAULT NULL,
+        data_type             TEXT DEFAULT '',
+        base_type             TEXT DEFAULT '',
+        column_size           INTEGER DEFAULT NULL,
+        is_nullable           INTEGER DEFAULT NULL,
+        column_default        TEXT DEFAULT '',
+        description           TEXT DEFAULT '',
+        is_primary_key        INTEGER DEFAULT 0,
+        foreign_key_json      TEXT DEFAULT NULL,
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Separate from database_columns because a profile is a different
+    # measurement with a different cost and a different absence mode: the
+    # column exists (catalog read) while its profile may be missing because
+    # ANALYZE never ran (STATE_NOT_COLLECTED). Folding them into one table
+    # would make "column present, stats absent" unrepresentable.
+    """
+    CREATE TABLE IF NOT EXISTS database_column_profiles (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug             TEXT NOT NULL,
+        surveyed_at               TEXT NOT NULL,
+        source                    TEXT NOT NULL DEFAULT 'local',
+        schema_name               TEXT NOT NULL,
+        table_name                TEXT NOT NULL,
+        column_name               TEXT NOT NULL,
+        null_fraction             REAL DEFAULT NULL,
+        distinct_count            REAL DEFAULT NULL,
+        -- Why distinct_count is NULL, when it is. Designer review round 3
+        -- (§3, "the corrected distinct_count, and the blank the correction
+        -- produced"): `_resolve_n_distinct` in database_surveyor.py returns
+        -- None for four different reasons, and this row's own `state` stays
+        -- STATE_MEASURED because every other pg_stats field came back fine
+        -- — a row-level state cannot carry a per-field absence. Values are
+        -- database_surveyor.py's REASON_NOT_COLLECTED / REASON_NEVER_ANALYZED
+        -- / REASON_STATS_RESET, or NULL when distinct_count is itself
+        -- resolved. NULL here is silent on purpose: it means either
+        -- distinct_count is present, or this row predates this column.
+        distinct_count_reason     TEXT DEFAULT NULL,
+        average_width             INTEGER DEFAULT NULL,
+        correlation               REAL DEFAULT NULL,
+        most_common_values_json   TEXT DEFAULT NULL,
+        most_common_freqs_json    TEXT DEFAULT NULL,
+        histogram_bounds_json     TEXT DEFAULT NULL,
+        min_value                 TEXT DEFAULT '',
+        max_value                 TEXT DEFAULT '',
+        -- Whose numbers these are, and as of when. Designer review,
+        -- 2026-09-20: `sample_strategy` answers how much was looked at; it
+        -- does not answer whose statistics these are or when they were
+        -- computed. A Postgres profile can come from the database's own
+        -- pg_stats — whole table, not ours, possibly months older than the
+        -- survey reporting it. A file profile is computed by RE at survey
+        -- time. Without these two a card shows a null fraction computed
+        -- three months ago beside a row count from two minutes ago and says
+        -- nothing about the difference.
+        --
+        -- This also makes the "no statistics collected, run ANALYZE" state
+        -- exact rather than special-cased: it is simply
+        -- stats_source = STATS_SOURCE_DATABASE with stats_computed_at NULL.
+        stats_source              TEXT DEFAULT '',
+        stats_computed_at         TEXT DEFAULT NULL,
+        sample_strategy           TEXT DEFAULT '',
+        sample_rows               INTEGER DEFAULT NULL,
+        sample_seed               INTEGER DEFAULT NULL,
+        -- The table's total row count as known when the sample was taken.
+        -- Phase 1 slice 10 (design §5.8): the envelope sentence §5.8 makes a
+        -- hard requirement is "from a random sample of 10,000 of 4.2M rows
+        -- (seed 7, ...)", and `sample_rows` alone is the 10,000 — without the
+        -- 4.2M, a sample size cannot be read as a proportion, which is the
+        -- only thing that makes it interpretable. NULL means the total was
+        -- not established (the statistics collector had no row for the
+        -- table), which is distinct from 0.
+        sample_total_rows         INTEGER DEFAULT NULL,
+        state                     TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_table_activity (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug     TEXT NOT NULL,
+        surveyed_at       TEXT NOT NULL,
+        source            TEXT NOT NULL DEFAULT 'local',
+        schema_name       TEXT NOT NULL,
+        table_name        TEXT NOT NULL,
+        rows_inserted     INTEGER DEFAULT NULL,
+        rows_updated      INTEGER DEFAULT NULL,
+        rows_deleted      INTEGER DEFAULT NULL,
+        hot_updates       INTEGER DEFAULT NULL,
+        live_tuples       INTEGER DEFAULT NULL,
+        dead_tuples       INTEGER DEFAULT NULL,
+        seq_scan          INTEGER DEFAULT NULL,
+        idx_scan          INTEGER DEFAULT NULL,
+        last_vacuum       TEXT DEFAULT '',
+        last_autovacuum   TEXT DEFAULT '',
+        last_analyze      TEXT DEFAULT '',
+        last_autoanalyze  TEXT DEFAULT '',
+        pending_changes   INTEGER DEFAULT NULL,
+        -- When Postgres last reset the counters above. Designer review,
+        -- 2026-09-20: `pg_stat_user_tables` counters are cumulative since
+        -- the last stats reset, and a change *rate* is the difference
+        -- between two snapshots. A reset, failover or restore between
+        -- snapshots makes that difference negative, and a small-multiples
+        -- chart would faithfully draw "−40,000 inserts" — a wrong number
+        -- rendered confidently.
+        --
+        -- Storing the reset timestamp per snapshot lets a comparator see
+        -- that it moved and report the interval as "counters reset, no rate
+        -- available" instead of as a rate. That check belongs to the change
+        -- comparators (design §9.1); this column is the evidence they need,
+        -- and without it the information is gone by the time they run.
+        stats_reset       TEXT DEFAULT NULL,
+        state             TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_grants (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug  TEXT NOT NULL,
+        surveyed_at    TEXT NOT NULL,
+        source         TEXT NOT NULL DEFAULT 'local',
+        schema_name    TEXT DEFAULT '',
+        object_name    TEXT DEFAULT '',
+        object_type    TEXT DEFAULT '',
+        grantee        TEXT NOT NULL,
+        grantor        TEXT DEFAULT '',
+        privilege_type TEXT NOT NULL,
+        is_grantable   INTEGER DEFAULT 0,
+        state          TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, object_name,
+               grantee, privilege_type),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_sql_objects (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug       TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        schema_name         TEXT NOT NULL,
+        object_name         TEXT NOT NULL,
+        object_type         TEXT NOT NULL DEFAULT 'view',
+        definition          TEXT DEFAULT '',
+        depends_on_json     TEXT DEFAULT NULL,
+        column_lineage_json TEXT DEFAULT NULL,
+        complexity          INTEGER DEFAULT NULL,
+        state               TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, object_name, object_type),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_settings (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug TEXT NOT NULL,
+        surveyed_at   TEXT NOT NULL,
+        source        TEXT NOT NULL DEFAULT 'local',
+        setting_name  TEXT NOT NULL,
+        setting_value TEXT DEFAULT '',
+        unit          TEXT DEFAULT '',
+        category      TEXT DEFAULT '',
+        setting_source TEXT DEFAULT '',
+        state         TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, setting_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # ── file systems ───────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_entries (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug     TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        entry_path          TEXT NOT NULL,
+        entry_name          TEXT DEFAULT '',
+        entry_type          TEXT NOT NULL DEFAULT 'file',
+        size_bytes          INTEGER DEFAULT NULL,
+        file_extension      TEXT DEFAULT '',
+        file_type           TEXT DEFAULT '',
+        asset_type          TEXT DEFAULT '',
+        deployed_impl_type  TEXT DEFAULT '',
+        is_hidden           INTEGER DEFAULT NULL,
+        is_symlink          INTEGER DEFAULT NULL,
+        is_executable       INTEGER DEFAULT NULL,
+        is_writable         INTEGER DEFAULT NULL,
+        is_readable         INTEGER DEFAULT NULL,
+        created_at          TEXT DEFAULT '',
+        modified_at         TEXT DEFAULT '',
+        accessed_at         TEXT DEFAULT '',
+        record_count        INTEGER DEFAULT NULL,
+        state               TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, surveyed_at, source, entry_path),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_data_files (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug TEXT NOT NULL,
+        surveyed_at     TEXT NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'local',
+        file_path       TEXT NOT NULL,
+        format          TEXT DEFAULT '',
+        row_count       INTEGER DEFAULT NULL,
+        column_count    INTEGER DEFAULT NULL,
+        schema_json     TEXT DEFAULT NULL,
+        null_summary    TEXT DEFAULT '',
+        file_size_bytes INTEGER DEFAULT NULL,
+        -- Same pair as database_column_profiles, for the same reason. A file
+        -- profile is normally computed by RE at survey time
+        -- (STATS_SOURCE_RESOURCE_EXPLORER), so stats_computed_at is usually
+        -- the survey time — but not always: a profile carried over from an
+        -- earlier run, or read from a sidecar manifest the publisher wrote,
+        -- is a different age from the walk that found the file, and the card
+        -- shows them side by side.
+        stats_source      TEXT DEFAULT '',
+        stats_computed_at TEXT DEFAULT NULL,
+        state           TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, surveyed_at, source, file_path),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    # ── coverage ───────────────────────────────────────────────────────────
+    # Not in the design doc's table list, added because rule "absence is a
+    # result" is otherwise unimplementable: an empty `database_grants` for a
+    # given (slug, surveyed_at, source) is ambiguous between "this survey did
+    # not look at grants", "the survey user could not read pg_roles" and
+    # "there genuinely are no grants". Per-row `state` cannot express any of
+    # those, because in each case there is no row to carry it. One row per
+    # section per survey run makes the distinction a stored fact.
+    #
+    # One table per resource type rather than one polymorphic table keyed
+    # (resource_type, resource_slug). The polymorphic form was written first
+    # and replaced: a slug column that cannot carry a foreign key is exactly
+    # the shape `tests/test_no_orphaned_slugs.py` exists to catch, and it is
+    # right to catch it here — coverage describes a survey *of* a resource,
+    # so when the resource is deleted these rows are debris, not history
+    # that outlives it. Two typed tables get a real FK and need no exemption.
+    """
+    CREATE TABLE IF NOT EXISTS database_survey_coverage (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug TEXT NOT NULL,
+        surveyed_at   TEXT NOT NULL,
+        source        TEXT NOT NULL DEFAULT 'local',
+        section       TEXT NOT NULL,
+        state         TEXT NOT NULL DEFAULT 'measured',
+        row_count     INTEGER DEFAULT NULL,
+        detail        TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, section),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_survey_coverage (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug TEXT NOT NULL,
+        surveyed_at     TEXT NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'local',
+        section         TEXT NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'measured',
+        row_count       INTEGER DEFAULT NULL,
+        detail          TEXT DEFAULT '',
+        UNIQUE(filesystem_slug, surveyed_at, source, section),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    # ── reachability (Phase 1 slice #13) ────────────────────────────────────
+    # Deferred 2026-09-21 (egeria-support-for-multi-resource.md §5/§10: "defer
+    # the resource_reachability table until further tests -- do not build it
+    # yet") pending live confirmation of probe 7's premise and of what a
+    # CHECK_ASSET result actually looks like. Un-deferred by the project
+    # owner 2026-09-22 -- see docs/design-notes/RESOURCE-REACHABILITY-
+    # IMPLEMENTED.md and PROBES-2026-09-21.md's "Probes 7 and 8, run live"
+    # section for the live evidence this table's shape is built from.
+    #
+    # Scoped to filesystem/folder resources only, per the same live evidence:
+    # probe 7 confirmed the mechanism (initiate_gov_action_type against
+    # FileSurvey::survey-folder with finalAnalysisStep=CHECK_ASSET) but ALSO
+    # confirmed RE's own create_folder_element_from_template() DataFolder
+    # template attaches no Connection at all -- every filesystem RE has ever
+    # cataloged this way hits the "no_connection" outcome, not a genuine
+    # reachability answer, until a real Connection is attached (see the
+    # design notes doc). Database reachability was NOT probed here -- the
+    # design doc's own §5 gap analysis is explicitly about the folder-survey
+    # CHECK_ASSET mechanism, and the two are different governance action
+    # types with different failure shapes (secrets-store resolution vs. a
+    # plain filesystem Connection) -- extending this table/check to databases
+    # is future work, not assumed to work the same way.
+    #
+    # `outcome` uses the exact vocabulary from egeria-support-for-multi-
+    # resource.md §5 (confirmed by a peer review during this slice's build,
+    # not invented fresh): reachable, no_connection, unresolvable_secret,
+    # network_unreachable, auth_rejected, unknown. `unknown` is also the
+    # three-state-discipline's third state -- "the CHECK_ASSET call itself
+    # did not complete/could not be evaluated" (timeout, exception, initiation
+    # failure) -- distinct from both "never checked" (no row at all) and any
+    # of the other outcomes, which all mean "checked, and here is what Egeria
+    # said". See reachability.py's classify_check_asset_result() docstring.
+    """
+    CREATE TABLE IF NOT EXISTS resource_reachability (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource_type      TEXT NOT NULL DEFAULT 'filesystem',
+        filesystem_slug    TEXT NOT NULL,
+        probed_at          TEXT NOT NULL,
+        probed_from        TEXT NOT NULL DEFAULT '',
+        outcome            TEXT NOT NULL,
+        error_code         TEXT DEFAULT '',
+        error_detail       TEXT DEFAULT '',
+        latency_ms         INTEGER DEFAULT NULL,
+        engine_action_guid TEXT DEFAULT '',
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+)
+
+#: Coverage table and slug column per resource type. Separate from
+#: `_DETAIL_TABLE_SPECS` because a coverage row is keyed by section rather
+#: than by a surveyed object, so it does not use the generic reader/writer.
+_COVERAGE_TABLES: dict[str, tuple[str, str]] = {
+    "database": ("database_survey_coverage", "database_slug"),
+    "filesystem": ("filesystem_survey_coverage", "filesystem_slug"),
+}
+
+#: Lookup indexes. The UNIQUE constraints above already cover the
+#: (slug, surveyed_at, source) prefix for point lookups; these serve the
+#: "latest run for this slug" and cross-run trend queries.
+_DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_db_schemas_slug ON database_schemas(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_tables_slug ON database_tables(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_columns_slug ON database_columns(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
+    "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_grants_slug ON database_grants(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_grants_grantee ON database_grants(database_slug, grantee)",
+    "CREATE INDEX IF NOT EXISTS idx_db_sql_objects_slug ON database_sql_objects(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_settings_slug ON database_settings(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_entries_slug ON filesystem_entries(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_data_files_slug ON filesystem_data_files(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_coverage_slug ON database_survey_coverage(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_coverage_slug ON filesystem_survey_coverage(filesystem_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_resource_reachability_slug "
+    "ON resource_reachability(filesystem_slug, probed_at)",
+)
+
+#: Columns added after the tables above first shipped. Empty at introduction;
+#: this is the seam so a later column lands on existing checkouts the same way
+#: `database_surveys.source` and the `file_systems` columns did, rather than
+#: being silently absent on any registry created before it.
+_DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("database_schemas", ()),
+    ("database_tables", ()),
+    ("database_columns", ()),
+    # stats_source/stats_computed_at (designer review, 2026-09-20) were added
+    # to this table's CREATE TABLE after it had already been created against
+    # the shared registry Postgres during this stream's own development —
+    # CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a
+    # pre-existing database_column_profiles was silently missing both columns
+    # until this migration entry existed. Found live, running the back-fill
+    # against the real shared registry.
+    ("database_column_profiles", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+        # Phase 1 slice 10 — same seam, same reason: the table already exists
+        # on every checkout, so the CREATE TABLE addition above is a no-op
+        # there and this entry is what actually lands the column.
+        ("sample_total_rows", "INTEGER DEFAULT NULL"),
+        # distinct_count_reason: same story, round 3 design review addition.
+        ("distinct_count_reason", "TEXT DEFAULT NULL"),
+    )),
+    # stats_reset: same story, same designer-review addition, same gap.
+    ("database_table_activity", (
+        ("stats_reset", "TEXT DEFAULT NULL"),
+    )),
+    ("database_grants", ()),
+    ("database_sql_objects", ()),
+    ("database_settings", ()),
+    ("filesystem_entries", ()),
+    # Same gap as database_column_profiles above, confirmed live against the
+    # same pre-existing shared-registry table.
+    ("filesystem_data_files", (
+        ("stats_source", "TEXT DEFAULT ''"),
+        ("stats_computed_at", "TEXT DEFAULT NULL"),
+    )),
+    ("database_survey_coverage", ()),
+    ("filesystem_survey_coverage", ()),
+    ("resource_reachability", ()),
+)
+
+
+class _DetailTableSpec(NamedTuple):
+    """Everything the generic detail-row reader/writer needs about one table.
+
+    Derived from the DDL rather than restated, so a column added to a CREATE
+    TABLE above is picked up here with no second edit. The alternative — a
+    hand-maintained column list per table — is the shape that goes stale
+    silently: the INSERT keeps working, the new column just never receives a
+    value, and nothing fails.
+    """
+    table: str
+    slug_column: str
+    resource_type: str
+    value_columns: tuple[str, ...]
+    insert_columns: tuple[str, ...]
+    json_columns: frozenset[str]
+    order_by: str
+
+
+#: Ordering for each detail table's rows: the order a person reads them in,
+#: not insertion order. Anything not named here falls back to its slug column.
+_DETAIL_TABLE_ORDER: dict[str, str] = {
+    "database_schemas": "schema_name",
+    "database_tables": "schema_name, table_name",
+    "database_columns": "schema_name, table_name, ordinal_position, column_name",
+    "database_column_profiles": "schema_name, table_name, column_name",
+    "database_table_activity": "schema_name, table_name",
+    "database_grants": "schema_name, object_name, grantee, privilege_type",
+    "database_sql_objects": "schema_name, object_type, object_name",
+    "database_settings": "setting_name",
+    "filesystem_entries": "entry_path",
+    "filesystem_data_files": "file_path",
+}
+
+_DETAIL_COLUMN_RE = re.compile(r"^\s*([a-z_][a-z0-9_]*)\s+[A-Z]", re.MULTILINE)
+_DETAIL_TABLE_NAME_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+([a-z_]+)")
+
+
+def _parse_detail_table_spec(ddl: str) -> _DetailTableSpec | None:
+    """Build a spec from one CREATE TABLE statement, or None if it is not one
+    of the per-object detail tables (the coverage table is keyed differently
+    and is handled by its own methods)."""
+    name_match = _DETAIL_TABLE_NAME_RE.search(ddl)
+    if not name_match:
+        return None
+    table = name_match.group(1)
+    if table in (
+        "database_survey_coverage",
+        "filesystem_survey_coverage",
+        # resource_reachability (Phase 1 slice #13) is keyed by
+        # (filesystem_slug, probed_at, outcome) with its own dedicated
+        # methods (record_reachability_check/get_latest_reachability/
+        # list_reachability_history) -- it has no surveyed_at/source columns
+        # and does not fit the generic (slug, surveyed_at, source, ...,
+        # state) detail-row shape the reader/writer below assumes. Excluded
+        # here the same way the two coverage tables are, for the same
+        # reason: it would otherwise be auto-detected by its `filesystem_
+        # slug` column and silently break write_detail_rows()'s generic
+        # insert (no surveyed_at/source to insert into).
+        "resource_reachability",
+    ):
+        return None
+
+    # Column lines only: a constraint line starts with UNIQUE/FOREIGN/PRIMARY,
+    # which the [a-z_] anchor already excludes.
+    columns = [c for c in _DETAIL_COLUMN_RE.findall(ddl) if c != "id"]
+    slug_candidates = [c for c in columns if c.endswith("_slug")]
+    if not slug_candidates:
+        return None
+    slug_column = slug_candidates[0]
+    value_columns = tuple(
+        c for c in columns if c not in (slug_column, "surveyed_at", "source")
+    )
+    return _DetailTableSpec(
+        table=table,
+        slug_column=slug_column,
+        resource_type="database" if slug_column == "database_slug" else "filesystem",
+        value_columns=value_columns,
+        insert_columns=(slug_column, "surveyed_at", "source") + value_columns,
+        json_columns=frozenset(c for c in value_columns if c.endswith("_json")),
+        order_by=_DETAIL_TABLE_ORDER.get(table, slug_column),
+    )
+
+
+_DETAIL_TABLE_SPECS: dict[str, _DetailTableSpec] = {
+    spec.table: spec
+    for spec in (_parse_detail_table_spec(ddl) for ddl in _DB_FS_DETAIL_TABLE_DDL)
+    if spec is not None
+}
+
+
+def _detail_value(value):
+    """Coerce one caller-supplied cell to something both backends store.
+
+    dicts and lists become JSON text; bools become 0/1 (SQLite has no boolean
+    and Postgres will not accept a Python bool into an INTEGER column); None
+    stays None, which is the whole point — NULL means "not measured", and the
+    row's `state` says why. Callers must not substitute 0 for it.
+    """
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(_json_sanitize(list(value) if isinstance(value, tuple) else value))
+    return value
+
+
+def _decode_detail_row(row: dict) -> dict:
+    """Decode `*_json` columns back to Python on the way out."""
+    for key, value in list(row.items()):
+        if key.endswith("_json") and isinstance(value, str) and value:
+            try:
+                row[key] = json.loads(value)
+            except (ValueError, TypeError):
+                # Leave the raw text rather than dropping it: a value that
+                # will not parse is evidence of a bug worth seeing, and
+                # silently turning it into None would read as "not measured".
+                pass
+    return row
+
+
 class ProjectRegistry:
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
@@ -554,6 +1265,103 @@ class ProjectRegistry:
             conn.execute(f"DROP TABLE {table}")
             conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
         log.info("registry: added user_id to %s and widened its primary key", table)
+
+    def _migrate_repo_dispositions_to_entity_key(self, conn) -> None:
+        """Widen `repo_dispositions`' primary key from `github_url` alone to
+        `(entity_type, entity_slug)` — the schema half of generalizing
+        disposition to database/filesystem resources (Backlog.md,
+        "Disposition is NOT fixed here", 2026-09-22). No-op once
+        `entity_slug` already exists: every run after the first, and every
+        freshly-created database (the CREATE TABLE just above already
+        declares the new shape).
+
+        Backfill (every pre-migration row is `entity_type='repo'`):
+        `entity_slug` is the row's own `project_slug` when non-empty — the
+        repo's real, already-resolved slug, which can legitimately differ
+        from a github_url-derived guess (a manual slug override, or a
+        collision-avoidance rename — confirmed live in the shared dev
+        registry: `odpi/egeria`'s row already carries `project_slug=
+        'egeria_git'`, not the `_url_to_slug`-derived `'egeria'`). For the
+        rarer never-imported candidate (`project_slug` `''` — 1 of 20 rows
+        in the shared dev registry as of 2026-09-22), fall back to the same
+        `_url_to_slug` derivation `org_importer.py` already uses for a
+        candidate's entity_slug elsewhere (`resource_working_set`/
+        `activity_log`) — see `add()` for what reconciles this if that repo
+        is later imported under a *different* slug.
+        """
+        existing = self._get_table_columns(conn, "repo_dispositions")
+        if not existing or "entity_slug" in existing:
+            return
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        conn.execute("ALTER TABLE repo_dispositions ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'repo'")
+        conn.execute("ALTER TABLE repo_dispositions ADD COLUMN entity_slug TEXT NOT NULL DEFAULT ''")
+        rows = conn.execute("SELECT github_url, project_slug FROM repo_dispositions").fetchall()
+        for row in rows:
+            slug = row["project_slug"] or _url_to_slug(row["github_url"])
+            conn.execute(
+                "UPDATE repo_dispositions SET entity_slug = ? WHERE github_url = ?",
+                (slug, row["github_url"]),
+            )
+        if conn.is_postgres:
+            conn.execute("ALTER TABLE repo_dispositions DROP CONSTRAINT IF EXISTS repo_dispositions_pkey")
+            conn.execute("ALTER TABLE repo_dispositions ADD PRIMARY KEY (entity_type, entity_slug)")
+        else:
+            tmp = "repo_dispositions__entity_key_migration"
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            conn.execute(f"""
+                CREATE TABLE {tmp} (
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL,
+                    github_url   TEXT DEFAULT '',
+                    disposition  TEXT NOT NULL DEFAULT 'undecided',
+                    reason       TEXT DEFAULT '',
+                    decided_by   TEXT DEFAULT '',
+                    decided_at   TEXT NOT NULL,
+                    project_slug TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
+            conn.execute(
+                f"INSERT INTO {tmp} (entity_type, entity_slug, github_url, disposition, "
+                "reason, decided_by, decided_at, project_slug) "
+                "SELECT entity_type, entity_slug, github_url, disposition, reason, "
+                "decided_by, decided_at, project_slug FROM repo_dispositions"
+            )
+            conn.execute("DROP TABLE repo_dispositions")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO repo_dispositions")
+        log.info("registry: widened repo_dispositions primary key to (entity_type, entity_slug)")
+
+    def _migrate_repo_disposition_history_to_entity_key(self, conn) -> None:
+        """Backfill `entity_type`/`entity_slug` on `repo_disposition_history`
+        — the append-only companion to `repo_dispositions` above. No PK
+        change needed here (it's keyed on its own `id`, never on
+        `github_url`), so this is a plain backfill, not a rebuild.
+
+        Prefers the slug `repo_dispositions` already resolved for a given
+        `github_url` (keeps history consistent with the current-state row
+        for the same repo); falls back to the same url-derived slug for a
+        `github_url` that only ever appears in history (its current-state
+        row was since deleted, or somehow never existed)."""
+        existing = self._get_table_columns(conn, "repo_disposition_history")
+        if not existing or "entity_slug" in existing:
+            return
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        conn.execute("ALTER TABLE repo_disposition_history ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'repo'")
+        conn.execute("ALTER TABLE repo_disposition_history ADD COLUMN entity_slug TEXT NOT NULL DEFAULT ''")
+        current = {
+            r["github_url"]: r["entity_slug"]
+            for r in conn.execute("SELECT github_url, entity_slug FROM repo_dispositions").fetchall()
+        }
+        rows = conn.execute("SELECT id, github_url FROM repo_disposition_history").fetchall()
+        for row in rows:
+            slug = current.get(row["github_url"]) or _url_to_slug(row["github_url"])
+            conn.execute(
+                "UPDATE repo_disposition_history SET entity_slug = ? WHERE id = ?",
+                (slug, row["id"]),
+            )
+        log.info("registry: backfilled repo_disposition_history.entity_type/entity_slug")
 
     def _search_path_schema(self) -> str:
         """Schema named by the connection URL's `options=-csearch_path=<name>`
@@ -787,6 +1595,42 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbols_parent_class "
                 "ON project_code_symbols(project_slug, parent_class)"
+            )
+            # project_code_markers — DESIGN-INTERFACE-SURFACE-IMPLEMENTED-
+            # RUNG.md §3.1/Decisions §2. A separate table from
+            # project_code_symbols, not columns on it: that table's key is
+            # UNIQUE(project_slug, file_path, qualified_name), one row per
+            # symbol, and a single handler can carry several registrations
+            # (`@app.get(...)` and `@app.post(...)` on one function is
+            # ordinary FastAPI) — columns would force a lossy flattening on
+            # day one. A marker is a fact ABOUT a symbol, the same
+            # relationship project_code_relationships already models with
+            # its own table.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_code_markers (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug   TEXT NOT NULL,
+                    file_path      TEXT NOT NULL,
+                    start_line     INTEGER DEFAULT 0,
+                    language       TEXT NOT NULL,
+                    marker_kind    TEXT NOT NULL,
+                    framework      TEXT DEFAULT '',
+                    interface_kind TEXT NOT NULL,
+                    detail         TEXT DEFAULT '',
+                    qualified_name TEXT DEFAULT '',
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            # (project_slug, interface_kind) — how interface_surface reads;
+            # (project_slug, qualified_name) — the join back to
+            # project_code_symbols.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_markers_slug_interface_kind "
+                "ON project_code_markers(project_slug, interface_kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_markers_slug_qualified_name "
+                "ON project_code_markers(project_slug, qualified_name)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_code_relationships (
@@ -1250,6 +2094,75 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
                 "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
+            # ── step_runs — one row per step execution (design §17.2) ──────
+            #
+            # What a step actually COST, as a vector, replacing the
+            # `<step>_elapsed`/`<step>_connects` metrics scattered across
+            # project_analysis_metrics rows. Those measured one axis, seconds,
+            # which is the axis the funnel argument is not really about: a
+            # step that waits on the network is cheap in CPU and slow in wall
+            # time, and for repositories the scarce resource is the GitHub
+            # rate budget rather than either.
+            #
+            # **No FOREIGN KEY on `slug`, deliberately.** Every other table
+            # here keys to `projects(slug)`, and this one records runs for
+            # repositories, databases AND filesystems — three different
+            # parent tables. A FK to one of them would reject two thirds of
+            # the rows; `entity_type` carries which one instead.
+            #
+            # **`metrics`/`declared` are TEXT holding JSON, not `jsonb`.**
+            # §17.2 writes `jsonb`, and this registry runs on Postgres in
+            # production and SQLite as a fallback (CLAUDE.md's tech-stack
+            # table) with one DDL for both — `PostgresCursorWrapper.
+            # _translate_sql` translates AUTOINCREMENT and GROUP_CONCAT and
+            # has no jsonb story, and every other JSON column in this file is
+            # TEXT (`detail_json`, `survey_data`, the `_json` suffix the
+            # detail-table reader keys off). One backend-specific column type
+            # here would mean two read paths — psycopg2 hands back a dict,
+            # sqlite3 a string — for a table whose whole purpose is to be
+            # queried uniformly. Recorded as a knowing deviation.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS step_runs (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug          TEXT NOT NULL,
+                    entity_type   TEXT NOT NULL DEFAULT 'repo',
+                    step_key      TEXT NOT NULL,
+                    surveyed_at   TEXT NOT NULL,
+                    source        TEXT NOT NULL DEFAULT 'local',
+                    executor      TEXT NOT NULL DEFAULT 'local',
+                    executor_ref  TEXT DEFAULT '',
+                    demanded_by   TEXT DEFAULT '',
+                    metrics       TEXT DEFAULT '{}',
+                    declared      TEXT DEFAULT '{}',
+                    disagreement  TEXT DEFAULT '',
+                    surveyed_as   TEXT DEFAULT ''
+                )
+            """)
+            # `entity_type` and `executor_ref` post-date the first shape this
+            # table shipped in during development — the same seam
+            # `_DB_FS_DETAIL_TABLE_MIGRATIONS` exists for, and for the same
+            # reason: CREATE TABLE IF NOT EXISTS is a no-op against a table
+            # that already exists in the shared registry.
+            _step_run_cols = self._get_table_columns(conn, "step_runs")
+            for _col, _ddl in (
+                ("entity_type", "TEXT NOT NULL DEFAULT 'repo'"),
+                ("executor_ref", "TEXT DEFAULT ''"),
+                ("demanded_by", "TEXT DEFAULT ''"),
+                # design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+                # §4 — which credential identity this run executed as;
+                # `source`/`executor` already say WHO ran it.
+                ("surveyed_as", "TEXT DEFAULT ''"),
+            ):
+                if _step_run_cols and _col not in _step_run_cols:
+                    conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_runs_step "
+                "ON step_runs(step_key, surveyed_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_runs_slug "
+                "ON step_runs(slug, surveyed_at)"
+            )
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -1364,6 +2277,7 @@ class ProjectRegistry:
                     column_count INTEGER DEFAULT 0,
                     survey_data TEXT DEFAULT '{}',
                     source TEXT DEFAULT 'local',
+                    surveyed_as TEXT DEFAULT '',
                     FOREIGN KEY (database_slug) REFERENCES databases(slug)
                 )
             """)
@@ -1371,6 +2285,13 @@ class ProjectRegistry:
             existing_ds = self._get_table_columns(conn, "database_surveys")
             if "source" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN source TEXT DEFAULT 'local'")
+            # Migration: add surveyed_as (design REPLY-DATABASE-CREDENTIAL-
+            # CAPABILITY-VISIBILITY.md §4 — "the credential identity is
+            # recorded on every survey row"; `source` already distinguishes
+            # WHO ran it (egeria/resource-explorer/local), this is WHICH
+            # CREDENTIAL it ran as).
+            if "surveyed_as" not in existing_ds:
+                conn.execute("ALTER TABLE database_surveys ADD COLUMN surveyed_as TEXT DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_database_surveys_slug "
                 "ON database_surveys(database_slug)"
@@ -1433,6 +2354,45 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_filesystem_surveys_slug "
                 "ON filesystem_surveys(filesystem_slug)"
             )
+
+            # ── Structured DB/FS detail tables ──────────────────────────────
+            #
+            # multi-resource-questions-design.md §5.7 (database) and §6 (file
+            # system). Until these existed, every per-object question ("which
+            # tables have no primary key?"), every diff and every change
+            # detector had to re-parse the `survey_data` JSON blob — which
+            # `web/routes/databases.py`'s get_database_diff did literally.
+            # The blob stays as the raw record; these are the queryable form.
+            #
+            # Every row is keyed by (slug, surveyed_at, source) per the design
+            # doc's rule D: RE keeps a local copy of every result whoever ran
+            # the survey, so a native Egeria run and an RE-local run of the
+            # same day must not overwrite each other. `source` is 'local' for
+            # RE's own surveyors (matching database_surveys.source's existing
+            # default) and 'egeria' for rows materialised back out of a native
+            # survey report by surveyors/result_materializer.py.
+            #
+            # `state` on every row, and the per-type coverage tables
+            # below, exist because absence is a result. The Java connector
+            # docs are explicit that MISSING schemas/tables/columns in a
+            # native Postgres survey mean the survey userId lacks permission,
+            # not that there are none; an empty pg_stats means ANALYZE never
+            # ran, not that the column has no values. Those must never render
+            # as "measured, and there was nothing" — see STATE_* below.
+            for _ddl in _DB_FS_DETAIL_TABLE_DDL:
+                conn.execute(_ddl)
+            for _idx in _DB_FS_DETAIL_TABLE_INDEXES:
+                conn.execute(_idx)
+            # Migrations: these tables were added together, so a checkout that
+            # already has them from an earlier point in this branch's life
+            # gets any later-added column here rather than silently missing
+            # it. Same (col, defn) shape as the projects/file_systems blocks.
+            for _table, _cols in _DB_FS_DETAIL_TABLE_MIGRATIONS:
+                _existing = self._get_table_columns(conn, _table)
+                for _col, _defn in _cols:
+                    if _col not in _existing:
+                        conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_defn}")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
                     id               TEXT PRIMARY KEY,
@@ -2012,7 +2972,7 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_egeria_call_timings_call "
                 "ON egeria_call_timings(call_name, kind)"
             )
-            # Repo triage disposition — undecided (default) / tracking /
+            # Resource triage disposition — undecided (default) / tracking /
             # investigating / recommended / using / abandoned / ignored.
             # `recommended` and `using` are both positive terminal states,
             # sitting alongside the negative terminal states
@@ -2021,41 +2981,72 @@ class ProjectRegistry:
             # counterpart to "decided against it"; `using` added later for
             # the stronger signal that the org is already actively using
             # the resource or knows of its use elsewhere in the org.
-            # Keyed by github_url (not project_slug)
-            # so it covers both a never-imported discovery-search candidate
-            # and an already-registered repo with the same row ("Discover
-            # repos to scout" plan, D10). One row per github_url — upsert,
-            # not append-only, since there's only ever one *current* decision.
+            #
+            # Keyed by (entity_type, entity_slug) — generalized 2026-09-22
+            # (Backlog.md, "Disposition is NOT fixed here") from a
+            # github_url-only PK, joining the same convention every other
+            # entity-family table already uses (see `_ENTITY_SLUG_TABLES`
+            # below). `github_url` stays as a plain column, kept for
+            # entity_type='repo' rows only — it is still how a repo's
+            # disposition gets set/read (see `set_disposition`), just no
+            # longer the identity the table is keyed on; database/
+            # filesystem rows leave it ''.
+            #
+            # entity_slug for a repo is its Project's real slug once
+            # imported (which can legitimately differ from a github_url-
+            # derived guess — a manual slug override, or a collision-
+            # avoidance rename), or a github_url-derived slug for a
+            # never-imported discovery-search candidate ("Discover repos to
+            # scout" plan, D10) — same derivation `org_importer._url_to_slug`
+            # already uses for a candidate's entity_slug elsewhere
+            # (resource_working_set/activity_log). `add()` reconciles a
+            # candidate's disposition row onto the real slug at import time,
+            # for the rarer case where they differ (see `add()`'s docstring
+            # / `_reconcile_disposition_on_import`).
+            #
+            # One row per (entity_type, entity_slug) — upsert, not
+            # append-only, since there's only ever one *current* decision.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS repo_dispositions (
-                    github_url   TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL,
+                    github_url   TEXT DEFAULT '',
                     disposition  TEXT NOT NULL DEFAULT 'undecided',
                     reason       TEXT DEFAULT '',
                     decided_by   TEXT DEFAULT '',
                     decided_at   TEXT NOT NULL,
-                    project_slug TEXT DEFAULT ''
+                    project_slug TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            self._migrate_repo_dispositions_to_entity_key(conn)
             # Append-only companion to repo_dispositions above — that table
-            # is upsert-only (one row per github_url, only the *current*
+            # is upsert-only (one row per entity, only the *current*
             # decision), so it can't answer "what was the history of
-            # decisions on this repo." Every set_disposition() call writes
-            # here too, in addition to upserting the current-state row
-            # (Scouting workflow redesign plan, D3/D6 — the Disposition
+            # decisions on this resource." Every set_disposition() call
+            # writes here too, in addition to upserting the current-state
+            # row (Scouting workflow redesign plan, D3/D6 — the Disposition
             # sub-tab's timeline view reads this).
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS repo_disposition_history (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    github_url   TEXT NOT NULL,
+                    entity_type  TEXT NOT NULL DEFAULT 'repo',
+                    entity_slug  TEXT NOT NULL DEFAULT '',
+                    github_url   TEXT DEFAULT '',
                     disposition  TEXT NOT NULL,
                     reason       TEXT DEFAULT '',
                     decided_by   TEXT DEFAULT '',
                     decided_at   TEXT NOT NULL
                 )
             """)
+            self._migrate_repo_disposition_history_to_entity_key(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_disposition_history_entity "
+                "ON repo_disposition_history(entity_type, entity_slug, decided_at)"
             )
             # DepthOffer (designer, 2026-09-13): the outcome of the /next
             # pane's "run these never-run analyses" offer, recorded on the
@@ -2491,6 +3482,7 @@ class ProjectRegistry:
     #: whose kind has no handler fails loudly rather than sitting queued for ever.
     RUN_KINDS = (
         "analysis_run",
+        "database_analysis_run",
         "survey_definition_run",
         "scouting_scan",
         "stage_batch",
@@ -3550,6 +4542,65 @@ class ProjectRegistry:
                 )""",
                 data,
             )
+        if project.github_url:
+            self._reconcile_disposition_on_import(project.github_url, data["slug"])
+
+    def _reconcile_disposition_on_import(self, github_url: str, real_slug: str) -> None:
+        """A repo's disposition can be set before it's ever imported (a
+        discovery-search candidate), keyed provisionally by a github_url-
+        derived slug (`resolve_repo_entity_slug`'s fallback). If it's later
+        imported under a genuinely different slug — a manual override, or a
+        collision-avoidance rename — that provisional row is now orphaned:
+        nothing at the real slug, and a stale one still sitting under the
+        guess. Re-key it here, at the one place every import path (org
+        importer, CLI, manual "add project") funnels through.
+
+        A no-op in the overwhelmingly common case (no row was ever set for
+        this repo pre-import, or the guessed slug already matches). Merges
+        rather than overwrites if a row somehow already exists at
+        real_slug too (shouldn't happen — real_slug wasn't registered a
+        moment ago — but favor the already-real row over the guess rather
+        than raise, since this runs inside `add()`'s success path and a
+        disposition mismatch is not a reason to fail the import)."""
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        guessed_slug = _url_to_slug(github_url)
+        if guessed_slug == real_slug:
+            return
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                (guessed_slug,),
+            ).fetchone()
+            if not existing:
+                return
+            real_exists = conn.execute(
+                "SELECT 1 FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                (real_slug,),
+            ).fetchone()
+            if real_exists:
+                # The real slug already has its own disposition row (set
+                # directly against it, somehow, before this import) — leave
+                # it alone and drop the stale guess rather than clobber it.
+                conn.execute(
+                    "DELETE FROM repo_dispositions WHERE entity_type = 'repo' AND entity_slug = ?",
+                    (guessed_slug,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE repo_dispositions SET entity_slug = ?, project_slug = ? "
+                    "WHERE entity_type = 'repo' AND entity_slug = ?",
+                    (real_slug, real_slug, guessed_slug),
+                )
+            conn.execute(
+                "UPDATE repo_disposition_history SET entity_slug = ? "
+                "WHERE entity_type = 'repo' AND entity_slug = ?",
+                (real_slug, guessed_slug),
+            )
+        log.info(
+            "registry: reconciled disposition for %s from provisional slug '%s' to real slug '%s'",
+            github_url, guessed_slug, real_slug,
+        )
 
     @staticmethod
     def _normalize_slug(slug: str) -> str:
@@ -3775,6 +4826,71 @@ class ProjectRegistry:
                     "DELETE FROM project_code_relationships WHERE project_slug = ?", (slug,)
                 )
 
+    def upsert_code_markers(self, resource_slug: str, markers: list) -> None:
+        """Insert extracted code markers (route/annotation registrations —
+        DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md §3.1). markers is a list
+        of CodeMarker dataclasses (resource_explorer/ingestion/
+        code_symbol_extractor.py). No UNIQUE constraint / ON CONFLICT here,
+        unlike project_code_symbols: one symbol legitimately carries several
+        registrations (`@app.get(...)` and `@app.post(...)` on the same
+        handler), so plain INSERT after clear_code_markers()'s per-language
+        DELETE is the whole rewrite — no upsert to merge."""
+        if not markers:
+            return
+        slug = self._normalize_slug(resource_slug)
+        rows = [
+            (
+                slug, m.file_path, m.start_line, m.language, m.marker_kind,
+                m.framework, m.interface_kind, m.detail, m.qualified_name,
+            )
+            for m in markers
+        ]
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_code_markers
+                   (project_slug, file_path, start_line, language, marker_kind,
+                    framework, interface_kind, detail, qualified_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+
+    def clear_code_markers(self, resource_slug: str, language: str | None = None) -> None:
+        """Remove marker rows — mirrors clear_code_symbols exactly (delete-
+        then-reinsert per language keeps a rerun from accumulating stale
+        duplicate markers)."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            if language:
+                conn.execute(
+                    "DELETE FROM project_code_markers WHERE project_slug = ? AND language = ?",
+                    (slug, language),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM project_code_markers WHERE project_slug = ?", (slug,)
+                )
+
+    def get_code_markers(self, resource_slug: str, interface_kind: str | None = None) -> list[dict]:
+        """Marker rows for a project, optionally filtered to one
+        interface_kind — interface_surface's primary read path."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            if interface_kind:
+                rows = conn.execute(
+                    "SELECT file_path, start_line, language, marker_kind, framework, "
+                    "interface_kind, detail, qualified_name FROM project_code_markers "
+                    "WHERE project_slug = ? AND interface_kind = ?",
+                    (slug, interface_kind),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT file_path, start_line, language, marker_kind, framework, "
+                    "interface_kind, detail, qualified_name FROM project_code_markers "
+                    "WHERE project_slug = ?",
+                    (slug,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_code_symbol_file_paths(self, resource_slug: str) -> list[str]:
         """Distinct file paths with at least one indexed code symbol —
         D2(c) (docs/repo-survey-catalog-completion-plan.md): a confirmed
@@ -3843,6 +4959,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_commits WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_symbols WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_relationships WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_code_markers WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
@@ -3893,7 +5010,7 @@ class ProjectRegistry:
     # because nothing enforces referential integrity on them.
     _PROJECT_SLUG_TABLES: tuple[str, ...] = (
         "project_stats", "project_commits", "project_code_symbols",
-        "project_code_relationships", "project_aliases",
+        "project_code_relationships", "project_code_markers", "project_aliases",
         "project_contributor_stats", "conversation_history", "context_compiles",
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
@@ -3915,6 +5032,13 @@ class ProjectRegistry:
         "working_set_members", "notification_subscriptions",
         "architecture_component_verdicts", "architecture_materialized_components",
         "architecture_materialized_blueprints", "architecture_materialized_ports",
+        # Joined this list 2026-09-22, when disposition's PK generalized from
+        # github_url alone to (entity_type, entity_slug) — see
+        # `_migrate_repo_dispositions_to_entity_key`. `repo_dispositions`
+        # ALSO keeps its own project_slug-column UPDATE just below (a
+        # separate, informational field, not the key), since that predates
+        # and is independent of this list.
+        "repo_dispositions", "repo_disposition_history",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,
@@ -4684,6 +5808,100 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── step_runs (design §17.2) ─────────────────────────────────────────
+    def record_step_run(
+        self, slug: str, step_key: str, surveyed_at: str, *,
+        entity_type: str = "repo", source: str = "local", executor: str = "local",
+        executor_ref: str = "", demanded_by: str = "",
+        metrics: dict | None = None, declared: dict | None = None,
+        disagreement: str = "", surveyed_as: str = "",
+    ) -> None:
+        """One row per step EXECUTION. Append-only: a step run twice in one
+        snapshot (once as a prerequisite, once on its own request) is two
+        facts, and collapsing them would lose the `demanded_by` attribution
+        that §17.1 exists to record.
+
+        `demanded_by` is empty for a directly-requested step and carries the
+        requesting step's key for an auto-run prerequisite — the field that
+        answers "why did Scouting take three minutes".
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
+                "source, executor, executor_ref, demanded_by, metrics, declared, "
+                "disagreement, surveyed_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (slug, entity_type, step_key, surveyed_at, source, executor,
+                 executor_ref or "", demanded_by or "",
+                 json.dumps(metrics or {}), json.dumps(declared or {}),
+                 disagreement or "", surveyed_as or ""),
+            )
+
+    def query_step_runs(
+        self, slug: str | None = None, step_key: str | None = None,
+        surveyed_at: str | None = None, entity_type: str | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Rows with `metrics`/`declared` already decoded to dicts.
+
+        Decoded here rather than at each call site: the column is TEXT-holding-
+        JSON on both backends (see the CREATE TABLE's own note), and leaving
+        the decode to callers is how a `metrics.get(...)` against a string
+        silently returns nothing.
+        """
+        where, params = [], []
+        for column, value in (("slug", slug), ("step_key", step_key),
+                              ("surveyed_at", surveyed_at),
+                              ("entity_type", entity_type)):
+            if value is not None:
+                where.append(f"{column} = ?")
+                params.append(value)
+        sql = "SELECT * FROM step_runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += f" ORDER BY surveyed_at DESC, id DESC LIMIT {int(limit)}"
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for row in rows:
+            record = dict(row)
+            for column in ("metrics", "declared"):
+                raw = record.get(column)
+                if isinstance(raw, str):
+                    try:
+                        record[column] = json.loads(raw or "{}")
+                    except (ValueError, TypeError):
+                        record[column] = {}
+                elif raw is None:
+                    record[column] = {}
+            out.append(record)
+        return out
+
+    def median_step_wall_ms(self, step_key: str) -> float | None:
+        """Median observed `wall_ms` for a step across every resource, or None
+        when it has never been measured.
+
+        None is a real answer the caller must render as one — a proposal built
+        on a tier default says so (`Proposal.estimated_is_measured`) rather
+        than presenting a guess as a measurement.
+
+        Across ALL resources, for the same reason `step_cost_observer.
+        _step_ever_measured` reads that way: "what does this step usually
+        cost" is a fact about the step.
+        """
+        try:
+            rows = self.query_step_runs(step_key=step_key, limit=500)
+        except Exception:
+            return None
+        values = sorted(
+            float(r["metrics"]["wall_ms"]) for r in rows
+            if isinstance(r.get("metrics"), dict)
+            and isinstance(r["metrics"].get("wall_ms"), (int, float))
+        )
+        if not values:
+            return None
+        mid = len(values) // 2
+        return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
     def upsert_metric(
         self, slug: str, kind: str, metrics: dict[str, float],
         detail: dict | None = None, surveyed_at: str | None = None,
@@ -5048,41 +6266,39 @@ class ProjectRegistry:
         they hang off, so a partial drain leaves a coherent prefix rather than
         orphans.
 
+        **This is a real claim.** Select and status transition happen in ONE
+        transaction (`self._conn()` below), so two drainers cannot both take
+        the same row — fixed 2026-09-19, see
+        `docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`. A claimed row moves to
+        `status='running'` with `claimed_at` set to `now`; on Postgres the
+        `SELECT` additionally carries `FOR UPDATE SKIP LOCKED`, so a second,
+        concurrent transaction skips rows the first is mid-claim on rather
+        than blocking or re-reading them once the first commits. SQLite has no
+        `SKIP LOCKED`, but needs none: it serialises writers itself, so the
+        single transaction already gives the same guarantee there.
+
+        This docstring used to say the opposite ("despite the name, it does
+        not claim") — accurate when written (2026-09-02), stale from the
+        moment the fix above landed a few hours later, and left uncorrected
+        until now. A `claim_` function that performs no claim, *documented* as
+        not claiming, is exactly the kind of doc a later reader trusts over
+        the code; the failure mode this repeats is the same shape as the
+        original bug it described, just inverted.
+
+        A row can still be stranded in `running` if its claimer dies before
+        marking it done/failed/pending — `CLAIM_LEASE_SECONDS` bounds that:
+        once `claimed_at` is older than the lease, the row is due again (see
+        the `status = 'running' AND claimed_at <= ?` clause below). A caller
+        that claims rows and then cannot even attempt them (no Egeria client
+        reachable) should call `release_outbox_claim()` immediately rather
+        than wait out the lease — see `drain_outbox`'s no-client branch.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
         table, which could be another resource's backlog entirely — leaving
         the caller believing it had published when it had in fact drained
         someone else's queue.
-
-        **Reads only, and despite the name it does not claim.** There is no
-        locking, no status transition, and no in-flight marking: `drain_outbox`
-        marks a row `done` only AFTER its create succeeds. Two drainers running
-        at once therefore select the same rows and both call `apply_element` on
-        them.
-
-        This docstring used to say "the drain marks each row in flight as it
-        takes it". It does not, and believing it is how you conclude that
-        concurrent drains are safe. They are not uniformly safe:
-
-        - Annotations survive it. The second create is rejected as a duplicate
-          qualifiedName and `apply_element` adopts the existing GUID, so the
-          outcome is one element and two rows marked done.
-        - Annotation LINKS do not. They go through a multi-link attach that
-          duplicates silently rather than upserting, and no reconciler exists
-          for annotation-level duplicates the way one does for survey-definition
-          step links.
-
-        So a second drainer is a real hazard, and the usual second drainer is
-        not another operator — it is `scheduler.py`'s own loop inside a running
-        `resource-explorer web`, firing every _CHECK_INTERVAL_SECONDS whether
-        anyone is at the keyboard or not. Stop the web server before a batch
-        republish, or accept that any duplicated link is permanent and silent.
-
-        Serialising this properly (SELECT ... FOR UPDATE SKIP LOCKED, or a
-        status='running' transition in the same transaction as the select)
-        would remove the hazard rather than documenting it, and is the right
-        fix when this stops being a single-operator dev environment.
         """
         now = now or datetime.utcnow().isoformat()
         lease_cutoff = (
@@ -5812,6 +7028,36 @@ class ProjectRegistry:
             ).fetchall()
         return {r["annotation_type"] if isinstance(r, dict) else r[0] for r in rows}
 
+    def count_projects_published_annotation_type(self, annotation_type: str) -> int:
+        """How many distinct projects have a local record of publishing this
+        annotation type at least once — the blast-radius number Admin's
+        Annotation Types registry shows before a rename/delete
+        (SPEC-ADMIN-THE-FOUR-GAPS.md §4/§0).
+
+        **This is a lower bound, not the true annotation count.** RE keeps no
+        durable local table of individual annotation instances by type — the
+        actual AnnotationType value only ever lives inside `egeria_outbox`'s
+        `payload_json` (purged once a write completes) or in Egeria itself.
+        `project_published_annotation_types` is the cheapest thing that is
+        both indexed and real: one row per (project, type) per publish. It
+        answers "how many projects have published this type at least once",
+        which undercounts if the same project holds several annotations of
+        the type, or if a project's real annotations were never bookkept
+        here (a publish that predates this table, or a best-effort insert
+        that silently failed — record_published_annotation_types() wraps its
+        own insert in the caller's try/except by design). Callers must
+        present this as a lower bound / "at least N", never as an exact
+        count — and a result of 0 must not be presented as "unused", since
+        it means "no local publish record", not "no annotations exist"."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT COUNT(DISTINCT project_slug) AS n
+                   FROM project_published_annotation_types
+                   WHERE annotation_type = ?""",
+                (annotation_type,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     def get_latest_project_stats(self, slug: str) -> dict | None:
         """Return the most recent project_stats row as a dict, or None."""
         slug = self._normalize_slug(slug)
@@ -6065,60 +7311,121 @@ class ProjectRegistry:
         queried as '.../repo' (and vice versa)."""
         return url.lower().rstrip("/").removesuffix(".git")
 
+    def resolve_repo_entity_slug(self, github_url: str) -> str:
+        """The entity_slug a repo's disposition is keyed on, for a given
+        github_url — the project's real slug if it has been imported
+        (which can legitimately differ from a url-derived guess: a manual
+        slug override, or a collision-avoidance rename), else the same
+        url-derived slug `org_importer.py`'s `_url_to_slug` already uses for
+        a not-yet-imported candidate elsewhere (`resource_working_set`/
+        `activity_log`). Exposed as its own method (not folded into
+        `set_disposition`) so `add()` can call it too, to reconcile a
+        candidate's disposition row onto the real slug at import time when
+        the two differ.
+
+        Normalizes the URL before deriving the fallback slug —
+        `_url_to_slug` (unlike this class's own `_normalize_github_url`)
+        does not strip a `.git` suffix, so '.../bar.git' and '.../bar'
+        would otherwise resolve to different slugs ('bar_git' vs 'bar') for
+        what is the same repo."""
+        from resource_explorer.github.org_importer import _url_to_slug
+
+        project = self.get_by_github_url(github_url)
+        return project.slug if project else _url_to_slug(self._normalize_github_url(github_url))
+
     def set_disposition(
         self, github_url: str, disposition: str,
         reason: str = "", decided_by: str = "", resource_slug: str = "",
     ) -> None:
-        """Upsert the current triage disposition for a repo — one row per
-        github_url, overwriting any prior decision (unlike the append-only
-        findings/metrics tables, there's only ever one *current* disposition)
-        — and append a row to repo_disposition_history so the Disposition
-        sub-tab can show a real timeline, not just the latest value
-        ("Discover repos to scout" plan, D10; Scouting workflow redesign
-        plan, D3/D6). Applies whether or not the repo has been imported yet —
-        project_slug is best-effort context, not required."""
+        """Upsert the current triage disposition for a repo — repo-specific
+        convenience over `set_disposition_for_entity` (entity_type='repo',
+        entity_slug=`resolve_repo_entity_slug(github_url)`). Applies whether
+        or not the repo has been imported yet — project_slug is best-effort
+        context, not required. Kept github_url-in, github_url-out rather
+        than folded away once the underlying table generalized
+        (Backlog.md, "Disposition is NOT fixed here", 2026-09-22): a repo's
+        stable identity really is its github_url (import can rename its
+        slug, `rename_project_slug` can rename it again later), so every
+        one of this method's ~20 existing callers already has the right
+        identifier in hand and gains nothing from computing a slug
+        themselves that this method computes once, correctly, either way."""
         key = self._normalize_github_url(github_url)
-        decided_at = datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO repo_dispositions
-                       (github_url, disposition, reason, decided_by, decided_at, project_slug)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(github_url) DO UPDATE SET
-                       disposition = excluded.disposition,
-                       reason = excluded.reason,
-                       decided_by = excluded.decided_by,
-                       decided_at = excluded.decided_at,
-                       project_slug = excluded.project_slug""",
-                (key, disposition, reason, decided_by, decided_at, resource_slug),
-            )
-            conn.execute(
-                """INSERT INTO repo_disposition_history
-                       (github_url, disposition, reason, decided_by, decided_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (key, disposition, reason, decided_by, decided_at),
-            )
+        entity_slug = self.resolve_repo_entity_slug(github_url)
+        self.set_disposition_for_entity(
+            "repo", entity_slug, disposition,
+            reason=reason, decided_by=decided_by,
+            github_url=key, project_slug=resource_slug,
+        )
 
     def get_disposition(self, github_url: str) -> dict | None:
         """The current disposition for a repo, or None if nobody has ever
         decided on it (callers should treat that the same as "undecided")."""
-        key = self._normalize_github_url(github_url)
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM repo_dispositions WHERE github_url = ?", (key,)
-            ).fetchone()
-        return dict(row) if row else None
+        return self.get_disposition_for_entity("repo", self.resolve_repo_entity_slug(github_url))
 
     def get_disposition_history(self, github_url: str) -> list[dict]:
         """Every disposition ever set for this repo, oldest first — backs
         the Disposition sub-tab's timeline view. `depth_offer` comes back
         parsed (a dict) or None — never the raw JSON string."""
-        key = self._normalize_github_url(github_url)
+        return self.get_disposition_history_for_entity("repo", self.resolve_repo_entity_slug(github_url))
+
+    def set_disposition_for_entity(
+        self, entity_type: str, entity_slug: str, disposition: str,
+        reason: str = "", decided_by: str = "", github_url: str = "", project_slug: str = "",
+    ) -> None:
+        """Upsert the current triage disposition for any entity — one row
+        per (entity_type, entity_slug), overwriting any prior decision
+        (unlike the append-only findings/metrics tables, there's only ever
+        one *current* disposition) — and append a row to
+        repo_disposition_history so the Disposition sub-tab can show a real
+        timeline, not just the latest value ("Discover repos to scout"
+        plan, D10; Scouting workflow redesign plan, D3/D6). This is the
+        generalized primitive (Backlog.md, "Disposition is NOT fixed
+        here", 2026-09-22) — `database`/`filesystem` callers use this
+        directly; repo callers go through `set_disposition`, which resolves
+        `entity_slug` and always passes `entity_type='repo'`."""
+        decided_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO repo_dispositions
+                       (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at, project_slug)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                       github_url = excluded.github_url,
+                       disposition = excluded.disposition,
+                       reason = excluded.reason,
+                       decided_by = excluded.decided_by,
+                       decided_at = excluded.decided_at,
+                       project_slug = excluded.project_slug""",
+                (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at, project_slug),
+            )
+            conn.execute(
+                """INSERT INTO repo_disposition_history
+                       (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (entity_type, entity_slug, github_url, disposition, reason, decided_by, decided_at),
+            )
+
+    def get_disposition_for_entity(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The current disposition for any entity, or None if nobody has
+        ever decided on it (callers should treat that the same as
+        "undecided")."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM repo_dispositions WHERE entity_type = ? AND entity_slug = ?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_disposition_history_for_entity(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """Every disposition ever set for this entity, oldest first — backs
+        the Disposition sub-tab's timeline view. `depth_offer` comes back
+        parsed (a dict) or None — never the raw JSON string."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT disposition, reason, decided_by, decided_at, depth_offer "
-                "FROM repo_disposition_history WHERE github_url = ? ORDER BY decided_at ASC",
-                (key,),
+                "FROM repo_disposition_history WHERE entity_type = ? AND entity_slug = ? "
+                "ORDER BY decided_at ASC",
+                (entity_type, entity_slug),
             ).fetchall()
         result = []
         for r in rows:
@@ -7344,9 +8651,20 @@ class ProjectRegistry:
     # ── database entity management ────────────────────────────────────────────
 
     def register_database(self, database: DatabaseEntity) -> None:
-        """Register a database entity in the registry."""
+        """Register a database entity in the registry.
+
+        `db_password` is encrypted at rest (`credential_crypto.
+        encrypt_db_password`) before it ever reaches the `databases` table —
+        see that module's docstring and design REPLY-DATABASE-CREDENTIAL-
+        CAPABILITY-VISIBILITY.md §7. Callers (web/routes/databases.py,
+        cli/main.py) always pass the plaintext password they received from
+        the operator; encryption is the registry's job, not theirs.
+        """
+        from resource_explorer.credential_crypto import encrypt_db_password
+
         data = asdict(database)
         data["slug"] = self._normalize_slug(data["slug"])
+        data["db_password"] = encrypt_db_password(data.get("db_password") or "")
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO databases (
@@ -7402,6 +8720,87 @@ class ProjectRegistry:
                 (status.value, error, slug),
             )
 
+    def update_database_credentials(self, slug: str, db_user: str, db_password: str) -> None:
+        """Update the stored connection credentials for a database entity.
+
+        Repoints an already-registered database at a different DB role/password
+        without disturbing its registration history (slug, egeria_asset_guid,
+        survey history, etc.) — the only supported way to change credentials;
+        there is deliberately no broader multi-connection/credential-store model
+        here (see docs/Backlog.md's "Database credential-capability model —
+        awaiting the project owner's ruling").
+
+        `db_password` is encrypted at rest (`credential_crypto.
+        encrypt_db_password`), same as `register_database` — this is the
+        registry-side half of the write; projecting the same credential into
+        the `.omsecrets` file (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+        VISIBILITY.md §7) is the caller's job (web/routes/databases.py,
+        cli/main.py) via `omsecrets_store.write_credential`, since this
+        method only knows about the registry, not the deployment's
+        `.omsecrets` path.
+        """
+        from resource_explorer.credential_crypto import encrypt_db_password
+
+        slug = self._normalize_slug(slug)
+        encrypted = encrypt_db_password(db_password or "")
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
+                (db_user, encrypted, slug),
+            )
+
+    def check_credential_drift(self, slug: str) -> dict:
+        """Compare RE's registry against the `.omsecrets` file for one
+        database's credential collection — design REPLY-DATABASE-CREDENTIAL-
+        CAPABILITY-VISIBILITY.md §7's closing line: "Drift between the two
+        is detectable by comparing collection names present on each side."
+
+        This is deliberately a narrow point check, not a reconciliation
+        UI: it answers "does this one database's collection name show up on
+        both sides", not "repair the mismatch" or "scan every database" (a
+        caller wanting the latter loops this over `list_databases()`). It
+        also does not (yet) compare the actual `userId`/`clearPassword`
+        values on each side, only whether both sides know about the same
+        named collection at all — value-level drift (same collection name,
+        different password on each side, e.g. one side rotated without the
+        other) is a real gap left for later, noted rather than silently
+        assumed away.
+
+        Returns a dict rather than a dataclass so CLI/web callers can
+        `json.dumps` it directly:
+            {
+                "slug": ..., "collection_name": ...,
+                "in_registry": bool,   # RE has a non-empty db_password for this slug
+                "in_omsecrets": bool,  # the collection name is a key in the .omsecrets file
+                "omsecrets_configured": bool,  # False when no local path is set at all —
+                                                # distinguishes "checked, and it's missing"
+                                                # from "couldn't check" (find-absence-as-answer)
+                "in_sync": bool,       # in_registry == in_omsecrets, only meaningful
+                                       # when omsecrets_configured is True
+            }
+        """
+        from resource_explorer.omsecrets_store import (
+            collection_names,
+            local_path,
+            secrets_collection_name,
+        )
+
+        slug = self._normalize_slug(slug)
+        database = self.get_database(slug)
+        in_registry = bool(database and database.db_password)
+        collection = secrets_collection_name(slug)
+        configured = bool(local_path())
+        present = collection_names()
+        in_omsecrets = collection in present
+        return {
+            "slug": slug,
+            "collection_name": collection,
+            "in_registry": in_registry,
+            "in_omsecrets": in_omsecrets,
+            "omsecrets_configured": configured,
+            "in_sync": (in_registry == in_omsecrets) if configured else None,
+        }
+
     def update_database_surveyed_at(self, slug: str) -> None:
         """Update the last_surveyed_at timestamp for a database."""
         slug = self._normalize_slug(slug)
@@ -7428,6 +8827,22 @@ class ProjectRegistry:
             # databases.slug; SQLite silently allows the reverse order
             # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            # The structured detail tables are children too, and every one of
+            # them has a real FK. Missing them here does not strand rows — it
+            # makes the parent delete fail outright, on Postgres and on
+            # SQLite alike (this connection sets foreign_keys=ON). Driven off
+            # the spec map so a table added later is covered without a second
+            # edit here.
+            for _table, _spec in _DETAIL_TABLE_SPECS.items():
+                if _spec.resource_type == "database":
+                    conn.execute(
+                        f"DELETE FROM {_table} WHERE {_spec.slug_column} = ?",
+                        (normalized,),
+                    )
+            conn.execute(
+                "DELETE FROM database_survey_coverage WHERE database_slug = ?",
+                (normalized,),
+            )
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
@@ -7439,18 +8854,37 @@ class ProjectRegistry:
         survey_data: dict,
         egeria_report_guid: str = "",
         source: str = "local",
+        surveyed_at: str | None = None,
+        surveyed_as: str = "",
     ) -> None:
-        """Record a database survey result."""
+        """Record a database survey result.
+
+        `surveyed_at` defaults to "now" (unchanged behaviour) but a caller
+        that already stamped its own results dict with a `surveyed_at` MUST
+        pass it here — this method's internal `backfill_database_survey`
+        call writes `database_table_activity` / `database_column_profiles`
+        placeholder rows from the SAME blob, keyed `(slug, surveyed_at,
+        source)`. A caller writing its own, richer detail rows for those same
+        tables after calling this method needs them keyed under the exact
+        same `surveyed_at`, or the two writes land under different keys and
+        `query_detail_rows`'s "latest wins" lookup can pick the older,
+        thinner one. Found live in Phase 1 slice 7's own tests: with two
+        independently-generated timestamps, `postgres_schema_and_stats`'s
+        real tuple counters were silently shadowed by this method's
+        `last_vacuum`/`last_analyze`-only backfill row, because the backfill
+        call's freshly-generated timestamp happened to sort later.
+        """
         slug = self._normalize_slug(slug)
-        surveyed_at = datetime.utcnow().isoformat()
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO database_surveys
                    (database_slug, surveyed_at, egeria_report_guid, schema_count,
-                    table_count, column_count, survey_data, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    table_count, column_count, survey_data, source, surveyed_as)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (slug, surveyed_at, egeria_report_guid, schema_count,
-                 table_count, column_count, json.dumps(survey_data), source),
+                 table_count, column_count, json.dumps(survey_data), source,
+                 surveyed_as or ""),
             )
             # Keep the databases row in sync so API responses reflect current counts
             conn.execute(
@@ -7460,6 +8894,31 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
+        # Materialise the structured detail rows from the same blob, so a
+        # survey run today is queryable without waiting for a back-fill
+        # (design §5.7). Done here rather than in each surveyor because every
+        # database survey path — local, hybrid and the Egeria-adaptive
+        # handler — already funnels through this one method, so one seam
+        # covers all three and no surveyor has to remember.
+        #
+        # Deliberately not fatal: a conversion bug must not cost the survey
+        # result that was just recorded above. The blob is still the raw
+        # record, so a failure here is recoverable by re-running the back-fill
+        # script — but it is logged loudly rather than swallowed, because a
+        # silently empty detail table is exactly the absence this design is
+        # trying to stop rendering as "nothing found".
+        try:
+            from resource_explorer.surveyors.result_materializer import (
+                backfill_database_survey,
+            )
+            backfill_database_survey(self, slug, surveyed_at, survey_data, source=source)
+        except Exception as exc:
+            log.warning(
+                "Structured detail rows not written for database %s @ %s (%s): %s. "
+                "The survey_data blob was stored; re-run "
+                "scripts/backfill_structured_tables.py to recover the rows.",
+                slug, surveyed_at, source, exc,
+            )
 
     def get_database_surveys(self, slug: str) -> list[dict]:
         """Return all survey records for a database, newest first."""
@@ -7467,7 +8926,8 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
-                          schema_count, table_count, column_count, survey_data, source
+                          schema_count, table_count, column_count, survey_data, source,
+                          surveyed_as
                    FROM database_surveys
                    WHERE database_slug = ?
                    ORDER BY surveyed_at DESC""",
@@ -7480,15 +8940,303 @@ class ProjectRegistry:
         surveys = self.get_database_surveys(slug)
         return surveys[0] if surveys else None
 
+    # ── structured DB/FS detail rows (design §5.7, §6) ────────────────────────
+    #
+    # One generic writer and one generic reader, rather than ten near-identical
+    # pairs. The tables differ only in their columns and their slug column, and
+    # both of those are derived from the DDL above, so adding a column to a
+    # CREATE TABLE is enough — there is no second list to keep in step. That
+    # matters here because these ten tables were written at once and would
+    # otherwise drift silently the first time one of them gained a column.
+
+    def write_detail_rows(
+        self,
+        table: str,
+        slug: str,
+        surveyed_at: str,
+        source: str = SOURCE_LOCAL,
+        rows: list[dict] | None = None,
+        *,
+        state: str = STATE_MEASURED,
+        coverage_section: str | None = None,
+        coverage_state: str | None = None,
+        coverage_detail: str = "",
+    ) -> int:
+        """Replace this (slug, surveyed_at, source)'s rows in `table`.
+
+        Returns the number of rows written. Replace rather than append, so
+        re-materialising the same survey report is idempotent — a native
+        survey that is read back twice must not double its rows.
+
+        `coverage_section`, when given, also records a coverage
+        row. Pass it for every section a survey *attempted*, including the ones
+        that came back empty: an empty section with no coverage row is
+        indistinguishable from a section the survey never looked at, which is
+        exactly the collapse `STATE_*` exists to prevent. When
+        `coverage_state` is omitted it is inferred as STATE_MEASURED for a
+        non-empty result and STATE_EMPTY for an empty one — an inference that
+        is only correct because the caller has asserted, by passing
+        `coverage_section` at all, that the attempt was made.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(
+                f"{table!r} is not a structured detail table; known: "
+                f"{sorted(_DETAIL_TABLE_SPECS)}"
+            )
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+        rows = rows or []
+
+        with self._conn() as conn:
+            conn.execute(
+                f"DELETE FROM {table} WHERE {spec.slug_column} = ? "
+                f"AND surveyed_at = ? AND source = ?",
+                (slug, surveyed_at, source),
+            )
+            if rows:
+                payload = []
+                for row in rows:
+                    values = [slug, surveyed_at, source]
+                    for col in spec.value_columns:
+                        if col == "state":
+                            values.append(row.get("state", state))
+                        else:
+                            values.append(_detail_value(row.get(col)))
+                    payload.append(tuple(values))
+                placeholders = ", ".join("?" for _ in spec.insert_columns)
+                conn.executemany(
+                    f"INSERT INTO {table} ({', '.join(spec.insert_columns)}) "
+                    f"VALUES ({placeholders})",
+                    payload,
+                )
+
+        if coverage_section is not None:
+            if coverage_state is None:
+                coverage_state = STATE_MEASURED if rows else STATE_EMPTY
+            self.record_section_coverage(
+                resource_type=spec.resource_type,
+                slug=slug,
+                surveyed_at=surveyed_at,
+                source=source,
+                section=coverage_section,
+                state=coverage_state,
+                row_count=len(rows),
+                detail=coverage_detail,
+            )
+        return len(rows)
+
+    def query_detail_rows(
+        self,
+        table: str,
+        slug: str,
+        surveyed_at: str | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
+        """Rows from `table` for a slug.
+
+        With no `surveyed_at`, returns the most recent run's rows — and
+        `source` narrows *which* run that is, so a caller asking for the
+        latest native run does not get a later local one. With neither, the
+        latest run of any source wins, which is the "what do we currently
+        know" question the UI asks.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+
+        where = [f"{spec.slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        if surveyed_at is None:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT MAX(surveyed_at) AS latest FROM {table} "
+                    f"WHERE {' AND '.join(where)}",
+                    tuple(params),
+                ).fetchone()
+            surveyed_at = (dict(row).get("latest") if row else None) or None
+            if surveyed_at is None:
+                return []
+        where.append("surveyed_at = ?")
+        params.append(surveyed_at)
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {' AND '.join(where)} "
+                f"ORDER BY {spec.order_by}",
+                tuple(params),
+            ).fetchall()
+        return [_decode_detail_row(dict(r)) for r in rows]
+
+    def record_section_coverage(
+        self,
+        resource_type: str,
+        slug: str,
+        surveyed_at: str,
+        section: str,
+        state: str,
+        source: str = SOURCE_LOCAL,
+        row_count: int | None = None,
+        detail: str = "",
+    ) -> None:
+        """Record that a survey run did (or could not) measure one section.
+
+        This is the row that lets a consumer tell "no grants exist" from "we
+        never read pg_roles" from "the survey user could not". Without it the
+        only evidence is an empty table, which says all three at once.
+        """
+        table, slug_column = self._coverage_table(resource_type)
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                f"""INSERT INTO {table}
+                   ({slug_column}, surveyed_at, source, section,
+                    state, row_count, detail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT({slug_column}, surveyed_at, source, section)
+                   DO UPDATE SET state=excluded.state,
+                                 row_count=excluded.row_count,
+                                 detail=excluded.detail""",
+                (slug, surveyed_at, source, section, state, row_count, detail),
+            )
+
+    @staticmethod
+    def _coverage_table(resource_type: str) -> tuple[str, str]:
+        try:
+            return _COVERAGE_TABLES[resource_type]
+        except KeyError:
+            raise ValueError(
+                f"no coverage table for resource type {resource_type!r}; "
+                f"known: {sorted(_COVERAGE_TABLES)}"
+            ) from None
+
+    def get_section_coverage(
+        self,
+        resource_type: str,
+        slug: str,
+        surveyed_at: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, dict]:
+        """Coverage rows for a run, keyed by section name.
+
+        A section absent from this mapping was never recorded at all, which is
+        weaker than STATE_NOT_MEASURED: it means nothing claimed to have
+        tried. Callers should render that as unknown, not as none.
+        """
+        table, slug_column = self._coverage_table(resource_type)
+        slug = self._normalize_slug(slug)
+        where = [f"{slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        if surveyed_at is None:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT MAX(surveyed_at) AS latest FROM {table} "
+                    f"WHERE {' AND '.join(where)}",
+                    tuple(params),
+                ).fetchone()
+            surveyed_at = (dict(row).get("latest") if row else None) or None
+            if surveyed_at is None:
+                return {}
+        where.append("surveyed_at = ?")
+        params.append(surveyed_at)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {' AND '.join(where)}",
+                tuple(params),
+            ).fetchall()
+        return {dict(r)["section"]: dict(r) for r in rows}
+
+    def get_detail_run_timestamps(
+        self, table: str, slug: str, source: str | None = None
+    ) -> list[str]:
+        """Distinct `surveyed_at` values present in `table`, newest first.
+
+        The seam the diff and trend consumers need: "which runs do I have
+        structured rows for", which is not the same as which rows
+        `database_surveys` has, since a run that predates these tables has a
+        blob and no rows until the back-fill runs.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+        where = [f"{spec.slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT surveyed_at FROM {table} "
+                f"WHERE {' AND '.join(where)} ORDER BY surveyed_at DESC",
+                tuple(params),
+            ).fetchall()
+        return [dict(r)["surveyed_at"] for r in rows]
+
     def database_exists(self, slug: str) -> bool:
         """Check if a database entity exists."""
         return self.get_database(slug) is not None
 
     def _row_to_database(self, row: sqlite3.Row) -> DatabaseEntity:
-        """Convert a database row to a DatabaseEntity dataclass."""
+        """Convert a database row to a DatabaseEntity dataclass.
+
+        Decrypts `db_password` (`credential_crypto.decrypt_db_password`) so
+        every caller of `get_database`/`list_databases`/etc. sees plaintext,
+        exactly as before encryption was added — the ciphertext never
+        escapes the registry layer.
+
+        Lazy migration: a row written before encryption shipped stores
+        `db_password` as clear text, which `decrypt_db_password` detects by
+        format (no `enc:v1:` prefix) and returns unchanged. When that
+        happens here, the row is re-encrypted and written back immediately,
+        so the migration is "on next read" rather than a separate startup
+        pass — chosen over a `_init_schema()` ALTER-TABLE-style migration
+        (the `surveyed_as` pattern, #253) because encrypting a column's
+        existing values needs the encryption key and the plaintext at the
+        same time, and by `_init_schema()` time neither this call path's
+        `db_password` values nor a guarantee the key is configured yet are
+        available in the same way a simple `ADD COLUMN` is. A row that is
+        never read again (e.g. an abandoned/never-surveyed database) stays
+        clear-text until it is; this only matters for rows still in active
+        use, which are exactly the ones a lazy migration reaches.
+        """
         import dataclasses
+
+        from resource_explorer.credential_crypto import (
+            decrypt_db_password,
+            is_encrypted,
+        )
+
         d = dict(row)
         d["status"] = ProjectStatus(d["status"])
+        raw_password = d.get("db_password") or ""
+        if raw_password and not is_encrypted(raw_password):
+            plaintext = raw_password
+            try:
+                slug = d.get("slug")
+                if slug:
+                    self.update_database_credentials(slug, d.get("db_user") or "", plaintext)
+            except (sqlite3.Error, OSError) as exc:
+                # Narrowed to the write-back failing (DB error, e.g. a
+                # locked file or a Postgres connection hiccup) — not a bare
+                # `except Exception`, so a bug in `encrypt_db_password`
+                # itself (a real, unrelated defect) still propagates instead
+                # of being swallowed here. The read must still succeed even
+                # when the migration write-back fails: the row simply stays
+                # clear-text and is retried on the next read.
+                log.warning(
+                    "registry: failed to lazily migrate db_password to "
+                    "encrypted storage for database slug=%r: %s", d.get("slug"), exc
+                )
+            d["db_password"] = plaintext
+        else:
+            d["db_password"] = decrypt_db_password(raw_password)
         # Filter to only known DatabaseEntity fields
         known = {f.name for f in dataclasses.fields(DatabaseEntity)}
         return DatabaseEntity(**{k: v for k, v in d.items() if k in known})
@@ -7597,6 +9345,28 @@ class ProjectRegistry:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute("DELETE FROM filesystem_surveys WHERE filesystem_slug = ?", (normalized,))
+            # Same reason as remove_database: these carry real FKs, so
+            # skipping them fails the parent delete rather than stranding
+            # rows.
+            for _table, _spec in _DETAIL_TABLE_SPECS.items():
+                if _spec.resource_type == "filesystem":
+                    conn.execute(
+                        f"DELETE FROM {_table} WHERE {_spec.slug_column} = ?",
+                        (normalized,),
+                    )
+            # resource_reachability is excluded from _DETAIL_TABLE_SPECS (see
+            # _parse_detail_table_spec's docstring) since it doesn't fit the
+            # generic detail-row shape, so it needs its own explicit cleanup
+            # here rather than riding the loop above -- same FK-before-parent
+            # reasoning as every other child table in this method.
+            conn.execute(
+                "DELETE FROM resource_reachability WHERE filesystem_slug = ?",
+                (normalized,),
+            )
+            conn.execute(
+                "DELETE FROM filesystem_survey_coverage WHERE filesystem_slug = ?",
+                (normalized,),
+            )
             conn.execute("DELETE FROM file_systems WHERE slug = ?", (normalized,))
 
     def update_filesystem_status(self, slug: str, status: ProjectStatus, error_message: str = "") -> None:
@@ -7622,6 +9392,81 @@ class ProjectRegistry:
                 "UPDATE file_systems SET egeria_asset_guid = ? WHERE slug = ?",
                 (guid, self._normalize_slug(slug)),
             )
+
+    def record_reachability_check(
+        self,
+        filesystem_slug: str,
+        *,
+        probed_at: str,
+        outcome: str,
+        probed_from: str = "",
+        error_code: str = "",
+        error_detail: str = "",
+        latency_ms: int | None = None,
+        engine_action_guid: str = "",
+        resource_type: str = "filesystem",
+    ) -> None:
+        """Record one reachability probe result (Phase 1 slice #13).
+
+        Every call writes a NEW row -- this is a history table, not a
+        single "current status" row, the same choice `database_settings`/
+        `database_grants` etc. make and for the same reason: "reachable at
+        T1, unreachable at T2" is itself a fact worth keeping, not just the
+        latest value. `get_latest_reachability` is the "current status" read.
+
+        `outcome` must be one of `REACHABILITY_OUTCOMES` (validated here,
+        not just by convention) -- see reachability.py's
+        classify_check_asset_result() for how a live CHECK_ASSET result maps
+        onto this vocabulary, taken verbatim from egeria-support-for-multi-
+        resource.md §5 rather than invented for this table.
+        """
+        if outcome not in REACHABILITY_OUTCOMES:
+            raise ValueError(
+                f"outcome={outcome!r} is not one of {sorted(REACHABILITY_OUTCOMES)}"
+            )
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_reachability (
+                    resource_type, filesystem_slug, probed_at, probed_from,
+                    outcome, error_code, error_detail, latency_ms,
+                    engine_action_guid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    resource_type, normalized, probed_at, probed_from,
+                    outcome, error_code, error_detail, latency_ms,
+                    engine_action_guid,
+                ),
+            )
+
+    def get_latest_reachability(self, filesystem_slug: str) -> dict | None:
+        """Most recent reachability probe for this filesystem, or None if it
+        has never been checked -- the "never checked" state of the
+        three-state absence discipline (rule: absence of a row, not a
+        sentinel value, means "never checked"). Distinct from a row that
+        exists with `outcome='unknown'`, which means "checked, and the
+        CHECK_ASSET call itself did not complete/could not be evaluated"."""
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM resource_reachability
+                   WHERE filesystem_slug = ?
+                   ORDER BY probed_at DESC, id DESC LIMIT 1""",
+                (normalized,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_reachability_history(self, filesystem_slug: str, limit: int = 20) -> list[dict]:
+        """Reachability probes for this filesystem, most recent first."""
+        normalized = self._normalize_slug(filesystem_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_reachability
+                   WHERE filesystem_slug = ?
+                   ORDER BY probed_at DESC, id DESC LIMIT ?""",
+                (normalized, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def add_filesystem_survey(
         self,
@@ -7661,6 +9506,23 @@ class ProjectRegistry:
                    SET file_count = ?, data_file_count = ?, last_surveyed_at = ?
                    WHERE slug = ?""",
                 (file_count, data_file_count, surveyed_at, normalized),
+            )
+        # Structured detail rows from the same blob — see the equivalent note
+        # in record_database_survey for why this lives here and why a failure
+        # is logged rather than raised.
+        try:
+            from resource_explorer.surveyors.result_materializer import (
+                backfill_filesystem_survey,
+            )
+            backfill_filesystem_survey(
+                self, normalized, surveyed_at, survey_data, source=source
+            )
+        except Exception as exc:
+            log.warning(
+                "Structured detail rows not written for filesystem %s @ %s (%s): %s. "
+                "The survey_data blob was stored; re-run "
+                "scripts/backfill_structured_tables.py to recover the rows.",
+                normalized, surveyed_at, source, exc,
             )
 
     def get_latest_filesystem_survey(self, fs_slug: str) -> dict | None:
@@ -7898,6 +9760,14 @@ class ProjectRegistry:
         the same reason (direct feedback: Analyses cards had no last-run
         signal at all, unlike Survey Definition cards).
 
+        Generalized beyond repo (docs/Backlog.md: "Database/filesystem
+        Analyses cards never showed a last-run/published badge" — the UI only
+        ever fetched this for entity_type='repo', so database/filesystem
+        cards could not show a badge no matter how many surveys had run).
+        `entity_type` selects the step map via `_analysis_step_map()`/
+        `_analysis_derived_sources()` above; the SQL and the attribution
+        logic below are unchanged and identical for every entity_type.
+
         Reads TWO kinds of activity row, because an analysis can be invoked two
         ways and reading only one made almost everything look never-run:
 
@@ -7910,20 +9780,29 @@ class ProjectRegistry:
           the findings tables and its annotations sat published — the card said
           "Never run" and "Published today" side by side.
 
-        A survey step's qualifiedName ends with its re_analysis_step key
-        (`GovActionProcessStep::RepoCoarseProfile::repo_language`), and
-        REPO_ANALYSIS_STEP_MAP partitions those keys across analyses — each key
-        belongs to exactly one — so this attribution is exact, not a guess.
+        Each step's `re_analysis_step` key (recorded directly in `detail.steps`
+        by survey_definition_executor as of this same change — previously only
+        the step's qualifiedName was recorded, and callers had to assume its
+        last `::`-separated segment equalled the re_analysis_step key, which
+        held for repo's own authoring convention but is NOT guaranteed by
+        anything in the schema; falls back to that same qualifiedName-suffix
+        parse for historical rows that predate the field) is looked up in
+        `_analysis_step_map(entity_type)`'s inversion.
+
+        For repo, REPO_ANALYSIS_STEP_MAP partitions step keys across
+        analyses — each key belongs to exactly one — so attribution is exact.
+        For database, a single coarse step (e.g. "db_derived") is the source
+        of SEVERAL analysis_catalog entries at once (see
+        DATABASE_ANALYSIS_STEP_MAP's docstring) — that fan-out is real and
+        intentional, not a guess, so one step run credits every analysis_id
+        it names, not just one.
 
         An analysis owning several step keys counts as run when ANY of them
         ran: it did real work then, and calling that "never run" is the larger
         error. `last_run_partial` says whether the run covered all its steps.
         """
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            repo_analysis_derived_sources as _repo_analysis_derived_sources)
-
-        step_owner = self._step_key_to_analysis_id()
-        owned_counts = {a: len(k) for a, k in _repo_analysis_step_map().items()}
+        step_owner = self._step_key_to_analysis_ids(entity_type)
+        owned_counts = {a: len(k) for a, k in _analysis_step_map(entity_type).items()}
         result: dict[str, dict] = {}
 
         with self._conn() as conn:
@@ -7959,8 +9838,8 @@ class ProjectRegistry:
                 # data minutes earlier while its card still read ten days stale.
                 # Newest-first, so this loses to any more recent row of the
                 # source's own, exactly like the survey-step branch below.
-                for source_id, keys in _repo_analysis_derived_sources(
-                        analysis_id or "").items():
+                for source_id, keys in _analysis_derived_sources(
+                        entity_type, analysis_id or "").items():
                     if source_id in result:
                         continue
                     result[source_id] = {
@@ -7992,9 +9871,11 @@ class ProjectRegistry:
 
             ran: dict[str, list] = {}
             for step in (detail.get("steps") or []):
-                key = str(step.get("step") or "").rsplit("::", 1)[-1]
-                owner = step_owner.get(key)
-                if owner:
+                # `re_analysis_step` is the real key, recorded directly since
+                # this same change; a historical row that predates it falls
+                # back to the qualifiedName-suffix parse repo always relied on.
+                key = step.get("re_analysis_step") or str(step.get("step") or "").rsplit("::", 1)[-1]
+                for owner in step_owner.get(key, []):
                     ran.setdefault(owner, []).append(step.get("status") or "")
             for analysis_id, statuses in ran.items():
                 if analysis_id in result:
@@ -8075,13 +9956,21 @@ class ProjectRegistry:
         return out
 
     @staticmethod
-    def _step_key_to_analysis_id() -> dict[str, str]:
-        """Inverse of REPO_ANALYSIS_STEP_MAP."""
-        return {
-            key: analysis_id
-            for analysis_id, keys in _repo_analysis_step_map().items()
-            for key in keys
-        }
+    def _step_key_to_analysis_ids(entity_type: str) -> dict[str, list[str]]:
+        """Inverse of `_analysis_step_map(entity_type)`: step_key ->
+        [analysis_id, ...]. A list, not a single id, because database's
+        `DATABASE_ANALYSIS_STEP_MAP` genuinely fans one step key out to
+        several analysis_ids (e.g. "db_derived" -> six analyses) — unlike
+        repo's REPO_ANALYSIS_STEP_MAP, which partitions the step-key space so
+        this inversion happens to be 1:1 there. `setdefault(...).append(...)`
+        preserves every owner rather than the dict-comprehension overwrite
+        `_repo_analysis_step_map`'s own docstring warns can silently drop
+        one when two analyses declare the same key by mistake."""
+        out: dict[str, list[str]] = {}
+        for analysis_id, keys in _analysis_step_map(entity_type).items():
+            for key in keys:
+                out.setdefault(key, []).append(analysis_id)
+        return out
 
     def update_activity_status(
         self,
@@ -8724,3 +10613,52 @@ def _repo_analysis_step_map() -> dict:
     except ImportError:  # pragma: no cover - defensive
         return {}
     return REPO_ANALYSIS_STEP_MAP
+
+
+def _analysis_step_map(entity_type: str) -> dict[str, list[str]]:
+    """analysis_id -> [re_analysis_step keys] for `entity_type`, fetched
+    lazily (same import-cycle reason as `_repo_analysis_step_map` above).
+
+    Added alongside the database/filesystem last-activity endpoints
+    (docs/Backlog.md: "Database/filesystem Analyses cards never showed a
+    last-run/published badge") to generalize `get_analysis_last_run` beyond
+    repo. `entity_type` values outside this map (or an import failure)
+    return `{}` — an entity_type with no step map simply attributes no
+    survey rows, same as repo behaved before REPO_ANALYSIS_STEP_MAP existed.
+    """
+    if entity_type == "repo":
+        return _repo_analysis_step_map()
+    if entity_type == "database":
+        try:
+            from resource_explorer.surveyors.database.survey_definition_adapter import (
+                DATABASE_ANALYSIS_STEP_MAP,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            return {}
+        return DATABASE_ANALYSIS_STEP_MAP
+    if entity_type == "filesystem":
+        try:
+            from resource_explorer.surveyors.filesystem.survey_definition_adapter import (
+                FILESYSTEM_ANALYSIS_STEP_MAP,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            return {}
+        return FILESYSTEM_ANALYSIS_STEP_MAP
+    return {}
+
+
+def _analysis_derived_sources(entity_type: str, analysis_id: str) -> dict[str, list[str]]:
+    """{source_analysis_id: [step_keys]} that `analysis_id` derives from, for
+    `entity_type` — repo's `architecture_diagram`-derives-from-
+    `architecture_recovery` pattern (see repo_analysis_derived_sources).
+    Database and filesystem have no AnalysisKind-style `derives_from`
+    declaration today, so this is `{}` for every other entity_type — not a
+    guess, a real absence: neither adapter declares one analysis as a view
+    over another's steps the way repo's architecture_diagram does."""
+    if entity_type != "repo":
+        return {}
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        repo_analysis_derived_sources,
+    )
+
+    return repo_analysis_derived_sources(analysis_id)

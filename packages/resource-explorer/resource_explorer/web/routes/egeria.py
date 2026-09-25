@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
 
 router = APIRouter()
 
@@ -103,6 +104,13 @@ class EgeriaAnnotationItem(BaseModel):
     explanation: str
     expression: str
     json_properties: dict
+    #: Egeria's `contentStatus` — "DRAFT" marks an unconfirmed PROPOSAL
+    #: (Phase 1 slice 10). Defaulted, so existing construction keeps working;
+    #: declared, because pydantic v2's `extra='ignore'` means an undeclared
+    #: field from the reader vanishes here with no error at all — the reason
+    #: this model is one of three that had to change in lockstep. Empty means
+    #: "no contentStatus stated", not "confirmed".
+    content_status: str = ""
 
 
 class FileTypeSummary(BaseModel):
@@ -552,7 +560,7 @@ async def resolve_stale_linkage(
     this deployment to verify such a path against. Clearing is the part that is
     genuinely generic; pretending the rest was would be worse than saying so.
     """
-    if entity_type not in ("repo", "database", "filesystem"):
+    if entity_type not in SURVEYED_RESOURCE_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown entity type '{entity_type}'")
     if req.action not in ("republish", "resurvey", "discard"):
         raise HTTPException(
@@ -880,6 +888,23 @@ async def materialize_annotations(slug: str, report_guid: str | None = None) -> 
 # Declared BEFORE /{slug}/... routes: Starlette matches in declaration order, so
 # a literal path after a path-param catch-all at the same position is never
 # reached — "resync" would be read as a slug.
+
+@router.get("/resync/scheduler-status")
+async def resync_status() -> dict:
+    """Scheduled scan-and-clear status — same shape convention and cheap,
+    in-process-state-only contract as bootstrap.py's /status route (see
+    bootstrap.py's own bootstrap_status() above): reads
+    egeria_resync.get_status(), never calls Egeria itself, so the Resync
+    pane can poll it alongside its scan without adding load.
+
+    Distinguishes "the scheduler ran and correctly found nothing to fix"
+    from "the scheduler hasn't run in days" -- both otherwise look like an
+    identical clean row.
+    """
+    from resource_explorer.egeria_resync import get_status
+
+    return get_status()
+
 
 @router.get("/resync/scan")
 async def resync_scan() -> dict:

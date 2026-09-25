@@ -229,7 +229,7 @@ repo_analyses:
 
   - id: interface_surface
     name: Interfaces & Published API
-    description: "What can be talked to, and whether the contract is written down — from the file inventory, declared dependencies, and the distribution/deployment-evidence facts other steps already recorded, no fetch. Answers two catalog questions at once, because the second is a finding about the first. Three rungs, evidence strength kept explicit: 'declared' is a committed contract (openapi.yaml, .proto) OR a packaging-declared entry point ([project.scripts], package.json bin); 'implemented' is the code running as one with no higher rung available (e.g. a distribution's own __main__.py); 'implied' is a dependency name only (fastapi, grpcio) and NEVER counts as a published API. Where code-level evidence would exist but no Discovery-tier step records it (route/handler/service-method registrations), the finding says could_not_check and why, rather than guessing implied. Specs under vendored, generated, example or test trees are excluded — OpenLineage was otherwise reported as publishing a gRPC API on the strength of two Maven test fixtures."
+    description: "What can be talked to, and whether the contract is written down — from the file inventory, declared dependencies, and the distribution/deployment-evidence/code-marker/architecture-interface facts other steps already recorded, no fetch. Answers two catalog questions at once, because the second is a finding about the first. Three rungs, evidence strength kept explicit: 'declared' is a committed contract (openapi.yaml, .proto) OR a packaging-declared entry point ([project.scripts], package.json bin); 'implemented' is the code running as one with no higher rung available (e.g. a distribution's own __main__.py, or a route/handler/service-method registration repo_symbol_extraction recorded); 'implied' is a dependency name only (fastapi, grpcio) and NEVER counts as a published API. Where repo_symbol_extraction has not yet run for this repo, or its languages are outside marker coverage, the finding says could_not_check and why, rather than guessing implied — a statement about whether the capture has run for THIS repo, not a permanent pipeline limitation. Specs under vendored, generated, example or test trees are excluded — OpenLineage was otherwise reported as publishing a gRPC API on the strength of two Maven test fixtures."
     resource_types: ["repo"]
     intent: discovery
     perspectives: ["Architecture", "Consumer", "App/AI Builder", "Data Expert"]
@@ -879,11 +879,19 @@ database_analyses:
 
   - id: row_count_snapshot
     name: "Row Count Snapshot"
-    description: "Count rows in all tables using pg_stat_user_tables. Records a time-series data point for trend analysis."
+    description: >
+      Count rows in all tables using pg_stat_user_tables. Records a
+      time-series data point for trend analysis. Also profiles columns from
+      pg_stats (null fraction, distinct count, frequent values — without
+      sampling), reads tuple counters/dead-row/scan activity from
+      pg_stat_user_tables, and flags unused indexes from
+      pg_stat_user_indexes. A capability the connection's engine does not
+      support, or a table ANALYZE has never touched, is reported as such
+      rather than as zero.
     resource_types: ["database"]
     intent: scouting
     perspectives: ["all", "Admin"]
-    annotation_types: ["ResourceMeasureAnnotation"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
     action: survey
@@ -895,13 +903,427 @@ database_analyses:
 
   - id: privilege_audit
     name: "Privilege Audit"
-    description: "Review database roles, grants, and superuser accounts for security hygiene."
+    description: "Roles, table grants and default ACLs from pg_roles/role_table_grants/pg_default_acl; raises a Request For Action on any PUBLIC grant. Backed by the postgres_operations step (design §5.4, §5.7) as of Phase 1 slice 8 — previously database-only/aspirational with no dedicated queries."
     resource_types: ["database"]
     intent: assessment  # scores grant/role hygiene — unchanged
     perspectives: ["Security", "Admin"]
-    annotation_types: ["DataClassAnnotation", "RequestForActionAnnotation"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_activity_signals
+    name: "Activity Signals"
+    description: "Database-wide roll-up of pg_stat_user_tables tuple counters and scan counts: is anything reading or writing at all, database-wide, since the last statistics reset. Reuses postgres_schema_and_stats' per-table figures rather than re-querying them (design §5.2, §5.7)."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: credential_capability
+    name: "Credential Capability"
+    description: "Read-only pg_namespace/information_schema.schemata, pg_class/has_table_privilege, pg_has_role(pg_monitor) and has_table_privilege(INSERT) checks -- never a trial write. States 'connected as X -- visible N of M schemas, SELECT on N of M tables' and raises an RFA to the database owner when coverage is meaningfully thin (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md, replying to ASK-...-#251)."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForAction"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_resilience
+    name: "Operational Resilience"
+    description: "MIXED analysis (design §5.5): catalog half — primary/standby, replicas and lag, WAL archiving status, backup-tool/Citus-clustering signals — measured directly; Enrichment half (last backup date, restore-test date, RPO/RTO) is not machine-observable and stays explicitly pending, never silently omitted."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["Admin", "Data Owner"]
+    annotation_types: ["ResourcePhysicalStatusAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_external_dependencies
+    name: "External Dependencies"
+    description: "What this database depends on outside itself: extensions, foreign data wrappers/servers/tables, logical replication publications/subscriptions (design §5.4)."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Architecture", "Admin"]
+    annotation_types: ["SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  # ── db_derived: the zero-fetch derivation tier (Phase 1 slice 9) ─────────
+  #
+  # All six are backed by the ONE `db_derived` step (design §5.7), which
+  # reads only rows RE already stored and opens no connection — to the
+  # database or to Egeria. `run_time: fast` and `availability: inline` follow
+  # from that: there is no acquisition to pay for, which is exactly the
+  # property CLAUDE.md rule 17 wants of the Discovery tier.
+  - id: db_classification
+    name: "Database Classification"
+    description: >
+      What kind of database this is — transactional, analytical, reference
+      data, staging or a copy — derived from stored table shapes, key/FK
+      density, naming patterns and the read/write mix in stored tuple
+      counters. Reports a confidence scaled to how many signal families were
+      actually available; a missing family (no tuple counters because ANALYZE
+      never ran, no comparable database to fingerprint against) lowers
+      confidence rather than counting as evidence, and too little signal
+      renders as "not established" instead of naming a kind.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Data Expert"]
+    annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_relationship_graph
+    name: "Relationship Graph"
+    description: >
+      Is there a data model here — do the tables relate through foreign keys,
+      or is it a bag of tables? Builds the FK graph from stored column rows:
+      edge count, connected components, isolated tables, most-referenced
+      tables. A survey that never captured key information renders as "not
+      established" rather than as "no foreign keys".
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Data Expert"]
+    annotation_types: ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: grain_determination
+    name: "Table Grain"
+    description: >
+      What is the grain of each table — one row per what? Derived from the
+      declared primary key, or failing that from a stored column profile
+      whose distinct count matches the row count, plus any date column in the
+      key for the interval. Produces a DataGrainAnnotation carrying a
+      grainStatement and a confidence that reflects the basis, published as a
+      proposal (contentStatus DRAFT) because no DataGrain element exists yet.
+      A table with no key and no profile is "not established"; a table with a
+      profile and no unique column is a real modelling gap.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Data Expert", "Steward"]
+    annotation_types: ["DataGrainAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_fingerprint
+    name: "Schema Fingerprint"
+    description: >
+      Does this look like a copy or subset of a database we already know? A
+      structural signature over stored table and column names and types,
+      hashed, and compared against every other database in the registry that
+      has stored schema rows — by Jaccard similarity and by containment, so a
+      genuine subset is detected as well as a duplicate. A registry with
+      nothing comparable renders as "not established", not as "unique".
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Architecture", "Financial"]
+    annotation_types: ["FingerprintAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: schema_conventions
+    name: "Schema Conventions"
+    description: >
+      Check-granular structural hygiene derived from stored rows: tables with
+      no primary key, tables with no foreign key, tables and columns with no
+      comment, and names that are not lower snake_case. Does NOT cover unused
+      indexes — postgres_schema_and_stats owns that check, which needs a live
+      pg_stat_user_indexes read. A database where nothing at all is documented
+      reads as "comments not captured" rather than as 100% undocumented.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Data Expert"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: data_class_match
+    name: "Data Class Match"
+    description: "Which columns conform to a known Egeria Data Class (PII and otherwise), with what confidence — and which look like a class we do not have yet. Matches column name, type and bounded value sampling against every DataClass in the platform, producing a DataClassAnnotation per column. An unmatched-but-patterned column is proposed as a new DataClass with contentStatus: DRAFT, linked to its evidence via AssociatedAnnotation (design §5.4; support doc §3 as settled by the corrected probe 4). Every confidence is stated against the sample that produced it, never as an unqualified \"conforms\" (design §5.8). A column no value was sampled from is not_established, never \"no match found\"."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Privacy", "Steward", "Security"]
+    annotation_types: ["DataClassAnnotation", "ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    # api_heavy per design §5.7 — the only step in the database family that
+    # reads actual table data. `queued`, not inline, for the same reason
+    # `architecture_recovery` is: cheap to compute once the sample is in hand,
+    # and the sample itself is a real fetch (CLAUDE.md rule 17's
+    # availability-is-not-run_time ruling).
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: db_change_rates
+    name: "Change Rates"
+    description: >
+      How is it changing — rows inserted/updated/deleted per table per
+      period, size drift and schema churn — differenced between two stored
+      survey snapshots. A database surveyed only once renders as
+      "insufficient history", never as zero change. A table whose cumulative
+      counters were reset between snapshots reports "counters reset, no rate
+      available" rather than the negative delta the subtraction would give.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Admin", "Data Owner"]
+    annotation_types: ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: schema_diff
+    name: "Schema Diff (Columns)"
+    description: >
+      Column-level schema drift since the previous survey — columns added,
+      dropped, or retyped — restricted to tables that exist in both
+      snapshots (a whole table appearing or disappearing is
+      `db_change_rates`'s schema-churn story, not this one's). A database
+      surveyed only once renders as "insufficient history", never as zero
+      change. Design §9.1's `schema_diff` comparator; this covers the
+      column/constraint half, the table add/drop half is already covered by
+      `db_change_rates`.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Admin"]
+    annotation_types: ["SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: grant_change
+    name: "Grant Change"
+    description: >
+      New grants (especially to PUBLIC) or revoked grants since the
+      previous survey, differenced across the two most recent snapshots of
+      `database_grants`. A database surveyed only once renders as
+      "insufficient history", never as zero change. Design §9.1's
+      `grant_change` comparator — the Privacy/Security preset's
+      done-test case.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Security", "Admin"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: corpus
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  # ── §16's coverage/grain/fit rows (2026-09-24) ───────────────────────────
+  #
+  # `docs/multi-resource-questions-design.md` §16.3's Scouting and Discovery
+  # rows. All three are backed by the same `db_derived` step as the six above,
+  # for the same reason: they reason over already-stored rows and open no
+  # connection. §16.3 files the first two under Scouting; they are tagged
+  # `discovery` here because CLAUDE.md rule 17's axis is "does this collect, or
+  # reason over what is already collected", and these reason — the same
+  # judgement that already put `grain_determination` (also a Scouting row in
+  # §16.3) in `discovery`. §16.2's "Scouting" is about when the SIGNAL is free,
+  # and it is: no fetch is added anywhere.
+  - id: subject_signals
+    name: "Subject Signals"
+    description: >
+      What is this data about? Candidate subject terms from stored table and
+      column names and from pg_description comments, each carrying the basis
+      it came from — a comment outranks a name, and a term found in both
+      outranks either. Confidence is deliberately low-medium (design §16.2:
+      "a name is a claim"), and NOTHING is matched against Egeria's glossary
+      or a data-class registry, because this step opens no connection: an
+      unmatched term means "not looked up", never "not a known term". A
+      database whose names are entirely structural (id, created_at, value)
+      reads as a real finding pointing at Enrichment, not as a missing survey
+      step; a database where not one table or column carries a comment reads
+      as "comments not captured" rather than as undocumented.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Data Expert", "Steward"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: coverage_signals
+    name: "Coverage Signals"
+    description: >
+      What period and places does this appear to cover, from catalog
+      statistics and names alone — no row read? The period comes from
+      pg_stats histogram bounds (and exact min/max where a native survey
+      stored them) on date and timestamp columns. Their ABSENCE means ANALYZE
+      has not run, or the credential cannot see pg_stats — it does NOT mean
+      the database holds no dates, and the two are separate named states
+      (design §16.2's own warning). Places are the NAMES of place-bearing
+      columns only: which regions are actually present needs the values, so
+      it is deferred to coverage_profile rather than estimated. Partition
+      bounds would be exact and free, and nothing in RE collects them yet, so
+      that block reports a collection gap rather than silence.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Governance"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: preliminary_fit
+    name: "Preliminary Fit"
+    description: >
+      Could this be in scope for what I am looking for — worth the full pass?
+      The Discovery gate of design §16.3: a zero-fetch comparison of the three
+      free estimates (subject_signals, coverage_signals, grain_determination's
+      time grain) against a supplied data requirement. Four verdicts, kept
+      distinct on purpose: fits, does not fit, COULD NOT CHECK (an input was
+      itself not established — the pg_stats/ANALYZE case, which must never
+      read as either of the first two), and "no requirement declared" when no
+      lens is supplied, which carries what this resource COULD satisfy instead
+      of a vacuous pass. Regions, data classes and grain statements are
+      carried through as deferred criteria naming the analysis that answers
+      them, never scored here.
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "Financial"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: reference_data_match
+    name: "Reference Data Match"
+    description: "Which low-cardinality columns conform to a known Egeria ValidValueSet, and which should become one. Columns whose n_distinct (from the stored pg_stats profile, sign convention resolved) falls under the reference-data gate have their sampled distinct values compared against every set in the platform: a full match becomes ValidValuesAssignment advice, a partial match raises an RFA listing the values outside the set, and no match at all proposes a new set with contentStatus: DRAFT (design §5.4). A truncated distinct-value list is inconclusive rather than a partial match, since a coverage fraction from an incomplete list is wrong in an unknown direction."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Data Expert", "Governance"]
+    annotation_types: ["RelationshipAnnotation", "ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: nested_column_profile
+    name: "Nested Column Profile"
+    description: "What is inside the JSON/JSONB/XML columns — keys, nesting, types, and consistency across rows. Samples each JSONB/JSON/XML column with the same §5.8 configuration surface postgres_column_profile uses, then infers a nested schema: per-key presence frequency and JSON-type consistency (or, for XML, root-element and element/attribute name frequency), and nesting depth. Produces a SchemaAnalysisAnnotation per column — including for a column where every sampled value is a JSON scalar or unparseable XML, which is a real, distinct finding (possibly a misclassified column), never rendered as 'no nested structure' (design §5.4; postgres_nested_columns, Phase 1 slice 11, gated on slice 10's sampling infrastructure)."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Data Expert", "App/AI Builder"]
+    annotation_types: ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation"]
+    source: local
+    # api_heavy per design §5.7 — reads actual JSON/XML values, same cost
+    # class as postgres_column_profile and for the identical reason
+    # (CLAUDE.md rule 17's availability-is-not-run_time ruling).
+    run_time: medium
+    availability: queued
     action: survey
     target_shape: whole_resource_only
     recommended: true

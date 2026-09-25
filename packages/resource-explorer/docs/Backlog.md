@@ -10,6 +10,252 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## A new annotation class is unguarded by `test_annotation_check_names.py` until someone remembers it
+
+**Found while building** `db_derived` (Phase 1 slice 9,
+`DB-DERIVED-STEP-IMPLEMENTED.md`).
+
+`tests/test_annotation_check_names.py` gates every annotation site in
+`surveyors/` on naming its `check_name`, and gates shared check names on being
+declared mutually exclusive. Both walk the AST looking for calls whose function
+name is in a hand-maintained set, `ANNOTATION_CTORS`. A new annotation class is
+absent from that set by default, so **every check in the file silently skips
+its call sites, and nothing reports that they are unchecked** — the guard is
+green because it never looked.
+
+Live when found: `ResourcePhysicalStatusAnnotation` (added by slice 8) was
+unguarded, and so were slice 9's `DataGrainAnnotation` and
+`FingerprintAnnotation`. All three were added to the set in slice 9's branch,
+and doing so immediately surfaced a real undeclared shared check name
+(`db_fingerprint`) that had been invisible — which is the evidence the gap
+matters rather than being theoretical.
+
+Two smaller holes in the same file, found the same way:
+
+- The shared-check-name check only reads `ast.Constant` keyword values, so a
+  site written `check_name=SOME_CONSTANT` is skipped. Slice 9's
+  `proposed_data_scope` sites were changed to spell the literal specifically so
+  the guard could see them, with a test pinning the literal against the
+  constant — satisfying the guard rather than dodging it, but the next author
+  has no way to know that is expected.
+- `DEFERRED` still excludes `database/database_surveyor.py`, on a 2026-09-02
+  note that DB/FS surveying is deferred "until the repo path is finished". Two
+  slices of database work have landed in that file since.
+
+**Candidate fix:** derive `ANNOTATION_CTORS` from `survey_report`'s own
+`Annotation` subclasses (or from `ANNOTATION_TYPES_REGISTRY`) instead of a hand
+list, so a new class is guarded by construction and the failure mode becomes "a
+new class breaks the build until declared" rather than "a new class is silently
+exempt". Re-examine `DEFERRED` at the same time.
+
+---
+
+## `min_value`/`max_value` are written only by the native survey path, so a local-only survey has no exact date range
+
+**Found while building** `db_derived`'s proposed `DataScope` (Phase 1 slice 9).
+
+`database_column_profiles` has `min_value`/`max_value` columns, and design
+§5.4's "what is the data's scope in time" row depends on them. The only writer
+is `result_materializer.py`'s native read-back path (from an Egeria column-
+values annotation's `range_from`/`range_to`). Slice 7's local `pg_stats` path
+does not populate them — `pg_stats` has no min/max column, and the step does
+not read values.
+
+So on a database RE has only surveyed locally, the exact coverage range is
+unavailable. Slice 9 falls back to the first and last elements of the stored
+`histogram_bounds_json`, which are Postgres's own ANALYZE-time estimates of the
+extremes, and labels the proposal's `basis` as `histogram_bounds` with reduced
+confidence accordingly. That is honest but weaker than it needs to be.
+
+**Candidate fixes**, either of which would make the local path produce an exact
+range: have `postgres_schema_and_stats` derive `min_value`/`max_value` from the
+histogram bounds at write time (no extra query, same estimate, but stored once
+rather than re-derived by every consumer); or give it a bounded
+`SELECT min(col), max(col)` per date column, which is exact but is a real query
+against the data and so a scope-of-fetch decision, not a free one.
+
+---
+
+## `FingerprintAnnotation`'s native Egeria field names are unverified
+
+**Found while building** `db_derived`'s `db_fingerprint` check (Phase 1 slice 9).
+
+`docs/egeria-integration.md` §2 confirms `FingerprintAnnotationProperties`
+exists and quotes its description; probe 5 (`PROBES-2026-09-21.md`) confirmed
+`create_annotation` *accepts* the type. Neither establishes what fields it
+carries, and no Egeria Java source checkout is available on this machine to
+read them from (`grep` for the class over `~/localGit` finds no `.java` at all).
+
+Slice 9 therefore publishes the fingerprint payload (digest, algorithm, table
+and column counts, closest match, similarity) through `additionalProperties` —
+the same fallback slice 8 used for `ResourcePhysicalStatusAnnotation` — rather
+than guessing typed field names that would land nowhere. `DataGrainAnnotation`
+needed no such fallback: its field names are quoted from the Java source in
+`egeria-support-for-multi-resource.md` §3, so it publishes as typed fields.
+
+**Candidate fix:** one probe — read `FingerprintAnnotationProperties` (and
+`ResourcePhysicalStatusAnnotationProperties`, same question) from the Egeria
+source or a live type query, and move both payloads onto their real fields.
+
+---
+
+## Does any ordinary read path surface `contentStatus`?
+
+**Raised by** `egeria-support-for-multi-resource.md` §3's own closing paragraph;
+**now live**, because `db_derived` (Phase 1 slice 9) is the first RE analysis
+that actually publishes `contentStatus: DRAFT` — on its proposed table grains
+and its proposed `DataScope`.
+
+The project owner's 2026-09-21 decision made `contentStatus: DRAFT` the
+mechanism for proposing a governance element that does not exist yet, and the
+corrected probe 4 showed it round-trips. What is *not* established is whether
+anything a consumer normally reads distinguishes a DRAFT annotation from a
+confirmed one: a `contentStatus: DRAFT` element keeps `ElementStatus: ACTIVE`,
+so it is not filtered out, and a naive reader sees the same element either way.
+
+Until that is checked, a proposal RE publishes may render exactly like a
+finding — which is the "absence rendered as a result" failure in a new place.
+**Candidate fix:** probe whether `find_metadata_elements`/RE's own annotation
+rendering surface the field at all, then make RE's own annotation views show it
+before anything leans on DRAFT as the primary proposal UX (§3 flags this as
+worth doing before slice 10).
+
+---
+
+## `db_hub_tables` is most of the way there for free
+
+**Noticed while building** `db_derived`'s relationship graph (Phase 1 slice 9).
+
+Design §5.3 lists `db_hub_tables` ("which tables would a consumer start with?
+FK in-degree, rows, comments, read activity") as its own analysis; it is not in
+slice 9's scope and was not built. But `db_relationship_graph` already computes
+FK in-degree per table and returns the top ten as `most_referenced`, and the
+other three inputs (row counts, comments, read activity) are all in the same
+stored rows this step already reads. A later slice could add it as a seventh
+zero-fetch check for very little work rather than as a new step.
+
+---
+
+## Change rates difference two snapshots, and nothing charts the series
+
+**Found while building** `db_derived`'s `db_change_rates` (Phase 1 slice 9).
+
+Two limits, both deliberate and both worth revisiting:
+
+- It differences the two most recent snapshots that carry activity rows, not a
+  longer series. Design §5.4 wants "per-table series → Understanding charts".
+  The series exists — `database_table_activity` rows across their several
+  `surveyed_at` values are it, which is why no new structured table was added —
+  but nothing walks more than two of them, and a trend over five surveys is a
+  different (and more useful) shape than a delta over the last two.
+- **Nothing renders it.** No Understanding-tier chart reads these rows. The
+  annotation carries the per-table payload and the classic DB view will show
+  the annotations, but the chart design §5.4 asks for is not built, so the
+  "per-table series" claim is currently satisfied by the data being reachable
+  rather than by anything a user sees.
+
+---
+
+## No structured table for index usage, and no `ResourceProfile` annotation type
+
+**Found while building** `postgres_schema_and_stats`'s pg_stats/tuple-counter/
+index extension (Phase 1 slice 7, `DB-SCHEMA-AND-STATS-EXTENSION-IMPLEMENTED.md`).
+
+Design §5.1 lists `pg_stat_user_indexes`/`pg_index` (index usage, unused-index
+detection) as part of this step's catalog sources, and §5.7 says the step
+produces "SchemaAnalysis, ResourceMeasure … ResourceProfile (frequent
+values)". Neither has a home in the current data model:
+
+- The ten structured tables `re/db-fs-structured-tables` built
+  (`database_schemas`, `database_tables`, `database_columns`,
+  `database_column_profiles`, `database_table_activity`, `database_grants`,
+  `database_sql_objects`, `database_settings`, plus the two filesystem
+  tables) have no `database_indexes` table. Index findings this slice
+  produces are annotations only (`ResourceMeasureAnnotation` per index,
+  `RequestForActionAnnotation` for an unused non-PK index) — not queryable
+  rows, so a UI wanting "list of unused indexes across all databases" has
+  nowhere to query.
+- `AnnotationType` (`surveyors/survey_report.py`) has no `RESOURCE_PROFILE`
+  member. Only Egeria's own native survey has a distinct "frequent values"
+  annotation shape (`ANN_COLUMN_VALUES` in `result_materializer.py`); a local
+  publish folds frequent values into `ResourceMeasureAnnotation.
+  resource_properties` instead.
+
+Both were left alone rather than added speculatively — slice 7's brief was
+explicit about not inventing a new table, and adding a new `AnnotationType`
+member is a catalog-and-publisher-wide decision, not a one-step scope
+extension. Worth a project-owner decision before either is picked up: does
+index usage get its own structured table (parity with the other nine), and
+is `ResourceProfile` worth adding as a distinct annotation type or does
+folding frequent values into `ResourceMeasureAnnotation` stay the pattern.
+
+---
+
+## Classic panel: primary component pick is still `latest`, not best-evidenced
+
+`RULING-CLASSIC-AND-NEXT.md` §3 (2026-09-17) also called for the classic panel's
+*primary* component reading — the `type`/`confidence` `_archRow` shows before any
+"also proposed by" clause — to become the best-evidenced proposal (agreed first,
+then highest confidence), not `repo_survey_definition_adapter.py:2951`'s
+`max(comp_rows, key=lambda r: r["surveyed_at"])`. The 2026-09-20 pass
+(`HONEST-CLASSIC-ROW-IMPLEMENTED.md`) shipped the honesty clause naming the other
+current proposer(s) but deliberately left `latest` as the server-side pick —
+changing it touches the shared `_architecture_recovery_results` payload every
+caller of `components[]` reads (both classic and `/next`), which is a wider
+blast radius than a one-clause client-side addition, and `/next` already has its
+own best-evidenced logic (the branch tree's `agreement`/`proposals` sort) so
+nothing was left un-honest by deferring this. Still open: swap `latest`'s
+selection rule to agreement-first-then-confidence, consistent with what `/next`
+already does, and update the one component-level test that pins `latest`'s
+current selection if one exists.
+
+## Path B3 — repo `executes_at: egeria` handler built (2026-09-20)
+
+**Decision (project owner, 2026-09-20):** build the repo-side `executes_at: "egeria"`
+plumbing now, even though no live repo survey action service may exist in Egeria
+yet ("we will probably have some surveys that execute there at some point") —
+close `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md` §1 Path B /
+item 8 (Path B3) rather than waiting for Egeria's side to be ready first.
+
+Built: `EgeriaPublisher.trigger_survey_by_guid` (+ `_initiate_survey`/
+`_find_survey_process_name`, `resource_explorer/surveyors/egeria_publisher.py`)
+mirrors `EgeriaDatabaseSurveyor`'s dynamic-discovery mechanism — generic over a
+technology-type string — rather than `EgeriaFileSystemSurveyor`'s hardcoded-
+qualifiedName shortcut, since no confirmed-live repo survey process exists to
+hardcode against. `repo_survey_definition_adapter._trigger_egeria_native_survey`
+registers as `other_engine_handlers={"egeria": ...}` on the repo `_ADAPTER`,
+following the database/filesystem handlers' contract exactly (requires a
+stored `Project.egeria_asset_guid`, reuses the shared
+`egeria_async_survey_result.poll_trigger_and_retrieve_annotations` poll/
+resolve/attribute/convert machinery unmodified — nothing resource-type-
+specific was found in it).
+
+Repos have no registered Egeria Technology Type (cataloged as a plain generic
+`Asset`, not a typed one) — `"GitHub Repository"` is used as the discovery key,
+since it's the one repo-specific string this codebase already sends to Egeria
+(`additionalProperties.deployed_implementation_type` in
+`EgeriaPublisher._find_or_create_asset`).
+
+**Expected, honest current state:** with no live repo survey action service
+registered in Egeria, and no `(entity_type="repo", "GitHub Repository")` entry
+in `configdata/technology_type_processes.yaml`, a repo Survey Definition step
+tagged `executes_at: "egeria"` now reaches a specific, clear RuntimeError
+("No native survey process configured for technology_type='GitHub Repository'
+(entity_type='repo')") instead of the old `not_executed_no_egeria_handler`
+skip — reported through the executor's normal per-step error path, not a
+crash. This is correct and expected, not a regression to fix; it self-resolves
+the moment a real repo survey action service is authored in Egeria and either
+registered as a discoverable user Survey Definition or added to
+`technology_type_processes.yaml` — no further RE code change needed.
+
+Tests: `tests/test_repo_egeria_native_survey_handler.py` (uncataloged raise,
+happy-path trigger+poll+resolve, no-matching-process error, both direct and
+through the full executor). `tests/test_execution_modes_path_b1_failure_modes.py`'s
+`TestUnregisteredEngineHandlerYieldsNotExecuted` — which had pinned "repos have
+no egeria handler at all" as its live example — is updated to exercise that
+generic failure mode against a synthetic adapter instead, since it's no longer
+true of repos.
+
 ## Cataloguing in layers — layer 1 evidence and consumed-Egeria-interfaces built
 
 **Decision (project owner, 2026-09-14):** catalogue in layers — coarse top-level
@@ -588,6 +834,96 @@ rather than its behaviour.
 
 Grouped by area. Within a group, the most actionable entries come first.
 
+**Priority tiers (project owner, 2026-09-18)**, used going forward to sequence which open
+items get picked up next — not a re-tag of every entry below, but the lens for new ones and for
+choosing what to dispatch:
+
+1. **Bugs and backend infrastructure** — data-corrupting races, broken/unverified execution paths,
+   orchestration. Fix correctness before building on top of it.
+2. **UI, generic/structural** — screens and surfaces that are missing or a stub (Search/Discover),
+   admin surface shape, cross-cutting UI mechanics.
+3. **Design-gated** — anything that needs a designer decision before it's buildable. Tracked so it
+   doesn't silently sit; see the designer's own `DEFERRED-REGISTER.md` for what's already on their
+   desk.
+4. **Survey/analytics/results enhancements** — new or improved analyses, richer findings, cost and
+   dependency modelling. Valuable, but behind the tiers above.
+
+### TIER 1 — FIXED 2026-09-19: whole-definition Prefect orchestration bypassed per-step `executes_at` routing
+
+**Found live, the day `PREFECT_ENABLED` defaulted to `true` for the first time with a real
+reachable server** (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5 phase 3): CI failed on a database Survey
+Definition fixture, tracing back to `SurveyDefinitionExecutor.run()`'s `_run_via_prefect` path —
+gated only on `_prefect_orchestration_enabled()` (i.e. `config.prefect.enabled`), with **no check
+on what any individual step's `executes_at` actually said**. `prefect/flows.py`'s
+`re_survey_definition_flow` → `run_planned_step_task` calls `run_surveyor_step_task.fn(...)` — the
+plain local-analysis-step runner — for **every step in the plan**, including ones tagged
+`executes_at="egeria"`. Confirmed directly: an `executes_at="egeria"` step that should have raised
+`_trigger_egeria_native_survey`'s "no stored Egeria asset guid" instead surfaced
+`run_surveyor_step_task`'s own "Entity ... not found in registry" — proof the step never reached
+its real handler at all.
+
+**Repo Survey Definitions never exposed this** — repos have no Egeria-coordinated path today (see
+the "three execution modes" Tier 1 entry above) — **so it would have silently broken every
+database and filesystem Survey Definition** the moment a real Prefect server was reachable, which
+is now the default topology on this machine. Phase 2's live verification called `run_prefect_step`
+directly for one step (`repo_arch_coupling`) rather than through `SurveyDefinitionExecutor.run()`'s
+whole-definition path — a real gap in what "verified live" actually covered, worth naming plainly
+rather than letting the phrase imply more than it checked.
+
+**Fixed** by `_all_steps_prefect_runnable()` (`survey_definition_executor.py`) — gates
+`_run_via_prefect` off entirely for any definition mixing engines, falling through to the existing
+local loop, which already routes each step correctly one at a time (repo/analysis-step definitions,
+which never mix engines, are unaffected and still get whole-definition orchestration). Regression
+test: `test_prefect_orchestration_respects_engine_routing.py`, proving the egeria step reaches its
+real handler with orchestration forced on, independent of whether a server happens to be reachable.
+
+**Left as a known, non-bug constraint, not fixed:** `run_surveyor_step_task` always constructs a
+fresh `ProjectRegistry()` rather than reusing the executor's own registry instance — correct for a
+real distributed worker (which must have its own DB connection to the same shared Postgres
+regardless), but it means anything exercising this Prefect path needs data that exists in the real
+default registry, not an isolated/throwaway one. Broke two new tests
+(`test_execution_modes_path_a_end_to_end.py`) that used a tmp-path SQLite registry; fixed by
+disabling whole-definition orchestration for those tests specifically (they test the local loop,
+not this boundary), not by changing the production code.
+
+**The real fix, not yet built:** per-step engine routing *inside* the Prefect flow itself, matching
+what the local loop already does — so a mixed-engine definition could still get Prefect's
+observability for its Prefect-eligible steps instead of falling back to the local loop entirely.
+Not scoped here; the guard above is the safe, correct behavior until it is.
+
+### The outbox drain does not serialise, and its docstring says it does — FIXED 2026-09-19
+
+**Resolved:** `claim_due_outbox_elements()` (`resource_explorer/registry.py`)
+now performs the select and the `status='running'` transition in one
+transaction, with `FOR UPDATE SKIP LOCKED` added to the `SELECT` on Postgres —
+so two concurrent drainers provably cannot claim the same row (see
+`docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`). A stranded claim (drainer
+died before marking the row done/failed) self-heals via `CLAIM_LEASE_SECONDS`;
+a claim that could not even be attempted (no Egeria client reachable) is
+released immediately by `drain_outbox`'s no-client branch calling
+`release_outbox_claim()`. Regression coverage lives in
+`tests/test_egeria_outbox.py`'s `TestTheClaimActuallyClaims` (two claimers
+never get the same row, a killed drainer's rows are reclaimable after the
+lease, an outage hands the claim back rather than holding it) and
+`TestTheClaimSqlIsValidOnPostgres` (pins the exact SQL shape — no `FOR UPDATE`
+combined with an outer join, which SQLite's test tier cannot itself catch).
+
+**This fix landed in the code on 2026-09-02 itself** (commit `472f83c5d`, a
+few hours after the entry below was filed and the docstring was first
+corrected to describe the then-still-broken behaviour) — but the docstring
+correction was never revisited once the real fix landed, so it kept
+describing the bug as unsolved, and this backlog entry was never marked
+fixed. Caught 2026-09-19 while auditing this entry to write a regression
+test: the "fix" the entry called for already existed in `registry.py`, just
+undocumented as done. Corrected the docstring in the same pass (see
+`claim_due_outbox_elements`'s current docstring) — a second instance of
+this exact failure mode (a docstring asserting the opposite of what the code
+does) is precisely what this entry itself warned "is worse than an
+undocumented race."
+
+*Original entry below, kept for the reasoning behind why the hazard is
+asymmetric — annotations survive a double-apply, annotation links do not.*
+
 ### The outbox drain does not serialise, and its docstring says it does
 
 **Filed 2026-09-02, while a batch republish had the web server deliberately
@@ -628,6 +964,211 @@ operator with the app open is already two drainers.
 property holds by construction instead of by remembering to stop the server.
 Until then, stopping the web server is the mitigation, and it is a mitigation
 for one run rather than a fix.
+
+### TIER 1 — `catalog_and_survey` never refreshes an existing element's credentials/connection
+
+> **Fixed for fresh catalogs, 2026-09-20 — see
+> `docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md` for the full investigation.**
+> The root cause was not the guard this entry originally suspected: Egeria's
+> create-from-template calls ARE upsert-safe by qualifiedName (confirmed live —
+> re-issuing one for an existing element returns the same GUID, not a
+> duplicate), so removing the `if not <guid>` guard alone would not have
+> helped. The real defect is that pyegeria's `create_postgres_server_element_
+> from_template`/`create_postgres_database_element_from_template` never set
+> `"deepCopy": True` on the template request, so Egeria never copies the
+> template's attached Connection subgraph — confirmed live that a first-time
+> catalog run can end up with no Connection too, not just a repeat one.
+> `EgeriaDatabaseSurveyor._create_postgres_element_from_template` now bypasses
+> those two wrappers and adds `deepCopy: True`, fixing this for **fresh
+> catalog runs**.
+>
+> **This does NOT repair `coco_ods` itself, or any other already-broken
+> existing element**, and `coco_ods` was deliberately left in its current
+> state. Confirmed live: Egeria's by-qualifiedName reuse path (what fires for
+> an element that already exists) never re-runs deepCopy's child-copying, no
+> matter how many times it's called. The template's attached Connection is
+> also not a simple Connection — it's a `VirtualConnection` embedding a
+> `SecretsStoreConnection` wired to a YAML-file secrets connector, plus its own
+> `Endpoint`/`ConnectorType` — so hand-assembling it via generic
+> `ConnectionMaker` calls was judged (project owner decision, 2026-09-20) an
+> unsupported-path workaround, not a fix, and was not attempted. The only
+> confirmed-correct repair is **delete-and-recatalog**, which fixes the
+> connection but changes the asset's GUID and orphans its existing Survey
+> Reports/annotations — a real fix with a real cost that needs its own
+> decision before it's built, not something to slip in as a side effect of
+> this bug fix. `EgeriaDatabaseSurveyor._warn_if_database_has_no_connection`
+> makes this state visible (WARNING-level log) the next time it's hit, instead
+> of only surfacing downstream as an opaque `OPEN-SURVEY-0009`.
+>
+> Also confirmed, per the task's explicit ask not to assume symmetry:
+> `EgeriaFileSystemSurveyor`'s `catalog_and_survey` does **not** have this bug
+> — it takes no credentials at all and its templates have no attached
+> Connection subgraph, so neither the guard nor the `deepCopy` gap applies
+> there. No code change was needed on the filesystem side.
+>
+> Still open: a pyegeria gap (`deepCopy` never set) should be logged in
+> `PYEGERIA_ISSUES.md` per this repo's pyegeria-gaps-tracking convention — not
+> done as part of this change since that file is in the `egeria-python`
+> checkout, outside this fix's `trellis`-only scope.
+
+**Found live, 2026-09-19/20**, while testing Egeria-native survey result retrieval against a real
+database (`coco_ods`, part of the Coco Pharmaceuticals sample data). The native PostgreSQL survey
+engine rejected the triggered engine action as `INVALID` with:
+
+> `OPEN-SURVEY-0009 The postgres-database-survey-service Survey Action Service has been supplied
+> with asset 8f239316-8773-44da-9e8e-760243226a10 which has no connection, so there is no way to
+> reach the resource it describes`
+
+**Root cause, confirmed by reading the code, not guessed:**
+`EgeriaDatabaseSurveyor._catalog_and_survey()` (`surveyors/database/egeria_database_surveyor.py`)
+looks up the server/database elements by name first (`_find_element_guid`) and only calls
+`create_postgres_server_element_from_template`/`create_postgres_database_element_from_template` —
+the calls that actually carry `db_user`/`db_pwd` and presumably attach a `Connection` — **when no
+element is found by that name**. Once an element exists, re-running `catalog_and_survey` (even
+with corrected credentials) reuses the existing element unchanged and never re-creates or updates
+its connection. Live-verified directly: re-ran `catalog_and_survey` for `coco_ods` with corrected
+`db_user`/`db_pwd` (see the `egeria_user` validation entry above — this asset was originally
+catalogued using bad credentials before that fix) and got the *identical* `OPEN-SURVEY-0009`
+error on the new engine action, proving the re-run changed nothing about the stored connection.
+
+**Impact:** any database or filesystem asset first catalogued with wrong/incomplete
+credentials is permanently stuck with no working native survey path — there is no way to correct
+it short-of manual intervention, since the one function that would normally be expected to "fix
+it, just re-run the catalog step" silently no-ops on the part that matters.
+
+**Not yet investigated:** whether pyegeria exposes an "update connection on an existing asset"
+call distinct from the create-from-template ones, or whether the only real fix is delete-and-
+recatalog. Also unconfirmed: whether `create_postgres_server_element_from_template`/
+`create_postgres_database_element_from_template` themselves are upsert-safe (would update in
+place if called again) — if so, the simpler fix is just removing the `if not <guid>` guard and
+always calling them, letting the template call itself decide create-vs-update. Investigate
+before assuming either fix is correct.
+
+**Explicitly not a bug in the Egeria-async-result-retrieval work done the same day** (see
+`EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md`) — that work's poll/attribution/parse mechanism was
+validated live against this exact failure: it correctly polled to the real terminal status
+(`INVALID`, not a timeout), correctly surfaced the real completion message, and correctly refused
+to guess when two survey reports (server-level and database-level, triggered together) landed in
+the same time window, raising `SurveyReportAttributionError` rather than picking one at random.
+The `0` annotation counts read back were independently confirmed accurate given the underlying
+`INVALID` survey — a real absence, not a miscount.
+
+### TIER 1 — "Three execution modes" don't map onto one verified mechanism, and two of the paths are untested
+
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
+> corrections to this entry, found while planning against it: the global-override concern below
+> (`config.prefect.enabled` rerouting every `resource-explorer` step) is already fixed —
+> `survey_definition_executor.py:317-332` honours `executes_at`, and rerouting needs the separate
+> `prefect.route_local_steps`, pinned by `tests/test_prefect_dispatch.py:179/184`. And there *is* a
+> filesystem hybrid path — not a class, but `hybrid_filesystem_surveyor.py:12`'s
+> `run_hybrid_filesystem_survey()`, called from `web/routes/filesystems.py:271-272`. The core
+> finding survives both corrections. The plan recommends folding both hybrid entry points'
+> capabilities into `executes_at` routing as a new `egeria-hybrid` value, not retiring or
+> documenting them as legacy — they are live default-path code with capabilities (cache-or-run,
+> catalog-on-demand, engine provenance) the other two paths lack.
+
+Raised by the project owner, 2026-09-18: are all three of RE, Egeria, and Hybrid execution genuinely
+working? Investigated against the code rather than assumed, and the honest answer is that **"three
+modes" isn't one mechanism with three settings** — it's two unrelated things that both get called a
+"mode":
+
+1. **`executes_at` routing** (`survey_definition_executor.py:314-514`) — a per-step field on Survey
+   Definitions with exactly three legal values, `"resource-explorer"`, `"egeria"`, `"prefect"`
+   (anything else raises, `:513-514`). `Architecture.md:229-233` frames this correctly as **two
+   coordinators, neither of which is RE**: either Egeria coordinates and RE executes leaf steps, or
+   RE coordinates and hands work to Prefect.
+2. **`HybridDatabaseSurveyor`** (`surveyors/database/hybrid_database_surveyor.py:14`, docstring "uses
+   Egeria when available, falls back to custom") — a **separate, older class not wired into
+   `survey_definition_executor.py`'s dispatch loop at all**. Invoked directly from
+   `web/routes/databases.py:250-251` and `cli/main.py:1687-1697` via `run_hybrid_survey()`. CLAUDE.md
+   rule 15 constrains it (run the local scan immediately after triggering Egeria's async survey).
+   **Correction, 2026-09-18 planning pass:** there is no *class* equivalent for filesystems, but
+   there is a function doing the same job — `filesystem/hybrid_filesystem_surveyor.py:12`'s
+   `run_hybrid_filesystem_survey()`, called from `web/routes/filesystems.py:271-272` and
+   `cli/main.py:2104-2105`. So the hybrid idea is two implementations on two resource types with no
+   shared abstraction, not one orphan class — a different, slightly worse version of the same
+   problem. There is still no repo hybrid path.
+
+**Verification status, checked directly rather than assumed:**
+
+- `executes_at: resource-explorer` / `executes_at: prefect` **routing logic is solidly unit-tested**
+  (`tests/test_prefect_dispatch.py` covers fallback, cancellation, exact routing predicates) — but
+  that is dispatch-logic testing, not a live end-to-end run through either path.
+- `executes_at: egeria` (the `other_engine_handlers` mechanism, `database/survey_definition_adapter.py:113`,
+  `filesystem/survey_definition_adapter.py:138`) has **no test coverage found**, matching the
+  codebase's own admission: `Architecture.md:246-247` states this route "is the intended route for
+  unifying database and filesystem survey launching... and it is **untested end to end on either
+  type**."
+- `HybridDatabaseSurveyor` / `run_hybrid_survey` has **no test coverage found at all** — not in any
+  file under `tests/` (grepped, came up empty except an unrelated baseline JSON fixture) — and it sits
+  architecturally disconnected from the `executes_at` system `Architecture.md` describes as canonical.
+
+**Net: one of the three has solid dispatch-logic tests (`resource-explorer`/`prefect` routing), one
+is self-admittedly untested end-to-end (`egeria`-triggered coordination), and the third
+(`HybridDatabaseSurveyor`) is an unrelated, untested, database-only code path that predates the
+`executes_at` design.** This needs closing before more work is built on any of the three assuming
+they're equivalent: at minimum, a real end-to-end test per path against a live Egeria/Prefect, and a
+decision on whether `HybridDatabaseSurveyor` should be folded into `executes_at` routing, replaced by
+it, or documented as a deliberately separate legacy path.
+
+### TIER 1 — Prefect: what's actually broken, concretely, for the project owner who wants to use it
+
+> **Planned 2026-09-18 — see `docs/design-notes/PLAN-PREFECT-OR-ALTERNATIVE.md`. Recommendation:
+> finish Prefect, ~2 days of work, not the multi-week commitment this entry's framing implied.**
+> Verified live on the machine that several of this entry's specifics were already stale: the
+> Prefect server container (`egeria-optional-prefect-server`) **is running and healthy**, answering
+> `/api/health` at the exact URL RE defaults to — not "isn't started". The Postgres
+> database/role gap is **closed** (`prefect` DB and `prefect_user` role both exist on the shared
+> instance). The work-pool mismatch is real but is a `.env` value (`PREFECT_WORK_POOL`), not a code
+> change. The `dr_egeria_survey_publisher.py` publishing path's renderer is complete and tested;
+> what's outstanding is running it once against dev Egeria. Dagster, Temporal and Airflow were
+> compared and lose (wrong execution model for an Egeria-defined step graph); a no-engine
+> alternative is the real challenger and loses only because it would mean rebuilding retries,
+> cancellation and per-step observability that Prefect already provides working today.
+
+Raised by the project owner, 2026-09-18: wants to actually use Prefect (or an equivalent) for the
+orchestration tooling, integration connectors and observability it provides, and asked what's
+actually wrong with it today rather than leaving "off by default" as an unexamined steady state.
+
+**Timeline** (full detail in this document's "Distributed survey orchestration via a flow tool
+(Prefect)" entries below): prototyped 2026-07-14, default-on
+2026-08-26, reverted to off-by-default 2026-09-04 after 13 orphaned
+`prefect.server.api.server:create_app` subprocess servers leaked (`config.py:319-331`,
+`PrefectConfig.enabled`'s docstring). **Root cause was Prefect's own client, not RE's fallback
+logic**: Prefect starts an ephemeral subprocess server when `PREFECT_SERVER_EPHEMERAL_ENABLED` is
+true (Prefect's own shipped default) and no API is reachable. Fixed by forcing
+`PREFECT_SERVER_EPHEMERAL_ENABLED=false` at package-import time (`resource_explorer/__init__.py:6-20`),
+covering all Prefect-importing modules including `prefect_status.py`, which imports
+`prefect.client.orchestration` independently of `prefect_adapter.py`.
+
+**Current defaults:** `PrefectConfig.enabled=False`, `route_local_steps=False` (`config.py:339-343`).
+`executes_at: prefect` steps do exist (`scripts/generate_repo_survey_definition.py`'s
+`PREFECT_ROUTED_STEPS`) but publishing the corresponding Egeria-side step requires a manual,
+human-in-the-loop Dr.Egeria run (`dr_egeria_survey_publisher.py`) — not yet done as part of any pass.
+
+**Not containerized, by explicit prior decision:** `scripts/prefect_up.sh`/`prefect_down.sh` are
+bare-host scripts only — no launchd/systemd unit, no container — because Trellis as a whole wasn't
+considered ready for containerization at the time.
+
+**A container already exists, but not here, and has three unresolved gaps if reused:** it lives in
+`egeria-workspaces-fs`'s `optional-associated-runtimes/prefect`, not Trellis. (1) work-pool name
+mismatch — `egeria-pool` vs. RE's default `default-agent-pool` — would leave steps `SCHEDULED`
+forever with no error surfaced; (2) that worker container has no access to the `resource_explorer`
+package/code, so it cannot actually execute RE's steps; (3) unconfirmed whether a separate `prefect`
+Postgres database/role is provisioned on the shared instance.
+
+**Also out of scope today, and worth naming:** `executes_at: egeria`-coordinated surveys get zero
+Prefect/RE visibility — no flow-run, no local thread, no activity_log update — a separate, undesigned
+observability gap from the one Prefect would otherwise close for local steps.
+
+**What production-viability would concretely take** (the docs already lay this out rather than
+leaving it open-ended): resolve the three container gaps above (or build a Trellis-native
+container); complete `dr_egeria_survey_publisher.py` publishing for `executes_at: prefect` steps;
+and decide/document whether `PREFECT_ROUTE_LOCAL_STEPS` should ever go default-on given the
+multiplied per-step overhead already noted elsewhere in this document. None of this has been
+scoped into a real plan yet — recorded here as the concrete starting point for one, including
+whether Prefect remains the right choice at all versus an equivalent tool, which this entry does
+not attempt to answer.
 
 ### Survey execution
 
@@ -3602,6 +4143,87 @@ to say "optional, off by default" rather than implying it's the normal execution
 decision item, not a bug fix — record the review's outcome here once done, with a
 `**Decision (project owner, <date>):**` callout per this repo's convention.
 
+**Measured 2026-09-18 — Prefect per-step dispatch overhead (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5
+phase 4).** This section's headline (and the plan doc's own §6 risk item) called this "unmeasured."
+It no longer is.
+
+*Methodology:* `repo_arch_summary` against `egeria_python_git`, chosen instead of phase 2's
+`repo_arch_coupling` specifically to isolate the fixed dispatch cost from compute-time noise —
+`repo_arch_coupling`'s own `StepInfo` declares `compute_cost="high"` with p90 132s from 32 measured
+runs, which would swamp a ~1-10s overhead signal. `repo_arch_summary` has
+`requires_resources={}`/`fetch_cost="none"`/`compute_cost="low"` (`repo_survey_definition_adapter.py`):
+zero network, zero filesystem, reads findings `repo_arch_coupling` already persisted for
+`egeria_python_git` earlier in this session — a genuinely warm, deterministic, fast step. 8 trials
+per path, alternated (in-process, Prefect, in-process, Prefect, ...) so drift brackets both paths
+rather than separating them into two blocks, one untimed warm-up call per path first. In-process:
+`run_surveyor_step_task.fn(...)` directly, the same call `run_prefect_step`'s own fallback branch
+uses. Prefect: `run_prefect_step(...)` with `config.prefect.enabled=True` and `PREFECT_API_URL`
+exported as a real process env var — RE's own `.env` is read by pydantic-settings directly and does
+**not** populate `os.environ`, so Prefect's own client (which reads `os.environ`/its profile, not
+RE's config object) sees nothing unless the var is exported to the process; the first attempt
+without doing that silently exercised only the fallback branch on every trial and was discarded.
+Confirmed via the Prefect API (`flow_runs/filter`) that all 8 trials produced real, distinct,
+`COMPLETED` flow runs — this is not a stealth-fallback result.
+
+*Numbers (wall-clock, seconds, one process, `.venv` Python 3.13, Prefect 3.8.1 client /
+`prefecthq/prefect:3-python3.12` server, host worker on `resource-explorer-pool`):*
+
+| | median | p90 | all 8 trials |
+|---|---|---|---|
+| in-process (`run_surveyor_step_task.fn`) | 1.18s | 2.40s | 0.67, 0.51, 2.38, 1.13, 0.73, 1.52, 1.24, 2.45 |
+| via Prefect (`run_prefect_step`) | 9.23s | 12.26s | 7.23, 8.17, 10.23, 12.26, 12.28, 8.23, 8.23, 10.29 |
+| **delta (added dispatch overhead)** | **~8.05s** | **~9.86s** | — |
+
+Cross-checked against Prefect's own `total_run_time` for these same 8 flow runs (the API's own
+measure of time actually spent *running*, excluding queued/scheduled time): 1.2–3.5s, matching the
+in-process figures closely. That confirms the ~8-10s delta is essentially all **dispatch + worker
+pickup + poll latency**, not slower compute inside the Prefect task — `_run_prefect_step_api`
+polls `state.result()` on a bare 1.0s `asyncio.sleep` loop, and the dominant cost sits in the gap
+between `create_flow_run_from_deployment` and the process-type worker's own polling cycle actually
+claiming the run, which this pass did not instrument further (worker query interval was left at
+its default).
+
+*Confidence:* in-process variance (0.5–2.5s) is real but small relative to the ~8s signal; the
+Prefect-path variance (7.2–12.3s) is larger in absolute terms but still clearly separated from the
+in-process cluster in all 8 trials — no overlap. Environmental noise does not weaken confidence in
+"the overhead is on the order of 8-10 seconds, not milliseconds and not one second."
+
+**Recommendation, following from this number:** `PREFECT_ROUTED_STEPS` widening to
+`repo_secret_scan`/`repo_rag_ingestion` (both `compute_cost="high"`, realistically tens of seconds
+to minutes of real work) is worth doing — an 8-10s fixed tax is a small fraction of their own
+runtime, and buys real retries/cancellation/per-task logs neither has today. `PREFECT_ROUTE_LOCAL_STEPS`
+(routing every plain local step through Prefect, not just `executes_at: prefect` ones) is a bad
+idea at today's worker/polling configuration: RE's Discovery/Analysis tier is full of sub-second-
+to-few-second steps (`repo_arch_summary` itself included), and an 8-10x-to-many-times multiplier on
+each one would make routine surveys dramatically slower for no compute benefit. `route_local_steps`
+should stay off by default; if it's ever wanted, the worker's polling interval should be tuned down
+first and re-measured, since this number is a property of that interval as configured today, not a
+Prefect ceiling.
+
+**DONE 2026-09-19 — phase 5 widening shipped.** `PREFECT_ROUTED_STEPS`
+(`scripts/generate_repo_survey_definition.py`) now also includes `repo_secret_scan` and
+`repo_rag_ingestion` alongside `repo_arch_coupling` — both confirmed `compute_cost="high"` in
+`repo_survey_definition_adapter.py` before widening. Docs regenerated
+(`repo-survey-definition-full.md`, `-analysis.md`, `-compliance.md`, `-refresh.md` — the four
+generated docs that reference either step — all show `executes_at: prefect` for both). Published
+live to dev Egeria (`qs-view-server`) after coordinating with all live peers per
+`coordinate-shared-writes`: two "Create Governance Action Process Step" blocks extracted directly
+from the regenerated `repo-survey-definition-full.md` (split on `___`, matched by Qualified Name),
+run once via `dr_egeria_run_block` against `https://host.docker.internal:9443` (confirmed the MCP
+egeria server's own network context — `localhost:9443` does not resolve from there, verified by a
+failed `validate` call against it). Both landed as **Update** Governance Action Process Step
+(upsert, not create — the elements already existed): `repo_secret_scan` GUID
+`c902a5dc-6ad5-4e22-9311-a003b5e69419`, `repo_rag_ingestion` GUID
+`818bae1c-b808-423b-9681-2461f169906a`, both with `executes_at: prefect` in the returned Additional
+Properties. Verified independently afterward via `SurveyDefinitionReader`'s
+`GovernanceOfficer.get_governance_definitions_by_name()` (a separate read path from the publisher's
+own tool, against `localhost:9443` from the host) — same two GUIDs, same `executes_at: prefect`.
+`scripts/reconcile_survey_definition_links.py --dry-run` reported clean before and after (all ten
+Survey Definitions, including `RepoFullSurvey`'s 42 edges) — the property-only update touched no
+step links, so no duplication risk to begin with, confirmed rather than assumed. No link commands
+were run. Test coverage (`tests/test_generate_repo_survey_definition.py`) updated to assert the
+widened three-step set.
+
 #### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because
@@ -3658,7 +4280,7 @@ one here" and made `executes_at: prefect` redundant. Now gated on a separate, of
 `PREFECT_ROUTE_LOCAL_STEPS`: routing RE's own steps through Prefect for retries/telemetry is
 a legitimate deployment choice, it just has to be asked for by name.
 
-**Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired — `_use_prefect` at `survey_definition_executor.py:162-167`. Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
+**Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired.** ~~Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.~~ **Answered — see "Routing fixed at the same time" immediately above: gated on the separate `PREFECT_ROUTE_LOCAL_STEPS`, off by default, so `executes_at` is honoured unless rerouting is asked for by name.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against **as of that pass — since re-verified live and largely closed, see `docs/design-notes/PLAN-PREFECT-OR-ALTERNATIVE.md` §1.3, 2026-09-18**. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
 
 Related/overlapping: "Periodic / triggered survey scheduling" below (this may be the eventual replacement for the daemon thread it says is only a short-term fix), "Coherent selective-cataloging model" below (the staging-registry funnel is a concrete proposal for it), and "Unify survey launching" above once a launcher needs to route to a third execution engine, not just two.
 
@@ -3839,6 +4461,51 @@ document instead of hardcoded `"repo"`, so the backend is ready — but there is
 show beyond repo until database/filesystem Survey Definitions exist (by the native-survey route
 above) *and* the tab's resource selector is generalized to match. Two separate small pieces once
 the native-survey path is proven, not one.
+
+**Backend-routing half done (2026-09-20) — `egeria-adaptive` fold-in.** Per
+`docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md` and
+`PLAN-EXECUTION-MODES-VERIFICATION.md` §3, `HybridDatabaseSurveyor`
+(`surveyors/database/hybrid_database_surveyor.py`) and
+`run_hybrid_filesystem_survey` (`surveyors/filesystem/hybrid_filesystem_surveyor.py`) — the
+strategy-selector logic that had been the default web/CLI survey path but was unreachable from
+`executes_at` routing — are now reachable as a fourth `executes_at` value, `egeria-adaptive`,
+registered in `other_engine_handlers` on both `database/survey_definition_adapter.py` and
+`filesystem/survey_definition_adapter.py` (`_run_egeria_adaptive` in each). `web/routes/
+databases.py`, `web/routes/filesystems.py`, and both `cli/main.py` database/filesystem survey
+commands now route through `SurveyDefinitionExecutor.run_synthetic_step` (new — a one-step,
+in-process-only `SurveyDefinition` that never touches Egeria to be constructed) with
+`executes_at="egeria-adaptive"`, instead of calling `HybridDatabaseSurveyor`/
+`run_hybrid_filesystem_survey` directly. `source` (`egeria` / `egeria-custom` / `custom` /
+`error`) is now a first-class field on the step's own `steps_report` entry (`survey_definition_
+executor.py`'s `other_engine_handlers` dispatch branch), not only inside the handler's return
+value.
+
+**Deliberately NOT done, and left as fast-follows:**
+- `HybridDatabaseSurveyor`/`run_hybrid_filesystem_survey` were NOT rewritten into shims that
+  delegate to the new handlers — the new handlers delegate to THEM instead, the reverse of what
+  the original plan described. `tests/test_execution_modes_path_c_hybrid.py` characterizes those
+  two by mocking private instance state directly (`surveyor._check_egeria_available`,
+  `surveyor._egeria_surveyor`), which only means anything if the real strategy logic still lives
+  on the class/function itself; rewriting them into thin callers of the new handler would sever
+  that mocking path and require rewriting the characterization tests the fold-in was explicitly
+  told to keep passing unchanged. Once nothing outside those two modules and their own tests
+  references them directly (true as of this change, confirmed by grep), a follow-up can finish
+  the retirement properly: move the logic itself into the handlers and delete the old modules,
+  updating the characterization tests to target the handlers instead.
+- No live-Egeria verification was done for `egeria-adaptive` (unit/mock tests only, per this
+  task's explicit scope — live writes need the coordinate-shared-writes protocol). A live
+  end-to-end run per resource type (as `PLAN-EXECUTION-MODES-VERIFICATION.md` §2's Path C
+  recommends: "one live run per resource type against dev Egeria, asserting `source` is what
+  actually happened") is still open — this is the one check that would catch "correct number,
+  wrong label" for the new handler's `source` field, which no mock can catch.
+- The legacy per-resource-type UI buttons/modals this backlog item's top half describes
+  (`showSurveyDbModal`, `showSurveyFsModal`, etc.) are untouched — out of scope for the backend
+  fold-in, and being tracked separately by the concurrent `executes_at`-visibility UI task
+  (`re/execution-mode-ui`).
+- Filesystem's `egeria-adaptive` handler has no cache-or-run (no `get_latest_survey` equivalent
+  exists on `EgeriaFileSystemSurveyor` yet) — it always runs the local scan fresh, matching
+  `run_hybrid_filesystem_survey`'s actual existing behavior rather than inventing a new Egeria API
+  surface this task wasn't scoped to build.
 
 ---
 
@@ -5591,10 +6258,11 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
 
 **Catalogue-in-layers round (`REPLY-CATALOGUE-IN-LAYERS.md`, 2026-09-14):**
 - `SoftwareLibrary`/package type error — **fixed**, this session (see the entry above).
-- `SourceControlLibrary`-per-repo type error — **still open**. Must land before the next Egeria
-  redeploy (owner's decision: wipe and redeploy fresh rather than migrate/retract existing
-  elements — see the entry above), or the fresh database is repopulated with the same wrong
-  structure.
+- `SourceControlLibrary`-per-repo type error — **fixed**, same day (`d514c884`, 16:33, 35 minutes
+  after this line was written at 15:58 — the line was never flipped when the fix landed). One
+  singleton `SourceControlLibrary` for GitHub (`_find_or_create_github_scl`, cached), each
+  repository its own `Asset` linked via `CapabilityAssetUse` (`egeria_publisher.py:702-917`).
+  Verified live in the code 2026-09-21, ahead of that night's Egeria redeploy.
 - Bulk-accept dialog copy — must not name `DeployedSoftwareComponent` (or any component-family
   type) before it is verified; say "software components" in plain words instead until pinned.
 - The layer-2 catalogue-depth offer — `DepthOffer`'s three rules verbatim (not a nag: once per
@@ -5603,3 +6271,1664 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
   price (Egeria writes: 1.5s median, p90 2.3s, post-redeploy) rather than DepthOffer's own "not yet
   measured" placeholder. Outcome (accepted/declined/chose) recorded on the catalogue record, same
   as a depth-offer decline.
+
+### `egeria_host` defaults to `database.host`, silently reproducing OPEN-SURVEY-0009 for the next database anyone registers
+
+Found 2026-09-21, flagged by a peer while catalogueing coco_pharma for the
+first time as part of the multi-resource plan's probe 9. The
+`localhost` → `host.docker.internal` fix for `coco_ods`/`coco_pharma`
+(Backlog.md, "catalog_and_survey never refreshes...") was applied as a
+direct SQL correction to those two registry rows' `egeria_host` column, not
+to the registration code path. `web/routes/databases.py:603`:
+
+```python
+egeria_host = database.egeria_host or database.host
+```
+
+`egeria_host` defaults to `""` (`registry.py:107`), so any database
+registered without an explicit `egeria_host` falls back to `database.host`
+— typically `localhost`, since that is how RE's own bare-host process
+reaches a Docker-hosted Postgres. Egeria's engine host runs inside Docker
+and cannot reach the RE host's `localhost`; the result is the identical
+`OPEN-SURVEY-0009 ... has no connection` failure, silently, for the next
+person who registers a database and doesn't think to pass `--egeria-host
+host.docker.internal` explicitly.
+
+**Not fixed here** — this is a repair keyed on the damage (two rows patched)
+rather than the cause (the registration default), so the fix survivors are
+invisible until the next new registration hits it. The real fix is a
+project-owner decision on what the right default actually is (a config
+value, a documented required field at registration time, or an explicit
+`--egeria-host` prompt) — filed rather than guessed.
+
+### Native Postgres survey fails with SCRAM auth error even on a freshly-catalogued asset with a real connection — second distinct connection-shaped failure, same secrets architecture
+
+Found 2026-09-21, triggering a native `survey-postgres-database` engine action
+against `coco_pharma`'s freshly-catalogued asset (guid
+`4dd8d5ee-eb5a-4fe3-8a52-7f304043a749`, catalogued via the fixed
+`deepCopy=True` path — PR #181/earlier work, so this asset genuinely has a
+`Connection`, unlike `coco_ods`'s broken existing asset). The engine action
+reached `final_status: FAILED` (not `INVALID` — a different terminal state
+than `coco_ods`'s `OPEN-SURVEY-0009`), with:
+
+> `OPEN-SURVEY-500-001 Unexpected exception in survey action service
+> postgres-database-survey-service of type
+> com.zaxxer.hikari.pool.HikariPool$PoolInitializationException detected by
+> method start. The error message was Failed to initialize pool: The server
+> requested SCRAM-based authentication, but no password was provided.`
+
+**This is a different failure than `OPEN-SURVEY-0009`** — that one meant "no
+connection at all"; this one means a `Connection` exists and Egeria's engine
+found it, but the password it resolved (or tried to resolve) was empty. This
+matches exactly the suspicion raised during the earlier `catalog_and_survey`
+investigation
+(`CATALOG-AND-SURVEY-REFRESH-FIX.md`): the template's attached `Connection`
+is a `VirtualConnection` embedding a `SecretsStoreConnection` (a YAML-file
+secrets-store connector), not a plain `Connection` with an inline
+`userId`/`password`. `deepCopy=True` correctly instantiates that subgraph
+structurally, but nothing in RE's registration path populates whatever the
+secrets-store connector actually reads from — the password never reaches
+the pool.
+
+**Not investigated further here** — this needs someone who knows how this
+deployment's Egeria engine host resolves a `SecretsStoreConnection` (a YAML
+file path on the engine host's filesystem, presumably) to say what RE would
+need to write, and where. Two live databases (`coco_ods`, `coco_pharma`) now
+have two different connection-shaped native-survey failures, both tracing
+back to the same underlying secrets architecture — this is the actual
+blocker for probe 9 (a genuine native annotation-type/metric-key dump) and
+for Phase 1 more broadly, not a one-off.
+
+**Root-caused and fixed for fresh catalog runs, same day (PR #185,
+`docs/design-notes/PROBES-2026-09-21.md`):** the templated
+`SecretsStoreConnection`'s `secretsCollectionName`/`secretsStorePathName`
+configuration properties were themselves left as Egeria's own literal,
+unsubstituted placeholder text — nothing had ever supplied real values.
+`EgeriaDatabaseSurveyor` now finds-or-creates its own Egeria secrets store
+(the documented client-side-secret pattern, project owner decision
+2026-09-21: Egeria does not share secrets across clients) and binds both
+placeholders at catalog time. **`coco_ods`/`coco_pharma` themselves are still
+broken** — both already exist by qualifiedName, so they stay on the reuse
+path forever and never get the new placeholders; fixing either needs the
+delete-and-recatalog GAP process, a separate deliberately-deferred decision.
+
+### `materialize_database_report`/`materialize_filesystem_report` don't distinguish an engine-action failure from a genuine empty result — not yet wired to a live caller
+
+Found 2026-09-21 while live-verifying Stream 3's structured-tables back-fill
+(`COORDINATOR-BRIEF-MULTI-RESOURCE.md`). A design review raised the concern
+that the coco_ods back-filled row (`table_count=0`, `state='measured'`) might
+be confidently-wrong data from the known `OPEN-SURVEY-0009` connection
+failure rather than a real absence. **Checked directly, not guessed**: a
+live, read-only `psycopg2` query against `coco_ods` confirms it genuinely has
+zero tables outside `pg_catalog`/`information_schema` right now — the
+back-filled row is correct, and no data correction was needed.
+
+The concern is still real for a different, forward-looking reason.
+`surveyors/result_materializer.py`'s `materialize_database_report`/
+`materialize_filesystem_report` take `annotations: list[dict]` — already
+resolved poll output — and correctly record an honest ambiguity note via
+`database_survey_coverage`'s `coverage_detail` when a section comes back
+empty (citing Egeria's own Postgres connector docs: missing may mean
+"permission", not "none exist"). But this conflates two different things
+into one ambiguity note: "the engine action completed and genuinely found
+nothing" and "the engine action itself failed (`final_status` != a success
+status, e.g. `INVALID`)" — the second is a stronger, more specific signal
+than the first, and `poll_trigger_and_retrieve_annotations`'s own result
+already carries `final_status`/`completion_message`, which never reaches
+either materializer function today.
+
+**Not yet causing wrong data**: grepped for call sites of both functions —
+neither has one. This is Phase 0 plumbing built ahead of Phase 1's live
+wiring, not a live bug.
+
+**Before wiring either function into a live caller (Phase 1)**: thread
+`final_status`/`completion_message` through, and give a failed engine action
+its own, more specific coverage note/state than a merely-empty-but-successful
+one — a curator reading "native survey reported none" should be able to tell
+"it ran and found nothing" from "it never actually ran" (this is exactly the
+distinction the `catalog_and_survey` no-refresh bug's own OPEN-SURVEY-0009
+failures would otherwise render as, if a curator ever re-triggers a broken
+asset's native survey and then reads the result back through these
+functions).
+
+**One more nuance, caught by a peer review after the ground-truth check
+above:** for coco_ods's specific back-filled rows, the *number* (0 tables)
+is correct, but the *label* (`state='measured'`) still overclaims for the
+runs whose blob carries no status signal — `measured` asserts that run
+established the count, and a blob with no success/failure field cannot
+support that claim, even when the number happens to match reality. This is
+the "correct number, wrong label" failure shape: re-measuring never catches
+it, because re-measuring returns the same number. The historical back-fill
+does not attempt to fix this (not worth reopening that PR for it, per the
+same review) — it is accepted as-is here, in writing, rather than silently.
+Any future rework of the historical-blob back-fill path should consider a
+weaker state than `STATE_MEASURED` (e.g. "stored, no run status recorded")
+for rows whose source blob genuinely carries no success/failure signal.
+
+## Phase 1 slice 8 (`postgres_operations`) — follow-ups logged, not fixed here
+
+Three items surfaced building the `postgres_operations` step (design
+§5.5/§5.7, `docs/design-notes/DB-OPERATIONS-STEP-IMPLEMENTED.md`), each
+deliberately scoped out rather than half-built:
+
+1. **Patroni-via-REST clustering detection is not attempted.** Design §5.5
+   marks it "partly" observable, but via a live REST call to a Patroni
+   instance — a different class of dependency (reachable HTTP endpoint,
+   separate credential, separate failure mode) than the catalog reads this
+   slice does. `get_clustering_info()` covers Citus only (a real Postgres
+   extension visible from `pg_extension`) and says so in its docstring.
+   Whoever picks this up should treat it as its own scope-of-fetch decision,
+   not an extension of `get_clustering_info()`.
+
+2. **`pg_subscription`'s per-item absence is not distinguished.**
+   `get_external_dependencies()` swallows a permission error on
+   `pg_subscription` (superuser/subscription-owner-only, subscriber-database
+   only) to an empty list via the same generic try/except as every other
+   read in that method. So "no subscriptions" and "not permitted to see
+   pg_subscription" collapse to the same empty result — the whole-capability
+   `external_dependencies` gate still distinguishes "this engine can't do
+   this at all", but not this one per-item case within it. A real fix needs
+   either a dedicated capability sub-flag or exception-type discrimination on
+   the psycopg2 error raised for an insufficient-privilege catalog read.
+
+3. **No live Postgres exercised any of the six new query methods.** All of
+   `get_privilege_audit`/`get_replication_status`/`get_wal_archiving_status`/
+   `get_backup_tool_signals`/`get_clustering_info`/`get_external_dependencies`
+   are covered only through a duck-typed fake connection
+   (`tests/test_postgres_operations_step.py`), which validates the
+   surveyor's logic (absence states, RFA firing, the MIXED envelope) but not
+   that the SQL itself is correct against a real server — e.g. that
+   `EXTRACT(EPOCH FROM replay_lag)` behaves as expected against a genuine
+   `pg_stat_replication` row with an actual replica attached, or that the
+   `pg_default_acl` join produces sensible rows against a database with real
+   default ACLs configured. Once step 6 (re-cataloguing `coco_ods` with a
+   reachable connection) or a primary/replica test pair exists, running
+   `postgres_operations` against it once and diffing the result against a
+   hand-checked `psql` session would close this gap.
+
+4. **`docs/dr-egeria/resource_questions.csv`'s prose is now stale for the
+   three rows this slice's `analysis_catalog.yaml` additions resolved.**
+   Regenerating `question_catalog.yaml` (required — see
+   `DB-OPERATIONS-STEP-IMPLEMENTED.md`) populated `analysis_ids` for
+   `db_activity_signals`/`db_resilience`/`db_external_dependencies`, but the
+   CSV's own `Answering Analysis` text for those rows still reads `GAP:
+   <id> (proposed) — <analysis> is not read by any analysis today`, and
+   `answering.kind` is still `gap`/`human`. The CSV is stream 4's ownership
+   and not touched by this slice; whoever next edits it should reword those
+   three rows' notes (and reconsider `kind`) now that the analyses exist.
+
+   **Extended 2026-09-21 by Phase 1 slice 9 (`db_derived`), same shape, six
+   more rows.** Regenerating the YAML again populated `analysis_ids` for
+   `db_classification`, `db_relationship_graph`, `grain_determination`,
+   `db_fingerprint`, `schema_conventions` and `db_change_rates`, while the
+   CSV's own prose for those rows still reads e.g. `GAP: db_fingerprint
+   (proposed) — FingerprintAnnotation exists as a type; no signature is
+   computed or compared` — which is now false in every case, since all six are
+   implemented and backed by a real step. That makes **nine** database rows
+   whose `answering.kind: gap` and "(proposed)" wording contradict their own
+   populated `analysis_ids`. Still stream 4's file and still not touched here,
+   but the drift is no longer marginal: a reader of the Questions tab is told
+   these questions cannot be answered by anything, by a note sitting next to
+   the id of the analysis that answers them.
+
+### `ConnectionMaker.create_connection`'s direct (non-template) body silently drops `configurationProperties`
+
+Found 2026-09-21, running Phase 1 slice #6 (probe 9, properly, against
+freshly-recatalogued `coco_ods`/`coco_pharma` post-redeploy —
+`docs/design-notes/PROBES-2026-09-21.md` has the full write-up under "Probe
+9 done properly"). Two separate `Connection` elements this session — RE's
+own admin secrets-store `Connection` and the per-database
+`SecretsStoreConnection` embedded by the PostgreSQL template — both came
+back from Egeria with `configurationProperties` entirely absent, despite
+both being supplied in `ConnectionMaker.create_connection`'s creation body.
+Patching the same property afterward with `update_connection(...,
+mergeUpdate=True)` took effect immediately, confirming the property itself
+is fine server-side; it is specifically the *creation* call that drops it.
+
+**Not the same bug as the wrong-connector-class one above** (that one is
+about which class handles the property; this one is about the property
+never landing at all), and **not the same as the missing-placeholder OCF
+precondition** (that one is fixed by supplying a value; here a value was
+supplied and still didn't land).
+
+**Not investigated further here** — needs someone to determine whether this
+is a `ConnectionMaker.create_connection` client-side body-shape defect
+(candidate for `PYEGERIA_ISSUES.md`, pending the usual approval-before-fix
+gate) or an Egeria server-side difference in how `configurationProperties`
+is handled between a template-instantiation body
+(`TemplateRequestBody.placeholderPropertyValues`, which has never shown
+this symptom) and a direct `NewElementRequestBody`/`UpdateElementRequestBody`
+creation. Both of this session's live-verified admin-store and
+per-database Connections needed a manual `update_connection` patch to work
+at all; `egeria_database_surveyor.py`'s own code has not been changed to
+work around this yet, since the right fix depends on which side the defect
+is actually on.
+
+### A leftover `ConnectorType` can carry a since-fixed bug forward, because "found by qualifiedName" never re-verifies its properties
+
+Found 2026-09-21, same investigation. The wrong-connector-class bug (this
+file's "Native Postgres survey fails with SCRAM auth error..." entry, above)
+was fixed in PR #188 for *new* `ConnectorType` creation. But
+`_ensure_own_secrets_store_guid`'s find-or-create now correctly reuses a
+`ConnectorType` if one already exists by qualifiedName (a separate fix,
+also 2026-09-21, for a 409 the naive Asset-only existence check caused) —
+and a leftover `ConnectorType` from before the class fix landed still
+carried the old, wrong `connectorProviderClassName`
+(`YAMLSecretsStoreProvider`, read-only). Reusing it by qualifiedName
+silently carried the old defect forward even though new-creation code had
+already been fixed — a third instance of "reuse never repairs," this time
+of a bug that genuinely was already fixed for the creation path. Patched
+live via `update_connector_type`.
+
+**Not fixed at the source.** Open question for a project-owner decision:
+should `_ensure_own_secrets_store_guid` verify a found `ConnectorType`'s
+`connectorProviderClassName` before trusting it (repairing it in place if
+wrong), the same "reuse never repairs" lesson this file already applies
+elsewhere — or was this specific stale element simply a one-time leftover
+from mid-development that a platform which has never run the pre-fix code
+will not reproduce, making the extra verification permanent complexity for
+a transient problem?
+
+### Exposure heatmap (data_class_match × privilege_audit, design §5.6) will show false negatives if built on today's grant reads — design guidance for Phase 1 slice #10
+
+Found 2026-09-21, designer round 2 review, drawing the exposure heatmap
+against the reads slice #8's `postgres_operations` (`privilege_audit`)
+already ships. **Not a bug in shipped code** — slice #8's own scope (a
+table-level RFA when the `PUBLIC` pseudo-role holds a grant) is correct and
+complete for what it does. The finding is that reusing today's grant reads
+naively for a *column-level, per-role* exposure matrix (§5.6's composite,
+gated on slice #10's `data_class_match`, not started) would produce three
+distinct false negatives — a role reads as having no access to a sensitive
+column when it actually does:
+
+1. **The reads are table-level; a column-level grid needs column grants.**
+   `information_schema.role_table_grants` (what `get_privilege_audit()`
+   reads today) and the structured `database_grants` table (Phase 0 stream
+   3) are both table-granularity — `database_grants` has no `column_name`
+   column, not even in its `UNIQUE` constraint. A column-level `GRANT SELECT
+   (email) ON patient TO analyst_ro` is invisible to both, and that role
+   would render as a full row of "no access" while actually holding a real
+   column grant.
+2. **`PUBLIC` can't be rendered as a column-role in a per-role grid.** It's
+   a pseudo-role, not a real one — as one column among several, a reader
+   scanning a specific role's row for red would find none, while that role
+   can in fact read everything via its `PUBLIC` inheritance.
+3. **Role membership/inheritance is read nowhere in this codebase** — no
+   `pg_auth_members`, no `pg_has_role`, anywhere. Granting access through a
+   group role (the normal Postgres administration pattern) would be
+   invisible to a grid built only from direct per-role grants.
+
+**The fix, when slice #10 builds this**: `has_column_privilege(role, table,
+column, 'SELECT')` collapses all three into one call — Postgres itself
+resolves membership, inheritance and `PUBLIC` at query time, so the
+composite doesn't need to reimplement any of it. Requires extending
+`database_grants`'s structured table with a `column_name` field (a
+migration) and reading `information_schema.column_privileges` (a strict
+superset of what `role_table_grants` reads today — it returns column grants
+*and* table grants pre-expanded per column) rather than the current
+table-only read.
+
+**The general rule underneath it, worth carrying into slice #10's design
+directly**: for an exposure view, the two failure directions are not
+symmetric the way they are for a plain measurement. A missing measurement
+elsewhere in this codebase renders as an honest gap (`not_established`,
+`STATE_NOT_COLLECTED`, etc.) — but here, a missing read renders as a *clean
+bill of health*, which is the worse direction to fail in for a
+security-relevant view. An empty cell in the exposure grid has to mean "no
+access path found" and never "no access path measured" — the absence
+discipline this codebase already applies elsewhere needs an even stronger
+form here, since the default failure mode (silence) reads as reassurance
+instead of as a gap.
+
+### `n_distinct` sign fix (design review round 2, 2026-09-21) does not repair rows already stored — decision needed
+
+`database_surveyor.py`'s `_resolve_n_distinct()` fixes `pg_stats.n_distinct`'s
+sign convention going forward, using `pg_class.reltuples` (the same
+`ANALYZE` run's row count, not a separately-read live count — a second
+design-review finding, caught before it shipped: the first fix used
+`pg_stat_user_tables.n_live_tup`, which can drift from the count the ratio
+was actually computed against). A third finding, same review: `reltuples
+== -1` only means "never analyzed" from PG14 on — on PG13 and earlier, `0`
+means both "analyzed, empty" and "never analyzed", so a table with real
+rows that was never ANALYZEd would otherwise resolve to a confident, wrong
+0. Fixed version-independently by cross-checking `last_analyze`/
+`last_autoanalyze` (already read by this module) rather than trusting the
+server-version-dependent sentinel alone.
+
+**The fix does not touch rows already written.** Every `database_column_profiles`
+row from a survey run before this fix carries the raw, unresolved value —
+either a bare negative number, or (if some earlier ad hoc code already
+multiplied by the wrong row count) a number computed from a mismatched
+denominator. A peer flagged this specifically: roughly 4,912 rows from a
+recent back-fill, and anything surveyed since, still say what they said
+before the fix. Deliberately **not fixed here** — re-running the back-fill
+is described as idempotent by key and therefore safe, but re-surveying (or
+otherwise mutating) the shared production registry's existing rows is a
+bigger, more consequential action than this bug-fix PR's scope, and needs
+the project owner's go-ahead rather than being done silently as a side
+effect of a code fix.
+
+**Until that happens**: any `database_column_profiles.distinct_count` value
+recorded before this fix landed should be treated as unreliable — do not
+trust it for the exposure heatmap (the entry immediately above) or any
+other consumer until the affected rows are re-surveyed. Whoever picks up
+either the historical-row question or the exposure heatmap should check
+this entry first.
+
+---
+
+## Slice 10 (`postgres_column_profile`) — seven follow-ups
+
+**Found while building** `postgres_column_profile` / `data_class_match` /
+`reference_data_match` (Phase 1 slice 10,
+`docs/design-notes/POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md`). Logged, not
+fixed — each is outside that slice's scope.
+
+**1. No curator accept/reject surface for a DRAFT proposal — the largest gap.**
+Slice 10 creates candidate `DataClass`/`ValidValueSet` elements with
+`contentStatus: DRAFT` and links them to their evidence via
+`AssociatedAnnotation`. Accepting one — clearing `contentStatus`, creating the
+real `ValidValuesAssignment` — has no surface at all. Design §11's review
+queue is the natural home. Until it exists, a proposal can only be actioned in
+Egeria's own UI.
+
+**2. RE has no DataClass/ValidValueSet browsing surface.** A DRAFT proposal is
+now visible as an *annotation* (see 3), but the proposed *element* is not
+visible in RE anywhere. The only real property read of a governance element in
+the whole package (`database_surveyor.py`'s PII-keyword lookup, ~line 1216)
+never reaches a UI. Prerequisite for 1.
+
+**3. `contentStatus` is still not carried by the older `/{slug}/annotations`
+read path.** Slice 10 surfaced it on the main chain
+(`egeria_survey_reader.get_annotations_by_report_guid` → the three
+`EgeriaAnnotationItem` models → `renderAnnotations`). The older
+qualifiedName-guessing path (`surveyors/egeria_reader.py::_parse_annotation` →
+`AnnotationItem` in `web/routes/egeria.py`) has its own model and its own
+field-by-field population and was left alone. Cheap: add `"contentStatus"` to
+`_parse_annotation`'s subtype-field list, then the model and its construction.
+
+**4. `resolve_n_distinct` may end up duplicated with slice 9.** The brief for
+slice 10 said to reuse slice 9's `_resolve_n_distinct`; slice 9 (`db_derived`)
+had not merged and there was nothing to import, so slice 10 implemented
+`column_matching.resolve_n_distinct` as a **public** name for slices 9 and 11
+to import. **If slice 9 lands its own, reconcile the two to one** before both
+are in the tree — two copies of a sign-convention correction is exactly the
+shape that drifts.
+
+**5. Two live bugs in `bootstrap_data_classes.py`, deliberately not copied by
+slice 10.** (a) Its `create_data_class` body's `properties` omits the
+`"class": "DataClassProperties"` discriminator that every other create path in
+both repos sets. (b) It calls `link_valid_value_definition` with no `body`,
+which makes pyegeria synthesise one from its own internal `prop` hint and POST
+it un-serialised. Both are in RE's own code, so both are fixable here.
+
+**6. Two pyegeria `prop`-hint mismatches — file, do not fix in place.**
+`link_annotation_to_described_element` passes
+`"AnnotationDescribedElementRelationship"` and `attach_annotation_to_report`
+passes `"SurveyReportAnnotationRelationship"`, neither of which is a real
+Egeria properties class (they should be `AssociatedAnnotationProperties` and
+`ReportedAnnotationProperties`). Harmless while a caller passes an explicit
+body — slice 10 always does — and a malformed POST when one is not. Belongs in
+`egeria-python`'s `PYEGERIA_ISSUES.md` per the log-and-wait policy.
+
+**7. Three things slice 10 could not verify without a live server**, worth one
+probe together against `coco_ods`: that `TABLESAMPLE SYSTEM (…) REPEATABLE (…)`
+is accepted as generated and that the 3× oversample actually fills `max_rows`;
+that `create_valid_value_definition` with `typeName: "ValidValueSet"` inside
+`properties` really yields a set rather than a bare definition (that path is
+exercised nowhere in either repo); and that
+`link_annotation_to_described_element` works at all — **that endpoint has
+never been called from Python**, so the evidence links are the least-verified
+part of the slice.
+
+**Also:** the regenerated `question_catalog.yaml` rows for `data_class_match`
+and `reference_data_match` still carry `GAP: … (proposed)` prose although both
+analyses now exist — the same staleness slice 8 flagged for its own three ids.
+The CSV's prose is its owner's call (stream 4), not a consumer's.
+
+## Slice 14 (database change comparators, design §9.1) — what remains open
+
+**Found while building** `db_change_comparator.py` (Phase 1 slice 14,
+`docs/design-notes/DB-CHANGE-RATES-DELIVERY-IMPLEMENTED.md`). The real gap
+this slice closed was structural, not computational: `db_derived`'s six
+checks (slice 9) never persisted through `project_analysis_findings`/
+`project_analysis_metrics` — both FK'd to `projects(slug)`, repos only — so
+`notification_detector.detect_change()` (the engine behind Automate
+subscriptions) silently read an always-empty history for any database
+analysis_id and reported "no change" forever. A database subscription
+already existed as a UI concept (`automate.py`'s `RESOURCE_ICON` includes
+`database`) with no way to ever fire. Fixed for `db_change_rates` only, by
+bridging `derive_change_rates`'s already-computed per-table deltas/schema
+churn into a `ChangeResult`. Logged, not fixed here:
+
+**1. Design §9.1's other six database comparators have no bridge yet:**
+`schema_diff` (column/constraint-level — today's fix only covers the
+table-add/drop half, via `db_change_rates`'s schema churn), `grant_change`,
+`class_change`, `reference_set_change`, `scope_change`,
+`resilience_change`. Each needs a two-snapshot diff over data this codebase
+already collects (`postgres_operations`'s `privilege_audit`/`db_resilience`
+— slice 8; `data_class_match`/`reference_data_match` — slice 10; proposed
+`DataScope` — slice 9) but none of those checks is differenced across runs
+today. `db_change_comparator.DATABASE_CHANGE_COMPARATORS` is the one place
+to add each as its own entry; `detect_database_change` already reports "no
+comparator implemented" (not a false "no change") for any analysis_id not
+yet in that dict, so subscribing to one of these today is honest, not
+silently broken — see 2.
+
+**2. Subscribing to a database analysis_id with no comparator yet is legal
+in the UI and silently inert.** `automate.py`'s subscription-create route
+validates project existence only for `entity_type == "repo"`; there is no
+check anywhere that a database `analysis_id` has an entry in
+`DATABASE_CHANGE_COMPARATORS`. A user can create a `db_classification`
+subscription today and it will never fire, with `established=False`
+recorded on every check but nothing in the UI surfacing that distinction
+(the Automate subscriptions table shows `last_checked_at`/
+`notification_count`, not *why* a check found nothing). Worth a UI
+affordance once a second comparator exists to make the contrast visible.
+
+**3. The same absence gap exists on the repo side, pre-existing, not
+introduced by this slice.** `notification_detector._detect_findings_change`/
+`_detect_metrics_change` both return `ChangeResult(changed=False)` — not
+`established=False` — for a kind with fewer than two history batches. The
+`established` field slice 14 added to `ChangeResult` would apply cleanly
+there too, but changing those two call sites is a repo-side behavior change
+outside this slice's database-only scope; left as found.
+
+**4. `_run_db_survey`'s db_derived dispatch fix (this slice) covers
+scheduling; the per-card manual "Run" route in `web/routes/databases.py`
+already had it (slice 9 built that one correctly).** Only the scheduler
+path had the gap, because it independently re-derives which local surveyor
+call to make rather than sharing one dispatcher with the web route — worth
+a future consolidation so a new db_derived-shaped analysis can't reintroduce
+the same gap a third way.
+
+## Phase 1 slice #13 — resource reachability (2026-09-22)
+
+Filed while building the slice (`resource_explorer/reachability.py`,
+`resource_reachability` table, launcher sentence — see
+`docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md`). This slice was
+deferred by the project owner 2026-09-21 ("do not build it yet ... further
+tests") and the deferral was reversed by the project owner 2026-09-22, who
+asked for it to proceed.
+
+**Real, previously-unconfirmed finding, not something this slice fixes**:
+`EgeriaFileSystemSurveyor.catalog_and_survey`'s `create_folder_element_
+from_template()` call attaches no Connection to the folder Asset it
+creates. Confirmed live (probe 7, first pass, `PROBES-2026-09-21.md`) —
+every filesystem RE has ever cataloged this way will report
+`outcome=no_connection` from this check, not a genuine reachability
+answer, until something attaches a real Connection. Whether to fix this by
+having `catalog_and_survey` attach one automatically (and if so, at catalog
+time or lazily on first reachability check) is a real design decision, not
+made here — this slice only builds the check itself and reports what it
+honestly finds.
+
+**Not re-tested**: probe 8's "folder-depth control" claim
+(`analysisLevel=ALL_FOLDERS_AND_FILES`) was run against an empty scratch
+folder on both request-parameter shapes and completed either way — this
+does not distinguish "CHECK_ASSET genuinely skips recursion" from "there
+was nothing to recurse into." Worth a follow-up probe against a populated
+folder before leaning on that claim as confirmed.
+
+**Out of scope, not attempted**: database reachability. `survey-postgres-
+database` is a different governance action type with a different failure
+shape (secrets-store resolution, per probe 9's write-up) — extending
+`resource_reachability`/the check to databases needs its own live probe
+pass, not an assumption that the folder-survey mechanism transfers.
+
+**Pre-existing, unrelated test failure noticed while running the full suite
+for this slice**: `tests/test_egeria_live_smoke.py::
+TestTheByNameFallbackWorks::test_a_cataloged_database_is_findable_by_name`
+fails against the current dev platform state (an assertion diff naming guid
+`45a75724-dbd3-45c6-bcd3-203db34265db` — the `egeria_optional_prefect_db`
+scratch database from `PROBES-2026-09-21.md`'s earlier live-verification
+work). Not investigated or fixed here — unrelated to filesystems or this
+slice's changes, and this session did not touch that database or its
+Egeria elements.
+
+## Database/filesystem Analyses cards: run attribution fixed, publish attribution still not established
+
+Live-reproduced in classic (`coco_pharma @ local-docker`): running a real
+database survey (`POST /api/databases/{slug}/survey` -> 200 OK, confirmed via
+the network tab) left every per-analysis card (Schema Conventions, Nested
+Column Profile, Data Class Match, Change Rates, ...) still showing no
+run/result indicator at all. Root cause: `index.html`'s
+`_loadAnalysisCatalogPanel()` only ever fetched
+`/api/projects/{slug}/analyses/last-activity` when `resourceType === 'repo'`
+— `lastActivity` was hard-coded to `{}` for database and filesystem no
+matter what had actually run, so `renderAnalysisCatalogCards()`'s
+`lastActivity[a.id]` lookup (the `📅 Last run`/`☁ Published` badges) could
+never populate for those two resource types.
+
+**Fixed:** `GET /api/databases/{slug}/analyses/last-activity` and
+`GET /api/filesystems/{slug}/analyses/last-activity` now exist
+(`web/routes/databases.py`, `web/routes/filesystems.py`), backed by
+`workflows.analysis.build_analysis_last_activity` — the repo route's
+attribution logic, generalized and shared rather than forked (`projects.py`'s
+route is now a thin adapter over the same function). The frontend guard is
+gone; `_loadAnalysisCatalogPanel()` fetches the right endpoint for whichever
+`resourceType` is selected.
+
+Run attribution (`last_run_at`/`last_run_status`/`last_run_partial`) is now
+REAL data for database and filesystem, not a guess: `ProjectRegistry.
+get_analysis_last_run()` is generalized to take a step map per entity_type —
+`DATABASE_ANALYSIS_STEP_MAP`/`FILESYSTEM_ANALYSIS_STEP_MAP`
+(`*/survey_definition_adapter.py`), built directly from each adapter's own
+`re_analysis_step_info` descriptions, which name the analysis_catalog ids
+each coarse step produces. Database's map is a genuine step->analyses
+FAN-OUT (one step like `db_derived` is the real source of six separate
+catalog entries) rather than repo's step->analysis PARTITION, so
+`ProjectRegistry._step_key_to_analysis_ids` now returns a list per step key
+and credits every owner, not just one.
+
+A second, smaller fix rides along: `survey_definition_executor.py`'s
+`steps_report` entries now record each step's real `re_analysis_step` key
+directly (`_step_key(step)`, already used internally for guard evaluation),
+not just its Egeria `qualifiedName`. Before this, `get_analysis_last_run`
+attributed a step by parsing the LAST `::`-segment off its qualifiedName and
+assuming it equalled the `re_analysis_step` key — true for repo's own
+authoring convention, but `docs/survey-definitions.md`'s own PostgreSQL
+example uses a CamelCase qualifiedName suffix (`SchemaAndStats`) that does
+NOT match its `re_analysis_step` value (`postgres_schema_and_stats`),
+so nothing in the schema actually guaranteed that convention for database.
+The qualifiedName-suffix parse is kept as a fallback for historical rows
+that predate this field.
+
+**NOT fixed, and deliberately not guessed at:** publish attribution
+(`last_published_at`/`last_published_scope`) is still empty for every
+database/filesystem analysis, always. `record_published_annotation_types()`/
+`record_published_analyses()` — the two tables `get_last_published_
+annotation_types`/`get_last_published_analyses` read — are written ONLY from
+`EgeriaPublisher` on the repo publish path (`surveyors/egeria_publisher.py`).
+`EgeriaDatabaseSurveyor.publish_step_annotations` and the filesystem
+publisher never call them. Building the repo route's two-tier recorded/
+shared publish-attribution fallback on top of a data source that plain does
+not exist for database/filesystem would reproduce exactly the "Never run"/
+"Published today" contradiction this file's `get_analysis_last_run` entry
+already fixed once, aimed at the wrong field this time. Wiring this up needs:
+a `DATABASE_ANALYSES_FOR_STEPS`-equivalent of `egeria_publisher._analyses_for_
+steps` (straightforward — it's the inverse of `DATABASE_ANALYSIS_STEP_MAP`,
+already built above), plus a call to both record functions from
+`publish_step_annotations` (and the filesystem equivalent) with the actual
+annotation types/analysis_ids that publish covered. `publish_stale`
+(Egeria-linkage staleness) has the same gap one level up: nothing writes an
+`f"{entity_type}_publish"` linkage row for database/filesystem, so that flag
+is always `False` there too — real absence, not a lie, since a card only
+shows it beside a `last_published_at` that is itself always empty today.
+
+## Most of RE's own Perspectives are now content-pack-homed, not RE-owned
+
+Live-queried via `elementHeader.origin` (`originCategory` +
+`homeMetadataCollectionName`) on this platform, 2026-09-22: of the 14
+`Perspective` entities in Egeria, 12 are `CONTENT_PACK`/`CoreContentPack`
+origin — including 10 of RE's own canonical 12 (Financial, Governance,
+Steward, Consumer, App/AI Builder, Privacy, Community, Data Expert,
+Security, Architecture), plus two RE doesn't define (`Owner`,
+`Administration`). Only `Admin` and `Data Owner` remain `LOCAL_COHORT`
+(`qs-metadata-store`).
+
+This happened because RE's authoring does a Merge Update against the same
+`qualifiedName` (e.g. `Perspective::Financial`) — once Egeria's own core
+content pack started shipping a `Perspective::Financial` entity, RE's batch
+landed its updates onto that pre-existing content-pack entity instead of
+creating a separate local one. Not a bug in the sense of anything broken —
+the terms still resolve and Question-to-Perspective links still work — but
+worth knowing before anyone assumes "RE owns its 12 perspectives outright"
+or plans a Perspectives-model change without checking origin first.
+
+By contrast, all ~100 `Question` GlossaryTerms on this platform are still
+`LOCAL_COHORT` — no content-pack overlap for Questions today, and
+specifically none for filesystem or reachability questions (checked
+directly while deciding whether to add filesystem_inventory question rows
+below).
+
+**Also new (project owner, 2026-09-22):** a new canonical intent, `Enhance`,
+for the valid values list. Not yet wired into RE — CLAUDE.md's canonical
+eight-intent list (rule 17), `analysis_catalog.yaml`/intent-validation, and
+any UI nav entry all still need updating. Project owner said this can be
+done "when convenient" — not urgent, but real: the next session that
+touches the intent list should check this entry first.
+
+## filesystem_inventory had zero question coverage in resource_questions.csv
+
+Found while investigating a related but separate active review
+(`FALSE-GAPS-2026-09-22.md`, not authored by this session, tracking 18
+rows where `Answering Analysis` still says `GAP: ... (proposed)` for
+now-built analyses). Distinct problem: `filesystem_inventory` — the one
+registered filesystem analysis (file walk, format/size/timestamp
+classification, tabular data-file schema profiling) — was referenced by
+**no row at all**, not even a `GAP:` one. The CSV had zero
+filesystem-only-scoped rows; filesystem only got incidental coverage via
+`database;filesystem[;dataset]` combo rows and `*` rows, none of which name
+`filesystem_inventory`.
+
+Fixed: two new filesystem-scoped rows added directly to
+`docs/dr-egeria/resource_questions.csv` and the runtime YAML regenerated.
+The Dr.Egeria authoring step (publishing these as real `Question`
+GlossaryTerms in Egeria) is deliberately **not done in this same
+change** — coordinating with other live sessions first, since the
+questions batch's perspective links have no reconciler and a duplicate
+there is permanent (see `coordinate-shared-writes` skill). Do the
+authoring as a separate, single, coordinated run once clear.
+
+## Phase 1 done-test verification (2026-09-22): NOT satisfied — Phase 2 held
+
+`COORDINATOR-BRIEF-MULTI-RESOURCE.md`'s own gate for starting Phase 2
+(filesystems) is its done-test: "`coco_ods` answers 'which columns conform
+to a Data Class?' and 'how is it changing?' from stored rows; the Egeria
+asset carries both a native and an RE report with same-typed column
+annotations; a new column and a new PUBLIC grant each raise an RFA." This
+had never been re-verified end-to-end since slices 6-14 merged. Ran all
+four clauses live against `coco_ods` (scratch table, real inserts, real
+`ALTER TABLE`/`GRANT`, real scheduler dispatch — all cleaned up after):
+
+- **"How is it changing?" — PASS.** `db_change_rates` correctly reported
+  `state=measured, deltas.rows_inserted=50` against a real 50-row insert.
+- **Native + RE reports share annotation types — PASS.** Confirmed 3
+  existing native `SurveyReport`s plus a freshly-published RE report on
+  the same asset, both using `ResourceMeasureAnnotation`.
+- **"Which columns conform to a Data Class?" — FAIL, two layered causes.**
+  (1) The live "Run" path (`DATABASE_ANALYSIS_STEP_MAP["data_class_match"]`
+  → `DatabaseSurveyor.survey()`) never passes a `ReferenceCatalog`, so
+  every column reports "not established" regardless of platform state.
+  (2) Even if wired, there is nothing to match against: Egeria currently
+  holds **0 Data Classes and 0 Valid Value Sets**. `bootstrap_data_
+  classes.py` is itself broken — it treats pyegeria's `"No elements
+  found"` miss-sentinel from `get_guid_for_name` as a valid GUID, so it
+  reports "6 skipped" while creating none. `resource_questions.csv` row
+  76 also still reads `GAP: data_class_match (proposed)`, so even a fixed
+  backend wouldn't surface as answered on the Questions tab yet.
+- **New column / PUBLIC grant → RFA — FAIL, architectural gap.**
+  `db_change_comparator.py`'s `DATABASE_CHANGE_COMPARATORS` only wires up
+  `db_change_rates`. Its own docstring already says `grant_change` and a
+  column-level `schema_diff` aren't built. Confirmed live: added a real
+  column and a real `GRANT SELECT ... TO PUBLIC`, ran the actual scheduler
+  dispatch path twice, zero RFAs either time.
+
+**Decision (this session, 2026-09-22):** Phase 2 stays held. Two fixes
+needed to actually close Phase 1, tracked as separate slices: (a) fix the
+`bootstrap_data_classes.py` sentinel bug, seed real Data Classes, wire
+`ReferenceCatalog` into the live survey path, fix the CSV row; (b) build
+`grant_change` and a column-level `schema_diff` comparator.
+
+## `data_class_match`'s "Run" button was wired to a `ReferenceCatalog` that no caller ever loaded, and the bootstrap script that seeds Data Classes never actually created any (2026-09-22)
+
+Two layered bugs, both on branch `re/data-class-seed-and-wiring`, found and
+fixed in the same session as a live check of whether "which columns conform
+to a Data Class?" is actually answerable end-to-end.
+
+**Bug 1 — wiring gap.** `DatabaseSurveyor.survey()` accepted a
+`reference_catalog` parameter (`database_surveyor.py`) that no caller —
+neither `web/routes/databases.py`'s per-card `run_single_database_analysis`
+("Run →") nor `scheduler.py`'s scheduled runs, both going through
+`run_database_survey` — ever passed. `survey_definition_adapter.py`'s
+`_run_postgres_column_profile` (the Survey Definition executor path) DID
+load one via `egeria_reference_catalog.load_reference_catalog`, so the two
+doors into the same `postgres_column_profile` step behaved differently: one
+read the platform's Data Classes, the other silently ran with
+`reference_catalog=None`, which `column_profile_step.py` correctly treats as
+"we did not ask" — `MATCH_NO_CANDIDATES`/"not established" for every
+column, regardless of the data. **Fixed** by having `survey()` itself load
+the catalog (via the SAME `load_reference_catalog`/`build_reference_clients`
+functions, not a second implementation) when `column_profile` is requested
+and no catalog was supplied — one lock, not two that can drift. New
+`read_egeria_catalog` parameter mirrors the Survey Definition path's escape
+hatch. Tests in `tests/test_database_surveyor_steps.py`
+(`TestColumnProfileLoadsReferenceCatalog`).
+
+**Bug 2 — `bootstrap_data_classes.py`'s existence checks were fooled by
+pyegeria's miss-sentinel.** `get_guid_for_name` returns the literal string
+`"No elements found"` on a miss, not `None`/`""`/an exception — truthy in
+Python, so this script's `if not guid` checks (three of them: DataClass,
+ValidValuesSet, keyword ValidValueDefinitions) read every miss as "already
+exists" and skipped every create. A real run reported "Created Data
+Classes: 0, Skipped: 6" against a platform holding zero. **Fixed** by
+routing all three lookups through `survey_definition_reader._as_guid`
+(already used correctly elsewhere in this codebase). The identical bug was
+found and fixed the same way in `egeria_reference_catalog.py`'s
+`_find_existing` (used by the DRAFT-proposal path) while checking the rest
+of the directory for the same pattern. Logged as
+`egeria-python/PYEGERIA_ISSUES.md` ISSUE-114 (caller-guideline entry, not a
+pyegeria code change — no fix applied there, per this repo's standing
+"log and wait for approval" convention for pyegeria itself).
+
+**Bug 3 — found only once Bug 2 was fixed enough to actually attempt a
+create:** `bootstrap_data_classes.py`'s `create_data_class` body omitted
+`properties.class: "DataClassProperties"` and `isOwnAnchor: true`, which
+Egeria rejects outright (400 `CLIENT_ERROR_400`) — `create_valid_value_definition`
+was missing `isOwnAnchor` too, and `link_valid_value_definition` was called
+with no body at all, a gap `egeria_reference_catalog.py`'s own docstring
+already named ("makes pyegeria synthesise one and POST it un-serialised — a
+live bug this does not copy"). All three fixed to match the body shapes
+`egeria_reference_catalog.py`'s `build_proposed_data_class_body`/
+`build_proposed_valid_value_set_body` already use correctly. Tests in
+`tests/test_bootstrap_data_classes.py`.
+
+**Live-verified end to end**, against the shared dev platform (reachable
+from this checkout at `https://localhost:9443`, not `host.docker.internal`
+— that hostname only resolves from inside a container): confirmed zero
+existing Data Classes/Valid Value Sets first, then ran the fixed bootstrap
+and got "Created Data Classes: 6, Skipped: 0" — GUIDs:
+`EmailAddress cf667f16-e9d8-45dd-a86e-3fa27e0f62d6`,
+`PhoneNumber f6333002-7a31-4311-8556-2644bfc9984e`,
+`SocialSecurityNumber ebf003df-629b-4a00-a7aa-d939a5e833f7`,
+`CreditCardNumber f2b4fbdf-eb35-4263-b487-3b74518ec451`,
+`Password 3d442693-cfae-40c8-95f9-a7bfbac9739b`,
+`DateOfBirth 2e597370-d598-4109-9acd-04ee06eac828`. Then re-ran
+`data_class_match` through the actual "Run" path
+(`DATABASE_ANALYSIS_STEP_MAP["data_class_match"]` → `run_database_survey` →
+`DatabaseSurveyor.survey()`) against a scratch table
+(`public.scratch_verify_phase1_wiring`, an `email_addr` column of
+well-formed emails, dropped after) and confirmed `reference_catalog.available
+= True, data_class_count = 6` and a genuine, established verdict — no
+longer `no_candidates`/"not established" regardless of data.
+
+**Found but NOT fixed, flagged for whoever designs the seed content next:**
+the live verdict for `email_addr` came back `unmatched_patterned` (proposing
+a new class), not a match against the seeded `EmailAddress` class — because
+`column_matching.pattern_conformance_any` treats a Data Class's `dataPatterns`
+as VALUE-matching regexes (fullmatched against sampled values), but
+`STANDARD_DATA_CLASSES` in `bootstrap_data_classes.py` populates
+`dataPatterns` with plain keyword strings (`"email"`, `"email_address"`, ...)
+meant as name hints — and that same list is reused, unchanged, as the display
+names of the seeded `ValidValuesSet`'s keyword members. The two uses want
+different content (name keywords vs. value regexes) under one field, and
+changing it to real regexes would break the keyword-set seeding that reads
+the same list. Whoever owns the seed content next should either add a
+separate value-pattern field or split the two lists.
+
+**Also still pending, by design (not an oversight):** the Dr.Egeria
+authoring batch (VALIDATE/PROCESS) for this session's
+`docs/dr-egeria/resource_questions.csv` row 76 reword (`GAP: data_class_match
+(proposed)` → `data_class_match`, `kind: gap` → `kind: analysis`) has not
+been run — CSV/YAML regeneration only, per the same coordination reasoning
+as the `filesystem_inventory` entry above. **Also worth checking**: an
+active, separately-authored review (`FALSE-GAPS-2026-09-22.md`, referenced
+above, not present on this branch) is reportedly tracking 18 rows in this
+same "`GAP: ... (proposed)` for a now-built analysis" shape — row 76 may be
+one of them, so whoever merges next should check for an overlapping edit to
+the same CSV row rather than assume this change is the only one in flight.
+
+## grant_change and column-level schema_diff comparators, plus two real
+## bugs found live-verifying them (2026-09-22)
+
+Phase 1 slice 14 follow-up (design §9.1). Built `grant_change` and the
+column/constraint-level half of `schema_diff` in
+`db_change_comparator.py`/`db_derived.py` — each its own `analysis_id`
+(design §9.1's Perspective presets subscribe to them separately from
+`db_change_rates`), same two-snapshot/`established` shape as
+`_compare_change_rates`. `schema_diff` is deliberately scoped to tables
+present in both snapshots, so a whole new/dropped table's columns stay
+`db_change_rates`'s schema-churn story rather than being double-reported.
+
+Live-verifying the coordinator brief's own done-test ("a new column and a
+new PUBLIC grant each raise an RFA") against the real `coco_ods` database
+surfaced two pre-existing bugs neither comparator's own logic could paper
+over, both confirmed by direct query against the shared registry/database
+rather than assumed:
+
+1. **`database_grants` was written by NO survey path at all**, local or
+   native. `database_surveyor.py`'s local blob already carried
+   `results["operations"]` (privilege_audit's own output), but
+   `result_materializer.py`'s `database_rows_from_survey_data()` never read
+   it back out, so `backfill_database_survey()` unconditionally marked
+   every local survey's grants `STATE_NOT_MEASURED` via
+   `_DATABASE_BLOB_UNMEASURED` — even for a survey that genuinely ran
+   privilege_audit. Fixed: grants are now extracted from
+   `operations["privilege_audit"]["table_grants"]` when that key is
+   present, and the NOT_MEASURED fallback loop skips any table the main
+   loop already wrote for real.
+2. **`information_schema.role_table_grants` cannot see PUBLIC's own
+   grants**, or another role's, from a non-privileged connecting role — by
+   that view's own Postgres documentation, it shows only grants where the
+   *current* role is the grantor or grantee. RE's stored survey credential
+   (`egeria_user`, an ordinary role, not a special case) surveyed a table
+   with a real `GRANT SELECT ... TO PUBLIC` on it and saw only its own
+   grant — the exact case design §9.1 names first ("a new grant,
+   *especially to PUBLIC*"). Fixed in `connection.py`'s
+   `get_privilege_audit()`: reads `pg_class.relacl` via `aclexplode()`
+   instead, which is catalog metadata visible to any connected role
+   regardless of what that role itself was granted.
+
+With both fixed, live-verified end to end through the real scheduler path
+(`scheduler._run_due` → `_execute` → `_check_subscriptions` →
+`detect_database_change`) on a scratch table in `coco_ods`: adding a column
+and a `GRANT INSERT ... TO PUBLIC`, then re-surveying, raised two RFAs
+(`activity_log` ids `887db284-153e-4d5c-9736-d78020d3b0b6` — "1 column(s)
+added: public.scratch_verify_slice14.phone_number" — and
+`404a93b9-9fa4-4ad0-b753-d7e0b7912659` — "1 new grant(s) to PUBLIC: INSERT
+on public.scratch_verify_slice14 to PUBLIC") with the PUBLIC grant named
+unambiguously in the RFA's own text, not buried in a generic "grants
+changed" message. Scratch table, grant, schedules and subscriptions were
+all removed afterward; the two fixes above are real and stay.
+
+Still open per design §9.1's full comparator table: `class_change`,
+`reference_set_change`, `scope_change`, `resilience_change` — logged
+already in `db_change_comparator.py`'s own module docstring.
+
+
+## Decision reversal: DB and FS now in scope for `/next` (2026-09-22)
+
+**Decision (project owner, 2026-09-22):** `/next` should reach parity with
+classic across all three resource types (repo, database, filesystem), not
+just repos — reversing the earlier ruling logged in
+`docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md` ("DB and FS stay out
+of `/next`. Project owner, 2026-09-20. They land in the classic UI..."; see
+that file's "What is different from the repo work" section for the original
+wording). The one-session-at-a-time rule on `next/app.js` that ruling had
+lifted is back in effect for DB/FS-touching `/next` work.
+
+A parity audit run the same day found the backend already resource-type-
+generic under most of `/next`'s panes — the gate was UI-side only:
+`paneNeedsRepo()` in `app.js` blocked Survey/Sub-Resources/By-analysis/
+Disposition for any non-repo `resourceType`, the Questions-engine pane had
+its own separate duplicate guard, and `automate.js`/`worklist.js` silently
+hardcoded `entityType`/`'repo'` instead of reading `state.resourceType`
+(worse than a gate — wrong data with no visible error, not an honest
+absence). `re/next-db-fs-gate-removal` removes/relaxes these gates and
+threads the real resource type through; see that branch's own commits for
+what was live-verified against a running database resource vs. left as an
+honest "not built" state (DB-specific views with no `/next` equivalent —
+schema-distribution charts, Kroki ER diagrams, the Survey Database modal —
+and filesystem-specific views — file inventory browsing, data-file
+profiling — stay out of scope, unchanged by this reversal).
+
+## By analysis / scouting-questions were repo-only; Disposition's `github_url` keying is not fixed here (2026-09-22)
+
+Three more real, separate backend gaps found continuing the audit above (on
+`re/next-generalize-byanalysis-disposition-questions`) — all genuinely
+repo-only backends, not a leftover UI restriction:
+
+**1. "By analysis" (`GET /{slug}/survey-results`)** read
+`REPO_ANALYSIS_RESULTS_MAP`/`REPO_ANALYSIS_HEADLINE_MAP`
+(`repo_survey_definition_adapter.py`) directly, with no database/filesystem
+equivalent. Fixed by extracting the route body into `workflows.analysis.
+build_survey_results(registry, entity_type, slug, stage, include_empty)` and
+adding `GET /api/databases/{slug}/survey-results` and `GET
+/api/filesystems/{slug}/survey-results` alongside it — same shape as
+`build_analysis_last_activity` above it. repo's own curated
+`SURVEY_RESULT_DASHBOARDS` groupings are untouched; database and filesystem
+have no such curated, themed groupings today, so this synthesizes one
+dashboard **per analysis_id** for those two entity_types instead — literally
+"by analysis", which is what the pane is named.
+
+New `DATABASE_ANALYSIS_RESULTS_MAP` (`database/survey_definition_adapter.py`)
+covers 14 of database's 18 analyses with **real** local reads, not stubs:
+- 8 are `live_read`-style thin wrappers over `run_db_derived()` (and its two
+  comparators, `derive_schema_diff`/`derive_grant_change`) — db_classification,
+  db_relationship_graph, grain_determination, db_fingerprint,
+  schema_conventions, db_change_rates, schema_diff, grant_change. All eight
+  already had this exact zero-fetch computation built (it backs their Egeria
+  publish path); wiring a reader for them is a read-time wrapper, not new
+  domain logic.
+- 6 are thin reads of already-materialized detail rows or the latest
+  `database_surveys.survey_data` blob — schema_inventory, row_count_snapshot
+  (`database_tables`/`database_columns` detail rows), privilege_audit,
+  db_activity_signals, db_resilience, db_external_dependencies (the four
+  `postgres_operations` sections, read from the survey blob's `operations`
+  key — no dedicated detail table exists for these four yet).
+
+**Left out, on purpose, not guessed at:** `data_class_match`,
+`reference_data_match` and `nested_column_profile` have no results reader.
+Their verdicts are real (`column_matching.py`/`nested_columns_step.py`
+compute them) but are turned ONLY into Egeria annotations — there is no
+local table a reader could query, because `registry.upsert_finding()` (the
+table every repo results_reader reads via `query_findings`) hard-requires
+`registry.get(slug)`, i.e. a registered **repo** `Project`; a database or
+filesystem survey cannot write to `project_analysis_findings`/
+`project_analysis_metrics` at all today. Building that path — either
+generalizing `upsert_finding`'s guard to accept database/filesystem
+entities, or giving these three their own detail table the way
+`database_column_profiles` exists for the pg_stats side of column
+profiling — is real, separate schema-and-write-path work, not a reader
+wrapper, so these three (and `egeria_db_survey`, which is a trigger with no
+local results either way, same as repo's own Egeria-triggered analyses)
+stay `results=None` — an honest "no results view yet", same as repo's own
+`repository_health`.
+
+**2. "Questions checklist" (`GET /{slug}/scouting-questions`)** — the
+underlying catalog function, `question_catalog_reader.get_questions()`, was
+already resource-type-generic; only the ROUTE reaching it, and the
+`has_data` scoring behind it (`workflows.scouting.question_has_data`, which
+read `REPO_ANALYSIS_RESULTS_MAP` directly) were repo-only. This dispatcher
+backs Scouting/Discovery/Assessment/Analysis/Enrichment/Curate in `/next`,
+not just a "Questions" tab (`app.js`'s `loadPane()`), so the fix has that
+whole blast radius. Fixed by extracting `workflows.scouting.
+build_question_checklist(registry, entity_type, slug, phase, perspectives,
+purposes)` and parametrizing `question_has_data` over `entity_type`
+(dispatching to the same `_results_map_for` three-way switch
+`build_survey_results` uses), then adding `GET /api/databases/{slug}/
+questions` and `GET /api/filesystems/{slug}/questions`. Database/filesystem
+questions now score `has_data` against the real
+`DATABASE_ANALYSIS_RESULTS_MAP`/`FILESYSTEM_ANALYSIS_RESULTS_MAP` above,
+inheriting the same three-analysis gap noted in item 1 — a question whose
+only `analysis_ids` are `data_class_match`/`reference_data_match`/
+`nested_column_profile` reports `has_data: false` today (a real "checked,
+found nothing to point at" answer only in the sense that there is genuinely
+nowhere local to check yet, not that the analysis found nothing).
+
+`/next`'s `app.js` gates for both panes (`paneNeedsRepoBackend('By
+analysis', ...)` and the questions-engine's own duplicate copy) are removed;
+both now fall through to the plain `paneNeedsRepo()` "select a resource"
+check, same as Survey. `apiEntityType()` is threaded through every new call
+site (`getSurveyDashboards`, `getQuestions`, and the `getContext` call the
+Questions pane's human-answer overlay was making with a hardcoded `'repo'`
+— found while touching this code, fixed alongside it since it is the exact
+same bug class this whole effort exists to close).
+
+**3. Disposition is NOT fixed here — investigated and deliberately left as
+an honest gate.** `registry.py`'s `set_disposition`/`get_disposition_history`
+are keyed by `github_url`, including a hardcoded `repo_disposition` table
+with `github_url TEXT PRIMARY KEY` (~line 2762) and a `repo_disposition_
+history` table keyed the same way (~line 2780) — plus the journal
+(`/api/journal/repo/...`) and records (`/api/projects/{slug}/records`)
+routes, both hardcoded repo paths. Unlike items 1 and 2, this is not a
+route-level gap over an already-generic backend; the `github_url` primary
+key is load-bearing schema, and every write/read path assumes it. A real fix
+needs one of:
+- a new `database_disposition`/`filesystem_disposition` table pair (schema
+  duplication, but no migration of existing rows), or
+- a genuine generalization of `repo_disposition`/`repo_disposition_history`
+  to a `(entity_type, entity_slug)` composite key in place of `github_url`
+  (no duplication, but a real migration of every existing disposition row
+  and every caller that currently passes a `github_url`).
+
+Judged too large to attempt as a "rushed half-migration" alongside items 1
+and 2 in the same PR — a real schema decision (which of the two shapes
+above, and whether existing `github_url` values need backfilling to slugs or
+can stay keyed as-is under a widened key) belongs to its own reviewed slice.
+`/next`'s Disposition gate (`paneNeedsRepoBackend('Disposition', ...)`) is
+therefore left exactly as the prior agent built it — unchanged by this PR.
+
+## Disposition generalized to `(entity_type, entity_slug)` — the schema gap above is now closed (2026-09-22)
+
+`re/generalize-disposition` picks up exactly the decision the entry above
+deliberately deferred. Investigated both options concretely before
+choosing, per the brief:
+
+**Row counts (shared dev Postgres, `resource_explorer.repo_dispositions`/
+`repo_disposition_history`, read-only query):** 20 current-disposition rows,
+44 history rows. Tiny — a live migration here carries none of the risk a
+large table would.
+
+**Call-site count.** Grepping every `.set_disposition(`/`.get_disposition(`/
+`.get_disposition_history(`/`.record_depth_offer(` call turned up ~11
+production sites (`workflows/discovery.py`, `web/routes/discovery.py` ×3,
+`web/routes/projects.py` ×2, `curate_plan.py`, `facts.py`, `batch_io.py`,
+`work_lists.py`, `cli/main.py`) and ~30 more in tests — larger than the
+Backlog entry above estimated ("the journal and records routes"), because
+`get_disposition`/`get_disposition_history` turned out to be read from five
+more modules than the two routes named. This mattered for the decision (see
+below): a signature change at every one of those ~41 sites was the real
+cost Option B was weighed against, not just "the schema."
+
+**FK/join surface.** `SELECT conname FROM pg_constraint WHERE confrelid IN
+('repo_dispositions'::regclass, 'repo_disposition_history'::regclass)`
+returned zero rows — nothing joins to disposition by `github_url`. So
+Option B's migration surface does not multiply beyond the two tables
+themselves, unlike a table that other tables reference.
+
+**Decision: Option B (generalize the key), with the schema widened but the
+existing repo-facing method signatures kept unchanged.** This needs
+unpacking, because it is not quite either option as originally framed.
+
+*Why B over A:* this session has a repeated, explicit precedent for
+generalizing rather than duplicating —
+`DATABASE_ANALYSIS_STEP_MAP`/`FILESYSTEM_ANALYSIS_STEP_MAP`,
+`database_grants`, `workflows.analysis.build_survey_results` (previous
+entry, item 1) all chose one generic mechanism over parallel per-type
+copies. More concretely here: `registry.py` already has a **live,
+maintained example of this exact shape** — `_ENTITY_SLUG_TABLES` (16
+tables: `resource_tags`, `resource_feedback`, `activity_log`,
+`resource_working_set`, etc.), all keyed on `(entity_type, entity_slug)`,
+all repointed automatically by `rename_project_slug()`. `repo_dispositions`/
+`repo_disposition_history` were the only two tables in the "entity family"
+still keyed on `github_url` alone. Option A (a new `database_disposition`/
+`filesystem_disposition` pair) would have added a *third* naming scheme
+alongside that convention and the repo-only one, for no gain the
+investigation above supports — the row count is trivial, nothing joins on
+`github_url`, and `registry.py` already has a tested PK-widening migration
+pattern for exactly this move (`_add_user_id_to_keyed_table`, used for
+`resource_working_set`'s `user_id` column) to build from.
+
+**Genuine risk found, and how it's handled — this is the reason the
+methods' signatures did NOT change at every one of the ~41 call sites.** A
+repo's disposition can be set before the repo is ever imported (a
+discovery-search candidate — 1 of the 20 rows in the shared dev registry
+today, `intake/intake`). At that point there is no `Project` and therefore
+no stable slug — only a URL. Naively keying straight off a
+github_url-derived guess (`org_importer._url_to_slug`) breaks the moment
+the repo is later imported under a **different** slug than that guess: a
+manual slug override, or a collision-avoidance rename. This is not
+hypothetical — it is already true of live data: `odpi/egeria`'s row
+carries `project_slug='egeria_git'`, not the url-derived `'egeria'`. A
+repo's stable identity really is its `github_url` (that is *why* the
+original schema keyed on it), and none of the other `_ENTITY_SLUG_TABLES`
+rows are ever written before a project exists, so they never had to solve
+this.
+
+So: the schema generalized (composite PK), but `set_disposition`/
+`get_disposition`/`get_disposition_history` (registry.py) kept their
+existing `github_url`-in, `github_url`-out signatures — **zero of the ~41
+existing call sites needed to change**, and the ~30 existing tests for them
+pass unmodified. Internally they now resolve `entity_slug` via a new
+`resolve_repo_entity_slug(github_url)` (the project's real slug once
+imported, else the same url-derived guess `org_importer.py` already uses
+elsewhere for a pre-import candidate) and delegate to new, genuinely
+generic primitives — `set_disposition_for_entity`/
+`get_disposition_for_entity`/`get_disposition_history_for_entity`
+(`entity_type`, `entity_slug`, ...) — which `database`/`filesystem` callers
+use directly, since those entities have no pre-import ambiguity (their slug
+*is* their stable identity from registration). `add()` gained a
+reconciliation step (`_reconcile_disposition_on_import`) that re-keys a
+provisional pre-import disposition row onto the real slug at import time,
+for the rarer case where they differ — closing the gap rather than leaving
+it as a latent bug. `rename_project_slug` also gained
+`repo_dispositions`/`repo_disposition_history` in its `_ENTITY_SLUG_TABLES`
+repoint list, so a later rename keeps disposition in sync the same way it
+already does for the other 16 tables.
+
+This is a deliberate departure from "update every caller to the new
+signature," and the reasoning is worth being explicit about rather than
+silently choosing the smaller diff: the repo-facing signature is not a
+leftover — `github_url` genuinely is the right identity for a resource that
+can be triaged before it exists as a project and renamed after, and forcing
+each of ~41 call sites to compute (or fetch) an `entity_slug` themselves
+would duplicate `resolve_repo_entity_slug`'s logic that many times for no
+behavioral gain. The literal instruction's intent — every caller reaching
+the correct API for its entity type — is satisfied: repo callers already
+had the correct API, and it stayed correct; new `database`/`filesystem`
+callers reach the new one.
+
+**Migration.** `repo_dispositions.github_url TEXT PRIMARY KEY` →
+`(entity_type, entity_slug)` composite PK, following the exact
+Postgres-vs-SQLite branch `_add_user_id_to_keyed_table` established
+(`ALTER ... DROP CONSTRAINT` + `ADD PRIMARY KEY` on Postgres; create-copy-
+swap on SQLite, since SQLite cannot drop a PRIMARY KEY in place).
+`repo_disposition_history` needed no PK change at all (it's keyed on its
+own `id`, never on `github_url`) — just a backfill and a new index.
+Backfill uses `project_slug` when the row already has one (the resolved
+slug set the last time this repo's disposition was written with a `Project`
+in hand — this is what makes `egeria_git`, not `egeria`, the right answer
+for that row) and falls back to `_url_to_slug(github_url)` only for the
+rarer empty-`project_slug` row. Verified against a hand-built pre-migration
+SQLite fixture reproducing both shapes (a normal imported-repo row and the
+`egeria`/`egeria_git`-style divergent one) — backfill lands both at the
+correct `entity_slug`, confirmed by reading it back through the unchanged
+`get_disposition`/`get_disposition_history` API afterward.
+
+**Records/journal routes.** The journal route
+(`/api/journal/{entity_type}/{slug}`) turned out to already be fully
+entity-generic on the backend — the "hardcoded repo paths" this and the
+prior entry described was actually the **frontend** wrapper
+(`re-api.js`'s `getJournal`/`writeJournal` hardcoding `/api/journal/repo/
+...`), fixed by threading an `entityType` param through (default `'repo'`,
+so no existing caller's behavior changes). The records route
+(`/api/projects/{slug}/records`, `.../records/{record_id}/act`) was a real
+backend gap, but a route-level one, not a disposition-schema one — same
+shape as items 1/2 above: `Curations.for_resource(entity_type, slug)` was
+already generic underneath; only the existence check (`registry.get(slug)`,
+Project-only) and the hardcoded `entity_type='repo'` passed to
+`WorkLists`/`log_rfa` needed generalizing. Added entity-generic siblings
+(`GET/POST /api/projects/entity/{entity_type}/{slug}/records[/...]`) rather
+than changing the existing repo routes in place, so the repo path is
+provably untouched. `GET .../records/{record_id}` (single-record fetch/
+export) needed no sibling — it never checked `entity_type` at all.
+
+**Deliberately NOT generalized, and why:** DepthOffer (the "these analyses
+have never run" offer shown after a verdict) stays repo-only. It reasons
+about the repo analysis catalog's analysis/assessment tiers specifically;
+generalizing it is a separate, analysis-catalog-shaped piece of work, not a
+disposition-schema one, and nothing in the brief asked for it. The frontend
+already degrades correctly without special-casing: `renderDepthOffer` gates
+on `p?.github_url`, which is simply absent for a database/filesystem
+`resource`, so it silently doesn't render rather than erroring. Similarly,
+a report's "write a correction" action (`saveReport`) stays on its
+existing repo-only route — out of scope here, and it fails with a visible
+error rather than silently for a database/filesystem record if someone
+reaches it, which is the correct degrade for something genuinely unbuilt.
+
+**Frontend.** `/next`'s Disposition pane no longer calls
+`paneNeedsRepoBackend()` — with the backend gap closed, nothing called that
+function any more, so it was deleted outright (dead code left in place is
+exactly the kind of thing a future gate could reach for again without
+re-checking whether it's still needed). The pane now uses the plain
+`paneNeedsRepo()` "select a resource" check, threads
+`apiEntityType(state.resourceType)` at the boundary (same convention as
+`getSurveyCandidates`/`getQuestions`), and branches picker/history/journal/
+records calls on whether the resolved entity type is `'repo'` (github_url-
+keyed, unchanged) or not (entity_slug-keyed, new). `DatabaseSummary`/
+`FileSystemSummary` gained a `disposition` field (mirroring
+`ProjectSummary`'s, already there) so the picker renders the current
+verdict without an extra round trip.
+
+**Tests.** `tests/test_registry.py` gained migration/backfill coverage
+(a fixture with pre-migration `github_url`-keyed rows, including the
+divergent-slug case, asserting the post-migration `(entity_type,
+entity_slug)` landing spot) and coverage of the new
+`*_for_entity`/`resolve_repo_entity_slug`/`_reconcile_disposition_on_import`
+methods. `tests/test_next_db_fs_gate_removal.py` updated: the class
+asserting `paneNeedsRepoBackend` still gated Disposition is replaced with
+one asserting the function is gone entirely and Disposition now follows
+the same `paneNeedsRepo()`/`apiEntityType()` shape as By analysis/
+Questions.
+
+**Live verification.** Not performed against the running dev server
+(`localhost:8810`) for this schema change specifically, and that gap is
+deliberate, not an oversight: that server currently runs the *old*
+registry.py against the *same* shared Postgres database this migration
+targets. Running the migration from this branch (a `ProjectRegistry()`
+construction is enough to trigger `_init_schema()`) would alter
+`repo_dispositions`' live constraints out from under the currently-running
+server mid-session — its old code's `INSERT ... ON CONFLICT(github_url)`
+would then fail outright (`ON CONFLICT` requires a unique constraint
+exactly matching its target, and `github_url` stops being one), breaking
+disposition-setting for every concurrent user until that server is
+restarted onto this branch. That restart is exactly the kind of shared,
+unreviewed disruption this repo's conventions route through a merged PR
+and a coordinated restart, not a solo subagent action — and this session
+had no working peer-messaging path to confirm no one else was mid-write
+against the same database first. Verified instead: the full local test
+suite (below) against a fresh SQLite registry and a hand-built
+pre-migration SQLite fixture reproducing the shared DB's actual data shape
+(20/44-row scale, including the one divergent-slug row) with the migration
+applied and read back through the unchanged public API; and a read-only
+`psql` query confirming the live table's current shape, row counts, and
+absence of FK references, all reported above. The coordinator should run
+this migration (or accept the PR and let the normal deploy/restart cycle
+do it) rather than have it applied ad hoc from a subagent session.
+
+---
+
+## Prefect-orchestrated survey definitions don't get §17.1's prerequisite resolution
+
+**Found while building** §17.1 (prerequisite auto-run, PR #241).
+
+The design doc says the Prefect path already expresses step dependencies as
+task edges and "Prefect renders the chain itself" — checked against the code
+and that's not true. `survey_execution_plan.build_plan` builds Prefect's task
+graph from a definition's authored `Link Next Process Step` edges and their
+guards only; it has never read `requires_context`, and `PRODUCES` (this PR's
+new source of truth for what a step writes) did not exist before it. A
+Prefect-orchestrated definition would dispatch a step whose stored input is
+absent, the same failure `step_preconditions.py` existed to catch on the local
+path.
+
+Contained, not fixed: a definition that needs resolving takes the local
+execution loop (which still routes individual `executes_at: prefect` steps
+through `run_prefect_step`); a definition with nothing to resolve — every
+definition today — goes to Prefect unchanged.
+
+**Candidate fix:** fold `PRODUCES` edges into `survey_execution_plan.build_plan`
+so Prefect's own task graph carries the same producer/precondition edges the
+local resolver derives, rather than running two different dependency
+mechanisms depending on which coordinator a definition happens to use.
+
+---
+
+## §17.2's cost vector is missing `source_rows`/`source_queries`, by design — but there's no marker for "will never be sampled"
+
+**Found while building** §17.2 (cost-vector recording, PR #241).
+
+The design lists `source_rows`/`source_queries` as "optional, sampled" —
+`pg_stat_statements` deltas or filesystem read counters. Neither is built, so
+the fields are simply **absent from the metrics vector**, not present at 0 (a
+0 would misread as "this step scanned no rows"). That's the right call for
+now, but nothing distinguishes "not sampled yet, could be added" from "will
+never be sampled for this step kind" — a later reader of `step_runs` has no
+way to tell those apart without re-reading this PR.
+
+**Candidate fix:** when `pg_stat_statements`/read-counter sampling is designed,
+decide the presence convention explicitly (absent vs. a typed "not sampled"
+sentinel) rather than leaving it implicit in "the column is missing."
+
+---
+
+## §17.3's Admin "Performance" panel — deferred, needs designer round 2 after real rows accumulate
+
+**Found while building** §17.2/§17.3 (PR #241).
+
+The derived metrics (cost per question answered, tier ratio) are built as
+functions with unit tests and no UI — `step_runs` has no consumer yet besides
+the resolver's own estimate lookups. Per the design's own sequencing, this
+waits for two weeks of real rows before a designer pass on the four
+Admin-panel views §17.3 describes.
+
+**Candidate fix:** none yet — this is intentionally waiting on data, not on
+design. Revisit once `step_runs` has enough real-run history to make the
+panel's views meaningful rather than speculative.
+
+---
+
+## `/next`'s prerequisite-proposal UI doesn't exist yet — classic-only for now
+
+**Found while building** §17.1 (PR #241).
+
+`POST /api/prerequisites/plan`/`run` work over HTTP (verified live against a
+real database), but nothing in `/next`'s stage pages renders a proposal or
+offers the "run it?" accept/decline flow — matching classic-first precedent
+elsewhere in this codebase, but a real capability gap in `/next` today: a
+`/next` user who crosses a tier boundary gets no prompt at all where classic
+would show one.
+
+**Candidate fix:** design the `/next` equivalent of the classic proposal
+prompt — likely a toast/inline-card pattern consistent with `/next`'s existing
+run-in-background and queued-toast conventions, reading the same
+`/api/prerequisites/plan` response classic will use.
+
+---
+
+## Two cost-vector measurement blind spots, both undercounting rather than overcounting
+
+**Found while building** §17.2 (PR #241), verified live against the real
+shared Postgres.
+
+- **`connects` is always 0 for database steps.** psycopg2 opens its socket
+  inside libpq, below anything RE's observer can instrument — so the
+  `fetch_cost='none'` disagreement check (a step declaring zero-fetch that
+  actually opened a connection) can never fire for a database step. A clean
+  board proves nothing here; it's structurally unable to catch the case it
+  exists to catch.
+- **A thread spawned inside a step doesn't inherit the calling ContextVar
+  scope**, so external calls made from that thread are undercounted in the
+  step's own cost vector. Safe direction for an "is this expensive" alarm
+  (undercounting never triggers a false alarm), wrong direction for trusting
+  a step's own "this was free" claim — `bytes_complete` on the row says
+  whether the count is trustworthy, but nothing surfaces that distinction
+  anywhere a reader would see it before trusting the number.
+
+**Candidate fix:** for `connects`, instrument at the connection-pool/adapter
+layer RE controls (`resource_explorer/connection.py`) rather than trying to
+observe libpq; for the thread issue, propagate the ContextVar explicitly at
+thread-spawn sites inside steps, or surface `bytes_complete=false` more
+visibly wherever `step_runs` metrics are displayed.
+
+---
+
+## `/next`'s "Survey & analyses" tab silently drops Egeria's own native, technology-specific survey processes — classic already shows them
+
+**Found live** (project owner, 2026-09-24): opened `/next`'s "Survey & analyses"
+sub-tab on a real database (`coco_ods`, PostgreSQL) and got "No survey
+definitions for this resource — the adapter registered none for this
+technology type," alongside a "Scope: all tiers — stage filter unavailable"
+chip. **First write-up of this entry claimed no Egeria survey definitions
+exist for database/filesystem at all — that was wrong, corrected by the
+project owner** ("there are plenty of Egeria database surveys — they are not
+generic, they are for PostgreSQL or whatever") and re-traced below.
+
+Two genuinely separate conventions exist in this codebase, per
+`ResourceTypeAdapter`'s own docstring and `technology_type_processes.py`'s
+header comment: **RE-authored** Survey Definitions (a `GovernanceActionProcess`
+tagged via `additionalProperties.supported_technology_type`, RE's own
+free-text convention — none exist for database/filesystem, only
+`repo-survey-definition-*` documents do, confirmed via
+`docs/dr-egeria/survey-definitions/`), and **Egeria-native** survey/catalog
+processes (real, pre-existing governance action processes/types Egeria
+itself ships or has cataloged for a real Technology Type, e.g. PostgreSQL).
+The second kind is real and already known to this codebase —
+`resource_explorer/configdata/technology_type_processes.yaml` has confirmed,
+live-verified entries for `PostgreSQL Relational Database` and
+`PostgreSQL Server`, including `PostgreSQLSurvey::survey-postgres-database`
+(`kind: survey_existing` — safe to trigger directly against an existing
+asset) and `PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess`
+(`kind: catalog_and_survey`).
+
+`web/routes/survey_definitions.py`'s `list_candidates()` DOES read this
+config (`get_native_processes(entity_type, adapter.egeria_technology_type_name)`)
+and returns it as a separate `egeria_native_processes` field on the response
+— deliberately not merged into `candidates`, since only `survey_existing`
+processes are currently safe to expose as runnable and `catalog_and_survey`
+needs template placeholder params RE doesn't collect yet. **Classic**
+(`web/static/index.html:8661`) reads this field and renders it as an
+informational block: *"Also known to Egeria for this technology (not yet
+runnable from here)."* **`/next` never reads `data.egeria_native_processes`
+at all** (`grep` across `web/static/next/app.js` returns nothing) — so for
+`coco_ods`, `/next` shows "no survey definitions" while classic, given the
+exact same API response, would show the real PostgreSQL native survey
+process that DOES exist for it. The "stage filter unavailable" chip is a
+correct, separate symptom (RE's own candidate lookup genuinely finds zero
+RE-authored definitions and falls back to a full scan, which also finds
+zero) — but it's misleading in context, since it implies nothing is
+survey-able here when something is.
+
+This is the same shape as the rest of this session's "/next hasn't caught up
+to classic" findings, not a new kind of gap.
+
+**Candidate fix:** port classic's `nativeProcessesHtml` block
+(`web/static/index.html` around line 8661) into `/next`'s `loadSurveyPane()`
+(`web/static/next/app.js`, the same function that renders the "No survey
+definitions" message) — read `data.egeria_native_processes`, render it the
+same informational-only way classic does, and make the "no survey
+definitions" empty-state message conditional on BOTH lists being empty, not
+just `candidates`. Separately worth a design decision, not blocking this
+fix: whether `survey_existing` native processes should become genuinely
+runnable from `/next` (they're flagged safe in the config already) rather
+than staying informational-only in both UIs.
+
+---
+
+## Revisit bundling `repo_symbol_extraction` into `interface_surface` once cheap-refresh or smaller-survey wiring exists
+
+**Decision (project owner, 2026-09-24):** leave `interface_surface`
+un-bundled, as merged in `#248` — no hard precondition, no auto-triggered
+`repo_symbol_extraction`. `PR #245`'s design doc originally cited
+`api_structure` as already using a "bundle" pattern for this exact
+relationship; that citation was wrong (`api_structure` was deliberately NOT
+bundled with `repo_symbol_extraction`, for the identical cost reason —
+see `analysis_catalog.yaml`'s comment above that `AnalysisKind` entry), so
+there was no working precedent to adopt as-is.
+
+**Why revisit later, and what would have to be true first:** the real
+objection to bundling is that `repo_symbol_extraction` is `fetch_cost=
+"download"` — a full zipball fetch — every time, even when the repo has not
+changed since the last extraction. Two things named by the project owner
+would change that cost calculus enough to make bundling worth trying again:
+
+1. **Skip the download when we already have the most recent version.**
+   `SourceCache` (`github/source_cache.py`) already keys `zipball_root`/
+   `git_clone_root` on `(repo, commit SHA)` and shares it across
+   `SurveyOrchestrator.run()` calls within one run — but nothing today
+   checks "is the SHA we last extracted from still the repo's current HEAD"
+   *before* deciding whether extraction is needed at all, across separate
+   runs/days. If a cheap SHA check (one API call, not a fetch) could answer
+   "nothing has changed since our last `project_code_markers`/
+   `project_code_symbols` write," bundling stops meaning "always pay for a
+   fresh download" and starts meaning "usually free, occasionally pays."
+2. **Wire smaller surveys together instead of building bigger ones.**
+   A framing the project owner raised directly, distinct from (1): rather
+   than making `interface_surface` itself absorb `repo_symbol_extraction`'s
+   cost, treat the relationship as an orchestration question — could §17.1's
+   own prerequisite-resolver machinery (already built, `PR #241`) be the
+   thing that composes "run `interface_surface`, and if its input is stale,
+   chain in `repo_symbol_extraction`" from two small, independently-useful
+   surveys, rather than either bundling them into one entry or leaving them
+   fully decoupled? This is closer to composing existing small pieces than
+   authoring a new combined analysis, and is worth a design pass of its own
+   before deciding whether "bundle" is even the right verb.
+
+**Candidate fix:** no code change until (1) or (2) exists. When either
+lands, re-open the bundling question for `interface_surface` specifically
+(and audit whether the same reasoning applies to any other analysis that
+today avoids bundling `repo_symbol_extraction` purely on cost grounds).
+
+---
+
+## `build_plan`'s PRODUCES-folding checks (`#247`) aren't run against the real, authored survey-definition corpus
+
+**Found while answering a project-owner question** ("how much static
+analysis can we do on the survey rather than only runtime checking?",
+2026-09-24, re: `PR #247`).
+
+`build_plan()` already does real static analysis: `MissingPrerequisiteError`/
+`PrerequisiteTierError` raise at plan-construction time, before any step
+executes, whenever a caller passes `step_registry=`. But
+`tests/test_survey_execution_plan.py::test_every_live_definition_plans_
+to_its_existing_order` — the one test that runs `build_plan()` against
+*every real, authored* Survey Definition document under
+`docs/dr-egeria/survey-definitions/` (via `documented_definitions()`) —
+calls it **without** `step_registry=`. So the new PRODUCES-folding path is
+only exercised against small hand-built fixtures (the `produces_world`
+fixture and its sibling tests), never against the real corpus. A survey
+definition authored with a step whose precondition producer is missing or
+crosses tier would not be caught by this test today, only by an actual
+Prefect run.
+
+**Candidate fix:** extend `test_every_live_definition_plans_to_its_existing_
+order` (or add a sibling test) to also call
+`build_plan(definition, step_registry=STEP_REGISTRY)` for every real,
+authored document and assert it does not raise either new error. Cheap
+(same test, one more assertion per document), zero runtime cost, and turns
+"will this survey definition actually work through the Prefect path" into a
+CI-time guard for every authored document rather than something only
+discovered by running it.
+
+---
+
+## `interface_surface`'s Thrift/SOAP coverage — a real gap and a probably-not-worth-it one, found together
+
+**Found while answering a project-owner question** ("seems like we need a
+Thrift bucket? Are we also looking at Swagger? Is SOAP really out in the
+wild still?", 2026-09-24, re: `PR #248`).
+
+**Swagger — already covered, no gap.** `_SPEC_PATTERNS`'s `"openapi"` regex
+matches `swagger.(yaml|json)` as well as `openapi.(yaml|json)` — Swagger is
+the pre-3.0 name for the same spec format, and this was already handled
+before `#248`.
+
+**Thrift — a real gap, not just the judgement-call mapping `#248` flagged.**
+`#248`'s PR body flags mapping `architecture_interfaces` port
+`protocol="Thrift"` to `interface_kind="grpc"` as a judgement call (no
+dedicated Thrift bucket exists). Checked further: the gap is bigger than
+that mapping. There is no `.thrift` entry in `_SPEC_PATTERNS` at all (unlike
+`.proto` for gRPC), so a repo with a committed Thrift IDL file gets **zero**
+`declared`-rung signal today — the only Thrift handling that exists is the
+after-the-fact port-protocol mapping, which requires `repo_arch_detect` to
+have already run and found a Thrift service. Thrift and gRPC are different
+wire protocols; folding one into the other's bucket is a stopgap, not a
+correct model.
+
+**Candidate fix:** add `"thrift": re.compile(r"\.thrift$")` to
+`_SPEC_PATTERNS` and `"thrift": "thrift"` to `_SPEC_TO_INTERFACE`, add
+`"thrift"` as its own entry in `_REGISTRATION_KINDS`/
+`_PORT_PROTOCOL_TO_INTERFACE_KIND` (mapping `"Thrift"` to `"thrift"`, not
+`"grpc"`), and add a `docs/dr-egeria/resource_questions.csv` /
+`analysis_catalog.yaml` mention if the question catalog enumerates interface
+kinds anywhere. Small, self-contained follow-up.
+
+**SOAP — likely not worth further investment, decision recorded so it isn't
+re-litigated.** `.wsdl` spec-file detection (`declared` rung) already
+exists, but `_DEPENDENCY_SIGNALS` has no `"soap"` entry (a repo depending on
+`zeep`/`spyne`/Spring-WS/JAX-WS gets no `implied` signal at all), and no
+framework marker capture was built in `#248` ("no framework in the surveyed
+catalog"). The design doc's own corpus measurement
+(`interface_surface.py`'s module docstring, dated 2026-08-26) found **zero**
+WSDL/SOAP hits across the measured catalog, against real counts for
+openapi/proto/graphql. Empirically dead in this specific corpus as of this
+writing — leave as `declared`-only unless a specific target resource is
+known to use SOAP, at which point revisit `_DEPENDENCY_SIGNALS` and
+framework-marker coverage together.
+
+---
+
+## Database credential-capability model — item 2 BUILT, items 1 and 3 still awaiting the project owner's ruling
+
+**Decision (project owner, 2026-09-24):** build item 2 below
+(`requires_capability` on `StepInfo` and the launcher gate) now, ahead of
+item 1, on the strength of §7.1 of the reply doc — which the architecture
+session added after this entry was written and which closes the question
+item 2 was said to depend on. Its words, which the build follows: "Build it
+as one axis beside cost tier in the same gate, not as a separate flow: a
+step declares `fetch_cost`, `compute_cost` and `requires_capability`, and
+the launcher shows one combined reason."
+
+**Status, so the dependency note below is not read as still blocking:**
+
+- **Item 2 — BUILT** on `re/requires-capability-combined-gate`.
+  `requires_capability` is declared on every `DATABASE_STEP_REGISTRY` entry
+  from `DATABASE-STEP-CAPABILITY-AUDIT.md`'s trace; the gate is the SAME
+  `prerequisite_resolver.resolve` the cost tier already goes through, adding
+  a `ConsentReason(kind="capability")` to the SAME `Proposal` rather than a
+  second flow; the credential's actual capability is read back from the
+  `credential_capability` probe's stored result, never re-probed.
+  Item 2's stated dependency on item 1 ("the gate needs to know which
+  connection is even in play") turned out not to bind: with one connection
+  per database there is exactly one credential in play, and the probe
+  already measures it. The gate becomes multi-connection-aware when item 1
+  lands; it does not need item 1 to be correct today.
+- **§7.1's three launcher choices: two built, one deliberately not.** "Run
+  partially and say so" (`Proposal.run_partially`, carrying
+  `MEASURED_WITHIN_CREDENTIAL_SCOPE`) and "raise the RFA"
+  (`POST /api/prerequisites/capability-rfa`, a step-naming RFA distinct from
+  the probe's standing resource-level one) are live. **"Pick another visible
+  connection" is not built** — it needs item 1's multi-connection model, and
+  a control that cannot do anything is worse than its absence.
+- **Items 1 and 3 — still blocked**, unchanged, and still needing a ruling.
+
+**Note on where §7 lives.** §7 was added to the reply doc by commit
+`990d7d61` on `re/reply-database-credential-capability`, which is **not
+merged to `main`** — `main` carries the doc through §6 only (`98e8c137`,
+PR #255). Anyone reading the doc from `main` will not find the §7 this build
+implements; read it with `git show 990d7d61:packages/resource-explorer/docs/
+design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` until that
+branch lands. Not cherry-picked onto the build branch on purpose: the doc
+commit belongs to its own PR and duplicating it would give one design note
+two histories.
+
+---
+
+## Database credential-capability model — awaiting the project owner's ruling
+
+**From:** `docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`
+(architecture session, 2026-09-24), replying to
+`ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` (`#251`). Read both in
+full before picking this up — this entry is a pointer, not a substitute.
+
+Piece 1 of the ask (a `credential_capability` probe, a persistent
+"connected as X — sees N of M schemas, SELECT on N of M tables" banner, a
+third fact-envelope state — "measured within credential scope" — and an RFA
+to the database owner when coverage is thin) needed no ruling and was
+dispatched immediately; see the PR that follows this entry once merged.
+
+**What's genuinely blocked on the project owner, and why it can't be
+guessed at:**
+
+1. **The connection/credential model itself.** The reply's finding from the
+   actual Egeria Java source (`ConnectionHandler.java`,
+   `OpenMetadataAccessSecurityConnector.java`): Egeria already supports any
+   number of `Connection` elements per asset, each with its own secrets
+   collection, with the credential's *role* (surveyor/reader/admin) sitting
+   as the `label` on the `ResourceConnection` relationship — not a new
+   concept RE needs to invent. The recommendation is a `database_credentials`
+   registry table that **indexes** Egeria's own connections (guid, role,
+   secrets collection, last probe) rather than owning credentials itself,
+   and retiring `databases.db_password` (`registry.py:2185`, clear-text
+   `TEXT`) in favor of the secrets store `#185` already built. This changes
+   `DatabaseEntity`'s shape and a live column's fate — a schema/data
+   migration decision, not something to build speculatively.
+2. **`requires_capability` on `StepInfo` and the launcher gate.** Declaring
+   what each database step needs (`catalog`/`read`/`stats`/`write`, per the
+   reply's §3 vocabulary) and gating survey execution on whether the
+   connected credential satisfies it — mirroring `#241`/`#247`'s cost-tier
+   gating — depends on (1) existing first: the gate needs to know which
+   connection is even in play.
+3. **Connection choice for RE-local survey runs** (letting a signed-in user
+   pick among an asset's visible connections) — also downstream of (1).
+
+**Two upstream Egeria defects found while answering this, not yet filed**
+(filing on `odpi/egeria`'s public tracker needs the project owner's
+go-ahead, not something to do unilaterally):
+
+- `OpenMetadataAccessSecurityConnector.selectConnection`
+  (`:2666-2669`) returns `connectionEntities.get(0)` — the first of the
+  *unfiltered* list — when exactly one connection is visible to the
+  requesting user, instead of `visibleConnections.get(0)`. An asset with an
+  admin connection listed first and a surveyor connection second, where the
+  requesting user can only see the surveyor one, gets the admin connection.
+- Same method, `:2670-2674`: when **several** connections are visible, the
+  selection is random (the code comment says so). No way to request "the
+  surveyor connection" deterministically.
+
+  Both affect Egeria-native surveys only (`executes_at: egeria`) — RE-local
+  runs choose their own connection and are unaffected. Until fixed, the
+  reply's operational rule is: an asset surveyed natively must have exactly
+  one connection visible to the survey engine's own user (via zones/security
+  tags), for the surveyor role specifically.
+
+**The pyegeria enumeration call — now confirmed, was wrong in the reply.**
+Not `ClassificationExplorer.get_relationships`, and not
+`ConnectionMaker.get_endpoints_for_asset`/`find_connections` either (both
+returned empty against a real, correctly-connected asset). The right call
+is `ConnectionMaker.find_assets(search_string=..., output_format='JSON')`
+— the asset result carries a `connections` array with the full
+`ResourceConnection` relationship (including its `relationshipProperties`,
+currently `null` everywhere since nobody has populated the label
+convention yet). Verified live against `coco_pharma`'s real asset.
+
+**§7 (architecture session, added to the REPLY doc directly) resolved the
+three remaining open questions — the model is now fully specified, only
+the go-ahead is still the owner's:**
+
+1. **The credential-gating idea has a real signal at catalog tier and an
+   existing design home.** Design §16.2/§16.3's `preliminary_fit` already
+   runs at catalog tier (`pg_namespace`/`pg_class`/`pg_attribute`/
+   `pg_constraint`/`pg_description`/`pg_partitioned_table`/
+   `pg_stat_all_tables` — all unfiltered) and yields a disqualify/pursue
+   verdict for subject, grain, size and partition coverage without ever
+   needing `SELECT`. Where it can't decide, its envelope literally says
+   "needs read on N tables to answer" — **that state IS the elevate-
+   credentials prompt**, feeding the launcher's three choices from reply
+   §3 (run partially / pick another visible connection / raise the RFA).
+   **Recommendation: build `requires_capability` as one axis alongside
+   cost tier in the same gate, not a separate flow** — a step declares
+   `fetch_cost`, `compute_cost` and `requires_capability` together, and the
+   launcher shows one combined reason rather than two separate gates a
+   user has to reconcile.
+2. **`.omsecrets` refresh — fully resolved, safe to edit directly.** Traced
+   to `ConnectorBroker.getConnector`, `SurveyActionServiceHandler`, and
+   `SurveyAssetStore.getConnectorForAsset`: every survey run gets a **fresh**
+   connector instance, and `SecretsStoreConnector.secretsTimeout`
+   initializes to `new Date()` at construction — so the first secret read
+   of every new instance always re-reads the file. **A file edit takes
+   effect on the very next survey run, unconditionally; no restart, no
+   meaningful delay.** (The earlier "60 minutes" concern only applies
+   *within* one already-running survey, which doesn't happen — each run is
+   its own fresh instance.)
+3. **Two credential stores are structurally required, not a gap to close.**
+   pyegeria only exposes `save_client_side_secret`/`delete_client_side_secret`
+   — **there is no read API for secrets**, by design (secrets are read only
+   by connectors, never returned to a caller). RE's local execution path
+   therefore *cannot* resolve credentials through Egeria; the `.omsecrets`
+   file cannot be the single store. What §1's model unifies is **identity
+   and the writer, not storage**: one secrets-collection name per
+   `(resource, role)`, written to both places by RE in the same operation.
+   RE's own `databases.db_password` should stop being a clear-text column
+   and become RE's own store (encrypted at rest, or the OS keychain); the
+   `.omsecrets` collection becomes its projection for the engine host.
+   Drift between the two is detectable by comparing collection names
+   present on each side — the best available guarantee without a read API.
+
+**Candidate fix:** none until the project owner gives the go-ahead — the
+technical design is now complete (this entry, `ASK`/`REPLY-DATABASE-
+CREDENTIAL-CAPABILITY-VISIBILITY.md`, and its §7), not merely directional.
+Once approved, items 2 and 3 from the original list follow directly and
+don't need a second design pass.
+
+## `stats` capability tier's `pg_monitor` premise was wrong for per-table/per-database counters — corrected (2026-09-24/25)
+
+`DATABASE-STEP-CAPABILITY-AUDIT.md`'s original classification (`#262`'s
+basis for the `requires_capability` field) said `pg_stat_user_tables`/`pg_
+stat_user_indexes` need `pg_monitor` membership. **Live-verified by the
+coordinating session, 2026-09-24/25, not to be true**: connected as
+`egeria_user` against `coco_pharma` (confirmed not a `pg_monitor` member),
+`pg_stat_user_tables` returned all 58 rows — matching an independent `pg_
+class`/`pg_namespace` count exactly — with real non-null `n_tup_ins`/`last_
+vacuum` values even for schemas (`demo`, `demo_auth`) the credential has no
+`USAGE` grant on. Same result for `pg_stat_user_indexes` (28/28),
+`pg_stat_database`, `pg_stat_archiver`, `pg_stat_bgwriter`, `pg_stat_wal` —
+all unfiltered. What `pg_monitor` genuinely gates, confirmed the same way: a
+second session's query text/state in `pg_stat_activity` came back
+`<insufficient privilege>` for the non-member role; `pg_stat_replication`
+shares that same masking mechanism per Postgres's own view definitions
+(not independently reproduced here — no standby attached to the dev
+instance). `pg_stats` (column statistics) is unaffected by any of this — it
+was already correctly `read`-tier, and was re-confirmed genuinely
+column-`SELECT`-filtered (441 of 481 rows visible to the same credential).
+
+**Fixed:** `credential_capability.py`'s module docstring and `STATS`
+branch/detail text; `DATABASE-STEP-CAPABILITY-AUDIT.md` (a "Correction"
+section plus inline corrections to the vocabulary table, §1, §2, the
+summary table, and "Worth a second look" #3); `survey_definition_adapter.
+py`'s `requires_capability` declarations — `postgres_schema_and_stats`
+`stats`→`read`, `postgres_operations`'s bundle comment corrected from
+two-stats-of-four to one (`db_activity_signals` is now `catalog`;
+`db_resilience` keeps `stats`, now solely because it reads `pg_stat_
+replication`); `db_derived.py`'s `COVERAGE_ANALYZE_REMEDY` (wrongly called
+the gap "a pg_monitor-class credential" issue — it's actually `pg_stats`,
+column-`SELECT`-gated); a stale comment in `database_surveyor.py`'s
+`_store_results` claiming `pg_stat_user_tables` is privilege-filtered; and
+`tests/test_requires_capability_gate.py`'s pinned expectations. Copy
+language in `docs/design-notes/ASK-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.
+md` §1's quoted `stats` sentence should be re-checked by whoever runs that
+designer pass, since the sentence quoted there is the pre-correction
+wording — not edited here since that doc is a point-in-time transcript of
+what shipped, not living copy.

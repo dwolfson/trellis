@@ -1,10 +1,17 @@
 """Admin's own /next surface (PLAN-FINISH-REPOS.md item 5): pinning that the
 header's ⚙ Admin button opens a real overlay panel — chrome-level, decoupled
-from #intent-nav, the same pattern as Activity — with five real ports
-(Annotation Types browse, Question Catalog, Logs, Feedback, Prefect) and six
-named, specific deferrals (Groups, Discovery Sources, Egeria Alignment,
-Egeria Links, Publish Queue, Repair), each linking out to classic via the
-shared `oldUiHref()` helper.
+from #intent-nav, the same pattern as Activity — with nine real ports
+(Annotation Types browse, Question Catalog, Logs, Feedback, Prefect,
+Discovery Sources, Groups, Egeria Alignment, Repair) and two named, specific
+deferrals (Egeria Links, Publish Queue), each linking out to classic
+via the shared `oldUiHref()` helper.
+
+Discovery Sources was ported from a deferral to a full build under
+SPEC-ADMIN-THE-FOUR-GAPS.md §3 — see TestDiscoverySourcesPane below and
+docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Groups was ported
+under §2 — see TestGroupsPane below and docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md.
+Egeria Alignment (Resync) and Repair were ported under §1 — see
+TestResyncPane/TestRepairPane below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
 
 No browser verification of a signed-in session happened for this file — see
 docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
@@ -20,19 +27,19 @@ from pathlib import Path
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
 DEFERRED_TAB_IDS = [
-    "admin-groups",
-    "admin-discovery-sources",
-    "admin-resync",
     "admin-egeria-links",
     "admin-outbox",
-    "admin-repair",
 ]
 BUILT_TAB_IDS = [
     "annotations",
+    "admin-groups",
     "admin-question-catalog",
     "admin-prefect",
     "admin-feedback",
     "admin-logs",
+    "admin-resync",
+    "admin-repair",
+    "admin-discovery-sources",
 ]
 
 
@@ -116,7 +123,7 @@ class TestGroupsAndTabsMatchClassic:
         for tab_id in BUILT_TAB_IDS + DEFERRED_TAB_IDS:
             assert f"id: '{tab_id}'" in src, f"missing tab id {tab_id!r}"
 
-    def test_exactly_five_tabs_are_wired_to_a_real_renderer(self):
+    def test_exactly_built_tab_ids_are_wired_to_a_real_renderer(self):
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
@@ -159,11 +166,29 @@ class TestAnnotationTypesBrowse:
         api = _reapi_src()
         assert "export const listAnnotationTypes = () => get('/api/analyses/annotation-types');" in api
 
-    def test_renders_a_detail_view_and_names_the_deferred_mutations(self):
+    def test_renders_a_detail_view_with_edit_and_delete(self):
         src = _admin_module("annotation_types.js")
         assert "export async function renderAnnotationTypes(host)" in src
-        assert "Register" in src or "Edit/Delete in current UI" in src
-        assert "oldUiHref" in src
+        assert "data-edit" in src
+        assert "data-delete" in src
+
+    def test_mutations_are_no_longer_deferred_to_classic(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §4 (2026-09-20): register/edit/delete
+        against the routes that already existed — this pane used to punt
+        every write to classic via `oldUiHref()`; it doesn't anymore."""
+        src = _admin_module("annotation_types.js")
+        assert "oldUiHref" not in src
+        api = _reapi_src()
+        assert "registerAnnotationType" in api
+        assert "updateAnnotationType" in api
+        assert "deleteAnnotationType" in api
+
+    def test_delete_confirmation_names_blast_radius_or_says_unknown(self):
+        """§0/§4: a destructive confirmation must say how many annotations
+        are affected, or say the count is unknown — never imply zero."""
+        src = _admin_module("annotation_types.js")
+        assert "getAnnotationTypeUsage" in src
+        assert "UNKNOWN" in src or "unknown" in src
 
 
 class TestQuestionCatalogBrowse:
@@ -179,6 +204,22 @@ class TestQuestionCatalogBrowse:
     def test_export_render_function_exists(self):
         src = _admin_module("question_catalog.js")
         assert "export async function renderQuestionCatalog(host)" in src
+
+    def test_add_and_retire_are_offered_but_no_edit_form_exists(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §4 (2026-09-20, project owner decision):
+        append-only — add and retire are real UI actions here; there is no
+        third path that reworks an existing question's own text."""
+        src = _admin_module("question_catalog.js")
+        assert "addQuestionCatalogEntry" in src
+        assert "retireQuestionCatalogEntry" in src
+        assert "data-retire" in src
+        assert "updateQuestionCatalogEntry" not in src
+        assert "editQuestionCatalogEntry" not in src
+
+    def test_retired_questions_are_shown_distinctly_not_hidden(self):
+        src = _admin_module("question_catalog.js")
+        assert "retired" in src
+        assert "LIFECYCLE" in src
 
 
 class TestLogsPane:
@@ -231,3 +272,290 @@ class TestPrefectPane:
     def test_cancel_is_confirmed_before_the_write(self):
         src = _admin_module("prefect.js")
         assert "window.confirm(" in src
+
+
+class TestGroupsPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §2: create/delete/assign/suggestions, all
+    ports of classic's createAdminGroup/deleteAdminGroup/
+    openAssignGroupModal+submitAssignGroup/applyGroupSuggestion against the
+    existing /api/projects/groups* routes. See groups.js's own header for
+    what's a straight port versus a deliberate departure (assignment lives
+    in this pane, not behind a per-resource button, since /next has none
+    yet)."""
+
+    def test_the_tab_is_wired_to_a_real_renderer_not_deferred(self):
+        src = _admin_index_src()
+        assert "{ id: 'admin-groups', label: '🗂 Groups', render: renderGroups }" in src
+
+    def test_reapi_exposes_create_delete_and_suggestions(self):
+        api = _reapi_src()
+        assert "export const groupSuggestions = ()" in api
+        assert "/api/projects/groups/suggestions" in api
+        assert "export const createGroup = (" in api
+        assert "export const deleteGroup = (" in api
+
+    def test_delete_has_no_confirmation_flag_on_the_route_itself(self):
+        # Mirrors removeProject's own comment: the DELETE route takes no
+        # confirm parameter, so the caller's window.confirm is the only
+        # confirmation that will ever exist.
+        api = _reapi_src()
+        i = api.index("export const deleteGroup = (")
+        body = api[max(0, i - 400):i + 100]
+        assert "confirmation" in body.lower()
+
+    def test_delete_confirms_and_names_where_members_go_not_that_they_vanish(self):
+        # SPEC-ADMIN-THE-FOUR-GAPS.md §0/§2: a group delete reads as
+        # destructive and is not -- the confirmation must say members return
+        # to Ungrouped, not merely warn generically. Classic's own pane has
+        # no confirm here at all (checked directly against index.html) --
+        # this is the fix, not a copy.
+        src = _admin_module("groups.js")
+        i = src.index("async function onDeleteGroup(")
+        body = src[i:src.index("\n}\n", i)]
+        assert "window.confirm(" in body
+        assert "return to Ungrouped" in body
+        assert "nothing is deleted" in body
+
+    def test_suggestions_are_rendered_and_applied_via_the_real_routes(self):
+        src = _admin_module("groups.js")
+        assert "groupSuggestions()" in src
+        assert "async function onApplySuggestion(" in src
+        assert "createGroup(" in src
+        assert "assignGroup(" in src
+
+    def test_assignment_uses_the_real_route_and_all_three_resource_types(self):
+        api = _reapi_src()
+        assert "export const assignGroup = (" in api
+        assert "/api/projects/${encodeURIComponent(slug)}/group" in api
+        src = _admin_module("groups.js")
+        assert "kind === 'database' ? 'database' : kind === 'filesystem' ? 'filesystem' : 'repo'" in src
+
+    def test_a_mutation_refreshes_the_sidebars_own_copy_of_groups(self):
+        # state.groups/state.projects are otherwise only populated once, in
+        # app.js's start() -- without this, the sidebar would show stale
+        # groupings until a full page reload.
+        app = _app()
+        assert "export async function refreshGroupsAndSidebar()" in app
+        src = _admin_module("groups.js")
+        assert "refreshGroupsAndSidebar" in src
+
+
+class TestResyncPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §1 — Resync is global drift reconciliation,
+    a different job from Repair (per-repo correction). The whole design is:
+    do not flatten a Finding's `repair_step`/`needs_decision` into "a row with
+    a button" — three distinct shapes, not one generic list item."""
+
+    def test_reads_the_real_scan_and_apply_routes(self):
+        api = _reapi_src()
+        assert "export const getResyncScan = ()" in api
+        assert "/api/egeria/resync/scan" in api
+        assert "export const applyResyncSteps = (" in api
+        assert "/api/egeria/resync/apply" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("resync.js")
+        assert "export async function renderResync(host)" in src
+
+    def test_unreachable_is_never_rendered_as_no_drift(self):
+        src = _admin_module("resync.js")
+        assert "d.reachable" in src
+        assert "Deliberately not reported as" in src
+
+    def test_scheduled_steps_get_a_state_row_not_a_fix_button(self):
+        src = _admin_module("resync.js")
+        assert "clear_stale_assets" in src
+        assert "clear_orphan_publish_claims" in src
+        assert "flag_vanished_publishes" in src
+        assert "function scheduledRowHtml" in src
+        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 2200]
+        assert "Run now" in body
+        # A scheduled row must not carry the same tick-a-box affordance as a
+        # repairable one -- it is a status report with a "run now" action,
+        # not a selectable fix.
+        assert "data-resync-step" not in body
+
+    def test_no_button_when_repair_step_is_empty(self):
+        src = _admin_module("resync.js")
+        assert "function decisionRowHtml" in src
+        body = src[src.index("function decisionRowHtml"):src.index("function decisionRowHtml") + 900]
+        assert "checkbox" not in body
+        assert "<button" not in body
+
+    def test_needs_decision_is_framed_as_a_question_not_an_action(self):
+        src = _admin_module("resync.js")
+        body = src[src.index("function decisionRowHtml"):src.index("function decisionRowHtml") + 900]
+        assert "your call" in body
+
+    def test_clear_stale_investigations_names_the_binding_it_unbinds(self):
+        """The most dangerous control in the product per egeria_resync.py's
+        own comment above SAFE_SCHEDULED_STEPS -- its confirmation must say
+        what it unbinds and how many, not just "clears N records"."""
+        src = _admin_module("resync.js")
+        i = src.index("clear_stale_investigations:")
+        block = src[i:i + 700]
+        assert "UNBIND" in block.upper()
+        assert "Project" in block
+
+    def test_apply_selected_confirms_before_writing(self):
+        src = _admin_module("resync.js")
+        assert "window.confirm(" in src
+        assert "async function applySelected" in src
+
+    def test_scheduled_flag_comes_from_finding_data_not_a_hardcoded_list(self):
+        """RESYNC-STATUS-ROUTE-IMPLEMENTED.md item 2 -- this file used to
+        keep its own `SCHEDULED_STEPS` Set mirroring egeria_resync.py's
+        SAFE_SCHEDULED_STEPS by hand. That duplication must be gone: the
+        pane now reads `finding.scheduled`, a field the backend computes."""
+        src = _admin_module("resync.js")
+        # The old hand-maintained copy declared its own `SCHEDULED_STEPS`
+        # constant -- checked as a standalone identifier (not a substring)
+        # so this doesn't false-positive on `SAFE_SCHEDULED_STEPS`, which is
+        # legitimately still named in comments referencing egeria_resync.py.
+        assert "const SCHEDULED_STEPS" not in src
+        assert "new Set([" not in src
+        assert "f.scheduled" in src
+        assert "f.repair_step && f.scheduled" in src
+        assert "f.repair_step && !f.scheduled" in src
+
+    def test_reads_the_real_status_route(self):
+        api = _reapi_src()
+        assert "export const getResyncStatus = ()" in api
+        assert "/api/egeria/resync/scheduler-status" in api
+        src = _admin_module("resync.js")
+        assert "getResyncStatus" in src
+
+    def test_consecutive_failures_flag_shows_when_nonzero_silent_when_zero(self):
+        """Design reviewer's exact requirement: a consecutive-failure count
+        earns a flag when non-zero, silence otherwise."""
+        src = _admin_module("resync.js")
+        assert "function scheduledRowHtml" in src
+        body = src[src.index("function scheduledRowHtml"):src.index("function scheduledRowHtml") + 2200]
+        # Gated on failures > 0 -- nothing rendered unconditionally.
+        assert "failures > 0" in body
+        assert "consecutive failure" in body
+        # last_run_at is surfaced too, for recency at a glance.
+        assert "last_run_at" in body
+
+    def test_expensive_steps_default_unticked(self):
+        src = _admin_module("resync.js")
+        assert "f.expensive ? '' : 'checked'" in src
+
+
+class TestRepairPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §1 -- Repair is per-repository correction,
+    NOT drift reconciliation; it needs no design beyond §0's blast-radius
+    rule, including naming what an action does NOT do."""
+
+    def test_reads_the_real_repair_routes(self):
+        api = _reapi_src()
+        for fn in (
+            "repairRename", "repairGithubUrl", "repairEnableCollection",
+            "getRepairDrift", "getRepairMemberships",
+            "repairRepointMembership", "repairDropMembership",
+        ):
+            assert f"export const {fn} = " in api
+        assert "/api/admin/repair/repos/" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("repair.js")
+        assert "export async function renderRepair(host)" in src
+
+    def test_destructive_actions_are_confirmed(self):
+        src = _admin_module("repair.js")
+        assert src.count("window.confirm(") >= 3  # rename, github-url change, drop membership
+
+    def test_names_what_it_does_not_do(self):
+        """SPEC-ADMIN-THE-FOUR-GAPS.md §0's sharpest example -- classic's
+        "this does not delete your files on disk" -- ported here for the
+        repair actions whose names sound more destructive than they are."""
+        src = _admin_module("repair.js")
+        assert "does not touch GitHub" in src
+        assert "does not remove the repo from RE" in src or "does not remove it from RE" in src
+
+    def test_is_distinct_from_resync_not_folded_together(self):
+        src = _admin_module("repair.js")
+        assert "NOT Resync" in src
+        resync_src = _admin_module("resync.js")
+        assert "NOT Repair" in resync_src
+
+
+class TestDiscoverySourcesPane:
+    """SPEC-ADMIN-THE-FOUR-GAPS.md §3: run's own route is read-only (returns
+    candidates, imports nothing), so this pane must preview before either of
+    its two effectful actions — importing from a run, and applying a
+    refresh — never fire-and-hope. Delete's confirmation must be worded from
+    the registry's actual (no-FK) behaviour, not a guess."""
+
+    def test_reads_and_writes_against_the_real_routes(self):
+        api = _reapi_src()
+        assert "export const listDiscoverySources = ()" in api
+        assert "export const createDiscoverySource = (" in api
+        assert "export const deleteDiscoverySource = (" in api
+        assert "export const runDiscoverySource = (" in api
+        assert "export const previewSourceRefresh = (" in api
+        assert "export const applySourceRefresh = (" in api
+        assert "export const searchDiscoveryRepos = (" in api
+        assert "export const importDiscoveredRepos = (" in api
+
+    def test_export_render_function_exists(self):
+        src = _admin_module("discovery_sources.js")
+        assert "export async function renderDiscoverySources(host)" in src
+
+    def test_run_shows_candidates_before_any_import_is_possible(self):
+        """The route itself never imports (checked against
+        run_discovery_source in web/routes/discovery.py) -- the module's
+        own header must say so, and importing must be a distinct,
+        confirmed follow-up action, not something doRun triggers itself."""
+        src = _admin_module("discovery_sources.js")
+        assert "READ-ONLY" in src
+        assert "no import" in src.lower()
+        i = src.index("async function doRun(")
+        run_body = src[i:src.index("\n}", i)]
+        assert "importDiscoveredRepos" not in run_body
+
+    def test_import_confirmation_names_the_count_and_destination(self):
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doImportSelected(")
+        body = src[i:src.index("\n}", i)]
+        assert "window.confirm(" in body
+        assert "picked.length" in body
+        assert "dest" in body  # names the destination group (or "no group")
+
+    def test_refresh_previews_before_it_applies(self):
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doRefresh(")
+        body = src[i:src.index("\n}", i)]
+        assert "previewSourceRefresh(" in body
+        assert "window.confirm(" in body
+        confirm_pos = body.index("window.confirm(")
+        apply_pos = body.index("applySourceRefresh(")
+        assert confirm_pos < apply_pos
+
+    def test_delete_confirmation_says_imported_repos_are_unaffected(self):
+        """registry.py's discovery_sources table has no foreign key into
+        projects -- deleting a source cannot touch anything already
+        imported from it, and the confirmation must say so rather than
+        reading as a generic destructive warning."""
+        src = _admin_module("discovery_sources.js")
+        i = src.index("async function doDelete(")
+        body = src[i:src.index("\n}", i)]
+        assert "window.confirm(" in body
+        assert "does not affect any repositories already imported" in body
+
+    def test_three_add_paths_are_present(self):
+        src = _admin_module("discovery_sources.js")
+        assert "'search'" in src and "searchFormHtml" in src
+        assert "listFormHtml" in src
+        assert "quickAddHtml" in src
+
+    def test_save_github_source_is_not_treated_as_an_add_source_path(self):
+        """Checked against classic's actual code before porting (spec's own
+        §6 lesson): _saveGithubSource posts to /api/discovery/github-base-url
+        (the GitHub API endpoint override), not a discovery source create --
+        it must not appear here as if it were a third source-creation path."""
+        src = _admin_module("discovery_sources.js")
+        # The comment discussing why it's excluded may mention the route by
+        # name; what must never appear is an actual call to it.
+        assert "'/api/discovery/github-base-url'" not in src
+        assert "not create a discovery source" in src.lower()

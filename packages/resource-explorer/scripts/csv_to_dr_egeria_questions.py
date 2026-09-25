@@ -101,7 +101,22 @@ REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
 # Question -> Perspective::Catalog History" blocks — the phantom the sentence
 # above warns about, caught before any heal executed them (the Perspective
 # does not exist on the platform, so each would have failed).
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History"]
+# "Status" (added 2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4) is the
+# append-only catalog's retirement marker ("Retired"/empty) — RE-internal,
+# consumed only by question_catalog_writer.py and question_catalog_reader.py,
+# never sent to Egeria. Same phantom-Perspective risk as every column above,
+# added here for the same reason.
+#
+# "Resource Types" (2026-09-20, docs/multi-resource-questions-design.md §1.1)
+# carries the `;`-separated resource types a question applies to, `*` for all.
+# It is NOT sent to Egeria either: the Egeria side of the question model is
+# resource-type-agnostic by design (one User Questions glossary, one Funnel
+# Stages glossary, twelve Perspectives — design §1.1's first paragraph), so a
+# question term is the same term whichever resource type asks it. The column
+# steers RE's own catalog generation only. It is listed here purely so the
+# by-elimination perspective scan does not turn it into a thirteenth
+# Perspective on every row.
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History", "Status", "Resource Types"]
 
 
 def _block(command: str, **fields: str) -> str:

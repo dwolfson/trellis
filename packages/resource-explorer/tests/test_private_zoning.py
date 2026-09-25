@@ -728,3 +728,143 @@ def test_the_platform_holding_the_control_is_still_chosen(monkeypatch):
 
     _two_platforms(monkeypatch, _OneHolderOfficer)
     assert ident._platform_name() == "Local OMAG Server Platform"
+
+
+# ── same displayName, different URL: the 2026-09-23 case ───────────────────
+#
+# A single quickstart boot can self-register TWICE under the SAME
+# displayName (and the same `identifier`) — once per hostname it is
+# reachable under (`host.docker.internal` beside `localhost`). Name alone
+# cannot disambiguate that, even with EXPLORER_EGERIA_PLATFORM_NAME, since
+# both entries share it. `platformURLRoot`, matched against this process's
+# own configured `EGERIA_PLATFORM_URL`, can — and unlike the holder-probe
+# it works before any control has ever been created.
+
+
+def _two_identically_named_platforms(monkeypatch, configured_url="https://localhost:9443"):
+    import types
+
+    class _FakeEgeriaCfgWithUrl:
+        view_server = "view-server"
+        platform_url = configured_url
+        user_id = "erinoverview"
+        user_password = "secret"
+
+    class _FakeTech:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def get_elements(self, type_name, output_format="JSON"):
+            return [
+                {
+                    "properties": {
+                        "displayName": "Quickstart OMAG Server Platform",
+                        "additionalProperties": {
+                            "platformURLRoot": "https://host.docker.internal:9443"},
+                    },
+                    "elementHeader": {"guid": "guid-docker-internal"},
+                },
+                {
+                    "properties": {
+                        "displayName": "Quickstart OMAG Server Platform",
+                        "additionalProperties": {
+                            "platformURLRoot": "https://localhost:9443"},
+                    },
+                    "elementHeader": {"guid": "guid-localhost"},
+                },
+            ]
+
+    monkeypatch.delenv("EXPLORER_EGERIA_PLATFORM_NAME", raising=False)
+    monkeypatch.setattr("pyegeria.EgeriaTech", _FakeTech)
+    monkeypatch.setattr("resource_explorer.config.get_config",
+                        lambda: types.SimpleNamespace(egeria=_FakeEgeriaCfgWithUrl()))
+
+
+def test_identically_named_platforms_resolve_by_configured_url(monkeypatch):
+    """Two catalogued platforms share a displayName — resolved anyway, by
+    matching `platformURLRoot` against this process's own connection URL."""
+    from resource_explorer import egeria_identity as ident
+
+    _two_identically_named_platforms(monkeypatch)
+    name, guid = ident._resolve_platform()
+    assert name == "Quickstart OMAG Server Platform"
+    assert guid == "guid-localhost", (
+        "must resolve to the entry whose platformURLRoot matches "
+        "EGERIA_PLATFORM_URL, not an arbitrary one of the identically-named pair")
+
+
+def test_platform_name_alone_cannot_disambiguate_identically_named_platforms(monkeypatch):
+    """`_platform_name()` still returns just the (ambiguous) name — callers
+    that need the disambiguated identity must use `_resolve_platform()`."""
+    from resource_explorer import egeria_identity as ident
+
+    _two_identically_named_platforms(monkeypatch)
+    assert ident._platform_name() == "Quickstart OMAG Server Platform"
+
+
+def test_no_url_match_falls_back_to_the_holder_probe(monkeypatch):
+    """If this process's configured URL matches neither catalogued platform,
+    the existing holder-probe fallback still runs rather than skipping straight
+    past it. Here the two platforms share a name, so the probe's own by-name
+    call genuinely cannot tell them apart either — that is Egeria's real
+    limitation, not a bug in the fallback, and refusing is the right answer."""
+    from resource_explorer import egeria_identity as ident
+
+    _two_identically_named_platforms(monkeypatch, configured_url="https://elsewhere:9443")
+
+    class _BothLookLikeHoldersOfficer:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **k):
+            pass
+
+        def get_security_access_control(self, platform, zone):
+            # Sees only the (identical) name — cannot distinguish the pair.
+            return {"associatedSecurityList": {"DEFAULT": ["nobody"]}}
+
+    monkeypatch.setattr("pyegeria.omvs.security_officer.SecurityOfficer",
+                        _BothLookLikeHoldersOfficer)
+
+    with pytest.raises(RuntimeError) as e:
+        ident._resolve_platform()
+    assert "ambiguous" in str(e.value)
+
+
+def test_ensure_private_zone_exists_passes_the_resolved_guid_through(monkeypatch):
+    """`ensure_private_zone_exists` must address the SPECIFIC platform it
+    resolved, not fall back to a by-name lookup that is ambiguous by
+    construction for two identically-named catalogued platforms."""
+    from resource_explorer import egeria_identity as ident
+
+    monkeypatch.setattr(ident, "_resolve_platform",
+                        lambda: ("Quickstart OMAG Server Platform", "guid-localhost"))
+    monkeypatch.setattr(ident, "service_credentials", lambda: object())
+    monkeypatch.setattr(ident, "apply_identity", lambda *a, **k: None)
+
+    calls = []
+
+    class _RecordingOfficer:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_security_access_control(self, platform, zone, **kwargs):
+            calls.append(("get", platform, zone, kwargs))
+            return {"associatedSecurityList": {"DEFAULT": ["nobody"]}}
+
+        def set_security_access_control(self, platform, body, **kwargs):
+            calls.append(("set", platform, kwargs))
+
+    monkeypatch.setattr("pyegeria.omvs.security_officer.SecurityOfficer", _RecordingOfficer)
+    ident._private_zone_state = None
+
+    result = ident.ensure_private_zone_exists()
+
+    assert result["status"] == "exists"
+    get_call = [c for c in calls if c[0] == "get"][0]
+    assert get_call[3] == {"platform_guid": "guid-localhost"}, (
+        "the guid must reach the Security Officer client, or the by-name lookup "
+        "is exactly as ambiguous as before")

@@ -20,6 +20,14 @@ router = APIRouter()
 class CompileRequest(BaseModel):
     resource_slug: str
     question: str
+    #: 'repo' | 'database' | 'filesystem'. Defaults to "repo" for backward
+    #: compatibility with callers that don't pass it (same default as
+    #: `entity_type` on routes/analyses.py's `answer_question` and
+    #: routes/context.py's `get_context`). Trusted as given, same as
+    #: `answer_question()` already trusts its own `entity_type` query param —
+    #: this route's registry.get() 404 check does not (and does not need to)
+    #: verify the slug actually belongs to this type.
+    entity_type: str = "repo"
     purposes: list[str] = []
     perspectives: list[str] = []
     #: Characters, not tokens. The caller owns the conversion, because only it
@@ -43,13 +51,33 @@ async def compile_endpoint(request: CompileRequest) -> CompileResponse:
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    if registry.get(request.resource_slug) is None:
+    # Dispatch the existence check through the SAME per-type adapter used
+    # everywhere else (survey_definition_executor.get_adapter) rather than
+    # always calling the repo-only `registry.get()` -- which is exactly what
+    # `_get_project_entity` (repo's own `get_entity`) already is, so this is
+    # unchanged for "repo" and newly correct for "database"/"filesystem",
+    # which `registry.get()` can never find (it only ever returns a
+    # `Project`). This trusts the caller's stated `entity_type` to pick which
+    # table to look in -- it does not verify the type against the registry,
+    # which is deliberately out of scope (see answer_question() in
+    # analyses.py, which trusts its own `entity_type` the same way).
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        get_adapter,
+    )
+
+    try:
+        entity = get_adapter(request.entity_type).get_entity(registry, request.resource_slug)
+    except SurveyDefinitionExecutorError:
+        entity = registry.get(request.resource_slug)
+    if entity is None:
         raise HTTPException(
             status_code=404, detail=f"Resource '{request.resource_slug}' not found"
         )
     try:
         compiled = compile_context(
             registry, request.resource_slug, request.question,
+            resource_type=request.entity_type,
             purposes=request.purposes, perspectives=request.perspectives,
             budget=request.budget, target_model=request.target_model,
         )

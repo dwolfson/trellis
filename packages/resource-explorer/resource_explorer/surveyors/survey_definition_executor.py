@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
-from resource_explorer.surveyors import result_status
+from resource_explorer.surveyors import result_status, step_cost_observer
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
 log = logging.getLogger(__name__)
@@ -78,6 +78,76 @@ class ResourceTypeAdapter:
     # existed) keeps the exact prior one-call-per-step behavior.
     run_batch: Callable | None = None
 
+    # ── what is KNOWN about a resource of this type (2026-09-20) ────────────
+    #
+    # docs/multi-resource-questions-design.md §1.1 item 5 / §13 Phase 0 item 3.
+    # `facts.py` used to import `REPO_ANALYSIS_RESULTS_MAP` and consult a
+    # `RESOURCE_STATE_SOURCES` table keyed by REPO question text, both
+    # unconditionally — so `FactLayer` answered every question about every
+    # resource type out of the repository's maps. These four fields are the
+    # per-type instances of that pattern (design §2, "carries over as a
+    # pattern, needs a per-type instance"), and `FactLayer` now dispatches
+    # through them.
+    #
+    # Each is a PROVIDER — a zero-argument callable returning the map — not
+    # the map itself. A resource type's maps are built at the bottom of a
+    # module that imports its whole surveyor stack, and this dataclass is
+    # constructed in that same module; a provider lets a type whose maps live
+    # elsewhere (repo's state sources live in facts.py, where their resolver
+    # functions are) declare them without an import cycle, and costs nothing
+    # for a type whose maps are local.
+    #
+    # None means NOT DECLARED, which is not the same as empty: a resource type
+    # with no results map cannot have facts read from it at all, and FactLayer
+    # says so in those words rather than reporting every analysis as
+    # never-run. Same distinction the question catalog draws between "not
+    # authored" and "filtered to nothing".
+
+    #: () -> {analysis_id: (results_reader, trend_reader)}
+    analysis_results_map: Callable | None = None
+    #: () -> {analysis_id: [step_key, ...]} — the SOURCE steps that would
+    #: establish an analysis, which for a derives-from analysis is its
+    #: source's steps rather than its own (see FactLayer.fact's `can_run`).
+    analysis_source_steps: Callable | None = None
+    #: () -> {analysis_id: AnalysisKind} — carries `results.live_read` and
+    #: `results.headline_reader`, which FactLayer reads off the kind rather
+    #: than off the derived results map (the derived map holds a tuple, and
+    #: `getattr(tuple, "live_read")` silently returned False for everything
+    #: the first time that was tried).
+    analysis_kinds: Callable | None = None
+    #: () -> {question_text: (resolver, subject)} — questions answerable from
+    #: the resource's own recorded state rather than from an analysis result.
+    #: Keyed by question text, so this map is per resource type by
+    #: construction: a database's questions are different strings.
+    state_sources: Callable | None = None
+    #: () -> {analysis_id: headline_reader}. A separate, directly-keyed
+    #: provider rather than reading `analysis_kinds()[id].results.
+    #: headline_reader` (2026-09-23, context_compile.py's own
+    #: results-reader/headline fallback): that fallback previously imported
+    #: `REPO_ANALYSIS_HEADLINE_MAP` — a module-level dict, mutated in place by
+    #: `monkeypatch.setitem` in tests — directly rather than through
+    #: `ANALYSIS_KINDS`. Deriving the same value from `analysis_kinds()` at
+    #: call time would read past that monkeypatch, since the derived headline
+    #: map is a separate object from the kinds table it was built from. This
+    #: provider keeps the same object identity `REPO_ANALYSIS_HEADLINE_MAP`
+    #: already had. None (undeclared) means no headline reader is offered for
+    #: this resource type — the database/filesystem case today, same as their
+    #: own `DATABASE_ANALYSIS_HEADLINE_MAP`/`FILESYSTEM_ANALYSIS_HEADLINE_MAP`
+    #: constants being empty dicts.
+    analysis_headline_map: Callable | None = None
+    #: () -> {step_key: StepInfo} — what each of this type's steps COSTS,
+    #: what stored data it REQUIRES, and what tables it PRODUCES (design
+    #: §17.1/§17.2). A provider for the same import-cycle reason as the four
+    #: above.
+    #:
+    #: None means NOT DECLARED, and the prerequisite resolver treats it as
+    #: such: a resource type with no step registry has no preconditions it
+    #: can check and no costs it can compare, so every step dispatches
+    #: exactly as it did before §17.1 existed. That is deliberately different
+    #: from an empty registry, which would be a claim that this type's steps
+    #: have no prerequisites.
+    step_registry: Callable | None = None
+
 
 _ADAPTERS: dict = {}
 
@@ -120,9 +190,49 @@ class SurveyDefinitionExecutor:
         survey_definition_ref: str | None = None,
         refresh_definition: bool = False,
         publish: str | None = None,
+        engine_override: str | None = None,
+        demanded_by: str = "",
+        capability_consented: bool = False,
         **runner_kwargs: Any,
     ) -> dict:
-        surveyed_at = datetime.utcnow().isoformat()
+        """
+        engine_override: per-RUN choice of which engine runs this definition's
+        `resource-explorer`-tagged steps, taking precedence over
+        `config.prefect.enabled`/`route_local_steps` for the duration of THIS
+        call only — a local parameter, never a global mutation, so it cannot
+        leak into a concurrent request.
+
+          - None (default): unchanged, config-driven behaviour (see
+            `_use_prefect` below).
+          - "resource-explorer": force every `resource-explorer`-tagged step
+            to run locally for this run, and skip whole-definition Prefect
+            orchestration (`_run_via_prefect`) entirely.
+          - "prefect": force every `resource-explorer`-tagged step to run via
+            Prefect for this run (`run_prefect_step` already degrades to
+            running the step locally if no Prefect server is actually
+            reachable — see its own docstring — so this is safe to select
+            even when Prefect isn't configured; it just won't do anything
+            useful).
+
+        This is genuinely a choice between two runners for the SAME function
+        and the SAME result — it is deliberately narrower than `executes_at`
+        itself: a step already declared `executes_at="egeria"` (coordinated by
+        Egeria's own engine host, not RE) is never forced through either value
+        of this override, and a step that exists ONLY as a Prefect flow (see
+        PREFECT_ONLY_STEPS below — it has no local implementation to force it
+        onto) is likewise left alone by "resource-explorer". See
+        `docs/design-notes/ENGINE-CHOICE-IMPLEMENTED.md` for the full
+        reasoning.
+
+        Raises ValueError for any other value, so a typo or a stale UI/API
+        param fails loudly rather than silently falling back to the default.
+        """
+        if engine_override not in (None, "resource-explorer", "prefect"):
+            raise ValueError(
+                f"engine_override must be one of None, 'resource-explorer', 'prefect' — "
+                f"got {engine_override!r}"
+            )
+
         adapter = get_adapter(entity_type)
         tech_type = technology_type or adapter.technology_type
 
@@ -157,9 +267,60 @@ class SurveyDefinitionExecutor:
                 "server (see docs/survey-definitions.md, Current Limitations)."
             )
 
+        return self._execute(
+            entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
+            process_guid=process_guid, process_qn=process_qn,
+            publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
+            # `demanded_by` used to be dropped here (a latent attribution bug
+            # named but deliberately left alone by the capability-axis change
+            # below) — fixed by re/survey-executor-demanded-by-run, forwarded
+            # like every other kwarg `_execute` already accepts.
+            demanded_by=demanded_by,
+            capability_consented=capability_consented,
+        )
+
+    def _execute(
+        self,
+        *,
+        entity_type: str,
+        slug: str,
+        entity,
+        survey_def,
+        process_guid: str,
+        process_qn: str,
+        publish: str | None,
+        engine_override: str | None,
+        runner_kwargs: dict,
+        demanded_by: str = "",
+        capability_consented: bool = False,
+    ) -> dict:
+        """Run an already-resolved Survey Definition's steps.
+
+        This is the shared body behind both `run()` (a real, Egeria-hosted
+        process fetched via `_resolve_process_guid`/`SurveyDefinitionReader.
+        fetch`) and `run_synthetic_step()` (a one-step, in-process-only
+        `SurveyDefinition` that never touches Egeria to be constructed).
+
+        Extracted 2026-09-20 for the `egeria-adaptive` fold-in
+        (EXECUTION-MODES-HYBRID-CLARIFICATION.md): its web/CLI call sites
+        need the same steps_report/publish-gating/activity-logging machinery
+        `run()` already has, for a single ad hoc step, without first having
+        to author (or look up) a real Egeria Survey Definition process just
+        to run one step.
+        """
+        adapter = get_adapter(entity_type)
+        surveyed_at = datetime.utcnow().isoformat()
+
         steps_report: list = []
         step_outputs: list = []
         errors: list = []
+        #: §17.1 — chains this run wants the user to confirm, and prerequisite
+        #: steps it ran on its own initiative. Both are returned so the caller
+        #: (the classic UI's survey response) can offer "run it?" without a
+        #: second request, and so an auto-run is visible as a result rather
+        #: than as three unexplained extra minutes.
+        proposals: list = []
+        auto_ran: set = set()
 
         def _stamp_definition_provenance(output) -> None:
             """Give every keyless annotation this call's `output` carries an
@@ -210,7 +371,11 @@ class SurveyDefinitionExecutor:
         # the activity entry, the assembled result — is shared, so the two
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
-        if _prefect_orchestration_enabled():
+        if (
+            _prefect_orchestration_enabled(engine_override)
+            and _all_steps_prefect_runnable(survey_def)
+            and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
+        ):
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
@@ -322,10 +487,26 @@ class SurveyDefinitionExecutor:
             step that named a different engine; `prefect.route_local_steps` is
             the explicit opt-in for that, because taking RE's own steps to
             Prefect is a real deployment choice but not one to make silently.
+
+            `engine_override` (this run's local parameter — see `run`'s own
+            docstring) takes precedence over both config values, but ONLY for
+            a step tagged `executes_at="resource-explorer"` — the one case
+            where "run this the other way" is a genuine, safe choice between
+            two runners of the same function. A step already forced to
+            Prefect (`executes_at="prefect"`, or a PREFECT_ONLY_STEPS entry
+            with no local implementation at all) is left alone by
+            engine_override="resource-explorer": there is nothing local to
+            force it onto. `executes_at="egeria"` steps never reach this
+            function's True branches at all — they fall through to `return
+            False` below regardless of engine_override, same as today.
             """
             if step.executes_at == "prefect" or step.re_analysis_step in PREFECT_ONLY_STEPS:
                 return True
             if step.executes_at == "resource-explorer":
+                if engine_override == "prefect":
+                    return True
+                if engine_override == "resource-explorer":
+                    return False
                 try:
                     cfg = get_config().prefect
                     return bool(cfg.enabled and getattr(cfg, "route_local_steps", False))
@@ -348,6 +529,7 @@ class SurveyDefinitionExecutor:
                 log.info("Skipping %s — %s", step.qualified_name, guard_reason)
                 steps_report.append({
                     "step": step.qualified_name,
+                    "re_analysis_step": _step_key(step),
                     "status": result_status.SKIPPED_BY_DESIGN,
                     "detail": guard_reason,
                 })
@@ -407,7 +589,7 @@ class SurveyDefinitionExecutor:
                         # already names, not a new one.
                         batch_guard = output.get("guard") if isinstance(output, dict) else None
                         for s in group:
-                            entry = {"step": s.qualified_name, "status": status}
+                            entry = {"step": s.qualified_name, "re_analysis_step": _step_key(s), "status": status}
                             if batch_errors:
                                 entry["detail"] = "; ".join(batch_errors)
                             steps_report.append(entry)
@@ -418,7 +600,7 @@ class SurveyDefinitionExecutor:
                         log.exception(msg)
                         errors.append(msg)
                         for s in group:
-                            steps_report.append({"step": s.qualified_name, "status": "error", "detail": str(exc)})
+                            steps_report.append({"step": s.qualified_name, "re_analysis_step": _step_key(s), "status": "error", "detail": str(exc)})
                     i = j
                     continue
                 # group of exactly 1 — fall through to the identical
@@ -426,10 +608,26 @@ class SurveyDefinitionExecutor:
 
             if use_prefect:
                 try:
-                    output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                    # Measured like any other step (§17.2's `executor` axis is
+                    # "local / prefect / egeria / remote … so native and
+                    # remote runs sit on the same board"). Only the PER-STEP
+                    # Prefect route is covered: a whole definition handed to
+                    # `_run_via_prefect` runs inside the flow and writes no
+                    # vector — a known gap, of a piece with the one
+                    # `_any_step_needs_prerequisites` documents, and the same
+                    # fix closes both.
+                    _pf_info = self._step_info(adapter, step.re_analysis_step)
+                    with step_cost_observer.observe(
+                        step.re_analysis_step,
+                        getattr(_pf_info, "fetch_cost", ""),
+                        getattr(_pf_info, "compute_cost", ""),
+                        executor="prefect", source="prefect",
+                    ) as _pf_observed:
+                        output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                    self._record_cost(_pf_observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok", "engine": "prefect"})
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except PrefectFlowRunCancelled as exc:
                     # Distinct from a generic failure — this is the user
@@ -440,12 +638,12 @@ class SurveyDefinitionExecutor:
                     msg = f"Prefect step '{step.re_analysis_step}' was cancelled: {exc}"
                     log.info(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "cancelled", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "cancelled", "engine": "prefect"})
                 except Exception as exc:
                     msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error", "engine": "prefect"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error", "engine": "prefect"})
             elif step.executes_at == "resource-explorer":
                 runner = adapter.re_analysis_steps.get(step.re_analysis_step)
                 if runner is None:
@@ -456,34 +654,130 @@ class SurveyDefinitionExecutor:
                     )
                     log.error(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "unknown_step"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "unknown_step"})
                     i += 1
                     continue
+                # §17.1 — prerequisites, on the shared path.
+                #
+                # `step_preconditions.evaluate` had exactly ONE call site
+                # before today (`SurveyOrchestrator.run`), so a step run
+                # through a Survey Definition was never gated at all: the
+                # database steps, whose chain §17.4 names as the reason this
+                # slice exists, had no precondition mechanism reaching them.
+                # This is deliberately the SAME resolver the orchestrator
+                # calls, not a parallel one — the design's intent is one
+                # mechanism, and two would drift the way the two guard
+                # evaluations in this file already had to be kept in step.
+                resolution = self._resolve_prerequisites(
+                    adapter, entity_type, entity, step.re_analysis_step,
+                    surveyed_at, runner_kwargs, steps_report, step_outputs,
+                    errors, auto_ran, capability_consented,
+                )
+                if resolution is not None and not resolution.may_run:
+                    entry = {
+                        "step": step.qualified_name,
+                        "re_analysis_step": _step_key(step),
+                        "status": result_status.SKIPPED_BY_DESIGN,
+                        "detail": resolution.reason,
+                    }
+                    if resolution.proposal is not None:
+                        entry["proposal"] = resolution.proposal.as_dict()
+                        proposals.append(resolution.proposal.as_dict())
+                    log.info("Skipping %s — %s", step.qualified_name, resolution.reason)
+                    steps_report.append(entry)
+                    i += 1
+                    continue
+                info = self._step_info(adapter, step.re_analysis_step)
                 try:
-                    output = runner(entity, self.registry, **runner_kwargs)
+                    with step_cost_observer.observe(
+                        step.re_analysis_step,
+                        getattr(info, "fetch_cost", ""),
+                        getattr(info, "compute_cost", ""),
+                        executor="local", source="local",
+                        # Carries §17.1's attribution when this whole run IS
+                        # an accepted prerequisite proposal — otherwise the
+                        # accepted chain's cost lands on the board with no
+                        # trace of the question that caused it, which is the
+                        # one thing `demanded_by` exists to prevent.
+                        demanded_by=demanded_by,
+                    ) as observed:
+                        output = runner(entity, self.registry, **runner_kwargs)
+                    self._record_cost(observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "status": "ok"})
+                    ok_entry = {"step": step.qualified_name,
+                                "re_analysis_step": _step_key(step), "status": "ok"}
+                    # "Run partially AND SAY SO" (REPLY-DATABASE-CREDENTIAL-
+                    # CAPABILITY-VISIBILITY.md §7.1). An advisory proposal
+                    # does not stop the step — see `Proposal.advisory` — but
+                    # the run must not then come back indistinguishable from
+                    # one made with a credential that could see everything.
+                    # Without this the step reports plain "ok" and the whole
+                    # gate is invisible on every unattended path.
+                    if (resolution is not None and resolution.proposal is not None
+                            and resolution.proposal.advisory):
+                        ok_entry["capability"] = resolution.proposal.as_dict()
+                    steps_report.append(ok_entry)
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except Exception as exc:
                     msg = f"RE step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error"})
             elif step.executes_at in adapter.other_engine_handlers:
                 handler = adapter.other_engine_handlers[step.executes_at]
                 try:
                     outcome = handler(entity, self.registry, step, **runner_kwargs)
-                    steps_report.append({
-                        "step": step.qualified_name,
-                        "status": "triggered",
-                        **({"detail": outcome} if isinstance(outcome, dict) else {}),
-                    })
+                    # Handlers that only trigger-and-forget (no waiting, e.g. an
+                    # engine with no synchronous result to read back yet) return
+                    # a dict with no "status" key, which keeps the historic
+                    # "triggered" wording rather than implying completion.
+                    # Handlers that wait for a real terminal result (e.g.
+                    # database/filesystem's _trigger_egeria_native_survey, which
+                    # polls to completion and reads back real annotations via
+                    # egeria_async_survey_result.py) set status="ok" themselves —
+                    # reported here as-is instead of overwritten, so a genuinely
+                    # completed step is never misreported as merely "triggered".
+                    if isinstance(outcome, dict):
+                        _stamp_definition_provenance(outcome)
+                        step_outputs.append(outcome)
+                    status = outcome.get("status", "triggered") if isinstance(outcome, dict) else "triggered"
+                    # `detail` feeds a json.dumps() call below (the activity-log
+                    # summary), so it must stay JSON-safe — outcome's own
+                    # "annotations" key (when present) carries real Annotation
+                    # dataclass instances, not plain dicts, so it is summarized
+                    # as a count here rather than embedded whole. The instances
+                    # themselves still flow to publish() via step_outputs above.
+                    detail = None
+                    if isinstance(outcome, dict):
+                        detail = {k: v for k, v in outcome.items() if k != "annotations"}
+                        if "annotations" in outcome:
+                            detail["annotation_count"] = len(outcome["annotations"] or [])
+                    # `source` — which engine's numbers these actually are
+                    # ("egeria" / "egeria-custom" / "custom" / "error", the
+                    # egeria-adaptive handler's vocabulary — see
+                    # database/survey_definition_adapter.py's
+                    # `_run_egeria_adaptive`) — is promoted to a top-level
+                    # field on the step's own steps_report entry, not left
+                    # nested only inside `detail`. This is what makes a run's
+                    # provenance visible in the run report itself rather than
+                    # only in the handler's own return value: before this, a
+                    # step's engine was directly observable but WHICH of
+                    # several strategies an adaptive handler actually took
+                    # was not, without reading raw `detail`.
+                    entry = {"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": status}
+                    if isinstance(outcome, dict) and "source" in outcome:
+                        entry["source"] = outcome["source"]
+                    if detail is not None:
+                        entry["detail"] = detail
+                    steps_report.append(entry)
+                    if isinstance(outcome, dict):
+                        produced_guard[_step_key(step)] = outcome.get("guard")
                 except Exception as exc:
                     msg = f"Failed to trigger {step.executes_at} for step '{step.qualified_name}': {exc}"
                     log.exception(msg)
                     errors.append(msg)
-                    steps_report.append({"step": step.qualified_name, "status": "error"})
+                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "error"})
             elif step.executes_at == "egeria":
                 # Real, live-reported gap (2026-08-24 — "closing the stub"):
                 # this used to log.info and move on with no entry in `errors`
@@ -507,16 +801,18 @@ class SurveyDefinitionExecutor:
                 )
                 log.warning(msg)
                 errors.append(msg)
-                steps_report.append({"step": step.qualified_name, "status": "not_executed_no_egeria_handler"})
+                steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "not_executed_no_egeria_handler"})
             else:
                 msg = (
                     f"Skipping step {step.qualified_name}: unrecognized executes_at="
-                    f"{step.executes_at!r} (only 'resource-explorer' and 'egeria' are "
-                    "understood today)"
+                    f"{step.executes_at!r} (recognized values are 'resource-explorer', "
+                    "'prefect', 'egeria', and any key an adapter registers in its own "
+                    "other_engine_handlers — e.g. 'egeria-adaptive' for database/"
+                    "filesystem, see EXECUTION-MODES-HYBRID-CLARIFICATION.md)"
                 )
                 log.warning(msg)
                 errors.append(msg)
-                steps_report.append({"step": step.qualified_name, "status": "unrecognized_engine"})
+                steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "unrecognized_engine"})
 
             i += 1
 
@@ -614,12 +910,304 @@ class SurveyDefinitionExecutor:
             "surveyed_at": surveyed_at,
             "steps": steps_report,
             "errors": errors,
+            # §17.1 — chains awaiting consent, and prerequisites this run took
+            # on itself. Returned rather than only logged: a proposal nobody
+            # can see is a skip with extra words, and "run it?" has to be
+            # offerable from the response the UI already has.
+            "proposals": proposals,
+            "auto_ran_steps": sorted(auto_ran),
             "egeria_report_guid": report_guid,
             "published": published,
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.
             "run_recorded": run_recorded,
         }
+
+    # ── §17.1: prerequisites, shared across every resource type ──────────
+    def _any_step_needs_prerequisites(self, adapter, entity, survey_def,
+                                      surveyed_at: str) -> bool:
+        """Whether §17.1 has anything to say about this definition. Runs nothing.
+
+        **This is a GAP being contained, and it is worth saying so plainly.**
+        Design §17.1 states that "on the Prefect path this is task
+        dependencies and Prefect renders the chain itself". Checked against
+        the code (2026-09-23) that is **not true today**:
+        `survey_execution_plan.build_plan` builds Prefect's task graph from
+        the definition's authored `Link Next Process Step` edges and their
+        guards — the graph an author drew. It has never read
+        `requires_context`, and `PRODUCES` did not exist until this change, so
+        a Prefect-orchestrated definition would dispatch a step whose stored
+        input is absent, exactly as the local loop did before
+        `step_preconditions` was written. The design's sentence describes
+        where the mechanism BELONGS, not where it is.
+
+        Rather than build a second resolver inside the Prefect flow — the
+        thing §17.1 is explicit about not wanting — this keeps one resolver
+        and routes a definition that needs it down the local loop, which
+        handles all three outcomes (auto-run, proposal, skip) correctly and
+        still calls `run_prefect_step` per step where `executes_at` asks for
+        it. A definition with nothing to resolve, which is every definition
+        that exists today, goes to Prefect unchanged.
+
+        The real fix is for the plan builder to fold `PRODUCES` edges into the
+        task graph, so Prefect renders the prerequisite chain the way the
+        design describes. That is a change to `survey_execution_plan` and to
+        the flow, and it is a slice of its own.
+        """
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return False
+        try:
+            registry_map = provider() or {}
+        except Exception:  # pragma: no cover - provider guard
+            return False
+        from resource_explorer.surveyors import prerequisite_resolver
+
+        for step in survey_def.steps:
+            key = getattr(step, "re_analysis_step", "") or ""
+            if not registry_map.get(key):
+                continue
+            try:
+                if prerequisite_resolver.resolve(
+                    self.registry, entity, key, registry_map,
+                    surveyed_at=surveyed_at,
+                ).status != prerequisite_resolver.SATISFIED:
+                    return True
+            except prerequisite_resolver.PrerequisiteCycleError:
+                # A declaration bug. Take the local loop, where it will be
+                # raised at dispatch with the step it belongs to, rather than
+                # silently handing the definition to Prefect as if nothing
+                # were wrong.
+                return True
+        return False
+
+    @staticmethod
+    def _step_info(adapter, step_key: str):
+        """This step's declared costs/preconditions/PRODUCES, or None when its
+        resource type has not declared a step registry. None is honest: a type
+        with no declarations has no preconditions to check and no tier to
+        compare against, and every step of it dispatches exactly as it did
+        before §17.1 existed."""
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return None
+        try:
+            return (provider() or {}).get(step_key)
+        except Exception as exc:  # pragma: no cover - provider guard
+            log.debug("could not read the step registry: %s", exc)
+            return None
+
+    def _resolve_prerequisites(
+        self, adapter, entity_type: str, entity, step_key: str,
+        surveyed_at: str, runner_kwargs: dict, steps_report: list,
+        step_outputs: list, errors: list, auto_ran: set,
+        capability_consented: bool = False,
+    ):
+        """Resolve, auto-run what the budget covers, and return the (re-checked)
+        Resolution. None when this resource type declares no step registry.
+
+        The re-check after an auto-run is not defensive noise: a producer that
+        ran and legitimately found nothing leaves the precondition still unmet
+        (CLAUDE.md's Gradle/BOM case, where `repo_manifest_parse` recovers 216
+        coordinates and zero versions), and the demanding step must then be
+        skipped with a reason rather than dispatched because a producer
+        "succeeded".
+        """
+        provider = getattr(adapter, "step_registry", None)
+        if provider is None:
+            return None
+        try:
+            registry_map = provider() or {}
+        except Exception as exc:  # pragma: no cover - provider guard
+            log.debug("could not read the step registry: %s", exc)
+            return None
+
+        from resource_explorer.surveyors import prerequisite_resolver
+
+        def _resolve():
+            return prerequisite_resolver.resolve(
+                self.registry, entity, step_key, registry_map,
+                surveyed_at=surveyed_at, already_ran=auto_ran,
+                capability_consented=capability_consented,
+            )
+
+        resolution = _resolve()
+        for producer in resolution.auto_run:
+            self._auto_run_producer(
+                adapter, entity_type, entity, producer, step_key, resolution,
+                surveyed_at, runner_kwargs, steps_report, step_outputs, errors)
+            auto_ran.add(producer)
+        if resolution.auto_run:
+            resolution = _resolve()
+        return resolution
+
+    def _auto_run_producer(
+        self, adapter, entity_type: str, entity, producer: str,
+        demanding_step: str, resolution, surveyed_at: str, runner_kwargs: dict,
+        steps_report: list, step_outputs: list, errors: list,
+    ) -> None:
+        """Run one prerequisite and record that it happened (§17.1 condition 3).
+
+        Three records, because an auto-run is a result and not an omission:
+        its own entry in `steps_report` carrying `demanded_by`, an activity-log
+        entry (CLAUDE.md rule 16), and a `step_runs` row whose `demanded_by`
+        attributes the cost to the step that asked for it as well as to the
+        step that paid it.
+        """
+        runner = adapter.re_analysis_steps.get(producer)
+        precondition = (resolution.proposal.preconditions[0]
+                        if resolution.proposal and resolution.proposal.preconditions
+                        else (resolution.dead_ends[0] if resolution.dead_ends else ""))
+        why = (f"ran {producer} because {demanding_step} required "
+               f"{precondition or 'its stored output'}")
+        if runner is None:
+            msg = (f"prerequisite {producer!r} for {demanding_step!r} is declared but "
+                   f"the {entity_type} adapter has no runner for it")
+            log.error(msg)
+            errors.append(msg)
+            return
+        info = self._step_info(adapter, producer)
+        output = None
+        try:
+            with step_cost_observer.observe(
+                producer, getattr(info, "fetch_cost", ""),
+                getattr(info, "compute_cost", ""),
+                executor="local", source="local", demanded_by=demanding_step,
+            ) as observed:
+                output = runner(entity, self.registry, **runner_kwargs)
+            self._record_cost(observed, entity_type, entity.slug, output, surveyed_at)
+        except Exception as exc:
+            # Reported, not raised: the demanding step's precondition is then
+            # simply still unmet, which the re-check sees, and it is skipped
+            # with a reason — the outcome it would have had anyway.
+            msg = f"prerequisite step '{producer}' failed: {exc}"
+            log.exception(msg)
+            errors.append(msg)
+            steps_report.append({
+                "step": producer, "re_analysis_step": producer, "status": "error",
+                "detail": msg, "demanded_by": demanding_step, "auto_run": True,
+            })
+            return
+        if isinstance(output, dict):
+            step_outputs.append(output)
+        steps_report.append({
+            "step": producer, "re_analysis_step": producer, "status": "ok",
+            "auto_run": True, "demanded_by": demanding_step, "detail": why,
+        })
+        log.info("%s", why)
+        try:
+            log_survey(
+                self.registry, entity_type, entity.slug,
+                getattr(entity, "display_name", "") or entity.slug,
+                getattr(entity, "github_url", "") or "",
+                intent="analysis", status="ok", summary=why,
+                detail=json.dumps({"prerequisite_auto_run": producer,
+                                   "demanded_by": demanding_step,
+                                   "precondition": precondition}),
+            )
+        except Exception as exc:
+            log.warning("could not log the prerequisite auto-run: %s", exc)
+
+    def _record_cost(self, observed, entity_type: str, slug: str, output,
+                     surveyed_at: str) -> None:
+        """Attach what the step produced, then persist the vector.
+
+        Yield is attached BEFORE the disagreement is judged, for the reason
+        `step_cost_observer` states at length: a duration taken while the
+        thing being measured was not happening is not evidence about a
+        declaration.
+        """
+        if not observed:
+            return
+        obs = observed[0]
+        annotations = (output or {}).get("annotations") if isinstance(output, dict) else None
+        obs.annotations, obs.outcomes = step_cost_observer.describe_work(annotations)
+        obs.disagreement = step_cost_observer._disagreement(obs)
+        step_cost_observer.record(self.registry, slug, obs, surveyed_at,
+                                  entity_type=entity_type)
+
+    def run_synthetic_step(
+        self,
+        entity_type: str,
+        slug: str,
+        re_analysis_step: str,
+        executes_at: str,
+        display_name: str | None = None,
+        publish: str | None = None,
+        engine_override: str | None = None,
+        demanded_by: str = "",
+        capability_consented: bool = False,
+        **runner_kwargs: Any,
+    ) -> dict:
+        """Run ONE step through the same dispatch loop `run()` uses, without
+        first fetching (or authoring) a real Egeria-hosted Survey Definition
+        process — a one-step, in-process-only `SurveyDefinition`/`SurveyStep`
+        pair, never written to or read from Egeria.
+
+        Built for the `egeria-adaptive` fold-in
+        (docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md): the
+        web/CLI "survey this database/filesystem" routes used to call
+        `HybridDatabaseSurveyor`/`run_hybrid_filesystem_survey` directly,
+        bypassing `executes_at` routing entirely. They now build a synthetic
+        single-step definition tagged `executes_at="egeria-adaptive"` and run
+        it through here, so the strategy-selector logic lives in
+        `other_engine_handlers["egeria-adaptive"]` like any other engine, and
+        its `source` provenance is visible in `steps_report` the same way a
+        real Survey Definition's steps are — one mechanism, not two.
+
+        `executes_at` is deliberately a parameter rather than hardcoded to
+        "egeria-adaptive": this is a general "run a single ad hoc step
+        through the executor" primitive, and a future caller wanting
+        "resource-explorer" or "egeria" for one step needs no separate
+        method.
+        """
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinition,
+            SurveyStep,
+        )
+
+        adapter = get_adapter(entity_type)
+        entity = adapter.get_entity(self.registry, slug)
+        if entity is None:
+            raise SurveyDefinitionExecutorError(
+                f"{entity_type} '{slug}' not found in registry"
+            )
+
+        qualified_name = f"synthetic::{entity_type}::{slug}::{re_analysis_step}"
+        step = SurveyStep(
+            guid="",
+            display_name=display_name or re_analysis_step,
+            qualified_name=qualified_name,
+            executes_at=executes_at,
+            re_analysis_step=re_analysis_step,
+        )
+        survey_def = SurveyDefinition(
+            process_guid="",
+            display_name=display_name or re_analysis_step,
+            qualified_name=qualified_name,
+            supported_technology_type=None,
+            steps=[step],
+        )
+        return self._execute(
+            entity_type=entity_type,
+            slug=slug,
+            entity=entity,
+            survey_def=survey_def,
+            process_guid="",
+            process_qn=survey_def.qualified_name,
+            publish=publish,
+            # Passed through rather than hardcoded to None (2026-09-23): an
+            # accepted prerequisite proposal (§17.1) names
+            # "resource-explorer", so the run the user consented to is the
+            # run they were quoted a cost for, and is measured.
+            engine_override=engine_override,
+            runner_kwargs=runner_kwargs,
+            demanded_by=demanded_by,
+            # §7.1's first choice, carried from the user's "run it anyway".
+            # Without it the re-resolve inside `_execute` would raise the very
+            # shortfall the user just accepted and skip the step.
+            capability_consented=capability_consented,
+        )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
         """(steps_report, step_outputs, errors) from one Prefect flow, or None.
@@ -629,19 +1217,62 @@ class SurveyDefinitionExecutor:
         local loop instead of failing a survey the loop could have run. The
         reason is logged — a silent fallback would make "Prefect ran this" and
         "Prefect was never reachable" look identical in the report.
+
+        Only called when `_all_steps_prefect_runnable(survey_def)` is true —
+        every step here runs through `run_surveyor_step_task`, the plain
+        local-analysis-step runner, with no per-step engine check of its own.
+        A step tagged `executes_at="egeria"` (or anything else that isn't
+        "resource-explorer"/"prefect") has no business here; see that
+        function's docstring for the live incident this guard fixes.
+
+        Passes the adapter's step registry into `build_plan` so PRODUCES
+        edges get folded into the Prefect task graph (§17.1's Prefect-side
+        gap — see `survey_execution_plan._add_produces_edges`). Callers
+        already route a definition with anything for the runtime resolver to
+        actually DO (`_any_step_needs_prerequisites`) to the local loop
+        instead of here, so what reaches this function is: definitions with
+        no unmet precondition today, plus whatever this folding now corrects
+        structurally at build time.
         """
         from resource_explorer.surveyors.survey_execution_plan import (
             CyclicPlanError,
+            MissingPrerequisiteError,
+            PrerequisiteTierError,
             build_plan,
             serialise,
         )
 
+        adapter = get_adapter(entity_type)
+        provider = getattr(adapter, "step_registry", None)
+        step_registry = None
+        if provider is not None:
+            try:
+                step_registry = provider() or {}
+            except Exception as exc:  # pragma: no cover - provider guard
+                log.debug("could not read the step registry for %s: %s",
+                          entity_type, exc)
+                # Explicit, not redundant: a registry that failed to load is
+                # the same as "not declared" for this call's purposes — no
+                # PRODUCES-folding, no tier check, `build_plan` behaves as it
+                # did before this change — and that fallback must be a
+                # decision this line makes, not merely a log line implying
+                # one.
+                step_registry = None
+
         try:
-            plan = build_plan(survey_def)
+            plan = build_plan(survey_def, step_registry=step_registry)
         except CyclicPlanError as exc:
             # Not a fallback case: the local loop would run a cyclic definition
             # in list order and report success for a survey that cannot be
             # ordered at all.
+            raise SurveyDefinitionExecutorError(str(exc)) from exc
+        except (MissingPrerequisiteError, PrerequisiteTierError) as exc:
+            # Also not a fallback case, and deliberately so (see
+            # `PrerequisiteTierError`'s docstring): silently falling back to
+            # the local loop here would hide a build-time-detectable problem
+            # behind "Prefect just wasn't reachable", which is exactly the
+            # ambiguity this function's own docstring says a silent fallback
+            # must not create.
             raise SurveyDefinitionExecutorError(str(exc)) from exc
 
         if not plan.steps:
@@ -712,22 +1343,78 @@ class SurveyDefinitionExecutor:
         return chosen["guid"], chosen["qualified_name"]
 
 
-def run_survey_definition(entity_type: str, slug: str, registry=None, **kwargs: Any) -> dict:
-    """Convenience function mirroring run_hybrid_survey's shape."""
+def run_survey_definition(
+    entity_type: str, slug: str, registry=None,
+    engine_override: str | None = None, **kwargs: Any,
+) -> dict:
+    """Convenience function mirroring run_hybrid_survey's shape.
+
+    `engine_override` is spelled out explicitly (rather than left to flow
+    through **kwargs implicitly) so callers — the CLI, the web route — see it
+    in this function's own signature. See SurveyDefinitionExecutor.run's
+    docstring for what the three legal values do.
+    """
     if registry is None:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
     executor = SurveyDefinitionExecutor(registry)
-    return executor.run(entity_type, slug, **kwargs)
+    return executor.run(entity_type, slug, engine_override=engine_override, **kwargs)
 
 
-def _prefect_orchestration_enabled() -> bool:
+def _all_steps_prefect_runnable(survey_def) -> bool:
+    """Whether every step in this definition can actually be run by
+    `run_surveyor_step_task` — the plain local-analysis-step runner Prefect's
+    flow calls for EVERY step in its plan, with no per-step engine check of
+    its own (`prefect/flows.py`'s `run_planned_step_task` -> `run_surveyor_
+    step_task.fn`).
+
+    Found 2026-09-19, live, the first time PREFECT_ENABLED defaulted to true
+    with a real reachable server on a mixed-engine definition:
+    `_run_via_prefect` handed the WHOLE plan to Prefect regardless of what
+    each step's `executes_at` said, so an `executes_at="egeria"` step never
+    reached its own `other_engine_handlers["egeria"]` handler at all — it
+    silently ran through the local-analysis-step path instead, which has no
+    `re_analysis_step` for it and fails with "Entity ... not found" (or worse,
+    for an entity type that DOES coincidentally have a same-named local step,
+    would have run the wrong thing under the right-looking status). Repo
+    Survey Definitions never hit this (repos have no Egeria-coordinated path
+    today), which is why phase 2's live verification — one step,
+    `repo_arch_coupling`, called directly via `run_prefect_step` rather than
+    through this whole-definition path — never exercised it.
+
+    The correct fix is per-step engine routing inside the Prefect flow
+    itself, matching what the local loop below already does correctly. Until
+    that's built, the safe answer is: don't send Prefect a definition it
+    cannot execute correctly — skip whole-definition orchestration entirely
+    for one that mixes engines, and let the local loop's existing, correct
+    per-step routing (which does call `run_prefect_step` for individual
+    `executes_at="prefect"` steps) handle it one step at a time instead.
+    """
+    return all(
+        getattr(step, "executes_at", "resource-explorer") in ("resource-explorer", "prefect")
+        for step in survey_def.steps
+    )
+
+
+def _prefect_orchestration_enabled(engine_override: str | None = None) -> bool:
     """Whether Prefect should sequence a whole Survey Definition.
 
     Reads the same `prefect.enabled` switch the per-step dispatch already
     honours, so there is one answer to "is Prefect available here" rather than
-    two that can disagree.
+    two that can disagree — except when `engine_override` names a choice for
+    THIS run, which takes precedence over the global config either way:
+    "resource-explorer" always answers False (whole-definition orchestration
+    is skipped, so the local loop's own per-step `_use_prefect` — which also
+    honours the same override — is what actually runs each step); "prefect"
+    always answers True (if no server is actually reachable,
+    `_run_via_prefect`'s existing try/except already falls back to the local
+    loop, same as it does today when `prefect.enabled` is True but Prefect is
+    down).
     """
+    if engine_override == "resource-explorer":
+        return False
+    if engine_override == "prefect":
+        return True
     try:
         from resource_explorer.config import get_config
 

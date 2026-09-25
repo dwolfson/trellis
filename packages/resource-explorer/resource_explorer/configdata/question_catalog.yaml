@@ -4,6 +4,15 @@
 # CSV, then regenerate this file, don't hand-edit it directly). Backs the
 # Scouting "Questions" checklist tab (question_catalog_reader.py).
 #
+# One `<resource_type>_questions` key per resource type the CSV's
+# `Resource Types` column names (`;`-separated, `*` for all — see
+# docs/multi-resource-questions-design.md §1.1). A resource type with NO
+# key here has no authored questions, which question_catalog_reader.py
+# reports as `not_authored` rather than as an empty list: "nobody has
+# written database questions yet" and "there are database questions and
+# your filters excluded them all" are the same length and opposite
+# answers. Do not add empty sections to make the file look complete.
+#
 # Each entry:
 #   question      - display text; matches the Egeria GlossaryTerm Display
 #                   Name exactly (case+punctuation-sensitive) since it's
@@ -28,7 +37,8 @@
 #     kind        - "analysis" | "direct" | "registry" | "human" |
 #                   "chart" | "gap" | "partial" | "mixed" | "unknown" —
 #                   how (or whether) RE can answer this today.
-#     analysis_ids - analysis_catalog.yaml repo_analyses ids that answer
+#     analysis_ids - analysis_catalog.yaml ids (from ANY `*_analyses`
+#                   section, not just repo_analyses) that answer
 #                   (fully or partially) this question; may be empty.
 #     checks       - finer `analysis_id:check_name` refs, validated against
 #                   configdata/check_registry.yaml. Added 2026-08-24 because
@@ -61,6 +71,12 @@
 #                   maintains the catalog; split out of Rationale/Source on
 #                   2026-09-11 so the limit and the changelog stop sharing
 #                   one sentence and one colour on screen.
+#   retired     - true if the CSV's Status column reads "Retired" (added
+#                   2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4, alongside
+#                   question_catalog_writer.py's add/retire write path).
+#                   The catalog is append-only: a retired question is never
+#                   removed or reworded, only flagged, since a past survey
+#                   answer still refers to it exactly as it was asked.
 
 repo_questions:
 - question: Is this repository actively maintained?
@@ -84,7 +100,8 @@ repo_questions:
   rationale: Recency/frequency signal — last-pushed date, commit cadence — answerable from GitHub API
     metadata alone (RE's HealthSurveyor), no zipball needed.
   catalog_history: ''
-- question: What does this repository do?
+  retired: false
+- question: What is this resource, and what is it for?
   stage: Scouting
   perspectives:
   - Consumer
@@ -101,8 +118,10 @@ repo_questions:
     note: N/A — direct field (Project.description) This might also be a summary of the top level README.
   answering_mechanism: Direct Field
   rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
-  catalog_history: ''
-- question: Who maintains this repository?
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Who owns this resource (accountable owner), and who administers it?
   stage: Scouting
   perspectives:
   - Steward
@@ -121,7 +140,9 @@ repo_questions:
   answering_mechanism: Git Statistics
   rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
     the same text until chaoss_metrics, built on project_commits, gave this one its own source.
-  catalog_history: ''
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
 - question: How widely adopted and active is the community around this repository?
   stage: Scouting
   perspectives:
@@ -144,7 +165,8 @@ repo_questions:
     names the weakest rather than averaging, so 'popular but unsupported' stays visible instead of averaging
     out.
   catalog_history: ''
-- question: Has this repository already been catalogued in Egeria and when?
+  retired: false
+- question: Has this resource already been catalogued in Egeria, and when?
   stage: Discovery
   perspectives:
   - Governance
@@ -162,7 +184,9 @@ repo_questions:
   rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
     whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
     data" search work.'
-  catalog_history: ''
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
 - question: Are there outstanding CVEs?
   stage: Analysis
   perspectives:
@@ -183,6 +207,7 @@ repo_questions:
   rationale: Covers advisories against DECLARED dependencies only, queried from OSV.dev, with coverage
     reported as prominently as the count — so a zero is 'none found in what we can see', not 'none exist'.
   catalog_history: Closed 2026-08-26 by cve_scan, reading the dependencies manifest_parse recorded.
+  retired: false
 - question: Is there any existing use within our organization?
   stage: Discovery
   perspectives:
@@ -206,6 +231,7 @@ repo_questions:
   rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
     — no external API needed.
   catalog_history: ''
+  retired: false
 - question: Any known feedback?
   stage: Discovery
   perspectives:
@@ -227,6 +253,7 @@ repo_questions:
   answering_mechanism: Local Registry Query + Egeria Queries
   rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
   catalog_history: ''
+  retired: false
 - question: Does it replace or extend something we already have?
   stage: Discovery
   perspectives:
@@ -243,7 +270,8 @@ repo_questions:
   answering_mechanism: Local Registry Query + RAG Queries
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
-- question: What are similar repos/projects? How does this differ?
+  retired: false
+- question: What are similar resources, and how does this differ?
   stage: Analysis
   perspectives:
   - Community
@@ -258,9 +286,11 @@ repo_questions:
     note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
   answering_mechanism: Agent-Based Analysis
   rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: ''
-- question: Are there any restrictions for use?
-  stage: Analysis
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Under what licence or agreement may this resource be used?
+  stage: Scouting
   perspectives:
   - Security
   - Architecture
@@ -279,7 +309,9 @@ repo_questions:
   answering_mechanism: Direct Field (standard license) + Agent-Based Analysis (non-standard license interpretation)
   rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
     is Assessment-tier (see the license-specifics row below).
-  catalog_history: ''
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
 - question: What dependencies does this require?
   stage: Analysis
   perspectives:
@@ -300,6 +332,7 @@ repo_questions:
   answering_mechanism: Code Analysis
   rationale: The declared dependency list, per ecosystem, from the manifests present.
   catalog_history: Answered by DependencySurveyor (Analysis tier).
+  retired: false
 - question: Do we already support these dependencies?
   stage: Analysis/Enrichment
   perspectives:
@@ -327,6 +360,7 @@ repo_questions:
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-12: answering
     became MIXED — dependency_support added as the machine starting point (project owner: ''A now, shaped
     to seed B''); the human corroboration stays.'
+  retired: false
 - question: What deployment styles does this support?
   stage: Analysis
   perspectives:
@@ -349,7 +383,8 @@ repo_questions:
     actually say is not read.
   catalog_history: Presence became a cheap Discovery-tier signal through repo_conventions' deployment_docker
     check; a content read of Dockerfiles and deployment docs remains a RAG-tier gap.
-- question: Do we know what the cost to run it is?
+  retired: false
+- question: What does this resource cost to run, host or license?
   stage: Analysis/Enrichment
   perspectives:
   - Financial
@@ -366,7 +401,10 @@ repo_questions:
   rationale: Human-supplied/derived — not resource-derivable.
   catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
-    pane, under a heading that promised the catalog''s questions for a person.'
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
+    from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
+    authoring stream.'
+  retired: false
 - question: Is there a validation / deployment test for it?
   stage: Analysis
   perspectives:
@@ -392,6 +430,7 @@ repo_questions:
     test is not detected.
   catalog_history: ci_quality replaced a CI-config-presence check with one that reads whether workflows
     run tests; repo_conventions' deployment_docker added the deployment-evidence signal.
+  retired: false
 - question: What is the upgrade process?
   stage: Analysis
   perspectives:
@@ -410,6 +449,7 @@ repo_questions:
   answering_mechanism: RAG Queries
   rationale: Needs content read (CHANGELOG, release notes) — RAG-tier, real gap.
   catalog_history: ''
+  retired: false
 - question: Does it fit into our monitoring infrastructure?
   stage: Analysis/Enrichment
   perspectives:
@@ -429,6 +469,7 @@ repo_questions:
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
   catalog_history: ''
+  retired: false
 - question: Does it fit into our security infrastructure?
   stage: Analysis/Enrichment
   perspectives:
@@ -453,6 +494,7 @@ repo_questions:
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
   catalog_history: ''
+  retired: false
 - question: Is there any reliability or availability aspects?
   stage: Analysis
   perspectives:
@@ -472,6 +514,7 @@ repo_questions:
   rationale: Trend/uptime signal, if available — Understanding-tier chart, or Analysis if content-derived
     (SLA docs).
   catalog_history: ''
+  retired: false
 - question: What kinds of integrations does it support?
   stage: Analysis
   perspectives:
@@ -496,6 +539,7 @@ repo_questions:
     it integrates with is not read.
   catalog_history: interface_surface answers the structural half; the content read for named systems has
     no surveyor.
+  retired: false
 - question: Does this fit within or need to extend our existing infrastructure estate?
   stage: Analysis/Enrichment
   perspectives:
@@ -514,6 +558,7 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org-internal cross-reference — human-supplied.
   catalog_history: ''
+  retired: false
 - question: How mature is it?
   stage: Assessment
   perspectives:
@@ -537,6 +582,7 @@ repo_questions:
     CHAOSS-informed (the maturity analysis) — a more direct answer than the age/release-cadence trend
     chart alone, which remains a secondary Understanding-tier view of the same underlying signal.
   catalog_history: ''
+  retired: false
 - question: Do we have the skills to support its use?
   stage: Analysis/Enrichment
   perspectives:
@@ -554,6 +600,7 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
   catalog_history: ''
+  retired: false
 - question: How well documented is it?
   stage: Analysis
   perspectives:
@@ -582,6 +629,7 @@ repo_questions:
     density — README count, a docs folder, .md/.txt count.
   catalog_history: documentation_coverage checks the root; repo_conventions' doc_breadth added the tree-wide
     density signal the root-only check missed.
+  retired: false
 - question: How is it supported?
   stage: Analysis
   perspectives:
@@ -606,6 +654,7 @@ repo_questions:
   rationale: Combines community responsiveness, documentation quality and any formal support documents.
   catalog_history: 'Mixed across tiers: responsiveness from Scouting, documentation from Assessment, support
     docs from Analysis/RAG.'
+  retired: false
 - question: Is there a current, published, security analysis?
   stage: Analysis
   perspectives:
@@ -635,6 +684,7 @@ repo_questions:
   catalog_history: The GAP note named OpenSSF Scorecard and CHAOSS as candidate tooling; both landed 2026-08-26
     as foss_scorecard and chaoss_metrics, and cii_badge reads the published badge. The question stays
     MIXED rather than answered.
+  retired: false
 - question: Does it fit into our governance frameworks?
   stage: Analysis/Enrichment
   perspectives:
@@ -654,7 +704,8 @@ repo_questions:
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
   catalog_history: ''
-- question: What explicit license does the repository use, and are there non-standard or copyleft terms?
+  retired: false
+- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -677,7 +728,9 @@ repo_questions:
     — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
     LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
     5962) is the standard schema this conforms to.'
-  catalog_history: ''
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
 - question: Is intellectual property (IP) provenance managed via CLA or DCO?
   stage: Analysis
   perspectives:
@@ -699,6 +752,7 @@ repo_questions:
   rationale: Reports which mechanism is in use — DCO sign-off in commit trailers, a CLA bot configuration,
     or a CONTRIBUTING.md statement — rather than a yes/no.
   catalog_history: contribution_provenance shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
   stage: Analysis
   perspectives:
@@ -720,6 +774,7 @@ repo_questions:
     checks whether each match is disclosed in the repo's own docs. An undisclosed match is the finding,
     not the presence of telemetry.
   catalog_history: telemetry_scan shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
   stage: Analysis
   perspectives:
@@ -738,6 +793,7 @@ repo_questions:
   answering_mechanism: Gap
   rationale: Needs model-card/dataset-file detection — real gap, AI Governance tooling category.
   catalog_history: ''
+  retired: false
 - question: How does the repository handle secrets, credentials, and sensitive configurations?
   stage: Analysis
   perspectives:
@@ -758,6 +814,7 @@ repo_questions:
     and commit. Never claims 'no secrets' — only 'no matches against this ruleset, in this snapshot' —
     and says nothing about git history, where a removed secret still lives.
   catalog_history: secret_scan shipped 2026-09-01; the row was marked GAP until 2026-09-02.
+  retired: false
 - question: Does the repository publish a clear process for reporting security vulnerabilities?
   stage: Analysis
   perspectives:
@@ -778,6 +835,7 @@ repo_questions:
     — which is reported separately.
   catalog_history: The row once read 'repo_conventions - RAG read?', which the generator could not parse
     into a kind, so the question was unanswerable despite being correctly wired.
+  retired: false
 - question: Does the repository have automated build tooling in place?
   stage: Analysis
   perspectives:
@@ -799,6 +857,7 @@ repo_questions:
     and gates.
   catalog_history: 'Same parser problem as the vulnerability-reporting row: a trailing ''- RAG read?''
     left the kind unknown and the question unanswerable.'
+  retired: false
 - question: Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
   stage: Assessment
   perspectives:
@@ -818,6 +877,7 @@ repo_questions:
   rationale: repo_conventions detects catalog-info.yaml and equivalent self-description files. Same parser
     problem — the row was wired correctly and phrased in a way the generator read as unknown.
   catalog_history: ''
+  retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
   perspectives:
@@ -836,6 +896,7 @@ repo_questions:
   rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
     findings/metrics history already surfaced by the resource's own analysis cards.
   catalog_history: ''
+  retired: false
 - question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
   stage: Discovery
   perspectives:
@@ -854,6 +915,7 @@ repo_questions:
   rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
     candidates list surfaces exactly this per-step breakdown before committing to run one.
   catalog_history: ''
+  retired: false
 - question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
   stage: Discovery
   perspectives:
@@ -873,8 +935,9 @@ repo_questions:
   rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
     repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
   catalog_history: ''
+  retired: false
 - question: How much has changed since the last time this was surveyed — is it worth re-running now?
-  stage: Automate
+  stage: Discovery
   perspectives:
   - Steward
   - Data Expert
@@ -889,7 +952,9 @@ repo_questions:
   rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
     once a schedule exists for the analysis — real today, but only reachable once that subscription is
     set up.
-  catalog_history: ''
+  catalog_history: '2026-09-21: stage moved Automate -> Discovery (design §2.1 -- automation is a property
+    of any survey, not a funnel stage) as part of the re/db-questions-csv authoring stream.'
+  retired: false
 - question: Is there a Survey Definition authored for this resource's technology type at all, or is that
     a catalog gap?
   stage: Discovery
@@ -908,6 +973,7 @@ repo_questions:
   rationale: Direct field — the candidates list itself; an empty result for a technology type with real
     registered resources is the signal.
   catalog_history: ''
+  retired: false
 - question: What kind of thing is this repository — a library, an application, a tool, or samples?
   stage: Discovery
   perspectives:
@@ -927,6 +993,7 @@ repo_questions:
   rationale: repo_classification exists and nothing asked for it. It also decides whether architecture
     recovery is worth running, so it gates later tiers.
   catalog_history: ''
+  retired: false
 - question: What components exist in this repository, and what kind is each?
   stage: Discovery
   perspectives:
@@ -950,6 +1017,7 @@ repo_questions:
     referenced any of them. The doc lens specifically compares documented architecture against recovered
     architecture.
   catalog_history: ''
+  retired: false
 - question: How do its components relate to each other?
   stage: Discovery
   perspectives:
@@ -973,6 +1041,7 @@ repo_questions:
     is the Mermaid diagram + caption rendered from architecture_recovery/architecture_summary at survey
     time -- previously computed and persisted, never read back by anything.'
   catalog_history: ''
+  retired: false
 - question: What languages and file types make up this repository?
   stage: Scouting
   perspectives:
@@ -993,6 +1062,7 @@ repo_questions:
     docstrings across the source files; no fetch beyond the inventory Scouting already holds.
   catalog_history: language_file_classification is one of the oldest analyses here and no question referenced
     it until this row was added.
+  retired: false
 - question: What data files does it ship, and what shape are they?
   stage: Analysis
   perspectives:
@@ -1011,6 +1081,7 @@ repo_questions:
   answering_mechanism: Code Analysis
   rationale: An inventory and shape profile of the data files shipped in the repository.
   catalog_history: data_file_profiling existed before any question referenced it.
+  retired: false
 - question: What APIs and code symbols does it expose to callers?
   stage: Analysis
   perspectives:
@@ -1033,6 +1104,7 @@ repo_questions:
   rationale: Covers the extracted code symbols and the interfaces implied by dependencies; a published
     contract is detected only where a specification file exists.
   catalog_history: api_structure and interface_surface both existed before any question referenced them.
+  retired: false
 - question: How does it score against OpenSSF Scorecard-style criteria?
   stage: Assessment
   perspectives:
@@ -1054,6 +1126,7 @@ repo_questions:
     upstream OpenSSF tool's own run, and a check it cannot evaluate is reported as not-established rather
     than as a failure.
   catalog_history: ''
+  retired: false
 - question: Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment
     behind it?
   stage: Assessment
@@ -1076,6 +1149,7 @@ repo_questions:
   rationale: cii_badge reads the real badge from bestpractices.dev rather than estimating one, and reports
     level together with the age of the self-assessment. No question referenced it.
   catalog_history: ''
+  retired: false
 - question: How concentrated is authorship — would the project survive losing its top contributors?
   stage: Assessment
   perspectives:
@@ -1095,6 +1169,7 @@ repo_questions:
   rationale: chaoss_metrics reports the elephant factor and related CHAOSS metrics on their own terms,
     never averaged into a score. No question referenced it.
   catalog_history: ''
+  retired: false
 - question: How much code is there? How complex?
   stage: Assessment
   perspectives:
@@ -1123,6 +1198,7 @@ repo_questions:
     never compute it, so they are excluded and named rather than averaged in (0.32 vs 2.69 on milvus).
     A repo with no census reports no line counts rather than zero: not counted is not the same as no code.'
   catalog_history: ''
+  retired: false
 - question: What are the public interfaces?
   stage: Discovery
   perspectives:
@@ -1149,3 +1225,3224 @@ repo_questions:
     the Analysis-stage question ''What APIs and code symbols does it expose to callers?'' (api_structure
     + interface_surface).'
   catalog_history: ''
+  retired: false
+- question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
+    — and which is cheaper?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no reachability probe exists — this needs a CHECK_ASSET-only engine action plus the observed-cost
+      comparison step_cost_observer already collects.'
+  answering_mechanism: Egeria Queries + Direct Field
+  rationale: Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET
+    from the engine host; efficiency is a separate axis (data locality, latency to first result, load
+    on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable
+    resource falls back to a Resource Explorer local mirror published under the native annotation shapes,
+    plus an RFA recording that Egeria could not reach it.
+  catalog_history: ''
+  retired: false
+- question: Where is this resource physically located, under which jurisdiction, and are there residency
+    or transfer constraints?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Data Owner
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing populates DataScope from a survey today; endpoint geolocation and the Enrichment
+      section are both unbuilt.'
+  answering_mechanism: Direct Field + Egeria Queries + Human-Supplied
+  rationale: Two halves. The machine half reads host and region from the connection endpoint, cloud instance
+    metadata, or the mount and file path. The human half — legal controller, residency rule — comes through
+    Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements
+    {jurisdiction, region, controller}.
+  catalog_history: ''
+  retired: false
+- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Consumer
+  - Privacy
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
+      interpretation of non-standard terms is unbuilt.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+    Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
+    for anything contractual that is not written down machine-readably.
+  catalog_history: ''
+  retired: false
+- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+    schema, freshness, contact and scope?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no readiness composite exists, and several of its inputs (DataScope, agreement, freshness)
+      are themselves gaps.'
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: A composite over facts other questions already establish — Egeria Ownership, a description,
+    License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4
+    requires this and the demand question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Is there a defined need or market for this resource — subscriptions, requests, existing use,
+    feedback or open requests for this kind of data?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Governance
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: DigitalSubscription is not read, and RFAs are not searchable by the kind of data they
+      ask for.'
+  answering_mechanism: Egeria Queries + Local Registry Query
+  rationale: Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback,
+    similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this
+    and the readiness question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+database_questions:
+- question: What is this resource, and what is it for?
+  stage: Scouting
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Project.description) This might also be a summary of the top level README.
+  answering_mechanism: Direct Field
+  rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Who owns this resource (accountable owner), and who administers it?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Owner
+  - Security
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for database resources (absent from analysis_catalog.yaml''s
+      database_analyses section).'
+  answering_mechanism: Git Statistics
+  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
+    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been catalogued in Egeria, and when?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
+      Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
+  answering_mechanism: Egeria Queries
+  rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
+    whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
+    data" search work.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there any existing use within our organization?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Privacy
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - probably a set of egeria queries.
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
+    — no external API needed.
+  catalog_history: ''
+  retired: false
+- question: Any known feedback?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (resource_feedback table) - result from Egeriq queries/report
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
+  catalog_history: ''
+  retired: false
+- question: Does it replace or extend something we already have?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Data Expert
+  - Architecture
+  purposes:
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - might need RAG support for this.
+  answering_mechanism: Local Registry Query + RAG Queries
+  rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
+  catalog_history: ''
+  retired: false
+- question: What are similar resources, and how does this differ?
+  stage: Analysis
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
+  answering_mechanism: Agent-Based Analysis
+  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Under what licence or agreement may this resource be used?
+  stage: Scouting
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (GitHub license field) - Also Agent over RAG? Direct field (GitHub license
+      field) for a standard license (e.g. Apache 2.0) — the answer for those is itself usually just "citation/attribution
+      required". A non-standard license needs the actual license text interpreted, which is where Agent-Based
+      Analysis comes in instead of a direct-field read.
+  answering_mechanism: Direct Field (standard license) + Agent-Based Analysis (non-standard license interpretation)
+  rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
+    is Assessment-tier (see the license-specifics row below).
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: What does this resource cost to run, host or license?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Admin
+  purposes:
+  - Select
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
+  answering_mechanism: Human-Supplied
+  rationale: Human-supplied/derived — not resource-derivable.
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
+    from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
+    authoring stream.'
+  retired: false
+- question: Does it fit into our monitoring infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Data Owner
+  - Consumer
+  - Architecture
+  - Admin
+  purposes:
+  - Deploy
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - We may be able to use targeted Egeria queries
+      first - augmented with enrichment.
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: Org-internal cross-reference — human-supplied.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our security infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Data Owner
+  - Consumer
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
+      queries.
+  answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
+  rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
+    it.'
+  catalog_history: ''
+  retired: false
+- question: Do we have the skills to support its use?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Learn
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Purely human-supplied — never resource-derivable.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our governance frameworks?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Certify
+  - Share
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
+      plus Egeria queries.
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
+  catalog_history: ''
+  retired: false
+- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Data Owner
+  - App/AI Builder
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for database resources (absent from analysis_catalog.yaml''s database_analyses
+      section).'
+  answering_mechanism: Code Analysis
+  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
+    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
+    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
+    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
+    5962) is the standard schema this conforms to.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (last_surveyed_at/egeria_asset_guid; scoped analysis-history queries)
+  answering_mechanism: Direct Field
+  rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
+    findings/metrics history already surfaced by the resource's own analysis cards.
+  catalog_history: ''
+  retired: false
+- question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, step/survey_kind detail)
+  answering_mechanism: Direct Field
+  rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
+    candidates list surfaces exactly this per-step breakdown before committing to run one.
+  catalog_history: ''
+  retired: false
+- question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (repo_dispositions) - there is some heuristic we might need to compute to
+      recommend a disposition
+  answering_mechanism: Direct Field
+  rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
+    repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
+  catalog_history: ''
+  retired: false
+- question: How much has changed since the last time this was surveyed — is it worth re-running now?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  purposes:
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — Automate subscription (notification_detector's change comparison)
+  answering_mechanism: Automate Change Detection
+  rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
+    once a schedule exists for the analysis — real today, but only reachable once that subscription is
+    set up.
+  catalog_history: '2026-09-21: stage moved Automate -> Discovery (design §2.1 -- automation is a property
+    of any survey, not a funnel stage) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there a Survey Definition authored for this resource's technology type at all, or is that
+    a catalog gap?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Admin
+  purposes:
+  - Explore
+  - Share
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, empty-result case)
+  answering_mechanism: Direct Field
+  rationale: Direct field — the candidates list itself; an empty result for a technology type with real
+    registered resources is the signal.
+  catalog_history: ''
+  retired: false
+- question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
+    — and which is cheaper?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no reachability probe exists — this needs a CHECK_ASSET-only engine action plus the observed-cost
+      comparison step_cost_observer already collects.'
+  answering_mechanism: Egeria Queries + Direct Field
+  rationale: Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET
+    from the engine host; efficiency is a separate axis (data locality, latency to first result, load
+    on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable
+    resource falls back to a Resource Explorer local mirror published under the native annotation shapes,
+    plus an RFA recording that Egeria could not reach it.
+  catalog_history: ''
+  retired: false
+- question: Where is this resource physically located, under which jurisdiction, and are there residency
+    or transfer constraints?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Data Owner
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing populates DataScope from a survey today; endpoint geolocation and the Enrichment
+      section are both unbuilt.'
+  answering_mechanism: Direct Field + Egeria Queries + Human-Supplied
+  rationale: Two halves. The machine half reads host and region from the connection endpoint, cloud instance
+    metadata, or the mount and file path. The human half — legal controller, residency rule — comes through
+    Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements
+    {jurisdiction, region, controller}.
+  catalog_history: ''
+  retired: false
+- question: What is the scope of the data in time — collection period, validity and coverage?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
+      that would supply the ranges is itself unbuilt.'
+  answering_mechanism: Value Profiling + Human-Supplied
+  rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
+    of date columns for a database, modification-time range and in-file date ranges for a filesystem,
+    DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
+  catalog_history: ''
+  retired: false
+- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Consumer
+  - Privacy
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
+      interpretation of non-standard terms is unbuilt.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+    Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
+    for anything contractual that is not written down machine-readably.
+  catalog_history: ''
+  retired: false
+- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+    schema, freshness, contact and scope?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no readiness composite exists, and several of its inputs (DataScope, agreement, freshness)
+      are themselves gaps.'
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: A composite over facts other questions already establish — Egeria Ownership, a description,
+    License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4
+    requires this and the demand question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Is there a defined need or market for this resource — subscriptions, requests, existing use,
+    feedback or open requests for this kind of data?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Governance
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: DigitalSubscription is not read, and RFAs are not searchable by the kind of data they
+      ask for.'
+  answering_mechanism: Egeria Queries + Local Registry Query
+  rationale: Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback,
+    similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this
+    and the readiness question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: How big is this database — schemas, tables, views, columns, rows and bytes?
+  stage: Scouting
+  perspectives:
+  - Financial
+  - Data Expert
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: mixed
+    analysis_ids:
+    - schema_inventory
+    - row_count_snapshot
+    checks: []
+    note: 'MIXED: schema_inventory (structural counts) + row_count_snapshot (rows and bytes)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Whole-database catalog reads only, no row data: information_schema and pg_catalog give the
+    structural counts, and relation sizes plus row counts give the volume. Design §5.1 — extract everything
+    the catalog already knows before reading a row.'
+  catalog_history: ''
+  retired: false
+- question: Which schemas carry the data, and which are system, empty or staging?
+  stage: Scouting
+  perspectives:
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  answering:
+    kind: analysis
+    analysis_ids:
+    - schema_inventory
+    checks: []
+    note: schema_inventory
+  answering_mechanism: Database Catalog Query
+  rationale: Derived from the same catalog read as the size question — object counts and sizes per schema,
+    plus name conventions. Cheap, whole-database, no row data.
+  catalog_history: ''
+  retired: false
+- question: Is this database alive — writes since the statistics were reset, last vacuum or analyse, and
+    is anything reading it?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Owner
+  - Admin
+  purposes:
+  - Maintain
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_activity_signals
+    checks: []
+    note: db_activity_signals (design §5.2, §5.7 — database-wide roll-up of pg_stat_user_tables tuple
+      and scan counters; reuses postgres_schema_and_stats' per-table figures rather than re-querying them)
+  answering_mechanism: Database Catalog Query
+  rationale: 'pg_stat_user_tables carries n_tup_ins/upd/del, n_live_tup, n_dead_tup, last_vacuum/autovacuum/analyze,
+    seq_scan and idx_scan; pg_stat_database carries the transaction and block counters. All of it is a
+    catalog read. Note the two absence modes design §5.1 calls out: a counter the engine does not support
+    is not_established, and statistics that were never collected must render as "run ANALYZE", not as
+    "no activity".'
+  catalog_history: ''
+  retired: false
+- question: Is this database documented — what fraction of its tables and columns carry comments?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Consumer
+  purposes:
+  - Assess
+  - Share
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing measures comment coverage across a database''s tables and columns. Design §5.2
+      proposes a new database comment-coverage analysis; its proposed id is deliberately not spelled out
+      in this note, because it contains a readable repo analysis id as a substring and the stale-gap guard
+      matches on substrings.'
+  answering_mechanism: Database Catalog Query
+  rationale: pg_description via obj_description and col_description gives comments per table and per column;
+    the measure is coverage, not presence. Note rule 13 in the package CLAUDE.md — these need the schema-qualified
+    (schema.table)::regclass form.
+  catalog_history: ''
+  retired: false
+- question: What engine and version is this, which extensions are installed, and is the version still
+    supported?
+  stage: Scouting
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: db_server_profile (proposed, server-level) — no analysis reads pg_settings, pg_extension
+      or the version support window.'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Server-level rather than database-level — design §5 makes server, database, schema and table
+    each addressable, and this row belongs to the server subset. Sources: version(), pg_settings, pg_extension,
+    and the upstream support window for the major version.'
+  catalog_history: ''
+  retired: false
+- question: Is this database a primary or a replica, is it clustered, and is WAL archiving or backup configured?
+  stage: Scouting
+  perspectives:
+  - Data Owner
+  - Admin
+  purposes:
+  - Assess
+  - Maintain
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_resilience
+    checks: []
+    note: 'db_resilience (design §5.5, MIXED — catalog half measured directly: primary/standby, replicas
+      and lag, WAL archiving status, backup-tool/Citus-clustering signals; Enrichment half stays explicitly
+      pending, never silently omitted)'
+  answering_mechanism: Database Catalog Query + Human-Supplied
+  rationale: 'Catalog-observable: pg_is_in_recovery() for the primary/standby role, pg_stat_replication
+    for standbys and replay lag, pg_settings.archive_mode with pg_stat_archiver for WAL archiving, pg_extension
+    and roles for backup tooling such as pgBackRest, barman or wal-g, Citus catalogs for clustering. Design
+    §5.5 — last successful backup and tested restore are NOT observable and are asked separately.'
+  catalog_history: ''
+  retired: false
+- question: When was this resource last backed up successfully, and has a restore ever been tested?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Data Owner
+  - Admin
+  purposes:
+  - Assess
+  - Attest
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids:
+    - db_resilience
+    checks: []
+    note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
+      analysis for databases; no filesystem-side catalog-observable half exists yet).
+  answering_mechanism: Human-Supplied
+  rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
+    archiving and extension-based backup tooling are catalog-observable, while last successful backup,
+    tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
+    recovery" section, and the answer envelope must say which half answered.'
+  catalog_history: ''
+  retired: false
+- question: What kind of database is this — transactional, analytical, reference data, staging or a copy?
+  stage: Discovery
+  perspectives:
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_classification
+    checks: []
+    note: db_classification (design §5.3, §5.7 — derived from stored table shapes, key/FK density, naming
+      patterns and the read/write mix in stored tuple counters; confidence scales with how many signal
+      families were available)
+  answering_mechanism: Database Catalog Query
+  rationale: 'Zero new fetch — reasons over what Scouting already stored: table shapes, foreign-key density,
+    naming conventions, read/write ratios from the tuple counters, and the query mix if pg_stat_statements
+    is installed.'
+  catalog_history: ''
+  retired: false
+- question: Is there a data model here — do the tables relate through foreign keys, or is this a bag of
+    tables?
+  stage: Discovery
+  perspectives:
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Learn
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_relationship_graph
+    checks: []
+    note: 'db_relationship_graph (design §5.3, §5.7 — builds the FK graph from stored column rows: edge
+      count, connected components, isolated tables, most-referenced tables)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Zero new fetch: the foreign-key constraints Scouting already read become a graph, and the
+    measure is connectivity — orphan tables, components, in-degree.'
+  catalog_history: ''
+  retired: false
+- question: What is the grain of each table — one row per what?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Explore
+  - Learn
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - grain_determination
+    checks: []
+    note: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
+      column profile whose distinct count matches the row count, plus any date column in the key; extended
+      2026-09-24 with §16.3's time grain from naming — a period word or date-shaped suffix in the table
+      name, or a column named like a date whatever its type — each interval carrying the basis it came
+      from and a confidence for it, so a key-declared period is no longer indistinguishable from a guess
+      about a naming habit; published as a DataGrainAnnotation proposal)
+  answering_mechanism: Database Catalog Query + Agent-Based Analysis
+  rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
+    and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
+    Shared with the filesystem path, where the same inference runs over a data file's columns.
+  catalog_history: '2026-09-24: extended with multi-resource-questions-design.md §16.3''s time grain from
+    naming (table-name period words, Postgres child-partition date suffixes, date-named columns of non-temporal
+    type), each with an explicit interval_basis and interval_confidence. The entity-grain-from-keys half
+    of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
+    a filesystem layout and are not looked for here.'
+  retired: false
+- question: Does this look like a copy or a subset of a database we already know?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Steward
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_fingerprint
+    checks: []
+    note: db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
+      types, hashed and compared by Jaccard similarity and containment against every other database in
+      the registry with stored schema rows)
+  answering_mechanism: Database Catalog Query + Local Registry Query
+  rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
+    and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
+    is the publication shape.
+  catalog_history: ''
+  retired: false
+- question: Are there views, materialised views, functions or triggers that encode business logic?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Learn
+  answering:
+    kind: partial
+    analysis_ids: []
+    checks: []
+    note: 'PARTIAL: the sql_analysis survey step parses view DDL with SQLGlot, but it is a survey step
+      only — analysis_catalog.yaml has no sql_analysis entry, so nothing in the question layer resolves
+      its result.'
+  answering_mechanism: Code Analysis
+  rationale: The DDL is already in the catalog (pg_views, pg_matviews, pg_proc, pg_trigger) and Resource
+    Explorer already parses view DDL with SQLGlot for dependencies, column lineage and complexity. What
+    is missing is the link from that step's output back to the question layer.
+  catalog_history: ''
+  retired: false
+- question: Which tables would a consumer start with?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Data Expert
+  purposes:
+  - Explore
+  - Learn
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: db_hub_tables (proposed) — every input exists; nothing combines them into a ranking.'
+  answering_mechanism: Database Catalog Query
+  rationale: 'A ranking rather than a measure: foreign-key in-degree, row counts, presence of comments
+    and read activity from the scan counters, combined into a short starting list. Zero new fetch.'
+  catalog_history: ''
+  retired: false
+- question: Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much
+    of the data sits in them?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Data Expert
+  purposes:
+  - Explore
+  - Assess
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no analysis classifies a column as semi-structured (JSON/JSONB/XML/array/hstore) or measures
+      the share of stored bytes it accounts for -- the catalog reads that already capture column types
+      perform no such derivation, and no id in the database analysis catalog performs it either.'
+  answering_mechanism: Database Catalog Query
+  rationale: Zero new fetch — the column types are already in the catalog read; what is derived is which
+    columns are semi-structured and what share of the stored bytes they account for. The contents themselves
+    are a separate, more expensive Analysis question.
+  catalog_history: ''
+  retired: false
+- question: What is this data about — which subjects, business terms or data classes does it appear to
+    hold?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Explore
+  - Learn
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - subject_signals
+    checks: []
+    note: 'subject_signals (design §16.2, §16.3 — candidate subject terms from stored table/column names
+      and pg_description comments, each carrying its basis: a comment outranks a name and a term in both
+      outranks either. NOT matched against Egeria''s glossary or a data-class registry, because the step
+      opens no connection — an unmatched term means "not looked up". A database whose names are wholly
+      structural is a real finding pointing at Enrichment; a database with no comment anywhere reads as
+      "comments not captured")'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Free at Scouting cost (design §16.2): table and column names plus pg_description comments
+    already sit in RE''s stored rows, so candidate subject terms need no new fetch. Confidence is low-medium
+    on purpose — §16.2''s "a name is a claim".'
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Scouting/Discovery
+    rows. §16.3 files this question under Scouting; it is recorded as Discovery here (and tagged intent:
+    discovery in analysis_catalog.yaml) because CLAUDE.md rule 17''s axis is "does this collect, or reason
+    over what is already collected" and this reasons over stored rows — the same judgement that already
+    placed grain_determination, also a §16.3 Scouting row, in Discovery. §16.2''s Scouting placement is
+    about the signal being free, and it is: no fetch is added.'
+  retired: false
+- question: What period and places does this appear to cover, from catalog statistics and names alone?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Consumer
+  purposes:
+  - Explore
+  - Select
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - coverage_signals
+    checks: []
+    note: 'coverage_signals (design §16.2, §16.3 — period from pg_stats histogram bounds and exact min/max
+      where a native survey stored them; absence of bounds is reported as "run ANALYZE / credential cannot
+      see pg_stats", NEVER as "no dates", and "no date column at all" is a separate, measured negative.
+      Places are the NAMES of place-bearing columns only — which regions are present needs the values,
+      deferred to coverage_profile. PARTIAL: partition bounds would be exact and free and nothing in RE
+      collects them, reported as a collection gap; Parquet footers and DCAT temporal/spatial descriptors
+      are filesystem/dataset work, not attempted here)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'design §16.2: pg_stats histogram bounds give a date column''s min and max WITHOUT reading
+    rows. Its own warning is the load-bearing part — "absent means ''run ANALYZE'', not ''no dates''"
+    — so the two states are separately named rather than collapsed.'
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Scouting/Discovery
+    rows. §16.3 files this question under Scouting; it is recorded as Discovery here (and tagged intent:
+    discovery in analysis_catalog.yaml) because CLAUDE.md rule 17''s axis is "does this collect, or reason
+    over what is already collected" and this reasons over stored rows — the same judgement that already
+    placed grain_determination, also a §16.3 Scouting row, in Discovery. §16.2''s Scouting placement is
+    about the signal being free, and it is: no fetch is added.'
+  retired: false
+- question: Could this be in scope for what I am looking for — worth the full pass?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Consumer
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - grain_determination
+    - subject_signals
+    - coverage_signals
+    - preliminary_fit
+    checks: []
+    note: 'preliminary_fit (design §16.3, §16.5 — zero-fetch comparison of subject_signals, coverage_signals
+      and grain_determination''s time grain against a supplied data requirement, with per-input confidence.
+      Four verdicts kept distinct: fits; does not fit; could_not_check when an input was itself not established
+      — the pg_stats/ANALYZE case, never rendered as either of the first two; and "no requirement declared"
+      when none is supplied, which carries what the resource COULD satisfy instead of a vacuous pass.
+      Regions, data classes and grain statements are carried through as deferred criteria naming the analysis
+      that answers them, never scored here. GAP, deliberate and scoped: the full DataLens governance definition
+      — versioned, investigation-scoped, with Curate-tier "make this my lens" actions, §16.5 points 3-5
+      — is not built; this takes a plain lens mapping or none, on §16.6''s own authority)'
+  answering_mechanism: Database Catalog Query + Local Registry Query
+  rationale: design §16.3's Discovery gate and §16.5 point 2 — fit is a query over stored measurements,
+    not a survey, so changing the requirement recomputes fit across every already-surveyed resource at
+    zero fetch cost, and the same question works with no requirement at all as a comparison across resources.
+  catalog_history: '2026-09-24: added with multi-resource-questions-design.md §16.3''s Discovery gate.
+    Built WITHOUT the full DataLens governance-definition model (§16.5 points 3–5), on §16.6''s own authority
+    — "preliminary_fit works before it exists, as a comparison across resources". It takes a plain lens
+    mapping using §16.6''s scopeElements key names, or none at all, in which case it renders "no requirement
+    declared" plus what the resource could satisfy.'
+  retired: false
+- question: What is the full schema — tables, columns, types, keys, constraints and indexes?
+  stage: Analysis
+  perspectives:
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Assess
+  - Deploy
+  answering:
+    kind: analysis
+    analysis_ids:
+    - schema_inventory
+    checks: []
+    note: schema_inventory
+  answering_mechanism: Database Catalog Query
+  rationale: 'The complete catalog read: information_schema and pg_catalog for schemas, tables, columns
+    and types; pg_constraint for primary, foreign, unique and check constraints; pg_index for indexes.
+    Published under Egeria''s own Relational* metric keys so a native and a local run are comparable (design
+    §2.2).'
+  catalog_history: ''
+  retired: false
+- question: What do the columns actually contain — nulls, distinct counts, most-common values, ranges
+    and widths?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Learn
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: column_profile (proposed) — pg_stats is never read, and no sampling fallback exists.'
+  answering_mechanism: Database Catalog Query + Value Profiling
+  rationale: 'pg_stats, populated by ANALYZE, already carries null_frac, n_distinct, most_common_vals,
+    most_common_freqs, histogram_bounds, avg_width and correlation — column profiling with no sampling
+    at all. Value sampling is the fallback for columns whose statistics are stale or missing. Design §5.8:
+    the answer envelope must state which route ran and, when sampled, the strategy, bound and seed.'
+  catalog_history: ''
+  retired: false
+- question: Which columns conform to a known Data Class, with what confidence, and which look like a class
+    we do not have yet?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Remediate
+  answering:
+    kind: analysis
+    analysis_ids:
+    - data_class_match
+    checks: []
+    note: 'data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation)'
+  answering_mechanism: Value Profiling + Egeria Queries
+  rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
+    against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
+    Columns that show a clear pattern but match nothing raise an RFA proposing a new Data Class, carrying
+    the observed pattern. Per design §5.8 the confidence is always stated against the sample, never as
+    an unqualified "conforms".'
+  catalog_history: ''
+  retired: false
+- question: Which low-cardinality columns conform to a known reference-data set, and which should become
+    one?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Remediate
+  answering:
+    kind: analysis
+    analysis_ids:
+    - reference_data_match
+    checks: []
+    note: 'reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values)'
+  answering_mechanism: Value Profiling + Egeria Queries
+  rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
+    every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises
+    an RFA listing the unmatched values; no match at all raises an RFA proposing a new ValidValueSet carrying
+    the values.
+  catalog_history: ''
+  retired: false
+- question: What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across
+    rows?
+  stage: Analysis
+  perspectives:
+  - App/AI Builder
+  - Data Expert
+  purposes:
+  - Assess
+  - Learn
+  answering:
+    kind: analysis
+    analysis_ids:
+    - nested_column_profile
+    checks: []
+    note: 'nested_column_profile (design §5.4/§5.7, postgres_nested_columns — samples every JSON/JSONB/XML
+      column and infers a nested schema: per-key presence frequency and JSON-type consistency, or for
+      XML the root element and element/attribute name frequency, plus nesting depth)'
+  answering_mechanism: Value Profiling
+  rationale: JSONB via jsonb_object_keys and jsonb_typeof over a bounded sample, giving key frequency,
+    nesting depth and type consistency across rows; XML via the root element and xpath key sampling. The
+    result is a SchemaAnalysisAnnotation carrying an inferred nested schema, sharing its inference core
+    with the filesystem path's JSON and XML file profiling.
+  catalog_history: ''
+  retired: false
+- question: Which tables have no primary key, no foreign key, no comment, unused indexes, or names that
+    break the convention?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Assess
+  - Remediate
+  answering:
+    kind: analysis
+    analysis_ids:
+    - schema_conventions
+    checks: []
+    note: 'schema_conventions (design §5.4, §5.7 — check-granular structural hygiene derived from stored
+      rows: no primary key, no foreign key, no comment, non-snake_case names; does not cover unused indexes,
+      which needs a live pg_stat_user_indexes read)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Check-granular in the same shape as the repository conventions analysis: each defect is
+    its own named check so an assessment can cite it and a subscription can watch it. All of it reads
+    the catalog, including pg_stat_user_indexes for indexes nothing uses.'
+  catalog_history: ''
+  retired: false
+- question: What does this database depend on outside itself — foreign data wrappers, dblink, extensions
+    or publications?
+  stage: Analysis
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_external_dependencies
+    checks: []
+    note: db_external_dependencies (design §5.4 — extensions, foreign data wrappers/servers/tables, logical
+      replication publications/subscriptions)
+  answering_mechanism: Database Catalog Query
+  rationale: pg_foreign_server and pg_foreign_table for FDWs, pg_extension for extensions including dblink,
+    pg_publication and pg_subscription for logical replication. A catalog read, no row data.
+  catalog_history: ''
+  retired: false
+- question: Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive
+    columns readable broadly?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Privacy
+  - Security
+  - Admin
+  purposes:
+  - Assess
+  - Certify
+  - Remediate
+  answering:
+    kind: partial
+    analysis_ids:
+    - privilege_audit
+    - data_class_match
+    checks: []
+    note: 'PARTIAL: privilege_audit answers the roles, grants, superuser and PUBLIC-grant half; the sensitive-column
+      half needs the proposed data_class_match and the join between the two, neither of which is built.'
+  answering_mechanism: Database Catalog Query
+  rationale: pg_roles, role_table_grants and pg_default_acl give the access half and already have an analysis.
+    The sensitivity half needs column-level Data Class matching, and the question is the cross of the
+    two — which is why a broad PUBLIC grant on an unremarkable table and the same grant on a table of
+    personal data read identically today.
+  catalog_history: ''
+  retired: false
+- question: How is this database changing — rows inserted, updated and deleted per table per period, size
+    drift and schema churn?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Owner
+  - Admin
+  purposes:
+  - Maintain
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_change_rates
+    checks: []
+    note: db_change_rates (design §5.4, §5.7 — rows inserted/updated/deleted per table per period, size
+      drift and schema churn, differenced between two stored survey snapshots)
+  answering_mechanism: Trend Chart
+  rationale: Deltas of the n_tup_ins/upd/del counters and of relation sizes between two stored snapshots,
+    per table, producing a series the Understanding tier can chart and the change detectors in design
+    §9 can threshold. Depends on the structured per-snapshot tables, not on re-parsing the survey JSON
+    blob.
+  catalog_history: ''
+  retired: false
+- question: Which glossary terms do these columns probably mean?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Learn
+  - Share
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: semantic_suggestions (proposed) — SemanticAnnotation exists as a type and nothing produces
+      one.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
+    any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept
+    or reject.
+  catalog_history: ''
+  retired: false
+- question: How complete and consistent is this database's documentation?
+  stage: Assessment
+  perspectives:
+  - Steward
+  - Consumer
+  purposes:
+  - Assess
+  - Share
+  answering:
+    kind: partial
+    analysis_ids:
+    - schema_conventions
+    checks: []
+    note: 'PARTIAL: schema_conventions supplies the completeness half (tables and columns with no comment,
+      banded against nothing-captured); it checks presence only -- no analysis scores comment quality
+      or consistency (e.g. a comment that only repeats the table name), so that half of the question stays
+      a gap.'
+  answering_mechanism: Database Catalog Query
+  rationale: Scores the coverage measure against criteria and adds the convention checks — a database
+    where every table has a comment but half of them repeat the table name is not well documented.
+  catalog_history: ''
+  retired: false
+- question: What is the sensitive-data exposure — which sensitive columns can which roles read?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Remediate
+  answering:
+    kind: partial
+    analysis_ids:
+    - privilege_audit
+    - data_class_match
+    checks: []
+    note: 'PARTIAL: privilege_audit supplies who can read what; the sensitive-column half needs the proposed
+      data_class_match, and nothing crosses the two today.'
+  answering_mechanism: Database Catalog Query
+  rationale: 'The scored form of the access-and-sensitivity question in Analysis: sensitive columns identified
+    by Data Class matching, crossed with who holds read access to them, weighted by the breadth of the
+    grant. A PUBLIC grant on a column of personal data is the finding this exists to surface.'
+  catalog_history: ''
+  retired: false
+- question: How well-modelled is this database — keys, constraints, foreign-key coverage, orphan tables
+    and grain clarity?
+  stage: Assessment
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Assess
+  answering:
+    kind: mixed
+    analysis_ids:
+    - db_relationship_graph
+    - grain_determination
+    - schema_conventions
+    checks: []
+    note: 'MIXED: schema_conventions (keys and constraints -- tables with no primary key, tables with
+      no foreign key) + db_relationship_graph (foreign-key coverage, connected components, isolated/orphan
+      tables) + grain_determination (per-table grain clarity, or a named modelling gap where none exists)'
+  answering_mechanism: Database Catalog Query
+  rationale: 'Scores the convention checks together with grain clarity: a table whose grain cannot be
+    stated is a modelling defect even when its constraints are all present.'
+  catalog_history: ''
+  retired: false
+- question: How well-governed is this database's reference data — what share of its low-cardinality columns
+    are bound to a set?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  purposes:
+  - Assess
+  - Certify
+  answering:
+    kind: partial
+    analysis_ids:
+    - reference_data_match
+    checks: []
+    note: 'PARTIAL: reference_data_match supplies the per-column checks (built, not proposed) -- which
+      columns are low-cardinality, and whether each is matched, partially matched or unmatched against
+      a ValidValueSet -- but nothing aggregates those verdicts into the governance share this question
+      asks for.'
+  answering_mechanism: Egeria Queries
+  rationale: The denominator is the columns whose cardinality makes them reference-data candidates; the
+    numerator is those bound to an Egeria ValidValueSet. Both come from the reference-data matching analysis.
+  catalog_history: ''
+  retired: false
+- question: Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
+  stage: Assessment
+  perspectives:
+  - Steward
+  - Admin
+  purposes:
+  - Maintain
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_activity_signals
+    checks: []
+    note: db_activity_signals (design §5.2, §5.7 — vacuum recency and dead-tuple ratios read from the
+      same stored pg_stat_user_tables figures as the activity-signals roll-up above)
+  answering_mechanism: Database Catalog Query
+  rationale: 'Scores the activity signals against thresholds: how long since the last vacuum or analyse,
+    the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1''s
+    absence rule — statistics that were never collected must not read as a healthy zero.'
+  catalog_history: ''
+  retired: false
+- question: Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Data Owner
+  - Admin
+  purposes:
+  - Assess
+  - Attest
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_resilience
+    checks: []
+    note: db_resilience (design §5.5, MIXED — combines the catalog-read half above with an Enrichment
+      'Backup and recovery' section that stays explicitly pending rather than silently omitted)
+  answering_mechanism: Database Catalog Query + Human-Supplied
+  rationale: 'Design §5.5 makes this deliberately two-sided: the catalog facts (role, replicas, archiving,
+    backup tooling) and the Enrichment facts (last successful backup, tested restore, RPO and RTO). The
+    envelope must say which half answered, because a green score drawn only from the catalog half would
+    claim something nobody verified.'
+  catalog_history: ''
+  retired: false
+filesystem_questions:
+- question: What is this resource, and what is it for?
+  stage: Scouting
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Project.description) This might also be a summary of the top level README.
+  answering_mechanism: Direct Field
+  rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Who owns this resource (accountable owner), and who administers it?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Owner
+  - Security
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s
+      filesystem_analyses section).'
+  answering_mechanism: Git Statistics
+  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
+    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been catalogued in Egeria, and when?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
+      Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
+  answering_mechanism: Egeria Queries
+  rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
+    whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
+    data" search work.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there any existing use within our organization?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Privacy
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - probably a set of egeria queries.
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
+    — no external API needed.
+  catalog_history: ''
+  retired: false
+- question: Any known feedback?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (resource_feedback table) - result from Egeriq queries/report
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
+  catalog_history: ''
+  retired: false
+- question: Does it replace or extend something we already have?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Data Expert
+  - Architecture
+  purposes:
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - might need RAG support for this.
+  answering_mechanism: Local Registry Query + RAG Queries
+  rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
+  catalog_history: ''
+  retired: false
+- question: What are similar resources, and how does this differ?
+  stage: Analysis
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
+  answering_mechanism: Agent-Based Analysis
+  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Under what licence or agreement may this resource be used?
+  stage: Scouting
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (GitHub license field) - Also Agent over RAG? Direct field (GitHub license
+      field) for a standard license (e.g. Apache 2.0) — the answer for those is itself usually just "citation/attribution
+      required". A non-standard license needs the actual license text interpreted, which is where Agent-Based
+      Analysis comes in instead of a direct-field read.
+  answering_mechanism: Direct Field (standard license) + Agent-Based Analysis (non-standard license interpretation)
+  rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
+    is Assessment-tier (see the license-specifics row below).
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: What does this resource cost to run, host or license?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Admin
+  purposes:
+  - Select
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
+  answering_mechanism: Human-Supplied
+  rationale: Human-supplied/derived — not resource-derivable.
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
+    from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
+    authoring stream.'
+  retired: false
+- question: Does it fit into our monitoring infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Data Owner
+  - Consumer
+  - Architecture
+  - Admin
+  purposes:
+  - Deploy
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - We may be able to use targeted Egeria queries
+      first - augmented with enrichment.
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: Org-internal cross-reference — human-supplied.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our security infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Data Owner
+  - Consumer
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
+      queries.
+  answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
+  rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
+    it.'
+  catalog_history: ''
+  retired: false
+- question: Do we have the skills to support its use?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Learn
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Purely human-supplied — never resource-derivable.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our governance frameworks?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Certify
+  - Share
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
+      plus Egeria queries.
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
+  catalog_history: ''
+  retired: false
+- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Data Owner
+  - App/AI Builder
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses
+      section).'
+  answering_mechanism: Code Analysis
+  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
+    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
+    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
+    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
+    5962) is the standard schema this conforms to.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (last_surveyed_at/egeria_asset_guid; scoped analysis-history queries)
+  answering_mechanism: Direct Field
+  rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
+    findings/metrics history already surfaced by the resource's own analysis cards.
+  catalog_history: ''
+  retired: false
+- question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, step/survey_kind detail)
+  answering_mechanism: Direct Field
+  rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
+    candidates list surfaces exactly this per-step breakdown before committing to run one.
+  catalog_history: ''
+  retired: false
+- question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (repo_dispositions) - there is some heuristic we might need to compute to
+      recommend a disposition
+  answering_mechanism: Direct Field
+  rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
+    repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
+  catalog_history: ''
+  retired: false
+- question: How much has changed since the last time this was surveyed — is it worth re-running now?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  purposes:
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — Automate subscription (notification_detector's change comparison)
+  answering_mechanism: Automate Change Detection
+  rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
+    once a schedule exists for the analysis — real today, but only reachable once that subscription is
+    set up.
+  catalog_history: '2026-09-21: stage moved Automate -> Discovery (design §2.1 -- automation is a property
+    of any survey, not a funnel stage) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there a Survey Definition authored for this resource's technology type at all, or is that
+    a catalog gap?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Admin
+  purposes:
+  - Explore
+  - Share
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, empty-result case)
+  answering_mechanism: Direct Field
+  rationale: Direct field — the candidates list itself; an empty result for a technology type with real
+    registered resources is the signal.
+  catalog_history: ''
+  retired: false
+- question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
+    — and which is cheaper?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no reachability probe exists — this needs a CHECK_ASSET-only engine action plus the observed-cost
+      comparison step_cost_observer already collects.'
+  answering_mechanism: Egeria Queries + Direct Field
+  rationale: Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET
+    from the engine host; efficiency is a separate axis (data locality, latency to first result, load
+    on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable
+    resource falls back to a Resource Explorer local mirror published under the native annotation shapes,
+    plus an RFA recording that Egeria could not reach it.
+  catalog_history: ''
+  retired: false
+- question: Where is this resource physically located, under which jurisdiction, and are there residency
+    or transfer constraints?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Data Owner
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing populates DataScope from a survey today; endpoint geolocation and the Enrichment
+      section are both unbuilt.'
+  answering_mechanism: Direct Field + Egeria Queries + Human-Supplied
+  rationale: Two halves. The machine half reads host and region from the connection endpoint, cloud instance
+    metadata, or the mount and file path. The human half — legal controller, residency rule — comes through
+    Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements
+    {jurisdiction, region, controller}.
+  catalog_history: ''
+  retired: false
+- question: What is the scope of the data in time — collection period, validity and coverage?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
+      that would supply the ranges is itself unbuilt.'
+  answering_mechanism: Value Profiling + Human-Supplied
+  rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
+    of date columns for a database, modification-time range and in-file date ranges for a filesystem,
+    DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
+  catalog_history: ''
+  retired: false
+- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Consumer
+  - Privacy
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
+      interpretation of non-standard terms is unbuilt.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+    Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
+    for anything contractual that is not written down machine-readably.
+  catalog_history: ''
+  retired: false
+- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+    schema, freshness, contact and scope?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no readiness composite exists, and several of its inputs (DataScope, agreement, freshness)
+      are themselves gaps.'
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: A composite over facts other questions already establish — Egeria Ownership, a description,
+    License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4
+    requires this and the demand question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Is there a defined need or market for this resource — subscriptions, requests, existing use,
+    feedback or open requests for this kind of data?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Governance
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: DigitalSubscription is not read, and RFAs are not searchable by the kind of data they
+      ask for.'
+  answering_mechanism: Egeria Queries + Local Registry Query
+  rationale: Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback,
+    similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this
+    and the readiness question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: When was this resource last backed up successfully, and has a restore ever been tested?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Data Owner
+  - Admin
+  purposes:
+  - Assess
+  - Attest
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
+      analysis for databases; no filesystem-side catalog-observable half exists yet).
+  answering_mechanism: Human-Supplied
+  rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
+    archiving and extension-based backup tooling are catalog-observable, while last successful backup,
+    tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
+    recovery" section, and the answer envelope must say which half answered.'
+  catalog_history: ''
+  retired: false
+- question: What is the grain of each table — one row per what?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Explore
+  - Learn
+  - Assess
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: grain_determination (design §5.3, §5.7 — derived from the declared primary key, or a stored
+      column profile whose distinct count matches the row count, plus any date column in the key; extended
+      2026-09-24 with §16.3''s time grain from naming — a period word or date-shaped suffix in the table
+      name, or a column named like a date whatever its type — each interval carrying the basis it came
+      from and a confidence for it, so a key-declared period is no longer indistinguishable from a guess
+      about a naming habit; published as a DataGrainAnnotation proposal) -- grain_determination is not
+      a real analysis for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses
+      section).'
+  answering_mechanism: Database Catalog Query + Agent-Based Analysis
+  rationale: Inferred from primary-key composition, column names, n_distinct approaching the row count,
+    and date columns — emitted as an Egeria DataGrainAnnotation with a grainStatement and a confidence.
+    Shared with the filesystem path, where the same inference runs over a data file's columns.
+  catalog_history: '2026-09-24: extended with multi-resource-questions-design.md §16.3''s time grain from
+    naming (table-name period words, Postgres child-partition date suffixes, date-named columns of non-temporal
+    type), each with an explicit interval_basis and interval_confidence. The entity-grain-from-keys half
+    of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
+    a filesystem layout and are not looked for here.'
+  retired: false
+- question: Which columns conform to a known Data Class, with what confidence, and which look like a class
+    we do not have yet?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Remediate
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation) -- data_class_match is not a real analysis
+      for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses section).'
+  answering_mechanism: Value Profiling + Egeria Queries
+  rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
+    against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
+    Columns that show a clear pattern but match nothing raise an RFA proposing a new Data Class, carrying
+    the observed pattern. Per design §5.8 the confidence is always stated against the sample, never as
+    an unqualified "conforms".'
+  catalog_history: ''
+  retired: false
+- question: Which low-cardinality columns conform to a known reference-data set, and which should become
+    one?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Remediate
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: reference_data_match (design §5.4 — compares each low-cardinality column''s sampled distinct
+      values against every Egeria ValidValueSet: a full match becomes ValidValuesAssignment advice, a
+      partial match raises an RFA listing the unmatched values, and no match at all proposes a new ValidValueSet
+      carrying the values) -- reference_data_match is not a real analysis for filesystem resources (absent
+      from analysis_catalog.yaml''s filesystem_analyses section).'
+  answering_mechanism: Value Profiling + Egeria Queries
+  rationale: Columns whose n_distinct falls under a threshold have their distinct values compared against
+    every Egeria ValidValueSet. A full match becomes ValidValuesAssignment advice; a partial match raises
+    an RFA listing the unmatched values; no match at all raises an RFA proposing a new ValidValueSet carrying
+    the values.
+  catalog_history: ''
+  retired: false
+- question: Which glossary terms do these columns probably mean?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Consumer
+  - Data Expert
+  purposes:
+  - Learn
+  - Share
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: semantic_suggestions (proposed) — SemanticAnnotation exists as a type and nothing produces
+      one.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
+    any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept
+    or reject.
+  catalog_history: ''
+  retired: false
+- question: What kinds of files does this filesystem contain, and how much data is there?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Expert
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - filesystem_inventory
+    checks: []
+    note: filesystem_inventory
+  answering_mechanism: Code Analysis
+  rationale: File walk classifies every file by format and type, records sizes and timestamps — RE's baseline
+    inventory for a filesystem resource, the filesystem equivalent of schema_inventory for a database.
+  catalog_history: '2026-09-22: added — filesystem_inventory is a real, registered analysis (file walk,
+    format/size/timestamp classification, tabular data-file schema profiling) that had zero question coverage
+    in this catalog, not even a GAP row. Confirmed via a live query against Egeria that no content-pack
+    element covers filesystem or reachability questions, so there is no overlap risk in adding these.'
+  retired: false
+- question: Does this filesystem contain recognizable tabular or structured data files, and what do their
+    schemas look like?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Data Expert
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - filesystem_inventory
+    checks: []
+    note: filesystem_inventory
+  answering_mechanism: Code Analysis
+  rationale: filesystem_inventory profiles tabular data file schemas (CSV, Excel, Parquet) it recognizes
+    during the same walk — this reuses that profiling rather than a separate pass.
+  catalog_history: '2026-09-22: added — filesystem_inventory is a real, registered analysis (file walk,
+    format/size/timestamp classification, tabular data-file schema profiling) that had zero question coverage
+    in this catalog, not even a GAP row. Confirmed via a live query against Egeria that no content-pack
+    element covers filesystem or reachability questions, so there is no overlap risk in adding these.'
+  retired: false
+dataset_questions:
+- question: What is this resource, and what is it for?
+  stage: Scouting
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Project.description) This might also be a summary of the top level README.
+  answering_mechanism: Direct Field
+  rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Who owns this resource (accountable owner), and who administers it?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Owner
+  - Security
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for dataset resources (absent from analysis_catalog.yaml''s
+      dataset_analyses section).'
+  answering_mechanism: Git Statistics
+  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
+    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been catalogued in Egeria, and when?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
+      Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
+  answering_mechanism: Egeria Queries
+  rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
+    whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
+    data" search work.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there any existing use within our organization?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Privacy
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - probably a set of egeria queries.
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
+    — no external API needed.
+  catalog_history: ''
+  retired: false
+- question: Any known feedback?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (resource_feedback table) - result from Egeriq queries/report
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
+  catalog_history: ''
+  retired: false
+- question: Does it replace or extend something we already have?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Data Expert
+  - Architecture
+  purposes:
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - might need RAG support for this.
+  answering_mechanism: Local Registry Query + RAG Queries
+  rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
+  catalog_history: ''
+  retired: false
+- question: What are similar resources, and how does this differ?
+  stage: Analysis
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
+  answering_mechanism: Agent-Based Analysis
+  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Under what licence or agreement may this resource be used?
+  stage: Scouting
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (GitHub license field) - Also Agent over RAG? Direct field (GitHub license
+      field) for a standard license (e.g. Apache 2.0) — the answer for those is itself usually just "citation/attribution
+      required". A non-standard license needs the actual license text interpreted, which is where Agent-Based
+      Analysis comes in instead of a direct-field read.
+  answering_mechanism: Direct Field (standard license) + Agent-Based Analysis (non-standard license interpretation)
+  rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
+    is Assessment-tier (see the license-specifics row below).
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: What does this resource cost to run, host or license?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Admin
+  purposes:
+  - Select
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
+  answering_mechanism: Human-Supplied
+  rationale: Human-supplied/derived — not resource-derivable.
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
+    from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
+    authoring stream.'
+  retired: false
+- question: Does it fit into our monitoring infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Data Owner
+  - Consumer
+  - Architecture
+  - Admin
+  purposes:
+  - Deploy
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - We may be able to use targeted Egeria queries
+      first - augmented with enrichment.
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: Org-internal cross-reference — human-supplied.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our security infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Data Owner
+  - Consumer
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
+      queries.
+  answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
+  rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
+    it.'
+  catalog_history: ''
+  retired: false
+- question: Do we have the skills to support its use?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Learn
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Purely human-supplied — never resource-derivable.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our governance frameworks?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Certify
+  - Share
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
+      plus Egeria queries.
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
+  catalog_history: ''
+  retired: false
+- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Data Owner
+  - App/AI Builder
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for dataset resources (absent from analysis_catalog.yaml''s dataset_analyses
+      section).'
+  answering_mechanism: Code Analysis
+  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
+    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
+    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
+    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
+    5962) is the standard schema this conforms to.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (last_surveyed_at/egeria_asset_guid; scoped analysis-history queries)
+  answering_mechanism: Direct Field
+  rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
+    findings/metrics history already surfaced by the resource's own analysis cards.
+  catalog_history: ''
+  retired: false
+- question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, step/survey_kind detail)
+  answering_mechanism: Direct Field
+  rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
+    candidates list surfaces exactly this per-step breakdown before committing to run one.
+  catalog_history: ''
+  retired: false
+- question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (repo_dispositions) - there is some heuristic we might need to compute to
+      recommend a disposition
+  answering_mechanism: Direct Field
+  rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
+    repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
+  catalog_history: ''
+  retired: false
+- question: How much has changed since the last time this was surveyed — is it worth re-running now?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  purposes:
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — Automate subscription (notification_detector's change comparison)
+  answering_mechanism: Automate Change Detection
+  rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
+    once a schedule exists for the analysis — real today, but only reachable once that subscription is
+    set up.
+  catalog_history: '2026-09-21: stage moved Automate -> Discovery (design §2.1 -- automation is a property
+    of any survey, not a funnel stage) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there a Survey Definition authored for this resource's technology type at all, or is that
+    a catalog gap?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Admin
+  purposes:
+  - Explore
+  - Share
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, empty-result case)
+  answering_mechanism: Direct Field
+  rationale: Direct field — the candidates list itself; an empty result for a technology type with real
+    registered resources is the signal.
+  catalog_history: ''
+  retired: false
+- question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
+    — and which is cheaper?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no reachability probe exists — this needs a CHECK_ASSET-only engine action plus the observed-cost
+      comparison step_cost_observer already collects.'
+  answering_mechanism: Egeria Queries + Direct Field
+  rationale: Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET
+    from the engine host; efficiency is a separate axis (data locality, latency to first result, load
+    on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable
+    resource falls back to a Resource Explorer local mirror published under the native annotation shapes,
+    plus an RFA recording that Egeria could not reach it.
+  catalog_history: ''
+  retired: false
+- question: Where is this resource physically located, under which jurisdiction, and are there residency
+    or transfer constraints?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Data Owner
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing populates DataScope from a survey today; endpoint geolocation and the Enrichment
+      section are both unbuilt.'
+  answering_mechanism: Direct Field + Egeria Queries + Human-Supplied
+  rationale: Two halves. The machine half reads host and region from the connection endpoint, cloud instance
+    metadata, or the mount and file path. The human half — legal controller, residency rule — comes through
+    Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements
+    {jurisdiction, region, controller}.
+  catalog_history: ''
+  retired: false
+- question: What is the scope of the data in time — collection period, validity and coverage?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
+      that would supply the ranges is itself unbuilt.'
+  answering_mechanism: Value Profiling + Human-Supplied
+  rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
+    of date columns for a database, modification-time range and in-file date ranges for a filesystem,
+    DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
+  catalog_history: ''
+  retired: false
+- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Consumer
+  - Privacy
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
+      interpretation of non-standard terms is unbuilt.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+    Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
+    for anything contractual that is not written down machine-readably.
+  catalog_history: ''
+  retired: false
+- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+    schema, freshness, contact and scope?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no readiness composite exists, and several of its inputs (DataScope, agreement, freshness)
+      are themselves gaps.'
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: A composite over facts other questions already establish — Egeria Ownership, a description,
+    License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4
+    requires this and the demand question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Is there a defined need or market for this resource — subscriptions, requests, existing use,
+    feedback or open requests for this kind of data?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Governance
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: DigitalSubscription is not read, and RFAs are not searchable by the kind of data they
+      ask for.'
+  answering_mechanism: Egeria Queries + Local Registry Query
+  rationale: Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback,
+    similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this
+    and the readiness question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Which columns conform to a known Data Class, with what confidence, and which look like a class
+    we do not have yet?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Steward
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Remediate
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: data_class_match (Phase 1 slice 10, design §5.4/§5.8 — matches column name, type and bounded
+      value sampling against every Egeria DataClass the platform holds, producing a DataClassAnnotation
+      per column; an unmatched-but-patterned column is proposed as a new DataClass with contentStatus:
+      DRAFT, linked to its evidence via AssociatedAnnotation) -- data_class_match is not a real analysis
+      for dataset resources (absent from analysis_catalog.yaml''s dataset_analyses section).'
+  answering_mechanism: Value Profiling + Egeria Queries
+  rationale: 'Generalises the existing PII matching: column name, type and sampled value patterns matched
+    against every Egeria DataClass, producing a DataClassAnnotation per column with a stated confidence.
+    Columns that show a clear pattern but match nothing raise an RFA proposing a new Data Class, carrying
+    the observed pattern. Per design §5.8 the confidence is always stated against the sample, never as
+    an unqualified "conforms".'
+  catalog_history: ''
+  retired: false
+model_questions:
+- question: What is this resource, and what is it for?
+  stage: Scouting
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Project.description) This might also be a summary of the top level README.
+  answering_mechanism: Direct Field
+  rationale: Purpose/description — from the repo's own GitHub description field, no deeper analysis required.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Who owns this resource (accountable owner), and who administers it?
+  stage: Scouting
+  perspectives:
+  - Steward
+  - Data Owner
+  - Security
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
+      + chaoss_metrics are not a real analysis for model resources (absent from analysis_catalog.yaml''s
+      model_analyses section).'
+  answering_mechanism: Git Statistics
+  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
+    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been catalogued in Egeria, and when?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
+      Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
+  answering_mechanism: Egeria Queries
+  rationale: '"Known inventory" check — is there already a catalog asset for this repo, independent of
+    whether it''s registered in Resource Explorer''s own local registry. Ties to the Scouting "shop for
+    data" search work.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there any existing use within our organization?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Privacy
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - probably a set of egeria queries.
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: Answerable locally from RE's own registry (cross-reference against already-registered repos/groups)
+    — no external API needed.
+  catalog_history: ''
+  retired: false
+- question: Any known feedback?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Community
+  - Data Expert
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (resource_feedback table) - result from Egeriq queries/report
+  answering_mechanism: Local Registry Query + Egeria Queries
+  rationale: RE's Curate intent already holds resource_feedback for cataloged resources.
+  catalog_history: ''
+  retired: false
+- question: Does it replace or extend something we already have?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Data Expert
+  - Architecture
+  purposes:
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — RE registry query (already-registered repos/groups) - might need RAG support for this.
+  answering_mechanism: Local Registry Query + RAG Queries
+  rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
+  catalog_history: ''
+  retired: false
+- question: What are similar resources, and how does this differ?
+  stage: Analysis
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
+  answering_mechanism: Agent-Based Analysis
+  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Under what licence or agreement may this resource be used?
+  stage: Scouting
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (GitHub license field) - Also Agent over RAG? Direct field (GitHub license
+      field) for a standard license (e.g. Apache 2.0) — the answer for those is itself usually just "citation/attribution
+      required". A non-standard license needs the actual license text interpreted, which is where Agent-Based
+      Analysis comes in instead of a direct-field read.
+  answering_mechanism: Direct Field (standard license) + Agent-Based Analysis (non-standard license interpretation)
+  rationale: License field is cheaply available from the GitHub API — deeper copyleft-risk categorization
+    is Assessment-tier (see the license-specifics row below).
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: What does this resource cost to run, host or license?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Admin
+  purposes:
+  - Select
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
+  answering_mechanism: Human-Supplied
+  rationale: Human-supplied/derived — not resource-derivable.
+  catalog_history: '2026-09-12: stage widened to Analysis/Enrichment — the answer is human-supplied via
+    Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
+    pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
+    from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
+    authoring stream.'
+  retired: false
+- question: Does it fit into our monitoring infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Data Owner
+  - Consumer
+  - Architecture
+  - Admin
+  purposes:
+  - Deploy
+  - Maintain
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - We may be able to use targeted Egeria queries
+      first - augmented with enrichment.
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: Org-internal cross-reference — human-supplied.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our security infrastructure?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Financial
+  - Data Owner
+  - Consumer
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
+      queries.
+  answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
+  rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
+    it.'
+  catalog_history: ''
+  retired: false
+- question: Do we have the skills to support its use?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Select
+  - Learn
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Purely human-supplied — never resource-derivable.
+  catalog_history: ''
+  retired: false
+- question: Does it fit into our governance frameworks?
+  stage: Analysis/Enrichment
+  perspectives:
+  - Governance
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Certify
+  - Share
+  answering:
+    kind: human
+    analysis_ids: []
+    checks: []
+    note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
+      plus Egeria queries.
+  answering_mechanism: Human-Supplied + Egeria Queries
+  rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
+  catalog_history: ''
+  retired: false
+- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Data Owner
+  - App/AI Builder
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
+      is not a real analysis for model resources (absent from analysis_catalog.yaml''s model_analyses
+      section).'
+  answering_mechanism: Code Analysis
+  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
+    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
+    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
+    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
+    5962) is the standard schema this conforms to.'
+  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
+    §4) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (last_surveyed_at/egeria_asset_guid; scoped analysis-history queries)
+  answering_mechanism: Direct Field
+  rationale: Direct field — last_surveyed_at, is_published (egeria_asset_guid), and any locally-cached
+    findings/metrics history already surfaced by the resource's own analysis cards.
+  catalog_history: ''
+  retired: false
+- question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, step/survey_kind detail)
+  answering_mechanism: Direct Field
+  rationale: Survey Definitions carry their own step lists/descriptions and survey_kind tag; the Discovery
+    candidates list surfaces exactly this per-step breakdown before committing to run one.
+  catalog_history: ''
+  retired: false
+- question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (repo_dispositions) - there is some heuristic we might need to compute to
+      recommend a disposition
+  answering_mechanism: Direct Field
+  rationale: Disposition control (Track/Investigate/Recommend/Abandon/Ignore) plus history — the same
+    repo_dispositions state Scouting already exposes, now reachable directly from Discovery too.
+  catalog_history: ''
+  retired: false
+- question: How much has changed since the last time this was surveyed — is it worth re-running now?
+  stage: Discovery
+  perspectives:
+  - Steward
+  - Data Expert
+  purposes:
+  - Maintain
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — Automate subscription (notification_detector's change comparison)
+  answering_mechanism: Automate Change Detection
+  rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
+    once a schedule exists for the analysis — real today, but only reachable once that subscription is
+    set up.
+  catalog_history: '2026-09-21: stage moved Automate -> Discovery (design §2.1 -- automation is a property
+    of any survey, not a funnel stage) as part of the re/db-questions-csv authoring stream.'
+  retired: false
+- question: Is there a Survey Definition authored for this resource's technology type at all, or is that
+    a catalog gap?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Admin
+  purposes:
+  - Explore
+  - Share
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — direct field (Survey Definition candidates list, empty-result case)
+  answering_mechanism: Direct Field
+  rationale: Direct field — the candidates list itself; an empty result for a technology type with real
+    registered resources is the signal.
+  catalog_history: ''
+  retired: false
+- question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
+    — and which is cheaper?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Architecture
+  - Admin
+  purposes:
+  - Explore
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no reachability probe exists — this needs a CHECK_ASSET-only engine action plus the observed-cost
+      comparison step_cost_observer already collects.'
+  answering_mechanism: Egeria Queries + Direct Field
+  rationale: Reachability is testable by running the native survey with finalAnalysisStep=CHECK_ASSET
+    from the engine host; efficiency is a separate axis (data locality, latency to first result, load
+    on the source, concurrency, provenance) — see multi-resource-questions-design.md §3 rule B. An unreachable
+    resource falls back to a Resource Explorer local mirror published under the native annotation shapes,
+    plus an RFA recording that Egeria could not reach it.
+  catalog_history: ''
+  retired: false
+- question: Where is this resource physically located, under which jurisdiction, and are there residency
+    or transfer constraints?
+  stage: Discovery
+  perspectives:
+  - Governance
+  - Data Owner
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: nothing populates DataScope from a survey today; endpoint geolocation and the Enrichment
+      section are both unbuilt.'
+  answering_mechanism: Direct Field + Egeria Queries + Human-Supplied
+  rationale: Two halves. The machine half reads host and region from the connection endpoint, cloud instance
+    metadata, or the mount and file path. The human half — legal controller, residency rule — comes through
+    Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements
+    {jurisdiction, region, controller}.
+  catalog_history: ''
+  retired: false
+- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Consumer
+  - Privacy
+  - Security
+  purposes:
+  - Select
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
+      interpretation of non-standard terms is unbuilt.'
+  answering_mechanism: Egeria Queries + Agent-Based Analysis
+  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+    Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
+    for anything contractual that is not written down machine-readably.
+  catalog_history: ''
+  retired: false
+- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+    schema, freshness, contact and scope?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Certify
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: no readiness composite exists, and several of its inputs (DataScope, agreement, freshness)
+      are themselves gaps.'
+  answering_mechanism: Egeria Queries + Human-Supplied
+  rationale: A composite over facts other questions already establish — Egeria Ownership, a description,
+    License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4
+    requires this and the demand question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false
+- question: Is there a defined need or market for this resource — subscriptions, requests, existing use,
+    feedback or open requests for this kind of data?
+  stage: Assessment
+  perspectives:
+  - Financial
+  - Governance
+  - Data Owner
+  - Consumer
+  purposes:
+  - Share
+  - Select
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: DigitalSubscription is not read, and RFAs are not searchable by the kind of data they
+      ask for.'
+  answering_mechanism: Egeria Queries + Local Registry Query
+  rationale: Reads Egeria DigitalSubscription, Resource Explorer's own registry of existing use and feedback,
+    similar-resource search hits, and open RFAs asking for this kind of data. Design §4 requires this
+    and the readiness question to hold together before a DigitalProduct is proposed.
+  catalog_history: ''
+  retired: false

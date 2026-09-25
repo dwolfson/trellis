@@ -212,7 +212,12 @@ export async function renderWorkListPane(ctx) {
   renderActions(ctx);
   renderLegend();
   try {
-    grid.analyses = await listAnalyses('repo', { intent: stage });
+    // The work list itself is homogeneous in entity_type (work_lists.py's
+    // WorkListCreate.entity_type, one value per list, default "repo") --
+    // this used to hardcode 'repo' regardless, silently showing the repo
+    // analysis catalog's menu on a database/filesystem work list rather than
+    // an honest error or the right menu.
+    grid.analyses = await listAnalyses(wl.entity_type || 'repo', { intent: stage });
   } catch (err) {
     grid.analyses = { error: err.message };
   }
@@ -380,7 +385,7 @@ async function loadGrid(ctx) {
   // `measured_at`, so the grid can say how current it is before it knows what
   // it says.
   try {
-    const proj = await getBulkStates(slugs, needed);
+    const proj = await getBulkStates(slugs, needed, wl.entity_type || 'repo');
     grid.states = proj.states || {};
     renderGrid();
   } catch (err) {
@@ -394,7 +399,7 @@ async function loadGrid(ctx) {
 
   // PASS 2 — the full read for the analyses that are cheap to read.
   try {
-    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick)); }
+    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick, wl.entity_type || 'repo')); }
   } catch (err) {
     grid.slowError = err.message;
   }
@@ -435,7 +440,7 @@ async function resolveInBackground(ctx, slugs, analyses) {
     const chunk = slugs.slice(i, i + CHUNK);
     const started = Date.now();
     try {
-      const bulk = await getBulkFacts(chunk, analyses);
+      const bulk = await getBulkFacts(chunk, analyses, grid.workList?.entity_type || 'repo');
       if (token !== grid.bgToken) return;
       for (const slug of chunk) {
         const facts = bulk.subjects?.[slug];
@@ -1154,14 +1159,18 @@ function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
 /** The panel shell both the cell popup and the refresh plan use. One shell,
  *  so the two cannot drift apart in behaviour — backdrop closes, Escape
  *  closes, a click inside does not. */
-export function openDialog(title, sub) {
+export function openDialog(title, sub, { wide = false } = {}) {
   closeCellDetail();
   const el = document.createElement('div');
   el.id = 'wl-detail';
   el.className = 'fixed inset-0 z-50 flex items-start justify-center '
     + 'bg-black/40 p-s4 overflow-auto';
+  // `wide` is for content that is a table, not a paragraph — the discovery
+  // import dialog's search-results grid is the first caller
+  // (discovery-import.js); every other dialog on this shell is prose or a
+  // short list and keeps the original width unless it opts in.
   el.innerHTML = `
-    <div class="mt-[6vh] w-full max-w-[640px] rounded bg-paper p-s4 shadow-lg"
+    <div class="mt-[6vh] w-full ${wide ? 'max-w-[960px]' : 'max-w-[640px]'} rounded bg-paper p-s4 shadow-lg"
       role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="flex items-start justify-between gap-s3">
         <div>
@@ -1421,6 +1430,32 @@ function openRefreshPlan(ctx) {
 async function reportPlanMovement(slotId, slug_pairs) {
   const slot = document.getElementById(slotId);
   if (!slot || !slug_pairs.length) return;
+  // getAnalysisTrend hits /api/projects/{slug}/analyses/{id}/trend
+  // (re-api.js), a repo-only route (projects.py) with no entity_type
+  // parameter and no database/filesystem backend equivalent today.
+  // DEPENDENCY, not attempted here: generalizing getAnalysisTrend and its
+  // backend route to a non-repo entity type is a separate change.
+  //
+  // Without this gate, every read below would fail for a non-repo work
+  // list and land in the generic `catch (_) { return null }` further down
+  // — indistinguishable from "checked, this measurement is unreadable".
+  // The plan-movement callout would then simply never appear for a
+  // database/filesystem work list, silently undercounting "would repeat
+  // an unchanged measurement" as "nothing repeats" rather than saying the
+  // heuristic was never evaluated for this entity type. Low-visibility
+  // (this is a preview-only, best-effort callout, not a blocking check)
+  // but a real instance of the same absence-vs-never-measured conflation
+  // this session's other fixes address — so skip the doomed requests and
+  // say so, rather than let the catch block quietly stand in for an
+  // honest "not available for this type yet".
+  const entityType = grid.workList?.entity_type || 'repo';
+  if (entityType !== 'repo') {
+    slot.innerHTML = `<div class="mt-s2 text-caveat text-ink-muted">
+      Whether any of these run(s) would repeat an unchanged measurement
+      isn't tracked yet for ${esc(entityType)} resources — this heuristic
+      only reads repo analysis trends today.</div>`;
+    return;
+  }
   // One read per ANALYSIS, not per pair: the series is per (resource,
   // analysis), but an unchanged analysis is usually unchanged across the set,
   // and a plan preview must not cost more than the run it is describing.
@@ -1505,7 +1540,7 @@ async function openCellDetail(slug, qi, ctx) {
   }
   let facts;
   try {
-    const res = await getBulkFacts([slug], ids);
+    const res = await getBulkFacts([slug], ids, grid.workList?.entity_type || 'repo');
     facts = res.subjects?.[slug] || [];
   } catch (err) {
     body.innerHTML = why + `<p class="text-state-warn">Could not read the results:
@@ -1864,8 +1899,8 @@ export async function openWorkList(ctx, slug) {
   await renderWorkListPane(ctx);
 }
 
-export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '' } = {}) {
-  return createWorkList(displayName, slugs, { investigation, rationale });
+export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '', entityType = 'repo' } = {}) {
+  return createWorkList(displayName, slugs, { investigation, rationale, entityType });
 }
 
 export { listWorkLists };

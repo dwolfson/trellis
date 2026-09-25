@@ -32,6 +32,60 @@ sub-surveyor units — each one is exposed as its own re_analysis_step key,
 the most granular and natural fit for Survey Definition steps. Publishing
 reuses the existing EgeriaPublisher.publish unmodified — it's already
 narrow (no native-survey side effect).
+
+A step tagged executes_at="egeria" is handled via other_engine_handlers,
+added 2026-09-20 to close Backlog "Path B3": until this build, repos had
+*no* "egeria" handler at all, so a step tagged executes_at="egeria" hit
+survey_definition_executor.py's not_executed_no_egeria_handler branch (an
+honest "this isn't wired up" state, not a crash — see
+tests/test_execution_modes_path_b1_failure_modes.py's
+TestUnregisteredEngineHandlerYieldsNotExecuted, which pinned that exact
+premise for repos and is updated alongside this change). Built now on an
+explicit project-owner decision even though no live repo survey action
+service may exist in Egeria yet ("we will probably have some surveys that
+execute there at some point") — the plumbing should activate the moment
+such a service exists, rather than waiting for Egeria's side first.
+
+`_trigger_egeria_native_survey` below follows the database/filesystem
+"egeria" handlers' contract exactly: requires the repo to already carry a
+stored Egeria asset guid (`Project.egeria_asset_guid`) — raises RuntimeError
+rather than cataloging as a side effect — then calls
+EgeriaPublisher.trigger_survey_by_guid (added alongside this handler,
+mirroring EgeriaDatabaseSurveyor.trigger_survey_by_guid's *dynamic*
+discovery mechanism: `_initiate_survey`/`_find_survey_process_name`,
+generic over a technology-type string, rather than
+EgeriaFileSystemSurveyor's hardcoded-qualifiedName shortcut) and the same
+shared egeria_async_survey_result.poll_trigger_and_retrieve_annotations
+poll/resolve/attribute/convert machinery the other two resource types use
+— nothing resource-type-specific was found in that function, so it is
+reused unmodified rather than forked.
+
+Repos are not registered under any real Egeria Technology Type (they are
+cataloged as a plain generic `Asset` — see egeria_publisher.py's own module
+docstring, "Element type, corrected 2026-09-14"), so there is no formally
+"confirmed" Technology Type name the way "PostgreSQL Relational Database"
+or "File System Directory" are. `EgeriaPublisher.trigger_survey_by_guid`
+uses "GitHub Repository" — the one repo-specific string this codebase
+already sends to Egeria (`additionalProperties.deployed_implementation_type`
+in `_find_or_create_asset`) — as its technology-type key for discovery.
+
+**Expected, honest outcome until Egeria's side exists:** with no live repo
+survey action service registered in Egeria, and no entry for
+(entity_type="repo", "GitHub Repository") in
+configdata/technology_type_processes.yaml, both the dynamic-discovery and
+fallback lookups inside `_initiate_survey` will find zero candidates, and
+the handler surfaces a specific RuntimeError ("No native survey process
+configured for technology_type='GitHub Repository' (entity_type='repo')")
+rather than crashing unhelpfully or silently no-oping. That error is
+reported through the executor's normal per-step error path (an "error"
+step status, not a crash) — see
+tests/test_repo_egeria_native_survey_handler.py's
+TestNoMatchingSurveyProcess. Once a real repo survey action service is
+authored in Egeria, add its qualifiedName to
+configdata/technology_type_processes.yaml (or author a discoverable
+user Survey Definition tagged with the same technology-type string) and
+this handler starts working with no further code change — see
+docs/Backlog.md for the tracking entry.
 """
 from __future__ import annotations
 
@@ -39,6 +93,7 @@ import json
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 from trellis_microflow import ResourceProvider
@@ -155,7 +210,13 @@ VIEW_HISTORY = "history"
 class StepInfo:
     """One SurveyOrchestrator step — a single sub-surveyor unit."""
     step_key: str
-    surveyor_cls: type
+    #: The sub-surveyor class `SurveyOrchestrator` constructs for this step.
+    #: `None` for a step that has no surveyor class of its own — the database
+    #: family's steps are plain callables registered in the adapter's
+    #: `re_analysis_steps`, and they declare a StepInfo (2026-09-23, §17.1)
+    #: purely to carry the cost/precondition/PRODUCES metadata the resolver
+    #: needs. Only the orchestrator's repo path ever instantiates this.
+    surveyor_cls: type | None
     description: str
     annotation_types: list[str]
     # Extra kwargs re_analysis_steps' Survey-Definition-triggered runners
@@ -194,6 +255,24 @@ class StepInfo:
     #: that vanishes from a report is indistinguishable from one that ran and
     #: found nothing.
     requires_context: dict[str, str] = field(default_factory=dict)
+    #: The stored tables this step WRITES — design §17.1 condition 2's
+    #: declarative registry. `requires_context` names stored data a step
+    #: READS; nothing until now knew which step FILLS it, so an unmet
+    #: precondition could say "no parsed dependencies" and not "…and
+    #: `repo_manifest_parse` is what would fix that" except by a producer
+    #: string hardcoded beside each check in `step_preconditions.PRECONDITIONS`.
+    #:
+    #: Declared HERE, on the producing step, because that is where the fact
+    #: lives: a step's author knows what it writes, and a precondition's
+    #: author should not have to. `step_produces.producer_of()` derives the
+    #: inverse (table -> producing step) at import, and
+    #: `step_preconditions` reads producers from that inverse rather than
+    #: carrying its own copy — one declaration, two directions.
+    #:
+    #: Two steps declaring the same table is a real error, not a merge:
+    #: the inverse map cannot answer "run which one?" and
+    #: `step_produces.validate()` raises rather than picking.
+    produces: tuple[str, ...] = ()
     requires_resources: dict[str, str] = field(default_factory=dict)
     # {resource_name: view} — what this step actually READS from that
     # resource. Checked against the provider's `provides` at import by
@@ -217,6 +296,32 @@ class StepInfo:
     # test_step_cost_tiers.py, not just by convention.
     fetch_cost: str = "none"
     compute_cost: str = "low"
+    #: What the connecting CREDENTIAL must be able to see or do for this step
+    #: to answer completely — the second axis of the same gate `fetch_cost`/
+    #: `compute_cost` form, per `REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+    #: VISIBILITY.md` §7.1: "a step declares `fetch_cost`, `compute_cost` and
+    #: `requires_capability` together, and the launcher shows one combined
+    #: reason." One of `CAPABILITY_VALUES`, or `""`.
+    #:
+    #: `""` is NOT "catalog" and not "satisfied by anything" — it is
+    #: **undeclared**, and the gate makes no claim about a step carrying it.
+    #: Two different situations share it deliberately, because collapsing
+    #: either into a real tier would be the absence-as-answer failure this
+    #: whole axis exists to prevent:
+    #:
+    #:   * a step that opens no connection at all (`db_derived` — the audit's
+    #:     §4 "no tier applies"; the weakest tier, `catalog`, still implies a
+    #:     live connection to *something*, so declaring it would overstate);
+    #:   * every repo and filesystem step, which have no credential model yet.
+    #:     Database-first, exactly as `produces`/`requires_context` were
+    #:     introduced (the `#241` precedent).
+    #:
+    #: Unlike the cost axes this is NOT an ordinal ladder and the resolver
+    #: never compares two values with `<`. `stats` does not imply `read`
+    #: (a `pg_monitor` member may hold no `SELECT` grant at all) and `write`
+    #: does not imply either. Each value is a separate predicate the probe
+    #: answers on its own terms — see `credential_capability.assess`.
+    requires_capability: str = ""
 
 
 # ── D6: shared-resource providers ────────────────────────────────────────
@@ -353,6 +458,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — the table four content-reading steps gate on
+        # (`has_file_inventory`), declared here so the gate can name its
+        # own remedy without repeating this step's key.
+        produces=("project_file_inventory",),
         # One of the 4 zipball steps (D3/D4) — a real download, so "none"
         # is invalid here. Walking the extracted tree is cheap.
         fetch_cost="download",
@@ -389,6 +498,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — `project_dependencies` is what `repo_cve_scan`'s
+        # `has_versioned_dependencies` gate reads. Note what is NOT claimed:
+        # producing the table is not the same as producing a *version* on
+        # every row (CLAUDE.md's Gradle/BOM case), so an auto-run of this
+        # step can legitimately leave that gate still unmet — the resolver
+        # treats that as `nothing_found`, not as a reason to run it again.
+        produces=("project_dependencies",),
         # One of the zipball steps (D3/D4) — a real download, so "none" is
         # invalid here.
         #
@@ -895,11 +1011,20 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "supported language, refreshing project_code_symbols/"
         "project_code_relationships — D5's self-contained microflow closing "
         "the bug where those tables were only ever populated by RAG "
-        "ingestion, never by a survey step.",
+        "ingestion, never by a survey step. Also extracts decorator/"
+        "annotation registrations (route/rpc/resolver/message-handler) for "
+        "Python and Java into project_code_markers.",
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
+        # §17.1 — the table `has_code_symbols` gates on. project_code_markers
+        # added per DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md Decisions
+        # §2 — no precondition wired to it today (Decisions §1: no
+        # precondition, no bundling), but a future one can reach it here
+        # without further plumbing.
+        produces=("project_code_symbols", "project_code_relationships",
+                  "project_code_markers"),
         # One of the 4 zipball steps. compute_cost="medium", not "low":
         # unlike repo_api_structure (a read of already-extracted symbols),
         # this step does the tree-sitter/ast extraction itself, across
@@ -4100,12 +4225,23 @@ class AnalysisKind:
     #: The steps this analysis OWNS. `REPO_ANALYSIS_STEP_MAP` is built from
     #: these and must PARTITION the step keys — each key belongs to exactly
     #: one analysis — because run attribution inverts it
-    #: (`ProjectRegistry._step_key_to_analysis_id`). A duplicate key there does
-    #: not raise: the inverse is a dict comprehension, so the later analysis
-    #: silently wins and the earlier one stops being credited with its own
-    #: runs. Measured 2026-09-08, before `derives_from` below existed:
+    #: (`ProjectRegistry._step_key_to_analysis_ids`). A duplicate key there
+    #: no longer raises OR silently drops one owner (as of the database/
+    #: filesystem generalization, the inverse is built with
+    #: `setdefault(...).append(...)`, not a dict comprehension) — a repo step
+    #: key declared by two analyses now credits BOTH on a run, which is
+    #: correct for database's intentional fan-out but is NOT what repo wants:
+    #: repo's contract is still that each key belongs to exactly one analysis,
+    #: so a duplicate here is a bug to fix, not a collision the map silently
+    #: resolves. Measured 2026-09-08, before `derives_from` below existed:
     #: `architecture_diagram` declared `architecture_recovery`'s two steps and
-    #: took ownership of both.
+    #: took ownership of both — back then the dict-comprehension inversion
+    #: masked it as a single silent winner; today it would show up as both
+    #: analyses being credited for the recovery's runs, which is at least
+    #: visible rather than silent, but still wrong for repo's partition
+    #: invariant. `tests/test_run_publish_honesty.py`'s
+    #: `test_the_two_attribution_paths_agree` asserts no repo key has more
+    #: than one owner.
     step_keys: list[str]
     #: Steps this analysis READS but does not own — the steps to execute to
     #: refresh its data, when it has none of its own.
@@ -4515,6 +4651,15 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
 # quietly admits a step it was meant to exclude.
 FETCH_COST_ORDER = ["none", "api", "api_heavy", "download"]
 COMPUTE_COST_ORDER = ["low", "medium", "high"]
+
+#: The vocabulary `StepInfo.requires_capability` draws from — `REPLY-DATABASE-
+#: CREDENTIAL-CAPABILITY-VISIBILITY.md` §3's four values, no more and no
+#: fewer. Deliberately a `frozenset` and NOT a list, unlike the two cost
+#: scales above: those are ordinal and their list *index* is load-bearing, and
+#: this one is not ordered at all. See `StepInfo.requires_capability` for why
+#: (`stats` does not imply `read`), and `credential_capability.assess` for the
+#: per-value predicates that replace an ordering.
+CAPABILITY_VALUES = frozenset({"catalog", "read", "stats", "write"})
 
 
 def analysis_cost(analysis_id: str) -> tuple[str, str]:
@@ -4932,6 +5077,57 @@ def _get_project_entity(registry, slug: str):
     return registry.get(slug)
 
 
+def _trigger_egeria_native_survey(project, registry, step, **_) -> dict:
+    """Trigger Egeria's own native repository survey for a step tagged
+    executes_at="egeria", then wait for it to reach a terminal status and
+    read back its real result. Requires the repo to already be cataloged in
+    Egeria (has a stored asset guid) — this does not catalog it as a side
+    effect. See this module's own docstring for the full design and the
+    honest-failure behavior while no live repo survey action service exists.
+
+    Synchronous by necessity, same as the database/filesystem handlers this
+    mirrors: the caller (survey_definition_executor's other_engine_handlers
+    dispatch) needs a real status/output to report, and there is no cheaper
+    way to get one than to poll.
+
+    Raises on: no stored Egeria asset guid (RuntimeError, this function);
+    no matching Egeria survey process found (RuntimeError, propagated from
+    EgeriaPublisher.trigger_survey_by_guid -> EgeriaPublisherError, which
+    wraps _initiate_survey's "No native survey process configured" message
+    — expected until Egeria's side exists, not a bug); poll timeout
+    (EgeriaEngineActionTimeoutError); or an unresolvable report attribution
+    (SurveyReportAttributionError). All propagate to the executor's own
+    per-step except clause, which reports them as a specific error rather
+    than a silent "triggered" success.
+    """
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+    from resource_explorer.surveyors.egeria_async_survey_result import (
+        poll_trigger_and_retrieve_annotations,
+    )
+
+    repo_guid = project.egeria_asset_guid
+    if not repo_guid:
+        raise RuntimeError(
+            f"Repository '{project.slug}' has no stored Egeria asset guid — "
+            "cannot trigger Egeria's native survey for an uncataloged repository."
+        )
+    publisher = EgeriaPublisher(registry=registry)
+    triggered_at = datetime.now(timezone.utc)
+    engine_action_guid = publisher.trigger_survey_by_guid(repo_guid)
+    log.info(
+        "Triggered Egeria native survey for repo %r: engine_action_guid=%s",
+        project.slug, engine_action_guid,
+    )
+    result = poll_trigger_and_retrieve_annotations(
+        surveyor=publisher,
+        engine_action_guid=engine_action_guid,
+        resource_guid=repo_guid,
+        triggered_at=triggered_at,
+        analysis_step=step.re_analysis_step,
+    )
+    return {"status": "ok", **result}
+
+
 def _publish(project, step_outputs: list, surveyed_at: str, registry, *,
             defer_drain: bool = False) -> str:
     """`defer_drain` is the run-in-background choice (see
@@ -4959,10 +5155,38 @@ _ADAPTER = ResourceTypeAdapter(
     entity_type="repo",
     technology_type="Git Repository",
     re_analysis_steps=_build_re_analysis_steps(),
+    # §17.1/§17.2 — the same STEP_REGISTRY the orchestrator already walks,
+    # exposed to the shared prerequisite resolver so the Survey-Definition
+    # path checks the same preconditions the orchestrator path does. Before
+    # this, `step_preconditions.evaluate()` had exactly one call site
+    # (SurveyOrchestrator.run), so a repo step run through a Survey
+    # Definition was never gated at all.
+    step_registry=lambda: STEP_REGISTRY,
     get_entity=_get_project_entity,
     publish=_publish,
     re_analysis_step_info=_RE_ANALYSIS_STEP_INFO,
     run_batch=_run_batch,
+    other_engine_handlers={
+        "egeria": _trigger_egeria_native_survey,
+    },
+    egeria_technology_type_name="GitHub Repository",
+    # What FactLayer reads to answer "what is known about this repository"
+    # (2026-09-20, design §1.1 item 5). These were unconditional imports in
+    # facts.py, which is what made the fact layer repo-only; declaring them
+    # here makes the repo one resource type among several rather than the
+    # default everything falls back to.
+    #
+    # `state_sources` resolves facts.py's own table lazily: its resolver
+    # functions live there beside the rest of the layer, and calling the
+    # provider at read time (not at import time) keeps this module free of an
+    # import cycle with facts.py.
+    analysis_results_map=lambda: REPO_ANALYSIS_RESULTS_MAP,
+    analysis_source_steps=lambda: REPO_ANALYSIS_SOURCE_STEPS,
+    analysis_kinds=lambda: ANALYSIS_KINDS,
+    analysis_headline_map=lambda: REPO_ANALYSIS_HEADLINE_MAP,
+    state_sources=lambda: __import__(
+        "resource_explorer.facts", fromlist=["RESOURCE_STATE_SOURCES"],
+    ).RESOURCE_STATE_SOURCES,
 )
 
 register_adapter(_ADAPTER)

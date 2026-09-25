@@ -271,5 +271,5 @@ ___
 Coarse Profile Survey
 
 ### Scope Reference
-What does this repository do?
+What is this resource, and what is it for?
 

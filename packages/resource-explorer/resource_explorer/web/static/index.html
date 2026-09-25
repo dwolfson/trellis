@@ -1233,6 +1233,17 @@
           Remember for this session <span class="text-slate-600">(kept in memory only — cleared on page reload)</span>
         </label>
       </div>
+      <!-- Only shown when GET /api/prefect/status reports enabled+reachable
+           (see showSurveyDefinitionRunModal) — a choice between two engines
+           that only exists when there IS a second engine to choose. -->
+      <div id="survey-def-run-engine" class="hidden">
+        <label class="modal-label">Engine <span class="text-slate-500">(this run only — 'resource-explorer'-tagged steps)</span></label>
+        <select id="survey-def-run-engine-select" class="modal-input">
+          <option value="">Use configured default</option>
+          <option value="resource-explorer">Local (resource-explorer)</option>
+          <option value="prefect">Prefect (retries, logs, cancellation)</option>
+        </select>
+      </div>
       <div id="survey-def-run-error" class="text-red-400 text-xs hidden"></div>
       <div id="survey-def-run-progress" class="text-slate-400 text-xs hidden">Running… this may take a while</div>
       <div id="survey-def-run-result" class="hidden text-xs bg-slate-800/60 rounded p-2 space-y-1"></div>
@@ -2740,11 +2751,27 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
         }
       } catch { /* non-fatal — cards just show the unscheduled state */ }
       // Last-run/last-published per local analysis_id (direct feedback,
-      // 2026-08-24 — Analyses cards had neither before). repo-only today,
-      // same scope as the results/schedule machinery above.
-      if (resourceType === 'repo') {
+      // 2026-08-24 — Analyses cards had neither before). Was repo-only
+      // (`if (resourceType === 'repo')` guarded this whole fetch out for
+      // database/filesystem) until the same live reproduction that opened
+      // this file's Backlog.md entry: a database survey completed (200 OK,
+      // confirmed via the network tab) and every per-analysis card still
+      // showed no run/result indicator at all, because `lastActivity` was
+      // hard-coded to `{}` for every non-repo resource type no matter what
+      // had actually run. `/api/databases/{slug}/analyses/last-activity`
+      // and the filesystem equivalent now exist (`web/routes/databases.py`,
+      // `web/routes/filesystems.py`), backed by the same
+      // `workflows.analysis.build_analysis_last_activity` the repo route
+      // uses — see its docstring for what's real data today (run
+      // attribution) versus not yet (publish attribution, for database/
+      // filesystem).
+      const _lastActivityBase = resourceType === 'database' ? '/api/databases'
+        : resourceType === 'filesystem' ? '/api/filesystems'
+        : resourceType === 'repo' ? '/api/projects'
+        : '';
+      if (_lastActivityBase) {
         try {
-          const laRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/last-activity`);
+          const laRes = await fetch(`${_lastActivityBase}/${encodeURIComponent(slug)}/analyses/last-activity`);
           if (laRes.ok) lastActivity = await laRes.json();
         } catch { /* non-fatal — cards just show the never-run state */ }
       }
@@ -2924,13 +2951,16 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     const lastRunHtml = la.last_run_at
       ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})${_esc(_runVia)}${_esc(_partial)}">📅 Last run ${_relTime(la.last_run_at)}${la.last_run_partial ? '*' : ''}</span>`
       : la.last_run_basis === 'not_established'
-        ? `<span class="text-slate-500" title="${la.unattributed_surveys} survey run(s) on this repo predate per-step recording, so whether this analysis was among them cannot be determined. Run it to establish one.">📅 Last run not established</span>`
+        ? `<span class="text-slate-500" title="${la.unattributed_surveys} survey run(s) on this resource predate per-step recording, so whether this analysis was among them cannot be determined. Run it to establish one.">📅 Last run not established</span>`
         : `<span class="text-amber-400">📅 Never run</span>`;
     // Two tiers, because annotation types are shared. 'analysis' means a type
     // only this analysis produces was published — real evidence about THIS
-    // card. 'repo' means only shared types matched, so all that is known is
-    // that the repo was published; shown dimmer and hedged rather than
-    // claiming a precision the join cannot support.
+    // card. Anything else non-empty (was hardcoded 'repo' before database/
+    // filesystem also started sending this field — the backend now returns
+    // the resource's own entity_type for the shared tier, e.g. 'database')
+    // means only shared types matched, so all that is known is that the
+    // resource was published; shown dimmer and hedged rather than claiming a
+    // precision the join cannot support.
     // Fourth publish state, on top of the two tiers above (PUBLISH-STATE-
     // AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4):
     // the date stays — it is the only evidence a publish happened — and the
@@ -2939,8 +2969,8 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
       ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>`
       : '';
     const lastPublishedHtml = la.last_published_at
-      ? la.last_published_scope === 'repo'
-        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The repo was published at ${_esc(la.last_published_at)}.">☁ Repo published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
+      ? la.last_published_scope && la.last_published_scope !== 'analysis'
+        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The resource was published at ${_esc(la.last_published_at)}.">☁ Resource published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
         : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
       : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
@@ -3419,6 +3449,76 @@ function _renderAnalysisResultsContent(analysisId, data) {
 // `_status` comes from resource_explorer/surveyors/result_status.py. A kind
 // that has not adopted the outcome vocabulary attaches none, and falls back to
 // the original message — which is then only shown when it is actually true.
+// "answering this needs `X` first — estimated 40s, one download; run it?"
+// (design §17.1, classic UI.)
+//
+// Three things it must say, and the third is the one that is easy to drop:
+// WHAT would run, WHAT it costs, and WHY it is being asked rather than simply
+// done. Without the third, a prompt reads as the system being timid about a
+// cheap step; with it, the user can see that their own budget is what is
+// holding it — which is the whole consent argument.
+//
+// The estimate says whether it is a MEASUREMENT or a tier default. A step
+// nobody has ever run has no median to quote, and quoting the default as
+// though it were observed is how "40s" becomes a number people stop
+// believing.
+function _renderPrerequisiteProposal(p, data) {
+  // The resource this card is about. The payload names it when it can; the
+  // fallback is the selection the sidebar is showing, resolved through the
+  // same facet→type mapping every other route in this file uses, so a
+  // database card never posts a repo slug.
+  const entityType = (data && data.entity_type) || _facetToResourceType(resourceTypeFacet);
+  const selected = entityType === 'database' ? selectedDatabase
+    : entityType === 'filesystem' ? selectedFilesystem : selectedProject;
+  const slug = (data && (data.slug || data.resource_slug)) || (selected && selected.slug) || '';
+  const id = `prereq-${Math.random().toString(36).slice(2, 10)}`;
+  const steps = (p.steps || []).map(s => `<code class="text-sky-300">${_esc(s)}</code>`).join(' → ');
+  const reasons = (p.reasons || []).map(r => `<li>${_esc(r.detail)}</li>`).join('');
+  const est = `${Math.round(p.estimated_seconds || 0)}s`;
+  return `<div id="${id}" class="text-xs text-amber-300/90 border border-amber-500/30 rounded p-2 space-y-1.5">
+    <div class="flex items-start gap-1.5">
+      <span>⏵</span>
+      <span>Answering this needs ${steps} first — estimated <strong>${est}</strong>
+        ${p.estimated_is_measured
+          ? '<span class="text-slate-500">(median of previous runs)</span>'
+          : '<span class="text-slate-500">(from its declared cost, never measured)</span>'}.</span>
+    </div>
+    <ul class="list-disc list-inside text-slate-400">${reasons}</ul>
+    <div class="flex items-center gap-2 pt-1">
+      <button class="px-2 py-1 rounded bg-amber-600/80 hover:bg-amber-600 text-white"
+        onclick='acceptPrerequisiteProposal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(p.steps || [])}, ${JSON.stringify(p.demanding_step || '')}, ${JSON.stringify(id)})'>
+        Run it</button>
+      <span class="text-slate-500">or leave it — nothing has run.</span>
+    </div>
+  </div>`;
+}
+
+// The user's yes. Runs exactly the steps they were shown (see
+// routes/prerequisites.py for why the client sends the plan back rather than
+// the server recomputing one).
+async function acceptPrerequisiteProposal(entityType, slug, steps, demandedBy, elId) {
+  const el = document.getElementById(elId);
+  if (el) el.innerHTML = `<div class="text-slate-400">Running ${steps.map(_esc).join(', ')}…</div>`;
+  const opId = logOp({ type:'analysis', slug, status:'running',
+    summary:`Running prerequisite ${steps.join(', ')} for ${demandedBy}…` });
+  try {
+    const res = await fetch('/api/prerequisites/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_type: entityType, slug, steps, demanded_by: demandedBy}),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || 'prerequisite run failed');
+    if (body.status === 'error') throw new Error((body.errors || []).join('; ') || 'prerequisite run failed');
+    updateOp(opId, 'ok', `Prerequisite ${steps.join(', ')} complete`);
+    showToast('success', `Ran ${steps.map(_esc).join(', ')} — re-run <strong>${_esc(demandedBy)}</strong> to get the answer.`, 8000);
+    if (el) el.innerHTML = `<div class="text-emerald-400">Ran ${steps.map(_esc).join(', ')}. Re-run ${_esc(demandedBy)} for the answer.</div>`;
+  } catch (e) {
+    updateOp(opId, 'error', `Prerequisite ${steps.join(', ')} failed`, e.message);
+    showToast('error', `Prerequisite failed: ${_esc(e.message)}`, 8000);
+    if (el) el.innerHTML = `<div class="text-red-400">${_esc(e.message)}</div>`;
+  }
+}
+
 function _renderEmptyResultState(data) {
   const st = data && data._status;
   if (!st) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
@@ -3435,6 +3535,15 @@ function _renderEmptyResultState(data) {
     // correctly declining to run — so rendering it as degraded would punish the
     // thing working as designed. The reason is always shown; a skip without one
     // is indistinguishable from a failure.
+    //
+    // …UNLESS the skip carries a PROPOSAL (design §17.1). Then it is not a win
+    // at all: the answer is one or more steps away, the budget the user chose
+    // does not stretch to them, and the only thing standing between them and
+    // the answer is being asked. Rendering that as the neutral "not
+    // applicable" would be the exact failure §17.1 was written to fix — "you
+    // got 'skipped: no parsed dependencies' when what you wanted was the
+    // answer, one cheap step away."
+    if (st.proposal) return _renderPrerequisiteProposal(st.proposal, data);
     return `<div class="text-xs text-slate-400 flex items-start gap-1.5">
       <span class="text-slate-500">⊘</span>
       <span>Not applicable — ${_esc(st.hint || 'a gate determined this analysis does not apply here.')}</span>
@@ -4225,6 +4334,25 @@ function _archRow(c, slug, rowUid) {
       </div>`
     : '';
   const anchorId = (_archInteractiveMode && c.path) ? ` id="${_curateComponentAnchorId(c.path)}"` : '';
+  // Honesty clause (RULING-CLASSIC-AND-NEXT.md §3 — classic shows type/
+  // confidence, so it must not show them falsely when a different extractor
+  // is currently proposing this same path with a different reading).
+  // `c.proposals` (repo_survey_definition_adapter.py's
+  // _architecture_recovery_results) carries one entry per extractor
+  // CURRENTLY proposing this path; more than one means the type/confidence
+  // shown above came from only one of them. The primary shown is `latest`
+  // (max by surveyed_at) server-side, which this client-side clause
+  // approximates as the proposal with the newest `surveyed_at` — good
+  // enough to name the OTHER extractor(s), not to reproduce the pick.
+  // Deliberately not the full /next two-column display, which the ruling
+  // says may stay /next-only; naming who else proposed it is the one
+  // clause required for honesty.
+  const otherProposals = (c.proposals && c.proposals.length > 1)
+    ? c.proposals.slice().sort((a, b) => (b.surveyed_at || '').localeCompare(a.surveyed_at || '')).slice(1)
+    : [];
+  const alsoProposedHtml = otherProposals.length
+    ? `<div class="text-slate-500">also proposed by ${otherProposals.map(p => _esc(p.run_label || '(unlabeled)')).join(', ')} ›</div>`
+    : '';
   return `
         <div class="text-xs text-slate-300 mb-1"${anchorId}>
           <div class="flex justify-between gap-2">
@@ -4233,6 +4361,7 @@ function _archRow(c, slug, rowUid) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
+          ${alsoProposedHtml}
           ${evidenceHtml}
           ${blueprintLinksHtml}
           ${noScopeNote}
@@ -6620,7 +6749,21 @@ function renderAnnotations(annotations) {
     for (const a of items) {
       const isRfa = type === 'RequestForAction';
       const conf  = a.confidence != null ? ` <span class="text-slate-500">[${a.confidence}]</span>` : '';
-      html += `<div class="${isRfa ? 'ann-row ann-rfa' : 'ann-row'}">• ${_esc(a.summary)}${conf}`;
+      // Egeria's contentStatus, surfaced 2026-09-21 (Phase 1 slice 10).
+      // DRAFT means this annotation is a PROPOSAL nobody has confirmed — a
+      // candidate Data Class or reference-data set. Before this, nothing in
+      // RE read the field at all, so a draft proposal rendered here exactly
+      // like a confirmed finding.
+      //
+      // Only a non-empty status draws a badge. An empty contentStatus is
+      // "not stated" — which is what every annotation published before slice
+      // 10 carries — and is NOT the same as "confirmed", so it must not get
+      // a badge of its own.
+      const cs = (a.content_status || '').toUpperCase();
+      const status = cs
+        ? ` <span class="text-[10px] uppercase font-semibold px-1 rounded ${cs === 'DRAFT' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400'}" title="Egeria contentStatus: ${_esc(cs)}${cs === 'DRAFT' ? ' — an unconfirmed proposal, not a confirmed finding' : ''}">${_esc(cs)}</span>`
+        : '';
+      html += `<div class="${isRfa ? 'ann-row ann-rfa' : 'ann-row'}">• ${_esc(a.summary)}${conf}${status}`;
       if (a.explanation) html += `<div class="text-slate-500 pl-3">${_esc(a.explanation)}</div>`;
       const sub = a.subtype_data || {};
       if (sub.actionRequested) html += `<div class="text-amber-500 pl-3">→ ${_esc(sub.actionRequested)}</div>`;
@@ -8246,6 +8389,12 @@ async function loadSurveyDefinitionsPanel() {
 function _surveyDefEngineBadge(executesAt) {
   if (executesAt === 'resource-explorer') return '<span class="analysis-tag tag-egeria">🏠 Runs in Resource Explorer</span>';
   if (executesAt === 'egeria')            return '<span class="analysis-tag tag-egeria">☁ Runs in Egeria</span>';
+  if (executesAt === 'prefect')           return '<span class="analysis-tag tag-egeria">⚡ Runs via Prefect</span>';
+  // egeria-adaptive is being added concurrently (branch re/egeria-adaptive) —
+  // named explicitly here for a clearer label/icon than the generic fallback
+  // below would give it, but the fallback already covers it (and any other
+  // future executes_at value) if this lands before that value exists.
+  if (executesAt === 'egeria-adaptive')   return '<span class="analysis-tag tag-egeria">🔄 Runs in Egeria (adaptive)</span>';
   return `<span class="analysis-tag">⚙ Runs in ${_esc(executesAt)}</span>`;
 }
 
@@ -8882,6 +9031,21 @@ function showSurveyDefinitionRunModal(entityType, slug, viewElId, qualifiedName)
   document.getElementById('survey-def-run-user').value = saved?.dbUser || '';
   document.getElementById('survey-def-run-pwd').value = saved?.dbPwd || '';
   document.getElementById('survey-def-run-remember').checked = !!saved;
+
+  // The engine choice is only meaningful — and only shown — when Prefect is
+  // actually configured and reachable; otherwise it's a control for a
+  // non-existent second engine. Reuses the same GET /api/prefect/status the
+  // Admin "⚡ Prefect" panel already calls, rather than inventing a second
+  // reachability check.
+  const engineWrap = document.getElementById('survey-def-run-engine');
+  const engineSelect = document.getElementById('survey-def-run-engine-select');
+  engineSelect.value = '';
+  engineWrap.classList.add('hidden');
+  fetch('/api/prefect/status').then(r => r.ok ? r.json() : null).then(status => {
+    if (status && status.enabled && status.reachable) {
+      engineWrap.classList.remove('hidden');
+    }
+  }).catch(() => { /* leave hidden — degrade to "no choice offered" */ });
 }
 
 function hideSurveyDefinitionRunModal() {
@@ -8945,12 +9109,14 @@ async function submitSurveyDefinitionRun() {
     // a 17-step Repo Full Survey, used to leave this exact spinner sitting
     // for however long the whole thing took, with zero feedback that
     // anything was actually progressing).
+    const engineChoice = document.getElementById('survey-def-run-engine-select').value || null;
     const startRes = await fetch(`/api/survey-definitions/${entityType}/${slug}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         survey_definition_ref: candidate.qualified_name,
         db_user: dbUser, db_pwd: dbPwd,
+        engine: engineChoice,
       }),
     });
     const started = await startRes.json();
@@ -9007,12 +9173,29 @@ async function submitSurveyDefinitionRun() {
       // slate-500 "nothing to see here" treatment.
       not_executed_no_egeria_handler: 'text-red-400', unrecognized_engine: 'text-amber-400',
     };
+    // steps_report entries don't consistently carry their own engine — only
+    // the Prefect path sets s.engine today (survey_definition_executor.py).
+    // The Survey Definition's own step list (candidate.steps, already
+    // fetched for this modal) declares executes_at per step by
+    // qualified_name, which is what steps_report's "step" field is — use
+    // that as the fallback so every step gets a badge, not just Prefect's.
+    const stepsExecutesAtByQn = Object.fromEntries(
+      (candidate.steps || []).map(st => [st.qualified_name, st.executes_at]));
     const stepsHtml = (data.steps || []).map(s => {
       const color = _statusColor[s.status] || 'text-red-400';
       const actionGuid = s.detail && s.detail.engine_action_guid
         ? `<div class="text-slate-600 pl-3">Egeria engine action: ${_esc(s.detail.engine_action_guid)} (async — check Egeria's Asset Catalog for results)</div>`
         : '';
-      return `<div>${_esc(s.step)}: <span class="${color}">${_esc(s.status)}</span></div>${actionGuid}`;
+      const engineForBadge = s.engine || stepsExecutesAtByQn[s.step] || '';
+      const engineBadge = engineForBadge ? ` ${_surveyDefEngineBadge(engineForBadge)}` : '';
+      // egeria-adaptive's planned provenance sub-field (which engine/path
+      // actually produced this step's result — egeria / egeria-custom /
+      // custom / error) — surfaced as secondary text if a concurrent change
+      // has already added it to this step's detail; harmless no-op until then.
+      const sourceNote = (s.detail && s.detail.source)
+        ? `<span class="text-slate-600 text-xs" title="Provenance"> (${_esc(s.detail.source)})</span>`
+        : '';
+      return `<div>${_esc(s.step)}: <span class="${color}">${_esc(s.status)}</span>${engineBadge}${sourceNote}</div>${actionGuid}`;
     }).join('');
     const guidHtml = data.egeria_report_guid ? `<div class="mt-1 text-slate-500">Report GUID: ${_esc(data.egeria_report_guid)}${
       data.egeria_portal_report_url
@@ -12985,6 +13168,9 @@ async function loadDbDiffBanner(slug) {
         ${(d.new_tables||[]).length ? `<span class="diff-add">+${d.new_tables.length} new: ${listItems(d.new_tables,'diff-add')}</span>` : ''}
         ${(d.removed_tables||[]).length ? `<span class="diff-del">-${d.removed_tables.length} removed: ${listItems(d.removed_tables,'diff-del')}</span>` : ''}
       </div>
+      ${d.table_diff_state === 'not_comparable'
+        ? `<div class="diff-banner-note text-xs mt-1 opacity-70">Per-table changes not available for these two runs${d.table_diff_note ? ` — ${_esc(d.table_diff_note)}` : ''}</div>`
+        : ''}
     </div>`;
   } catch { /* no diff — silently skip */ }
 }
@@ -14665,6 +14851,7 @@ async function loadFilesystemSurveyReport() {
     const surveys = surveyRes.ok ? await surveyRes.json() : [];
     renderFilesystemSurveyReport(fs, surveys);
     _fsSurveyLoaded = true;
+    if (fs.egeria_asset_guid) refreshFsReachabilitySentence(fs.slug);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs py-8 text-center">Failed to load: ${e.message}</div>`;
   }
@@ -14726,9 +14913,16 @@ function renderFilesystemSurveyReport(fs, surveys) {
             ☁ Re-publish to Egeria
           </button>
         ` : ''}
+        ${fs.egeria_asset_guid ? `
+          <button id="fs-reachability-btn-${_esc(fs.slug)}" onclick="checkFsReachability('${_esc(fs.slug)}')"
+            class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-amber-300 transition-colors whitespace-nowrap">
+            🔌 Check Reachability
+          </button>
+        ` : ''}
       </div>
     </div>
-    <div class="text-xs text-slate-500">Last surveyed: <span class="text-slate-300">${surveyDate}</span></div>`;
+    <div class="text-xs text-slate-500">Last surveyed: <span class="text-slate-300">${surveyDate}</span></div>
+    <div id="fs-reachability-sentence-${_esc(fs.slug)}" class="text-xs text-slate-500">${_renderReachabilitySentence(null)}</div>`;
 
   if (!latest) {
     html += `<div class="text-slate-500 text-sm py-6 text-center">
@@ -14914,6 +15108,67 @@ function renderFilesystemSurveyReport(fs, surveys) {
 
   view.innerHTML = html;
   loadEgeriaSurveys(`/api/filesystems/${fs.slug}`, 'fs-egeria-surveys-list', 'fs-egeria');
+}
+
+// ── reachability (Phase 1 slice #13) ────────────────────────────────────────────
+// Launcher sentence per COORDINATOR-BRIEF-MULTI-RESOURCE.md's slice #13 row —
+// deliberately minimal: one button, one rendered sentence, no new page or
+// dashboard. Lives in the classic UI (index.html), not /next, matching
+// CLAUDE.md's "DB/FS work stays in the classic UI" note.
+const _REACHABILITY_OUTCOME_DISPLAY = {
+  reachable:            ['✅', 'text-emerald-400', 'Reachable'],
+  no_connection:        ['⚠️', 'text-amber-400',   'Not reachable — no Connection is attached to this asset yet'],
+  unresolvable_secret:  ['⚠️', 'text-amber-400',   'Not reachable — the resource’s secret reference does not resolve'],
+  network_unreachable:  ['⚠️', 'text-amber-400',   'Not reachable — the engine host cannot reach this resource'],
+  auth_rejected:        ['⚠️', 'text-amber-400',   'Not reachable — authentication was rejected'],
+  unknown:              ['❓', 'text-slate-400',   'Could not determine reachability'],
+};
+
+function _renderReachabilitySentence(result) {
+  if (!result) {
+    return 'Reachability: <span class="text-slate-500">not checked yet</span>';
+  }
+  const [icon, cls, label] = _REACHABILITY_OUTCOME_DISPLAY[result.outcome] || ['❓', 'text-slate-400', result.outcome];
+  const when = result.probed_at ? result.probed_at.replace('T', ' ').substring(0, 16) + ' UTC' : '';
+  const detail = result.error_code ? ` <span class="text-slate-600 font-mono" title="${_esc(result.error_detail || '')}">(${_esc(result.error_code)})</span>` : '';
+  return `Reachability: <span class="${cls}">${icon} ${_esc(label)}</span>${detail}` +
+    (when ? ` <span class="text-slate-600">— checked ${when}</span>` : '');
+}
+
+async function refreshFsReachabilitySentence(slug) {
+  const el = document.getElementById(`fs-reachability-sentence-${slug}`);
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/filesystems/${slug}/reachability`);
+    const result = res.ok ? await res.json() : null;
+    el.innerHTML = _renderReachabilitySentence(result);
+  } catch (e) {
+    // Never surface this as an error state — "could not load the last
+    // result" is not itself a reachability finding, so leave the sentence
+    // showing whatever it already showed rather than replacing it with
+    // something that looks like a probe outcome.
+  }
+}
+
+async function checkFsReachability(slug) {
+  const btn = document.getElementById(`fs-reachability-btn-${slug}`);
+  const el = document.getElementById(`fs-reachability-sentence-${slug}`);
+  if (btn) { btn.disabled = true; btn.textContent = '🔌 Checking…'; }
+  if (el) el.innerHTML = 'Reachability: <span class="text-slate-500">checking…</span>';
+  try {
+    const res = await fetch(`/api/filesystems/${slug}/reachability`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+    if (el) el.innerHTML = _renderReachabilitySentence(result);
+    const display = _REACHABILITY_OUTCOME_DISPLAY[result.outcome];
+    showToast(result.outcome === 'reachable' ? 'success' : 'info',
+      `Reachability check: ${display ? display[2] : result.outcome}`, 4000);
+  } catch (e) {
+    if (el) el.innerHTML = `Reachability: <span class="text-red-400">check failed — ${_esc(e.message)}</span>`;
+    showToast('error', `Reachability check failed: ${e.message}`, 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔌 Check Reachability'; }
+  }
 }
 
 // ── utils ──────────────────────────────────────────────────────────────────────

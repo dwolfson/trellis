@@ -3,9 +3,345 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from resource_explorer.registry import DatabaseEntity
+
+
+@dataclass(frozen=True)
+class EngineCapabilities:
+    """What this connection's engine can report, declared per capability
+    rather than as one blanket "native support" flag.
+
+    Design doc §5.1: "the connection layer gains a capability declaration per
+    engine (`supports: {column_stats, tuple_counters, replication_status,
+    query_stats, ...}`), and each catalog-fed analysis states which capability
+    it needs. A finding whose capability is absent is `not_established`, not
+    `nothing_found`."
+
+    Only the capabilities a build actually extracts are declared True.
+    `query_stats` stays False on every engine as of this slice — nothing
+    reads `pg_stat_statements` yet (design §5.1 lists it as a later input to
+    `db_classification`, Phase 1 slice 9). Declaring a capability True ahead
+    of any code that reads it would make "not yet implemented"
+    indistinguishable from "measured, and there was nothing" — the exact
+    collapse this field exists to prevent.
+
+    `replication_status`, `resilience` and `external_dependencies` were
+    False through Phase 1 slice 7; slice 8's `postgres_operations` step
+    (design §5.5, §5.7) is what reads `pg_is_in_recovery()`,
+    `pg_stat_replication`, `pg_settings.archive_mode`, `pg_stat_archiver`,
+    `pg_extension`, `pg_foreign_server`/`pg_foreign_table` and
+    `pg_publication`/`pg_subscription`, so Postgres declares them True from
+    this slice on (see `PostgreSQLConnection.capabilities` below).
+    `privileges` (`pg_roles`, `role_table_grants`, `pg_default_acl`) is new
+    in this slice too, for the same reason — `privilege_audit` existed as a
+    catalog analysis id before this slice but had no dedicated capability
+    or step backing it (confirmed "aspirational" per
+    `COORDINATOR-BRIEF-MULTI-RESOURCE.md`'s Phase 0 target-shape audit).
+    """
+
+    column_stats: bool = False
+    tuple_counters: bool = False
+    index_stats: bool = False
+    replication_status: bool = False
+    query_stats: bool = False
+    resilience: bool = False
+    external_dependencies: bool = False
+    #: `pg_roles` / `information_schema.role_table_grants` / `pg_default_acl`
+    #: — added Phase 1 slice 8 alongside the others above, not part of the
+    #: original PR #191 declaration.
+    privileges: bool = False
+    #: Whether this engine can take a BOUNDED sample of a column's actual
+    #: values — Phase 1 slice 10's `postgres_column_profile` (design §5.7,
+    #: §5.8). Its own capability rather than a corollary of `column_stats`,
+    #: because the two are genuinely independent: `pg_stats` gives a profile
+    #: with no rows read, while data-class and reference-data matching need
+    #: real values (design §5.1: "the only route for data-class and
+    #: reference-data matching, which need actual values"). An engine could
+    #: have either without the other.
+    #:
+    #: When False, `data_class_match`/`reference_data_match` are
+    #: `not_established` for every column — never "no match found". That
+    #: distinction is the reason this is a declared capability rather than an
+    #: empty result set.
+    value_sampling: bool = False
+    #: Whether this engine can introspect what the CONNECTING CREDENTIAL
+    #: itself can see and do — `credential_capability` (design: REPLY-
+    #: DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §3/§4, replying to
+    #: ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md #251). Catalog reads
+    #: and privilege-check function calls only — `pg_namespace`/`pg_class`
+    #: (unfiltered) compared against `has_schema_privilege`/
+    #: `has_table_privilege`, `pg_has_role` for the statistics role, and
+    #: `has_table_privilege(..., 'INSERT')` PROBED, never exercised, for
+    #: write. Independent of `privileges` above (which audits OTHER roles'
+    #: grants): this is about what THIS SESSION's own role can reach.
+    credential_introspection: bool = False
+
+    def as_dict(self) -> dict[str, bool]:
+        return asdict(self)
+
+
+#: No capability beyond the generic information_schema reads every
+#: DatabaseConnection subclass already does via get_schema_info(). The
+#: default for any engine that has not declared otherwise.
+NO_CAPABILITIES = EngineCapabilities()
+
+
+@dataclass(frozen=True)
+class ContainmentLevel:
+    """One level of an engine's containment hierarchy ABOVE the table.
+
+    REPLY-SCHEMA-AS-SUB-RESOURCE.md §5 (project owner, 2026-09-24): *"different
+    databases have or do not have schemas, and their semantics differ...
+    Containment is declared per engine, in the engine capability declaration
+    design §5.1 already calls for on `DatabaseConnection`. Each level carries:
+    its name in that engine's vocabulary, its Egeria technology type, semantic
+    flags (`namespace`, `owner`, `security_boundary`, `physical_unit`), the
+    default container, and the system containers to exclude."*
+
+    Declared per engine rather than assumed, for exactly the reason
+    `EngineCapabilities` above is: an engine that has not been taught to this
+    codebase must produce an honest "nothing declared" rather than silently
+    inheriting Postgres's hierarchy. "Schema" is the word Postgres uses; MySQL
+    has no such level at all, Oracle's is an *owner* rather than a namespace,
+    and DuckDB's parent is a file. Hardcoding `"schema"` anywhere downstream
+    would make all four read alike.
+
+    The four semantic flags are independent on purpose — §5's table has an
+    engine for nearly every combination:
+
+    - `namespace` — can a table be qualified by this level inside one
+      connection (`schema.table`)? This is the flag the aggregation grain is
+      derived from (see `EngineContainment.aggregation_grain`).
+    - `owner` — is the level a *principal* rather than a container? Oracle's
+      schema is a user; Postgres's is not.
+    - `security_boundary` — does the level carry its own privilege? Postgres
+      schemas do (`USAGE`), which is why the credential probe is per schema.
+    - `physical_unit` — is the level a separate physical artifact (a file, a
+      database with its own connection)?
+    """
+
+    #: The level's name in THIS engine's vocabulary — "schema" for Postgres,
+    #: "catalog" for DuckDB, "owner" for Oracle. Never assumed by a caller.
+    name: str
+    #: Egeria's technology type for this level, so a `sub_resources` row (shape
+    #: 2, not built here) and the native survey read-back agree on what they
+    #: are naming. §5: *"Egeria's technology types already encode this per
+    #: engine... so the declaration maps onto rule A rather than inventing a
+    #: hierarchy."*
+    egeria_technology_type: str = ""
+    namespace: bool = False
+    owner: bool = False
+    security_boundary: bool = False
+    physical_unit: bool = False
+    #: The container every engine of this kind has by default — `public` for
+    #: Postgres, `dbo` for SQL Server. Treated as an ORDINARY container, never
+    #: special-cased away (REPLY §1: *"treat `public` as a schema like any
+    #: other"*); declared so a reader can see which one it is, not so it can
+    #: be skipped.
+    default_container: str = ""
+    #: Exact container names that are the engine's own plumbing and are
+    #: excluded from analysis output by default.
+    system_containers: tuple[str, ...] = ()
+    #: Prefixes for the same, for engines that generate them (`pg_toast`,
+    #: `pg_toast_temp_1`, `pg_temp_3`). A prefix rather than a pattern because
+    #: every real case is a prefix and a regex here would be a licence to put
+    #: matching logic in a declaration.
+    system_container_prefixes: tuple[str, ...] = ()
+
+    def is_system_container(self, name: str | None) -> bool:
+        """Is `name` one of this level's system containers?
+
+        The single place that question is answered, so a call site cannot
+        drift into its own hardcoded `('pg_catalog', 'information_schema')`
+        list — there were four such lists in `connection.py`'s own SQL before
+        this declaration existed, and each is correct only for Postgres.
+        """
+        if not name:
+            return False
+        if name in self.system_containers:
+            return True
+        return any(name.startswith(p) for p in self.system_container_prefixes)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+#: The engine has genuinely unprivileged catalog objects a credential can read
+#: whatever its table grants — Postgres's `pg_class`/`pg_namespace`. This is
+#: what `#257`'s catalog-only fallback already relies on, and what makes
+#: "structure only" a reachable state for a schema with `USAGE` and no
+#: `SELECT`.
+STRUCTURAL_FLOOR_UNPRIVILEGED = "unprivileged"
+#: A structural floor exists, but only with a specific elevated role or grant
+#: — Oracle's `SELECT_CATALOG_ROLE` / `SELECT ANY DICTIONARY`, SQL Server's
+#: `VIEW DEFINITION` at database scope. A database owner can grant it without
+#: exposing row data, so it is a real ask to make; it is just not free.
+STRUCTURAL_FLOOR_ROLE_GRANT = "role_grant"
+#: No floor short of per-table grants — MySQL/MariaDB, whose
+#: `information_schema` shows only objects the user already holds some
+#: privilege on. There, an unreadable table is also an INVISIBLE one, so the
+#: denominator ("of M tables") is not established either.
+STRUCTURAL_FLOOR_NONE = "none"
+
+
+@dataclass(frozen=True)
+class EngineContainment:
+    """An engine's containment levels above the table, outermost first.
+
+    `levels` is ordered — `(database, schema)` for Postgres — so that
+    `aggregation_grain` can be *derived* rather than declared twice. §5 point
+    2: *"The aggregation grain is derived, not fixed: the lowest `namespace`
+    level above table. Postgres → schema. MySQL → the database itself, so
+    per-namespace output equals whole-database output and the interesting
+    comparison moves up to the server."*
+
+    An engine with no declaration gets `NO_CONTAINMENT`, whose
+    `aggregation_grain` is `None`. That is not "this engine has one flat
+    namespace" — it is "nobody has declared this engine's hierarchy", and the
+    callers treat it as an absence (whole-database output only, labelled as
+    such) rather than guessing.
+    """
+
+    engine: str = ""
+    levels: tuple[ContainmentLevel, ...] = ()
+    #: How much STRUCTURE this engine lets a credential see when it cannot
+    #: read the data (architecture session, 2026-09-24). Postgres's
+    #: "`information_schema` is privilege-filtered but `pg_class` is not"
+    #: property — the one `#257`'s catalog-only fallback and the
+    #: `structure_only` credential state both rest on — does NOT generalize:
+    #: Oracle and SQL Server have a floor only behind a role grant, and MySQL
+    #: has none at all. Declared per engine so a future engine says which of
+    #: the three it is instead of silently inheriting Postgres's.
+    #:
+    #: The empty default is deliberate on `NO_CONTAINMENT`: an engine nobody
+    #: has declared has not been found to have no floor — nobody looked.
+    structural_floor: str = ""
+
+    @property
+    def declared(self) -> bool:
+        return bool(self.levels)
+
+    @property
+    def aggregation_grain(self) -> ContainmentLevel | None:
+        """The innermost `namespace` level above table, or None if undeclared.
+
+        Derived, per §5 point 2. For Postgres the database level is NOT a
+        namespace (you cannot write `database.schema.table` in one Postgres
+        connection), so this resolves to `schema`; for a hypothetical MySQL
+        declaration the database level would be the namespace and this would
+        resolve to it, which is the correct answer there — per-namespace output
+        then equals whole-database output, honestly rather than by accident.
+        """
+        for level in reversed(self.levels):
+            if level.namespace:
+                return level
+        return None
+
+    def level(self, name: str) -> ContainmentLevel | None:
+        for level in self.levels:
+            if level.name == name:
+                return level
+        return None
+
+    def is_system_container(self, name: str | None) -> bool:
+        """System-container test at the aggregation grain (no grain → False).
+
+        False when nothing is declared is deliberate: with no declaration
+        there is no grain to group by either, so no name can be excluded at a
+        level that does not exist. The caller's own "is there a grain" check is
+        what stops it from reporting per-container output — not this.
+        """
+        grain = self.aggregation_grain
+        return bool(grain and grain.is_system_container(name))
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "engine": self.engine,
+            "structural_floor": self.structural_floor,
+            "levels": [level.as_dict() for level in self.levels],
+            "aggregation_grain": (
+                self.aggregation_grain.name if self.aggregation_grain else None
+            ),
+        }
+
+
+#: Nothing declared. The honest default for an engine this codebase has not
+#: been taught, and NOT a claim that the engine is flat.
+NO_CONTAINMENT = EngineContainment()
+
+#: A Postgres database: a physical unit with its own connection and its own
+#: `CONNECT` privilege, but NOT a namespace — one connection cannot qualify a
+#: table with it, which is exactly why cross-database references need a
+#: foreign server or `dblink` (§5 point 4) and why the grain below is `schema`.
+POSTGRES_DATABASE_LEVEL = ContainmentLevel(
+    name="database",
+    egeria_technology_type="PostgreSQL Relational Database",
+    namespace=False,
+    owner=False,
+    security_boundary=True,
+    physical_unit=True,
+)
+
+#: A Postgres schema: §5's table, row 1 — *"a namespace with its own privilege
+#: (`USAGE`); `public` default; extensions and `pg_toast` own schemas"*.
+#: `owner=False` distinguishes it from Oracle, where the same level IS a user;
+#: a Postgres schema has an owner but is not itself a principal.
+POSTGRES_SCHEMA_LEVEL = ContainmentLevel(
+    name="schema",
+    # Egeria's own technology type for the level (its open-metadata type is
+    # `DeployedDatabaseSchema`, which REPLY §5 names as already separate from
+    # the database). Only the database-level type above is exercised by this
+    # codebase today — the schema one is declared for shape 2's
+    # `sub_resources` rows and the native read-back, neither of which is built
+    # in this slice.
+    egeria_technology_type="PostgreSQL Relational Database Schema",
+    namespace=True,
+    owner=False,
+    security_boundary=True,
+    physical_unit=False,
+    default_container="public",
+    system_containers=("pg_catalog", "information_schema"),
+    # `pg_toast`, `pg_toast_temp_1`, `pg_temp_3` — generated, one per backend.
+    system_container_prefixes=("pg_toast", "pg_temp"),
+)
+
+POSTGRES_CONTAINMENT = EngineContainment(
+    engine="postgresql",
+    levels=(POSTGRES_DATABASE_LEVEL, POSTGRES_SCHEMA_LEVEL),
+    # `pg_class`/`pg_namespace` are readable by any connected role regardless
+    # of `USAGE`/`SELECT`, which is what `get_credential_capability()`'s own
+    # docstring establishes against a live instance and what `#257`'s
+    # catalog-only fallback recovers tables through. Stated here rather than
+    # assumed, because it is a Postgres property and not a database one.
+    structural_floor=STRUCTURAL_FLOOR_UNPRIVILEGED,
+)
+
+#: `DatabaseEntity.db_type` spellings that mean Postgres. Postgres is the ONLY
+#: engine declared in this slice, deliberately (REPLY §5 gives the shape for
+#: eight more; building them without a live instance to check against would
+#: declare semantics nobody verified). Anything else resolves to
+#: `NO_CONTAINMENT` and reports whole-database output labelled as
+#: "containment not declared for this engine" — never Postgres's hierarchy
+#: applied to an engine that does not have it.
+_CONTAINMENT_BY_ENGINE: dict[str, EngineContainment] = {
+    "postgresql": POSTGRES_CONTAINMENT,
+    "postgres": POSTGRES_CONTAINMENT,
+    "pgsql": POSTGRES_CONTAINMENT,
+}
+
+
+def containment_for_engine(engine: str | None) -> EngineContainment:
+    """Resolve a `DatabaseEntity.db_type` to its containment declaration.
+
+    Takes the engine NAME rather than a connection because the one caller that
+    needs it most — `db_derived`, the zero-fetch step — has no connection by
+    construction and must still be able to group by the right level for a
+    database whose credentials are gone.
+    """
+    return _CONTAINMENT_BY_ENGINE.get((engine or "").strip().lower(), NO_CONTAINMENT)
 
 
 class DatabaseConnection(ABC):
@@ -30,6 +366,28 @@ class DatabaseConnection(ABC):
     @abstractmethod
     def close(self) -> None:
         """Close the connection."""
+
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        """This engine's capability declaration (design §5.1).
+
+        Not abstract: an engine that adds no capability beyond the schema
+        read needs no boilerplate override, and a caller that has not been
+        taught about a given engine gets an honest "nothing declared" rather
+        than an AttributeError.
+        """
+        return NO_CAPABILITIES
+
+    @property
+    def containment(self) -> EngineContainment:
+        """This engine's containment levels above the table (REPLY-SCHEMA-AS-
+        SUB-RESOURCE.md §5).
+
+        Not abstract, for the same reason `capabilities` is not: an engine
+        nobody has declared reports `NO_CONTAINMENT` — "the hierarchy is not
+        declared" — rather than raising, or inheriting Postgres's.
+        """
+        return NO_CONTAINMENT
 
 
 class PostgreSQLConnection(DatabaseConnection):
@@ -122,7 +480,30 @@ class PostgreSQLConnection(DatabaseConnection):
             return {}
 
     def _get_tables_for_schema(self, schema_name: str) -> list[dict]:
-        """Get tables and columns for a schema, including PK/FK info and pg_description comments."""
+        """Get tables and columns for a schema, including PK/FK info and pg_description comments.
+
+        `information_schema.tables`/`.columns` (and the PK/FK/comment
+        lookups below, which also go through `information_schema`/
+        `obj_description()`/`col_description()`) are privilege-filtered by
+        Postgres: a role needs `SELECT` on a table before that table shows up
+        here at all. Confirmed live against a real `coco_pharma` incident
+        (design: ASK/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md): a
+        credential with `USAGE` on `coco_ods` but no `SELECT` grant on any
+        table inside it got **zero** tables back for that schema, even
+        though the tables genuinely exist.
+
+        `pg_class`/`pg_attribute`/`pg_namespace` are catalog metadata, not
+        privilege-filtered — any connected role can read them regardless of
+        grants (the same fact `get_credential_capability()` relies on). So
+        after the normal enumeration below, `_catalog_only_fallback()` fills
+        in any table the catalog knows about that `information_schema` did
+        not return — table name, column names, Postgres type names, and
+        `pg_class.reltuples` as an ANALYZE-time row estimate. This is a
+        fallback, not a replacement: a schema where `information_schema`
+        already sees every table is returned exactly as before, with the
+        richer exact data (real PK/FK, `is_nullable`, `column_default`,
+        exact comments) that only that path can supply.
+        """
         # Get primary keys for the schema
         pk_query = """
             SELECT kcu.table_name, kcu.column_name
@@ -201,6 +582,7 @@ class PostgreSQLConnection(DatabaseConnection):
                     "type": row["table_type"],
                     "description": row.get("table_description") or "",
                     "columns": [],
+                    "source": "information_schema",
                 }
             if row["column_name"]:
                 col_name = row["column_name"]
@@ -231,9 +613,126 @@ class PostgreSQLConnection(DatabaseConnection):
                     "description": row.get("column_description") or "",
                     "is_primary_key": is_pk,
                     "foreign_key": fk,
+                    "source": "information_schema",
                 })
 
+        self._catalog_only_fallback(schema_name, tables)
         return list(tables.values())
+
+    def _catalog_only_fallback(self, schema_name: str, tables: dict[str, dict]) -> None:
+        """Fill in, in place, any table `information_schema` did not return
+        for this schema but `pg_class` says exists.
+
+        Only ever ADDS entries `tables` is missing — a schema where
+        `information_schema` already saw every table is untouched, so a
+        credential with full access keeps getting exactly today's richer
+        data. See `_get_tables_for_schema()`'s docstring for why this is
+        possible at all (pg_class/pg_attribute/pg_namespace are not
+        privilege-filtered) and what it can and cannot supply.
+        """
+        try:
+            catalog = self._catalog_table_summary(schema_name)
+        except Exception:
+            return
+        for table_name, info in catalog.items():
+            if table_name in tables:
+                continue
+            columns = self._catalog_columns_for_table(schema_name, table_name)
+            tables[table_name] = {
+                "name": table_name,
+                "type": info.get("table_type") or "",
+                "description": "",
+                "columns": columns,
+                "source": "catalog_fallback",
+                # pg_class.reltuples is an ANALYZE-time estimate, never a
+                # live count — kept in its own field, and paired with an
+                # explicit basis, rather than written straight into a plain
+                # "row_count" that every other caller reads as exact.
+                "row_count_estimate": info.get("reltuples"),
+                "row_count_basis": "estimated",
+            }
+
+    def _catalog_table_summary(self, schema_name: str) -> dict[str, dict]:
+        """{table_name: {table_type, reltuples}} from `pg_class`/`pg_namespace`
+        for one schema — catalog metadata, readable by any connected role
+        regardless of `USAGE`/`SELECT` grants (same fact
+        `get_credential_capability()` relies on). `reltuples` is the row
+        estimate from the last `ANALYZE`, not a live count.
+        """
+        query = """
+            SELECT c.relname AS table_name, c.relkind, c.reltuples
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relkind IN ('r', 'p', 'v', 'm')
+        """
+        rows = self.execute_query(query, (schema_name,))
+        kind_to_type = {
+            "r": "BASE TABLE", "p": "BASE TABLE",
+            "v": "VIEW", "m": "MATERIALIZED VIEW",
+        }
+        out: dict[str, dict] = {}
+        for r in rows:
+            name = r.get("table_name")
+            if not name:
+                continue
+            reltuples = r.get("reltuples")
+            out[name] = {
+                "table_type": kind_to_type.get(r.get("relkind"), ""),
+                "reltuples": (
+                    int(reltuples) if reltuples is not None and reltuples >= 0 else None
+                ),
+            }
+        return out
+
+    def _catalog_columns_for_table(self, schema_name: str, table_name: str) -> list[dict]:
+        """Column names and Postgres type names from `pg_attribute`, for the
+        catalog-only fallback path.
+
+        Deliberately does NOT attempt `is_nullable`, `column_default`,
+        primary/foreign-key detail or a comment for these columns — this
+        codebase's PK/FK/default/comment lookups all go through
+        `information_schema`/`obj_description()`/`col_description()`, which
+        are exactly the privilege-filtered paths this fallback exists
+        because of. Reporting `nullable`/`is_primary_key` as a guessed
+        `False` here would be a confident wrong answer of the same shape
+        this whole change exists to avoid, so those fields are left `None`/
+        absent rather than defaulted.
+        """
+        query = """
+            SELECT a.attname AS column_name,
+                   a.attnum  AS ordinal_position,
+                   format_type(a.atttypid, a.atttypmod) AS data_type
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+              AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
+        """
+        try:
+            rows = self.execute_query(query, (schema_name, table_name))
+        except Exception:
+            return []
+        columns = []
+        for r in rows:
+            name = r.get("column_name")
+            if not name:
+                continue
+            data_type = r.get("data_type") or ""
+            columns.append({
+                "name": name,
+                "type": data_type,
+                "base_type": data_type,
+                "nullable": None,
+                "default": None,
+                "position": r.get("ordinal_position"),
+                "description": "",
+                "is_primary_key": None,
+                "foreign_key": None,
+                "source": "catalog_fallback",
+            })
+        return columns
 
     def list_databases(self) -> list[dict]:
         """List all databases on this server that the current user can connect to."""
@@ -266,12 +765,555 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception as e:
             raise RuntimeError(f"Could not list databases: {e}") from e
 
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        """Postgres declares the capabilities this and the prior slice
+        extract: `query_stats` (`pg_stat_statements`) stays False
+        deliberately — see EngineCapabilities' docstring; nothing in this
+        class reads it yet, so declaring True would be a promise this code
+        does not keep.
+        """
+        return EngineCapabilities(
+            column_stats=True,
+            tuple_counters=True,
+            index_stats=True,
+            replication_status=True,
+            resilience=True,
+            external_dependencies=True,
+            privileges=True,
+            # Phase 1 slice 10: `TABLESAMPLE SYSTEM`/`BERNOULLI` with
+            # `REPEATABLE (seed)`, which is what `sampling.py` builds and what
+            # design §5.8 names specifically in preference to
+            # `ORDER BY random() LIMIT n`.
+            value_sampling=True,
+            # `credential_capability` probe — pg_namespace/pg_class,
+            # has_schema_privilege/has_table_privilege and pg_has_role all
+            # exist on every Postgres this codebase supports.
+            credential_introspection=True,
+        )
+
+    @property
+    def containment(self) -> EngineContainment:
+        """server → database → schema, per REPLY-SCHEMA-AS-SUB-RESOURCE.md §5's
+        first table row. The one engine declared in this slice."""
+        return POSTGRES_CONTAINMENT
+
+    def get_column_stats(self) -> list[dict]:
+        """Per-column `pg_stats` — populated only after `ANALYZE` has run.
+
+        Design §5.1: null_frac, n_distinct, most_common_vals,
+        most_common_freqs, histogram_bounds, avg_width, correlation — column
+        profiling without sampling.
+
+        A column with no matching row here has not been measured as "having
+        no values" — it has never been analyzed. That distinction is made by
+        the caller, which knows the full column catalog from
+        `get_schema_info()` and can tell "in the catalog, absent from
+        pg_stats" from "genuinely profiled". This method only reports what
+        pg_stats has; it never fabricates a row for a column ANALYZE has not
+        reached.
+
+        Joins in `pg_class.reltuples` — the row-count estimate from the SAME
+        `ANALYZE` run that produced `n_distinct` — because resolving
+        `n_distinct`'s negative-ratio form needs the row count *as of that
+        analyze*, not a live count read separately (design review round 2,
+        2026-09-21: `pg_stat_user_tables.n_live_tup` drifts from
+        `pg_class.reltuples` between analyzes, so multiplying a ratio
+        computed at analyze time by a row count read at survey time is an
+        internally inconsistent number, even once the sign is fixed).
+        """
+        query = """
+            SELECT
+                s.schemaname, s.tablename, s.attname,
+                s.null_frac, s.n_distinct, s.avg_width, s.correlation,
+                s.most_common_vals::text  AS most_common_vals,
+                s.most_common_freqs::text AS most_common_freqs,
+                s.histogram_bounds::text  AS histogram_bounds,
+                c.reltuples
+            FROM pg_stats s
+            LEFT JOIN pg_namespace n ON n.nspname = s.schemaname
+            LEFT JOIN pg_class c ON c.relname = s.tablename AND c.relnamespace = n.oid
+            WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY s.schemaname, s.tablename, s.attname
+        """
+        try:
+            return self.execute_query(query)
+        except Exception:
+            return []
+
+    def get_table_activity(self) -> list[dict]:
+        """Per-table tuple counters, live/dead rows, scan counts and
+        vacuum/analyze recency from `pg_stat_user_tables` (design §5.1) —
+        the full set `database_table_activity` has columns for, not just the
+        row-count/last-analyzed subset `_get_table_row_stats` already feeds
+        into `schema_info` for display.
+
+        A table absent from this result (present in the catalog but missing
+        here) has not been reported as inactive — Postgres has not
+        accumulated a statistics-collector row for it yet, which is rare but
+        distinct from "zero activity" (a real row with all-zero counters).
+        """
+        query = """
+            SELECT
+                schemaname, relname AS tablename,
+                n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+                n_live_tup, n_dead_tup,
+                seq_scan, idx_scan,
+                last_vacuum, last_autovacuum, last_analyze, last_autoanalyze,
+                n_mod_since_analyze AS pending_changes
+            FROM pg_stat_user_tables
+            ORDER BY schemaname, relname
+        """
+        try:
+            rows = self.execute_query(query)
+        except Exception:
+            return []
+        result = []
+        for r in rows:
+            result.append({
+                "schemaname": r.get("schemaname", ""),
+                "tablename": r.get("tablename", ""),
+                "rows_inserted": r.get("n_tup_ins"),
+                "rows_updated": r.get("n_tup_upd"),
+                "rows_deleted": r.get("n_tup_del"),
+                "hot_updates": r.get("n_tup_hot_upd"),
+                "live_tuples": r.get("n_live_tup"),
+                "dead_tuples": r.get("n_dead_tup"),
+                "seq_scan": r.get("seq_scan"),
+                "idx_scan": r.get("idx_scan"),
+                "last_vacuum": str(r["last_vacuum"]) if r.get("last_vacuum") else "",
+                "last_autovacuum": str(r["last_autovacuum"]) if r.get("last_autovacuum") else "",
+                "last_analyze": str(r["last_analyze"]) if r.get("last_analyze") else "",
+                "last_autoanalyze": str(r["last_autoanalyze"]) if r.get("last_autoanalyze") else "",
+                "pending_changes": r.get("pending_changes"),
+            })
+        return result
+
+    def get_stats_reset(self) -> str:
+        """When `pg_stat_database` last reset this database's counters.
+
+        The evidence `database_table_activity.stats_reset` exists to carry
+        (see `result_materializer.py`'s identical comment on the native
+        path) — a change comparator (design §9.1, Phase 1 slice 14) needs
+        this to tell a real rate from the negative delta a reset produces.
+        """
+        try:
+            rows = self.execute_query(
+                "SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()"
+            )
+            value = rows[0].get("stats_reset") if rows else None
+            return str(value) if value else ""
+        except Exception:
+            return ""
+
+    def get_index_stats(self) -> list[dict]:
+        """Per-index usage from `pg_stat_user_indexes`, joined to `pg_index`
+        for uniqueness/primary-key — design §5.1's "index usage and
+        unused-index detection".
+
+        `idx_scan == 0` is the unused-index signal, with the same staleness
+        caveat as the tuple counters: it is a count since the last stats
+        reset (`get_stats_reset()`), not since the index was created.
+        """
+        query = """
+            SELECT
+                s.schemaname, s.relname AS tablename, s.indexrelname,
+                s.idx_scan, s.idx_tup_read, s.idx_tup_fetch,
+                i.indisunique  AS is_unique,
+                i.indisprimary AS is_primary,
+                pg_relation_size(s.indexrelid) AS index_size_bytes
+            FROM pg_stat_user_indexes s
+            JOIN pg_index i ON i.indexrelid = s.indexrelid
+            ORDER BY s.schemaname, s.relname, s.indexrelname
+        """
+        try:
+            return self.execute_query(query)
+        except Exception:
+            return []
+
+    # ── Phase 1 slice 8: postgres_operations (design §5.1, §5.4, §5.5, §5.7) ──
+    # Six new reads backing `privilege_audit`, `db_activity_signals` (which
+    # reuses get_table_activity()/get_stats_reset() above rather than
+    # querying pg_stat_user_tables a second way), `db_resilience` and
+    # `db_external_dependencies`. Each method never raises — a query
+    # failure (missing catalog view, insufficient privilege) yields an
+    # empty result, and it is the CALLER (gated on `capabilities` above)
+    # that says whether "empty" here means "measured, none" or "could not
+    # be measured" — same division of responsibility as get_column_stats()
+    # and get_table_activity() already establish.
+
+    def get_privilege_audit(self) -> dict:
+        """Roles, table grants and default ACLs (design §5.1's catalog-source
+        table; §5.4's `privilege_audit` row) — "who can read and write
+        what", including the PUBLIC grants `postgres_operations` raises an
+        RFA on.
+        """
+        # Each field below is an independent read: a failure on one (e.g.
+        # insufficient privilege on pg_default_acl) must not take out the
+        # other two, so each gets its own try/except with an explicit
+        # fallback re-assignment in the except body (never a bare `pass`) —
+        # that fallback keeps the failure's default visible in the code, in
+        # the shape `tests/test_no_silent_success.py`'s ratchet expects of a
+        # handler in a value-returning function.
+        roles: list[dict] = []
+        try:
+            roles = self.execute_query("""
+                SELECT rolname, rolsuper, rolcreaterole, rolcreatedb,
+                       rolcanlogin, rolreplication, rolbypassrls
+                FROM pg_roles
+                WHERE rolname NOT LIKE 'pg\\_%'
+                ORDER BY rolname
+            """)
+        except Exception:
+            roles = []
+
+        table_grants: list[dict] = []
+        try:
+            # NOT information_schema.role_table_grants — found live while
+            # verifying grant_change against a real PUBLIC grant on coco_ods
+            # (2026-09-22): that view only shows grants where the CURRENT
+            # connecting role is the grantor or grantee (or a member of one),
+            # per its own Postgres documentation. Confirmed directly: as
+            # `egeria_user` (RE's stored, non-superuser credential — the
+            # ordinary case, not a special one), it returned egeria_user's
+            # own SELECT and nothing else, hiding both the table owner's
+            # grants AND a real `GRANT SELECT ... TO PUBLIC` on the same
+            # table — exactly the design §9.1 done-test case
+            # ("especially to PUBLIC") this survey exists to catch. pg_class
+            # ACLs are catalog metadata, visible to any connected role
+            # regardless of what that role itself was granted, so this reads
+            # the real ACL as stored rather than only the slice of it that
+            # happens to involve the connecting role.
+            table_grants = self.execute_query("""
+                SELECT
+                    n.nspname AS table_schema,
+                    c.relname AS table_name,
+                    CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                         ELSE acl.grantee::regrole::text END AS grantee,
+                    acl.privilege_type,
+                    acl.is_grantable
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                  AND c.relacl IS NOT NULL
+                ORDER BY table_schema, table_name, grantee, privilege_type
+            """)
+        except Exception:
+            table_grants = []
+
+        default_acl: list[dict] = []
+        try:
+            default_acl = self.execute_query("""
+                SELECT
+                    n.nspname                    AS schema_name,
+                    a.defaclrole::regrole::text  AS role_name,
+                    a.defaclobjtype              AS object_type,
+                    a.defaclacl::text            AS acl
+                FROM pg_default_acl a
+                LEFT JOIN pg_namespace n ON n.oid = a.defaclnamespace
+                ORDER BY schema_name NULLS FIRST, role_name
+            """)
+        except Exception:
+            default_acl = []
+
+        return {"roles": roles, "table_grants": table_grants, "default_acl": default_acl}
+
+    def get_credential_capability(self) -> dict:
+        """What THIS credential can see and do, as distinct from what the
+        database contains — the `credential_capability` probe (design: REPLY-
+        DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md §0/§3/§4).
+
+        `pg_namespace` and `pg_class` are catalog metadata, readable by any
+        connected role regardless of `USAGE`/`SELECT` grants — confirmed
+        directly against the incident that prompted this (a real `coco_pharma`
+        database, connected as `egeria_user`): `information_schema.schemata`
+        showed 6 of the database's real 8 schemas, and `has_table_privilege`
+        found `SELECT` on only 3 of `coco_ods`'s real tables despite `USAGE`
+        on the schema itself. So the unfiltered pg_* counts here are the
+        honest denominator ("of M"), not an under-count — the blind spot has a
+        known size.
+
+        Every read is catalog metadata or a privilege-CHECK function call.
+        `has_table_privilege(..., 'INSERT')` is called for every visible
+        table to answer "could this credential write", but no write is ever
+        attempted — `write_capable` is a probe result, reported honestly as
+        such, never an exercised capability.
+        """
+        connected_as = ""
+        try:
+            rows = self.execute_query("SELECT current_user AS connected_as")
+            connected_as = rows[0].get("connected_as") or "" if rows else ""
+        except Exception:
+            connected_as = ""
+
+        schemas: list[dict] = []
+        try:
+            schemas = self.execute_query("""
+                SELECT n.nspname AS schema_name,
+                       has_schema_privilege(current_user, n.nspname, 'USAGE') AS usage_granted
+                FROM pg_namespace n
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY n.nspname
+            """)
+        except Exception:
+            schemas = []
+
+        tables: list[dict] = []
+        try:
+            tables = self.execute_query("""
+                SELECT n.nspname AS schema_name, c.relname AS table_name,
+                       has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
+                       has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY n.nspname, c.relname
+            """)
+        except Exception:
+            tables = []
+
+        stats_role = False
+        try:
+            # pg_monitor (PG 10+) is the standard predefined role for read
+            # access to monitoring views/functions (pg_stat_*, pg_read_all_
+            # stats implied). MEMBER (not USAGE) is the correct third
+            # argument for a role-membership check.
+            rows = self.execute_query(
+                "SELECT pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_role"
+            )
+            stats_role = bool(rows[0].get("has_role")) if rows else False
+        except Exception:
+            stats_role = False
+
+        by_schema: dict[str, dict] = {}
+        for s in schemas:
+            by_schema[s["schema_name"]] = {
+                "usage_granted": bool(s.get("usage_granted")),
+                "table_total": 0,
+                "table_select": 0,
+            }
+        for t in tables:
+            sc = by_schema.setdefault(
+                t["schema_name"],
+                {"usage_granted": False, "table_total": 0, "table_select": 0},
+            )
+            sc["table_total"] += 1
+            if t.get("can_select"):
+                sc["table_select"] += 1
+
+        return {
+            "connected_as": connected_as,
+            "schema_total": len(schemas),
+            "schema_visible": sum(1 for s in schemas if s.get("usage_granted")),
+            "table_total": len(tables),
+            "table_select": sum(1 for t in tables if t.get("can_select")),
+            "by_schema": by_schema,
+            "stats_role": stats_role,
+            #: Always True: this method never skips the write probe, it only
+            #: ever skips the write itself.
+            "write_probed": True,
+            "write_capable": any(t.get("can_insert") for t in tables),
+        }
+
+    def get_replication_status(self) -> dict:
+        """Whether this connection is a standby, and — if it is a primary —
+        which replicas are attached and how far behind (design §5.5).
+
+        `is_in_recovery` is `None` only if `pg_is_in_recovery()` itself could
+        not be queried (should not happen on a reachable Postgres server);
+        that is a genuinely different, worse case than "queried and it said
+        false", so the two are kept distinguishable rather than both
+        defaulting to `False`.
+        """
+        is_in_recovery: bool | None = None
+        try:
+            rows = self.execute_query("SELECT pg_is_in_recovery() AS in_recovery")
+            is_in_recovery = bool(rows[0]["in_recovery"]) if rows else None
+        except Exception:
+            is_in_recovery = None
+
+        replicas: list[dict] = []
+        try:
+            rows = self.execute_query("""
+                SELECT
+                    application_name,
+                    client_addr::text AS client_addr,
+                    state,
+                    sync_state,
+                    EXTRACT(EPOCH FROM replay_lag) AS replay_lag_seconds
+                FROM pg_stat_replication
+                ORDER BY application_name
+            """)
+            for r in rows:
+                replicas.append({
+                    "application_name": r.get("application_name") or "",
+                    "client_addr": r.get("client_addr") or "",
+                    "state": r.get("state") or "",
+                    "sync_state": r.get("sync_state") or "",
+                    "replay_lag_seconds": (
+                        float(r["replay_lag_seconds"])
+                        if r.get("replay_lag_seconds") is not None else None
+                    ),
+                })
+        except Exception:
+            replicas = []
+
+        return {"is_in_recovery": is_in_recovery, "replicas": replicas}
+
+    def get_wal_archiving_status(self) -> dict:
+        """Is WAL archiving on, and is it succeeding (design §5.5)."""
+        archive_mode = ""
+        try:
+            rows = self.execute_query("SHOW archive_mode")
+            archive_mode = str(rows[0].get("archive_mode", "")) if rows else ""
+        except Exception:
+            archive_mode = ""
+
+        archived_count = None
+        failed_count = None
+        last_archived_time = ""
+        last_failed_time = ""
+        try:
+            rows = self.execute_query("""
+                SELECT archived_count, failed_count,
+                       last_archived_time::text AS last_archived_time,
+                       last_failed_time::text   AS last_failed_time
+                FROM pg_stat_archiver
+            """)
+            if rows:
+                r = rows[0]
+                archived_count = r.get("archived_count")
+                failed_count = r.get("failed_count")
+                last_archived_time = r.get("last_archived_time") or ""
+                last_failed_time = r.get("last_failed_time") or ""
+        except Exception:
+            archived_count, failed_count = None, None
+            last_archived_time, last_failed_time = "", ""
+
+        return {
+            "archive_mode": archive_mode,
+            "archived_count": archived_count,
+            "failed_count": failed_count,
+            "last_archived_time": last_archived_time,
+            "last_failed_time": last_failed_time,
+        }
+
+    def get_backup_tool_signals(self) -> dict:
+        """Presence of a known backup-tool extension (design §5.5: "partly"
+        observable). Detecting the extension does not prove a backup is
+        configured or succeeding — only that the tooling is installed —
+        which is exactly the "partial signal" design §5.5 says this is, not
+        the last-backup-date/restore-test-date questions it explicitly
+        marks as not machine-observable at all.
+        """
+        known_tool_markers = ("pgbackrest", "pg_backrest", "wal-g", "wal_g", "barman")
+        detected: list[str] = []
+        try:
+            rows = self.execute_query("SELECT extname FROM pg_extension ORDER BY extname")
+            for r in rows:
+                name = (r.get("extname") or "")
+                if any(marker in name.lower() for marker in known_tool_markers):
+                    detected.append(name)
+        except Exception:
+            detected = []
+        return {"detected_extensions": detected}
+
+    def get_clustering_info(self) -> dict:
+        """Citus clustering catalogs, when the extension is present (design
+        §5.5: "partly" observable). Patroni-via-REST and managed-service HA
+        are deliberately out of scope for a connection-layer catalog read —
+        see `DB-OPERATIONS-STEP-IMPLEMENTED.md`'s scoped-out section.
+        """
+        citus_detected = False
+        citus_version = None
+        try:
+            rows = self.execute_query(
+                "SELECT extversion FROM pg_extension WHERE extname = 'citus'"
+            )
+            if rows:
+                citus_detected = True
+                citus_version = rows[0].get("extversion")
+        except Exception:
+            citus_detected, citus_version = False, None
+        return {"citus_detected": citus_detected, "citus_version": citus_version}
+
+    def get_external_dependencies(self) -> dict:
+        """What this database depends on outside itself (design §5.4):
+        extensions, foreign data wrappers/servers/tables, and logical
+        replication publications/subscriptions.
+        """
+        extensions: list[dict] = []
+        foreign_servers: list[dict] = []
+        foreign_tables: list[dict] = []
+        publications: list[dict] = []
+        subscriptions: list[dict] = []
+        try:
+            extensions = self.execute_query(
+                "SELECT extname, extversion FROM pg_extension ORDER BY extname"
+            )
+        except Exception:
+            extensions = []
+        try:
+            foreign_servers = self.execute_query("""
+                SELECT fs.srvname, fdw.fdwname
+                FROM pg_foreign_server fs
+                JOIN pg_foreign_data_wrapper fdw ON fdw.oid = fs.srvfdw
+                ORDER BY fs.srvname
+            """)
+        except Exception:
+            foreign_servers = []
+        try:
+            foreign_tables = self.execute_query("""
+                SELECT n.nspname AS schema_name, c.relname AS table_name, fs.srvname
+                FROM pg_foreign_table ft
+                JOIN pg_class c ON c.oid = ft.ftrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_foreign_server fs ON fs.oid = ft.ftserver
+                ORDER BY schema_name, table_name
+            """)
+        except Exception:
+            foreign_tables = []
+        try:
+            publications = self.execute_query(
+                "SELECT pubname FROM pg_publication ORDER BY pubname"
+            )
+        except Exception:
+            publications = []
+        try:
+            # Only visible to a superuser/subscription-owning role on the
+            # subscriber database — a permission error here is swallowed to
+            # empty by the same try/except as every other read in this
+            # method, which means "no subscriptions" and "not permitted to
+            # see pg_subscription" are not distinguished per-item. That is a
+            # known simplification (see DB-OPERATIONS-STEP-IMPLEMENTED.md);
+            # the whole-method `external_dependencies` capability gate is
+            # what distinguishes "this engine can't do this at all".
+            subscriptions = self.execute_query(
+                "SELECT subname FROM pg_subscription ORDER BY subname"
+            )
+        except Exception:
+            subscriptions = []
+        return {
+            "extensions": extensions,
+            "foreign_servers": foreign_servers,
+            "foreign_tables": foreign_tables,
+            "publications": publications,
+            "subscriptions": subscriptions,
+        }
+
     def get_statistics(self) -> dict:
         """Get database statistics."""
         stats = {
             "database_size": self._get_database_size(),
             "table_stats": self._get_table_statistics(),
             "row_stats": self._get_table_row_stats(),
+            "column_stats": self.get_column_stats(),
+            "table_activity": self.get_table_activity(),
+            "index_stats": self.get_index_stats(),
+            "stats_reset": self.get_stats_reset(),
         }
         return stats
 

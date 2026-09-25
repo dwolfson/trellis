@@ -28,6 +28,14 @@ ANNOTATION_CTORS = {
     "Annotation", "ClassificationAnnotation", "RequestForActionAnnotation",
     "ResourceMeasureAnnotation", "QualityScoreAnnotation",
     "SchemaAnalysisAnnotation", "DataClassAnnotation", "RelationshipAnnotation",
+    # Added 2026-09-21. These three annotation classes existed (the first from
+    # Phase 1 slice 8, the other two from slice 9) but were absent from this
+    # set, which meant every check in this file silently skipped their call
+    # sites — a new annotation class arrives unguarded by default, and nothing
+    # says so. The set is the guard's own blind spot, so a new class belongs
+    # here in the same change that introduces it.
+    "ResourcePhysicalStatusAnnotation", "DataGrainAnnotation",
+    "FingerprintAnnotation",
 }
 
 #: FS and DB surveying is deferred until the repo path is finished (2026-09-02),
@@ -88,6 +96,53 @@ KNOWN_EXCLUSIVE = {
     ("sub_surveyors/sla_content.py", "sla_content"),
     ("sub_surveyors/sub_resource_survey.py", "sub_resource_survey"),
     ("sub_surveyors/telemetry_scan.py", "telemetry_scan"),
+    # Added 2026-09-21 with `db_derived` (Phase 1 slice 9). Each of these four
+    # is one check with two branches — the absence branch and the measured
+    # branch — in a single `_*_annotations()` helper whose absence branch is an
+    # early `return [...]`, so the two can never both run for one check in one
+    # survey. Same shape as contribution_provenance/secret_scan above.
+    # Verified by reading each helper, not assumed: `_classification_
+    # annotations`, `_graph_annotations`, `_change_rate_annotations` and
+    # `_scope_annotations` all `return` the absence list immediately.
+    ("database/db_derived.py", "db_classification"),
+    ("database/db_derived.py", "db_relationship_graph"),
+    ("database/db_derived.py", "db_change_rates"),
+    ("database/db_derived.py", "proposed_data_scope"),
+    # Surfaced only once FingerprintAnnotation was added to ANNOTATION_CTORS
+    # above — which is the point of adding it. `_fingerprint_annotations`'
+    # absence branch is the same early `return`.
+    ("database/db_derived.py", "db_fingerprint"),
+    # Added 2026-09-22 with the grant_change/schema_diff (column half)
+    # comparators (Phase 1 slice 14 follow-up, design §9.1).
+    # `_schema_diff_annotations`/`_grant_change_annotations` have the exact
+    # same shape as the four above: an early-`return` absence branch
+    # (insufficient_history) and a measured branch, verified by reading —
+    # never both in one run.
+    ("database/db_derived.py", "schema_diff"),
+    ("database/db_derived.py", "grant_change"),
+    # Added 2026-09-24 with design §16.3's Scouting/Discovery rows. Same shape
+    # again, verified by reading each helper rather than assumed:
+    #   `_subject_annotations`         — absence/"no subject term" branch is an
+    #                                    early `return [...]`.
+    #   `_coverage_annotations`        — the whole-payload absence branch is an
+    #                                    early `return [...]`; the three
+    #                                    per-block annotations it otherwise
+    #                                    builds carry DISTINCT check names
+    #                                    (`coverage_signals_temporal`/`_spatial`
+    #                                    /`_partitions`), so they do not share
+    #                                    one and are not listed here.
+    #   `coverage_signals_temporal`    — the exception, and the one that
+    #                                    matters: two sites for ONE check, the
+    #                                    measured window and the
+    #                                    no-dates/run-ANALYZE branch, in a
+    #                                    single if/else. Mutually exclusive by
+    #                                    construction, and they must stay one
+    #                                    check because a reader following "what
+    #                                    period does this cover" needs to see
+    #                                    the answer change from unknown to
+    #                                    measured under the same name.
+    ("database/db_derived.py", "subject_signals"),
+    ("database/db_derived.py", "coverage_signals_temporal"),
 }
 
 

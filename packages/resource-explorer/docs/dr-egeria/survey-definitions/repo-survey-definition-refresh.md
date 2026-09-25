@@ -68,7 +68,7 @@ Refreshes the project's pgvector collections via IncrementalIndexer — the quer
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_rag_ingestion |
 

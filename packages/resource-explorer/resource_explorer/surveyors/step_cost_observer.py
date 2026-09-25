@@ -36,15 +36,39 @@ the duration of a step. Under concurrent surveys in one process the count can
 attribute another thread's connection to this step, so a NON-ZERO count on a
 step declared zero-fetch is a prompt to look, not a proof. A zero count is the
 trustworthy direction, and that asymmetry is stated rather than hidden.
+
+**And there is a second asymmetry, found while verifying §17.2 live against a
+real database (2026-09-23): the zero is NOT trustworthy for a step that
+connects through libpq.** `psycopg2` opens its socket inside the C client, so
+`socket.socket.connect` is never called and `connects` comes back 0 for a
+`postgres_schema_and_stats` run that demonstrably opened a connection. The
+`fetch_cost='none'` disagreement check therefore cannot fire for ANY database
+step, which is worth knowing before reading a clean board as evidence. The
+database family's real fetch signal is `api_calls`/`bytes_fetched` over HTTP
+(Egeria) plus, when it is built, §17.2's `source_queries` — the optional,
+sampled axis this phase deliberately does not build.
+
+**Seconds are one axis of a vector (2026-09-23, design §17.2).** Wall time is
+what the user waits and is not what the funnel's argument is about: a step
+that waits on the network is cheap in CPU and slow in wall time, and for
+repositories the scarce resource is the GitHub rate budget rather than either.
+`observe()` now also captures CPU time, bytes fetched, API and Egeria calls,
+cache hits, LLM tokens and the step's own yield, and `record()` writes the
+whole vector as one `step_runs` row instead of two per-step metrics scattered
+across project rows. The old `project_analysis_metrics` write is KEPT — the
+`funnel-cost-measured.md` measurement and every existing reader query it, and
+a migration that moved the numbers on the same day the vector arrived would
+have made a gap in the history look like a change in the costs.
 """
 from __future__ import annotations
 
 import logging
+import resource
 import socket
 import threading
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +117,71 @@ class Observation:
     #: Empty when observation and declaration agree.
     disagreement: str = ""
 
+    # ── the rest of §17.2's vector ───────────────────────────────────────
+    #: Process CPU time consumed inside the step, in ms — *compute*, which is
+    #: what tier placement actually claims. -1 = not captured.
+    cpu_ms: float = -1.0
+    #: Bytes that arrived over the network into RE during the step.
+    bytes_fetched: int = 0
+    #: True when every counted request could be sized. False makes
+    #: `bytes_fetched` a floor, and a reader must not add it up as a total.
+    bytes_complete: bool = True
+    api_calls: int = 0
+    api_calls_by_host: dict = field(default_factory=dict)
+    egeria_calls: int = 0
+    llm_tokens_in: int = 0
+    llm_tokens_out: int = 0
+    #: `SourceCache` hits/misses within the step, and the three-state label
+    #: `cold`/`warm`/`not-consulted` — so a warm run is not mistaken for a
+    #: cheap step (22.6s cold vs 1.3s warm is one step's real range), and a
+    #: database survey that consults no cache at all is not filed as "warm".
+    cache_hits: int = 0
+    cache_misses: int = 0
+    acquisition: str = "not-consulted"
+    #: How many catalog questions this step's analyses answer — yield's
+    #: denominator. -1 = could not be determined (the catalog did not load),
+    #: which is not 0.
+    questions_answered: int = -1
+    #: local / prefect / egeria / remote, and whose engine's numbers these are.
+    executor: str = "local"
+    source: str = "local"
+    #: Prefect flow-run id or Egeria engine-action GUID, for linking out.
+    executor_ref: str = ""
+    #: §17.1's attribution: "" for a directly-requested step, the requesting
+    #: step's key for an auto-run prerequisite.
+    demanded_by: str = ""
+
+    def vector(self) -> dict:
+        """The cost vector as it is stored, one key per §17.2 axis.
+
+        `annotations`/`questions_answered` carry -1 for "not captured", never
+        0 — a step that produced nothing and a step whose yield was never
+        looked at must not read alike, which is the whole reason this module
+        records yield beside duration at all.
+        """
+        return {
+            "wall_ms": round(self.elapsed * 1000.0, 1),
+            "cpu_ms": round(self.cpu_ms, 1),
+            "bytes_fetched": self.bytes_fetched,
+            "bytes_complete": self.bytes_complete,
+            "api_calls": self.api_calls,
+            "api_calls_by_host": dict(self.api_calls_by_host),
+            "egeria_calls": self.egeria_calls,
+            "llm_tokens_in": self.llm_tokens_in,
+            "llm_tokens_out": self.llm_tokens_out,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "acquisition": self.acquisition,
+            "connects": self.connects,
+            "annotations": self.annotations,
+            "questions_answered": self.questions_answered,
+            "outcomes": list(self.outcomes),
+            "interpretable": self.interpretable,
+        }
+
+    def declared_vector(self) -> dict:
+        return {"fetch_cost": self.declared_fetch, "compute_cost": self.declared_compute}
+
     @property
     def interpretable(self) -> bool:
         """Can this timing be reasoned about at all?
@@ -109,15 +198,47 @@ class Observation:
         return not self.disagreement
 
 
+def _cpu_seconds() -> float:
+    """Process CPU time (user + system), self and children.
+
+    Children are included because two of the most expensive things a step
+    does — `git` and the zipball extraction — run as subprocesses, and a
+    measure of "compute" that left them out would report the heaviest steps
+    in this package as costing nothing.
+
+    Process-wide, so a concurrent survey in another thread inflates it, the
+    same crudeness (and the same direction) the socket counter already
+    states about itself: a high number is a prompt to look, a low one is
+    trustworthy.
+    """
+    try:
+        me = resource.getrusage(resource.RUSAGE_SELF)
+        kids = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return me.ru_utime + me.ru_stime + kids.ru_utime + kids.ru_stime
+    except Exception:  # pragma: no cover - platform guard
+        return float("nan")
+
+
 @contextmanager
-def observe(step_key: str, declared_fetch: str, declared_compute: str):
-    """Time a step and count the connections it opens, then compare.
+def observe(step_key: str, declared_fetch: str, declared_compute: str,
+            *, executor: str = "local", source: str = "local",
+            executor_ref: str = "", demanded_by: str = ""):
+    """Measure a step's whole cost vector, then compare it with what it declared.
 
     Yields a one-element list that receives the Observation on exit, so a
     caller can read the result without the context manager having to return
     two things.
+
+    The three ContextVar scopes (`acquisition`, `llm_usage`, `external_calls`)
+    nest, so wrapping a prerequisite step inside a demanding one attributes
+    the cost to BOTH — which is §17.1 condition 3's requirement, not an
+    accident: "why did Scouting take three minutes" is answered by the
+    demanding step carrying its prerequisite's cost, while `demanded_by` on
+    the producer's own row keeps the two separable.
     """
     global _connect_count, _patched
+    from resource_explorer.observability import acquisition, external_calls, llm_usage
+
     out: list[Observation] = []
     with _counter_lock:
         start_count = _connect_count
@@ -126,17 +247,38 @@ def observe(step_key: str, declared_fetch: str, declared_compute: str):
             socket.socket.connect = _counting_connect  # type: ignore[method-assign]
             _patched = True
     t0 = time.perf_counter()
-    try:
-        yield out
-    finally:
-        elapsed = time.perf_counter() - t0
-        with _counter_lock:
-            connects = _connect_count - start_count
-        obs = Observation(step_key, elapsed, connects, declared_fetch, declared_compute)
-        obs.disagreement = _disagreement(obs)
-        out.append(obs)
-        if obs.disagreement:
-            log.warning("step cost: %s — %s", step_key, obs.disagreement)
+    cpu0 = _cpu_seconds()
+    with ExitStack() as stack:
+        calls = stack.enter_context(external_calls.call_scope())
+        acquired = stack.enter_context(acquisition.acquisition_scope())
+        tokens = stack.enter_context(llm_usage.usage_scope())
+        try:
+            yield out
+        finally:
+            elapsed = time.perf_counter() - t0
+            cpu = _cpu_seconds() - cpu0
+            with _counter_lock:
+                connects = _connect_count - start_count
+            obs = Observation(step_key, elapsed, connects, declared_fetch, declared_compute)
+            obs.cpu_ms = -1.0 if cpu != cpu else round(cpu * 1000.0, 1)
+            obs.bytes_fetched = calls.bytes_fetched
+            obs.bytes_complete = calls.bytes_complete
+            obs.api_calls = calls.api_calls
+            obs.api_calls_by_host = dict(calls.by_host)
+            obs.egeria_calls = calls.egeria_calls
+            obs.cache_hits = acquired.hits
+            obs.cache_misses = acquired.misses
+            obs.acquisition = acquired.state
+            obs.llm_tokens_in = int(getattr(tokens, "prompt_tokens", 0) or 0)
+            obs.llm_tokens_out = int(getattr(tokens, "completion_tokens", 0) or 0)
+            obs.executor = executor
+            obs.source = source
+            obs.executor_ref = executor_ref
+            obs.demanded_by = demanded_by
+            obs.disagreement = _disagreement(obs)
+            out.append(obs)
+            if obs.disagreement:
+                log.warning("step cost: %s — %s", step_key, obs.disagreement)
 
 
 def _disagreement(obs: Observation) -> str:
@@ -231,7 +373,63 @@ def describe_work(annotations) -> tuple[int, tuple[str, ...]]:
     return len(annotations or ()), tuple(sorted(set(outcomes)))
 
 
-def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None) -> str:
+def count_questions_answered(step_key: str, entity_type: str = "repo") -> int:
+    """How many catalog questions this step's analyses answer — §17.2's yield
+    denominator, "questions from the catalog's `analysis_ids` inverse".
+
+    Returns -1 when the catalogs cannot be read. That is not 0: a step whose
+    questions could not be counted and a step that answers none of them are
+    different facts, and cost-per-question divides by this.
+    """
+    try:
+        from resource_explorer.surveyors import question_catalog_reader as qcr
+
+        analyses = _analyses_for_step(step_key, entity_type)
+        if analyses is None:
+            return -1
+        if not qcr.is_authored(entity_type):
+            # No questions authored for this resource type at all. Distinct
+            # from "authored, and none of them need this step" — the first is
+            # a gap in the catalog, the second is a fact about the step.
+            return -1
+        total = 0
+        for entry in qcr.get_questions(entity_type) or ():
+            # `get_questions` returns plain dicts (its own `QuestionList`
+            # carries `QuestionCatalogEntry` dataclasses only internally);
+            # both shapes are read here rather than assuming one, because
+            # guessing wrong here reports every step as answering nothing —
+            # a yield of 0, which is precisely the number this axis exists to
+            # make meaningful.
+            answering = entry.get("answering") if isinstance(entry, dict) \
+                else getattr(entry, "answering", None)
+            ids = set((answering.get("analysis_ids") if isinstance(answering, dict)
+                       else getattr(answering, "analysis_ids", ())) or ())
+            if ids & analyses:
+                total += 1
+        return total
+    except Exception as exc:
+        log.debug("could not count questions answered by %s: %s", step_key, exc)
+        return -1
+
+
+def _analyses_for_step(step_key: str, entity_type: str) -> set[str] | None:
+    """The analysis ids this step is the source of, or None when the map for
+    this resource type is not declared."""
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    try:
+        adapter = get_adapter(entity_type)
+    except Exception:
+        return None
+    provider = getattr(adapter, "analysis_source_steps", None)
+    if provider is None:
+        return None
+    mapping = provider() or {}
+    return {aid for aid, keys in mapping.items() if step_key in (keys or ())}
+
+
+def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None,
+           entity_type: str = "repo") -> str:
     """Persist one observation. Returns FIRST when this is the first ever for
     this step, RECORDED normally, NOT_RECORDED when persistence failed.
 
@@ -241,6 +439,37 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
     distinguishable value rather than only logging: an observer whose own
     writes fail quietly stops being evidence and starts being decoration.
     """
+    # The vector first (§17.2). It comes BEFORE the legacy per-project metric
+    # write below because that write is repo-only by construction:
+    # `project_analysis_metrics` carries a foreign key to `projects(slug)`, so
+    # `upsert_metric` refuses a database or filesystem slug outright. Written
+    # second, its refusal returned NOT_RECORDED and the vector — the
+    # entity-type-agnostic thing this whole section exists to store — was
+    # never attempted, which is how the first live database run produced no
+    # row at all.
+    vector_recorded = True
+    try:
+        if obs.questions_answered < 0:
+            obs.questions_answered = count_questions_answered(obs.step_key, entity_type)
+        registry.record_step_run(
+            slug, obs.step_key, surveyed_at or "",
+            entity_type=entity_type,
+            source=obs.source, executor=obs.executor,
+            executor_ref=obs.executor_ref, demanded_by=obs.demanded_by,
+            metrics=obs.vector(), declared=obs.declared_vector(),
+            disagreement=obs.disagreement,
+        )
+    except Exception as exc:
+        vector_recorded = False
+        log.warning("could not record the step_runs row for %s: %s", obs.step_key, exc)
+
+    if entity_type != "repo":
+        # No legacy metrics for a non-repo resource — there never were any,
+        # and `project_analysis_metrics` cannot hold them. The FIRST-ever
+        # check below reads that same table, so it cannot answer for a
+        # database step either; RECORDED is the honest return, not FIRST.
+        return RECORDED if vector_recorded else NOT_RECORDED
+
     first = False
     history_read = True
     try:
@@ -277,6 +506,10 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
         # Never fail a survey over its own instrumentation — but say so in the
         # return value, not only in a log line nobody is reading.
         log.warning("could not record step cost for %s: %s", obs.step_key, exc)
+        return NOT_RECORDED
+    # The vector is written at the top of this function, before the legacy
+    # metric above — see the comment there for why the order matters.
+    if not vector_recorded:
         return NOT_RECORDED
     if not history_read:
         return NOT_RECORDED

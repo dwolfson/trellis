@@ -95,20 +95,70 @@ def _not_measurable_gaps(registry, slug: str) -> list[dict]:
     return out
 
 
-def _disagreement_gaps(registry, slug: str) -> list[dict]:
+def _disagreement_gaps(registry, slug: str, entity_type: str = "repo") -> list[dict]:
     """One gap per resource-state resolver whose value carries
     `measures_disagree` — facts.py's own disagreement computation
     (`_r_community`, ~line 329), read rather than re-derived so this can never
-    disagree with the card the user is looking at."""
-    from resource_explorer.facts import RESOURCE_STATE_SOURCES
+    disagree with the card the user is looking at.
 
-    project = registry.get(slug)
-    if project is None:
+    Dispatches via `get_adapter(entity_type)` rather than importing
+    `RESOURCE_STATE_SOURCES` directly (which is repo's own table — see its
+    docstring in facts.py) and rather than `registry.get(slug)` (the
+    repo-only `projects` table lookup, which returns None for a database or
+    filesystem slug even when it exists).
+
+    Two DIFFERENT absences are distinguished here on purpose, per
+    find-absence-as-answer: "this resource type declares no disagreement
+    checks at all" (repo is the only type with a `state_sources` provider
+    today — `[]` is a true, checked absence) is not the same claim as "we
+    could not find/evaluate the resource" (logged, not silently folded into
+    the same `[]`). Both still return `[]` to the caller because this
+    function's return shape has no third gap_kind for "not applicable to
+    this type" — see the module docstring's two shapes — but the distinction
+    is now visible in the logs rather than indistinguishable in the result.
+    """
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        get_adapter,
+    )
+
+    try:
+        adapter = get_adapter(entity_type)
+    except SurveyDefinitionExecutorError:
+        log.debug("_disagreement_gaps: no Survey Definition adapter registered "
+                  "for entity_type=%r — nothing to check (never established, "
+                  "not the same as 'checked, no disagreement')", entity_type)
         return []
+
+    state_sources_provider = adapter.state_sources
+    if not callable(state_sources_provider):
+        # Undeclared, not empty. Today only repo declares a `state_sources`
+        # provider (RESOURCE_STATE_SOURCES) — database/filesystem leave it
+        # None deliberately (their own adapter modules say so). A resource
+        # type with no provider has genuinely nothing for this function to
+        # check, which is a true `[]` — but it must never be reached by
+        # accidentally resolving repo's table for a non-repo slug, which is
+        # what `registry.get(slug)` returning None used to collapse into the
+        # same silent `[]` as "no state sources for this type" without a way
+        # to tell the two apart.
+        log.debug("_disagreement_gaps: entity_type=%r declares no "
+                  "state_sources — no disagreement checks exist for this "
+                  "type (not the same as 'checked, found none')", entity_type)
+        return []
+    state_sources = state_sources_provider() or {}
+
+    entity = adapter.get_entity(registry, slug)
+    if entity is None:
+        log.debug("_disagreement_gaps: entity_type=%r slug=%r not found — "
+                  "could not evaluate its %d declared state-source "
+                  "resolver(s) (unmeasured, not 'no disagreement')",
+                  entity_type, slug, len(state_sources))
+        return []
+
     out = []
-    for question, (resolver, subject) in RESOURCE_STATE_SOURCES.items():
+    for question, (resolver, subject) in state_sources.items():
         try:
-            value, _state = resolver(registry, project)
+            value, _state = resolver(registry, entity)
         except Exception as exc:
             # A resolver failing to run is not itself a disagreement — it is
             # the kind of "could not check" the not_measurable half already
@@ -133,19 +183,26 @@ def _disagreement_gaps(registry, slug: str) -> list[dict]:
     return out
 
 
-def collect_gaps(registry, slug: str) -> list[dict]:
+def collect_gaps(registry, slug: str, entity_type: str = "repo") -> list[dict]:
     """Every gap about the analysis, for one resource. Pure — no write.
 
+    `entity_type` is passed through to `_disagreement_gaps` so a database or
+    filesystem slug is looked up via its own adapter rather than the
+    repo-only `projects` table. `_not_measurable_gaps` is unaffected —
+    `analyses_with_checks()`/`query_findings` are already resource-type
+    agnostic (keyed by analysis/check name, not by table).
+
     Each dict: {analysis_id, gap_kind, check_name, sentence, evidence}."""
-    return _not_measurable_gaps(registry, slug) + _disagreement_gaps(registry, slug)
+    return (_not_measurable_gaps(registry, slug)
+            + _disagreement_gaps(registry, slug, entity_type))
 
 
-def record_gaps_for(registry, slug: str) -> list[dict]:
+def record_gaps_for(registry, slug: str, entity_type: str = "repo") -> list[dict]:
     """Collect and upsert — the write-side counterpart, called from the one
     choke point (FactLayer.facts()) so the collection is current whenever the
     page is. Returns what was collected (before persistence, which cannot
     fail on a duplicate — upsert_gap is idempotent by construction)."""
-    gaps = collect_gaps(registry, slug)
+    gaps = collect_gaps(registry, slug, entity_type)
     for g in gaps:
         registry.upsert_gap(
             slug, g["analysis_id"], g["gap_kind"], g["check_name"],

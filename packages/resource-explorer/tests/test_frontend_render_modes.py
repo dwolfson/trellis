@@ -309,13 +309,19 @@ def test_a_derived_last_run_is_labelled_as_derived_on_the_card():
 
 def test_the_api_sends_the_field_the_card_reads():
     """A card reading a key the payload never sends renders `undefined`. Both
-    sides are edited here, so this pins them together."""
+    sides are edited here, so this pins them together.
+
+    The payload-building logic moved from `projects.py` into
+    `workflows.analysis.build_analysis_last_activity` when database/
+    filesystem got their own `/analyses/last-activity` routes sharing it —
+    `projects.py` is now a thin adapter with no field literals of its own, so
+    this pins the field where it actually lives."""
     import pathlib as _p
     route = (_p.Path(__file__).resolve().parent.parent
-             / "resource_explorer" / "web" / "routes" / "projects.py").read_text()
+             / "resource_explorer" / "workflows" / "analysis.py").read_text()
     assert '"last_run_derived_from"' in route, (
         "index.html reads la.last_run_derived_from but the analyses payload in "
-        "projects.py does not send it"
+        "workflows/analysis.py does not send it"
     )
 
 
