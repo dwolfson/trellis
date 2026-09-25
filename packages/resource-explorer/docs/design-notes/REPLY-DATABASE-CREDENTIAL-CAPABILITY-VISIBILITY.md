@@ -199,9 +199,12 @@ operational rule in §2 is relied on in a multi-connection deployment.
    index; retire `db_password`; migrate `coco_ods`/`coco_pharma`, which
    need delete-and-recreate anyway (`PROBES-2026-09-21.md`).
 3. **Then:** `requires_capability` on `StepInfo` for the database steps
-   that exist (`postgres_schema_and_stats` and `db_activity_signals` →
-   `catalog`; column profile, data-class matching and the `pg_stats`
-   coverage estimate → `read`; `db_resilience` → `stats`); the
+   that exist — as declared on `main` after #274: `credential_capability`
+   → `catalog`; `postgres_schema_and_stats` → `read` (it enumerates via
+   the privilege-filtered `information_schema` and reads `pg_stats`);
+   `postgres_operations` → `stats` (for its `db_resilience` member; the
+   bundle declares its strongest requirement); column profile, nested
+   columns, `sql_analysis`, data-class and reference matching → `read`; the
    launcher gate; connection choice for local runs.
 4. **Alongside:** file the two Egeria issues; verify the pyegeria read.
 
