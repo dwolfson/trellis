@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -546,11 +549,39 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
 
 
 class AnalysisRunResult(BaseModel):
-    status: str  # "ok" | "error"
+    """The response `POST /{slug}/analyses/{analysis_id}/run` returns.
+
+    Was a fully-resolved synchronous result — this handler used to run the
+    survey inline (`await asyncio.to_thread(_run)`) and hand back `status`/
+    `message`/`error` for a run that had, by the time this returns, already
+    finished. It never wrote an activity_log entry at all, and this model
+    carried no `activity_id`. `/next`'s shared `rerun()` (app.js) calls this
+    route the same way it calls the repo route
+    (`resource_explorer/web/static/re-api.js`'s `runAnalysis`), reads
+    `started.activity_id`, and polls `GET /api/activity/{activity_id}` — so
+    `activity_id` came back `undefined`, that GET 404'd with "Activity entry
+    not found", and the run's own real result (which had already succeeded)
+    was thrown away and reported as a failure. Reproduced live via
+    `db_activity_signals`'s "Is this database alive…" Questions-checklist
+    card, but not specific to it — every analysis_id in
+    `DATABASE_ANALYSIS_STEP_MAP` (and every `db_derived` id) went through
+    this same handler.
+
+    Matches `projects.py`'s `run_single_analysis` or `run_stage_batch`'s
+    response shape (`{"status": "started", "activity_id": ..., "run_id":
+    ...}`) as closely as this route's own response model allows: `status` is
+    now `"started"` on success, and `activity_id`/`run_id` are populated so
+    the frontend's existing poll works unchanged. `slug`/`analysis_id` are
+    kept for compatibility with `tests/test_database_analysis_run_route.py`'s
+    pre-existing assertions and any other reader of this response.
+    """
+    status: str  # "started" | "error" (validation failures still raise HTTPException)
     slug: str
     analysis_id: str
     message: str = ""
     error: str | None = None
+    activity_id: str = ""
+    run_id: str = ""
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
@@ -567,81 +598,79 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
 
     Two local shapes now, not one: the DatabaseSurveyor step path below, and
     the zero-fetch `db_derived` path (Phase 1 slice 9), which reads stored
-    rows and so takes neither a step nor credentials."""
+    rows and so takes neither a step nor credentials.
+
+    **Enqueues; does not run** (activity-tracking fix — see AnalysisRunResult's
+    docstring for the bug this closes). Matches `projects.py`'s
+    `run_single_analysis`: validation stays synchronous (an unmapped/unknown
+    analysis_id, or missing credentials, is still a 400 here rather than a
+    queued row that fails later in the worker), a real 'running' activity
+    entry is written up front via `log_analysis_run` (already generic across
+    entity_type — no change needed there), and the actual work is handed to
+    the run queue's `database_analysis_run` kind
+    (`run_queue.py::_handle_database_analysis_run` ->
+    `workflows.analysis.execute_and_record_database_analysis`), which writes
+    the terminal status onto the same activity entry when it finishes.
+
+    The two branches get the same activity tracking, but not the same
+    dispatch: `db_derived` reads stored rows only (no connection opened, no
+    credentials needed — see db_derived.py's own module docstring) and was
+    already fast enough to run inline before this fix, so it is *still*
+    queued here for consistency and because a database that has never been
+    reachable must not be treated specially by this route — but see
+    `workflows.analysis.run_database_analysis` for confirmation it does no
+    fetch of its own. The DATABASE_ANALYSIS_STEP_MAP branch opens a real
+    connection and can legitimately take a while (the same shape that made
+    the repo path's `architecture_recovery` worth backgrounding), so it is
+    the one this fix is actually for.
+    """
+    from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_queue import requested_by as _requested_by
     from resource_explorer.surveyors.database.database_surveyor import (
         DATABASE_ANALYSIS_STEP_MAP,
-        run_database_survey,
     )
-    from resource_explorer.surveyors.database.db_derived import (
-        DB_DERIVED_ANALYSES,
-        run_db_derived,
-    )
+    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     registry = ProjectRegistry()
     db = registry.get_database(slug)
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    # db_derived (Phase 1 slice 9) is handled before the step map and before
-    # the credentials check below, because it is zero-fetch: it reads stored
-    # rows only, so it neither needs a DatabaseSurveyor step nor stored
-    # credentials. Requiring credentials here would refuse the one database
-    # analysis that can still answer when the server is unreachable.
+    # Validation stays synchronous — an unknown/unmapped analysis_id, or
+    # missing credentials, must be a 400 here, not a queued row that fails a
+    # minute later in a different process where nobody is looking (same rule
+    # projects.py's run_single_analysis follows).
     if analysis_id in DB_DERIVED_ANALYSES:
-        def _run_derived():
-            return run_db_derived(registry, slug)
-
-        try:
-            derived_result = await asyncio.to_thread(_run_derived)
-        except Exception as exc:
-            return AnalysisRunResult(
-                status="error", slug=slug, analysis_id=analysis_id, error=str(exc),
-            )
-        check = (derived_result.get("derived") or {}).get(analysis_id) or {}
-        return AnalysisRunResult(
-            status="ok", slug=slug, analysis_id=analysis_id,
-            message=(
-                f"{len(derived_result.get('annotations', []))} annotation(s) "
-                f"derived from stored rows (no fetch). "
-                f"{analysis_id}: {check.get('state', 'unknown')}."
-            ),
-        )
-
-    if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+        pass  # zero-fetch — no credentials check needed
+    elif analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
                    "either it's Egeria-native/publish (use the appropriate dedicated "
                    "action instead) or an unknown id.",
         )
-
-    if not db.db_user or not db.db_password:
+    elif not db.db_user or not db.db_password:
         raise HTTPException(
             status_code=400,
             detail="No stored database credentials — register the database with "
                    "db_user/db_password, or run a full survey with credentials, first.",
         )
 
-    steps = DATABASE_ANALYSIS_STEP_MAP[analysis_id]
+    activity_id = log_analysis_run(
+        registry, "database", slug, db.display_name, "running",
+        f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
+    )
+    run_id = registry.enqueue_run(
+        "database_analysis_run", {"slug": slug, "analysis_id": analysis_id},
+        result_ref=activity_id, requested_by=_requested_by(),
+    )
+    log.info("enqueued database_analysis_run %s for %s/%s (activity %s)",
+             run_id, slug, analysis_id, activity_id)
 
-    def _run():
-        return run_database_survey(
-            slug, credentials={"user": db.db_user, "password": db.db_password},
-            registry=registry, steps=steps,
-        )
-
-    try:
-        result = await asyncio.to_thread(_run)
-    except Exception as exc:
-        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
-
-    non_fatal = result.get("errors") or []
     return AnalysisRunResult(
-        status="ok", slug=slug, analysis_id=analysis_id,
-        message=f"{len(result.get('annotations', []))} annotation(s)." + (
-            f" ({len(non_fatal)} non-fatal error(s))" if non_fatal else ""
-        ),
+        status="started", slug=slug, analysis_id=analysis_id,
+        activity_id=activity_id, run_id=run_id,
     )
 
 

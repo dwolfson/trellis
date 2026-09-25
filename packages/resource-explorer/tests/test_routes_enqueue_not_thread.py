@@ -53,7 +53,7 @@ def client(registry):
 
 
 class TestNoThreadSpawning:
-    ROUTE_MODULES = ("projects.py", "survey_definitions.py")
+    ROUTE_MODULES = ("projects.py", "survey_definitions.py", "databases.py")
 
     def test_the_backgrounding_route_modules_no_longer_spawn_threads(self):
         from pathlib import Path
