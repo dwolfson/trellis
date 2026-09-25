@@ -201,7 +201,7 @@ def assess(requirement: str, probe: dict | None) -> CapabilityAssessment:
             requirement=READ, known=True, satisfied=ok, connected_as=who,
             have=got, of=total,
             detail="" if ok else (
-                f"needs `read`; connected as {who}, which has SELECT on "
+                f"needs `read`: connected as {who}, which has SELECT on "
                 f"{got} of {total} table(s) — the rest are in this "
                 f"database's catalog but out of this credential's reach"),
         )
@@ -217,9 +217,9 @@ def assess(requirement: str, probe: dict | None) -> CapabilityAssessment:
         return CapabilityAssessment(
             requirement=STATS, known=True, satisfied=ok, connected_as=who,
             detail="" if ok else (
-                f"needs `stats`; connected as {who}, which is not a member of "
+                f"needs `stats`: connected as {who}, which is not a member of "
                 "`pg_monitor`, so replication status and other sessions' "
-                "activity are not fully visible (this does NOT affect "
+                "activity are not fully visible (this does not affect "
                 "per-table row-count/activity counters — `pg_stat_user_tables`"
                 "/`pg_stat_user_indexes` are visible to any connected role)"),
         )
@@ -229,8 +229,8 @@ def assess(requirement: str, probe: dict | None) -> CapabilityAssessment:
         return CapabilityAssessment(
             requirement=WRITE, known=True, satisfied=ok, connected_as=who,
             detail="" if ok else (
-                f"needs `write`; connected as {who}, which was probed for "
-                "INSERT (never exercised) and does not have it"),
+                f"needs `write`: connected as {who}, which cannot INSERT "
+                "(checked without writing anything)"),
         )
 
     # An unrecognised value. Say so rather than treating it as satisfied:

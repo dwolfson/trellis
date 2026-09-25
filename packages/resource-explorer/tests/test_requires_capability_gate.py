@@ -160,7 +160,7 @@ def test_read_carries_the_fraction_the_probe_already_computed():
 def test_write_is_probed_and_never_a_ladder_position():
     assert cc.assess("write", NARROW).satisfied is False
     assert cc.assess("write", FULL).satisfied is True
-    assert "never exercised" in cc.assess("write", NARROW).detail
+    assert "checked without writing anything" in cc.assess("write", NARROW).detail
 
 
 def test_a_database_with_no_tables_is_not_a_read_shortfall():
