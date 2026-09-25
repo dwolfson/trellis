@@ -924,6 +924,16 @@ a drawer: an actor with no screen needs an engine action or a webhook.
 **Decision (project owner, 2026-09-20):** spec it; a set of Terms or a Valid
 Value set are acceptable starting points.
 
+**Decision (project owner, 2026-09-25):** Purposes are being modelled in
+Egeria as a **valid values list**, and will be used, in part, **to select
+the right connection for the right purpose**. Two consequences: the
+recommendation below (a `ValidValueSet` with `ReferenceValueAssignment`
+from Question terms) is confirmed rather than proposed, and Purpose gains a
+second consumer beyond question ranking — the connection choice in
+`security-model.md` §5, where an investigation's purpose (Explore, Assess,
+Certify …) selects among the labelled connections on an asset. `Level`
+(§18.3) rides the same mechanism as a second small set.
+
 Recommendation: **a `ValidValueSet` named `Resource Explorer Purposes`, one
 `ValidValueDefinition` per purpose, and `ReferenceValueAssignment` from each
 Question term to its purposes.**
@@ -1760,10 +1770,54 @@ envelope gains `scope` (the locator set answered for) and `shown_of`
 (N of M), and the rule from §16.3 stands: **every answer names its scope**.
 A whole-database ✓ on a question whose level is `schema` is not an answer.
 
-Cross-type questions (§4) stay at database level; §5's database questions
-are re-levelled row by row when the column is added, and the answering
-analysis for a `table`-level question must produce per-table rows, which
-the structured tables (§5.7) already hold.
+**Specification (2026-09-25, built the same day on `re/questions-level-column`).**
+
+- **Column:** `Level`, one column, `;`-separated, validated against a
+  controlled vocabulary the way Purposes are — a typo stops the build. Blank
+  means `resource`. Registered in both generators' non-perspective lists
+  (`NON_PERSPECTIVE_COLUMNS`, `OPTIONAL_LEAD_COLUMNS`), because any column
+  they do not know becomes a phantom Perspective.
+- **Vocabulary, engine-neutral:** `resource`, `container`, `member`,
+  `field`. "Schema" does not exist on MySQL and the level names come from
+  each engine's containment declaration, so the CSV uses the abstract four
+  and the guide maps them per resource type: database = database / schema /
+  table / column; filesystem = root / folder / file / field; dataset =
+  dataset / distribution / file / field; repository = repository /
+  component / file / symbol.
+- **Semantics:** the level(s) at which the answer is a *single value*.
+  Asked above its level, a question answers as a ranked distribution ("top
+  10 and 13 more, total across the scope") — nothing in the CSV enumerates
+  the combinations. A row may carry two levels when it is natural at both
+  ("how big is this database" is `resource;container`: one figure for the
+  database, and a breakdown per schema that is not a derived distribution
+  but the same answer at the next level).
+- **Consumers:** the YAML entry gains `levels`; `QuestionCatalogEntry.levels`
+  defaults to `["resource"]` for entries generated before the column
+  existed; the Questions tab filters by the current focus (§18.1) and rolls
+  up the levels below it; the envelope gains `scope` and `shown_of`
+  (slice 21's second half). Survey-definition generation is unaffected —
+  `ScopedBy` links are per question, not per level (verified: regenerating
+  after the column landed changed nothing).
+- **Egeria:** not published yet. Level rides the same valid-value-set
+  mechanism as Purposes (§10, decided 2026-09-25), a second small set, so
+  one server fix unblocks both.
+- **The second extension slice 21 still owes:** per-type `Answering
+  Analysis`. Cross-type rows answer a database with repository prose today
+  (`REVIEW-SURVEY-PANE-285.md` §6.3). Rather than five new columns, the one
+  cell allows per-type segments with a type prefix and a type-neutral
+  default — `N/A — direct field || database: N/A — direct field
+  (pg_description) || filesystem: descriptor_detection` — and a type with
+  neither segment nor default renders *not authored for this type*.
+- **Guards:** unknown level → build fails (built). A row below `resource`
+  whose analysis produces no per-member rows is the "answered with counts,
+  no schema named" failure; that guard lands with slice 20's `scopes`
+  declaration, which is what makes it checkable.
+
+Cross-type questions (§4) carry `resource`; §5's database questions were
+levelled row by row on 2026-09-25 (9 `container`, 7 `member`, 7 `field`,
+plus the dual-level rows); the answering analysis for a `member`-level
+question must produce per-table rows, which the structured tables (§5.7)
+already hold.
 
 ### 18.4 Analyses accept a scope
 
