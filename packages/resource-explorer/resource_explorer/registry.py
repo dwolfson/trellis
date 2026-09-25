@@ -9807,7 +9807,7 @@ class ProjectRegistry:
 
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT ts, status, detail, operation FROM activity_log "
+                "SELECT ts, status, detail, operation, summary FROM activity_log "
                 "WHERE entity_type = ? AND entity_slug = ? "
                 "AND operation IN ('analysis_run', 'survey') "
                 "ORDER BY ts DESC LIMIT ?",
@@ -9866,6 +9866,17 @@ class ProjectRegistry:
                         # frontend's ☁ Publish button uses this to decide
                         # whether it's a recovery action worth showing.
                         "last_publish_failed": detail.get("published") is False,
+                        # The activity row's own one-line summary — for a
+                        # failed run this is the concrete error
+                        # (`execute_and_record_analysis` writes
+                        # `result.error or summary` there), read here so the
+                        # Survey & Analyses pane's result-summary line
+                        # (REPLY-SURVEY-ANALYSES-PANE-USER-FACING-MODEL.md
+                        # §1.1, "ran, failed" state) can say WHAT failed
+                        # rather than just THAT it failed. Absent for older
+                        # rows or non-analysis_run attribution — callers must
+                        # not assume it's always present.
+                        "last_run_summary": row["summary"] or "",
                     }
                 continue
 
