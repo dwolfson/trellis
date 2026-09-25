@@ -3974,6 +3974,8 @@ function analysisIndexRowHtml(row) {
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
+    <span data-analysis-run-error="${esc(row.analysis_id)}"
+      class="hidden w-full text-provenance text-state-warn"></span>
   </div>
   ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
@@ -4086,11 +4088,13 @@ async function renderAnalysesIndexSection(slug, stage) {
   });
   host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
     const aid = b.dataset.analysisRun;
+    const errEl = host.querySelector(`[data-analysis-run-error="${CSS.escape(aid)}"]`);
+    if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
     b.disabled = true;
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      const started = await runAnalysis(slug, aid);
+      const started = await runAnalysis(slug, aid, apiEntityType(state.resourceType));
       // Watch it rather than tell the user to reload — pollActivity is the
       // same mechanism the Questions checklist's run button already uses
       // (rerun(), above). A five-minute timeout still redraws the section
@@ -4115,7 +4119,12 @@ async function renderAnalysesIndexSection(slug, stage) {
     } catch (err) {
       b.disabled = false;
       b.textContent = original;
-      b.title = err.status === 401 ? 'Sign in to run an analysis' : err.message;
+      const msg = err.status === 401 ? 'Sign in to run an analysis' : `Could not start: ${err.message}`;
+      b.title = msg;
+      // A tooltip alone is invisible unless the reader hovers -- reported as
+      // "the button works but doesn't do anything", because Queueing… reverts
+      // to run → the instant the request fails, with nothing else on screen.
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
     }
   }));
 }

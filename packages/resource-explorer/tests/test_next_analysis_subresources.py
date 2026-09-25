@@ -122,6 +122,23 @@ class TestRunConfigurationAttachedToTheAnalysisRow:
         assert "import { mountSubResourcePanel } from '/static/next/stages/analysis.js';" in app
         assert "renderAnalysisNote" not in app
 
+    def test_the_run_button_passes_entity_type_not_just_slug_and_id(self):
+        """Live-reproduced 2026-09-25: `runAnalysis(slug, aid)` -- missing
+        the third `entityType` arg -- defaults to 'repo' (re-api.js), so a
+        database's "run"/"re-run" button POSTed to `/api/projects/{slug}/
+        analyses/{aid}/run` (repo's route) instead of `/api/databases/{slug}
+        /analyses/{aid}/run`, 404ing. `Queueing…` reverted to `run →` the
+        instant the request failed, with only a hover tooltip explaining
+        why -- reported as "the button works but doesn't do anything".
+        `rerun()` (the Questions-checklist run button, same file) already
+        passes `apiEntityType(state.resourceType)` correctly; this pins the
+        same call shape for the Analyses-index button too."""
+        app = _app()
+        start = app.index("async function renderAnalysesIndexSection(")
+        end = app.index("\n}", app.index("data-analysis-run", start))
+        body = app[start:end]
+        assert "runAnalysis(slug, aid, apiEntityType(state.resourceType))" in body
+
 
 class TestSubResourcePanelPortsClassicsRealBehaviour:
     """Not a redesign -- the same D2/D3/D4/D5/D6 funnel stages classic's
