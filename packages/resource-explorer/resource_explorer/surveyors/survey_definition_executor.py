@@ -271,13 +271,11 @@ class SurveyDefinitionExecutor:
             entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
             process_guid=process_guid, process_qn=process_qn,
             publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
-            # NOTE: `demanded_by` is deliberately NOT added here, though this
-            # method accepts one and drops it. That looks like a latent
-            # attribution bug (an accepted proposal run through `run()` rather
-            # than `run_synthetic_step()` loses its `demanded_by`), but it
-            # predates this change and fixing it would alter `step_runs`
-            # attribution for runs unrelated to the capability axis. Left
-            # alone on purpose, and filed rather than folded in here.
+            # `demanded_by` used to be dropped here (a latent attribution bug
+            # named but deliberately left alone by the capability-axis change
+            # below) — fixed by re/survey-executor-demanded-by-run, forwarded
+            # like every other kwarg `_execute` already accepts.
+            demanded_by=demanded_by,
             capability_consented=capability_consented,
         )
 
