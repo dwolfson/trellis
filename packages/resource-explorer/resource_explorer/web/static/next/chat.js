@@ -148,9 +148,20 @@ function sourceLine(body) {
       const v = manifest[k];
       return Array.isArray(v) ? v.length : v != null && v !== '';
     });
-    return parts.length
+    // The absence fact `evidenceFooterListsHtml` deliberately does not
+    // enumerate belongs here instead, as one clause on the answer's own
+    // sentence -- not a footer line per key, and not one combined line
+    // naming every key either (REVIEW-SURVEY-PANE-285.md's correction:
+    // "the footer lists only lists that exist ... a combined line naming
+    // twelve analysis ids is the same wall, shorter"). Said once, generically,
+    // only when packed evidence had list-shaped sections and NONE had a
+    // member reader to open.
+    const lists = listSentences(body);
+    const noListsAvailable = lists.length > 0 && !lists.some((l) => l.members);
+    const suffix = noListsAvailable ? ' · no evidence lists were available for this question' : '';
+    return (parts.length
       ? `From compiled evidence · ${parts.join(', ')}`
-      : 'Compiled evidence was empty · answered from retrieval';
+      : 'Compiled evidence was empty · answered from retrieval') + suffix;
   }
   return 'No compiled evidence on this answer · source not reported';
 }
@@ -260,36 +271,24 @@ function listSentenceHtml(l, i) {
   </div>`;
 }
 
-/** `turn.lists`, split into "has a member reader" (one line each, as before)
- *  and "does not" (one COMBINED line, naming every such key).
+/** `turn.lists`, filtered to sections that actually HAVE a member reader.
+ *  The footer names only lists that exist to open — a readerless section is
+ *  not named here at all, singly or combined; that fact belongs in the
+ *  answer's own one-line provenance sentence instead (`sourceLine()`).
  *
- *  Live-reproduced 2026-09-25 (REVIEW-SURVEY-PANE-285.md): a database's
- *  compiled evidence packs many sections with list-shaped fields
- *  (coverage_signals, grain_determination, preliminary_fit, subject_signals,
- *  schema_conventions, ...) and NONE of them are in `MEMBER_LISTED` --
- *  that set is repo-shaped analyses only. `listSentenceHtml`'s per-section
- *  fallback then rendered "No list to open — X has no member reader yet."
- *  once per section, degenerating into a dozen near-identical lines for one
- *  answer. Case four on the design sheet this fallback implements ("the
- *  absence becomes a fact about that analysis") is still right for ONE
- *  analysis; it stops being informative once every analysis says the same
- *  thing, so the case for more than one collapses into a single line naming
- *  them all, rather than repeating the sentence. */
+ *  Live-reproduced 2026-09-25 (REVIEW-SURVEY-PANE-285.md, then corrected on
+ *  review of the first fix): a database's compiled evidence packs many
+ *  sections with list-shaped fields (coverage_signals, grain_determination,
+ *  preliminary_fit, subject_signals, schema_conventions, ...) and NONE of
+ *  them are in `MEMBER_LISTED` -- that set is repo-shaped analyses only.
+ *  `listSentenceHtml`'s per-section fallback rendered "No list to open — X
+ *  has no member reader yet." once per section, a wall of near-identical
+ *  lines for one answer. The first fix collapsed that wall into one combined
+ *  line naming every key — still a wall, just shorter, and still something
+ *  the footer had no business asserting: a footer that lists what exists is
+ *  not the place to enumerate what doesn't. */
 function evidenceFooterListsHtml(lists, slug) {
-  const withReader = lists.filter((l) => l.members);
-  const withoutReader = lists.filter((l) => !l.members);
-  const rendered = withReader.map((l) => listSentenceHtml(l, slug)).join('');
-  if (!withoutReader.length) return rendered;
-  if (withoutReader.length === 1) {
-    const l = withoutReader[0];
-    return rendered + `<div class="mt-s2 text-chip text-chrome-muted">
-      No list to open — <span class="font-mono">${esc(l.key)}</span> has no member reader yet.
-    </div>`;
-  }
-  const keys = withoutReader.map((l) => `<span class="font-mono">${esc(l.key)}</span>`).join(', ');
-  return rendered + `<div class="mt-s2 text-chip text-chrome-muted">
-    No list to open for ${withoutReader.length} of this answer's sections — none has a member reader yet: ${keys}.
-  </div>`;
+  return lists.filter((l) => l.members).map((l) => listSentenceHtml(l, slug)).join('');
 }
 
 /**
