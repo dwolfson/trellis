@@ -48,6 +48,7 @@ from datetime import datetime
 from resource_explorer.registry import (
     SOURCE_LOCAL,
     STATE_MEASURED,
+    STATE_NOT_COLLECTED,
     STATE_NOT_MEASURED,
 )
 from resource_explorer.surveyors.database import schema_scope
@@ -83,6 +84,16 @@ DB_DERIVED_ANALYSES: tuple[str, ...] = (
     # db_change_comparator.py).
     "schema_diff",
     "grant_change",
+    # Design §16.3's Scouting and Discovery rows (added 2026-09-24). All three
+    # are zero-fetch derivations over the same stored rows every check above
+    # reads, so they belong to this step rather than to a new one — and
+    # `db_derived`'s `requires_capability` stays UNDECLARED (`""`) rather than
+    # becoming `catalog`, for exactly the reason the audit gives in
+    # `survey_definition_adapter.py`: the weakest tier still implies a live
+    # connection, and these open none.
+    "subject_signals",
+    "coverage_signals",
+    "preliminary_fit",
 )
 
 #: NOTE on the two annotation sites that carry this check's name: they spell
@@ -796,6 +807,244 @@ _GRAIN_CONFIDENCE = {
 _UNIQUE_RATIO_EXACT = 0.99
 _UNIQUE_RATIO_LIKELY = 0.95
 
+# ── time grain from naming (design §16.2/§16.3, added 2026-09-24) ──────────
+#
+# §16.3's `grain_determination` row: *"exists, extended with time grain from
+# naming, partitions and PK date columns"*. The PK-date half already existed
+# (`_grain_from_pk` sets `interval` when a date column sits IN the key, and
+# §16.2's "entity grain from keys" row is `_grain_from_pk` itself) — what is
+# added here is the two naming halves, and an explicit BASIS and CONFIDENCE for
+# whichever signal the interval came from.
+#
+# The basis matters more than the interval. "monthly" derived from a PK date
+# column is a near-declaration; "monthly" derived from a table called
+# `sales_202503` is a guess about a naming habit. Before this, both rendered as
+# the same bare `interval: "monthly"` string with nothing to tell them apart —
+# and §16.2 grades them differently on purpose ("medium for partitions and file
+# names, low for column names").
+
+#: Interval names this module emits, weakest-period-last. Shared with
+#: `preliminary_fit`'s compatibility test, which needs them ordered: a table
+#: recorded per hour can serve a monthly requirement, not the reverse.
+INTERVAL_RANK: dict[str, int] = {
+    "hourly": 1,
+    "per-date": 2,
+    "daily": 2,
+    "weekly": 3,
+    "monthly": 4,
+    "quarterly": 5,
+    "annual": 6,
+}
+
+#: Basis for an interval, and its confidence. Ordered strongest-first; the
+#: first basis that fires wins, and the others are still recorded (as
+#: `interval_signals`) so a reader can see a naming signal that AGREES with the
+#: key — or disagrees with it, which is a finding of its own.
+GRAIN_INTERVAL_BASIS_PK = "primary_key_date"
+GRAIN_INTERVAL_BASIS_TABLE_NAME = "table_name"
+GRAIN_INTERVAL_BASIS_PARTITION_SUFFIX = "partition_suffix"
+GRAIN_INTERVAL_BASIS_COLUMN_NAME = "column_name"
+GRAIN_INTERVAL_BASIS_COLUMN_NAME_UNTYPED = "column_name_untyped"
+
+_INTERVAL_CONFIDENCE = {
+    # A date column inside the declared primary key: the schema itself says
+    # the grain is per-period. Not 100 — which period still comes from the
+    # column's NAME.
+    GRAIN_INTERVAL_BASIS_PK: 85,
+    # `daily_sales`, `orders_hourly`: a deliberate name, and the period is
+    # spelled out rather than inferred from a value. §16.2's "medium".
+    GRAIN_INTERVAL_BASIS_TABLE_NAME: 70,
+    # `events_202503`: a partition-naming habit. Medium per §16.2, and below
+    # an explicit period word because the period is inferred from the shape of
+    # a number.
+    GRAIN_INTERVAL_BASIS_PARTITION_SUFFIX: 55,
+    # A date/timestamp-TYPED column whose name carries a period word. §16.2's
+    # "low for column names".
+    GRAIN_INTERVAL_BASIS_COLUMN_NAME: 40,
+    # A column named like a date whose TYPE is not temporal (`day integer`,
+    # `period text`). The weakest signal here and deliberately still reported:
+    # it is exactly the shape a bare warehouse fact table uses, and dropping
+    # it would leave such a table with no time grain at all.
+    GRAIN_INTERVAL_BASIS_COLUMN_NAME_UNTYPED: 25,
+}
+
+#: Period words in a TABLE name, longest/most-specific first so `semi_annual`
+#: cannot be matched as `annual`. Matched against the name's tokens, not as a
+#: substring: `annualised_rate` is not an annual grain, and a substring test
+#: would say it was.
+_TABLE_PERIOD_TOKENS: tuple[tuple[str, str], ...] = (
+    ("hourly", "hourly"), ("hour", "hourly"),
+    ("daily", "daily"), ("day", "daily"),
+    ("weekly", "weekly"), ("week", "weekly"),
+    ("monthly", "monthly"), ("month", "monthly"),
+    ("quarterly", "quarterly"), ("quarter", "quarterly"),
+    ("annual", "annual"), ("yearly", "annual"), ("year", "annual"),
+)
+
+#: A table name ending in a period-shaped number — Postgres's own partitioning
+#: convention (`events_2025`, `events_202503`, `events_2025_03_01`) and the
+#: nearest database equivalent of §16.2's `year=/month=/day=` partition keys.
+#: Those literal Hive-style keys are a FILESYSTEM layout and are deliberately
+#: not looked for here; see `_interval_from_partition_suffix`.
+_PARTITION_SUFFIX_RE = re.compile(
+    r"(?:^|[_.])(?:p|part|y)?(20\d{2})(?:[_.-]?(\d{2}))?(?:[_.-]?(\d{2}))?$"
+)
+
+#: Column-name markers for a date-bearing column, as a whole token. §16.2:
+#: *"columns `*_date`, `*_ts`, `day`, `hour`, `period`"*. `at` is deliberately
+#: absent as a bare token (`at` alone is never a column name worth matching);
+#: `*_at` is caught by the `_at` suffix test in `_name_suggests_date`.
+_DATE_NAME_TOKENS = frozenset({
+    "date", "dates", "dt", "ts", "timestamp", "datetime", "time", "day",
+    "hour", "period", "week", "month", "quarter", "year", "asof",
+})
+
+#: Suffixes that make a column a date by naming convention even when no token
+#: matches (`ordered_at`, `load_dttm`).
+_DATE_NAME_SUFFIXES = ("_at", "_on", "_dttm", "_date", "_ts", "_time", "_day")
+
+
+def _tokenise_name(name: str) -> list[str]:
+    """`OrderLine_2025` → `['order', 'line', '2025']`.
+
+    Splits on non-alphanumerics AND on camelCase boundaries, because a
+    database that quotes its identifiers routinely carries both conventions in
+    one schema.
+    """
+    if not name:
+        return []
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
+    return [t for t in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if t]
+
+
+def _name_suggests_date(column_name: str) -> bool:
+    """Does this column's NAME claim to carry a date, whatever its type?
+
+    Name only, deliberately: the caller already knows the type, and the point
+    of this test is the case where the two disagree (`day integer`,
+    `period text`) — a real warehouse convention that a type-only test reads
+    as "this table has no date column at all".
+    """
+    name = (column_name or "").lower()
+    if not name:
+        return False
+    if any(name.endswith(suffix) for suffix in _DATE_NAME_SUFFIXES):
+        return True
+    return bool(_DATE_NAME_TOKENS & set(_tokenise_name(name)))
+
+
+def _interval_from_table_name(table_name: str) -> str:
+    """`daily_sales` → `daily`; `orders_hourly` → `hourly`; else `""`."""
+    tokens = set(_tokenise_name(table_name))
+    for token, interval in _TABLE_PERIOD_TOKENS:
+        if token in tokens:
+            return interval
+    return ""
+
+
+def _interval_from_partition_suffix(table_name: str) -> str:
+    """`events_202503` → `monthly`; `events_2025` → `annual`; else `""`.
+
+    **A judgement call about scope, stated rather than left implicit.** §16.2
+    names *"partition keys `year=/month=/day=`"* as the free partition signal.
+    That exact form is a Hive/Parquet directory layout — it is a
+    FILESYSTEM/dataset signal and belongs with Phase 2's
+    `filesystem_structure`, not with a database's stored table rows, which
+    never carry it. The database equivalent, and what this looks for, is
+    Postgres's own child-partition naming habit: a date-shaped suffix on the
+    table name.
+
+    It is a NAMING signal, not the partition metadata itself. Real partition
+    bounds (`pg_partitioned_table`, the child tables' `CHECK` constraints)
+    would be exact — and nothing in RE collects them today, which
+    `coverage_signals` reports as a collection gap rather than as an absence
+    of partitioning.
+    """
+    match = _PARTITION_SUFFIX_RE.search((table_name or "").lower())
+    if not match:
+        return ""
+    _year, month, day = match.groups()
+    if day:
+        return "daily"
+    if month:
+        return "monthly"
+    return "annual"
+
+
+def _time_grain(
+    table_name: str,
+    pk_interval: str,
+    typed_date_columns: list[str],
+    named_date_columns: list[str],
+) -> dict:
+    """The interval, its basis, its confidence, and every signal that fired.
+
+    `pk_interval` is what `_grain_from_pk` already derived (empty when no date
+    column sits in the key). The strongest basis present wins; the others are
+    kept in `interval_signals` so a disagreement is visible instead of being
+    silently outranked.
+    """
+    signals: dict[str, str] = {}
+    if pk_interval:
+        signals[GRAIN_INTERVAL_BASIS_PK] = pk_interval
+    from_table = _interval_from_table_name(table_name)
+    if from_table:
+        signals[GRAIN_INTERVAL_BASIS_TABLE_NAME] = from_table
+    from_partition = _interval_from_partition_suffix(table_name)
+    if from_partition:
+        signals[GRAIN_INTERVAL_BASIS_PARTITION_SUFFIX] = from_partition
+    if typed_date_columns:
+        from_typed = _interval_from_columns(typed_date_columns)
+        if from_typed:
+            signals[GRAIN_INTERVAL_BASIS_COLUMN_NAME] = from_typed
+    untyped = [c for c in named_date_columns if c not in set(typed_date_columns)]
+    if untyped:
+        from_untyped = _interval_from_columns(untyped)
+        if from_untyped:
+            signals[GRAIN_INTERVAL_BASIS_COLUMN_NAME_UNTYPED] = from_untyped
+
+    for basis in (GRAIN_INTERVAL_BASIS_PK, GRAIN_INTERVAL_BASIS_TABLE_NAME,
+                  GRAIN_INTERVAL_BASIS_PARTITION_SUFFIX,
+                  GRAIN_INTERVAL_BASIS_COLUMN_NAME,
+                  GRAIN_INTERVAL_BASIS_COLUMN_NAME_UNTYPED):
+        if basis in signals:
+            interval = signals[basis]
+            disagreeing = sorted(
+                f"{other}={value}" for other, value in signals.items()
+                if other != basis and value != interval
+            )
+            return {
+                "interval": interval,
+                "interval_basis": basis,
+                "interval_confidence": _INTERVAL_CONFIDENCE[basis],
+                "interval_signals": signals,
+                "interval_explanation": (
+                    f"Time grain {interval!r}, from {basis} "
+                    f"(confidence {_INTERVAL_CONFIDENCE[basis]}: a naming or "
+                    f"key signal, never a measured cadence — that is "
+                    f"`coverage_profile`, an Analysis-tier read)."
+                    + (f" Other signals disagree: {', '.join(disagreeing)}."
+                       if disagreeing else "")
+                ),
+            }
+
+    return {
+        "interval": "",
+        "interval_basis": "",
+        "interval_confidence": 0,
+        "interval_signals": {},
+        # NOT "this table has no time grain": nothing in its name, its key or
+        # its column names names a period, which is a statement about the
+        # available signal.
+        "interval_explanation": (
+            "No time grain is derivable from names: no date column sits in the "
+            "key, the table name carries no period word or date-shaped suffix, "
+            "and no column is named like a date. That is an absence of naming "
+            "signal, NOT a finding that the data is not periodic — a measured "
+            "cadence needs `coverage_profile` (Analysis tier)."
+        ),
+    }
+
 
 def determine_grain(inputs: DerivedInputs) -> dict:
     """One row per what, per table (design §5.3).
@@ -834,6 +1083,17 @@ def determine_grain(inputs: DerivedInputs) -> dict:
         ]
         date_columns = [d for d in date_columns if d]
 
+        # §16.2's "time grain from naming" — columns named like a date
+        # whatever their type. A superset of `date_columns` for a well-typed
+        # schema and the ONLY signal in a warehouse that stores `day` as an
+        # integer, which is why it is collected separately rather than folded
+        # into the typed list (a consumer reading `date_columns` is reading a
+        # list of temporal-TYPED columns and must keep doing so).
+        named_date_columns = [
+            c.get("column_name") for c in cols
+            if c.get("column_name") and _name_suggests_date(c.get("column_name"))
+        ]
+
         pk_columns = [
             c.get("column_name") for c in cols if c.get("is_primary_key")
         ] if keys_captured else []
@@ -845,10 +1105,12 @@ def determine_grain(inputs: DerivedInputs) -> dict:
             "qualified_name": f"{schema_name}.{table_name}",
             "row_count": row_count,
             "date_columns": date_columns,
+            "named_date_columns": named_date_columns,
         }
 
         if pk_columns:
             entry.update(_grain_from_pk(pk_columns, date_columns))
+            _apply_time_grain(entry, table_name, date_columns, named_date_columns)
             grains.append(entry)
             continue
 
@@ -858,8 +1120,7 @@ def determine_grain(inputs: DerivedInputs) -> dict:
         candidate = _grain_from_profiles(profiles, row_count)
         if candidate:
             entry.update(candidate)
-            if date_columns:
-                entry["interval"] = _interval_from_columns(date_columns)
+            _apply_time_grain(entry, table_name, date_columns, named_date_columns)
             grains.append(entry)
             continue
 
@@ -880,6 +1141,7 @@ def determine_grain(inputs: DerivedInputs) -> dict:
                       "reading this as a table without a grain."
                 ),
             })
+            _apply_time_grain(entry, table_name, date_columns, named_date_columns)
             grains.append(entry)
             continue
 
@@ -899,9 +1161,15 @@ def determine_grain(inputs: DerivedInputs) -> dict:
                 f"evidence."
             ),
         })
+        _apply_time_grain(entry, table_name, date_columns, named_date_columns)
         grains.append(entry)
 
     determined = [g for g in grains if g.get("grain_statement")]
+    timed = [g for g in grains if g.get("interval")]
+    bases: dict[str, int] = {}
+    for g in timed:
+        basis = g.get("interval_basis") or ""
+        bases[basis] = bases.get(basis, 0) + 1
     return {
         "state": STATE_MEASURED,
         "grains": grains,
@@ -909,7 +1177,34 @@ def determine_grain(inputs: DerivedInputs) -> dict:
         "determined_count": len(determined),
         "undetermined_count": len(grains) - len(determined),
         "keys_were_captured": keys_captured,
+        # §16.3's time-grain extension, rolled up so `preliminary_fit` and the
+        # results card can read it without walking every table. `timed_count`
+        # is a count of tables with a NAMING-derived interval; a table missing
+        # from it has no period word anywhere, which is not the same as data
+        # that is not periodic.
+        "timed_count": len(timed),
+        "interval_bases": bases,
+        "intervals": sorted({g["interval"] for g in timed}),
     }
+
+
+def _apply_time_grain(
+    entry: dict,
+    table_name: str,
+    date_columns: list[str],
+    named_date_columns: list[str],
+) -> None:
+    """Attach §16.3's time-grain fields to one table's grain entry, in place.
+
+    `entry["interval"]` may already be set by `_grain_from_pk` (a date column
+    IN the key). That is the strongest basis and is preserved — this records
+    WHICH basis it was and what else agreed, which is the part that did not
+    exist before.
+    """
+    time_grain = _time_grain(
+        table_name, entry.get("interval") or "", date_columns, named_date_columns,
+    )
+    entry.update(time_grain)
 
 
 def _grain_from_pk(pk_columns: list[str], date_columns: list[str]) -> dict:
@@ -985,6 +1280,12 @@ def _interval_from_columns(date_columns: list[str]) -> str:
     for marker, interval in (
         ("month", "monthly"), ("week", "weekly"), ("year", "annual"),
         ("quarter", "quarterly"), ("hour", "hourly"),
+        # Added 2026-09-24 with §16.3's time-grain extension: `day` is one of
+        # the column names §16.2 names explicitly, and without it a column
+        # literally called `day` fell through to the generic `per-date`. Last
+        # in the list so a `day` inside a longer period word cannot pre-empt
+        # it, and checked after `month`/`week` for the same reason.
+        ("day", "daily"),
     ):
         if marker in joined:
             return interval
@@ -1925,6 +2226,1177 @@ def propose_data_scope(inputs: DerivedInputs) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 10. subject_signals  (design §16.2/§16.3, added 2026-09-24)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Sections 10–12 are defined AHEAD of §9's aggregation-grain helpers below,
+# because §9 calls them: `apply_container_grain` runs `derive_subject_signals`
+# and `derive_coverage_signals` over container-scoped inputs. Numbered by when
+# they were added, ordered by what reads what.
+#
+# §16.3, Scouting row 1: *"What is this data about — which subjects, business
+# terms or data classes does it appear to hold?"* — from *"table, column, file
+# and folder names; `pg_description`; README and descriptor text"*, at *"low–
+# medium; a name is a claim"* confidence.
+#
+# Two things this deliberately does NOT do:
+#
+# * **It does not match against Egeria's glossary.** §16.3's mechanism column
+#   reads "Catalog + Egeria glossary", and the glossary half is a fetch — this
+#   module opens nothing. So the output is *candidate* terms, with
+#   `glossary_matched: False` and a named reason, rather than terms silently
+#   presented as if they had been resolved against a vocabulary. A later
+#   Egeria-reading step (§16.7's `governance_context_readback` is the natural
+#   home) can resolve them; nothing here pretends to have.
+# * **It does not score a database's subject.** There is no single subject and
+#   no composite. The output is a ranked list of terms, each carrying the
+#   basis it came from, which is §15's "no composite score" applied here.
+
+#: Tokens that carry no subject. Every one of these is either structural
+#: (`id`, `pk`), temporal plumbing (`created`, `updated`), a modelling-pattern
+#: word already reported by `db_classification` (`dim`, `fact`, `stg`), or a
+#: generic container word (`table`, `data`). Kept conservative in the other
+#: direction on purpose: `log`, `audit`, `event` and `invoice` are NOT here,
+#: because each genuinely names what the data is about.
+_SUBJECT_STOPWORDS = frozenset({
+    "id", "ids", "uid", "uuid", "guid", "key", "keys", "pk", "fk", "seq",
+    "sequence", "num", "no", "code", "codes", "type", "types", "kind",
+    "status", "state", "flag", "flags", "name", "names", "desc", "description",
+    "value", "values", "val", "data", "table", "tables", "tbl", "col", "cols",
+    "column", "columns", "row", "rows", "field", "fields", "record", "records",
+    "created", "updated", "modified", "changed", "deleted", "inserted",
+    "create", "update", "delete", "insert", "at", "on", "by", "of", "in",
+    "for", "the", "and", "or", "to", "from", "with", "is", "has", "was",
+    "ts", "timestamp", "datetime", "date", "dates", "dt", "dttm", "time",
+    "year", "month", "day", "hour", "week", "quarter", "period", "asof",
+    # Period words name the GRAIN, not the subject — `grain_determination`
+    # reports them as an interval with a basis, and letting `daily_sales`
+    # contribute "daily" as a candidate subject would put the same signal in
+    # two places under two meanings.
+    "daily", "hourly", "weekly", "monthly", "quarterly", "annual", "yearly",
+    "count", "total", "sum", "avg", "min", "max", "pct", "ratio", "rate",
+    "version", "rev", "revision", "active", "enabled", "valid", "current",
+    "tmp", "temp", "stg", "staging", "raw", "bak", "backup", "old", "new",
+    "test", "dummy", "sample", "temp1", "aux", "misc", "other", "default",
+    "ref", "lookup", "lu", "dim", "fact", "agg", "mart", "cube", "rollup",
+    "summary", "snapshot", "hist", "history", "archive", "meta", "sys",
+    "system", "public", "main", "base", "core", "src", "tgt", "target",
+    "source", "detail", "details", "header", "line", "lines", "item", "items",
+    "text", "json", "jsonb", "xml", "blob", "bytea", "int", "bigint", "str",
+})
+
+#: A token shorter than this is dropped. Three-letter subject words exist
+#: (`tax`, `fee`, `sku`) so the floor is 3, not 4.
+_MIN_SUBJECT_TOKEN = 3
+
+#: Confidence per basis, §16.2's "low–medium; a name is a claim" made
+#: concrete. A comment is a human sentence written to explain the thing, so it
+#: outranks a name; a term appearing in BOTH is the strongest signal available
+#: without reading a value or resolving a glossary, and is still capped well
+#: below certainty.
+SUBJECT_BASIS_NAME = "name"
+SUBJECT_BASIS_COMMENT = "comment"
+SUBJECT_BASIS_BOTH = "comment_and_name"
+
+_SUBJECT_CONFIDENCE = {
+    SUBJECT_BASIS_NAME: 25,
+    SUBJECT_BASIS_COMMENT: 45,
+    SUBJECT_BASIS_BOTH: 60,
+}
+
+#: How many terms the payload carries. A database with 4,000 columns produces
+#: a long tail of one-off tokens that is noise on a card and in an annotation;
+#: the full count is still reported as `term_count` so the cut is visible.
+_SUBJECT_TERM_LIMIT = 40
+
+#: `subject_signals`' own reasons, named so a consumer can branch on them
+#: rather than on prose.
+SUBJECT_REASON_NO_ROWS = "no_schema_rows"
+SUBJECT_REASON_NO_SUBJECT_NAMES = "no_subject_bearing_names"
+
+
+def derive_subject_signals(inputs: DerivedInputs) -> dict:
+    """Candidate subject terms from stored names and comments. Zero fetch.
+
+    Three states, and they must not read alike:
+
+    - **measured, with terms** — names and/or comments name things.
+    - **measured, with none** (`no_subject_bearing_names`) — a real finding:
+      every name in this database is structural (`t1.c1`, `id`, `value`), so
+      the names say nothing about the subject. Someone reading this should
+      reach for Enrichment (§16.3's own Enrichment row), not for ANALYZE.
+    - **not measured** (`no_schema_rows`) — nothing was ever surveyed.
+
+    `comments_captured` carries the fourth distinction, the one
+    `check_conventions` already draws for its own comment checks: if NOT ONE
+    table or column in the whole database carries a description, the likelier
+    explanation is that comments were never captured than that a real database
+    documents nothing — so the confidence of every term drops to name-only and
+    the payload says why.
+    """
+    tables = [t for t in inputs.tables if _is_base_table(t)]
+    if not tables and not inputs.columns:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": SUBJECT_REASON_NO_ROWS,
+            "terms": [],
+            "term_count": 0,
+            "explanation": (
+                "No stored table or column rows for this database, so there is "
+                "nothing to read a subject from. NOT a finding that the data "
+                "has no subject — run the schema step."
+            ),
+        }
+
+    # {term: {basis-source: occurrence count}} plus the containers it appears in.
+    hits: dict[str, dict[str, int]] = {}
+    containers: dict[str, set] = {}
+
+    def _record(term: str, source: str, container: str) -> None:
+        if len(term) < _MIN_SUBJECT_TOKEN or term.isdigit():
+            return
+        if term in _SUBJECT_STOPWORDS:
+            return
+        bucket = hits.setdefault(term, {})
+        bucket[source] = bucket.get(source, 0) + 1
+        containers.setdefault(term, set()).add(container)
+
+    documented_tables = 0
+    documented_columns = 0
+
+    for table in tables:
+        container = table.get("schema_name") or ""
+        for token in _tokenise_name(table.get("table_name") or ""):
+            _record(token, "table_name", container)
+        comment = (table.get("description") or "").strip()
+        if comment:
+            documented_tables += 1
+            for token in _tokenise_name(comment):
+                _record(token, "table_comment", container)
+
+    for col in inputs.columns:
+        container = col.get("schema_name") or ""
+        for token in _tokenise_name(col.get("column_name") or ""):
+            _record(token, "column_name", container)
+        comment = (col.get("description") or "").strip()
+        if comment:
+            documented_columns += 1
+            for token in _tokenise_name(comment):
+                _record(token, "column_comment", container)
+
+    # The same test `check_conventions` uses, for the same reason.
+    comments_captured = not (
+        documented_tables == 0 and documented_columns == 0 and bool(inputs.columns)
+    )
+
+    terms: list[dict] = []
+    for term, sources in hits.items():
+        from_comment = bool(sources.get("table_comment") or sources.get("column_comment"))
+        from_name = bool(sources.get("table_name") or sources.get("column_name"))
+        if from_comment and from_name:
+            basis = SUBJECT_BASIS_BOTH
+        elif from_comment:
+            basis = SUBJECT_BASIS_COMMENT
+        else:
+            basis = SUBJECT_BASIS_NAME
+        terms.append({
+            "term": term,
+            "basis": basis,
+            "confidence": _SUBJECT_CONFIDENCE[basis],
+            "occurrences": sum(sources.values()),
+            "sources": dict(sorted(sources.items())),
+            "containers": sorted(containers.get(term, ())),
+        })
+
+    terms.sort(key=lambda t: (-t["confidence"], -t["occurrences"], t["term"]))
+    shown = terms[:_SUBJECT_TERM_LIMIT]
+
+    if not terms:
+        return {
+            "state": STATE_MEASURED,
+            "reason": SUBJECT_REASON_NO_SUBJECT_NAMES,
+            "terms": [],
+            "term_count": 0,
+            "comments_captured": comments_captured,
+            "glossary_matched": False,
+            "glossary_reason": "zero_fetch_step",
+            "label": "gap",
+            "explanation": (
+                f"Measured: every token in this database's {len(tables)} "
+                f"table name(s) and {len(inputs.columns)} column name(s) is "
+                f"structural or temporal plumbing (`id`, `created_at`, "
+                f"`value`), and no comment names a subject either. The names "
+                f"genuinely do not say what the data is about — a real "
+                f"finding that points at Enrichment, not at a missing survey "
+                f"step."
+            ),
+        }
+
+    top = ", ".join(t["term"] for t in shown[:8])
+    return {
+        "state": STATE_MEASURED,
+        "terms": shown,
+        "term_count": len(terms),
+        "shown_count": len(shown),
+        "comments_captured": comments_captured,
+        # Never resolved against a vocabulary here — see the section comment.
+        "glossary_matched": False,
+        "glossary_reason": "zero_fetch_step",
+        "label": "info",
+        "confidence": shown[0]["confidence"],
+        "explanation": (
+            f"{len(terms)} candidate subject term(s) from stored names"
+            + (" and comments" if comments_captured else "")
+            + f"; strongest: {top}. "
+            + ("These rest on names alone: not one table or column in this "
+               "database carries a comment, which reads as comments never "
+               "having been captured rather than as a database that documents "
+               "nothing — so no term here reaches comment-level confidence. "
+               if not comments_captured else "")
+            + "Candidate terms only: a name is a claim (§16.2), and NOTHING "
+              "here was matched against Egeria's glossary or a data-class "
+              "registry — this step opens no connection, so an unmatched term "
+              "means 'not looked up', never 'not a known term'."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 11. coverage_signals  (design §16.2/§16.3, added 2026-09-24)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# §16.3, Scouting row 3: *"What period and places does it appear to cover, from
+# catalog statistics, file footers and descriptors alone?"*
+#
+# §16.2's warning is the whole point of this analysis and the thing most
+# likely to be undone by a later edit: `pg_stats.histogram_bounds` gives a date
+# column's min and max **without reading rows** — *"high when stats are fresh;
+# **absent means 'run ANALYZE', not 'no dates'**"*. Those two states are one
+# line apart in the data and opposite in meaning, so they are separate,
+# named reasons here, and `tests/test_fit_and_coverage_signals.py` fails if
+# anything collapses them.
+#
+# Scope, stated: **databases only**, per this change's brief. Parquet/Feather
+# footers (§16.2 row 5) and DCAT/Croissant descriptors (row 6) are filesystem
+# and dataset work and are not attempted — reported as `not_applicable` for a
+# database rather than silently missing.
+
+#: `coverage_signals`' temporal reasons.
+COVERAGE_REASON_NO_ROWS = "no_schema_rows"
+#: MEASURED NEGATIVE. Not one stored column has a temporal type or a
+#: date-shaped name: this database holds nothing dated, which is a real answer
+#: and enough on its own to exclude it from a lens with a time window.
+COVERAGE_REASON_NO_DATE_COLUMNS = "no_date_columns"
+#: NOT MEASURED. Date columns exist and no stored statistics carry bounds for
+#: any of them. §16.2's warning, as a reason code: the remedy is `ANALYZE`
+#: plus the statistics step, and the answer is unknown, NOT "no dates".
+COVERAGE_REASON_STATS_NOT_POPULATED = "stats_not_populated"
+#: MEASURED. Bounds were found.
+COVERAGE_REASON_MEASURED = "measured"
+
+#: The remedy sentence the `stats_not_populated` state carries. One string so
+#: the card, the annotation and `preliminary_fit`'s `could_not_check` verdict
+#: all say the same thing.
+COVERAGE_ANALYZE_REMEDY = (
+    "Run ANALYZE on the target database, then re-run the statistics step "
+    "(`postgres_schema_and_stats`), which stores pg_stats histogram bounds. "
+    "Note that step needs the `stats` capability (a pg_monitor-class "
+    "credential) — if the credential cannot see pg_stats, this stays unknown "
+    "however often ANALYZE runs."
+)
+
+#: Place-bearing column-name tokens (§16.2's "geography from names and
+#: classes", name half only). Whole tokens, never substrings: `state` inside
+#: `statement` is not a place, and `lat` inside `latest` is not a latitude.
+_PLACE_NAME_TOKENS = frozenset({
+    "country", "countries", "region", "regions", "state", "province",
+    "prefecture", "city", "town", "district", "county", "territory",
+    "continent", "postcode", "postal", "zip", "zipcode", "latitude", "lat",
+    "longitude", "lon", "lng", "geom", "geography", "geo", "location",
+    "locale", "locality", "address", "timezone", "tz", "market", "site",
+})
+
+#: Not every place token is equally strong. A column called `latitude` or
+#: `postcode` is almost certainly geographic; `site`, `market`, `location` and
+#: `state` are routinely something else entirely (`state` is very often a
+#: status). Two tiers rather than one flat list, so the payload can say which.
+_STRONG_PLACE_TOKENS = frozenset({
+    "country", "countries", "region", "regions", "province", "prefecture",
+    "city", "postcode", "postal", "zip", "zipcode", "latitude", "longitude",
+    "geom", "geography", "continent", "county",
+})
+
+
+def derive_coverage_signals(inputs: DerivedInputs) -> dict:
+    """Period and places from catalog statistics and names alone. Zero fetch.
+
+    Three blocks, each with its own state, because they fail independently:
+    `temporal` (the one §16.2 warns about), `spatial` (names only at this
+    tier), and `partitions` (a collection gap, reported as one).
+    """
+    if not inputs.columns:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": COVERAGE_REASON_NO_ROWS,
+            "temporal": {
+                "state": STATE_NOT_MEASURED,
+                "reason": COVERAGE_REASON_NO_ROWS,
+                "label": "unverified",
+                # NOT the ANALYZE remedy: nothing has been surveyed at all, so
+                # running ANALYZE on the target would change nothing here. A
+                # remedy that names the wrong fix is worse than none.
+                "remedy": (
+                    "Run the schema step (`postgres_schema_and_stats`) — no "
+                    "column row for this database has ever been stored."
+                ),
+                "explanation": (
+                    "No stored column rows, so no date column could even be "
+                    "looked for. Unknown, not 'no dates'."
+                ),
+            },
+            "spatial": {
+                "state": STATE_NOT_MEASURED,
+                "reason": COVERAGE_REASON_NO_ROWS,
+                "explanation": "No stored column rows to read place names from.",
+            },
+            "partitions": _partition_signal(),
+            "explanation": (
+                "No stored column rows for this database. Neither the period "
+                "nor the places it covers is established — run the schema "
+                "step. NOT a finding that it covers nothing."
+            ),
+        }
+
+    return {
+        "state": STATE_MEASURED,
+        "temporal": _temporal_coverage(inputs),
+        "spatial": _spatial_coverage(inputs),
+        "partitions": _partition_signal(),
+        "explanation": (
+            "Coverage estimated from stored catalog statistics and column "
+            "names only — no value was read. See `temporal`, `spatial` and "
+            "`partitions`, each of which carries its own state: they are "
+            "established independently and one being unknown says nothing "
+            "about the others."
+        ),
+    }
+
+
+def _temporal_coverage(inputs: DerivedInputs) -> dict:
+    """The period, from `pg_stats` bounds on date columns. §16.2's row 4.
+
+    Shares `propose_data_scope`'s reading of the stored profile (exact
+    `min_value`/`max_value` first, `histogram_bounds_json` second) and differs
+    from it in two ways that matter: it also counts columns that are dated by
+    NAME but not by type, and it distinguishes "no date columns at all" from
+    "date columns whose statistics were never populated" with named reason
+    codes instead of two similar prose sentences.
+    """
+    typed: list[dict] = []
+    named_only: list[dict] = []
+    for col in inputs.columns:
+        base = (col.get("base_type") or col.get("data_type") or "").lower()
+        if any(marker in base for marker in _DATE_TYPE_MARKERS):
+            typed.append(col)
+        elif _name_suggests_date(col.get("column_name") or ""):
+            named_only.append(col)
+
+    if not typed and not named_only:
+        return {
+            "state": STATE_MEASURED,
+            "reason": COVERAGE_REASON_NO_DATE_COLUMNS,
+            "date_column_count": 0,
+            "named_date_column_count": 0,
+            "label": "gap",
+            "explanation": (
+                f"MEASURED NEGATIVE: none of this database's "
+                f"{len(inputs.columns)} stored columns has a date or timestamp "
+                f"type, and none is named like a date either. It holds nothing "
+                f"dated, so it has no period to cover — a real finding, not a "
+                f"missing statistic."
+            ),
+        }
+
+    profiles = {
+        (_table_key(p), p.get("column_name")): p for p in inputs.profiles
+    }
+    ranges: list[dict] = []
+    for col in typed:
+        profile = profiles.get((_table_key(col), col.get("column_name")))
+        if not profile:
+            continue
+        low = (profile.get("min_value") or "").strip() or None
+        high = (profile.get("max_value") or "").strip() or None
+        basis = "profile_min_max"
+        if low is None or high is None:
+            bounds = profile.get("histogram_bounds_json")
+            if isinstance(bounds, list) and len(bounds) >= 2:
+                low = low or str(bounds[0])
+                high = high or str(bounds[-1])
+                basis = "histogram_bounds"
+        if low is None or high is None:
+            continue
+        ranges.append({
+            "schema_name": col.get("schema_name"),
+            "table_name": col.get("table_name"),
+            "column_name": col.get("column_name"),
+            "start": low,
+            "end": high,
+            "basis": basis,
+        })
+
+    if not ranges:
+        profiled = sum(
+            1 for col in typed
+            if (_table_key(col), col.get("column_name")) in profiles
+        )
+        return {
+            # THE distinction §16.2 warns about. NOT_MEASURED, never a
+            # negative finding: the period is unknown.
+            "state": STATE_NOT_MEASURED,
+            "reason": COVERAGE_REASON_STATS_NOT_POPULATED,
+            "date_column_count": len(typed),
+            "named_date_column_count": len(named_only),
+            "profiled_column_count": profiled,
+            "label": "unverified",
+            "remedy": COVERAGE_ANALYZE_REMEDY,
+            "explanation": (
+                f"{len(typed)} date/timestamp column(s) exist"
+                + (f" (plus {len(named_only)} column(s) dated by name only)"
+                   if named_only else "")
+                + f", and {'none of their' if not profiled else 'not one of the ' + str(profiled) + ' stored'} "
+                + "statistics rows carries a value range. pg_stats histogram "
+                  "bounds are populated by ANALYZE, so their ABSENCE means "
+                  "ANALYZE has not run (or the credential cannot see "
+                  "pg_stats) — it does NOT mean this database holds no dates. "
+                  "The period covered is UNKNOWN. " + COVERAGE_ANALYZE_REMEDY
+            ),
+        }
+
+    starts = sorted(r["start"] for r in ranges)
+    ends = sorted(r["end"] for r in ranges)
+    estimated = [r for r in ranges if r["basis"] == "histogram_bounds"]
+    confidence = 80 if not estimated else 55
+    if len(estimated) == len(ranges):
+        confidence = 50
+    return {
+        "state": STATE_MEASURED,
+        "reason": COVERAGE_REASON_MEASURED,
+        # `DataScopeProperties`' own key names, per egeria-support-for-multi-
+        # resource.md §7 — so a lens comparison and a Curate prefill both read
+        # the same keys on both sides (§16.1).
+        "dataCoverageStartTime": starts[0],
+        "dataCoverageEndTime": ends[-1],
+        "confidence": confidence,
+        "basis": ", ".join(sorted({r["basis"] for r in ranges})),
+        "column_ranges": ranges,
+        "date_column_count": len(typed),
+        "named_date_column_count": len(named_only),
+        "profiled_column_count": len(ranges),
+        "label": "pass",
+        "explanation": (
+            f"Coverage {starts[0]} … {ends[-1]}, from {len(ranges)} of "
+            f"{len(typed)} date/timestamp column(s), with no row read. "
+            + (f"{len(estimated)} range(s) come from pg_stats histogram "
+               f"bounds, which are ANALYZE-time estimates of the extremes "
+               f"rather than exact values — hence the reduced confidence. "
+               if estimated else "")
+            + (f"{len(typed) - len(ranges)} date column(s) have no stored "
+               f"bounds and are NOT included; their own range is unknown "
+               f"rather than empty. " if len(ranges) < len(typed) else "")
+            + "An estimate from the catalog, not a measured cadence: gaps "
+              "inside this range are invisible here and need "
+              "`coverage_profile` (Analysis tier)."
+        ),
+    }
+
+
+def _spatial_coverage(inputs: DerivedInputs) -> dict:
+    """The places, from column NAMES only. §16.2's row 7, name half.
+
+    Returns candidates, never an extent. The set of regions actually present
+    needs the values, which is a data read (`coverage_profile` +
+    `reference_data_match`, Analysis tier) — so `values_read` is `False` on
+    every payload this returns, and the verdict word is `candidates_only`
+    rather than anything that could be mistaken for a measured extent.
+    """
+    strong: list[dict] = []
+    weak: list[dict] = []
+    for col in inputs.columns:
+        name = col.get("column_name") or ""
+        tokens = set(_tokenise_name(name))
+        matched = sorted(tokens & _PLACE_NAME_TOKENS)
+        if not matched:
+            continue
+        entry = {
+            "schema_name": col.get("schema_name"),
+            "table_name": col.get("table_name"),
+            "column_name": name,
+            "data_type": col.get("base_type") or col.get("data_type") or "",
+            "matched_tokens": matched,
+        }
+        if set(matched) & _STRONG_PLACE_TOKENS:
+            strong.append(entry)
+        else:
+            weak.append(entry)
+
+    if not strong and not weak:
+        return {
+            "state": STATE_MEASURED,
+            "verdict": "no_place_columns",
+            "place_columns": [],
+            "ambiguous_place_columns": [],
+            "values_read": False,
+            "next_analysis": "coverage_profile",
+            "label": "info",
+            "explanation": (
+                f"MEASURED NEGATIVE, at name level only: no column among "
+                f"{len(inputs.columns)} is named like a place (country, "
+                f"region, postcode, lat/lon…). A place could still be encoded "
+                f"inside a text column under another name, so this is "
+                f"evidence of no geographic COLUMN, not proof of no "
+                f"geographic content — the values have not been read."
+            ),
+        }
+
+    return {
+        "state": STATE_MEASURED,
+        "verdict": "candidates_only",
+        "place_columns": strong,
+        "ambiguous_place_columns": weak,
+        "values_read": False,
+        "next_analysis": "coverage_profile",
+        "label": "info",
+        "confidence": 35 if strong else 20,
+        "explanation": (
+            f"{len(strong)} column(s) named unambiguously like a place"
+            + (f", plus {len(weak)} whose name is geographic in some schemas "
+               f"and not in others (`state`, `site`, `market`)" if weak else "")
+            + ". These are the NAMES of place-bearing columns — the places "
+              "actually present are NOT established, because no value was "
+              "read. The set of regions, or a bounding box, needs "
+              "`coverage_profile` plus `reference_data_match` (Analysis "
+              "tier)."
+        ),
+    }
+
+
+def _partition_signal() -> dict:
+    """Partition bounds: named by §16.2, not collectable from stored rows.
+
+    §16.2 row 4 lists *"partition bounds from `pg_partitioned_table` / check
+    constraints give exact ranges"* as a free Scouting signal, and it would be
+    — but nothing in RE collects it: no structured table carries partition
+    metadata (checked against `registry.py`'s `_DB_FS_DETAIL_TABLE_DDL` and
+    `connection.py`'s collection SQL, 2026-09-24). So this block reports a
+    COLLECTION GAP with the step that would close it, rather than returning
+    nothing and letting a reader conclude the database is unpartitioned.
+
+    `grain_determination`'s `partition_suffix` interval basis is a *naming*
+    signal about the same subject and is not a substitute: a name suggests a
+    period, a bound states one.
+    """
+    return {
+        "state": STATE_NOT_COLLECTED,
+        "reason": "partition_metadata_not_stored",
+        "label": "unverified",
+        "remedy": (
+            "Extend `postgres_schema_and_stats` to store `pg_partitioned_table` "
+            "/ `pg_class.relispartition` and each child partition's bound, then "
+            "this block becomes an exact range at no extra tier — it is "
+            "unfiltered catalog metadata (`catalog` capability)."
+        ),
+        "explanation": (
+            "Partition bounds are an exact, free coverage signal (§16.2) and "
+            "RE does not collect them: no structured table carries partition "
+            "metadata today. So this is UNKNOWN — the absence here means "
+            "nothing collects it, NOT that this database is unpartitioned."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. preliminary_fit  (design §16.3 Discovery, §16.5, added 2026-09-24)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# §16.3, Discovery row 1: *"Could this be in scope for what I am looking for —
+# worth the full pass?"* — *"zero-fetch; the three Scouting estimates against
+# the investigation's `DataLens`; per-input confidence; renders 'no requirement
+# declared' when none"*.
+#
+# **Scope decision for this change (2026-09-24), stated because it is a
+# deliberate narrowing.** §16.5 points 3–5 describe a full `DataLens`: an
+# Egeria governance definition, versioned, editable in the investigation's
+# framing form, with Curate-tier "make this my lens" actions and
+# cross-investigation matching. None of that is built here. §16.6's own cost
+# table is the authority for splitting it that way — *"`preliminary_fit` works
+# before it exists, as a comparison across resources"* — and §16.5 point 2
+# says the same: *"the same question works with no lens at all as a comparison
+# across resources"*.
+#
+# So what this takes is a plain mapping, and there are exactly two ways to
+# supply one:
+#
+#   * **no lens** → the verdict is `no_requirement_declared`, and the payload
+#     still carries `achievable`: what this resource *could* satisfy (§16.5
+#     point 2's "here is what the working set could satisfy"). Never a vacuous
+#     pass, and never a silent fail.
+#   * **an ad-hoc lens** → a dict using `DataScopeProperties`' / §16.6's own
+#     `scopeElements` key names (`subjectTerms`, `interval`,
+#     `dataCoverageStartTime`, `dataCoverageEndTime`, `regions`), which is the
+#     shape a real `DataLens` will serialise to. `lens_source` records where
+#     it came from, and `lens_version` is carried through when present (§16.5
+#     point 4 — a fit verdict is only meaningful against a lens version), so
+#     wiring a stored, versioned lens in later changes the CALLER, not this
+#     function.
+
+FIT_FITS = "fits"
+FIT_DOES_NOT_FIT = "does_not_fit"
+#: An input this verdict depends on was itself not established. The state
+#: §16.2's ANALYZE warning makes unavoidable: with `coverage_signals`
+#: unknown, "does not fit" and "fits" are both unsupported claims.
+FIT_COULD_NOT_CHECK = "could_not_check"
+#: No lens, or a lens that declares nothing this tier can compare.
+FIT_NO_REQUIREMENT = "no_requirement_declared"
+#: Per-input only: the lens declares nothing on this axis, but does declare
+#: something on another. Distinct from `FIT_NO_REQUIREMENT`, which is the
+#: whole-verdict version.
+FIT_INPUT_NO_CRITERION = "no_criterion"
+
+#: Lens keys, §16.6's `scopeElements` set. Named constants because the whole
+#: point of §16.1 is that lens and scope use the IDENTICAL key names, and a
+#: typo on one side would silently read as "no criterion declared".
+LENS_SUBJECT_TERMS = "subjectTerms"
+LENS_DATA_CLASSES = "dataClasses"
+LENS_REGIONS = "regions"
+LENS_INTERVAL = "interval"
+LENS_GRAIN_STATEMENT = "grainStatement"
+LENS_COVERAGE_START = "dataCoverageStartTime"
+LENS_COVERAGE_END = "dataCoverageEndTime"
+
+#: Criteria a real `DataLens` carries that this tier cannot answer, with the
+#: analysis that can. Reported as `deferred_criteria` rather than scored — a
+#: lens that asks for EMEA regions must not read as "fits" because the region
+#: test was quietly skipped, nor as "does not fit" because it was impossible.
+_DEFERRED_CRITERIA = {
+    LENS_REGIONS: (
+        "coverage_profile (Analysis tier)",
+        "which regions are actually present needs the values read; "
+        "`coverage_signals` only names the columns that could carry them",
+    ),
+    LENS_DATA_CLASSES: (
+        "data_class_match (Analysis tier)",
+        "data-class membership is matched against sampled values, and this "
+        "tier reads no value; `subject_signals`' candidate terms are names, "
+        "not class matches",
+    ),
+    LENS_GRAIN_STATEMENT: (
+        "grain_determination (measured) / requirement_fit (Assessment tier)",
+        "comparing two grain STATEMENTS in prose is not a set test; the "
+        "interval is the part this tier can compare",
+    ),
+}
+
+
+def normalise_lens(lens: dict | None) -> dict | None:
+    """A lens mapping, or None. Tolerates an empty dict as "no lens".
+
+    Deliberately permissive about unknown keys (a real `DataLens` carries
+    bounding-box and validity fields this tier has no estimate for) and
+    deliberately strict about nothing: an unrecognised key is reported in
+    `unused_criteria`, never silently dropped.
+    """
+    if not isinstance(lens, dict) or not lens:
+        return None
+    cleaned = {k: v for k, v in lens.items() if v not in (None, "", [], {})}
+    return cleaned or None
+
+
+def _fit_subject(subject: dict, lens: dict) -> dict:
+    sought = [str(t).strip().lower() for t in (lens.get(LENS_SUBJECT_TERMS) or [])
+              if str(t).strip()]
+    if not sought:
+        return {"verdict": FIT_INPUT_NO_CRITERION, "confidence": 0,
+                "explanation": "The lens declares no subject terms."}
+    if (subject or {}).get("state") != STATE_MEASURED:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": (subject or {}).get("reason") or "subject_not_established",
+            "explanation": (
+                "`subject_signals` is not established for this database "
+                f"({(subject or {}).get('reason') or 'unknown reason'}), so "
+                "whether it holds the sought subject cannot be answered "
+                "either way."
+            ),
+        }
+    held = {t["term"]: t for t in (subject.get("terms") or [])}
+    if not held:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": SUBJECT_REASON_NO_SUBJECT_NAMES,
+            "explanation": (
+                "This database's names carry no subject term at all (a real "
+                "finding of `subject_signals`), so they cannot confirm OR "
+                "rule out the sought subject — the names simply do not say. "
+                "Enrichment, or a value-level pass, is what would answer it."
+            ),
+        }
+    # PREFIX match both ways, not a free substring test: a lens term "sales"
+    # should match a held "salesorder" and a held "order" should match a
+    # sought "orders", but an arbitrary substring test would match the held
+    # "art" against a sought "cart" — a false fit, and at this tier a false
+    # fit costs the whole expensive pass the gate exists to withhold. The
+    # lens's own terms are tokenised exactly as the held ones were, so
+    # "sales_order" compares like with like.
+    sought_tokens = {tok for term in sought for tok in _tokenise_name(term)}
+    matched = sorted(
+        term for term in held
+        if term in sought_tokens
+        or any(term.startswith(tok) or tok.startswith(term)
+               for tok in sought_tokens)
+    )
+    if matched:
+        confidence = max(held[m]["confidence"] for m in matched)
+        return {
+            "verdict": FIT_FITS,
+            "confidence": confidence,
+            "matched_terms": matched,
+            "sought_terms": sought,
+            "explanation": (
+                f"Subject overlap on {', '.join(matched)} (confidence "
+                f"{confidence} — these are candidate terms from names and "
+                f"comments, never glossary matches)."
+            ),
+        }
+    return {
+        "verdict": FIT_DOES_NOT_FIT,
+        # Low on purpose: §16.2 grades name-derived subject low–medium, so a
+        # non-overlap is a weak disqualifier and must not read as a strong one.
+        "confidence": 25,
+        "sought_terms": sought,
+        "explanation": (
+            f"No candidate subject term overlaps the sought "
+            f"{', '.join(sought)}. A weak disqualifier: the held terms come "
+            f"from names and comments, so a database that holds the subject "
+            f"under unfamiliar names looks like this too."
+        ),
+    }
+
+
+def _fit_coverage(coverage: dict, lens: dict) -> dict:
+    start = str(lens.get(LENS_COVERAGE_START) or "").strip()
+    end = str(lens.get(LENS_COVERAGE_END) or "").strip()
+    if not start and not end:
+        return {"verdict": FIT_INPUT_NO_CRITERION, "confidence": 0,
+                "explanation": "The lens declares no time window."}
+
+    temporal = (coverage or {}).get("temporal") or {}
+    reason = temporal.get("reason")
+    if reason == COVERAGE_REASON_NO_DATE_COLUMNS:
+        return {
+            "verdict": FIT_DOES_NOT_FIT,
+            # A measured negative about the schema, so this one IS strong.
+            "confidence": 90,
+            "reason": reason,
+            "explanation": (
+                "The lens asks for a time window and this database has no "
+                "date or timestamp column at all (measured, not missing) — so "
+                "it cannot cover any window."
+            ),
+        }
+    if temporal.get("state") != STATE_MEASURED:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": reason or "temporal_not_established",
+            "remedy": temporal.get("remedy") or COVERAGE_ANALYZE_REMEDY,
+            "explanation": (
+                "The period this database covers is NOT established "
+                f"({reason or 'unknown reason'}), so it cannot be compared "
+                "with the lens's window. This is not 'does not fit' and not "
+                "'no requirement' — it is unknown. "
+                + (temporal.get("remedy") or COVERAGE_ANALYZE_REMEDY)
+            ),
+        }
+
+    held_start = str(temporal.get("dataCoverageStartTime") or "")
+    held_end = str(temporal.get("dataCoverageEndTime") or "")
+    # String comparison, which is correct for ISO-8601 and is what the stored
+    # bounds are. A non-ISO bound would compare wrongly rather than raise, so
+    # the basis is carried through for a reader to dispute.
+    overlaps = not ((end and held_start and held_start > end)
+                    or (start and held_end and held_end < start))
+    confidence = temporal.get("confidence") or 50
+    if overlaps:
+        return {
+            "verdict": FIT_FITS,
+            "confidence": confidence,
+            "held_window": [held_start, held_end],
+            "sought_window": [start, end],
+            "basis": temporal.get("basis"),
+            "explanation": (
+                f"Held coverage {held_start} … {held_end} overlaps the sought "
+                f"{start or '(open)'} … {end or '(open)'}. Overlap only — "
+                f"whether the window is COVERED without gaps needs "
+                f"`coverage_profile` (Analysis tier)."
+            ),
+        }
+    return {
+        "verdict": FIT_DOES_NOT_FIT,
+        "confidence": confidence,
+        "held_window": [held_start, held_end],
+        "sought_window": [start, end],
+        "basis": temporal.get("basis"),
+        "explanation": (
+            f"Held coverage {held_start} … {held_end} does not overlap the "
+            f"sought {start or '(open)'} … {end or '(open)'} at all."
+        ),
+    }
+
+
+def _fit_grain(grain: dict, lens: dict) -> dict:
+    sought = str(lens.get(LENS_INTERVAL) or "").strip().lower()
+    if not sought:
+        return {"verdict": FIT_INPUT_NO_CRITERION, "confidence": 0,
+                "explanation": "The lens declares no time interval."}
+    if sought not in INTERVAL_RANK:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": "unknown_sought_interval",
+            "explanation": (
+                f"The lens asks for interval {sought!r}, which is not one of "
+                f"the intervals this tier derives ({', '.join(sorted(INTERVAL_RANK))}). "
+                f"Not compared rather than guessed at."
+            ),
+        }
+    if (grain or {}).get("state") != STATE_MEASURED:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": (grain or {}).get("reason") or "grain_not_established",
+            "explanation": (
+                "`grain_determination` is not established for this database, "
+                "so no time grain can be compared with the lens's interval."
+            ),
+        }
+    timed = [g for g in (grain.get("grains") or []) if g.get("interval")]
+    if not timed:
+        return {
+            "verdict": FIT_COULD_NOT_CHECK,
+            "confidence": 0,
+            "reason": "no_interval_derived",
+            "explanation": (
+                f"No table in this database carries a time grain derivable "
+                f"from naming or from a date column in its key, so there is "
+                f"nothing to compare with the sought {sought!r}. An absence "
+                f"of naming signal, NOT a finding that the data is not "
+                f"periodic — a measured cadence is `coverage_profile` "
+                f"(Analysis tier)."
+            ),
+        }
+    sought_rank = INTERVAL_RANK[sought]
+    compatible = [
+        g for g in timed
+        if INTERVAL_RANK.get(g["interval"], 99) <= sought_rank
+    ]
+    if compatible:
+        best = max(compatible, key=lambda g: g.get("interval_confidence") or 0)
+        return {
+            "verdict": FIT_FITS,
+            "confidence": best.get("interval_confidence") or 0,
+            "sought_interval": sought,
+            "compatible_tables": [g["qualified_name"] for g in compatible][:20],
+            "compatible_count": len(compatible),
+            "held_intervals": sorted({g["interval"] for g in timed}),
+            "explanation": (
+                f"{len(compatible)} of {len(timed)} table(s) with a derivable "
+                f"time grain are recorded at {sought!r} or finer (strongest: "
+                f"{best['qualified_name']} at {best['interval']!r}, basis "
+                f"{best.get('interval_basis')}, confidence "
+                f"{best.get('interval_confidence')}). Finer serves coarser: "
+                f"per-day data can answer a monthly requirement."
+            ),
+        }
+    return {
+        "verdict": FIT_DOES_NOT_FIT,
+        "confidence": max(g.get("interval_confidence") or 0 for g in timed),
+        "sought_interval": sought,
+        "held_intervals": sorted({g["interval"] for g in timed}),
+        "explanation": (
+            f"Every table with a derivable time grain is COARSER than the "
+            f"sought {sought!r} (held: "
+            f"{', '.join(sorted({g['interval'] for g in timed}))}), and a "
+            f"coarser grain cannot be disaggregated into a finer one."
+        ),
+    }
+
+
+def compute_preliminary_fit(
+    subject: dict,
+    coverage: dict,
+    grain: dict,
+    lens: dict | None = None,
+) -> dict:
+    """The Discovery gate: could this be in scope, from the free estimates?
+
+    Zero fetch — a pure function of the three Scouting payloads and a lens
+    mapping, which is what makes §16.5 point 2's cheap refinement possible:
+    changing the lens recomputes fit over every already-surveyed resource at
+    no fetch cost.
+
+    Four verdicts, and the third is the one this exists to get right:
+
+    - `fits` — every criterion the lens declares and this tier can check does.
+    - `does_not_fit` — at least one checkable criterion definitely fails.
+    - `could_not_check` — no criterion fails, and at least one could not be
+      evaluated because its input was not established. §16.2's ANALYZE case
+      lands here, and it must NEVER render as either of the two above.
+    - `no_requirement_declared` — no lens, or a lens declaring nothing
+      comparable at this tier. Carries `achievable` instead of a pass.
+
+    Plus one state that is not a verdict at all: when NONE of the three
+    estimates is established (a never-surveyed database), the payload is
+    `STATE_NOT_MEASURED` with `reason: no_estimates_established`, because "no
+    requirement declared" is a statement about the *lens* and what is needed
+    there is a statement about the *resource*. See the branch below.
+    """
+    normalised = normalise_lens(lens)
+    achievable = _achievable(subject, coverage, grain)
+
+    # Nothing has been surveyed at all: none of the three estimates exists, so
+    # there is no gate to run. STATE_NOT_MEASURED rather than a verdict,
+    # because `_db_derived_field_reader` normalises that to `{}` and the card
+    # disappears — which is right. A never-surveyed database rendering
+    # "Preliminary fit: no requirement declared" would be an answer about a
+    # resource nobody has looked at, and "no requirement declared" is a
+    # statement about the LENS, not about the resource. The verdict field is
+    # still filled in with `could_not_check` so no consumer reading it sees a
+    # fit or a miss.
+    nothing_established = not (
+        (subject or {}).get("state") == STATE_MEASURED
+        or (coverage or {}).get("state") == STATE_MEASURED
+        or (grain or {}).get("state") == STATE_MEASURED
+    )
+    if nothing_established:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "verdict": FIT_COULD_NOT_CHECK,
+            "reason": "no_estimates_established",
+            "label": "unverified",
+            "confidence": 0,
+            "lens_declared": bool(normalised),
+            "lens_source": str((normalised or {}).get("lens_source") or ""),
+            "lens_version": str((normalised or {}).get("lens_version") or ""),
+            "inputs": {},
+            "achievable": achievable,
+            "deferred_criteria": [],
+            "unused_criteria": [],
+            "explanation": (
+                "None of the three Scouting estimates this gate compares "
+                "(subject, coverage, time grain) is established for this "
+                "database, so there is nothing to compare against any "
+                "requirement. NOT a fit, NOT a miss, and NOT 'no requirement "
+                "declared' — that would be a statement about the lens, and "
+                "this is a statement about the resource: it has not been "
+                "surveyed. Run the schema step."
+            ),
+        }
+
+    deferred = []
+    unused = []
+    if normalised:
+        for key in sorted(normalised):
+            if key in _DEFERRED_CRITERIA:
+                analysis, why = _DEFERRED_CRITERIA[key]
+                deferred.append({"criterion": key, "answered_by": analysis,
+                                 "explanation": why})
+            elif key not in {LENS_SUBJECT_TERMS, LENS_INTERVAL,
+                             LENS_COVERAGE_START, LENS_COVERAGE_END,
+                             "lens_version", "lens_source", "name",
+                             "qualified_name", "description"}:
+                unused.append(key)
+
+    if not normalised:
+        return {
+            "state": STATE_MEASURED,
+            "verdict": FIT_NO_REQUIREMENT,
+            "label": "unverified",
+            "confidence": 0,
+            "lens_declared": False,
+            "lens_source": "",
+            "lens_version": "",
+            "inputs": {},
+            "achievable": achievable,
+            "deferred_criteria": [],
+            "unused_criteria": [],
+            "explanation": (
+                "NO REQUIREMENT DECLARED — no lens was supplied, so fit is "
+                "not a question that has an answer here. This is NOT a pass "
+                "and NOT a failure. `achievable` states what this resource "
+                "could satisfy (§16.5 point 2), which is the form the same "
+                "question takes as a comparison across resources: supply "
+                "subject terms, an interval or a time window as an ad-hoc "
+                "lens and this becomes a real verdict at no fetch cost."
+            ),
+        }
+
+    inputs = {
+        "subject": _fit_subject(subject, normalised),
+        "coverage": _fit_coverage(coverage, normalised),
+        "grain": _fit_grain(grain, normalised),
+    }
+
+    failed = [k for k, v in inputs.items() if v["verdict"] == FIT_DOES_NOT_FIT]
+    unchecked = [k for k, v in inputs.items() if v["verdict"] == FIT_COULD_NOT_CHECK]
+    passed = [k for k, v in inputs.items() if v["verdict"] == FIT_FITS]
+    no_criterion = [k for k, v in inputs.items()
+                    if v["verdict"] == FIT_INPUT_NO_CRITERION]
+
+    if failed:
+        verdict, label = FIT_DOES_NOT_FIT, "gap"
+        contributing = failed
+        summary = (
+            f"DOES NOT FIT: {', '.join(failed)} definitely fail(s) against "
+            f"this lens."
+        )
+    elif unchecked:
+        # The whole reason this state exists. A gap in an input is not a
+        # negative verdict and is not a vacuous pass.
+        verdict, label = FIT_COULD_NOT_CHECK, "unverified"
+        contributing = unchecked
+        summary = (
+            f"COULD NOT CHECK: nothing contradicts this lens, and "
+            f"{', '.join(unchecked)} could not be evaluated because the "
+            f"underlying estimate is not established. Treat as UNKNOWN, not "
+            f"as a fit and not as a miss."
+        )
+    elif passed:
+        verdict, label = FIT_FITS, "pass"
+        contributing = passed
+        summary = (
+            f"FITS on {', '.join(passed)} — worth the full pass. Every "
+            f"criterion this lens declares and this tier can check is "
+            f"satisfied."
+        )
+    else:
+        # A lens that declares only deferred criteria (regions, data classes,
+        # a grain statement). Not a pass: nothing was compared.
+        verdict, label = FIT_NO_REQUIREMENT, "unverified"
+        contributing = []
+        summary = (
+            "NO REQUIREMENT DECLARED at this tier: the lens declares only "
+            "criteria this zero-fetch tier cannot compare "
+            f"({', '.join(d['criterion'] for d in deferred) or 'none'}), so "
+            "no verdict was reached. Not a pass."
+        )
+
+    confidence = (
+        min(inputs[k].get("confidence") or 0 for k in contributing)
+        if contributing else 0
+    )
+
+    caveats = []
+    # The remedy travels up to the verdict rather than staying buried in the
+    # input, so the person reading the gate is told what would answer it —
+    # "could not check" without "run ANALYZE" is an unactionable verdict.
+    remedies = [
+        inputs[k]["remedy"] for k in unchecked if inputs[k].get("remedy")
+    ]
+    if remedies:
+        caveats.append(" ".join(dict.fromkeys(remedies)))
+    if unchecked and verdict != FIT_COULD_NOT_CHECK:
+        caveats.append(
+            f"{', '.join(unchecked)} could not be checked, so this verdict "
+            f"rests on the rest."
+        )
+    if no_criterion:
+        caveats.append(
+            f"The lens declares nothing for {', '.join(no_criterion)}."
+        )
+    if deferred:
+        caveats.append(
+            "Deferred to a later tier: "
+            + "; ".join(f"{d['criterion']} → {d['answered_by']}" for d in deferred)
+            + "."
+        )
+    if unused:
+        caveats.append(
+            f"The lens carries {', '.join(unused)}, which nothing at this "
+            f"tier estimates — carried through unevaluated rather than "
+            f"dropped."
+        )
+
+    return {
+        "state": STATE_MEASURED,
+        "verdict": verdict,
+        "label": label,
+        "confidence": confidence,
+        "lens_declared": True,
+        "lens_source": str(normalised.get("lens_source") or "ad_hoc"),
+        # §16.5 point 4: a verdict is only meaningful against the lens version
+        # it used. Empty for an ad-hoc lens, which is itself the honest answer.
+        "lens_version": str(normalised.get("lens_version") or ""),
+        "lens": normalised,
+        "inputs": inputs,
+        "failed_inputs": failed,
+        "unchecked_inputs": unchecked,
+        "passed_inputs": passed,
+        "deferred_criteria": deferred,
+        "unused_criteria": unused,
+        "achievable": achievable,
+        "explanation": " ".join([summary, *caveats]),
+    }
+
+
+def _achievable(subject: dict, coverage: dict, grain: dict) -> dict:
+    """What this resource could satisfy, lens or no lens (§16.5 point 2).
+
+    The descriptive half that *"comes first and stands alone"* (§16.5 point 1):
+    it is computed identically whether a lens exists, so the no-lens rendering
+    is the same data as the verdict's, not a stub.
+    """
+    temporal = (coverage or {}).get("temporal") or {}
+    window = (
+        [temporal.get("dataCoverageStartTime"), temporal.get("dataCoverageEndTime")]
+        if temporal.get("state") == STATE_MEASURED else None
+    )
+    all_terms = [t["term"] for t in ((subject or {}).get("terms") or [])]
+    intervals = (grain or {}).get("intervals") or []
+
+    if all_terms:
+        subject_clause = f"subject terms {', '.join(all_terms[:6])}"
+    else:
+        subject_clause = "no subject terms derivable"
+    if window:
+        coverage_clause = f"coverage {window[0]} … {window[1]}"
+    else:
+        coverage_clause = (
+            f"coverage not established ({temporal.get('reason') or 'unknown'})"
+        )
+    if intervals:
+        grain_clause = f"time grain(s) {', '.join(intervals)}"
+    else:
+        grain_clause = "no time grain derivable"
+
+    return {
+        "subject_terms": all_terms[:12],
+        "subject_state": (subject or {}).get("state"),
+        "coverage_window": window,
+        "coverage_state": temporal.get("state"),
+        "coverage_reason": temporal.get("reason"),
+        "intervals": intervals,
+        "grain_state": (grain or {}).get("state"),
+        "explanation": (
+            "What this resource could satisfy, from the free Scouting "
+            f"estimates: {subject_clause}; {coverage_clause}; {grain_clause}."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 9. The aggregation grain  (REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1, §1/§5)
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -2484,6 +3956,144 @@ def conventions_by_container(inputs: DerivedInputs, containment) -> dict:
     }
 
 
+def subject_signals_by_container(inputs: DerivedInputs, containment) -> dict:
+    """Each container's candidate subject terms; the rollup names the union.
+
+    #266's grain, applied to §16's subject row. A database with a `sales`
+    schema and an `hr` schema has two subjects, and one flat term list reads as
+    a single confused one — which is the same defect as one relationship graph
+    over three unrelated schemas.
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+    per_container = {
+        name: derive_subject_signals(scope_inputs(inputs, name))
+        for name in containers
+    }
+    by_container_terms = {
+        name: [t["term"] for t in (result.get("terms") or [])][:12]
+        for name, result in per_container.items()
+    }
+    silent = sorted(
+        name for name, result in per_container.items()
+        if not (result.get("terms") or [])
+    )
+    explanation = (
+        f"A rollup: the whole-database term list above is the union, and this "
+        f"splits it across {len(containers)} {grain_name}(s)"
+        + (f" — {', '.join(silent)} carries no subject-bearing name at all."
+           if silent else ".")
+    )
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="union_of_terms",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            terms_by_container=by_container_terms,
+        ),
+    }
+
+
+def coverage_signals_by_container(inputs: DerivedInputs, containment) -> dict:
+    """Each container's period and places; the rollup names the widest span.
+
+    The reason this matters more here than anywhere else: a whole-database
+    window is the MIN start and MAX end across every schema, so one schema
+    covering 2019 and another covering 2026 render as "2019 … 2026" — a span
+    no schema actually covers. The per-container breakdown is what makes that
+    visible, and `aggregation.rollup_kind` says `widest_span` so the
+    whole-database figure cannot be mistaken for a per-schema one.
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+    per_container = {
+        name: derive_coverage_signals(scope_inputs(inputs, name))
+        for name in containers
+    }
+    windows = {}
+    unknown = []
+    for name, result in per_container.items():
+        temporal = (result.get("temporal") or {})
+        if temporal.get("state") == STATE_MEASURED and temporal.get("dataCoverageStartTime"):
+            windows[name] = [temporal["dataCoverageStartTime"],
+                             temporal["dataCoverageEndTime"]]
+        else:
+            unknown.append({"container": name, "reason": temporal.get("reason")})
+    explanation = (
+        f"A rollup over {len(containers)} {grain_name}(s): the whole-database "
+        f"window above is the widest span across them, which no single "
+        f"{grain_name} need cover. "
+        + (f"{len(windows)} {grain_name}(s) have a window; " if windows else "")
+        + (f"{len(unknown)} do not — "
+           + ", ".join(f"{u['container']} ({u['reason']})" for u in unknown)
+           + ". Each of those is unknown or a measured negative on its own "
+             "terms; read the per-container reason rather than the total."
+           if unknown else "every one of them has a window.")
+    )
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="widest_span",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            windows_by_container=windows,
+            containers_without_window=unknown,
+        ),
+    }
+
+
+def preliminary_fit_by_container(
+    inputs: DerivedInputs, containment, lens: dict | None,
+) -> dict:
+    """Each container's own fit verdict; the rollup counts them by verdict.
+
+    The gate's whole purpose is deciding whether the expensive pass is worth
+    running, and the unit that pass runs on is a schema. "One of six schemas
+    fits" is a materially different answer from "the database fits", and a
+    whole-database verdict cannot express it.
+    """
+    grain_name = containment.aggregation_grain.name
+    containers = _containers(inputs, containment)
+    per_container = {}
+    for name in containers:
+        scoped = scope_inputs(inputs, name)
+        per_container[name] = compute_preliminary_fit(
+            derive_subject_signals(scoped),
+            derive_coverage_signals(scoped),
+            determine_grain(scoped),
+            lens,
+        )
+    counts: dict[str, int] = {}
+    for result in per_container.values():
+        counts[result["verdict"]] = counts.get(result["verdict"], 0) + 1
+    fitting = sorted(n for n, r in per_container.items() if r["verdict"] == FIT_FITS)
+    explanation = (
+        f"A rollup over {len(containers)} {grain_name}(s), counted by verdict "
+        f"rather than averaged: "
+        + ", ".join(f"{verdict}={count}" for verdict, count in sorted(counts.items()))
+        + ". "
+        + (f"In scope: {', '.join(fitting)}." if fitting else
+           "No single " + grain_name + " fits on its own.")
+    )
+    return {
+        f"by_{grain_name}": per_container,
+        "aggregation": schema_scope.rollup_envelope(
+            containment,
+            rollup_kind="verdict_counts",
+            containers=containers,
+            excluded_system_containers=_excluded(inputs, containment),
+            explanation=explanation,
+            verdict_counts=counts,
+            fitting_containers=fitting,
+        ),
+    }
+
+
 def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dict:
     """Attach the per-container breakdown and rollup to each structural check.
 
@@ -2498,6 +4108,15 @@ def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dic
     targets = (
         "db_classification", "db_relationship_graph",
         "db_fingerprint", "schema_conventions",
+        # Added 2026-09-24 with design §16.3's Scouting/Discovery rows. Both
+        # are aggregations over tables and columns, so #266's ruling applies
+        # to them exactly as it applies to the four above: "a bag of subject
+        # terms from six schemas" and "2019…2026 across every schema" are the
+        # same kind of blurred answer "edge count 0, component count 3" was.
+        # `preliminary_fit` is included because a verdict over a whole
+        # database hides the case the gate exists for — one schema in scope
+        # and five not.
+        "subject_signals", "coverage_signals", "preliminary_fit",
     )
 
     if grain is None:
@@ -2519,6 +4138,22 @@ def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dic
     )
     derived["schema_conventions"].update(
         conventions_by_container(inputs, containment)
+    )
+    # §16's three new rows, at the same grain and by the same mechanism: run
+    # the pure check function over container-scoped inputs. `preliminary_fit`
+    # additionally needs the per-container grain, which `determine_grain`
+    # already produces per table — scoping its inputs is what turns that into
+    # a per-container verdict.
+    derived["subject_signals"].update(
+        subject_signals_by_container(inputs, containment)
+    )
+    derived["coverage_signals"].update(
+        coverage_signals_by_container(inputs, containment)
+    )
+    derived["preliminary_fit"].update(
+        preliminary_fit_by_container(
+            inputs, containment, (derived["preliminary_fit"].get("lens") or None),
+        )
     )
     # The screen relays `explanation` (the fact layer's "prose" rung in
     # `next/app.js`'s `readEnvelope`) and skips nested objects, so a breakdown
@@ -2564,11 +4199,20 @@ def run_db_derived(
     *,
     surveyed_at: str | None = None,
     source: str | None = None,
+    lens: dict | None = None,
 ) -> dict:
     """Run every `db_derived` check over stored rows. Opens no connection.
 
     Returns a dict shaped like the other database steps' output: the per-check
     payloads under `derived`, plus the annotations they produced.
+
+    `lens` is design §16.5's optional data requirement, as a plain mapping
+    using §16.6's `scopeElements` key names — see `compute_preliminary_fit`.
+    Omitted (the default, and what every caller in the tree passes today),
+    `preliminary_fit` renders "no requirement declared" plus what this
+    resource could satisfy. That is the designed degraded mode, not a stub:
+    §16.6 puts `preliminary_fit` in Phase 1 explicitly *"before [the DataLens]
+    exists, as a comparison across resources"*.
     """
     inputs = load_inputs(registry, slug, surveyed_at, source)
 
@@ -2581,6 +4225,9 @@ def run_db_derived(
     schema_diff = derive_schema_diff(registry, slug)
     grant_change = derive_grant_change(registry, slug)
     scope = propose_data_scope(inputs)
+    subject = derive_subject_signals(inputs)
+    coverage = derive_coverage_signals(inputs)
+    fit = compute_preliminary_fit(subject, coverage, grain, lens)
 
     derived = {
         "db_classification": classification,
@@ -2592,6 +4239,9 @@ def run_db_derived(
         "schema_diff": schema_diff,
         "grant_change": grant_change,
         _PROPOSED_SCOPE_CHECK: scope,
+        "subject_signals": subject,
+        "coverage_signals": coverage,
+        "preliminary_fit": fit,
     }
 
     # REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1: the four structural checks above
@@ -2630,6 +4280,9 @@ def build_annotations(derived: dict) -> list:
     annotations.extend(_schema_diff_annotations(derived["schema_diff"]))
     annotations.extend(_grant_change_annotations(derived["grant_change"]))
     annotations.extend(_scope_annotations(derived[_PROPOSED_SCOPE_CHECK]))
+    annotations.extend(_subject_annotations(derived["subject_signals"]))
+    annotations.extend(_coverage_annotations(derived["coverage_signals"]))
+    annotations.extend(_fit_annotations(derived["preliminary_fit"]))
     return annotations
 
 
@@ -2744,6 +4397,14 @@ def _grain_annotations(result: dict) -> list:
                     "grain_columns": grain.get("grain_columns") or [],
                     "row_count": grain.get("row_count"),
                     "date_columns": grain.get("date_columns") or [],
+                    # §16.3's time-grain extension: the interval alone was
+                    # ambiguous between a key-declared period and a guess
+                    # from a table's name.
+                    "named_date_columns": grain.get("named_date_columns") or [],
+                    "interval_basis": grain.get("interval_basis") or "",
+                    "interval_confidence": grain.get("interval_confidence") or 0,
+                    "interval_signals": grain.get("interval_signals") or {},
+                    "interval_explanation": grain.get("interval_explanation") or "",
                 },
             ))
         else:
@@ -3061,4 +4722,225 @@ def _scope_annotations(result: dict) -> list:
             "basis": result["basis"],
         },
         json_properties={"column_ranges": result["column_ranges"]},
+    )]
+
+
+def _subject_annotations(result: dict) -> list:
+    """One annotation for `subject_signals` (design §16.3's Scouting row 1).
+
+    Two mutually exclusive branches — the absence branch `return`s
+    immediately — which is why `subject_signals` is listed in
+    `tests/test_annotation_check_names.py`'s `KNOWN_EXCLUSIVE`, on the same
+    grounds as the eight checks above it.
+    """
+    if result["state"] != STATE_MEASURED or not result.get("terms"):
+        measured = result["state"] == STATE_MEASURED
+        return [ResourceMeasureAnnotation(
+            summary=(
+                "Names carry no subject term" if measured
+                else "Subject signals not established"
+            ),
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="subject_signals",
+            check_name="subject_signals",
+            # `gap` when measured (the names really say nothing — an
+            # Enrichment prompt); `unverified` when nothing was surveyed.
+            label="gap" if measured else "unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={
+                "state": result["state"],
+                "reason": result.get("reason") or "",
+                "comments_captured": result.get("comments_captured"),
+            },
+        )]
+
+    terms = result["terms"]
+    return [ResourceMeasureAnnotation(
+        summary=(
+            "Candidate subjects: "
+            + ", ".join(t["term"] for t in terms[:6])
+            + (f" (+{result['term_count'] - min(6, len(terms))} more)"
+               if result["term_count"] > 6 else "")
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="subject_signals",
+        check_name="subject_signals",
+        label="info",
+        confidence=result["confidence"],
+        explanation=result["explanation"],
+        # Candidate terms from names, never a declaration — the same
+        # measured-is-not-declared rule `proposed_data_scope` follows.
+        content_status="DRAFT",
+        resource_properties={
+            # §16.6's `scopeElements` key, so a lens comparison reads the same
+            # key name on both sides (§16.1).
+            "subjectTerms": ", ".join(t["term"] for t in terms),
+            "term_count": result["term_count"],
+            "comments_captured": result.get("comments_captured"),
+            "glossary_matched": result.get("glossary_matched"),
+        },
+        json_properties={"terms": terms},
+    )]
+
+
+def _coverage_annotations(result: dict) -> list:
+    """One annotation per block of `coverage_signals` (§16.3's Scouting row 3).
+
+    Three annotations rather than one composite, because the three blocks fail
+    independently and §15 rules out a composite score: a database whose period
+    is unknown and whose place columns are merely named must not average into
+    one "partially covered" line.
+
+    `check_name` is distinct per block (`coverage_signals_temporal` and so on),
+    so each is separately followable and no two collide on qualifiedName.
+    """
+    if result["state"] != STATE_MEASURED:
+        return [ResourceMeasureAnnotation(
+            summary="Coverage signals not established",
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="coverage_signals",
+            check_name="coverage_signals",
+            label="unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={"reason": result.get("reason") or ""},
+        )]
+
+    out: list = []
+    temporal = result["temporal"]
+    if temporal["state"] == STATE_MEASURED and temporal.get("dataCoverageStartTime"):
+        out.append(ResourceMeasureAnnotation(
+            summary=(
+                f"Covers {temporal['dataCoverageStartTime']} … "
+                f"{temporal['dataCoverageEndTime']} (catalog estimate)"
+            ),
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="coverage_signals",
+            check_name="coverage_signals_temporal",
+            label=temporal["label"],
+            confidence=temporal["confidence"],
+            explanation=temporal["explanation"],
+            content_status="DRAFT",
+            resource_properties={
+                "dataCoverageStartTime": temporal["dataCoverageStartTime"],
+                "dataCoverageEndTime": temporal["dataCoverageEndTime"],
+                "basis": temporal["basis"],
+                "reason": temporal["reason"],
+            },
+            json_properties={"column_ranges": temporal["column_ranges"]},
+        ))
+    else:
+        no_dates = temporal["reason"] == COVERAGE_REASON_NO_DATE_COLUMNS
+        out.append(ResourceMeasureAnnotation(
+            summary=(
+                "Holds no dated data" if no_dates
+                else "Period covered not established — run ANALYZE"
+            ),
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="coverage_signals",
+            check_name="coverage_signals_temporal",
+            label=temporal["label"],
+            # A measured negative is a real finding and says so; an
+            # unpopulated statistic is not a finding at all.
+            confidence=90 if no_dates else 0,
+            explanation=temporal["explanation"],
+            resource_properties={
+                "state": temporal["state"],
+                "reason": temporal["reason"],
+                "remedy": temporal.get("remedy") or "",
+                "date_column_count": temporal.get("date_column_count"),
+            },
+        ))
+
+    spatial = result["spatial"]
+    out.append(ResourceMeasureAnnotation(
+        summary=(
+            f"{len(spatial.get('place_columns') or [])} place-named column(s); "
+            f"values not read"
+            if spatial.get("verdict") == "candidates_only"
+            else "No place-named column"
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="coverage_signals",
+        check_name="coverage_signals_spatial",
+        label=spatial.get("label") or "info",
+        confidence=spatial.get("confidence") or 0,
+        explanation=spatial["explanation"],
+        resource_properties={
+            "state": spatial["state"],
+            "verdict": spatial.get("verdict") or "",
+            "values_read": spatial.get("values_read"),
+            "next_analysis": spatial.get("next_analysis") or "",
+        },
+        json_properties={
+            "place_columns": spatial.get("place_columns") or [],
+            "ambiguous_place_columns": spatial.get("ambiguous_place_columns") or [],
+        },
+    ))
+
+    partitions = result["partitions"]
+    out.append(ResourceMeasureAnnotation(
+        summary="Partition bounds not collected by any step",
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="coverage_signals",
+        check_name="coverage_signals_partitions",
+        label=partitions["label"],
+        confidence=0,
+        explanation=partitions["explanation"],
+        resource_properties={
+            "state": partitions["state"],
+            "reason": partitions["reason"],
+            "remedy": partitions["remedy"],
+        },
+    ))
+    return out
+
+
+def _fit_annotations(result: dict) -> list:
+    """One annotation for `preliminary_fit` (§16.3's Discovery gate).
+
+    The four verdicts map to four different summaries and labels, deliberately
+    — a `could_not_check` rendered like a `does_not_fit` would be the exact
+    collapse §16.2's ANALYZE warning is about, one level up.
+    """
+    verdict = result["verdict"]
+    summaries = {
+        FIT_FITS: "Preliminary fit: in scope — worth the full pass",
+        FIT_DOES_NOT_FIT: "Preliminary fit: out of scope",
+        FIT_COULD_NOT_CHECK: "Preliminary fit: could not check",
+        FIT_NO_REQUIREMENT: "Preliminary fit: no requirement declared",
+    }
+    if result.get("reason") == "no_estimates_established":
+        # Its own sentence, not the generic "could not check": nothing about
+        # this resource has been measured, and the remedy is a survey rather
+        # than a lens or an ANALYZE.
+        summary = "Preliminary fit: nothing measured to compare"
+    else:
+        summary = summaries.get(verdict, "Preliminary fit")
+    return [ResourceMeasureAnnotation(
+        summary=summary,
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="preliminary_fit",
+        check_name="preliminary_fit",
+        label=result["label"],
+        confidence=result["confidence"],
+        explanation=result["explanation"],
+        resource_properties={
+            "verdict": verdict,
+            "lens_declared": result["lens_declared"],
+            "lens_source": result["lens_source"],
+            # §16.5 point 4: which lens version this verdict was computed
+            # against. Empty for an ad-hoc lens, and empty is the honest
+            # answer rather than a default version number.
+            "lens_version": result["lens_version"],
+            "unchecked_inputs": ", ".join(result.get("unchecked_inputs") or []),
+            "failed_inputs": ", ".join(result.get("failed_inputs") or []),
+        },
+        json_properties={
+            "inputs": result.get("inputs") or {},
+            "achievable": result.get("achievable") or {},
+            "deferred_criteria": result.get("deferred_criteria") or [],
+            "unused_criteria": result.get("unused_criteria") or [],
+        },
     )]

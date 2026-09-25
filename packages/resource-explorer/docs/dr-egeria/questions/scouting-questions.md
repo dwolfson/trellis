@@ -5347,6 +5347,193 @@ ___
 User Questions
 
 ### Display Name
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+### Description
+Free at Scouting cost (design §16.2): table and column names plus pg_description comments already sit in RE's stored rows, so candidate subject terms need no new fetch. Confidence is low-medium on purpose — §16.2's "a name is a claim".
+
+### Summary
+A consumer shopping for data searches by subject, not by table name; a resource nobody can describe is a resource nobody finds.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is this data about — which subjects, business terms or data classes does it appear to hold?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What period and places does this appear to cover, from catalog statistics and names alone?
+
+### Description
+design §16.2: pg_stats histogram bounds give a date column's min and max WITHOUT reading rows. Its own warning is the load-bearing part — "absent means 'run ANALYZE', not 'no dates'" — so the two states are separately named rather than collapsed.
+
+### Summary
+Data that does not cover the period or the places being asked about is out of scope however good it is, and finding that out after the expensive pass is the waste the funnel exists to avoid.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What period and places does this appear to cover, from catalog statistics and names alone?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+What period and places does this appear to cover, from catalog statistics and names alone?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What period and places does this appear to cover, from catalog statistics and names alone?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What period and places does this appear to cover, from catalog statistics and names alone?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Could this be in scope for what I am looking for — worth the full pass?
+
+### Description
+design §16.3's Discovery gate and §16.5 point 2 — fit is a query over stored measurements, not a survey, so changing the requirement recomputes fit across every already-surveyed resource at zero fetch cost, and the same question works with no requirement at all as a comparison across resources.
+
+### Summary
+This is the gate: it decides whether the Analysis-tier aggregate pass is worth paying for on this resource, from signals that cost nothing.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Could this be in scope for what I am looking for — worth the full pass?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Could this be in scope for what I am looking for — worth the full pass?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Could this be in scope for what I am looking for — worth the full pass?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Could this be in scope for what I am looking for — worth the full pass?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
 What is the full schema — tables, columns, types, keys, constraints and indexes?
 
 ### Description
