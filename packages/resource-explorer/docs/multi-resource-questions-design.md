@@ -463,6 +463,51 @@ values". Value sampling (`postgres_column_profile`, §5.7) becomes the
 *fallback* for columns whose stats are stale or missing, and the only route for
 data-class and reference-data matching, which need actual values.
 
+### 5.1a Catalog values are estimates as of the last utility run — stamp them, and get actuals later
+
+**Project owner, 2026-09-25:** `pg_stats` and its relatives are refreshed
+only when a utility runs (`ANALYZE`, `VACUUM`, index builds), so the best
+they can say is "an estimate as of the last run". Everything in §5.1's
+catalog-first strategy is therefore an *estimate*, and the design needs
+three things it did not have: a freshness stamp on every estimate, a
+vocabulary for how stale it is, and the later pass that produces actuals.
+
+**The stamp is itself a catalog-tier read.** The same unprivileged activity
+view identity A already reads carries `last_analyze`, `last_autoanalyze`
+and `n_mod_since_analyze` (rows modified since statistics were taken), so
+every estimate is stamped "as of *date*, *N* rows changed since" — a
+quantified freshness, not a caveat. `reltuples`/`relpages` refresh on the
+same events; `n_live_tup`/`n_dead_tup` are running counters (more current,
+still approximate). Per engine, the freshness source goes in the engine
+declaration: SQL Server `sys.dm_db_stats_properties` (`last_updated`,
+`modification_counter`); Oracle `DBA_TAB_STATISTICS.LAST_ANALYZED` and
+`STALE_STATS`; MySQL `mysql.innodb_table_stats.last_update`; DuckDB
+computes on the fly, so no staleness.
+
+**Four freshness states**, shown in every envelope and annotation built
+from a catalog value: `fresh` · `stale` (with the modification count and
+age) · `never_collected` (statistics absent — "run ANALYZE") ·
+`not_visible` (this identity cannot see them — §9 of the credentials
+reply). A `stats_staleness` comparator (§9.1) fires when age or
+modification count crosses a threshold, because "statistics are three
+months old" is a finding in its own right.
+
+**Actuals come from the Analysis-tier pushdown pass**, bound to identity
+B and labelled *measured*: exact `COUNT(*)`, `COUNT(*) - COUNT(col)`
+(estimates can never assert zero nulls), `COUNT(DISTINCT)` or HyperLogLog,
+`MIN`/`MAX`, key uniqueness for grain, exact coverage gaps, pattern
+conformance — sampled and time-boxed per §5.8. The gate then reads
+"estimated from statistics 40 days old (4,120 rows changed since) — run
+the measured pass?", which is a better prompt than a bare Run.
+
+**Two consequences.** Egeria's native Postgres survey reads `pg_stats` too
+(`PROBES-2026-09-21.md`: *Most Common Values* comes from
+`pg_stats.most_common_vals`), so native annotations are estimates with the
+same staleness and the read-back labels them so — a native result is not
+authoritative because it is native. And refreshing statistics is not a
+survey identity's job (`ANALYZE` needs ownership or `MAINTAIN`), so stale
+statistics raise an RFA to the DBA, never a write.
+
 Perspectives: **Data Expert, Steward, Privacy, Security, Admin, Data Owner,
 Architecture, Governance** carry most rows. No new Perspective is needed.
 
