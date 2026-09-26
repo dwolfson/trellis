@@ -23,6 +23,16 @@ toward "answered at level". `target_shape` still decides what the note
 says: "no per-{level} rows exist at all" (`whole_resource_only`) reads
 differently from "rows exist, no reader shows them yet" (anything else) —
 the second is a live pointer at slice 22's per-schema/per-table view.
+
+**Slice 17c revision (2026-09-26):** `_check_level` now runs a stricter,
+prior check unconditionally (see `test_slice17c_renderable_answer_gate.py`
+for its own tests) — does ANY known fact render text at all, at any level?
+The fixtures below default each fact's `value` to a non-empty scalar
+(`{"measured": True}`) so they clear that check the same way a real
+analysis with SOME scalar field would, and continue to exercise the
+sub-resource-specific rule below it exactly as before. A fixture that wants
+to test the "nothing renders at all" case passes `value={}` explicitly (see
+`test_slice17c_renderable_answer_gate.py`).
 """
 from __future__ import annotations
 
@@ -53,7 +63,10 @@ def _measured_envelope(analysis_ids: list[str], headlines: dict | None = None) -
     headlines = headlines or {}
     env = Envelope(subject="coco_ods")
     env.facts = [
-        Fact(analysis_id=aid, state=MEASURED, value={}, headline=headlines.get(aid, ""))
+        Fact(
+            analysis_id=aid, state=MEASURED, value={"measured": True},
+            headline=headlines.get(aid, ""),
+        )
         for aid in analysis_ids
     ]
     return env

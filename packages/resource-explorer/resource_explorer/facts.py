@@ -1069,42 +1069,99 @@ class FactLayer:
     #: a whole-resource rollup genuinely IS the answer at that level.
     _SUB_RESOURCE_LEVELS = frozenset({"container", "member", "field"})
 
-    def _check_level(self, env: "Envelope", question: dict) -> None:
-        """Withhold the checkmark (design §18.3) when this question is asked
-        below `resource` level and nothing that actually reaches the screen
-        names an item at that level.
+    #: Mirrors `app.js`'s `scalarMeasures()` closely enough to answer one
+    #: question — would rung 3 of `readEnvelope` find anything to say at
+    #: all — never a general-purpose renderer. Both must be kept in step by
+    #: hand; there is no shared source between a Python backend and a
+    #: browser-side fallback formatter.
+    _SCALAR_FALLBACK_MAX_LEN = 60
 
-        First cut of this gate (slice 17) bound the check to `target_shape`
-        — a static catalog declaration of what an analysis is CAPABLE of
-        producing. Live gate on `coco_pharma` (2026-09-26) found that wrong:
-        "Which schemas carry the data" stayed ticked with the rendered
-        answer reading "table count 56 · column count 427" — no schema
-        named anywhere — because `schema_inventory` declares `target_shape:
-        single_container` (it does store one row per table, schema_name and
-        all) even though nothing renders that breakdown. The frontend's
-        `scalarMeasures()` (`app.js`) skips every list/object field by
-        design; a fact only escapes that fallback, and gets to say anything
-        about individual schemas or tables, via a written `headline_reader`
-        (`row_count_snapshot` has one, `schema_inventory` does not — see
-        `DATABASE_ANALYSIS_HEADLINE_MAP`). So the rule now binds to what
-        reaches the screen: a known fact counts toward "answered at level"
-        only when it produced a `headline` — the one rung `readEnvelope`
-        (`app.js`) can put member-naming prose on. `target_shape` still
-        decides what the NOTE says when the gate fires, because "nothing to
-        show" (`whole_resource_only`) and "rows exist, no reader shows them"
-        (anything else) point different people at different follow-ups —
-        the second is a live pointer at slice 22's per-schema view.
+    def _renders_text(self, fact: "Fact") -> bool:
+        """Would ANYTHING on this fact reach the screen — `readEnvelope`'s
+        rung 1 (`headline`), rung 2 (`value.detail`/`summary`/`description`
+        prose), or rung 3 (`scalarMeasures()`'s last-resort `key value`
+        dump)? Slice 17c's own trigger: `db_resilience` ties four nested
+        dicts (`replication`/`wal_archiving`/`backup_tool_signals`/
+        `clustering`) together with no top-level scalar anywhere, so rung 3
+        — which explicitly skips every list/object field by design — can
+        NEVER produce a line for it, structurally, on every run, not only
+        the runs the gate happened to catch live. A known fact with nothing
+        renderable is not an answer; the checkmark it sits under is the one
+        the whole fact/envelope layer exists to keep honest.
+        """
+        if (fact.headline or "").strip():
+            return True
+        value = fact.value or {}
+        for key in ("detail", "summary", "description"):
+            v = value.get(key)
+            if isinstance(v, str) and v.strip():
+                return True
+        for k, v in value.items():
+            if v is None or v == "" or k == "verdict":
+                continue
+            if isinstance(v, (dict, list)):
+                continue
+            if len(str(v)) > self._SCALAR_FALLBACK_MAX_LEN:
+                continue
+            return True
+        return False
+
+    def _check_level(self, env: "Envelope", question: dict) -> None:
+        """Withhold the checkmark (design §18.3) when nothing that actually
+        reaches the screen answers this question — either because nothing
+        renders at ANY level, or because the question is asked below
+        `resource` level and nothing names an item at that level.
+
+        First cut of this gate (slice 17) bound the sub-resource-level check
+        to `target_shape` — a static catalog declaration of what an
+        analysis is CAPABLE of producing. Live gate on `coco_pharma`
+        (2026-09-26) found that wrong: "Which schemas carry the data"
+        stayed ticked with the rendered answer reading "table count 56 ·
+        column count 427" — no schema named anywhere — because
+        `schema_inventory` declares `target_shape: single_container` (it
+        does store one row per table, schema_name and all) even though
+        nothing renders that breakdown. Slice 17b's fix bound the
+        sub-resource check to whether a known fact produced a `headline`.
+
+        The SAME gate on the very next screen (still 2026-09-26) found the
+        identical defect one level up: "Is this database a primary or a
+        replica..." — a plain `resource`-level question, exempt from the
+        sub-resource check entirely — showed a ✓ with NO answer text at
+        all, because `db_resilience` has no `headline_reader` and its
+        value is four nested dicts, which `scalarMeasures()`'s fallback
+        (rung 3) skips by design. `target_shape`-vs-`headline` was never
+        the right axis to generalize; "does the checkmark's own fact
+        produce a line of text, at any level" is. `_renders_text` answers
+        that directly, so this method now runs it FIRST and unconditionally
+        (`levels` no longer gates whether the check happens at all — only
+        whether the stricter member-naming rule on top of it applies).
+
+        `target_shape` still decides what the NOTE says once a sub-resource
+        question additionally fails the headline-specific check, because
+        "nothing to show" (`whole_resource_only`) and "rows exist, no
+        reader shows them" (anything else) point different people at
+        different follow-ups — the second is a live pointer at slice 22's
+        per-schema view.
 
         Deliberately conservative in the same way as before: only ids that
-        actually CONTRIBUTED a known fact are checked, and one surfaced
-        headline is enough to call the question answered at its own level.
+        actually CONTRIBUTED a known fact are checked, and one fact with
+        renderable text (rung 1-3) is enough to clear the first check; one
+        with a headline specifically (rung 1) is enough to clear the
+        sub-resource one.
         """
+        known = [f for f in env.facts if f.is_known]
+        if not known:
+            return
+        if not any(self._renders_text(f) for f in known):
+            env.level_mismatch = True
+            env.level_note = (
+                "This ran; no summary reader exists yet for its results."
+            )
+            return
+
         levels = question.get("levels") or ["resource"]
         sub_levels = [lv for lv in levels if lv in self._SUB_RESOURCE_LEVELS]
         if not sub_levels:
-            return
-        known = [f for f in env.facts if f.is_known]
-        if not known:
             return
         if any((f.headline or "").strip() for f in known):
             return
