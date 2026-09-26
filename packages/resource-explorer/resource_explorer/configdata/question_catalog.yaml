@@ -289,7 +289,8 @@ repo_questions:
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
   retired: false
-- question: What are similar resources, and how does this differ?
+- question: Which resources have similar content — code, documentation or data values — and how does this
+    one differ?
   stage: Analysis
   perspectives:
   - Community
@@ -303,11 +304,17 @@ repo_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
-  answering_mechanism: Agent-Based Analysis
-  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
+      over RAG can describe how two resources differ once candidates exist'
+  answering_mechanism: RAG Queries + Agent-Based Analysis
+  rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
+    scope similarity (which needs declared or measured scope) and structural similarity (which needs a
+    schema). Design §16.7 5′ and the coverage audit''s similarity item: content finds candidates; scope
+    fit ranks them.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row).'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -1608,7 +1615,8 @@ database_questions:
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
   retired: false
-- question: What are similar resources, and how does this differ?
+- question: Which resources have similar content — code, documentation or data values — and how does this
+    one differ?
   stage: Analysis
   perspectives:
   - Community
@@ -1622,11 +1630,56 @@ database_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
-  answering_mechanism: Agent-Based Analysis
-  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
+      over RAG can describe how two resources differ once candidates exist'
+  answering_mechanism: RAG Queries + Agent-Based Analysis
+  rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
+    scope similarity (which needs declared or measured scope) and structural similarity (which needs a
+    schema). Design §16.7 5′ and the coverage audit''s similarity item: content finds candidates; scope
+    fit ranks them.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row).'
+  retired: false
+- question: Which resources cover similar subjects, grain and period or places — could one stand in for
+    this one, or this one for them?
+  stage: Discovery
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  levels:
+  - resource
+  - container
+  answering:
+    kind: mixed
+    analysis_ids:
+    - grain_determination
+    - subject_signals
+    - coverage_signals
+    - preliminary_fit
+    checks: []
+    note: 'MIXED: preliminary_fit + coverage_signals + subject_signals + grain_determination (the lens
+      is derived from a resource rather than an investigation — design §16.5 ''lens from a resource'';
+      the comparison is requirement_fit''s field-by-field overlap)'
+  answering_mechanism: Analysis (lens fit over stored scope)
+  rationale: 'Scope similarity is lens fit (design §16.5): derive a lens from this resource''s declared
+    or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
+    stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
+    fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -2320,7 +2373,8 @@ database_questions:
     of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
     a filesystem layout and are not looked for here.'
   retired: false
-- question: Does this look like a copy or a subset of a database we already know?
+- question: Is this a copy, subset or superset of a resource we already know — structurally, by schema
+    or file signature?
   stage: Discovery
   perspectives:
   - Financial
@@ -2332,18 +2386,21 @@ database_questions:
   levels:
   - container
   answering:
-    kind: analysis
+    kind: unknown
     analysis_ids:
     - db_fingerprint
     checks: []
-    note: db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
+    note: 'db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
       types, hashed and compared by Jaccard similarity and containment against every other database in
-      the registry with stored schema rows)
+      the registry with stored schema rows) ; filesystems: GAP: file_fingerprint (design §6.2) — same
+      signature comparison over files, not built'
   answering_mechanism: Database Catalog Query + Local Registry Query
   rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
     and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
     is the publication shape.
-  catalog_history: ''
+  catalog_history: '2026-09-26: reworded and widened to filesystems as the structural-similarity member
+    of the three-way split of ''What are similar resources'' (project owner); databases keep db_fingerprint,
+    filesystems are a GAP until file_fingerprint exists.'
   retired: false
 - question: Are there views, materialised views, functions or triggers that encode business logic?
   stage: Discovery
@@ -3072,7 +3129,8 @@ filesystem_questions:
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
   retired: false
-- question: What are similar resources, and how does this differ?
+- question: Which resources have similar content — code, documentation or data values — and how does this
+    one differ?
   stage: Analysis
   perspectives:
   - Community
@@ -3086,11 +3144,52 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
-  answering_mechanism: Agent-Based Analysis
-  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
+      over RAG can describe how two resources differ once candidates exist'
+  answering_mechanism: RAG Queries + Agent-Based Analysis
+  rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
+    scope similarity (which needs declared or measured scope) and structural similarity (which needs a
+    schema). Design §16.7 5′ and the coverage audit''s similarity item: content finds candidates; scope
+    fit ranks them.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row).'
+  retired: false
+- question: Which resources cover similar subjects, grain and period or places — could one stand in for
+    this one, or this one for them?
+  stage: Discovery
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  levels:
+  - resource
+  - container
+  answering:
+    kind: mixed
+    analysis_ids: []
+    checks: []
+    note: 'MIXED: preliminary_fit + coverage_signals + subject_signals + grain_determination (the lens
+      is derived from a resource rather than an investigation — design §16.5 ''lens from a resource'';
+      the comparison is requirement_fit''s field-by-field overlap)'
+  answering_mechanism: Analysis (lens fit over stored scope)
+  rationale: 'Scope similarity is lens fit (design §16.5): derive a lens from this resource''s declared
+    or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
+    stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
+    fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -3589,6 +3688,34 @@ filesystem_questions:
     of §16.2 was already built and is unchanged. §16.2''s literal year=/month=/day= partition keys are
     a filesystem layout and are not looked for here.'
   retired: false
+- question: Is this a copy, subset or superset of a resource we already know — structurally, by schema
+    or file signature?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Steward
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  levels:
+  - container
+  answering:
+    kind: unknown
+    analysis_ids: []
+    checks: []
+    note: 'db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
+      types, hashed and compared by Jaccard similarity and containment against every other database in
+      the registry with stored schema rows) ; filesystems: GAP: file_fingerprint (design §6.2) — same
+      signature comparison over files, not built'
+  answering_mechanism: Database Catalog Query + Local Registry Query
+  rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
+    and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
+    is the publication shape.
+  catalog_history: '2026-09-26: reworded and widened to filesystems as the structural-similarity member
+    of the three-way split of ''What are similar resources'' (project owner); databases keep db_fingerprint,
+    filesystems are a GAP until file_fingerprint exists.'
+  retired: false
 - question: Which columns conform to a known Data Class, with what confidence, and which look like a class
     we do not have yet?
   stage: Analysis
@@ -3861,7 +3988,8 @@ dataset_questions:
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
   retired: false
-- question: What are similar resources, and how does this differ?
+- question: Which resources have similar content — code, documentation or data values — and how does this
+    one differ?
   stage: Analysis
   perspectives:
   - Community
@@ -3875,11 +4003,52 @@ dataset_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
-  answering_mechanism: Agent-Based Analysis
-  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
+      over RAG can describe how two resources differ once candidates exist'
+  answering_mechanism: RAG Queries + Agent-Based Analysis
+  rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
+    scope similarity (which needs declared or measured scope) and structural similarity (which needs a
+    schema). Design §16.7 5′ and the coverage audit''s similarity item: content finds candidates; scope
+    fit ranks them.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row).'
+  retired: false
+- question: Which resources cover similar subjects, grain and period or places — could one stand in for
+    this one, or this one for them?
+  stage: Discovery
+  perspectives:
+  - Community
+  - Security
+  - Admin
+  purposes:
+  - Select
+  levels:
+  - resource
+  - container
+  answering:
+    kind: mixed
+    analysis_ids: []
+    checks: []
+    note: 'MIXED: preliminary_fit + coverage_signals + subject_signals + grain_determination (the lens
+      is derived from a resource rather than an investigation — design §16.5 ''lens from a resource'';
+      the comparison is requirement_fit''s field-by-field overlap)'
+  answering_mechanism: Analysis (lens fit over stored scope)
+  rationale: 'Scope similarity is lens fit (design §16.5): derive a lens from this resource''s declared
+    or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
+    stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
+    fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -4487,7 +4656,8 @@ model_questions:
   rationale: Answerable locally from RE's own registry/groups, same as "existing use within our organization."
   catalog_history: ''
   retired: false
-- question: What are similar resources, and how does this differ?
+- question: Which resources have similar content — code, documentation or data values — and how does this
+    one differ?
   stage: Analysis
   perspectives:
   - Community
@@ -4501,11 +4671,17 @@ model_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
-  answering_mechanism: Agent-Based Analysis
-  rationale: Needs similarity search over content (RAG/embeddings) — real gap, not built.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
+      over RAG can describe how two resources differ once candidates exist'
+  answering_mechanism: RAG Queries + Agent-Based Analysis
+  rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
+    scope similarity (which needs declared or measured scope) and structural similarity (which needs a
+    schema). Design §16.7 5′ and the coverage audit''s similarity item: content finds candidates; scope
+    fit ranks them.'
+  catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
+    owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
+    now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
+    pre-existing copy/subset row).'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
