@@ -27,13 +27,15 @@ from resource_explorer.surveyors.survey_report import (
 
 from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
 
-# analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps.
-# Database per-card dispatch fix (D6 prerequisite, repo-scope-narrowing-
-# funnel plan) — closes the gap where every local database analysis card
-# triggered the identical whole-DB survey() regardless of which was
-# clicked. "schema" always runs (see DatabaseSurveyor._ALL_STEPS's
-# comment), so schema_inventory/row_count_snapshot genuinely diverge in
-# what extra work they do (views vs. statistics), not just in label.
+# analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps,
+# for the subset of database analyses that need an open connection to run at
+# all (a DatabaseSurveyor.survey() call). Database per-card dispatch fix (D6
+# prerequisite, repo-scope-narrowing-funnel plan) — closes the gap where every
+# local database analysis card triggered the identical whole-DB survey()
+# regardless of which was clicked. "schema" always runs (see
+# DatabaseSurveyor._ALL_STEPS's comment), so schema_inventory/row_count_
+# snapshot genuinely diverge in what extra work they do (views vs.
+# statistics), not just in label.
 #
 # privilege_audit: had no dedicated check before Phase 1 slice 8
 # (confirmed — "database-only, aspirational" per the target-shape audit),
@@ -47,7 +49,30 @@ from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
 # _survey_operations()'s activity-signals table count, which is why
 # "schema" appears in their step lists too, not just because the shared
 # invariant below forces it regardless.
-DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+#
+# Deliberately does NOT carry the zero-fetch `db_derived`-backed ids
+# (db_classification, subject_signals, …) — those never call
+# DatabaseSurveyor.survey() at all (see db_derived.py's own module
+# docstring: it opens no connection, to the database or to Egeria), so a
+# "which DatabaseSurveyor steps does X need" map has nothing to say about
+# them. Every caller of this map (below, plus web/routes/databases.py,
+# workflows/analysis.py, scheduler.py) checks `analysis_id in
+# db_derived.DB_DERIVED_ANALYSES` FIRST and only falls through to this map
+# for what remains — that membership check, not this map, is what used to
+# be missing for `subject_signals`/`coverage_signals`/`preliminary_fit`
+# wherever a caller forgot it (see `survey_definition_adapter.py`'s
+# `DATABASE_ANALYSIS_RE_STEP_MAP`, now derived from `DB_DERIVED_ANALYSES`
+# rather than hand-listed a second time, for exactly that reason).
+#
+# Renamed from `DATABASE_ANALYSIS_STEP_MAP` (slice 17,
+# docs/design-notes/SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md) — that
+# name was shared, coincidentally, with a SEPARATE hand-maintained dict in
+# `survey_definition_adapter.py` with a different shape (re_analysis_step
+# keys, not DatabaseSurveyor.survey() step names) and a different set of
+# consumers. The two were never the same data and updating one while
+# forgetting the other is exactly the bug REVIEW-SURVEY-PANE-285.md §5(a)
+# found — distinct names make that mistake harder to make by accident.
+DATABASE_SURVEYOR_STEP_MAP: dict[str, list[str]] = {
     "schema_inventory": ["schema", "views"],
     "row_count_snapshot": ["schema", "statistics"],
     "privilege_audit": ["schema", "operations"],
@@ -251,8 +276,8 @@ class DatabaseSurveyor:
     # structural backbone every other step is enrichment on top of, not an
     # independently optional step. Database per-card dispatch fix (D6
     # prerequisite, repo-scope-narrowing-funnel plan) — see
-    # DATABASE_ANALYSIS_STEP_MAP in web/routes/databases.py for the
-    # analysis_id -> steps mapping this enables.
+    # DATABASE_SURVEYOR_STEP_MAP (this module, used by web/routes/databases.py)
+    # for the analysis_id -> steps mapping this enables.
     #
     # "operations" (Phase 1 slice 8, postgres_operations) is deliberately
     # NOT in _ALL_STEPS: unlike statistics/views, its four constituent
@@ -260,7 +285,7 @@ class DatabaseSurveyor:
     # db_external_dependencies) are read directly from pg_roles/pg_stat_*/
     # pg_settings/pg_extension — an "api / low" cost per design §5.7 that
     # should not silently ride along on every default full survey(). It
-    # only runs when explicitly requested (DATABASE_ANALYSIS_STEP_MAP or the
+    # only runs when explicitly requested (DATABASE_SURVEYOR_STEP_MAP or the
     # postgres_operations adapter entry point), same opt-in shape "views"
     # already had before this slice.
     _ALL_STEPS = ("schema", "statistics", "views")

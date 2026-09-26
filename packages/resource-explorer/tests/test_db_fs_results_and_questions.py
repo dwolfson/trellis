@@ -66,21 +66,29 @@ class TestDatabaseResultsMapCoverage:
         # Now eighteen (2026-09-24): `subject_signals`, `coverage_signals` and
         # `preliminary_fit` — multi-resource-questions-design.md §16.3's
         # Scouting and Discovery rows, all three backed by the same zero-fetch
-        # `db_derived` step and so all three with a reader from the start. They
-        # are NOT in `DATABASE_ANALYSIS_STEP_MAP`, which maps an analysis id to
-        # `DatabaseSurveyor.survey()` steps — `db_derived` opens no connection
-        # and is not a `survey()` step at all, which is why none of the eight
-        # existing db_derived ids appear there either. The set difference
-        # asserted below is therefore unaffected by adding them.
+        # `db_derived` step and so all three with a reader from the start.
+        #
+        # `DATABASE_ANALYSIS_RE_STEP_MAP` (renamed from `DATABASE_ANALYSIS_
+        # STEP_MAP` — slice 17, docs/design-notes/SLICE-17-RUNNABILITY-FROM-
+        # CATALOG-IMPLEMENTED.md) maps an analysis id to a `re_analysis_step`
+        # key, `db_derived` for all eleven zero-fetch ids including these
+        # three — it is now DERIVED from `db_derived.DB_DERIVED_ANALYSES`
+        # rather than hand-listed a second time, which is exactly the fix:
+        # before it, this map had all eight of the OLDER db_derived ids but
+        # not these three, and every Run button for them reported "no mapped
+        # survey step(s)" although a real results reader (this test) always
+        # existed for them. The set difference asserted below is unaffected
+        # by the fix either way, since all eleven db_derived ids are present
+        # in BOTH maps now.
         from resource_explorer.surveyors.database.survey_definition_adapter import (
-            DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_STEP_MAP,
+            DATABASE_ANALYSIS_RE_STEP_MAP, DATABASE_ANALYSIS_RESULTS_MAP,
         )
 
         expected_absent = {
             "data_class_match", "reference_data_match", "nested_column_profile",
             "egeria_db_survey",
         }
-        assert set(DATABASE_ANALYSIS_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
+        assert set(DATABASE_ANALYSIS_RE_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
         assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 18
 
     def test_every_entry_is_a_reader_pair(self):

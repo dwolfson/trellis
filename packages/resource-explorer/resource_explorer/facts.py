@@ -36,6 +36,7 @@ agreed" and "the detector was sure" are different claims.
 """
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -176,6 +177,20 @@ class Envelope:
     facts: list = field(default_factory=list)
     #: Why no answer is possible, when none is. Empty when `answerable`.
     blocked_reason: str = ""
+    #: Design §18.3 (docs/multi-resource-questions-design.md): true when this
+    #: question is asked at a level BELOW `resource` (container/member/field)
+    #: but every fact that answers it comes from an analysis whose own
+    #: `target_shape` is `whole_resource_only` — a rollup with nothing
+    #: per-member in it. `answerable` stays true (something real WAS
+    #: measured, and that is not nothing), but a checkmark on this envelope
+    #: would be exactly the "✓ means the mapped analysis ran, not that the
+    #: question was answered" failure REVIEW-SURVEY-PANE-285.md's small-
+    #: findings list names ("which schemas carry the data" ticked with a
+    #: table/column COUNT and no schema named). Consumers gate the checkmark
+    #: on `answerable and not level_mismatch`, not on `answerable` alone.
+    level_mismatch: bool = False
+    #: Why, in words, when `level_mismatch` is true. Empty otherwise.
+    level_note: str = ""
 
     @property
     def answerable(self) -> bool:
@@ -197,6 +212,8 @@ class Envelope:
             "question_id": self.question_id, "kind": self.kind,
             "answerable": self.answerable,
             "blocked_reason": self.blocked_reason,
+            "level_mismatch": self.level_mismatch,
+            "level_note": self.level_note,
             "facts": [f.as_dict() for f in self.facts],
             "can_run": self.can_run,
             # Counted here rather than left to each caller, so two agents
@@ -214,6 +231,29 @@ class Envelope:
             # key nothing else uses.
             "query_hash": _query_hash(self.question),
         }
+
+
+@functools.lru_cache(maxsize=8)
+def _analysis_target_shapes(resource_type: str) -> dict:
+    """{analysis_id: target_shape} for one resource type, read straight from
+    `analysis_catalog.yaml` — no new declaration; every entry already carries
+    `target_shape` (default `"whole_resource_only"`). Used by `FactLayer.
+    _check_level` to tell a whole-database rollup from a real per-member
+    answer (design §18.3). Cached the same way `analysis_catalog_reader`'s
+    own loader is — this reads a small, rarely-changing YAML file, not
+    per-resource state, so caching by resource_type alone is safe; tests
+    that mutate the catalog on disk call `clear_cache()` below."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    return {
+        a["id"]: a.get("target_shape", "whole_resource_only")
+        for a in get_analyses(resource_type, include_egeria_live=False)
+    }
+
+
+def clear_target_shape_cache() -> None:
+    """Testing hook — mirrors every other catalog loader's `clear_cache()`."""
+    _analysis_target_shapes.cache_clear()
 
 
 #: answering.kind values that no amount of surveying will satisfy. Each is a
@@ -1018,7 +1058,52 @@ class FactLayer:
                 "Nothing has been measured for this yet."
                 + (f" Run: {', '.join(env.can_run)}." if env.can_run else "")
             )
+        else:
+            self._check_level(env, question)
         return env
+
+    #: Levels named below "resource" (design §18.3's engine-neutral
+    #: vocabulary: database=resource, schema=container, table=member,
+    #: column=field). A question carrying only "resource" (the default for
+    #: every entry generated before the `Level` column existed) is exempt —
+    #: a whole-resource rollup genuinely IS the answer at that level.
+    _SUB_RESOURCE_LEVELS = frozenset({"container", "member", "field"})
+
+    def _check_level(self, env: "Envelope", question: dict) -> None:
+        """Withhold the checkmark (design §18.3) when this question is asked
+        below `resource` level and every fact answering it comes from an
+        analysis whose own catalog entry declares `target_shape:
+        whole_resource_only` — a rollup with nothing per-member in it.
+
+        Deliberately conservative: only the ids that actually CONTRIBUTED a
+        known fact are checked (an id nobody could read from should not
+        count either way), and the gate only fires when NONE of them can
+        name a member — one analysis with a real per-member breakdown
+        (`target_shape: corpus` or `single_container`) is enough to call the
+        question answered at its own level. The full guard design §18.3
+        itself describes — checking that a per-member analysis actually
+        PRODUCED rows for this run, not just that it is capable of doing so
+        — needs slice 20's `scopes` declaration to be checkable; this is the
+        signal available today, from a field the catalog already carries.
+        """
+        levels = question.get("levels") or ["resource"]
+        sub_levels = [lv for lv in levels if lv in self._SUB_RESOURCE_LEVELS]
+        if not sub_levels:
+            return
+        known_ids = [f.analysis_id for f in env.facts if f.is_known]
+        if not known_ids:
+            return
+        shapes = _analysis_target_shapes(self.resource_type)
+        if all(shapes.get(aid, "whole_resource_only") == "whole_resource_only"
+               for aid in known_ids):
+            env.level_mismatch = True
+            env.level_note = (
+                "Answered only as a whole-resource rollup — this question is "
+                f"asked at {'/'.join(sub_levels)} level and "
+                + (f"{known_ids[0]} names no {sub_levels[0]}."
+                   if len(known_ids) == 1
+                   else f"none of {', '.join(known_ids)} name one.")
+            )
 
     # ── internals ───────────────────────────────────────────────────────────
     def _resource_state_fact(self, slug: str, resolver, subject: str) -> Fact:

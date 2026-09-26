@@ -9793,7 +9793,7 @@ class ProjectRegistry:
         analyses — each key belongs to exactly one — so attribution is exact.
         For database, a single coarse step (e.g. "db_derived") is the source
         of SEVERAL analysis_catalog entries at once (see
-        DATABASE_ANALYSIS_STEP_MAP's docstring) — that fan-out is real and
+        DATABASE_ANALYSIS_RE_STEP_MAP's docstring) — that fan-out is real and
         intentional, not a guess, so one step run credits every analysis_id
         it names, not just one.
 
@@ -9959,7 +9959,7 @@ class ProjectRegistry:
     def _step_key_to_analysis_ids(entity_type: str) -> dict[str, list[str]]:
         """Inverse of `_analysis_step_map(entity_type)`: step_key ->
         [analysis_id, ...]. A list, not a single id, because database's
-        `DATABASE_ANALYSIS_STEP_MAP` genuinely fans one step key out to
+        `DATABASE_ANALYSIS_RE_STEP_MAP` genuinely fans one step key out to
         several analysis_ids (e.g. "db_derived" -> six analyses) — unlike
         repo's REPO_ANALYSIS_STEP_MAP, which partitions the step-key space so
         this inversion happens to be 1:1 there. `setdefault(...).append(...)`
@@ -10631,11 +10631,11 @@ def _analysis_step_map(entity_type: str) -> dict[str, list[str]]:
     if entity_type == "database":
         try:
             from resource_explorer.surveyors.database.survey_definition_adapter import (
-                DATABASE_ANALYSIS_STEP_MAP,
+                DATABASE_ANALYSIS_RE_STEP_MAP,
             )
         except ImportError:  # pragma: no cover - defensive
             return {}
-        return DATABASE_ANALYSIS_STEP_MAP
+        return DATABASE_ANALYSIS_RE_STEP_MAP
     if entity_type == "filesystem":
         try:
             from resource_explorer.surveyors.filesystem.survey_definition_adapter import (

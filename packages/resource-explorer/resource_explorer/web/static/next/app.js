@@ -551,11 +551,18 @@ const NO_READER = 'no_reader';
 const PARTIAL = 'partial';
 
 /**
- * The six row states from the design's legend. Each is a different SENTENCE,
+ * The row states from the design's legend. Each is a different SENTENCE,
  * never a different shade of the same one.
  *
  * `answered`  — an analysis ran and produced a result
  * `automatic` — answered without a survey: a direct field, the registry, a chart
+ * `partial`   — an analysis ran, but only as a whole-resource rollup, for a
+ *               question asked below resource level (design §18.3) — the
+ *               "✓ means the mapped analysis ran, not that the question was
+ *               answered" failure REVIEW-SURVEY-PANE-285.md's small-findings
+ *               list names. Not "nothing was measured" (that is `unrun`);
+ *               something real ran, it just cannot name the schema/table/
+ *               column the question asked about.
  * `unrun`     — nothing has run yet; there IS a surveyor
  * `human`     — needs someone to say; Enrichment's job
  * `no-surveyor` — nothing has run AND nothing can; no surveyor exists
@@ -567,9 +574,19 @@ function rowState(entry, env) {
   if (kind === 'human') return 'human';
   if (kind === 'unknown') return 'unclassified';
   if (env && env.answerable) {
+    if (env.level_mismatch) return 'partial';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
   return 'unrun';
+}
+
+/** Fully answered = a checkmark's worth of answer, not merely "something ran".
+ *  A `level_mismatch` envelope has `answerable === true` (a real analysis DID
+ *  run) but withholds the tick (design §18.3) -- callers that count or gate
+ *  on "answered" must use this, not `env.answerable` alone, or the counter
+ *  and the row glyph would disagree about the same envelope. */
+function isFullyAnswered(env) {
+  return !!(env && env.answerable && !env.level_mismatch);
 }
 
 const GLYPH = {
@@ -5282,6 +5299,7 @@ function deferredPaneHtml(tab) {
 const LEGEND = [
   ['answered',     'answered'],
   ['automatic',    'automatic'],
+  ['partial',      'ran, but not at this level'],
   ['unrun',        'not run'],
   ['human',        'needs you'],
   ['no-surveyor',  'no surveyor'],
@@ -5873,11 +5891,18 @@ function bodyLines(entry, i, st, env) {
       + provenanceLine(entry, i, lines, st);
   }
 
-  // answered | automatic
+  // answered | automatic | partial
   const lines = readEnvelope(entry, env);
   let html = autoRanNoteHtml(entry, indent);
   if (lines.answer) {
     html += `<div class="${indent} text-answer text-ink">${lines.answer}</div>`;
+  }
+  // §18.3's own caveat, ahead of the analysis's own (below): a rollup with
+  // no schema/table/column named is the more important thing to say here,
+  // and the reader should not have to reach the analysis's own note to
+  // learn the tick is withheld.
+  if (st === 'partial' && env && env.level_note) {
+    html += `<div class="ml-[22px] mt-[5px] text-caveat text-accent-ink">${tnum(esc(env.level_note))}</div>`;
   }
   if (lines.caveat) {
     html += `<div class="ml-[22px] mt-[5px] text-caveat text-accent-ink">${tnum(esc(lines.caveat))}</div>`;
@@ -6010,7 +6035,7 @@ function provenanceLine(entry, i, lines, st) {
   }
 
   const actions = [];
-  if (st === 'answered' || st === 'automatic') {
+  if (st === 'answered' || st === 'automatic' || st === 'partial') {
     actions.push(`<button data-evidence="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">evidence</button>`);
   }
   // A relationship answer has a diagram behind it. It cannot be read in a
@@ -6035,7 +6060,7 @@ function provenanceLine(entry, i, lines, st) {
   // "sources" names first) -- a question naming several analyses gets the
   // rest via that analysis's own row on `by_analysis`, not duplicated here.
   const primaryId = (entry.analysis_ids || [])[0];
-  if (primaryId && (st === 'answered' || st === 'automatic')) {
+  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial')) {
     actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
   }
@@ -6069,7 +6094,7 @@ function updateAnsweredCount() {
   });
   const answered = settled.filter((q) => {
     const env = state.answers.get(q.question);
-    return env.answerable;
+    return isFullyAnswered(env);
   }).length;
   const pending = total - settled.length;
   el.innerHTML = `<span class="tnum">${answered}</span> of <span class="tnum">${total}</span> answered`
@@ -6699,6 +6724,7 @@ function rowAsMarkdown(entry, i) {
 
 const STATE_LABEL = {
   answered: 'answered', automatic: 'automatic', unrun: 'not run',
+  partial: 'ran, but not at this level',
   human: 'needs human input', 'no-surveyor': 'no surveyor exists yet',
   unclassified: 'unclassified',
 };

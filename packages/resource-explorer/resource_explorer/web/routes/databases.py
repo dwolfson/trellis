@@ -564,7 +564,7 @@ class AnalysisRunResult(BaseModel):
     was thrown away and reported as a failure. Reproduced live via
     `db_activity_signals`'s "Is this database alive…" Questions-checklist
     card, but not specific to it — every analysis_id in
-    `DATABASE_ANALYSIS_STEP_MAP` (and every `db_derived` id) went through
+    `DATABASE_SURVEYOR_STEP_MAP` (and every `db_derived` id) went through
     this same handler.
 
     Matches `projects.py`'s `run_single_analysis` or `run_stage_batch`'s
@@ -619,7 +619,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     queued here for consistency and because a database that has never been
     reachable must not be treated specially by this route — but see
     `workflows.analysis.run_database_analysis` for confirmation it does no
-    fetch of its own. The DATABASE_ANALYSIS_STEP_MAP branch opens a real
+    fetch of its own. The DATABASE_SURVEYOR_STEP_MAP branch opens a real
     connection and can legitimately take a while (the same shape that made
     the repo path's `architecture_recovery` worth backgrounding), so it is
     the one this fix is actually for.
@@ -628,7 +628,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.run_queue import requested_by as _requested_by
     from resource_explorer.surveyors.database.database_surveyor import (
-        DATABASE_ANALYSIS_STEP_MAP,
+        DATABASE_SURVEYOR_STEP_MAP,
     )
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
@@ -643,7 +643,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     # projects.py's run_single_analysis follows).
     if analysis_id in DB_DERIVED_ANALYSES:
         pass  # zero-fetch — no credentials check needed
-    elif analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+    elif analysis_id not in DATABASE_SURVEYOR_STEP_MAP:
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
