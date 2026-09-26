@@ -10,6 +10,45 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## `get_statistics()`'s output feeds no analysis reader, only a ride-along
+
+**Found while building** the enumeration-floor + collector-honesty PR
+(2026-09-26), while inventorying `connection.py`'s collectors to decide
+which needed the `_errors` honesty floor.
+
+`PostgreSQLConnection.get_statistics()` calls `_get_database_size()`,
+`_get_table_statistics()`, `_get_table_row_stats()`, `get_column_stats()`,
+`get_table_activity()`, `get_index_stats()`, and `get_stats_reset()` — a
+real, non-trivial set of live database queries — and its only caller is
+`database_surveyor.py`'s `_survey_statistics()`. Grepped directly to
+confirm: nothing in `DATABASE_ANALYSIS_RESULTS_MAP` reads the
+`statistics` key its output is stored under, i.e. no analysis SURFACES it
+as an answer to any question. It isn't entirely dead, though — a comment
+in `survey_definition_adapter.py` (~line 443, the availability-vs-tier
+discussion) says `postgres_column_profile` "pulls `statistics` in as a
+ride-along for sampling provenance" — so something reads it internally,
+just not as a user-facing result. That comment also names `sql_analysis`
+as running the whole default survey though its own output uses none of
+it, flagged there "as a code smell to fix separately" — this entry is
+that separate item for `get_statistics()` specifically: a real,
+non-trivial set of live queries whose OWN dedicated collector
+(`get_statistics()`/`_survey_statistics()`) has no analysis reader of its
+own, distinct from the ride-along consumption.
+
+**Candidate fix:** either (a) wire a reader for it as its own analysis —
+`row_count_snapshot`'s own catalog description already says it profiles
+columns from `pg_stats` (null fraction, distinct count, frequent values)
+and tuple counters from `pg_stat_user_tables`, which overlaps
+`get_statistics()`'s own `get_column_stats()`/`get_table_activity()` calls
+closely enough that there may be real duplicate-fetch waste between the
+two, not just an unread result — or (b) delete
+`get_statistics()`/`_survey_statistics()` entirely if the ride-along
+consumption in `postgres_column_profile` doesn't actually need the whole
+dict. Not fixed here; this PR's own scope was collector honesty, not
+collector necessity.
+
+---
+
 ## A new annotation class is unguarded by `test_annotation_check_names.py` until someone remembers it
 
 **Found while building** `db_derived` (Phase 1 slice 9,

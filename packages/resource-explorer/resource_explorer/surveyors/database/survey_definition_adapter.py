@@ -1118,16 +1118,36 @@ def _schema_inventory_results(registry, slug: str) -> dict:
         key = (c.get("schema_name"), c.get("table_name"))
         columns_by_table[key] = columns_by_table.get(key, 0) + 1
     catalog_only_count = sum(1 for t in tables if t.get("state") == STATE_CATALOG_ESTIMATE)
+    # Design ruling (security-model.md §2.1/§3.4, 2026-09-26): relation
+    # kinds are reported separately and named, never blended into one
+    # "table count" -- `table_type` (`information_schema.tables`, or a
+    # catalog-only-fallback row's `_catalog_table_summary` mapping) is
+    # always one of these four for the relkinds `get_schema_info`/
+    # `_enumerate_relations` select (`r`/`p` -> BASE TABLE, `v` -> VIEW,
+    # `m` -> MATERIALIZED VIEW, `f` -> FOREIGN). `base_table_count` is kept
+    # as the stable field existing comparators already diff `table_count`
+    # as if it meant; `table_count` itself is unchanged (every relation
+    # kind combined), so neither meaning silently changes under a caller
+    # that hasn't been updated to read the new fields.
+    base_table_count = sum(1 for t in tables if t.get("table_type") == "BASE TABLE")
+    view_count = sum(1 for t in tables if t.get("table_type") == "VIEW")
+    materialized_view_count = sum(1 for t in tables if t.get("table_type") == "MATERIALIZED VIEW")
+    foreign_table_count = sum(1 for t in tables if t.get("table_type") == "FOREIGN")
     value = {
         "table_count": len(tables),
         "column_count": len(columns),
+        "base_table_count": base_table_count,
+        "view_count": view_count,
+        "materialized_view_count": materialized_view_count,
+        "foreign_table_count": foreign_table_count,
         # How many of the tables above are counted at all only because of
         # the pg_class/pg_attribute catalog-only fallback (connection.py's
-        # `_catalog_only_fallback`) — never SELECT-visible via
-        # information_schema. Zero on a fully-measured database; present so
-        # a reader can distinguish "23 tables, all fully measured" from "23
-        # tables, but 20 of them only via catalog metadata, unverified
-        # names/estimated counts".
+        # `_catalog_only_fallback`, or `get_schema_info`'s zero-privilege
+        # schema pass, which reuses the identical mechanism) — never
+        # SELECT-visible via information_schema. Zero on a fully-measured
+        # database; present so a reader can distinguish "23 tables, all
+        # fully measured" from "23 tables, but 20 of them only via catalog
+        # metadata, unverified names/estimated counts".
         "catalog_only_table_count": catalog_only_count,
         "tables": [
             {
@@ -1234,6 +1254,35 @@ def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
     return {"label": f"{' · '.join(parts)}{coverage}.{caveat}", "status": "info"}
 
 
+def _merge_collector_errors(*sections: dict) -> dict:
+    """Combine every `_errors` sub-dict a collector attached to its own
+    section (collector-honesty rule, design ruling 2026-09-26 — see
+    `docs/design-notes/SLICE-17C-RENDERABLE-ANSWER-GATE-IMPLEMENTED.md`'s
+    "Live gate follow-ups" section for the incident and the 26-site
+    inventory) into one dict, so a headline built from several
+    independently-collected sections can tell a real collection failure
+    from a genuine empty/zero, rather than rendering whichever partial data
+    happened to survive as if it were the whole answer.
+
+    Deliberately coarse: if ANY section failed, the whole headline renders
+    the failure rather than splicing a caveat onto the sections that did
+    succeed — a finer per-field composition is possible future work, not
+    attempted here.
+    """
+    merged: dict[str, str] = {}
+    for section in sections:
+        merged.update((section or {}).get("_errors") or {})
+    return merged
+
+
+def _collection_failed_headline(errors: dict) -> dict:
+    """The honest state collector-honesty callers render instead of a
+    zero/empty sentence: "collection failed: <reason> — re-run.", never
+    silently falling through to whatever partial data survived."""
+    field, reason = next(iter(errors.items()))
+    return {"label": f"Collection failed ({field}): {reason} — re-run.", "status": "error"}
+
+
 def _db_resilience_headline(registry, slug: str) -> dict | None:
     """The one-sentence summary `scalarMeasures()` can never produce for
     `db_resilience` (slice 17c) — every one of its four top-level fields
@@ -1248,6 +1297,10 @@ def _db_resilience_headline(registry, slug: str) -> dict | None:
     wal = value.get("wal_archiving") or {}
     backup = value.get("backup_tool_signals") or {}
     clustering = value.get("clustering") or {}
+
+    errors = _merge_collector_errors(replication, wal, backup, clustering)
+    if errors:
+        return _collection_failed_headline(errors)
 
     parts = []
     if replication.get("is_in_recovery") is None:
@@ -1346,6 +1399,8 @@ def _db_external_dependencies_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("external_dependencies")(registry, slug)
     if not value:
         return None
+    if value.get("_errors"):
+        return _collection_failed_headline(value["_errors"])
     counts = [
         (len(value.get("extensions") or []), "extension(s)"),
         (len(value.get("foreign_servers") or []), "foreign server(s)"),
@@ -1392,6 +1447,8 @@ def _db_privilege_audit_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("privilege_audit")(registry, slug)
     if not value:
         return None
+    if value.get("_errors"):
+        return _collection_failed_headline(value["_errors"])
     roles = value.get("roles") or []
     if not roles:
         return None
