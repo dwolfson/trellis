@@ -1571,6 +1571,58 @@ first analysis whose source is `egeria` for *every* resource type,
 including repositories, so its results reader is the template for any
 later Egeria-mirrored analysis.
 
+### 16.8 Scope relations are per axis — "similar" is not one number
+
+**Project owner, 2026-09-26:** two databases may both hold "customer data"
+and differ entirely — one for pre-sales, one for post-sales support; one
+for the US, one for New York, where the second is a subset of the first.
+The scope-similarity question (§16.3, the three-way split of "similar
+resources") therefore answers with a **relation per axis**, and
+"substitutable" is derived from those relations, never scored.
+
+**The axes**, each with its own source and its own comparison:
+
+| Axis | What it captures | Held side | Sought side | Comparison |
+|---|---|---|---|---|
+| Subject | what the data is about — glossary terms, data classes | `scopeElements.subjectTerms`, `dataClasses` (declared) or `subject_signals` (measured) | the lens's terms | set relation |
+| **Population** | *which* of that subject — customers in which lifecycle stage, which segment, which business process (pre-sales vs post-sales) | `scopeElements.population`, `lifecycleStage`, `businessProcess`; usually **declared**, occasionally inferable from names (`presales_customers`) | the lens's `DataLens` *processing type* — Egeria's own definition of a lens is "the scope of data for a particular type of processing", which is exactly this axis | set relation; **unknown when undeclared**, never assumed equal because the subject matches |
+| Space | where — regions, bounding box, jurisdiction | `DataScope` bbox, `scopeElements.regions` | lens bbox / regions | containment |
+| Time | collection, validity, coverage windows | `DataScope` times | lens times | interval containment |
+| Grain | one row per what, per what interval | `DataGrain` | lens grain | finer / same / coarser |
+| Structure | the schema or file signature | `db_fingerprint` / `file_fingerprint` | another resource's signature | same / subset / superset (this is the *structural* member of the split, §16.3) |
+
+**The relation vocabulary**, the same on every axis: `same`, `contains`,
+`contained_by`, `overlaps`, `disjoint`, `not_established`. The last is a
+real value: an undeclared population axis renders as "population: not
+established — the two may be the same customers or different ones", which
+is the honest answer to the pre-sales/post-sales pair until someone
+declares it, and the reason two "customer" databases must never be called
+similar on subject alone.
+
+**Derived answers**, computed from the per-axis relations and shown with
+them, not instead of them:
+
+- *Can B stand in for A?* — every axis `same` or `contains` in B's favour,
+  grain `same` or finer, structure at least `subset`-compatible with what
+  A's consumers use. One `disjoint` or `not_established` axis and the
+  answer is "not without checking *axis*".
+- *Is B a subset of A?* — structure `same` and one or more of space, time,
+  population `contained_by`, the rest `same`. NY-of-US is: subject same,
+  population same, structure same, space contained_by, time same.
+- *Are these the same data twice?* — every axis `same` including structure;
+  a candidate for the copy finding (§5.3) and for consolidation.
+
+**What it changes.** `requirement_fit` and `preliminary_fit` (§16.3) report
+per axis, and the designer's two-extent map and calendar strip (§11) are
+the space and time axes drawn; the population axis has no drawing and is a
+labelled line. The `scopeElements` key convention in §16.6 gains
+`population`, `lifecycleStage` and `businessProcess`. `DataLens`'s
+processing type is the sought side of population and should be set when
+an investigation is framed. The structural and scope members of the
+"similar" split are asked together on one row of the answer, because
+"same structure, subset of rows by geography" is the precise statement
+about the NY/US pair and neither half says it alone.
+
 ## 17. Prerequisites run themselves, and every run says what it cost
 
 **Added 2026-09-23 at the project owner's direction**, from two questions:

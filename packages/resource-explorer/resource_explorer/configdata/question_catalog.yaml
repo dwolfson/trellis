@@ -1670,11 +1670,16 @@ database_questions:
     or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
     stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
     fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
-    ''is something like this already productised'' (§16.7 5′).'
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
   catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
     owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
     now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
-    pre-existing copy/subset row).'
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -3175,11 +3180,16 @@ filesystem_questions:
     or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
     stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
     fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
-    ''is something like this already productised'' (§16.7 5′).'
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
   catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
     owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
     now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
-    pre-existing copy/subset row).'
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
@@ -4029,11 +4039,16 @@ dataset_questions:
     or measured DataScope, DataGrain and subject terms and run the fit against every other resource''s
     stored scope — no new survey, a query over stored measurements. Runs both ways, so a resource that
     fails one investigation''s lens can still match another (§16.5 point 5). Also the mechanism behind
-    ''is something like this already productised'' (§16.7 5′).'
+    ''is something like this already productised'' (§16.7 5′). The answer is a relation per scope axis
+    — subject, population (which customers: pre-sales vs post-sales), space, time, grain, structure —
+    each same / contains / contained_by / overlaps / disjoint / not_established, with ''can one stand
+    in for the other'' and ''is one a subset of the other'' derived from them (design §16.8). Two ''customer''
+    databases are never called similar on subject alone: an undeclared population axis renders not_established.'
   catalog_history: '2026-09-26: split from ''What are similar resources, and how does this differ?'' (project
     owner: ''tease apart what we mean by similar — scope, database type, data objects''); three questions
     now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
-    pre-existing copy/subset row).'
+    pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
+    §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
 - question: Under what licence or agreement may this resource be used?
   stage: Scouting
