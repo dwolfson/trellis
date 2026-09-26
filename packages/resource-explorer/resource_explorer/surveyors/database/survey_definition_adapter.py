@@ -1290,7 +1290,34 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
     question from "is anything reading or writing this database", which is
     what a Data Owner actually asked. Written for slice 17c alongside
     `db_resilience`'s (same operations-section family, same review) even
-    though it wasn't the one the gate caught empty."""
+    though it wasn't the one the gate caught empty.
+
+    Live gate feedback (2026-09-26): the counter WHEN matters as much as the
+    counts themselves -- a large write count means something different
+    right after a reset than it does a year in -- so the "since" clause is
+    load-bearing, not decoration, and `pg_stat_database.stats_reset` being
+    `NULL` is a real, distinct case from "we don't know", not an absence to
+    paper over with a generic "since the last reset" that implies a reset
+    happened. Per the same review's headline-detail rule (a headline
+    answers what was asked, in the fewest words; supporting detail belongs
+    in evidence, not the line), the per-table count is dropped from the
+    sentence -- it answers "how many tables", not "is anything reading or
+    writing this database".
+
+    Second correction, same gate, still 2026-09-26: the first cut of the
+    `NULL` wording said "since the server started" -- wrong, per the
+    owner's own correction. `pg_stat_database`'s cumulative counters
+    survive a server restart; `stats_reset` is `NULL` only when the
+    counters have never been reset since Postgres started tracking them at
+    all (a stats-collector-lifetime fact, not a server-uptime one). This is
+    also distinct from the ANALYZE-driven estimate-freshness stamp design
+    §5.1a's catalog-only fallback carries (`STATE_CATALOG_ESTIMATE`,
+    `_schema_inventory_results`'s `row_count_is_estimate`) -- that marks
+    how stale a row-count *estimate* is; this marks how long the
+    read/write *activity counters* have been accumulating. Two different
+    clocks on two different kinds of number, not to be conflated in either
+    direction.
+    """
     value = _operations_section_reader("activity_signals")(registry, slug)
     if not value:
         return None
@@ -1302,12 +1329,12 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
         for t in activity
     )
     total_reads = sum((t.get("seq_scan") or 0) + (t.get("idx_scan") or 0) for t in activity)
-    label = (
-        f"{total_writes:,} write(s), {total_reads:,} read(s) across "
-        f"{len(activity)} table(s) since the last statistics reset"
-        + (f" ({value['stats_reset']})" if value.get("stats_reset") else "")
-        + "."
+    stats_reset = value.get("stats_reset")
+    since_clause = (
+        f"since statistics were reset on {stats_reset}" if stats_reset
+        else "since statistics collection began (never reset)"
     )
+    label = f"{total_writes:,} writes and {total_reads:,} reads {since_clause}."
     return {"label": label, "status": "info"}
 
 
@@ -1342,14 +1369,33 @@ def _db_privilege_audit_headline(registry, slug: str) -> dict | None:
     what"), so leaving it at the honest-absence floor is a visible gap, not
     just an incomplete nicety. "N roles; M superuser(s); PUBLIC has SELECT
     on K table(s); J table(s) world-writable" is a one-line reduction over
-    data this reader already has, not a new fetch."""
+    data this reader already has, not a new fetch.
+
+    `roles` empty is never a real answer, only a collection failure: every
+    live Postgres database has at least the connecting role, and `pg_roles`
+    is readable by any role regardless of grants (the same fact
+    `get_credential_capability()` relies on for its own unfiltered reads).
+    Found live on `coco_pharma` (2026-09-26): `get_privilege_audit()`'s
+    roles query had a literal `%` that psycopg2's printf-style substitution
+    choked on (`connection.py`, now fixed), silently caught and turned into
+    an empty list — which this reader then rendered as "0 role(s); 0
+    superuser(s)", a confident wrong answer indistinguishable from a real
+    audit finding. So `roles` gets the same treatment `target_shape:
+    whole_resource_only` gets nowhere else in this file: a count that
+    cannot legitimately be zero returns `None` here rather than a sentence,
+    falling to `_renders_text`'s honest "ran; no summary reader" state.
+    `table_grants` has no equivalent floor — a table with only its owner's
+    default privileges and no explicit grant produces a genuinely empty
+    `table_grants` (the query's own `c.relacl IS NOT NULL` filter), so a
+    zero there is real and still worth stating.
+    """
     value = _operations_section_reader("privilege_audit")(registry, slug)
     if not value:
         return None
     roles = value.get("roles") or []
-    grants = value.get("table_grants") or []
-    if not roles and not grants:
+    if not roles:
         return None
+    grants = value.get("table_grants") or []
 
     superusers = sum(1 for r in roles if r.get("rolsuper"))
     public_grants = [g for g in grants if (g.get("grantee") or "") == "PUBLIC"]
