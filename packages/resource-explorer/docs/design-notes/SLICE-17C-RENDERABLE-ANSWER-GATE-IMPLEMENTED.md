@@ -93,10 +93,16 @@ follow-up commits on this branch:
    The counter's start time changes what the counts mean — a large write
    count reads differently right after a reset than a year in. Rewritten
    to "N writes and M reads since statistics were reset on `<timestamp>`",
-   or "...since the server started (statistics never reset)" when
+   or "...since statistics collection began (never reset)" when
    `pg_stat_database.stats_reset` is `NULL` — a real, distinct case from
    "we don't know", not glossed over with wording that implies a reset
-   happened. Also dropped the per-table count from the sentence per the
+   happened. **Correction (owner, 2026-09-26):** the first cut said "since
+   the server started" — wrong, since `pg_stat_database`'s cumulative
+   counters survive a server restart; `NULL` means never reset since
+   collection began, not since the server last came up. Also distinct from
+   the ANALYZE-driven estimate-freshness stamp (design §5.1a,
+   `STATE_CATALOG_ESTIMATE`) — two different clocks on two different kinds
+   of number. Also dropped the per-table count from the sentence per the
    review's headline-detail rule (a headline answers what was asked, in
    the fewest words; supporting detail belongs in evidence) — "across N
    tables" answers a different question than "is anything reading or

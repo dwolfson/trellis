@@ -1296,14 +1296,27 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
     counts themselves -- a large write count means something different
     right after a reset than it does a year in -- so the "since" clause is
     load-bearing, not decoration, and `pg_stat_database.stats_reset` being
-    `NULL` (a server that has never had its counters reset since it last
-    started) is a real, distinct case from "we don't know", not an absence
-    to paper over with a generic "since the last reset" that implies a
-    reset happened. Per the same review's headline-detail rule (a headline
+    `NULL` is a real, distinct case from "we don't know", not an absence to
+    paper over with a generic "since the last reset" that implies a reset
+    happened. Per the same review's headline-detail rule (a headline
     answers what was asked, in the fewest words; supporting detail belongs
     in evidence, not the line), the per-table count is dropped from the
     sentence -- it answers "how many tables", not "is anything reading or
     writing this database".
+
+    Second correction, same gate, still 2026-09-26: the first cut of the
+    `NULL` wording said "since the server started" -- wrong, per the
+    owner's own correction. `pg_stat_database`'s cumulative counters
+    survive a server restart; `stats_reset` is `NULL` only when the
+    counters have never been reset since Postgres started tracking them at
+    all (a stats-collector-lifetime fact, not a server-uptime one). This is
+    also distinct from the ANALYZE-driven estimate-freshness stamp design
+    §5.1a's catalog-only fallback carries (`STATE_CATALOG_ESTIMATE`,
+    `_schema_inventory_results`'s `row_count_is_estimate`) -- that marks
+    how stale a row-count *estimate* is; this marks how long the
+    read/write *activity counters* have been accumulating. Two different
+    clocks on two different kinds of number, not to be conflated in either
+    direction.
     """
     value = _operations_section_reader("activity_signals")(registry, slug)
     if not value:
@@ -1319,7 +1332,7 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
     stats_reset = value.get("stats_reset")
     since_clause = (
         f"since statistics were reset on {stats_reset}" if stats_reset
-        else "since the server started (statistics never reset)"
+        else "since statistics collection began (never reset)"
     )
     label = f"{total_writes:,} writes and {total_reads:,} reads {since_clause}."
     return {"label": label, "status": "info"}

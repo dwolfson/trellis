@@ -335,10 +335,12 @@ class TestHeadlineFunctionsProduceRealSentences:
         assert "since statistics were reset on 2026-09-20 10:00:00+00" in label
 
     def test_activity_signals_headline_says_never_reset_when_stats_reset_is_null(self):
-        """`pg_stat_database.stats_reset` NULL means the server has never had
-        its counters reset since it last started -- a real, distinct case
-        from "we don't know", not papered over with generic wording that
-        implies a reset happened."""
+        """`pg_stat_database.stats_reset` NULL means the counters have never
+        been reset since collection began -- a real, distinct case from "we
+        don't know", not papered over with generic wording that implies a
+        reset happened. NOT "since the server started" (owner's correction,
+        2026-09-26): cumulative statistics survive a server restart, so that
+        wording would be factually wrong, not just imprecise."""
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             _db_activity_signals_headline,
         )
@@ -350,7 +352,8 @@ class TestHeadlineFunctionsProduceRealSentences:
             "table_count": 1,
         }}})
         result = _db_activity_signals_headline(registry, "coco_ods")
-        assert "since the server started (statistics never reset)" in result["label"]
+        assert "since statistics collection began (never reset)" in result["label"]
+        assert "server started" not in result["label"]
 
     def test_privilege_audit_headline_names_roles_and_public_grants(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
