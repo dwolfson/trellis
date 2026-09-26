@@ -2386,21 +2386,22 @@ database_questions:
   levels:
   - container
   answering:
-    kind: unknown
+    kind: partial
     analysis_ids:
     - db_fingerprint
     checks: []
-    note: 'db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
-      types, hashed and compared by Jaccard similarity and containment against every other database in
-      the registry with stored schema rows) ; filesystems: GAP: file_fingerprint (design §6.2) — same
-      signature comparison over files, not built'
+    note: 'PARTIAL: db_fingerprint answers it for databases (a structural signature over schema shape
+      — likely_copy / likely_subset_of / likely_superset_of, design §5.3); for filesystems it is a GAP
+      until file_fingerprint (design §6.2) exists'
   answering_mechanism: Database Catalog Query + Local Registry Query
   rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
     and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
     is the publication shape.
   catalog_history: '2026-09-26: reworded and widened to filesystems as the structural-similarity member
     of the three-way split of ''What are similar resources'' (project owner); databases keep db_fingerprint,
-    filesystems are a GAP until file_fingerprint exists.'
+    filesystems are a GAP until file_fingerprint exists. | 2026-09-26: Answering Analysis rewritten as
+    PARTIAL: — the widened note had broken the bare-analysis-id convention and left the row kind=unknown
+    (caught by test_catalog_invariants in #299''s CI).'
   retired: false
 - question: Are there views, materialised views, functions or triggers that encode business logic?
   stage: Discovery
@@ -3701,20 +3702,21 @@ filesystem_questions:
   levels:
   - container
   answering:
-    kind: unknown
+    kind: partial
     analysis_ids: []
     checks: []
-    note: 'db_fingerprint (design §3, §5.3 — a structural signature over stored table/column names and
-      types, hashed and compared by Jaccard similarity and containment against every other database in
-      the registry with stored schema rows) ; filesystems: GAP: file_fingerprint (design §6.2) — same
-      signature comparison over files, not built'
+    note: 'PARTIAL: db_fingerprint answers it for databases (a structural signature over schema shape
+      — likely_copy / likely_subset_of / likely_superset_of, design §5.3); for filesystems it is a GAP
+      until file_fingerprint (design §6.2) exists'
   answering_mechanism: Database Catalog Query + Local Registry Query
   rationale: A schema signature — table and column names, types, key structure — hashed into a fingerprint
     and compared against the fingerprints of databases already in the registry. Egeria's FingerprintAnnotation
     is the publication shape.
   catalog_history: '2026-09-26: reworded and widened to filesystems as the structural-similarity member
     of the three-way split of ''What are similar resources'' (project owner); databases keep db_fingerprint,
-    filesystems are a GAP until file_fingerprint exists.'
+    filesystems are a GAP until file_fingerprint exists. | 2026-09-26: Answering Analysis rewritten as
+    PARTIAL: — the widened note had broken the bare-analysis-id convention and left the row kind=unknown
+    (caught by test_catalog_invariants in #299''s CI).'
   retired: false
 - question: Which columns conform to a known Data Class, with what confidence, and which look like a class
     we do not have yet?
