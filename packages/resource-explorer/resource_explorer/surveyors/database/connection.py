@@ -957,11 +957,24 @@ class PostgreSQLConnection(DatabaseConnection):
         # handler in a value-returning function.
         roles: list[dict] = []
         try:
+            # `execute_query` always calls `cursor.execute(query, params)`
+            # with a params tuple, even the default empty `()` -- which
+            # still switches psycopg2 into printf-style query substitution.
+            # A literal `%` that isn't part of a `%s`/`%(name)s` placeholder
+            # then reads as a malformed format spec and raises (here,
+            # `IndexError: tuple index out of range`) -- caught by this
+            # very `except`, silently turning "the query is broken" into
+            # "there are no roles", live-confirmed on `coco_pharma`
+            # (2026-09-26): every survey's `privilege_audit.roles` was
+            # empty, though `pg_roles` genuinely has 13 real rows there.
+            # `%%` is the literal-percent escape psycopg2's substitution
+            # expects; `pg\_%` (one escaped underscore, one literal
+            # trailing wildcard) becomes `pg\_%%`.
             roles = self.execute_query("""
                 SELECT rolname, rolsuper, rolcreaterole, rolcreatedb,
                        rolcanlogin, rolreplication, rolbypassrls
                 FROM pg_roles
-                WHERE rolname NOT LIKE 'pg\\_%'
+                WHERE rolname NOT LIKE 'pg\\_%%'
                 ORDER BY rolname
             """)
         except Exception:
