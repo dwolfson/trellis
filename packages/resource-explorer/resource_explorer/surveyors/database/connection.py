@@ -1514,7 +1514,27 @@ class PostgreSQLConnection(DatabaseConnection):
         return self.execute_query(query)
 
     def _get_table_row_stats(self) -> list[dict]:
-        """Get row counts and last-activity timestamps from pg_stat_user_tables."""
+        """Get row counts and last-activity timestamps from pg_stat_user_tables.
+
+        `n_live_tup` is maintained incrementally by DML tracking, not only
+        by `ANALYZE` — but that tracking is exactly what a fresh restore
+        from a dump loses (a plain SQL dump/restore carries table DATA, not
+        `pg_stat_user_tables`'s runtime counters), and a table nobody has
+        ever `ANALYZE`d or written to since restore reads `n_live_tup == 0`
+        indistinguishably from a table that is genuinely empty. Found live
+        on `coco_pharma` (2026-09-26): every table in two entire schemas
+        showed `n_live_tup = 0` with `last_analyze`/`last_autoanalyze` both
+        `NULL` — reported downstream as "measured, 0 rows", a confident
+        wrong answer for tables that plainly hold real data (their own
+        names — `orders`, `customers`, `order_details` — are not those of
+        empty tables) design §5.1a already has a name for this exact
+        state (`REASON_NEVER_ANALYZED` in `database_surveyor.py`) for a
+        sibling case (`n_distinct` resolution); this reader gets the same
+        treatment: `row_count` is `None`, not `0`, when the stats
+        collector shows zero activity AND no `ANALYZE` has ever run — a
+        real, non-zero `n_live_tup` is trusted regardless of `ANALYZE`
+        history, since DML tracking alone would have produced it.
+        """
         query = """
             SELECT
                 schemaname,
@@ -1531,11 +1551,14 @@ class PostgreSQLConnection(DatabaseConnection):
             # Cast timestamps to ISO strings so they survive JSON serialisation
             result = []
             for r in rows:
+                live_tup = r.get("row_count")
+                last_analyzed = str(r["last_analyzed"]) if r.get("last_analyzed") else ""
+                never_analyzed_zero = (not live_tup) and not last_analyzed
                 result.append({
                     "schemaname": r.get("schemaname", ""),
                     "tablename":  r.get("tablename", ""),
-                    "row_count":  int(r.get("row_count") or 0),
-                    "last_analyzed": str(r["last_analyzed"]) if r.get("last_analyzed") else "",
+                    "row_count":  None if never_analyzed_zero else int(live_tup or 0),
+                    "last_analyzed": last_analyzed,
                     "last_vacuumed": str(r["last_vacuumed"]) if r.get("last_vacuumed") else "",
                     "pending_changes": int(r.get("pending_changes") or 0),
                 })
