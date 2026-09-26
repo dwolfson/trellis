@@ -10,42 +10,113 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
-## `get_statistics()`'s output feeds no analysis reader, only a ride-along
+## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
+
+**Found while gating** the enumeration-floor + collector-honesty PR
+(2026-09-26), while re-verifying the never-analyzed row-count fix live
+against `coco_pharma` after a stale-8811 report from the owner.
+
+`database_surveyor.py`'s `_store_results()` enriches every table in
+`schema_info["schemas"]` with `row_count`/`size_bytes` from
+`results["statistics"]["row_stats"]`/`["table_stats"]` — but it does this
+**unconditionally, for every table, on every survey run**, even when the
+run's own requested steps never fetched `"statistics"` at all.
+`DATABASE_SURVEYOR_STEP_MAP` gives `schema_inventory` steps
+`["schema", "views"]` and `db_activity_signals` steps
+`["schema", "operations"]` — neither includes `"statistics"` — so when
+either runs, `statistics` is `{}`, `row_lookup` is empty for every table,
+and every non-catalog-fallback table falls to `_store_results`'s bare
+`else: table["row_count"] = 0` branch, **overwriting whatever correct
+value a PRIOR `row_count_snapshot` run had just stored** with a naive
+zero.
+
+Reproduced directly and repeatably against `coco_pharma`
+(`localhost_docker_coco_pharma`): run `row_count_snapshot` alone →
+`us_sales_forecast`/`eu_sales_forecast`/`consolidated_forecast` correctly
+show `row_count: None` (never `ANALYZE`d, per the fix above). Run
+`schema_inventory` right after, on the same database, no other change →
+those same three tables flip to `row_count: 0`. Run `row_count_snapshot`
+again → back to `None`. Fully order-dependent, not specific to this
+never-analyzed case — the SAME clobbering would have produced a false
+`0` even before that fix, for any table whose real row count had been
+correctly captured by a `row_count_snapshot` run and was then overwritten
+by literally any OTHER per-card analysis's run.
+
+This means "How big is this database" can silently go stale or wrong the
+moment ANY other database analysis is re-run afterward — a real, and
+currently invisible, source of the exact "measured zero" class of bug this
+whole effort has been about, one level up (at the SURVEY level, not the
+reader level).
+
+**Candidate fix:** `_store_results` should not touch `row_count`/
+`size_bytes` for a table at all when this run's own `statistics` step
+didn't run — leave the table's PREVIOUSLY stored value in place (read it
+back rather than defaulting to `0`), or record it as `not this run's
+concern` rather than silently asserting a fresh zero. Needs its own PR;
+not attempted here — this PR's scope was the enumeration floor and
+collector-level `_errors`, not per-card survey write semantics, and a
+correct fix needs to reconcile with however `record_database_survey`
+already merges (or doesn't) successive local survey rows for the same
+database.
+
+## `get_statistics()` is consumed by row/size enrichment, not by any analysis reader — and its own row-count field had a real absence-as-zero bug
 
 **Found while building** the enumeration-floor + collector-honesty PR
 (2026-09-26), while inventorying `connection.py`'s collectors to decide
 which needed the `_errors` honesty floor.
 
-`PostgreSQLConnection.get_statistics()` calls `_get_database_size()`,
-`_get_table_statistics()`, `_get_table_row_stats()`, `get_column_stats()`,
-`get_table_activity()`, `get_index_stats()`, and `get_stats_reset()` — a
-real, non-trivial set of live database queries — and its only caller is
-`database_surveyor.py`'s `_survey_statistics()`. Grepped directly to
-confirm: nothing in `DATABASE_ANALYSIS_RESULTS_MAP` reads the
-`statistics` key its output is stored under, i.e. no analysis SURFACES it
-as an answer to any question. It isn't entirely dead, though — a comment
-in `survey_definition_adapter.py` (~line 443, the availability-vs-tier
-discussion) says `postgres_column_profile` "pulls `statistics` in as a
-ride-along for sampling provenance" — so something reads it internally,
-just not as a user-facing result. That comment also names `sql_analysis`
-as running the whole default survey though its own output uses none of
-it, flagged there "as a code smell to fix separately" — this entry is
-that separate item for `get_statistics()` specifically: a real,
-non-trivial set of live queries whose OWN dedicated collector
-(`get_statistics()`/`_survey_statistics()`) has no analysis reader of its
-own, distinct from the ride-along consumption.
+**Correction to this entry's own first draft:** it originally claimed
+`get_statistics()`'s output "feeds nothing." That was wrong — re-checked
+after a live gate found a real bug in exactly this path (see below).
+`database_surveyor.py`'s `_store_results()` reads
+`statistics["row_stats"]`/`["table_stats"]` directly to enrich EVERY
+table's `row_count`/`size_bytes` before storage — a real, load-bearing
+consumer, not a ride-along. What's still true: no entry in
+`DATABASE_ANALYSIS_RESULTS_MAP` reads the `statistics` key as an ANSWER to
+a user-facing question in its own right (distinct from feeding another
+analysis's fields) — `postgres_column_profile`'s use, per
+`survey_definition_adapter.py` ~line 443, is genuinely a ride-along for
+sampling provenance, on top of the enrichment role. Whether a dedicated
+reader is still worth adding is unchanged from the original question, just
+not for the reason first stated.
 
-**Candidate fix:** either (a) wire a reader for it as its own analysis —
-`row_count_snapshot`'s own catalog description already says it profiles
-columns from `pg_stats` (null fraction, distinct count, frequent values)
-and tuple counters from `pg_stat_user_tables`, which overlaps
-`get_statistics()`'s own `get_column_stats()`/`get_table_activity()` calls
-closely enough that there may be real duplicate-fetch waste between the
-two, not just an unread result — or (b) delete
-`get_statistics()`/`_survey_statistics()` entirely if the ride-along
-consumption in `postgres_column_profile` doesn't actually need the whole
-dict. Not fixed here; this PR's own scope was collector honesty, not
-collector necessity.
+**The real bug this path had, found via the same PR's live gate
+(`coco_pharma`, 2026-09-26):** `_get_table_row_stats()` (one of
+`get_statistics()`'s calls) read `n_live_tup` from `pg_stat_user_tables`
+as `row_count` unconditionally. `n_live_tup` is maintained by incremental
+DML tracking, not only by `ANALYZE` — but a plain SQL dump/restore carries
+table DATA, not `pg_stat_user_tables`'s runtime counters, so a
+freshly-restored table reads `n_live_tup = 0` indistinguishably from one
+that is genuinely empty. Live: two entire schemas' tables (`orders`,
+`customers`, `order_details`, ...) showed `n_live_tup = 0` with
+`last_analyze`/`last_autoanalyze` both `NULL`, and "How big is this
+database" reported 0 total rows across 53+ "measured" tables — where a
+prior reading (before this bug fired on a fresh local re-survey) showed
+3,526 real rows across 7 tables. **Fixed** in this PR:
+`_get_table_row_stats()` now returns `row_count: None` (not `0`) when
+`n_live_tup` is zero AND no `ANALYZE` has ever run — a genuine nonzero
+count is still trusted regardless of `ANALYZE` history, since DML
+tracking alone would have produced it. See
+`docs/design-notes/ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md`
+for the full trace and `tests/test_table_row_stats_never_analyzed.py` for
+coverage.
+
+**Still open, not fixed here:** (a) whether to wire a dedicated reader for
+`get_statistics()`'s remaining fields (`column_stats`/`index_stats`/
+`table_activity` beyond what `row_stats` already feeds) as their own
+analysis, given `row_count_snapshot`'s catalog description already claims
+some of this ground (`pg_stats` profiling, tuple counters) and there may
+be real duplicate-fetch waste between the two — or delete what's
+genuinely unused; (b) the same "state says HOW discovered, not whether
+the VALUE is exact" ambiguity noticed while fixing the bug above:
+`_schema_inventory_results`'s `row_count_is_estimate` is `True` whenever a
+table's SCHEMA-level discovery went through `_catalog_only_fallback`
+(`state == STATE_CATALOG_ESTIMATE`), even when its `row_count` came from a
+perfectly real, `ANALYZE`d `pg_stat_user_tables` row (confirmed live: 7 of
+`coco_pharma`'s tables have exactly this shape) — "estimate" there means
+"undiscoverable via `information_schema`," not "the number itself is
+approximate," and the headline wording doesn't currently distinguish the
+two.
 
 ---
 

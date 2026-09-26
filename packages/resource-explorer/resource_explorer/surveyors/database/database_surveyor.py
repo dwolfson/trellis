@@ -1571,9 +1571,47 @@ class DatabaseSurveyor:
         return annotations
 
     def _store_results(self, results: dict) -> None:
-        """Store survey results in the registry."""
+        """Store survey results in the registry.
+
+        Collector-honesty rule (design ruling 2026-09-26, generalizing
+        slice 17c/the enumeration-floor PR's own fix): this method must
+        write only the fields THIS run actually collected. Found live on
+        `coco_pharma`: a per-card run of `schema_inventory` (steps
+        `["schema", "views"]` — no `"statistics"`) or `db_activity_signals`
+        (`["schema", "operations"]` — also no `"statistics"`) used to
+        silently overwrite EVERY table's `row_count`/`size_bytes` back to a
+        bare `0`, clobbering whatever a PRIOR `row_count_snapshot` run had
+        correctly measured — a run that fetched no statistics manufacturing
+        a "measured zero" by the act of writing, the exact class of bug
+        this effort exists to close, one level up (the survey writer, not
+        a results reader). Reproduced and fixed: a table this run has no
+        fresh statistics for keeps whatever was already stored (read back
+        before overwriting), or `None` if nothing was ever stored — never a
+        fabricated `0`.
+
+        This is the honest STOPGAP, not the real fix: the underlying cause
+        is one row per table getting overwritten by every survey run
+        instead of survey rows keyed `(slug, surveyed_at, source)` per
+        design rule D — the structured-tables rework (stream 3) is where
+        that actually gets fixed. Preserving prior values here prevents the
+        visible symptom (numbers flipping between runs) without touching
+        that larger design.
+        """
         schema_info = results["schema_info"]
         statistics  = results.get("statistics", {})
+
+        # Read back whatever is already stored for this database BEFORE
+        # this run's own write, so a table this run has no fresh
+        # statistics for can keep its prior value instead of losing it.
+        try:
+            prior_rows = self.registry.query_detail_rows(
+                "database_tables", self.db_entity.slug
+            )
+        except Exception:
+            prior_rows = []
+        prior_by_key = {
+            (r.get("schema_name"), r.get("table_name")): r for r in prior_rows
+        }
 
         # Enrich each table with row count + activity timestamps from
         # pg_stat_user_tables. CORRECTED 2026-09-24/25: unlike information_
@@ -1591,7 +1629,8 @@ class DatabaseSurveyor:
         }
         for schema in schema_info.get("schemas", []):
             for table in schema["tables"]:
-                rs = row_lookup.get((schema["name"], table["name"]), {})
+                key = (schema["name"], table["name"])
+                rs = row_lookup.get(key, {})
                 if rs:
                     table["row_count"] = rs.get("row_count", 0)
                 elif table.get("source") == "catalog_fallback":
@@ -1603,7 +1642,12 @@ class DatabaseSurveyor:
                     # `row_count_estimate` when `row_count` is left absent.
                     table["row_count"] = None
                 else:
-                    table["row_count"] = 0
+                    # This run's own steps did not include "statistics" at
+                    # all -- nothing here was measured THIS run. Keep
+                    # whatever was already stored rather than asserting a
+                    # zero this run never looked at.
+                    prior = prior_by_key.get(key)
+                    table["row_count"] = prior.get("row_count") if prior else None
                 table["last_analyzed"]  = rs.get("last_analyzed", "")
                 table["last_vacuumed"]  = rs.get("last_vacuumed", "")
                 table["pending_changes"] = rs.get("pending_changes", 0)
@@ -1615,7 +1659,8 @@ class DatabaseSurveyor:
         }
         for schema in schema_info.get("schemas", []):
             for table in schema["tables"]:
-                ts = size_lookup.get((schema["name"], table["name"]), {})
+                key = (schema["name"], table["name"])
+                ts = size_lookup.get(key, {})
                 if ts:
                     table["size_bytes"] = ts.get("total_bytes", 0) or 0
                 elif table.get("source") == "catalog_fallback":
@@ -1625,7 +1670,10 @@ class DatabaseSurveyor:
                     # back to at all — leave it unmeasured rather than 0.
                     table["size_bytes"] = None
                 else:
-                    table["size_bytes"] = 0
+                    # Same stopgap as row_count above -- this run collected
+                    # no size data at all, so keep the prior value.
+                    prior = prior_by_key.get(key)
+                    table["size_bytes"] = prior.get("size_bytes") if prior else None
                 table["size_pretty"] = ts.get("total_size", "")
 
         # `surveyed_at` is passed explicitly (rather than left to default)
