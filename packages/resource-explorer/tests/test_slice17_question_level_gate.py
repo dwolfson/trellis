@@ -1,22 +1,28 @@
 """Slice 17, item 3 (docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md,
 Phase 1b row 17; docs/multi-resource-questions-design.md §18.3): a checkmark
 is withheld when the question is asked below `resource` level (`container`,
-`member`, `field` — design §18.3's engine-neutral vocabulary) and every
-analysis that answered it only produced a whole-resource rollup.
+`member`, `field` — design §18.3's engine-neutral vocabulary) and nothing
+that actually reaches the screen names an item at that level.
 
 `QuestionCatalogEntry.levels` (from #290) is the new field this reads —
 consumers here, not the CSV/YAML machinery that produces it (already merged
 and stable, per this slice's own ground rules).
 
-The signal used is the `target_shape` field every `analysis_catalog.yaml`
-entry already carries (`whole_resource_only` vs. `corpus`/
-`single_container`) — real data, not a new declaration. Design §18.3 itself
-notes the FULL guard (did this run actually PRODUCE per-member rows) needs
-slice 20's `scopes` declaration to be checkable; this is the signal already
-available, and it catches the exact live case the coordinator brief names:
-`subject_signals`/`coverage_signals`/`preliminary_fit` are `container`/
-`member`-level questions (per `question_catalog.yaml`) answered by
-`target_shape: whole_resource_only` analyses.
+**Slice 17b revision (2026-09-26):** the first cut bound this to
+`target_shape` alone — a static catalog declaration of what an analysis is
+CAPABLE of producing. Live gate on `coco_pharma` found that wrong:
+`schema_inventory` declares `target_shape: single_container` (real
+per-table rows, schema_name and all) and so satisfied the old gate, but the
+rendered answer for "Which schemas carry the data" was
+"table count 56 · column count 427" — no schema named anywhere, because
+`schema_inventory` has no `headline_reader` and the frontend's
+`scalarMeasures()` fallback drops list/object fields by design. The gate
+now requires a known fact to have produced a `headline` — the one rung that
+can carry member-naming prose past that fallback — before counting it
+toward "answered at level". `target_shape` still decides what the note
+says: "no per-{level} rows exist at all" (`whole_resource_only`) reads
+differently from "rows exist, no reader shows them yet" (anything else) —
+the second is a live pointer at slice 22's per-schema/per-table view.
 """
 from __future__ import annotations
 
@@ -43,9 +49,13 @@ def _fact_layer(monkeypatch, catalog: list[dict]) -> FactLayer:
     return fl
 
 
-def _measured_envelope(analysis_ids: list[str]) -> Envelope:
+def _measured_envelope(analysis_ids: list[str], headlines: dict | None = None) -> Envelope:
+    headlines = headlines or {}
     env = Envelope(subject="coco_ods")
-    env.facts = [Fact(analysis_id=aid, state=MEASURED, value={}) for aid in analysis_ids]
+    env.facts = [
+        Fact(analysis_id=aid, state=MEASURED, value={}, headline=headlines.get(aid, ""))
+        for aid in analysis_ids
+    ]
     return env
 
 
@@ -110,23 +120,72 @@ class TestNotGatedWhenItShouldNotBe:
         fl._check_level(env, {})
         assert env.level_mismatch is False
 
-    def test_a_per_member_analysis_satisfies_a_sub_resource_level(self, monkeypatch):
-        """One analysis with a real per-member breakdown is enough -- the
-        question is answered at its own level, even if a rollup-only
-        analysis also contributed a fact."""
+    def test_a_per_member_analysis_with_a_headline_satisfies_a_sub_resource_level(self, monkeypatch):
+        """A real per-member breakdown that actually wrote a headline is
+        enough -- the question is answered at its own level, even if a
+        rollup-only analysis also contributed a fact."""
         fl = _fact_layer(monkeypatch, [
             {"id": "schema_inventory", "target_shape": "corpus"},
             {"id": "subject_signals", "target_shape": "whole_resource_only"},
         ])
-        env = _measured_envelope(["schema_inventory", "subject_signals"])
+        env = _measured_envelope(
+            ["schema_inventory", "subject_signals"],
+            headlines={"schema_inventory": "3 schemas: public, staging, audit."},
+        )
         fl._check_level(env, {"levels": ["member"]})
         assert env.level_mismatch is False
 
-    def test_single_container_shape_also_satisfies_the_level(self, monkeypatch):
+    def test_single_container_shape_with_a_headline_also_satisfies_the_level(self, monkeypatch):
         fl = _fact_layer(monkeypatch, [
             {"id": "grant_change", "target_shape": "single_container"},
         ])
-        env = _measured_envelope(["grant_change"])
+        env = _measured_envelope(
+            ["grant_change"], headlines={"grant_change": "2 grants changed on public.orders."}
+        )
+        fl._check_level(env, {"levels": ["container"]})
+        assert env.level_mismatch is False
+
+
+class TestCapableButUnrenderedStillGates:
+    """The exact live regression (coco_pharma, 2026-09-26): an analysis whose
+    catalog entry declares a per-member `target_shape` still withholds the
+    tick when nothing it produced actually reaches the screen -- capability
+    to store per-member rows is not the same as a reader that shows them."""
+
+    def test_schema_inventory_without_a_headline_still_gates_a_container_question(self, monkeypatch):
+        fl = _fact_layer(monkeypatch, [
+            {"id": "schema_inventory", "target_shape": "single_container"},
+        ])
+        env = _measured_envelope(["schema_inventory"])  # no headline -- the live bug
+        fl._check_level(env, {"levels": ["container"]})
+        assert env.level_mismatch is True
+        assert "schema_inventory" in env.level_note
+        assert "no reader shows them yet" in env.level_note
+        assert "rollup" not in env.level_note  # this is NOT the "nothing to show" case
+
+    def test_the_note_distinguishes_stored_but_unrendered_from_no_data_at_all(self, monkeypatch):
+        """Mixing a whole_resource_only id with a capable-but-unrendered one:
+        the note should point at the capable id specifically, not claim
+        broadly that nothing names a member."""
+        fl = _fact_layer(monkeypatch, [
+            {"id": "schema_inventory", "target_shape": "single_container"},
+            {"id": "db_activity_signals", "target_shape": "whole_resource_only"},
+        ])
+        env = _measured_envelope(["schema_inventory", "db_activity_signals"])
+        fl._check_level(env, {"levels": ["container"]})
+        assert env.level_mismatch is True
+        assert "schema_inventory" in env.level_note
+        assert "no reader shows them yet" in env.level_note
+
+    def test_a_headline_on_one_capable_analysis_is_enough_even_with_others_unrendered(self, monkeypatch):
+        fl = _fact_layer(monkeypatch, [
+            {"id": "schema_inventory", "target_shape": "single_container"},
+            {"id": "row_count_snapshot", "target_shape": "corpus"},
+        ])
+        env = _measured_envelope(
+            ["schema_inventory", "row_count_snapshot"],
+            headlines={"row_count_snapshot": "1,204 rows, 3 tables measured."},
+        )
         fl._check_level(env, {"levels": ["container"]})
         assert env.level_mismatch is False
 
@@ -180,3 +239,61 @@ class TestRealCatalogAgreesWithTheLiveBugReport(object):
             and q["answering"]["kind"] == "analysis"
         )
         assert set(row["levels"]) & {"container", "member", "field"}
+
+
+class TestRealCatalogAgreesWithTheSlice17bLiveBugReport:
+    """Confirms, against the real catalog on disk, the specific regression
+    the coco_pharma gate found: `schema_inventory` has no headline_reader,
+    so the container-level question it alone answers must still gate."""
+
+    def test_schema_inventory_has_no_headline_reader_in_the_real_map(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+
+        assert "schema_inventory" not in DATABASE_ANALYSIS_HEADLINE_MAP
+
+    def test_which_schemas_carry_the_data_is_answered_only_by_schema_inventory(self):
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        row = next(
+            q for q in get_questions("database")
+            if q["question"].startswith("Which schemas carry the data")
+        )
+        assert row["answering"]["analysis_ids"] == ["schema_inventory"]
+        assert "container" in row["levels"]
+
+    def test_the_real_question_gates_end_to_end_with_no_headline(self, monkeypatch):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        catalog = get_analyses("database", include_egeria_live=False)
+        fl = _fact_layer(monkeypatch, catalog)
+        env = _measured_envelope(["schema_inventory"])  # no headline, exactly as live
+        row = next(
+            q for q in get_questions("database")
+            if q["question"].startswith("Which schemas carry the data")
+        )
+        fl._check_level(env, row)
+        assert env.level_mismatch is True
+        assert "no reader shows them yet" in env.level_note
+
+    def test_how_big_is_this_database_still_passes_via_row_count_snapshots_headline(self, monkeypatch):
+        """The gate's other half (item c): "How big is this database" must
+        stay ticked, because row_count_snapshot -- one of its two
+        contributing analyses -- has a real headline_reader."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        catalog = get_analyses("database", include_egeria_live=False)
+        fl = _fact_layer(monkeypatch, catalog)
+        env = _measured_envelope(
+            ["schema_inventory", "row_count_snapshot"],
+            headlines={"row_count_snapshot": "1,204 row(s), 3.2 MB (3 of 3 tables measured)."},
+        )
+        row = next(
+            q for q in get_questions("database")
+            if q["question"].startswith("How big is this database")
+        )
+        fl._check_level(env, row)
+        assert env.level_mismatch is False

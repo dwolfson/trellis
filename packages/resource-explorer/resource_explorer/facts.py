@@ -1071,32 +1071,59 @@ class FactLayer:
 
     def _check_level(self, env: "Envelope", question: dict) -> None:
         """Withhold the checkmark (design §18.3) when this question is asked
-        below `resource` level and every fact answering it comes from an
-        analysis whose own catalog entry declares `target_shape:
-        whole_resource_only` — a rollup with nothing per-member in it.
+        below `resource` level and nothing that actually reaches the screen
+        names an item at that level.
 
-        Deliberately conservative: only the ids that actually CONTRIBUTED a
-        known fact are checked (an id nobody could read from should not
-        count either way), and the gate only fires when NONE of them can
-        name a member — one analysis with a real per-member breakdown
-        (`target_shape: corpus` or `single_container`) is enough to call the
-        question answered at its own level. The full guard design §18.3
-        itself describes — checking that a per-member analysis actually
-        PRODUCED rows for this run, not just that it is capable of doing so
-        — needs slice 20's `scopes` declaration to be checkable; this is the
-        signal available today, from a field the catalog already carries.
+        First cut of this gate (slice 17) bound the check to `target_shape`
+        — a static catalog declaration of what an analysis is CAPABLE of
+        producing. Live gate on `coco_pharma` (2026-09-26) found that wrong:
+        "Which schemas carry the data" stayed ticked with the rendered
+        answer reading "table count 56 · column count 427" — no schema
+        named anywhere — because `schema_inventory` declares `target_shape:
+        single_container` (it does store one row per table, schema_name and
+        all) even though nothing renders that breakdown. The frontend's
+        `scalarMeasures()` (`app.js`) skips every list/object field by
+        design; a fact only escapes that fallback, and gets to say anything
+        about individual schemas or tables, via a written `headline_reader`
+        (`row_count_snapshot` has one, `schema_inventory` does not — see
+        `DATABASE_ANALYSIS_HEADLINE_MAP`). So the rule now binds to what
+        reaches the screen: a known fact counts toward "answered at level"
+        only when it produced a `headline` — the one rung `readEnvelope`
+        (`app.js`) can put member-naming prose on. `target_shape` still
+        decides what the NOTE says when the gate fires, because "nothing to
+        show" (`whole_resource_only`) and "rows exist, no reader shows them"
+        (anything else) point different people at different follow-ups —
+        the second is a live pointer at slice 22's per-schema view.
+
+        Deliberately conservative in the same way as before: only ids that
+        actually CONTRIBUTED a known fact are checked, and one surfaced
+        headline is enough to call the question answered at its own level.
         """
         levels = question.get("levels") or ["resource"]
         sub_levels = [lv for lv in levels if lv in self._SUB_RESOURCE_LEVELS]
         if not sub_levels:
             return
-        known_ids = [f.analysis_id for f in env.facts if f.is_known]
-        if not known_ids:
+        known = [f for f in env.facts if f.is_known]
+        if not known:
             return
+        if any((f.headline or "").strip() for f in known):
+            return
+        known_ids = [f.analysis_id for f in known]
         shapes = _analysis_target_shapes(self.resource_type)
-        if all(shapes.get(aid, "whole_resource_only") == "whole_resource_only"
-               for aid in known_ids):
-            env.level_mismatch = True
+        capable_ids = [
+            aid for aid in known_ids
+            if shapes.get(aid, "whole_resource_only") != "whole_resource_only"
+        ]
+        env.level_mismatch = True
+        if capable_ids:
+            env.level_note = (
+                f"Answered, but not at {'/'.join(sub_levels)} level — "
+                + (f"{capable_ids[0]} stores per-{sub_levels[0]} rows"
+                   if len(capable_ids) == 1
+                   else f"{', '.join(capable_ids)} store per-{sub_levels[0]} rows")
+                + f", but no reader shows them yet."
+            )
+        else:
             env.level_note = (
                 "Answered only as a whole-resource rollup — this question is "
                 f"asked at {'/'.join(sub_levels)} level and "
