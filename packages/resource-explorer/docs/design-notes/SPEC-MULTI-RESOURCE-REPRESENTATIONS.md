@@ -144,6 +144,13 @@ Perspectives, a scoring layer.
 
 ## 5a · Scope similarity, per axis — four representations (added 2026-09-26, design §16.8)
 
+**Deferred — recorded so it is not forgotten, not a request yet** (project
+owner, 2026-09-26: "not ready for this yet — but shouldn't forget it").
+Do not draw these in round 2. They become a request once scoped analyses
+(slice 20), the `Level` envelope (slice 21) and cluster proposals (slice
+24) produce per-axis data to draw against; until then the only scope
+visuals in scope are the two-extent map and the calendar strip from §2.
+
 "Similar" is not one number: it is a relation per scope axis — subject,
 population (which customers: pre-sales vs post-sales), space, time, grain,
 structure — each `same` / `contains` / `contained_by` / `overlaps` /
@@ -174,6 +181,6 @@ Triggered when stream 6/7 in the coordinator brief lands: `coco_ods`
 re-catalogued, the native Postgres survey read back into rows, and RE's own
 schema-and-stats step extended to `pg_stats`. At that point real column
 profiles, real tuple counters and real annotation types exist. Round 2 asks
-for drawings of the profile card, the treemap, the exposure heatmap and
-the scope comparison strip (§5a) against that data, on the canvas, in the
-usual way.
+for drawings of the profile card, the treemap, the exposure heatmap
+against that data, on the canvas, in the usual way. The per-axis
+similarity representations in §5a are deferred past round 2.
