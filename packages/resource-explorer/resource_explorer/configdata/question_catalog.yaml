@@ -413,7 +413,7 @@ repo_questions:
     check; a content read of Dockerfiles and deployment docs remains a RAG-tier gap.
   retired: false
 - question: What does this resource cost to run, host or license?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Admin
@@ -433,7 +433,9 @@ repo_questions:
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
     from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
-    authoring stream.'
+    authoring stream. | 2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s
+    live review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Is there a validation / deployment test for it?
   stage: Analysis
@@ -485,7 +487,7 @@ repo_questions:
   catalog_history: ''
   retired: false
 - question: Does it fit into our monitoring infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Data Owner
   - Consumer
@@ -504,10 +506,12 @@ repo_questions:
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our security infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Data Owner
@@ -531,7 +535,9 @@ repo_questions:
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Is there any reliability or availability aspects?
   stage: Analysis
@@ -583,7 +589,7 @@ repo_questions:
     no surveyor.
   retired: false
 - question: Does this fit within or need to extend our existing infrastructure estate?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Consumer
   - Security
@@ -601,7 +607,9 @@ repo_questions:
     note: N/A — human-supplied via Enrichment Context form with as fallback from Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: How mature is it?
   stage: Assessment
@@ -630,7 +638,7 @@ repo_questions:
   catalog_history: ''
   retired: false
 - question: Do we have the skills to support its use?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Security
   - Architecture
@@ -647,7 +655,9 @@ repo_questions:
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: How well documented is it?
   stage: Analysis
@@ -740,7 +750,7 @@ repo_questions:
     MIXED rather than answered.
   retired: false
 - question: Does it fit into our governance frameworks?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Security
@@ -759,7 +769,9 @@ repo_questions:
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
@@ -1642,7 +1654,7 @@ database_questions:
     §4) as part of the re/db-questions-csv authoring stream.'
   retired: false
 - question: What does this resource cost to run, host or license?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Admin
@@ -1662,10 +1674,12 @@ database_questions:
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
     from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
-    authoring stream.'
+    authoring stream. | 2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s
+    live review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our monitoring infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Data Owner
   - Consumer
@@ -1684,10 +1698,12 @@ database_questions:
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our security infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Data Owner
@@ -1710,10 +1726,12 @@ database_questions:
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Do we have the skills to support its use?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Security
   - Architecture
@@ -1730,10 +1748,12 @@ database_questions:
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our governance frameworks?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Security
@@ -1752,7 +1772,9 @@ database_questions:
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
@@ -1953,16 +1975,21 @@ database_questions:
   levels:
   - member
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: mixed
+    analysis_ids:
+    - coverage_signals
     checks: []
-    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
-      that would supply the ranges is itself unbuilt.'
-  answering_mechanism: Value Profiling + Human-Supplied
+    note: 'MIXED: coverage_signals (Discovery, catalog tier — partition bounds, file-name dates, descriptor
+      temporal fields; identity A) + coverage_profile (Analysis, data identity B — measured date ranges,
+      cadence and gaps per table); the declared DataScope is curated from the measured one (design §16,
+      §14)'
+  answering_mechanism: DB Introspection + Profiling + Human-Supplied
   rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
     of date columns for a database, modification-time range and in-file date ranges for a filesystem,
     DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: ''no mechanism'' text predated design §16; now points at coverage_signals
+    / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
+    able to have a surveyor for''.'
   retired: false
 - question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
   stage: Analysis
@@ -2186,7 +2213,7 @@ database_questions:
   catalog_history: ''
   retired: false
 - question: When was this resource last backed up successfully, and has a restore ever been tested?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Data Owner
@@ -2198,18 +2225,20 @@ database_questions:
   levels:
   - resource
   answering:
-    kind: human
+    kind: mixed
     analysis_ids:
     - db_resilience
     checks: []
-    note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
-      analysis for databases; no filesystem-side catalog-observable half exists yet).
-  answering_mechanism: Human-Supplied
+    note: 'MIXED: db_resilience (machine half — backup-tool signals and WAL archiving status, explicitly
+      non-definitive: absence of a detected tool is not absence of backups) + human-supplied via the Enrichment
+      Context form (last successful backup, last tested restore, RPO/RTO)'
+  answering_mechanism: DB Introspection + Human-Supplied
   rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
     archiving and extension-based backup tooling are catalog-observable, while last successful backup,
     tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
     recovery" section, and the answer envelope must say which half answered.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: moved to Enrichment (project owner, live review): the definitive answer
+    is human; db_resilience''s backup-tool signal is shown as non-definitive supporting evidence.'
   retired: false
 - question: What kind of database is this — transactional, analytical, reference data, staging or a copy?
   stage: Discovery
@@ -3089,7 +3118,7 @@ filesystem_questions:
     §4) as part of the re/db-questions-csv authoring stream.'
   retired: false
 - question: What does this resource cost to run, host or license?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Admin
@@ -3109,10 +3138,12 @@ filesystem_questions:
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
     from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
-    authoring stream.'
+    authoring stream. | 2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s
+    live review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our monitoring infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Data Owner
   - Consumer
@@ -3131,10 +3162,12 @@ filesystem_questions:
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our security infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Data Owner
@@ -3157,10 +3190,12 @@ filesystem_questions:
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Do we have the skills to support its use?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Security
   - Architecture
@@ -3177,10 +3212,12 @@ filesystem_questions:
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our governance frameworks?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Security
@@ -3199,7 +3236,9 @@ filesystem_questions:
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
@@ -3400,16 +3439,20 @@ filesystem_questions:
   levels:
   - member
   answering:
-    kind: gap
+    kind: mixed
     analysis_ids: []
     checks: []
-    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
-      that would supply the ranges is itself unbuilt.'
-  answering_mechanism: Value Profiling + Human-Supplied
+    note: 'MIXED: coverage_signals (Discovery, catalog tier — partition bounds, file-name dates, descriptor
+      temporal fields; identity A) + coverage_profile (Analysis, data identity B — measured date ranges,
+      cadence and gaps per table); the declared DataScope is curated from the measured one (design §16,
+      §14)'
+  answering_mechanism: DB Introspection + Profiling + Human-Supplied
   rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
     of date columns for a database, modification-time range and in-file date ranges for a filesystem,
     DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: ''no mechanism'' text predated design §16; now points at coverage_signals
+    / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
+    able to have a surveyor for''.'
   retired: false
 - question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
   stage: Analysis
@@ -3486,7 +3529,7 @@ filesystem_questions:
   catalog_history: ''
   retired: false
 - question: When was this resource last backed up successfully, and has a restore ever been tested?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Data Owner
@@ -3498,17 +3541,19 @@ filesystem_questions:
   levels:
   - resource
   answering:
-    kind: human
+    kind: mixed
     analysis_ids: []
     checks: []
-    note: N/A — human-supplied via the Enrichment Context form (the Enrichment half of the proposed db_resilience
-      analysis for databases; no filesystem-side catalog-observable half exists yet).
-  answering_mechanism: Human-Supplied
+    note: 'MIXED: db_resilience (machine half — backup-tool signals and WAL archiving status, explicitly
+      non-definitive: absence of a detected tool is not absence of backups) + human-supplied via the Enrichment
+      Context form (last successful backup, last tested restore, RPO/RTO)'
+  answering_mechanism: DB Introspection + Human-Supplied
   rationale: 'Design §5.5 draws the line explicitly for databases: primary/standby role, replicas, WAL
     archiving and extension-based backup tooling are catalog-observable, while last successful backup,
     tested restore and RPO/RTO are not, for any resource type. They come from an Enrichment "Backup and
     recovery" section, and the answer envelope must say which half answered.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: moved to Enrichment (project owner, live review): the definitive answer
+    is human; db_resilience''s backup-tool signal is shown as non-definitive supporting evidence.'
   retired: false
 - question: What is the grain of each table — one row per what?
   stage: Discovery
@@ -3862,7 +3907,7 @@ dataset_questions:
     §4) as part of the re/db-questions-csv authoring stream.'
   retired: false
 - question: What does this resource cost to run, host or license?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Admin
@@ -3882,10 +3927,12 @@ dataset_questions:
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
     from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
-    authoring stream.'
+    authoring stream. | 2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s
+    live review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our monitoring infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Data Owner
   - Consumer
@@ -3904,10 +3951,12 @@ dataset_questions:
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our security infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Data Owner
@@ -3930,10 +3979,12 @@ dataset_questions:
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Do we have the skills to support its use?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Security
   - Architecture
@@ -3950,10 +4001,12 @@ dataset_questions:
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our governance frameworks?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Security
@@ -3972,7 +4025,9 @@ dataset_questions:
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
@@ -4173,16 +4228,20 @@ dataset_questions:
   levels:
   - member
   answering:
-    kind: gap
+    kind: mixed
     analysis_ids: []
     checks: []
-    note: 'GAP: date-range extraction feeds no DataScope proposal today, and the column-level profiling
-      that would supply the ranges is itself unbuilt.'
-  answering_mechanism: Value Profiling + Human-Supplied
+    note: 'MIXED: coverage_signals (Discovery, catalog tier — partition bounds, file-name dates, descriptor
+      temporal fields; identity A) + coverage_profile (Analysis, data identity B — measured date ranges,
+      cadence and gaps per table); the declared DataScope is curated from the measured one (design §16,
+      §14)'
+  answering_mechanism: DB Introspection + Profiling + Human-Supplied
   rationale: 'The other half of DataScope, and machine-proposable for most types: minimum and maximum
     of date columns for a database, modification-time range and in-file date ranges for a filesystem,
     DCAT temporal for a published dataset. Human confirmation of validity and coverage comes through Enrichment.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: ''no mechanism'' text predated design §16; now points at coverage_signals
+    / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
+    able to have a surveyor for''.'
   retired: false
 - question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
   stage: Analysis
@@ -4474,7 +4533,7 @@ model_questions:
     §4) as part of the re/db-questions-csv authoring stream.'
   retired: false
 - question: What does this resource cost to run, host or license?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Admin
@@ -4494,10 +4553,12 @@ model_questions:
     Enrichment (says so in Answering Analysis), but exact phase matching kept the row off the Enrichment
     pane, under a heading that promised the catalog''s questions for a person. | 2026-09-21: reworded
     from repo-only to cross-type wording (multi-resource-questions-design.md §4) as part of the re/db-questions-csv
-    authoring stream.'
+    authoring stream. | 2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s
+    live review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our monitoring infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Data Owner
   - Consumer
@@ -4516,10 +4577,12 @@ model_questions:
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
   rationale: Org-internal cross-reference — human-supplied.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our security infrastructure?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Financial
   - Data Owner
@@ -4542,10 +4605,12 @@ model_questions:
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
   rationale: 'An organisation-internal cross-reference: the security findings inform it, a person answers
     it.'
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Do we have the skills to support its use?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Security
   - Architecture
@@ -4562,10 +4627,12 @@ model_questions:
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Purely human-supplied — never resource-derivable.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: Does it fit into our governance frameworks?
-  stage: Analysis/Enrichment
+  stage: Enrichment
   perspectives:
   - Governance
   - Security
@@ -4584,7 +4651,9 @@ model_questions:
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
   rationale: Org policy cross-reference (human-supplied), plus Curate's zone/catalog membership once published.
-  catalog_history: ''
+  catalog_history: '2026-09-26: re-staged from Analysis/Enrichment to Enrichment — project owner''s live
+    review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
+    by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
 - question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment

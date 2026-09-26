@@ -116,6 +116,20 @@ descriptions live in `docs/dr-egeria/foundations/foundations.md`; summary:
 - **Architecture** — how the resource fits the broader information architecture/supply chain.
 - **Admin** — operational/infrastructure upkeep, access, reliability.
 
+## The headline rule — what an answer line must contain
+
+**Decision (project owner, 2026-09-26):** the one-line answer to a question
+covers **every part the question asks**, in the fewest words, and nothing
+the question did not ask. "Is this database a primary or a replica, is it
+clustered, and is WAL archiving or backup configured?" asks four things, so
+its line has four clauses: "primary; not clustered; WAL archiving off; no
+backup tool detected". Supporting detail — lag figures, archiver counters,
+tool names, grant lists — goes under *evidence* or is reached by a chat
+follow-up, never into the line. If the question were only "is this database
+a primary or a replica?", the line would stop at "primary" and the rest
+would be evidence. Write the `Question` cell with this in mind: each clause
+you put in the question is a clause the headline reader must answer.
+
 ## `Level` — which granularity the question is about
 
 Added 2026-09-25 (`docs/multi-resource-questions-design.md` §18.3), because
