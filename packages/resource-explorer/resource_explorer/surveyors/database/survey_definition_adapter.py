@@ -1133,9 +1133,21 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     view_count = sum(1 for t in tables if t.get("table_type") == "VIEW")
     materialized_view_count = sum(1 for t in tables if t.get("table_type") == "MATERIALIZED VIEW")
     foreign_table_count = sum(1 for t in tables if t.get("table_type") == "FOREIGN")
+    # "How big is this database — schemas, tables, ..." names schemas
+    # first; this reader had no schema-level field at all until this count
+    # was added (found live, `coco_pharma`, 2026-09-26). Distinct
+    # `schema_name` across the stored `database_tables` rows -- schemas
+    # that actually produced at least one table row, "the visible ones",
+    # not necessarily every schema `get_schema_info()` enumerated (a
+    # schema with zero tables at all, like `public` on `coco_pharma`, has
+    # no `database_tables` rows to be distinct over) -- `schema_total`
+    # from the credential-capability probe, surfaced by the headline
+    # reader below, is the true database-wide denominator.
+    schema_count = len({t.get("schema_name") for t in tables if t.get("schema_name")})
     value = {
         "table_count": len(tables),
         "column_count": len(columns),
+        "schema_count": schema_count,
         "base_table_count": base_table_count,
         "view_count": view_count,
         "materialized_view_count": materialized_view_count,
@@ -1224,6 +1236,79 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
     if status:
         value["_status"] = status
     return value
+
+
+#: Above this many distinct schemas, the headline names a count instead of
+#: listing every one -- a wall of 40 schema names is not "the fewest words"
+#: either. Chosen generously enough that every real database seen so far
+#: (`coco_pharma`: 8) lists in full.
+_SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT = 15
+
+
+def _schema_inventory_headline(registry, slug: str) -> dict | None:
+    """"How big is this database — schemas, tables, views, columns, rows
+    and bytes?" names schemas first, but `_schema_inventory_results` had no
+    schema-level field at all until this reader was written (found live,
+    `coco_pharma`, 2026-09-26 — `scalarMeasures()`'s fallback rendered
+    "table count 56 · column count 427 ..." with no schema mentioned
+    anywhere). Answers every part of the question THIS analysis owns
+    (schemas/tables/views/columns) in one sentence; rows/bytes stay on
+    `row_count_snapshot`'s own headline, which already covers them.
+
+    Deliberately NAMES the schemas (not just a count), within
+    `_SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT`: `_check_level`'s sub-resource
+    gate treats any non-empty headline as evidence the analysis answered at
+    its own level, and a bare count would satisfy that check for
+    "Which schemas carry the data...?" (`container` level, `schema_inventory`
+    alone) without actually naming a single schema -- reopening the exact
+    "answered, but nothing names a container" gap slice 17b closed, just one
+    level up. Naming the schemas here is a real answer, not a trick to
+    satisfy the gate; a real per-schema classification ("system, empty or
+    staging") is still slice 22's own dedicated view, not attempted here.
+
+    `schema_count` (this reader's own distinct `schema_name` count over
+    stored tables) and `schema_total`/`schema_visible` (the
+    credential-capability probe's database-wide denominator, the SAME
+    numbers the credential banner already shows) are both surfaced,
+    together, deliberately: they can legitimately differ (a schema with
+    zero tables at all contributes to `schema_total` but not
+    `schema_count`), and stating both is more honest than silently
+    picking one.
+    """
+    value = _schema_inventory_results(registry, slug)
+    if not value or not value.get("table_count"):
+        return None
+    cap = _credential_capability_results(registry, slug)
+    schema_total = cap.get("schema_total")
+    schema_visible = cap.get("schema_visible")
+
+    schema_names = sorted({
+        t.get("schema_name") for t in value.get("tables") or [] if t.get("schema_name")
+    })
+    if schema_names and len(schema_names) <= _SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT:
+        schema_part = f"{len(schema_names)} schema(s) ({', '.join(schema_names)})"
+    else:
+        schema_part = f"{value.get('schema_count', 0)} schema(s)"
+    if schema_total:
+        schema_part += f", {schema_visible} of {schema_total} visible to this credential"
+
+    kind_bits = []
+    for count, label in (
+        (value.get("base_table_count"), "base"),
+        (value.get("view_count"), "view"),
+        (value.get("materialized_view_count"), "materialized view"),
+        (value.get("foreign_table_count"), "foreign"),
+    ):
+        if count:
+            kind_bits.append(f"{count} {label}")
+    kind_str = f" ({', '.join(kind_bits)})" if kind_bits else ""
+
+    parts = [
+        schema_part,
+        f"{value['table_count']} table(s){kind_str}",
+        f"{value.get('column_count', 0)} column(s)",
+    ]
+    return {"label": " · ".join(parts) + ".", "status": "info"}
 
 
 def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
@@ -1540,6 +1625,7 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: visible gap, not an acceptable one, so it gets a headline in the same
 #: pass as the other three rather than deferred.
 DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
+    "schema_inventory": _schema_inventory_headline,
     "row_count_snapshot": _row_count_snapshot_headline,
     "db_resilience": _db_resilience_headline,
     "db_activity_signals": _db_activity_signals_headline,
