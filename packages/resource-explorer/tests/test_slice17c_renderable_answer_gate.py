@@ -315,7 +315,9 @@ class TestHeadlineFunctionsProduceRealSentences:
         result = _db_external_dependencies_headline(registry, "coco_ods")
         assert "no extensions" in result["label"].lower()
 
-    def test_activity_signals_headline_names_reads_and_writes(self):
+    def test_activity_signals_headline_names_reads_and_writes_and_when(self):
+        """Live gate feedback (2026-09-26): the counter WHEN matters as much
+        as the counts -- the reset timestamp is load-bearing, not detail."""
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             _db_activity_signals_headline,
         )
@@ -328,8 +330,27 @@ class TestHeadlineFunctionsProduceRealSentences:
         }}})
         result = _db_activity_signals_headline(registry, "coco_ods")
         label = result["label"]
-        assert "12 write" in label
-        assert "105 read" in label
+        assert "12 writes" in label
+        assert "105 reads" in label
+        assert "since statistics were reset on 2026-09-20 10:00:00+00" in label
+
+    def test_activity_signals_headline_says_never_reset_when_stats_reset_is_null(self):
+        """`pg_stat_database.stats_reset` NULL means the server has never had
+        its counters reset since it last started -- a real, distinct case
+        from "we don't know", not papered over with generic wording that
+        implies a reset happened."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_activity_signals_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"activity_signals": {
+            "table_activity": [
+                {"n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0, "seq_scan": 0, "idx_scan": 0},
+            ],
+            "stats_reset": "",
+            "table_count": 1,
+        }}})
+        result = _db_activity_signals_headline(registry, "coco_ods")
+        assert "since the server started (statistics never reset)" in result["label"]
 
     def test_privilege_audit_headline_names_roles_and_public_grants(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
