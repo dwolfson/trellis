@@ -142,11 +142,38 @@ Perspectives, a scoring layer.
 
 ---
 
+## 5a · Scope similarity, per axis — four representations (added 2026-09-26, design §16.8)
+
+"Similar" is not one number: it is a relation per scope axis — subject,
+population (which customers: pre-sales vs post-sales), space, time, grain,
+structure — each `same` / `contains` / `contained_by` / `overlaps` /
+`disjoint` / `not_established`, with "can one stand in for the other" and
+"is one a subset" *derived* from those and shown with them. Two worked
+pairs from the project owner: two "customer" databases that differ only by
+population (pre-sales vs post-sales); New York inside US, which is subject
+same, population same, structure same, space contained-by, time same.
+
+| Representation | For | Drawing | Why |
+|---|---|---|---|
+| **Scope comparison strip** | one pair | one row per axis; the two resources' extents side by side with a **relation glyph**: two equal bars = same; a bar inside a bar = contained-by; overlapping bars = overlaps; separated bars = disjoint; a dashed hollow bar = not established | read top to bottom it *is* the answer — five equals and one nested bar is NY-in-US; a dashed population row says "we do not know" honestly |
+| **Per-axis extents** | any axis with geometry | space: the two-extent map (held solid, sought dashed); time: two interval bars on one timeline; grain: a short ladder (per transaction / day / month) with both resources' rungs marked; subject: two sets of term chips with the intersection highlighted; structure: fingerprint side by side (tables shared / only in A / only in B); population: a labelled value pair or a question mark — it has no geometry | containment is immediate where the axis has geometry; the population axis must not be faked with one |
+| **Candidate matrix** | many candidates | candidates as rows, axes as columns, cells as relation glyphs, sorted by substitutability; a **column of dashed cells** (e.g. population) shows what the catalog cannot yet distinguish — a curation task made visible | a consumer scanning twenty candidates sees which is same-or-contains across the board and which fails on exactly one axis |
+| **Nesting diagram** | containment chains | an Euler diagram — NY inside US inside global — per axis (space, time, population), with the sought lens as a dashed outline over the nest | shows where the requirement falls among what is held |
+
+Two rules for all four: **every relation glyph carries its basis** (declared /
+measured / estimated / recorded at write — a measured space extent and a
+declared population sit on the same strip), and **derived verdicts are
+sentences under the strip** ("B can stand in for A"; "B is a subset of A by
+geography"), never a coloured score. Precedents in the field are partial:
+Venn and Euler overlap views in data-quality tools, and schema-diff
+side-by-side; nobody draws similarity per axis.
+
 ## 6 · Round 2
 
 Triggered when stream 6/7 in the coordinator brief lands: `coco_ods`
 re-catalogued, the native Postgres survey read back into rows, and RE's own
 schema-and-stats step extended to `pg_stats`. At that point real column
 profiles, real tuple counters and real annotation types exist. Round 2 asks
-for drawings of the profile card, the treemap and the exposure heatmap
-against that data, on the canvas, in the usual way.
+for drawings of the profile card, the treemap, the exposure heatmap and
+the scope comparison strip (§5a) against that data, on the canvas, in the
+usual way.
