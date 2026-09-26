@@ -56,7 +56,7 @@ sub-resource `levels` entry.
    sub-resource / `headline`-specific check from slice 17b run on top,
    preserving its distinct wording (`target_shape`-based: "nothing to
    show" vs. "rows exist, no reader shows them yet").
-3. **Three new headline readers** (`survey_definition_adapter.py`,
+3. **Four new headline readers** (`survey_definition_adapter.py`,
    registered in `DATABASE_ANALYSIS_HEADLINE_MAP`), mirroring
    `row_count_snapshot`'s pattern — because the honesty floor
    (`_renders_text`) is not the ceiling; "primary; no replicas; WAL
@@ -74,18 +74,18 @@ sub-resource `levels` entry.
    - `_db_external_dependencies_headline` — named counts of extensions,
      foreign servers/tables, publications/subscriptions (every one of its
      fields is a list, the identical structural gap `db_resilience` has).
-
-`privilege_audit` (also `_operations_section_reader`-backed, also
-all-list fields — `roles`, `table_grants`, presumably a third ACL list)
-is **not** given a headline here. Not because it's exempt: `_renders_text`
-means it now correctly falls to the honest "ran; no summary reader yet"
-state instead of an empty checkmark, which is the safe default the gate
-exists to provide. Writing its sentence is separate, deliberately-scoped
-follow-up work, not silently dropped.
+   - `_db_privilege_audit_headline` — role count and superuser count, how
+     many tables PUBLIC has `SELECT` on, how many are PUBLIC-writable
+     (`INSERT`/`UPDATE`/`DELETE`). Added on review (design session,
+     2026-09-26): `privilege_audit` has the identical all-list shape as
+     `db_external_dependencies`, but it directly answers a
+     Security-perspective question ("who can read and write what") — a
+     known answer with no sentence is a visible gap a Security reviewer
+     will see first, not an acceptable floor the way it is for an analysis
+     nobody is specifically asking after yet.
 
 ## Explicitly NOT done here
 
-- **`privilege_audit`'s own headline** — see above; logged, not written.
 - **A shared Python/JS implementation of the scalar-fallback rule** —
   `_renders_text` and `scalarMeasures()` are two hand-written
   implementations of the same narrow rule, not one shared source. A
@@ -98,35 +98,39 @@ follow-up work, not silently dropped.
 
 ## Tests
 
-- `test_slice17c_renderable_answer_gate.py` (new, 26 tests): `_renders_text`
+- `test_slice17c_renderable_answer_gate.py` (34 tests): `_renders_text`
   unit coverage (headline/prose/scalar/all-nested-dict/all-list/empty/
   `verdict`-excluded/overlong-excluded/null-excluded cases, plus the real
   `db_activity_signals` shape rendering via its scalars); the generalized
   gate firing at `resource` level (including a missing-`levels`-key case);
   one renderable fact among several unrenderable ones being enough; the two
   checks composing correctly (renders-something does not by itself satisfy
-  a sub-resource question); the three real headline-map entries existing;
+  a sub-resource question); the four real headline-map entries existing;
   and reader-level tests confirming each new headline's actual sentence
-  content (not just non-emptiness).
+  content (not just non-emptiness) — including `privilege_audit`'s PUBLIC
+  `SELECT`/world-writable counts, and its no-PUBLIC-grants wording.
 - `test_slice17_question_level_gate.py` (18 existing, unchanged assertions):
   fixture helper `_measured_envelope` updated to default each fact's
   `value` to a non-empty scalar (`{"measured": True}`), since the
   generalized gate's new first check would otherwise fire on every bare
   fixture — this proxies what a real analysis with even one scalar field
   does, and every test's sub-resource-specific assertion is unaffected.
-- Full suite: 6400 passed, 103 skipped, 1 failed — the same pre-existing
-  `test_egeria_live_smoke.py` live-Egeria-environment failure noted on
-  slices 16, 17, and 17b.
+- Full suite: re-run after adding `privilege_audit`'s headline, still
+  passing at the same pre-existing-failure baseline noted on slices 16,
+  17, and 17b (`test_egeria_live_smoke.py`, needs a live Egeria
+  environment).
 
 ## Live signed-in gate
 
 **Not yet run.** Needs a real signed-in session against `coco_pharma` to
 confirm, on screen:
 
-- "Is this database a primary or a replica, and is it replicating to
-  anything?" now shows a real sentence (e.g. "Primary; no replicas; WAL
-  archiving off; no backup tool detected.") — not an empty ✓, and not the
-  no-summary-reader state (a headline now exists for it).
+- The resilience, activity-signals, external-dependencies, and
+  privilege-audit rows each show a real sentence (e.g. "Primary; no
+  replicas; WAL archiving off; no backup tool detected." /
+  "N role(s); M superuser(s); PUBLIC has SELECT on K table(s); J
+  table(s) world-writable.") — none an empty ✓, none the no-summary-reader
+  state.
 - No ✓ anywhere on the Questions tab has an empty answer line — the
   general claim the ruling asked this slice to close, not just the one
   row that was caught live.

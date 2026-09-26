@@ -1334,6 +1334,43 @@ def _db_external_dependencies_headline(registry, slug: str) -> dict | None:
     return {"label": label, "status": "info"}
 
 
+def _db_privilege_audit_headline(registry, slug: str) -> dict | None:
+    """`get_privilege_audit()`'s three fields (`roles`/`table_grants`/
+    `default_acl`) are all lists, the identical structural gap
+    `db_external_dependencies` has — but unlike that one, this is the direct
+    answer to a Security-perspective question ("who can read and write
+    what"), so leaving it at the honest-absence floor is a visible gap, not
+    just an incomplete nicety. "N roles; M superuser(s); PUBLIC has SELECT
+    on K table(s); J table(s) world-writable" is a one-line reduction over
+    data this reader already has, not a new fetch."""
+    value = _operations_section_reader("privilege_audit")(registry, slug)
+    if not value:
+        return None
+    roles = value.get("roles") or []
+    grants = value.get("table_grants") or []
+    if not roles and not grants:
+        return None
+
+    superusers = sum(1 for r in roles if r.get("rolsuper"))
+    public_grants = [g for g in grants if (g.get("grantee") or "") == "PUBLIC"]
+    public_select_tables = {
+        (g.get("table_schema"), g.get("table_name"))
+        for g in public_grants if g.get("privilege_type") == "SELECT"
+    }
+    world_writable_tables = {
+        (g.get("table_schema"), g.get("table_name"))
+        for g in public_grants if g.get("privilege_type") in ("INSERT", "UPDATE", "DELETE")
+    }
+
+    parts = [f"{len(roles)} role(s); {superusers} superuser(s)"]
+    parts.append(
+        f"PUBLIC has SELECT on {len(public_select_tables)} table(s)"
+        if public_select_tables else "no PUBLIC SELECT grants"
+    )
+    parts.append(f"{len(world_writable_tables)} table(s) world-writable")
+    return {"label": "; ".join(parts) + ".", "status": "info"}
+
+
 def _format_bytes(n: int) -> str:
     """Same thresholds as every other byte-formatting spot in this codebase
     (KB/MB/GB, 1024-based) — kept local rather than imported to avoid a new
@@ -1385,24 +1422,26 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: sentence here, the Questions row for "How big is this database" showed
 #: only `table_count`/`measured_count`, never an actual row count or size.
 #:
-#: Slice 17c (2026-09-26) added the other three `postgres_operations`
+#: Slice 17c (2026-09-26) added all four other `postgres_operations`
 #: sections for the same reason, `db_resilience` most acutely: every one of
 #: its top-level fields is a nested dict, so unlike row_count_snapshot (or
 #: db_activity_signals, which does have two scalar fields) it had NO
 #: fallback at all — a ✓ with a genuinely empty answer line, the exact
 #: defect facts.py's `_renders_text` gate now catches for any future
 #: all-nested-dict analysis that shows up without a headline_reader of its
-#: own. `privilege_audit` (also `_operations_section_reader`-backed, also
-#: all-list fields) is left without one here — not because it is exempt,
-#: but because nobody has written its sentence yet; `_renders_text` means
-#: it falls to the honest "ran; no summary reader yet" state instead of an
-#: empty checkmark in the meantime, which is the safe default this gate
-#: exists to provide.
+#: own. `privilege_audit` (also all-list fields, same structural gap as
+#: `db_external_dependencies`) was initially left without one on the
+#: reasoning that `_renders_text` gives it a safe floor either way — the
+#: design session's review corrected that: a Security-perspective question
+#: ("who can read and write what") with a known answer and no sentence is a
+#: visible gap, not an acceptable one, so it gets a headline in the same
+#: pass as the other three rather than deferred.
 DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "row_count_snapshot": _row_count_snapshot_headline,
     "db_resilience": _db_resilience_headline,
     "db_activity_signals": _db_activity_signals_headline,
     "db_external_dependencies": _db_external_dependencies_headline,
+    "privilege_audit": _db_privilege_audit_headline,
 }
 
 #: RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0 declared `analysis_results_map`

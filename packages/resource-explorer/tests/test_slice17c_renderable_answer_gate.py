@@ -232,6 +232,15 @@ class TestRealCatalogHeadlinesNowExistForTheThreeOperationsAnalyses:
         )
         assert "db_external_dependencies" in DATABASE_ANALYSIS_HEADLINE_MAP
 
+    def test_privilege_audit_now_has_a_headline_reader(self):
+        """Added on review: a Security-perspective question with a known
+        answer and no sentence is a visible gap, not an acceptable floor --
+        given a headline in the same pass as the other three, not deferred."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        assert "privilege_audit" in DATABASE_ANALYSIS_HEADLINE_MAP
+
 
 class TestHeadlineFunctionsProduceRealSentences:
     """Reader-level tests (fake registry, real functions) confirming the
@@ -321,3 +330,66 @@ class TestHeadlineFunctionsProduceRealSentences:
         label = result["label"]
         assert "12 write" in label
         assert "105 read" in label
+
+    def test_privilege_audit_headline_names_roles_and_public_grants(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [
+                {"rolname": "postgres", "rolsuper": True},
+                {"rolname": "egeria_user", "rolsuper": False},
+                {"rolname": "app_user", "rolsuper": False},
+            ],
+            "table_grants": [
+                {"table_schema": "public", "table_name": "orders",
+                 "grantee": "PUBLIC", "privilege_type": "SELECT"},
+                {"table_schema": "public", "table_name": "customers",
+                 "grantee": "PUBLIC", "privilege_type": "SELECT"},
+                {"table_schema": "public", "table_name": "orders",
+                 "grantee": "app_user", "privilege_type": "INSERT"},
+            ],
+            "default_acl": [],
+        }}})
+        result = _db_privilege_audit_headline(registry, "coco_ods")
+        label = result["label"]
+        assert "3 role(s); 1 superuser(s)" in label
+        assert "PUBLIC has SELECT on 2 table(s)" in label
+        assert "0 table(s) world-writable" in label
+
+    def test_privilege_audit_headline_names_world_writable_public_grants(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [{"rolname": "postgres", "rolsuper": True}],
+            "table_grants": [
+                {"table_schema": "public", "table_name": "logs",
+                 "grantee": "PUBLIC", "privilege_type": "INSERT"},
+            ],
+            "default_acl": [],
+        }}})
+        result = _db_privilege_audit_headline(registry, "coco_ods")
+        assert "1 table(s) world-writable" in result["label"]
+
+    def test_privilege_audit_headline_says_so_with_no_public_grants(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [{"rolname": "postgres", "rolsuper": True}],
+            "table_grants": [
+                {"table_schema": "public", "table_name": "orders",
+                 "grantee": "app_user", "privilege_type": "SELECT"},
+            ],
+            "default_acl": [],
+        }}})
+        result = _db_privilege_audit_headline(registry, "coco_ods")
+        assert "no PUBLIC SELECT grants" in result["label"]
+
+    def test_privilege_audit_headline_is_none_when_nothing_measured(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({})
+        assert _db_privilege_audit_headline(registry, "coco_ods") is None
