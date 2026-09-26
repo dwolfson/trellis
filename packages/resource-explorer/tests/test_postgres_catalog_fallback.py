@@ -366,6 +366,46 @@ class TestSchemaInventoryResultsSurfaceTheEstimate:
         assert value["tables"][0]["row_count_is_estimate"] is False
 
 
+class TestSchemaInventoryResultsNameRelationKindsSeparately:
+    """Design ruling (security-model.md §2.1/§3.4, 2026-09-26): relation
+    kinds are reported separately and named, never blended into one "table
+    count" -- base_table_count stays the stable field the comparators
+    already diff `table_count` as if it meant."""
+
+    def test_mixed_relation_kinds_are_each_counted(self, registry, db_entity):
+        slug = db_entity.slug
+        _write_tables(registry, slug, [
+            {"schema_name": "public", "table_name": "customers",
+             "table_type": "BASE TABLE", "row_count": 5, "state": STATE_MEASURED},
+            {"schema_name": "public", "table_name": "recent_orders",
+             "table_type": "VIEW", "state": STATE_MEASURED},
+            {"schema_name": "public", "table_name": "monthly_totals",
+             "table_type": "MATERIALIZED VIEW", "state": STATE_MEASURED},
+            {"schema_name": "public", "table_name": "remote_customers",
+             "table_type": "FOREIGN", "state": STATE_MEASURED},
+        ])
+        value = _schema_inventory_results(registry, slug)
+        assert value["table_count"] == 4
+        assert value["base_table_count"] == 1
+        assert value["view_count"] == 1
+        assert value["materialized_view_count"] == 1
+        assert value["foreign_table_count"] == 1
+
+    def test_all_base_tables_reports_zero_for_the_others(self, registry, db_entity):
+        slug = db_entity.slug
+        _write_tables(registry, slug, [
+            {"schema_name": "public", "table_name": "a",
+             "table_type": "BASE TABLE", "state": STATE_MEASURED},
+            {"schema_name": "public", "table_name": "b",
+             "table_type": "BASE TABLE", "state": STATE_MEASURED},
+        ])
+        value = _schema_inventory_results(registry, slug)
+        assert value["table_count"] == value["base_table_count"] == 2
+        assert value["view_count"] == 0
+        assert value["materialized_view_count"] == 0
+        assert value["foreign_table_count"] == 0
+
+
 class TestRowCountSnapshotResultsLabelEstimates:
     def test_estimated_count_reported_alongside_measured_count(self, registry, db_entity):
         slug = db_entity.slug

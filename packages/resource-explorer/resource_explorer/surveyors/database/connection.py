@@ -440,20 +440,59 @@ class PostgreSQLConnection(DatabaseConnection):
             return []
 
     def get_schema_info(self) -> dict:
-        """Get PostgreSQL schema information."""
-        # Query information_schema for schemas (excluding system schemas)
+        """Get PostgreSQL schema information.
+
+        `information_schema.schemata` is privilege-filtered by Postgres
+        itself, to schemas the connected role owns or holds ANY grant on —
+        a schema with zero privilege (not even `USAGE`) never appears here
+        at all, and everything below is keyed off this list, so that
+        schema's tables were never even attempted. This is the identical
+        gap `get_credential_capability()`'s own docstring documents having
+        hit and fixed for the credential-visibility PROBE (an 8-vs-6
+        schema undercount, `coco_pharma`) by reading `pg_namespace`
+        directly instead — a fix that was never carried back to this
+        enumeration, so the probe and this inventory could (and did,
+        `coco_pharma` 2026-09-26: 61 vs. 56 tables) disagree on the
+        database's own totals. Design ruling (security-model.md
+        §2.1/§3.4): on an engine whose structural floor is unprivileged
+        (Postgres), every enumeration reads that floor, never a
+        privilege-filtered view, so there is exactly one denominator.
+
+        Fixed by adding a second pass below: any schema `_enumerate_relations`
+        (the same unprivileged `pg_namespace`/`pg_class` floor
+        `get_credential_capability` uses) sees that the privileged loop
+        above missed is read the same way `_catalog_only_fallback` already
+        reads a table `information_schema` couldn't see WITHIN an
+        already-known schema — `pg_class`/`pg_attribute` are catalog
+        metadata, not privilege-filtered, so table names, relation kinds,
+        and column names/types ARE visible with zero grants; only row data
+        and comments are not. Each such table is tagged `source:
+        "catalog_fallback"`, the same marker `database_rows_from_survey_data`
+        (`result_materializer.py`) already recognizes and stores as
+        `STATE_CATALOG_ESTIMATE` — no downstream change needed for the
+        table-level honesty; a zero-privilege schema now appears with real,
+        named tables in "structure only" state rather than not appearing at
+        all.
+        """
+        errors: dict[str, str] = {}
         schemas_query = """
             SELECT schema_name
             FROM information_schema.schemata
             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
             ORDER BY schema_name
         """
-        schemas = self.execute_query(schemas_query)
+        try:
+            schemas = self.execute_query(schemas_query)
+        except Exception as exc:
+            errors["schemas"] = str(exc)
+            schemas = []
         schema_descriptions = self._get_schema_descriptions()
 
         result = {"schemas": [], "total_tables": 0, "total_columns": 0}
+        seen_schema_names: set[str] = set()
         for schema in schemas:
             schema_name = schema["schema_name"]
+            seen_schema_names.add(schema_name)
             tables = self._get_tables_for_schema(schema_name)
             result["schemas"].append({
                 "name": schema_name,
@@ -463,7 +502,81 @@ class PostgreSQLConnection(DatabaseConnection):
             result["total_tables"] += len(tables)
             result["total_columns"] += sum(len(t["columns"]) for t in tables)
 
+        try:
+            floor_schemas, _floor_tables = self._enumerate_relations()
+        except Exception as exc:
+            errors["enumeration_floor"] = str(exc)
+            floor_schemas = []
+        for s in floor_schemas:
+            schema_name = s.get("schema_name")
+            if not schema_name or schema_name in seen_schema_names:
+                continue
+            seen_schema_names.add(schema_name)
+            try:
+                catalog_tables = self._catalog_table_summary(schema_name)
+            except Exception as exc:
+                errors[f"schema:{schema_name}"] = str(exc)
+                catalog_tables = {}
+            tables = []
+            for table_name, info in catalog_tables.items():
+                tables.append({
+                    "name": table_name,
+                    "type": info.get("table_type") or "",
+                    "description": "",
+                    "columns": self._catalog_columns_for_table(schema_name, table_name),
+                    "source": "catalog_fallback",
+                    "row_count_estimate": info.get("reltuples"),
+                    "row_count_basis": "estimated",
+                })
+            result["schemas"].append({
+                "name": schema_name,
+                "description": schema_descriptions.get(schema_name, ""),
+                "tables": tables,
+                # Distinguishes "found via the floor, zero USAGE grant" from
+                # an ordinary schema above -- not yet rendered anywhere (no
+                # per-schema view exists until slice 22), but present so
+                # that view can tell the two apart without re-deriving it.
+                "access": "no_usage",
+            })
+            result["total_tables"] += len(tables)
+            result["total_columns"] += sum(len(t["columns"]) for t in tables)
+
+        if errors:
+            result["_errors"] = errors
         return result
+
+    def _enumerate_relations(self) -> tuple[list[dict], list[dict]]:
+        """The unprivileged floor: every non-system schema and relation in
+        this database, read straight from `pg_namespace`/`pg_class` —
+        readable by any connected role regardless of `USAGE`/`SELECT`
+        grants (`get_credential_capability()`'s own docstring establishes
+        this). The single enumeration both the credential-capability probe
+        and `get_schema_info()`'s inventory read from, so the two can no
+        longer independently drift on how many schemas or tables this
+        database has (design ruling, security-model.md §2.1/§3.4,
+        2026-09-26 — see `get_schema_info()`'s docstring for the incident
+        that prompted it). Raises on failure; callers record the error on
+        their own section rather than this shared helper silently
+        defaulting, since what "no rows" should mean differs per caller.
+        """
+        schemas = self.execute_query("""
+            SELECT n.nspname AS schema_name,
+                   has_schema_privilege(current_user, n.nspname, 'USAGE') AS usage_granted
+            FROM pg_namespace n
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY n.nspname
+        """)
+        tables = self.execute_query("""
+            SELECT n.nspname AS schema_name, c.relname AS table_name, c.relkind,
+                   has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
+                   has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY n.nspname, c.relname
+        """)
+        return schemas, tables
 
     def _get_schema_descriptions(self) -> dict[str, str]:
         """Return {schema_name: description} from pg_namespace."""
@@ -955,6 +1068,7 @@ class PostgreSQLConnection(DatabaseConnection):
         # that fallback keeps the failure's default visible in the code, in
         # the shape `tests/test_no_silent_success.py`'s ratchet expects of a
         # handler in a value-returning function.
+        errors: dict[str, str] = {}
         roles: list[dict] = []
         try:
             # `execute_query` always calls `cursor.execute(query, params)`
@@ -969,7 +1083,10 @@ class PostgreSQLConnection(DatabaseConnection):
             # empty, though `pg_roles` genuinely has 13 real rows there.
             # `%%` is the literal-percent escape psycopg2's substitution
             # expects; `pg\_%` (one escaped underscore, one literal
-            # trailing wildcard) becomes `pg\_%%`.
+            # trailing wildcard) becomes `pg\_%%`. Recorded on `_errors`
+            # (collector-honesty rule, design ruling 2026-09-26) now too,
+            # so a future regression of this exact class is caught by the
+            # headline reader rather than only by luck or a live incident.
             roles = self.execute_query("""
                 SELECT rolname, rolsuper, rolcreaterole, rolcreatedb,
                        rolcanlogin, rolreplication, rolbypassrls
@@ -977,8 +1094,9 @@ class PostgreSQLConnection(DatabaseConnection):
                 WHERE rolname NOT LIKE 'pg\\_%%'
                 ORDER BY rolname
             """)
-        except Exception:
+        except Exception as exc:
             roles = []
+            errors["roles"] = str(exc)
 
         table_grants: list[dict] = []
         try:
@@ -1013,8 +1131,9 @@ class PostgreSQLConnection(DatabaseConnection):
                   AND c.relacl IS NOT NULL
                 ORDER BY table_schema, table_name, grantee, privilege_type
             """)
-        except Exception:
+        except Exception as exc:
             table_grants = []
+            errors["table_grants"] = str(exc)
 
         default_acl: list[dict] = []
         try:
@@ -1028,10 +1147,14 @@ class PostgreSQLConnection(DatabaseConnection):
                 LEFT JOIN pg_namespace n ON n.oid = a.defaclnamespace
                 ORDER BY schema_name NULLS FIRST, role_name
             """)
-        except Exception:
+        except Exception as exc:
             default_acl = []
+            errors["default_acl"] = str(exc)
 
-        return {"roles": roles, "table_grants": table_grants, "default_acl": default_acl}
+        result = {"roles": roles, "table_grants": table_grants, "default_acl": default_acl}
+        if errors:
+            result["_errors"] = errors
+        return result
 
     def get_credential_capability(self) -> dict:
         """What THIS credential can see and do, as distinct from what the
@@ -1053,40 +1176,30 @@ class PostgreSQLConnection(DatabaseConnection):
         table to answer "could this credential write", but no write is ever
         attempted — `write_capable` is a probe result, reported honestly as
         such, never an exercised capability.
+
+        The schema/table enumeration itself now goes through
+        `_enumerate_relations()`, shared with `get_schema_info()`'s own
+        floor pass, rather than duplicating the same two queries — see that
+        method's docstring for why the two needing to agree is the point.
+        A caught exception here is recorded on `_errors` (collector-honesty
+        rule, design ruling 2026-09-26) rather than only silently degrading
+        to empty defaults, so a reader can tell "measured, and it's zero"
+        from "the read itself failed."
         """
+        errors: dict[str, str] = {}
         connected_as = ""
         try:
             rows = self.execute_query("SELECT current_user AS connected_as")
             connected_as = rows[0].get("connected_as") or "" if rows else ""
-        except Exception:
+        except Exception as exc:
             connected_as = ""
+            errors["connected_as"] = str(exc)
 
-        schemas: list[dict] = []
         try:
-            schemas = self.execute_query("""
-                SELECT n.nspname AS schema_name,
-                       has_schema_privilege(current_user, n.nspname, 'USAGE') AS usage_granted
-                FROM pg_namespace n
-                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                ORDER BY n.nspname
-            """)
-        except Exception:
-            schemas = []
-
-        tables: list[dict] = []
-        try:
-            tables = self.execute_query("""
-                SELECT n.nspname AS schema_name, c.relname AS table_name,
-                       has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
-                       has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
-                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                ORDER BY n.nspname, c.relname
-            """)
-        except Exception:
-            tables = []
+            schemas, tables = self._enumerate_relations()
+        except Exception as exc:
+            schemas, tables = [], []
+            errors["enumeration"] = str(exc)
 
         stats_role = False
         try:
@@ -1098,8 +1211,9 @@ class PostgreSQLConnection(DatabaseConnection):
                 "SELECT pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_role"
             )
             stats_role = bool(rows[0].get("has_role")) if rows else False
-        except Exception:
+        except Exception as exc:
             stats_role = False
+            errors["stats_role"] = str(exc)
 
         by_schema: dict[str, dict] = {}
         for s in schemas:
@@ -1117,7 +1231,7 @@ class PostgreSQLConnection(DatabaseConnection):
             if t.get("can_select"):
                 sc["table_select"] += 1
 
-        return {
+        result = {
             "connected_as": connected_as,
             "schema_total": len(schemas),
             "schema_visible": sum(1 for s in schemas if s.get("usage_granted")),
@@ -1130,6 +1244,9 @@ class PostgreSQLConnection(DatabaseConnection):
             "write_probed": True,
             "write_capable": any(t.get("can_insert") for t in tables),
         }
+        if errors:
+            result["_errors"] = errors
+        return result
 
     def get_replication_status(self) -> dict:
         """Whether this connection is a standby, and — if it is a primary —
@@ -1139,14 +1256,19 @@ class PostgreSQLConnection(DatabaseConnection):
         not be queried (should not happen on a reachable Postgres server);
         that is a genuinely different, worse case than "queried and it said
         false", so the two are kept distinguishable rather than both
-        defaulting to `False`.
+        defaulting to `False`. `replicas` gets the same collector-honesty
+        floor (`_errors`, design ruling 2026-09-26) a bare `[]` cannot carry
+        on its own -- a query failure and "genuinely no replicas attached"
+        must not read identically to a reader.
         """
+        errors: dict[str, str] = {}
         is_in_recovery: bool | None = None
         try:
             rows = self.execute_query("SELECT pg_is_in_recovery() AS in_recovery")
             is_in_recovery = bool(rows[0]["in_recovery"]) if rows else None
-        except Exception:
+        except Exception as exc:
             is_in_recovery = None
+            errors["is_in_recovery"] = str(exc)
 
         replicas: list[dict] = []
         try:
@@ -1171,19 +1293,28 @@ class PostgreSQLConnection(DatabaseConnection):
                         if r.get("replay_lag_seconds") is not None else None
                     ),
                 })
-        except Exception:
+        except Exception as exc:
             replicas = []
+            errors["replicas"] = str(exc)
 
-        return {"is_in_recovery": is_in_recovery, "replicas": replicas}
+        result = {"is_in_recovery": is_in_recovery, "replicas": replicas}
+        if errors:
+            result["_errors"] = errors
+        return result
 
     def get_wal_archiving_status(self) -> dict:
-        """Is WAL archiving on, and is it succeeding (design §5.5)."""
+        """Is WAL archiving on, and is it succeeding (design §5.5). A caught
+        exception is recorded on `_errors` (collector-honesty rule, design
+        ruling 2026-09-26) rather than only degrading to the empty
+        defaults, which otherwise read identically to "archiving is off"."""
+        errors: dict[str, str] = {}
         archive_mode = ""
         try:
             rows = self.execute_query("SHOW archive_mode")
             archive_mode = str(rows[0].get("archive_mode", "")) if rows else ""
-        except Exception:
+        except Exception as exc:
             archive_mode = ""
+            errors["archive_mode"] = str(exc)
 
         archived_count = None
         failed_count = None
@@ -1202,17 +1333,21 @@ class PostgreSQLConnection(DatabaseConnection):
                 failed_count = r.get("failed_count")
                 last_archived_time = r.get("last_archived_time") or ""
                 last_failed_time = r.get("last_failed_time") or ""
-        except Exception:
+        except Exception as exc:
             archived_count, failed_count = None, None
             last_archived_time, last_failed_time = "", ""
+            errors["archiver_stats"] = str(exc)
 
-        return {
+        result = {
             "archive_mode": archive_mode,
             "archived_count": archived_count,
             "failed_count": failed_count,
             "last_archived_time": last_archived_time,
             "last_failed_time": last_failed_time,
         }
+        if errors:
+            result["_errors"] = errors
+        return result
 
     def get_backup_tool_signals(self) -> dict:
         """Presence of a known backup-tool extension (design §5.5: "partly"
@@ -1224,15 +1359,18 @@ class PostgreSQLConnection(DatabaseConnection):
         """
         known_tool_markers = ("pgbackrest", "pg_backrest", "wal-g", "wal_g", "barman")
         detected: list[str] = []
+        result: dict = {}
         try:
             rows = self.execute_query("SELECT extname FROM pg_extension ORDER BY extname")
             for r in rows:
                 name = (r.get("extname") or "")
                 if any(marker in name.lower() for marker in known_tool_markers):
                     detected.append(name)
-        except Exception:
+        except Exception as exc:
             detected = []
-        return {"detected_extensions": detected}
+            result["_errors"] = {"detected_extensions": str(exc)}
+        result["detected_extensions"] = detected
+        return result
 
     def get_clustering_info(self) -> dict:
         """Citus clustering catalogs, when the extension is present (design
@@ -1242,6 +1380,7 @@ class PostgreSQLConnection(DatabaseConnection):
         """
         citus_detected = False
         citus_version = None
+        result: dict = {}
         try:
             rows = self.execute_query(
                 "SELECT extversion FROM pg_extension WHERE extname = 'citus'"
@@ -1249,15 +1388,22 @@ class PostgreSQLConnection(DatabaseConnection):
             if rows:
                 citus_detected = True
                 citus_version = rows[0].get("extversion")
-        except Exception:
+        except Exception as exc:
             citus_detected, citus_version = False, None
-        return {"citus_detected": citus_detected, "citus_version": citus_version}
+            result["_errors"] = {"citus_detected": str(exc)}
+        result["citus_detected"] = citus_detected
+        result["citus_version"] = citus_version
+        return result
 
     def get_external_dependencies(self) -> dict:
         """What this database depends on outside itself (design §5.4):
         extensions, foreign data wrappers/servers/tables, and logical
-        replication publications/subscriptions.
+        replication publications/subscriptions. Each caught exception is
+        recorded on `_errors` (collector-honesty rule, design ruling
+        2026-09-26) so a real query failure never reads identically to
+        "this database genuinely depends on nothing".
         """
+        errors: dict[str, str] = {}
         extensions: list[dict] = []
         foreign_servers: list[dict] = []
         foreign_tables: list[dict] = []
@@ -1267,8 +1413,9 @@ class PostgreSQLConnection(DatabaseConnection):
             extensions = self.execute_query(
                 "SELECT extname, extversion FROM pg_extension ORDER BY extname"
             )
-        except Exception:
+        except Exception as exc:
             extensions = []
+            errors["extensions"] = str(exc)
         try:
             foreign_servers = self.execute_query("""
                 SELECT fs.srvname, fdw.fdwname
@@ -1276,8 +1423,9 @@ class PostgreSQLConnection(DatabaseConnection):
                 JOIN pg_foreign_data_wrapper fdw ON fdw.oid = fs.srvfdw
                 ORDER BY fs.srvname
             """)
-        except Exception:
+        except Exception as exc:
             foreign_servers = []
+            errors["foreign_servers"] = str(exc)
         try:
             foreign_tables = self.execute_query("""
                 SELECT n.nspname AS schema_name, c.relname AS table_name, fs.srvname
@@ -1287,14 +1435,16 @@ class PostgreSQLConnection(DatabaseConnection):
                 JOIN pg_foreign_server fs ON fs.oid = ft.ftserver
                 ORDER BY schema_name, table_name
             """)
-        except Exception:
+        except Exception as exc:
             foreign_tables = []
+            errors["foreign_tables"] = str(exc)
         try:
             publications = self.execute_query(
                 "SELECT pubname FROM pg_publication ORDER BY pubname"
             )
-        except Exception:
+        except Exception as exc:
             publications = []
+            errors["publications"] = str(exc)
         try:
             # Only visible to a superuser/subscription-owning role on the
             # subscriber database — a permission error here is swallowed to
@@ -1303,19 +1453,26 @@ class PostgreSQLConnection(DatabaseConnection):
             # see pg_subscription" are not distinguished per-item. That is a
             # known simplification (see DB-OPERATIONS-STEP-IMPLEMENTED.md);
             # the whole-method `external_dependencies` capability gate is
-            # what distinguishes "this engine can't do this at all".
+            # what distinguishes "this engine can't do this at all". The
+            # `_errors` entry at least says a permission error happened,
+            # even if it can't say for which reason relative to the other
+            # two.
             subscriptions = self.execute_query(
                 "SELECT subname FROM pg_subscription ORDER BY subname"
             )
-        except Exception:
+        except Exception as exc:
             subscriptions = []
-        return {
+            errors["subscriptions"] = str(exc)
+        result = {
             "extensions": extensions,
             "foreign_servers": foreign_servers,
             "foreign_tables": foreign_tables,
             "publications": publications,
             "subscriptions": subscriptions,
         }
+        if errors:
+            result["_errors"] = errors
+        return result
 
     def get_statistics(self) -> dict:
         """Get database statistics."""
