@@ -146,6 +146,74 @@ follow-up commits on this branch:
    genuinely empty `table_grants` (the query's own `c.relacl IS NOT NULL`
    filter), which is a real zero worth stating, not a failure to mask.
 
+### Why this bug was invisible for weeks, and where else it can hide
+
+The design session's own framing, worth stating explicitly: the bug wasn't
+a rare edge case, it was invisible *by construction*. `get_privilege_audit`'s
+own `try/except Exception: roles = []` turned "the query is broken" into
+"there are no roles" at the collection layer itself — a genuine exception,
+not a real empty result, silently became indistinguishable from one. The
+headline-level floor added above catches this ONE field (`roles`) because
+someone could reason "this can never legitimately be zero." It does not
+catch the next collector that swallows an exception into an empty list for
+a field where zero *can* be legitimate — there the floor has nothing to
+grab onto, and the same failure mode reproduces invisibly again.
+
+**Ruling (design session, 2026-09-26):** a collector that catches an
+exception should record it on its section (an `error`/`failed_at` field),
+not just return the empty default; a reader should render a recorded error
+as "collection failed: `<reason>` — re-run", never silently as an empty
+list or a zero. This is a real fix to `connection.py`'s collector
+methods themselves, not another reader-side patch — the reader can only
+ever be as honest as what the collector handed it.
+
+**Scope, not yet converted here** (this is `connection.py`'s own
+`try/except Exception: <field> = <empty>` pattern, grepped exhaustively —
+26 occurrences, one per guarded read):
+
+| Method | Falls back to |
+|---|---|
+| `_get_schema_descriptions` | `{}` |
+| `_catalog_only_fallback` | (silently returns, populates nothing) |
+| `_catalog_columns_for_table` | `[]` |
+| `get_column_stats` | `[]` |
+| `get_table_activity` | `[]` |
+| `get_stats_reset` | `""` |
+| `get_index_stats` | `[]` |
+| `get_privilege_audit` (×3: roles, table_grants, default_acl) | `[]` each |
+| `get_credential_capability` (×4: connected_as, schemas, tables, stats_role) | `""`/`[]`/`[]`/`False` |
+| `get_replication_status` (×2: is_in_recovery, replicas) | `None`/`[]` |
+| `get_wal_archiving_status` (×2) | `""`/`(None, None)` |
+| `get_backup_tool_signals` | `[]` |
+| `get_clustering_info` | `(False, None)` |
+| `get_external_dependencies` (×5: extensions, foreign_servers, foreign_tables, publications, subscriptions) | `[]` each |
+| `_get_table_row_stats` | `[]` |
+
+Not every one of these is equally dangerous — `get_credential_capability`'s
+own fields are largely upstream inputs to *other* honesty checks
+(`_credential_scope_status`) that already treat a zero specially, and
+several (`_catalog_only_fallback`, `_get_schema_descriptions`) are
+best-effort enrichments where an empty result was always a legitimate
+degrade path. `privilege_audit`'s `roles` was the one proven live to be
+wrong. The other 25 were not individually re-verified against a real
+database here — this table is the starting inventory for the follow-up,
+not a claim that all 25 are also live bugs. `database_surveyor.py` was
+also checked: only 2 bare `except Exception: pass` blocks exist there
+(egeria-keyword extraction for PII detection), a different shape (no
+collector field falls back to empty because of them) and not part of this
+inventory.
+
+**Follow-up (separate PR, after the enumeration-floor PR since it touches
+the same file):** convert each of the 26 sites above to record
+`{"error": str(exc), "failed_at": <analysis_id or field name>}` on its
+section rather than silently defaulting, and update the corresponding
+readers (`_schema_inventory_results`, `_row_count_snapshot_results`,
+the four `DATABASE_ANALYSIS_HEADLINE_MAP` readers this slice added, and
+any classic-UI reader touching the same fields) to render a recorded error
+as "collection failed: `<reason>` — re-run" rather than falling through to
+a zero-sentence or an honest-absence state that reads as "nothing to
+report" rather than "something went wrong."
+
 ## Explicitly NOT done here
 
 - **A shared Python/JS implementation of the scalar-fallback rule** —
