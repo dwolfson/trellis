@@ -414,3 +414,101 @@ class TestHeadlineFunctionsProduceRealSentences:
         )
         registry = self._registry_with_survey({})
         assert _db_privilege_audit_headline(registry, "coco_ods") is None
+
+    def test_privilege_audit_headline_is_none_when_roles_is_empty_even_with_grants(self):
+        """The exact coco_pharma collection failure (2026-09-26): roles=[]
+        with real table_grants present is a broken read (an unescaped % in
+        the roles query, since fixed in connection.py), not a database with
+        zero roles -- every live Postgres has at least the connecting role,
+        and pg_roles is universally readable. Must fall to the honest
+        no-summary-reader state rather than render "0 role(s); 0
+        superuser(s)"."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [],
+            "table_grants": [
+                {"table_schema": "public", "table_name": "orders",
+                 "grantee": "PUBLIC", "privilege_type": "SELECT"},
+            ],
+            "default_acl": [],
+        }}})
+        assert _db_privilege_audit_headline(registry, "coco_ods") is None
+
+    def test_privilege_audit_headline_is_none_when_everything_is_empty(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [], "table_grants": [], "default_acl": [],
+        }}})
+        assert _db_privilege_audit_headline(registry, "coco_ods") is None
+
+    def test_privilege_audit_headline_allows_a_real_zero_grants_count(self):
+        """Unlike roles, table_grants CAN legitimately be empty -- a
+        database where every table carries only its owner's default
+        privileges, with no explicit GRANT rows at all, is a real state
+        (`get_privilege_audit()`'s own query filters `c.relacl IS NOT
+        NULL`), not a collection failure."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_privilege_audit_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"privilege_audit": {
+            "roles": [{"rolname": "postgres", "rolsuper": True}],
+            "table_grants": [],
+            "default_acl": [],
+        }}})
+        result = _db_privilege_audit_headline(registry, "coco_ods")
+        assert result is not None
+        assert "1 role(s); 1 superuser(s)" in result["label"]
+
+
+class TestPrivilegeAuditRolesQueryDoesNotChokeOnItsOwnLikePattern:
+    """Regression test for the root cause behind the collection failure
+    above: `get_privilege_audit()`'s roles query had a literal `%` in a
+    LIKE pattern, but `execute_query` always passes a params tuple (even
+    the default empty `()`) to psycopg2, which switches on printf-style
+    query substitution and chokes on any `%` that isn't part of a valid
+    placeholder -- silently caught by the query's own try/except and
+    turned into an empty roles list, indistinguishable from "no roles"."""
+
+    def test_the_roles_query_runs_without_raising_against_a_real_connection_shape(self):
+        """Exercises the exact query string `get_privilege_audit` sends,
+        against a stub cursor that mimics psycopg2's real percent-sign
+        substitution behavior (raises on an unescaped literal `%`), the
+        cheapest way to pin this without a real Postgres connection."""
+        import re
+
+        from resource_explorer.surveyors.database.connection import PostgreSQLConnection
+
+        class _StubCursor:
+            def __init__(self):
+                self.description = [("rolname",)]
+
+            def execute(self, query, params=()):
+                # Mirrors psycopg2: with a params tuple (even empty), `%%`
+                # is the literal-percent escape and `%s`/`%(name)s` are
+                # placeholders; any OTHER `%` is invalid.
+                stripped = query.replace("%%", "")
+                stripped = re.sub(r"%s|%\([a-zA-Z_]+\)s", "", stripped)
+                if "%" in stripped:
+                    raise IndexError("tuple index out of range")
+
+            def fetchall(self):
+                return [("egeria_user",)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _StubConn:
+            def cursor(self):
+                return _StubCursor()
+
+        conn = PostgreSQLConnection.__new__(PostgreSQLConnection)
+        conn._conn = _StubConn()
+        result = conn.get_privilege_audit()
+        assert result["roles"] == [{"rolname": "egeria_user"}]
