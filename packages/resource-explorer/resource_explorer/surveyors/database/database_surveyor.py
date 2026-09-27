@@ -1676,6 +1676,40 @@ class DatabaseSurveyor:
                     table["size_bytes"] = prior.get("size_bytes") if prior else None
                 table["size_pretty"] = ts.get("total_size", "")
 
+        # `operations`/`credential_capability` preserve-prior, same stopgap
+        # as row_count/size_bytes above — found live 2026-09-26 running a
+        # database Survey Definition: SurveyDefinitionExecutor dispatches
+        # each step as its OWN separate DatabaseSurveyor.survey() call, so
+        # a 3-step Scouting definition writes THREE survey rows a couple of
+        # seconds apart. The last step, credential_capability, collects no
+        # "operations" at all — its own `results.get("operations", {})` is
+        # correctly `{}` for ITS run — but writing that `{}` unconditionally
+        # made it the newest row's value, silently shadowing the real
+        # operations data postgres_operations had written two rows earlier.
+        # db_activity_signals/db_resilience (which read the operations
+        # section off the single latest row) then read nothing and
+        # degraded from "0 writes and 6 reads" to "ran and found nothing" —
+        # a per-analysis-path answer clobbered by an unrelated step in the
+        # same Survey Definition run, not a real measurement. Same fix as
+        # row_count/size_bytes: this run's own emptiness is only trusted
+        # when this run's OWN requested steps included that section; when
+        # they were run but the fields at hand happens to be empty by
+        # design (a genuinely stale-only db) it stays empty. This is only a
+        # difference at the boundary — for statistics we lacked a
+        # "did this run cover it" flag, so we fall back to a permissive
+        # "keep the value if THIS run's own value is empty" rule.
+        import json
+        prior_operations: dict = {}
+        prior_credential_capability: dict = {}
+        try:
+            prior_survey = self.registry.get_latest_database_survey(self.db_entity.slug)
+            if prior_survey:
+                prior_data = json.loads(prior_survey.get("survey_data") or "{}")
+                prior_operations = prior_data.get("operations") or {}
+                prior_credential_capability = prior_data.get("credential_capability") or {}
+        except Exception:
+            pass
+
         # `surveyed_at` is passed explicitly (rather than left to default)
         # so this call's own backfill_database_survey() write and the
         # extension's write just below land under the SAME
@@ -1691,15 +1725,17 @@ class DatabaseSurveyor:
                 "statistics": statistics,
                 "annotation_count": len(results["annotations"]),
                 "views": results.get("views", []),
-                #: postgres_operations (Phase 1 slice 8) — empty dict when
-                #: the "operations" step was not requested, same "step
-                #: didn't run" convention as `views` above; not a new
-                #: structured table, folded into this existing blob.
-                "operations": results.get("operations", {}),
-                #: credential_capability (design §3/§4) — empty dict when the
-                #: step was not requested, same "step didn't run" convention
-                #: as "operations"/"views" above.
-                "credential_capability": results.get("credential_capability", {}),
+                #: postgres_operations (Phase 1 slice 8) — falls back to the
+                #: prior stored value when THIS run's own results have none,
+                #: same "don't manufacture an empty answer" rule row_count/
+                #: size_bytes above use; empty dict only when neither this
+                #: run nor any prior one ever collected it.
+                "operations": results.get("operations") or prior_operations,
+                #: credential_capability (design §3/§4) — same preserve-prior
+                #: rule as "operations" above.
+                "credential_capability": (
+                    results.get("credential_capability") or prior_credential_capability
+                ),
             },
             surveyed_at=results["surveyed_at"],
             # `surveyed_as`: the credential identity this run connected as

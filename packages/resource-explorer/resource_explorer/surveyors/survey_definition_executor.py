@@ -242,6 +242,22 @@ class SurveyDefinitionExecutor:
                 f"{entity_type} '{slug}' not found in registry"
             )
 
+        # Fall back to the entity's own stored credentials when the caller
+        # supplied neither — the same fallback databases.py's plain (non-Survey-
+        # Definition) survey route already applies (`req.db_user or database.
+        # db_user`). Without this, every database Survey Definition run through
+        # this path fails on its first step ("Database credentials are
+        # required to connect") even though the database has stored
+        # credentials and its ordinary survey button works fine — found live
+        # 2026-09-26 running the first-ever database Survey Definition
+        # (Slice 12) end to end. `getattr(entity, ..., "")` is a no-op for
+        # repo/filesystem entities, which carry no db_user/db_password.
+        if not runner_kwargs.get("db_user") and not runner_kwargs.get("db_pwd"):
+            stored_user = getattr(entity, "db_user", "") or ""
+            stored_pwd = getattr(entity, "db_password", "") or ""
+            if stored_user or stored_pwd:
+                runner_kwargs = {**runner_kwargs, "db_user": stored_user, "db_pwd": stored_pwd}
+
         process_guid, process_qn = self._resolve_process_guid(
             entity_type, slug, tech_type, survey_definition_ref, refresh_definition
         )

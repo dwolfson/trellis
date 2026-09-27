@@ -117,8 +117,11 @@ there is one combined step.
   Without structured rows, per-object questions ("which tables have no
   primary key?"), diffs, trending and change detection all have to re-parse
   JSON (`web/routes/databases.py:655` already does).
-- No survey definitions exist for either type; the ten in
-  `docs/dr-egeria/survey-definitions/` are all `repo-*`.
+- No survey definitions exist for either type **(no longer current — Slice
+  12, 2026-09-26, authored three for database: Scouting/Analysis/
+  Assessment, in their own `docs/dr-egeria/survey-definitions-database/`
+  directory)**; the ten in `docs/dr-egeria/survey-definitions/` are still
+  all `repo-*`, and filesystem has none yet.
 - `executes_at: egeria` has no test coverage on either type; the hybrid
   surveyors have none (`Backlog.md:875-935`, Tier 1).
 - The `next` UI is repo-only by decision (`next/app.js:121`, `:1833`); the
