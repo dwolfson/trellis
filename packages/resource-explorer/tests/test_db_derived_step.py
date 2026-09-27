@@ -1100,6 +1100,20 @@ class TestSlice21bHeadlines:
         ):
             assert field in DATABASE_ANALYSIS_HEADLINE_MAP
 
+    def test_db_fingerprint_has_a_registered_headline(self, registry):
+        """Owner's gate follow-up (2026-09-27): the last `db_derived`
+        analysis with no headline — every other derived card had one by
+        then, `db_fingerprint`'s ended in "no written summary" instead."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        assert "db_fingerprint" in DATABASE_ANALYSIS_HEADLINE_MAP
+        _normalised_schema(registry)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["db_fingerprint"](registry, "coco_ods")
+        assert headline is not None
+        assert headline["status"] == "info"
+        assert headline["label"]
+
     def test_a_measured_analysis_relays_its_own_explanation(self, registry):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             DATABASE_ANALYSIS_HEADLINE_MAP,

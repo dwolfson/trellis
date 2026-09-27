@@ -618,3 +618,65 @@ def test_maintainers_merge_one_person_committing_under_two_addresses(pg_registry
     assert top["name"] == "Mandy Chessell"
     assert top["emails"] == 2, "the merge must be inspectable"
     assert top["share"] > 0.99, f"expected ~99.5%, got {top['share']:.1%}"
+
+
+class TestResourceStateHeadlines:
+    """Owner's gate follow-up (2026-09-27): `_resource_state_fact` never set
+    a `headline` at all, so every one of these six questions fell to
+    `readEnvelope`'s rung-3 scalar fallback ("no written summary — the
+    figures above are the raw measures") — the exact defect this whole area
+    exists to close for analysis-backed facts, just never extended to these
+    resource-state-sourced ones."""
+
+    def test_every_named_subject_is_registered(self):
+        from resource_explorer.facts import _RESOURCE_STATE_HEADLINES
+        for subject in (
+            "catalog_presence", "related_resources", "survey_history",
+            "survey_definitions", "disposition", "change_since_last_survey",
+        ):
+            assert subject in _RESOURCE_STATE_HEADLINES
+
+    def test_catalog_presence_names_the_group_and_sibling_count(self):
+        from resource_explorer.facts import _RESOURCE_STATE_HEADLINES
+        from resource_explorer.surveyors.result_status import MEASURED
+        fn = _RESOURCE_STATE_HEADLINES["catalog_presence"]
+        headline = fn({"registered": True, "group": "data-platform",
+                        "siblings_in_group": 3}, MEASURED)
+        assert "data-platform" in headline
+        assert "3" in headline
+
+    def test_survey_definitions_handles_both_resolver_shapes(self):
+        from resource_explorer.facts import _RESOURCE_STATE_HEADLINES
+        from resource_explorer.surveyors.result_status import MEASURED, NOTHING_FOUND
+        fn = _RESOURCE_STATE_HEADLINES["survey_definitions"]
+        # _r_which_survey's shape (a "candidates" list).
+        assert "coco_survey" in fn(
+            {"count": 1, "candidates": ["coco_survey"], "note": ""}, MEASURED)
+        # _r_survey_definition_exists's shape (authored/count, no candidates).
+        assert "catalog gap" in fn(
+            {"authored": False, "count": 0, "technology_type": "Git Repository"},
+            NOTHING_FOUND)
+
+    def test_change_since_last_survey_names_what_changed(self):
+        from resource_explorer.facts import _RESOURCE_STATE_HEADLINES
+        from resource_explorer.surveyors.result_status import MEASURED
+        fn = _RESOURCE_STATE_HEADLINES["change_since_last_survey"]
+        headline = fn({"changed_count": 2, "unchanged_count": 5,
+                        "changed": [{"analysis_id": "cve_scan", "summary": "x"},
+                                    {"analysis_id": "foss_scorecard", "summary": "y"}]},
+                       MEASURED)
+        assert "2 of 7" in headline
+        assert "cve_scan" in headline and "foss_scorecard" in headline
+
+    def test_a_resource_state_fact_carries_the_headline(self, pg_registry):
+        from resource_explorer.facts import FactLayer, RESOURCE_STATE_SOURCES
+        from resource_explorer.registry import Project
+
+        reg = pg_registry
+        reg.add(Project(slug="hl", display_name="hl", github_url="https://github.com/x/hl",
+                         group_slug="platform"))
+        fl = FactLayer(registry=reg, resource_type="repo")
+        resolver, subject = RESOURCE_STATE_SOURCES["Is there any existing use within our organization?"]
+        fact = fl._resource_state_fact("hl", resolver, subject)
+        assert fact.headline
+        assert "platform" in fact.headline

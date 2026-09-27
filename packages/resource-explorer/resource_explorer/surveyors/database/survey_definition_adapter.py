@@ -2231,6 +2231,15 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "subject_signals": _db_derived_explanation_headline("subject_signals"),
     "coverage_signals": _db_derived_explanation_headline("coverage_signals"),
     "preliminary_fit": _db_derived_explanation_headline("preliminary_fit"),
+    #: Owner's gate follow-up (2026-09-27): the last `db_derived` analysis
+    #: with no headline — `fingerprint_database()` already writes a real
+    #: `explanation` for every branch (no schema rows; measured, no
+    #: comparable peers; measured, no match found; measured, names the
+    #: closest match and its verdict/similarity), so the generic
+    #: explanation-relay factory is enough — no bespoke reader needed, unlike
+    #: grain_determination/schema_conventions which have no top-level
+    #: `explanation` at all.
+    "db_fingerprint": _db_derived_explanation_headline("db_fingerprint"),
 }
 
 #: Slice 21a — level-aware headlines. A SEPARATE map, not a change to the
