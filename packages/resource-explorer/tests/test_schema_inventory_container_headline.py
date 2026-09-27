@@ -32,8 +32,8 @@ class _FakeRegistry:
         return [{"survey_data": json.dumps(self._survey_data)}]
 
 
-def _table(schema, name, row_count=None, state="measured"):
-    return {"schema_name": schema, "table_name": name, "table_type": "BASE TABLE",
+def _table(schema, name, row_count=None, state="measured", table_type="BASE TABLE"):
+    return {"schema_name": schema, "table_name": name, "table_type": table_type,
             "state": state, "row_count": row_count}
 
 
@@ -107,6 +107,34 @@ class TestDataAndEmptyClassification:
         # `schemas_with_tables` for the parallel gap.
         result = _schema_inventory_container_headline(registry, "mydb")
         assert "public 1 table(s) · 1 row(s)" in result["label"]
+
+
+class TestViewOnlySchemasAreDistinctFromEmpty:
+    """Found live, `adventureworks`, 2026-09-27: AdventureWorks's shortcut
+    schemas (`hr`/`pe`/`pr`/`pu`/`sa`) hold only views over tables that
+    live in another schema — genuinely zero base tables, not a schema
+    nobody has populated. Views' row_count is never measured, so before
+    this fix they fell into the same "0 row(s) — empty" bucket as a truly
+    empty schema, indistinguishable from it."""
+
+    def test_a_schema_of_only_views_is_not_reported_as_empty(self):
+        registry = _FakeRegistry(tables=[
+            _table("hr", "v_employee", table_type="VIEW"),
+            _table("hr", "v_department", table_type="VIEW"),
+        ])
+        result = _schema_inventory_container_headline(registry, "mydb")
+        assert "empty" not in result["label"]
+        assert "hr 2 view(s)" in result["label"]
+        assert "no base tables" in result["label"]
+
+    def test_a_schema_with_at_least_one_base_table_is_not_views_only(self):
+        registry = _FakeRegistry(tables=[
+            _table("public", "v", table_type="VIEW"),
+            _table("public", "t", table_type="BASE TABLE", row_count=5),
+        ])
+        result = _schema_inventory_container_headline(registry, "mydb")
+        assert "views only" not in result["label"] and "view(s)" not in result["label"]
+        assert "public 2 table(s) · 5 row(s)" in result["label"]
 
 
 class TestCredentialScopeClassification:
