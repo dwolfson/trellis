@@ -255,16 +255,23 @@ class TestRealCatalogAgreesWithTheLiveBugReport(object):
 
 
 class TestRealCatalogAgreesWithTheSlice17bLiveBugReport:
-    """Confirms, against the real catalog on disk, the specific regression
-    the coco_pharma gate found: `schema_inventory` has no headline_reader,
-    so the container-level question it alone answers must still gate."""
+    """Confirms, against the real catalog on disk, that the coco_pharma
+    gate's original regression is now closed: `schema_inventory` was given
+    a real headline_reader (docs/design-notes/
+    ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md's follow-up)
+    that names actual schemas, not just a count -- see
+    `test_schema_inventory_headline.py` for the headline's own content
+    tests. The mechanism test below (no headline at all -> gate fires) is
+    kept as a regression pin on `_check_level` itself, using a synthetic
+    envelope rather than the real map, since that is what it is actually
+    testing."""
 
-    def test_schema_inventory_has_no_headline_reader_in_the_real_map(self):
+    def test_schema_inventory_now_has_a_headline_reader_in_the_real_map(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             DATABASE_ANALYSIS_HEADLINE_MAP,
         )
 
-        assert "schema_inventory" not in DATABASE_ANALYSIS_HEADLINE_MAP
+        assert "schema_inventory" in DATABASE_ANALYSIS_HEADLINE_MAP
 
     def test_which_schemas_carry_the_data_is_answered_only_by_schema_inventory(self):
         from resource_explorer.surveyors.question_catalog_reader import get_questions
@@ -276,13 +283,34 @@ class TestRealCatalogAgreesWithTheSlice17bLiveBugReport:
         assert row["answering"]["analysis_ids"] == ["schema_inventory"]
         assert "container" in row["levels"]
 
-    def test_the_real_question_gates_end_to_end_with_no_headline(self, monkeypatch):
+    def test_the_real_question_is_answered_now_that_schema_inventory_has_a_headline(self, monkeypatch):
         from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
         from resource_explorer.surveyors.question_catalog_reader import get_questions
 
         catalog = get_analyses("database", include_egeria_live=False)
         fl = _fact_layer(monkeypatch, catalog)
-        env = _measured_envelope(["schema_inventory"])  # no headline, exactly as live
+        env = _measured_envelope(
+            ["schema_inventory"],
+            headlines={"schema_inventory": "7 schema(s) (coco_ods, coco_sus, demo)."},
+        )
+        row = next(
+            q for q in get_questions("database")
+            if q["question"].startswith("Which schemas carry the data")
+        )
+        fl._check_level(env, row)
+        assert env.level_mismatch is False
+
+    def test_the_mechanism_still_gates_a_schema_inventory_fact_with_no_headline_at_all(self, monkeypatch):
+        """Regression pin on `_check_level` itself, independent of whether
+        the real `schema_inventory` currently has a headline -- if a future
+        change ever removed it, this question must gate again, not silently
+        pass."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        catalog = get_analyses("database", include_egeria_live=False)
+        fl = _fact_layer(monkeypatch, catalog)
+        env = _measured_envelope(["schema_inventory"])  # no headline
         row = next(
             q for q in get_questions("database")
             if q["question"].startswith("Which schemas carry the data")

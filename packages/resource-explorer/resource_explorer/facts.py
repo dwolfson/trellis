@@ -1088,8 +1088,24 @@ class FactLayer:
         the runs the gate happened to catch live. A known fact with nothing
         renderable is not an answer; the checkmark it sits under is the one
         the whole fact/envelope layer exists to keep honest.
+
+        `NOTHING_FOUND` gets its own rung, ahead of headline/prose/scalar,
+        matching `readEnvelope`'s own ordering (`app.js`): a fact whose
+        state is `NOTHING_FOUND` and carries no headline/prose still
+        renders a synthesized sentence there — "`<analysis_id>` ran and
+        found nothing." Missing this case here produced a genuine
+        contradiction live (`coco_pharma`, 2026-09-26): a card showed BOTH
+        that synthesized sentence AND "This ran; no summary reader exists
+        yet for its results.", because `_renders_text` (not knowing about
+        `readEnvelope`'s special case) concluded nothing rendered and
+        `_check_level` added its own note on top of an answer that, in
+        fact, already rendered one. A measured zero is knowledge (see
+        `Fact.is_known`'s own docstring) and must not ALSO be treated as
+        "nothing to show."
         """
         if (fact.headline or "").strip():
+            return True
+        if fact.state == NOTHING_FOUND:
             return True
         value = fact.value or {}
         for key in ("detail", "summary", "description"):
