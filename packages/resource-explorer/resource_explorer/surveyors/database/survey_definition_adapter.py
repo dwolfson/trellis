@@ -1154,13 +1154,31 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # not necessarily every schema `get_schema_info()` enumerated (a
     # schema with zero tables at all, like `public` on `coco_pharma`, has
     # no `database_tables` rows to be distinct over) -- `schema_total`
-    # from the credential-capability probe, surfaced by the headline
-    # reader below, is the true database-wide denominator.
-    schema_count = len({t.get("schema_name") for t in tables if t.get("schema_name")})
+    # from the credential-capability probe, below, is the true
+    # database-wide denominator.
+    #
+    # Named `schemas_with_tables`, not `schema_count` — correct-number-
+    # wrong-label, found live 2026-09-26: the headline's own leading number
+    # is `schema_total` (owner's ruling — "8 schemas if there are, even if
+    # one has no tables"), so an evidence panel showing "schema count 7"
+    # right below a headline reading "8 schema(s)" contradicted itself,
+    # even though both numbers were individually correct for what they
+    # actually counted.
+    schemas_with_tables = len({t.get("schema_name") for t in tables if t.get("schema_name")})
+    cap = _credential_capability_results(registry, slug)
     value = {
         "table_count": len(tables),
         "column_count": len(columns),
-        "schema_count": schema_count,
+        "schemas_with_tables": schemas_with_tables,
+        # From the credential-capability probe (same source the header's
+        # "sees N of M schema(s)" banner and the headline's leading number
+        # both already use) — present here too so the evidence panel agrees
+        # with the headline instead of only showing the narrower
+        # `schemas_with_tables` count. Omitted, not zero, when no probe has
+        # run: `0 of 0` would read as "this database has no schemas at
+        # all," a stronger and different claim than "not measured yet."
+        **({"schema_total": cap["schema_total"], "schemas_visible": cap["schema_visible"]}
+           if cap.get("schema_total") else {}),
         "base_table_count": base_table_count,
         "view_count": view_count,
         "materialized_view_count": materialized_view_count,
@@ -1279,13 +1297,14 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
     satisfy the gate; a real per-schema classification ("system, empty or
     staging") is still slice 22's own dedicated view, not attempted here.
 
-    `schema_count` (this reader's own distinct `schema_name` count over
-    stored tables) and `schema_total`/`schema_visible` (the
+    `schemas_with_tables` (this reader's own distinct `schema_name` count
+    over stored tables) and `schema_total`/`schemas_visible` (the
     credential-capability probe's database-wide denominator, the SAME
-    numbers the credential banner already shows) are both surfaced,
-    together, deliberately: they can legitimately differ (a schema with
-    zero tables at all contributes to `schema_total` but not
-    `schema_count`), and stating both is more honest than silently
+    numbers the credential banner already shows, and now also surfaced on
+    `_schema_inventory_results`'s own value dict for the evidence panel)
+    are both surfaced, together, deliberately: they can legitimately differ
+    (a schema with zero tables at all contributes to `schema_total` but not
+    `schemas_with_tables`), and stating both is more honest than silently
     picking one.
     """
     value = _schema_inventory_results(registry, slug)
@@ -1299,7 +1318,7 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
         t.get("schema_name") for t in value.get("tables") or [] if t.get("schema_name")
     })
     named = bool(schema_names) and len(schema_names) <= _SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT
-    schema_count = value.get("schema_count", 0)
+    schema_count = value.get("schemas_with_tables", 0)
 
     # Owner's ruling (2026-09-26): the leading number is how many schemas
     # EXIST, not how many have tables — "we should say 8 schemas if there
