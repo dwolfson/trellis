@@ -1,7 +1,9 @@
 # Slice 12 — Database Survey Definitions, implemented
 
 **Coordinator brief:** Phase 1b, Slice 12 from the brief, owner-approved.
-**PR:** #TBD (`re/slice12-database-survey-definitions`).
+**PR:** #303 (`re/slice12-database-survey-definitions`).
+**Final local full-suite count** (after every fix below, non-overlapping
+run): 6481 passed, 104 skipped, 0 failed.
 
 **Merge order:** this branch is based on `re/schema-headline-and-level-gate-note`'s
 tip (`0e1a7417`), not `main` — merge that branch's PR FIRST. This branch's
@@ -322,6 +324,100 @@ nothing else broken). Final run, after the shared registry was corrected
 file unchanged: 6477 passed, 104 skipped, 0 failed — the by-name test now
 skips on its own pre-existing filter, since the underlying data is honest
 again; this branch introduces no code change to make that happen.
+
+## A fourth defect, found by the owner's post-merge gate: a Survey Definition run degraded answers the per-analysis path had already produced (#303)
+
+Reported by the owner ~2h after the Database Scouting Scan run above:
+`db_activity_signals` (which had read "0 writes and 6 reads since
+statistics collection began" after an earlier per-analysis re-run) and
+`db_resilience` both flipped to "ran and found nothing," and the answered
+count fell from 4 of 9 to 3 of 9 (8812) / 1 of 9 (8813) — on every port,
+all reading the same shared registry. The only write in between was this
+branch's own Scouting Survey Definition run.
+
+**Root cause, confirmed by diffing the two latest stored `database_surveys`
+rows for `localhost_docker_coco_pharma`:** `SurveyDefinitionExecutor`
+dispatches each Survey Definition step as its OWN separate
+`DatabaseSurveyor.survey()` call — a 3-step Scouting definition
+(`postgres_schema_and_stats` -> `postgres_operations` ->
+`credential_capability`) writes THREE survey rows a couple of seconds
+apart, not one combined row the way a per-analysis run does.
+`_store_results` wrote `"operations": results.get("operations", {})`
+unconditionally — correct for the `postgres_operations` step's OWN run,
+but the LAST step, `credential_capability`, collects no `operations` at
+all, and its `{}` became the newest row's value, silently shadowing the
+real operations data `postgres_operations` had written two rows earlier.
+`db_activity_signals`/`db_resilience` read the operations section off the
+single latest row, so they read nothing — a per-analysis-path answer
+clobbered by an unrelated LATER step in the same Survey Definition run,
+never a real re-measurement.
+
+Exactly the "correct number, wrong label" / prior-value-preservation class
+`_store_results`'s own docstring already documents for `row_count`/
+`size_bytes` (the `_store_results` fix earlier in this session, ported from
+the enumeration-floor PR) — just never extended to the `operations`/
+`credential_capability` keys. **Fixed the same way**: before writing,
+`_store_results` now reads back the LATEST prior survey row and falls back
+to its `operations`/`credential_capability` values when THIS run's own
+results have none (`{}` unambiguously means "this run's requested steps
+didn't include it," the same "step didn't run" convention the two
+docstrings already state — never a genuine empty measurement, so no risk
+of masking a real "found nothing" answer).
+
+Live repair: re-ran the Scouting Survey Definition against `coco_pharma`
+directly via `run_survey_definition()` after the fix — all 3 steps `ok`,
+and the fresh row now carries BOTH the real `operations` section (real
+`activity_signals`/`resilience`/`external_dependencies`/`privilege_audit`
+data) AND `credential_capability` together, correctly. Confirmed on 8811:
+`db_activity_signals` reads "0 writes and 6 reads since statistics
+collection began" again, `db_resilience` reads "primary; no replicas; WAL
+archiving off; no backup tool detected" again, answered count back to 4
+of 9. (8812/8813 will pick up the same repaired row automatically — it's
+the same shared registry — no separate action needed there.)
+
+Tests: `test_store_results_preserves_prior_operations.py` (new, 4 tests) —
+operations survives a later credential_capability-only run; the symmetric
+case (credential_capability survives a later operations-only run); a
+genuine first-ever run with neither step run yet still correctly reports
+empty (not a blanket "never empty" rule); and an end-to-end test through
+`SurveyDefinitionExecutor`'s own `_run_postgres_operations`/
+`_run_credential_capability` adapters, run in the same order a real
+Scouting definition's steps chain would, asserting the surviving
+operations section is byte-for-byte identical in shape to what the
+per-analysis path itself wrote — the literal #303 regression, reproduced
+and pinned. 95 tests across the affected files re-run clean
+(`test_database_surveyor_steps.py`, `test_store_results_preserves_prior_stats.py`,
+the new file, `test_egeria_database_surveyor_secrets.py`,
+`test_credential_capability_step.py`, `test_collector_honesty.py`,
+`test_survey_definition_executor.py`).
+
+## CI failure (PR #303): two more incomplete mocks in `test_survey_definitions_routes.py`
+
+CI reported `2 failed, 6448 passed, 131 skipped` on this branch:
+`test_egeria_tech_type_catalog_failure_does_not_break_listing` and
+`test_egeria_native_processes_excludes_delete_kind`, both
+`assert resp.status_code == 200` → got 400. Both passed in every local run
+(6477–6481 passed) because this dev environment has a real reachable
+Egeria/registry to silently fall back to; CI has neither, so the SAME
+incomplete-mock gap the 5 tests earlier in this branch were fixed for
+(only mocking the full-scan `find_candidate_process_guids`, not the
+questions-scoped `find_candidate_process_guids_by_questions` that
+`list_candidates` tries FIRST for `entity_type="database"`) reached a real
+network call in CI and 400'd, instead of silently succeeding against a
+live platform the way it did here. Missed these two originally because
+neither asserts on the candidate list itself (one checks a step's
+annotation-type enrichment, the other native-process kinds), so an extra
+real candidate slipping in locally didn't visibly break either assertion.
+
+Fixed the same way as the other 5: added the missing
+`find_candidate_process_guids_by_questions` mock (`return_value=[]`) to
+both, and added `resp.text` to both status-code assertion messages per the
+coordinator's ask, so a future CI failure here shows the 400 body directly
+rather than needing a second round-trip to find it. Verified against a
+genuinely unreachable Egeria endpoint locally
+(`EGERIA_PLATFORM_URL=https://127.0.0.1:1`), not just re-run against the
+live one, to confirm both are now actually isolated rather than still
+depending on a fallback that happened to work here.
 
 ## Deferred
 

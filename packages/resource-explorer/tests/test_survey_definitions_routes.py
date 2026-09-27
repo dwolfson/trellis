@@ -169,6 +169,12 @@ class TestListCandidates:
         survey_def = _fake_survey_def(steps=[step])
 
         with patch(
+            # See test_returns_step_detail_for_valid_candidate's comment:
+            # without this, CI (no live Egeria/registry) 400s here instead
+            # of exercising the full-scan fixture this test actually wants.
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+            return_value=[],
+        ), patch(
             "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
             return_value=[{"qualified_name": "GovActionProcess::Test", "display_name": "Test", "guid": "proc-guid"}],
         ), patch(
@@ -180,7 +186,7 @@ class TestListCandidates:
         ):
             resp = client.get("/api/survey-definitions/database/mydb/candidates")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         step_out = resp.json()["candidates"][0]["steps"][0]
         assert "egeria_produced_annotation_types" not in step_out
 
@@ -317,11 +323,15 @@ class TestListCandidates:
         # "PostgreSQL Relational Database") rather than mocking — this is the
         # externalized table, not something to fake in a unit test.
         with patch(
+            # See test_returns_step_detail_for_valid_candidate's comment.
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+            return_value=[],
+        ), patch(
             "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
             return_value=[],
         ):
             resp = client.get("/api/survey-definitions/database/mydb/candidates")
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         native = resp.json()["egeria_native_processes"]
         kinds = {p["kind"] for p in native}
         assert "delete" not in kinds
