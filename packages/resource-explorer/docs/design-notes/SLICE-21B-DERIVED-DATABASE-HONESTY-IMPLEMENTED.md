@@ -224,7 +224,10 @@ the record.
   overcounting bug (#4 above), using the same fixture
   `test_profiles_present_but_nothing_unique_is_a_real_gap` already
   established for the underlying "gap" case.
-- Full suite: 6531 passed, 104 skipped, 0 failed.
+- Full suite (before the owner's gate follow-up round): 6531 passed, 104
+  skipped, 0 failed.
+- Full suite (after the owner's gate follow-up round, merged with updated
+  21a/#305): 6551 passed, 104 skipped, 0 failed.
 
 ## Not attempted here
 
@@ -330,10 +333,9 @@ headline` functions:
 
 ## Report
 
-Implementation complete, tested, live-gated (backend-verified; browser
-screenshot blocked — see above), full suite green. **Commit held**, per
-the coordinator's own instruction: 21b is based on 21a's tip and would
-inherit 21a's CI hang (run 36290350357, cancelled at the 30-min job
-timeout) until that is diagnosed and fixed on the 21a branch. Will commit
-and push once 21a's fix lands and this branch is confirmed clear of it —
-see the CI-hang investigation reported separately.
+21a's CI timeout confirmed a runner flake (see its own IMPLEMENTED doc),
+CI on `3e3c0b12` (this slice, containing all of 21a) passed at 15.7 min.
+Merged main (#305) into 21a, then updated 21a into this branch — only
+`docs/Backlog.md` conflicted both times (append-only, resolved by keeping
+both sides); `survey_definition_adapter.py` auto-merged cleanly each time.
+Branch `re/slice21b-derived-db-honesty`, tip: see PR.
