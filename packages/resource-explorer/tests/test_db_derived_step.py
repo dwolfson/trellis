@@ -344,6 +344,24 @@ class TestClassification:
         result = classify_database(load_inputs(registry, "coco_ods"), fingerprint)
         assert result["confidence"] <= 95
 
+    def test_a_measured_no_match_fingerprint_is_not_reported_as_missing(
+        self, registry,
+    ):
+        """Found live, `adventureworks`, 2026-09-27: `db_fingerprint` had
+        genuinely measured against 2 comparable databases and found nothing
+        above the reportable Jaccard threshold — a real, negative finding —
+        but `classify_database` still said "No data for: fingerprint",
+        because `best_similarity is None` (the no-match case) was
+        indistinguishable from having no comparable databases at all."""
+        _normalised_schema(registry)
+        fingerprint = {
+            "state": STATE_MEASURED, "comparable_databases": 2,
+            "best_similarity": None,
+        }
+        result = classify_database(load_inputs(registry, "coco_ods"), fingerprint)
+        assert "fingerprint" not in result["signals_missing"]
+        assert "fingerprint" in result["signals_used"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. db_relationship_graph
@@ -1278,6 +1296,52 @@ class TestSlice21bHeadlines:
             registry, "coco_ods")
         assert headline is not None
         assert "public: 0 of 1 table(s) grain-determined" in headline["label"]
+
+    def test_resource_headline_distinguishes_key_basis_from_naming_basis(
+        self, registry,
+    ):
+        """Found live, `adventureworks`, 2026-09-27: "68 carry a time
+        interval" read as "68 have a date column in the key" — the strong
+        `primary_key_date` basis — but on that database the heuristic that
+        actually fired for nearly all of them was a column-NAME match (every
+        table has a `modifieddate` column); only 6 genuinely had a date
+        column in the primary key. The headline must say which basis did
+        the work, not collapse both into one undifferentiated count."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        tables = [_table("period_log"), _table("widget")]
+        columns = [
+            _column("period_log", "log_date", pk=True, dtype="date"),
+            _column("widget", "id", pk=True),
+            _column("widget", "modifieddate", dtype="timestamp"),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["grain_determination"](
+            registry, "coco_ods")
+        assert headline is not None
+        label = headline["label"]
+        assert "2 carry a time interval" in label
+        assert "1 from a date column in the key" in label
+        assert "1 from naming only" in label
+        assert "lower confidence" in label
+
+    def test_resource_headline_flags_naming_only_when_no_table_has_a_key_date(
+        self, registry,
+    ):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        tables = [_table("widget")]
+        columns = [
+            _column("widget", "id", pk=True),
+            _column("widget", "modifieddate", dtype="timestamp"),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["grain_determination"](
+            registry, "coco_ods")
+        assert headline is not None
+        assert "1 carry a time interval (naming basis, lower confidence)" in headline["label"]
 
 
 class TestCoverageStatusFlipsToNotEstablished:

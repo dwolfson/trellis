@@ -8280,3 +8280,98 @@ candidate for slice 18/20 — not fixed here, since the reactive patches
 already in place are each individually correct and this is a design
 change to the writer's contract, not a live-visible bug in its own right
 right now.
+
+## `database_table_activity` rows are clobbered at the STRUCTURED-TABLE layer by a multi-step survey run's later steps — not fixed here, deferred for a fresh session (found live, `adventureworks`, 2026-09-27)
+
+The same class of bug as `_store_results`'s survey_data-blob clobber
+(above), but discovered one layer down, in the structured tables
+themselves — every per-step Survey Definition run writes a FULL set of 157
+`database_table_activity` rows for `laz_local_adventureworks` even when
+that particular run's steps never collected activity data, with every
+counter NULL, and this overwrites the good, real-counter row an EARLIER
+step in the same multi-step run had just written moments before. Of 8
+survey runs recorded for this database, only 2 carry real counters
+(19:20:22, a scouting step; 19:24:00, the dedicated `db_activity_signals`
+step); the other 6 each wrote 157 NULL-counter rows. `db_classification`
+and `_db_activity_signals_headline` both load from the row with the
+LATEST `surveyed_at` per table (19:24:03, all-NULL) and so reported "No
+data for: activity" despite 761,184 real inserts and 1,435 real updates
+sitting in the 19:24:00 row, one run earlier.
+
+**Why this was found now and not sooner:** finding #1 in this same session
+(`_db_activity_signals_headline` reading the wrong pg_stat column names)
+masked this — once that bug was fixed, the headline correctly tried to
+read `rows_inserted`/etc. and found them NULL in the latest row, which is
+what surfaced the clobber underneath.
+
+**Fix direction, NOT attempted here** (explicitly deferred — the
+coordinator's own words: a half-ported fix on this primary data path late
+in a long session is worse than the current known undercount): write only
+the tables a run's own requested steps actually collected activity for —
+same generic rule as the `_store_results` entry above, applied one layer
+down at the structured-table writer. `load_inputs` (or whatever reads
+`database_table_activity` for `db_derived.py`'s consumers) should fall
+back PER-TABLE to the newest run that has non-NULL counter rows for that
+specific table, rather than taking the single latest `surveyed_at` across
+the whole snapshot and accepting whatever that run happened to write for
+every table — a table a later run's steps did touch should still prefer
+ITS newer data; a table only an earlier run touched should fall back to
+that earlier row instead of reading NULL.
+
+## PRIMARY-path PK/FK queries in `connection.py` drop real foreign/primary keys that a table is referenced from (or claims) MANY TIMES — not fixed here, deferred for a fresh session (found live, `adventureworks`, 2026-09-27)
+
+Verified against `pg_constraint`/ground truth via direct `psql` on the
+newly-registered `adventureworks` database (68 tables, dense FKs, full
+comments): the PRIMARY-path `information_schema`-based key queries in
+`connection.py` (`_get_tables_for_schema`, roughly lines 620-660) stored
+only 71 of 91 real foreign-key columns and 99 of 181 real primary-key
+columns. This is the classic `constraint_column_usage`-join multiplicity
+bug — the missing columns are specifically ones referenced FROM MANY
+different places (a column that is the target of several FKs, or a
+composite key with more than 2 parts), which a naive join against
+`information_schema.constraint_column_usage` fans out or drops rows for
+depending on join order, rather than pairing each constraint's columns by
+their declared ordinal position.
+
+Full list of the 20 affected columns (all confirmed present in
+`pg_constraint` but absent or wrong from the primary-path read):
+`humanresources.employee.businessentityid`,
+`person.stateprovince.territoryid`, `production.document.owner`,
+`purchasing.productvendor.productid`,
+`purchasing.productvendor.unitmeasurecode`,
+`purchasing.purchaseorderdetail.productid`,
+`purchasing.purchaseorderheader.employeeid`,
+`purchasing.vendor.businessentityid`,
+`sales.countryregioncurrency.countryregioncode`,
+`sales.customer.personid`, `sales.personcreditcard.businessentityid`,
+`sales.salesorderheader.billtoaddressid`,
+`sales.salesorderheader.shipmethodid`,
+`sales.salesorderheader.shiptoaddressid`,
+`sales.salesperson.businessentityid`,
+`sales.salestaxrate.stateprovinceid`,
+`sales.salesterritory.countryregioncode`,
+`sales.shoppingcartitem.productid`,
+`sales.specialofferproduct.productid`, `sales.store.businessentityid`.
+
+This directly undercounts `db_relationship_graph`'s edge count (71
+edges reported, real count higher) and, per the owner's own words, makes
+`grain_determination`'s "keys captured: 68/68" **right only by luck** —
+the 20 missing columns happen not to be the ones any of the 68 tables'
+own declared primary keys needed for THIS database's particular grain
+questions, not because the underlying key-reading is actually complete.
+
+**Fix direction, NOT attempted here** (explicitly deferred — a half-ported
+key query on the primary path is worse than the current known undercount,
+per the coordinator's own words): Slice 21b already wrote the correct
+version of this exact query for the FALLBACK (no-SELECT-grant, catalog-
+only) path — `_catalog_keys_for_schema` in `connection.py`, which reads
+`pg_constraint`/`pg_index` directly (`contype='p'`/`contype='f'`) and uses
+`WITH ORDINALITY` to pair composite-key columns by their actual ordinal
+position rather than joining on names alone. That same query needs to
+become the PRIMARY-path read too — `pg_constraint` is catalog metadata,
+unfiltered by `SELECT` grants, so there is no privilege reason the
+primary path was using the weaker `information_schema` join in the first
+place. The fix is to promote the existing, already-correct, already-
+tested fallback implementation to be the ONE implementation, called from
+both paths, keyed by `(schema, table, column)` — not to write a second,
+parallel query.

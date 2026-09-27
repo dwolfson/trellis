@@ -4264,6 +4264,28 @@ async function launchSurvey(slug, ref) {
         ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}
       It runs asynchronously — its results appear in Dashboard and in the question rows
       as each step lands, not when this line changes.`;
+    // Found live, `adventureworks`, 2026-09-27: a Survey Definition run
+    // that had genuinely completed (three survey rows written) still left
+    // this pane reading "never run" — nothing here ever re-fetched. Watch
+    // the run the same way the per-analysis run button already does
+    // (pollActivity — see the `data-analysis-run` handler above), then
+    // reload the whole Survey pane so its "last run" status, and
+    // everything else `getSurveyCandidates` returns, reflects what
+    // actually happened rather than the stale pre-run snapshot.
+    if (res && res.activity_id) {
+      try {
+        await pollActivity(res.activity_id, {});
+      } catch (err) {
+        if (err.name !== 'PollTimeout') throw err;
+        // Not a failure — this browser stopped watching; the run itself
+        // may still be in flight. Reload anyway: it shows whatever state
+        // the run has reached by now, which is still more current than a
+        // note that never changes.
+      }
+      if (slug === state.selectedSlug && state.subTab === 'survey') {
+        await loadSurveyPane();
+      }
+    }
   } catch (err) {
     if (!note) return;
     // 401 is not a failure of the survey, it is a fact about this session.

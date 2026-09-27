@@ -317,13 +317,24 @@ class TestHeadlineFunctionsProduceRealSentences:
 
     def test_activity_signals_headline_names_reads_and_writes_and_when(self):
         """Live gate feedback (2026-09-26): the counter WHEN matters as much
-        as the counts -- the reset timestamp is load-bearing, not detail."""
+        as the counts -- the reset timestamp is load-bearing, not detail.
+
+        Fixture keys are the STORED names (`connection.py`'s own
+        `_survey_operations()` renames `n_tup_ins`/`n_tup_upd`/`n_tup_del`
+        to `rows_inserted`/`rows_updated`/`rows_deleted` before writing —
+        only `seq_scan`/`idx_scan` keep their raw pg_stat_user_tables
+        names). Using the raw names here would pass even with the
+        live-found bug that read those same raw names back (found live,
+        `adventureworks`, 2026-09-27: "0 writes and 861 reads" reported for
+        a database with 761,184 inserts + 1,435 updates — this test's own
+        fixture, before the fix, used to validate against its own wrong
+        assumption rather than the real stored shape)."""
         from resource_explorer.surveyors.database.survey_definition_adapter import (
             _db_activity_signals_headline,
         )
         registry = self._registry_with_survey({"operations": {"activity_signals": {
             "table_activity": [
-                {"n_tup_ins": 10, "n_tup_upd": 2, "n_tup_del": 0, "seq_scan": 5, "idx_scan": 100},
+                {"rows_inserted": 10, "rows_updated": 2, "rows_deleted": 0, "seq_scan": 5, "idx_scan": 100},
             ],
             "stats_reset": "2026-09-20 10:00:00+00",
             "table_count": 1,
@@ -333,6 +344,24 @@ class TestHeadlineFunctionsProduceRealSentences:
         assert "12 writes" in label
         assert "105 reads" in label
         assert "since statistics were reset on 2026-09-20 10:00:00+00" in label
+
+    def test_activity_signals_headline_does_not_read_the_raw_pg_stat_column_names(self):
+        """The regression this whole fix is about: `n_tup_ins`/`n_tup_upd`/
+        `n_tup_del` are never present on a stored row (they were renamed
+        before storage), so a row carrying ONLY those raw names must count
+        as zero writes, not silently sum a key that happens to look right."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _db_activity_signals_headline,
+        )
+        registry = self._registry_with_survey({"operations": {"activity_signals": {
+            "table_activity": [
+                {"n_tup_ins": 761184, "n_tup_upd": 1435, "n_tup_del": 0, "seq_scan": 5, "idx_scan": 100},
+            ],
+            "stats_reset": "2026-09-20 10:00:00+00",
+            "table_count": 1,
+        }}})
+        result = _db_activity_signals_headline(registry, "coco_ods")
+        assert "0 writes" in result["label"]
 
     def test_activity_signals_headline_says_never_reset_when_stats_reset_is_null(self):
         """`pg_stat_database.stats_reset` NULL means the counters have never
@@ -346,7 +375,7 @@ class TestHeadlineFunctionsProduceRealSentences:
         )
         registry = self._registry_with_survey({"operations": {"activity_signals": {
             "table_activity": [
-                {"n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0, "seq_scan": 0, "idx_scan": 0},
+                {"rows_inserted": 1, "rows_updated": 0, "rows_deleted": 0, "seq_scan": 0, "idx_scan": 0},
             ],
             "stats_reset": "",
             "table_count": 1,

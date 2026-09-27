@@ -57,6 +57,19 @@ class TestSchemaCountRenamedToSchemasWithTables:
         assert value["schemas_with_tables"] == 2
         assert "schema_count" not in value
 
+    def test_a_schema_of_only_views_does_not_count_as_with_tables(self):
+        """Found live, `adventureworks`, 2026-09-27: this counted any schema
+        with a ROW in `database_tables`, including view-only schemas — a
+        schema whose relations are entirely views has zero actual tables,
+        so it overstated the count (reported 10, truth 5 for AdventureWorks's
+        base-table-bearing schemas)."""
+        registry = _FakeRegistry(tables=[
+            _table("public", "a"),
+            _table("hr", "v_employee", table_type="VIEW"),
+        ])
+        value = _schema_inventory_results(registry, "mydb")
+        assert value["schemas_with_tables"] == 1
+
 
 class TestSchemaTotalAndVisibleFromTheProbe:
     def test_present_when_a_credential_capability_probe_has_run(self):

@@ -1256,7 +1256,16 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # right below a headline reading "8 schema(s)" contradicted itself,
     # even though both numbers were individually correct for what they
     # actually counted.
-    schemas_with_tables = len({t.get("schema_name") for t in tables if t.get("schema_name")})
+    # Found live, `adventureworks`, 2026-09-27: this used to count any
+    # schema with an ROW in `database_tables` at all, which includes
+    # view-only schemas (AdventureWorks's `hr`/`pe`/`pr`/`pu`/`sa`
+    # shortcuts) — a schema whose relations are entirely views has zero
+    # actual TABLES, so counting it toward "N with tables" overstated the
+    # figure (reported 10, truth 5 base-table-bearing schemas).
+    schemas_with_tables = len({
+        t.get("schema_name") for t in tables
+        if t.get("schema_name") and t.get("table_type") == "BASE TABLE"
+    })
     cap = _credential_capability_results(registry, slug)
     value = {
         "table_count": len(tables),
@@ -1548,6 +1557,25 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
                 "classification": "staging",
             })
             continue
+        # Found live, `adventureworks`, 2026-09-27: AdventureWorks's five
+        # shortcut schemas (`hr`/`pe`/`pr`/`pu`/`sa`) hold ONLY views over
+        # tables that live in another schema — genuinely zero base tables,
+        # not a schema nobody has populated. Those views' `row_count` is
+        # never measured (views have no catalog row estimate), so before
+        # this they fell through the same `row_total is None` path as a
+        # truly empty schema and rendered "6 table(s) · 0 row(s) — empty",
+        # indistinguishable from a schema with no data in it at all. A
+        # reader cannot tell "nothing here" from "this is a lens on data
+        # that lives elsewhere" without opening the schema — exactly the
+        # owner's Slice 22 usability gate ("see which schema holds the
+        # data at a glance") that this conflation defeats.
+        if table_count > 0 and all(t.get("table_type") != "BASE TABLE" for t in ts):
+            shortfall_rows.append({
+                "schema": name, "table_count": table_count, "row_total": row_total,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "views_only",
+            })
+            continue
         # `row_total is None` (Slice 21a follow-up, owner's gate, 2026-09-27):
         # a schema whose only tables have `row_count IS NULL` — never
         # measured at all, no catalog-estimate fallback either — used to
@@ -1651,6 +1679,8 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
                 parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
         elif row["classification"] == "staging":
             parts.append(f"{name} {count} table(s) — staging (by name)")
+        elif row["classification"] == "views_only":
+            parts.append(f"{name} {count} view(s) · no base tables")
         else:
             # Owner's gate, 2026-09-27: a structure-only/no-access schema
             # can still carry a real (catalog-estimated) row total — the
@@ -1826,8 +1856,16 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
     activity = value.get("table_activity") or []
     if not activity:
         return {"label": "No table activity recorded yet.", "status": "info"}
+    # Found live, `adventureworks`, 2026-09-27: this read `n_tup_ins`/
+    # `n_tup_upd`/`n_tup_del` — the RAW pg_stat_user_tables column names —
+    # but `connection.py`'s own `_survey_operations()` renames them to
+    # `rows_inserted`/`rows_updated`/`rows_deleted` before storing (only
+    # `seq_scan`/`idx_scan` keep their raw names, which is why the read
+    # count was always right and the write count silently summed three
+    # keys that are never present, always 0). Reported "0 writes and 861
+    # reads" for a database with 761,184 inserts + 1,435 updates.
     total_writes = sum(
-        (t.get("n_tup_ins") or 0) + (t.get("n_tup_upd") or 0) + (t.get("n_tup_del") or 0)
+        (t.get("rows_inserted") or 0) + (t.get("rows_updated") or 0) + (t.get("rows_deleted") or 0)
         for t in activity
     )
     total_reads = sum((t.get("seq_scan") or 0) + (t.get("idx_scan") or 0) for t in activity)
@@ -2005,7 +2043,27 @@ def _grain_determination_headline(registry, slug: str) -> dict | None:
     if undetermined:
         parts.append(f"{undetermined} do not")
     if timed:
-        parts.append(f"{timed} carry a time interval")
+        # Found live, `adventureworks`, 2026-09-27: "68 carry a time
+        # interval" read as "68 have a date column in the key" (the
+        # strong, `primary_key_date` basis), but on this database the
+        # heuristic that actually fired for nearly all of them was a
+        # column-NAME match (every table has a `modifieddate` column) —
+        # only 6 genuinely had a date column in the primary key. Naming
+        # `interval_bases` here so the confidence spread is visible
+        # instead of collapsing every basis into one undifferentiated
+        # count.
+        bases = value.get("interval_bases") or {}
+        key_based = bases.get("primary_key_date", 0)
+        if key_based and key_based == timed:
+            parts.append(f"{timed} carry a time interval (date column in the key)")
+        elif key_based:
+            parts.append(
+                f"{timed} carry a time interval ({key_based} from a date "
+                f"column in the key, {timed - key_based} from naming only, "
+                f"lower confidence)"
+            )
+        else:
+            parts.append(f"{timed} carry a time interval (naming basis, lower confidence)")
     return {"label": "; ".join(parts) + ".", "status": "info"}
 
 
@@ -2281,7 +2339,8 @@ def _schema_inventory_container_measurements(registry, slug: str) -> list[dict] 
         return None
 
     _NOTES = {"data": "", "empty": "empty", "staging": "staging (by name)",
-              "no_access": "no access", "structure_only": "structure only"}
+              "no_access": "no access", "structure_only": "structure only",
+              "views_only": "views only, no base tables"}
     out = []
     for row in rows:
         if row["classification"] == "system":
