@@ -88,6 +88,38 @@ class TestNoFifthTabIsAdded:
         assert "sub_resources" not in app[start:end]
 
 
+class TestSchemaInventoryTabGatesOnTheRealResourceTypeValue:
+    """Found live, `laz_local_adventureworks`, 2026-09-27: Dan's Slice 22
+    usability gate failed before task 1 -- the Schema Inventory tab never
+    appeared for ANY database. `resourceTypes: ['database']` used the
+    display word, but `state.resourceType` is always the short form 'db'
+    (see the module comment above `$` -- "'repo' | 'db' | 'filesystem'" --
+    and every other comparison site in this file: `apiEntityType`,
+    `nonRepoLabel`, the find-title branch, the empty-selection prompt all
+    compare to 'db'). `subTabsHtml()`'s own `.includes(state.resourceType)`
+    filter silently never matched, so the tab was dropped for every
+    database. No existing test asserted the tab's gating at all -- these
+    are new, not fixes to a test that used the wrong fixture value."""
+
+    def test_sub_tabs_resourcetypes_uses_the_short_form(self):
+        app = _app()
+        start = app.index("const SUB_TABS = [")
+        end = app.index("];", start)
+        block = app[start:end]
+        row = block[block.index("id: 'schema_inventory'"):]
+        row = row[:row.index("},") + 1]
+        assert "resourceTypes: ['db']" in row
+        assert "'database'" not in row
+
+    def test_pane_guard_compares_against_the_short_form(self):
+        app = _app()
+        start = app.index("async function loadSchemaInventoryPane()")
+        end = app.index("\n}\n", start)
+        body = app[start:end]
+        assert "state.resourceType !== 'db'" in body
+        assert "state.resourceType !== 'database'" not in body
+
+
 class TestRunConfigurationAttachedToTheAnalysisRow:
     """The candidate-selection/catalogue UI is attached to sub_resource_
     survey's own row on Survey & analyses, not a separate view."""

@@ -343,7 +343,13 @@ const SUB_TABS = [
   // Slice 22 — database-only: a repo/filesystem has no schema/table/column
   // tree to show, so this tab is filtered out entirely for those types
   // (subTabsHtml() below), not merely left unbuilt-looking for them.
-  { id: 'schema_inventory', label: 'Schema Inventory', does: 'Schemas, tables and columns, with row/byte estimates, keys and comments', built: true, resourceTypes: ['database'] },
+  // Found live, `laz_local_adventureworks`, 2026-09-27: `resourceTypes`
+  // named the display-word 'database', but `state.resourceType` is always
+  // the short form 'db' (line ~157's own comment: 'repo' | 'db' |
+  // 'filesystem' — every other comparison site in this file agrees). The
+  // filter's own `.includes(state.resourceType)` check silently never
+  // matched, so this tab never appeared for any database at all.
+  { id: 'schema_inventory', label: 'Schema Inventory', does: 'Schemas, tables and columns, with row/byte estimates, keys and comments', built: true, resourceTypes: ['db'] },
 ];
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -3355,7 +3361,7 @@ export function bindSubTabs() {
  */
 async function loadSchemaInventoryPane() {
   const el = $('content');
-  if (state.resourceType !== 'database') {
+  if (state.resourceType !== 'db') {
     el.innerHTML = deferredPaneHtml(
       { label: 'Schema Inventory', does: 'Only databases have a schema tree to show' });
     bindSubTabs();

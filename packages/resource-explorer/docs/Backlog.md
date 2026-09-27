@@ -8280,3 +8280,45 @@ candidate for slice 18/20 — not fixed here, since the reactive patches
 already in place are each individually correct and this is a design
 change to the writer's contract, not a live-visible bug in its own right
 right now.
+
+## The Scouting Survey Definition's own "Run"/"Re-run" button does not follow the analyses-list rule (found live, Slice 22 gate, `laz_local_adventureworks`, 2026-09-27)
+
+After the Database Scouting Scan has run at least once, the analyses list
+further down the Survey pane correctly switches its own per-analysis
+button text from "Run" to "Re-run" — but the Survey Definition row's own
+launch button stays on "Run" regardless, even though the definition has
+genuinely already run. Two buttons on the same pane, reading the same
+underlying "has this run before?" fact, disagree with each other in
+front of the user.
+
+**Fix direction, not attempted here** (out of scope for Slice 22 — a
+schema-inventory-view slice, not a survey-pane slice): find whatever
+per-analysis-row logic already computes the Run/Re-run label (used by the
+analyses list) and apply the exact same rule to the Survey Definition
+row's own button, rather than adding a second, parallel "has it run"
+check that could drift from the first.
+
+## A schema's "N table(s)" count blends views and materialized views into the same word a sibling schema calls "view(s)" (found live, Slice 22 gate, `laz_local_adventureworks`, 2026-09-27)
+
+Slice 22's per-schema container line correctly gives a view-only schema
+its own wording ("hr 6 view(s) · no base tables" — see the `views_only`
+classification added on `re/adventureworks-correctness`), but a MIXED
+schema still reports every relation kind together under the word
+"table(s)": `production 28 table(s)` for a schema that is actually 25
+base tables + 2 views + 1 materialized view. The same database uses two
+different words for the same relation kind depending on which schema it
+sits in, which is the "correct number, wrong label" shape — the total
+(28) is right, but "table(s)" overstates what 3 of those 28 rows
+actually are.
+
+**Fix direction, not attempted here** (out of scope for Slice 22 —
+flagged during its gate, not part of its own brief): report the relation
+kinds separately in the per-schema line too, the same way `_schema_
+inventory_results`'s own `base_table_count`/`view_count`/`materialized_
+view_count`/`foreign_table_count` fields already split them at the
+resource level (see survey_definition_adapter.py's own comment on that
+split, "relation kinds are reported separately and named, never blended
+into one table count") — e.g. "25 table(s) · 2 view(s) · 1 materialized
+view" — or, at minimum, do not use the word "table(s)" for a count that
+includes non-base-table relations while a sibling schema's line uses
+"view(s)" for the identical relation kind.
