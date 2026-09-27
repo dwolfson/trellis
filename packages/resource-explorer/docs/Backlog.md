@@ -8322,3 +8322,20 @@ into one table count") — e.g. "25 table(s) · 2 view(s) · 1 materialized
 view" — or, at minimum, do not use the word "table(s)" for a count that
 includes non-base-table relations while a sibling schema's line uses
 "view(s)" for the identical relation kind.
+
+## Schema Inventory tab wants an at-a-glance bar chart, not just a list, for "which schema holds the data" (Dan's gate, Slice 22, `laz_local_adventureworks`, 2026-09-27)
+
+The tree view answers "which schema holds the data" only after reading
+down the list — Dan's own usability task 3 ("see at a glance which schema
+holds the data") passes on the list today, but he asked, while gating it,
+for a small bar chart at the top of the tab (estimated rows and column
+count per schema) so the answer is visible before reading anything.
+Explicitly queued for a later branch, not Slice 22 itself — the tree view
+was the brief; a chart is a genuinely new, separable piece of UI.
+
+**Fix direction, not attempted here**: the per-schema `row_total`/
+`bytes_total`/table-count numbers `schema_inventory_tree()` (and
+`_schema_inventory_container_rows` underneath it) already compute are
+exactly the chart's inputs — no new backend read needed, just a small bar
+(or two, rows and columns) per schema rendered above the existing tree,
+sorted the same data-first order the tree itself already uses.

@@ -3371,8 +3371,13 @@ async function loadSchemaInventoryPane() {
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>
-    <input id="schema-tree-filter" type="text" placeholder="Filter schemas, tables, columns…"
-      class="mb-s3 w-full max-w-[40ch] rounded-sm border border-rule bg-transparent px-s2 py-[4px] text-caveat text-ink placeholder:text-ink-muted" />
+    <div class="relative mb-s3 w-full max-w-[40ch]">
+      <input id="schema-tree-filter" type="text" placeholder="Filter schemas, tables, columns…"
+        class="w-full rounded-sm border border-rule bg-transparent px-s2 py-[4px] pr-[26px] text-caveat text-ink placeholder:text-ink-muted" />
+      <button id="schema-tree-filter-clear" type="button" aria-label="Clear filter"
+        class="absolute right-[6px] top-1/2 hidden -translate-y-1/2 cursor-pointer text-ink-muted hover:text-ink"
+      >×</button>
+    </div>
     <div id="schema-tree">Reading the schema tree…</div>`;
   bindSubTabs();
 
@@ -3386,12 +3391,40 @@ async function loadSchemaInventoryPane() {
   }
   if (slug !== state.selectedSlug) return;
   $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
-  $('schema-tree-filter')?.addEventListener('input', (e) => filterSchemaTree(e.target.value));
+  bindSchemaTreeFilter();
+}
+
+/** The filter input's own wiring: typing filters live, the × button
+ * (Dan's gate, 2026-09-27 -- "needs a clear control") appears once there is
+ * something to clear and empties the box back to the unfiltered tree, and
+ * Escape does the same without reaching for the mouse. */
+function bindSchemaTreeFilter() {
+  const input = $('schema-tree-filter');
+  const clearBtn = $('schema-tree-filter-clear');
+  if (!input || !clearBtn) return;
+  const sync = () => { clearBtn.classList.toggle('hidden', !input.value); };
+  const clear = () => {
+    input.value = '';
+    filterSchemaTree('');
+    sync();
+    input.focus();
+  };
+  input.addEventListener('input', (e) => { filterSchemaTree(e.target.value); sync(); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') clear(); });
+  clearBtn.addEventListener('click', clear);
 }
 
 const _SCHEMA_SHORTFALL_LABELS = {
   no_access: 'no access', structure_only: 'structure only', staging: 'staging (by name)',
   empty: 'empty',
+};
+
+//: Table-kind labels -- quiet, muted words distinguishing a base table from
+//: a view/materialized view (Dan's gate, 2026-09-27: he asked for a way to
+//: tell them apart at a glance without being didactic about it).
+const _TABLE_KIND_LABELS = {
+  'BASE TABLE': 'table', 'VIEW': 'view', 'MATERIALIZED VIEW': 'matview',
+  'FOREIGN': 'foreign table',
 };
 
 function schemaTreeHtml(schemas) {
@@ -3404,11 +3437,20 @@ function schemaTreeHtml(schemas) {
     const stamp = s.classification === 'data'
       ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
       : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
-    const searchText = [s.schema, ...(s.tables || []).map((t) => t.name),
-      ...(s.tables || []).flatMap((t) => (t.columns || []).map((c) => c.name))].join(' ').toLowerCase();
-    return `<details class="mb-s2 border-b border-rule pb-s2" data-tree-node data-tree-text="${esc(searchText)}">
+    // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
+    // this used to be the schema name PLUS every table/column name
+    // concatenated, so a node's own displayed match state was really "does
+    // ANY descendant match", not "does the node ITSELF match" -- the two
+    // got conflated in `filterSchemaTree()`, which is what silently hid a
+    // matched table's own column rows (they carry only their own name, and
+    // never matched the query that matched their PARENT table's name).
+    // `data-tree-text` now holds only this node's own name, exactly like
+    // the column rows below already did -- `filterSchemaTree()`'s own
+    // recursion is what now decides "does a descendant match" separately.
+    return `<details class="mb-s2 border-b border-rule pb-s2" data-tree-node data-tree-text="${esc(s.schema.toLowerCase())}">
       <summary class="cursor-pointer text-ink">
         <span class="font-semibold">${esc(s.schema)}</span>
+        <span class="text-caveat text-ink-muted"> schema</span>
         <span class="text-provenance text-ink-muted"> — ${esc(stamp)}</span>
       </summary>
       ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
@@ -3423,10 +3465,13 @@ function tableHtml(t) {
     ? 'not measured'
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
   const byteStamp = t.size_bytes == null ? 'not measured' : fmtBytes(t.size_bytes);
-  const searchText = [t.name, ...(t.columns || []).map((c) => c.name)].join(' ').toLowerCase();
-  return `<details class="mb-s1" data-tree-node data-tree-text="${esc(searchText)}">
+  const kindLabel = _TABLE_KIND_LABELS[t.table_type] || 'table';
+  // Own name only -- see schemaTreeHtml's comment above on why this is no
+  // longer the table+columns concatenation it used to be.
+  return `<details class="mb-s1" data-tree-node data-tree-text="${esc(t.name.toLowerCase())}">
     <summary class="cursor-pointer text-ink">
       ${esc(t.name)}
+      <span class="text-caveat text-ink-muted"> ${esc(kindLabel)}</span>
       <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count} column(s)</span>
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[70ch] border-collapse text-caveat">
@@ -3441,30 +3486,86 @@ function tableHtml(t) {
   </details>`;
 }
 
-/** Narrows the schema tree by name across all three levels — a matching
- *  leaf (column, table, or schema name) force-opens every `<details>` on
- *  its path to the root, so a match inside a collapsed schema is never
- *  hidden; clearing the filter leaves every node exactly as it was (no
- *  saved-collapse-state clobbering, unlike the sidebar's persistent one —
- *  this tree has no cross-session collapse preference to protect). */
+/** Narrows the schema tree by name across all three levels.
+ *
+ * Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's Slice 22 gate):
+ * the previous version matched every `[data-tree-node]` independently
+ * against `data-tree-text`, which used to hold a table/schema's own name
+ * PLUS every descendant's name concatenated together (so "does this node
+ * match" really meant "does this node OR anything under it match"). That
+ * made a TABLE look matched (its concatenated text contained the query),
+ * but its COLUMN rows -- each carrying only their own name -- did not, so
+ * they were independently hidden even though the table's own `<details>`
+ * was open: filtering on "salesorderheader" opened the table and showed
+ * nothing underneath it.
+ *
+ * `data-tree-text` is now always a node's OWN name only (schemaTreeHtml/
+ * tableHtml's own comments). This recursion is what decides descendant
+ * matching, per the rule the gate asked for:
+ *   - a node whose OWN name matches shows EVERY descendant (unconditionally
+ *     visible, but still collapsed unless individually opened) -- a
+ *     matched table therefore reveals all its columns, and a matched
+ *     schema reveals all its tables collapsed;
+ *   - a node whose own name does not match, but some descendant's does,
+ *     stays visible and its own `<details>` opens (so the path down to the
+ *     match is reachable), while sibling branches that contain no match
+ *     are hidden entirely;
+ *   - a node with no match anywhere under it is hidden.
+ *
+ * Clearing the filter leaves every node exactly as it was (no
+ * saved-collapse-state clobbering, unlike the sidebar's persistent one —
+ * this tree has no cross-session collapse preference to protect). */
 function filterSchemaTree(raw) {
   const q = raw.trim().toLowerCase();
-  const nodes = document.querySelectorAll('#schema-tree [data-tree-node]');
+  const root = $('schema-tree');
+  if (!root) return;
   if (!q) {
-    nodes.forEach((n) => { n.style.display = ''; });
+    root.querySelectorAll('[data-tree-node]').forEach((n) => { n.style.display = ''; });
     return;
   }
-  nodes.forEach((n) => {
-    const match = (n.dataset.treeText || '').includes(q);
-    n.style.display = match ? '' : 'none';
-    if (match) {
-      let p = n.parentElement;
-      while (p) {
-        if (p.tagName === 'DETAILS') p.open = true;
-        p = p.parentElement;
-      }
+  directTreeChildren(root).forEach((n) => filterTreeNode(n, q));
+}
+
+/** Filters one `[data-tree-node]` (and everything under it) against `q`,
+ * per the rule in `filterSchemaTree`'s own docstring. Returns whether `el`
+ * itself, or anything under it, matched -- so a caller one level up knows
+ * whether to keep `el` visible as part of a deeper match's path. */
+function filterTreeNode(el, q) {
+  const ownMatch = (el.dataset.treeText || '').includes(q);
+  if (ownMatch) {
+    el.style.display = '';
+    if (el.tagName === 'DETAILS') el.open = true;
+    // Unconditionally visible from here down -- no further per-node
+    // filtering, exactly the "a matched table shows all its columns" rule.
+    // Nested `<details>` are left in whatever open/closed state they were
+    // already in, which is how "a matched schema shows all its tables
+    // COLLAPSED" falls out for free (a table's own columns stay invisible
+    // behind its own closed `<details>`, regardless of this display style).
+    el.querySelectorAll('[data-tree-node]').forEach((n) => { n.style.display = ''; });
+    return true;
+  }
+  const children = directTreeChildren(el);
+  const anyChildMatched = children.reduce((acc, c) => filterTreeNode(c, q) || acc, false);
+  el.style.display = anyChildMatched ? '' : 'none';
+  if (anyChildMatched && el.tagName === 'DETAILS') el.open = true;
+  return anyChildMatched;
+}
+
+/** The `[data-tree-node]` elements directly under `el` in tree terms -- it
+ * descends through plain wrapper markup (the schema's table-list `<div>`,
+ * a table's own `<table>`/`<tr>` structure) but stops at the first
+ * `[data-tree-node]` it finds along each branch, so a schema's traversal
+ * yields its tables, never reaching past them into their own columns. */
+function directTreeChildren(el) {
+  const out = [];
+  const walk = (node) => {
+    for (const child of node.children) {
+      if (child.matches('[data-tree-node]')) out.push(child);
+      else walk(child);
     }
-  });
+  };
+  walk(el);
+  return out;
 }
 
 async function loadDispositionPane() {
