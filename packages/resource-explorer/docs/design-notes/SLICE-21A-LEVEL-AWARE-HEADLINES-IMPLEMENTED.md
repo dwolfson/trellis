@@ -238,6 +238,16 @@ capability probe; no new survey step, no new stored field.
   with no container reader registered (`row_count_snapshot`).
 - Full suite: 6517 passed, 104 skipped, 0 failed.
 
+## CI timeout on the first push was a runner flake, not this diff
+
+Run 36290350357 (tip `6e4ce6f7`) was cancelled at CI's 30-minute job
+timeout. Investigated at length (see `re/tests-fail-fast-without-egeria`'s
+own IMPLEMENTED doc for the full trace) and diffed against this slice's
+commit — no new network I/O anywhere in it. Confirmed 2026-09-27: CI on
+`3e3c0b12` (Slice 21b, which contains all of this slice) passed with the
+test job at 15.7 minutes, squarely in the normal band. The original cancel
+was a runner-level flake, unrelated to this diff.
+
 ## Report
 
 Branch `re/slice21a-level-headlines`, tip: see PR.
