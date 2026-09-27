@@ -142,6 +142,15 @@ ___
 Database Analysis Survey
 
 ### Scope Reference
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+___
+
+## Link Element To Scope
+### Target Element
+Database Analysis Survey
+
+### Scope Reference
 Which columns conform to a known Data Class, with what confidence, and which look like a class we do not have yet?
 
 ___
@@ -179,6 +188,15 @@ Database Analysis Survey
 
 ### Scope Reference
 How well-governed is this database's reference data — what share of its low-cardinality columns are bound to a set?
+
+___
+
+## Link Element To Scope
+### Target Element
+Database Analysis Survey
+
+### Scope Reference
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
 
 ___
 
