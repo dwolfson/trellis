@@ -269,7 +269,7 @@ and the count of cases.
 
 ---
 
-## E. The Database Analysis Survey cannot run on its own (added 2026-09-27)
+## E. The Database Analysis Survey fails on the default engine (added 2026-09-27)
 
 ### Evidence
 
@@ -284,6 +284,24 @@ engine override. It failed in under two seconds:
 > or run this definition through the local execution loop, which can
 > auto-run or propose an out-of-definition producer.
 
+**Same definition, `engine_override: "resource-explorer"`** (run 7a98803a,
+21:24 UTC): succeeded in 8 seconds, wrote three survey rows and the first
+Analysis-tier `step_runs` rows on any database (`postgres_column_profile`,
+`postgres_nested_columns`, `db_derived`, `postgres_operations`, executor
+`local`, `demanded_by` empty because the run was enqueued directly, not
+from a question card). So the local loop's auto-run of out-of-definition
+producers works; the Prefect path, which is the default when
+`engine_override` is None, does not. A person clicking Run on the Analysis
+definition gets the failure.
+
+Observation for whoever takes this: `database_column_profiles` shows the
+same shape before and after the profile step ran (1,236 rows per run, 468
+with `null_fraction`/`distinct_count` and state `measured`, 768 with
+`stats_basis` `not_collected`, at 19:24, 20:59 and both 21:24 runs). The
+468 come from `pg_stats` read by `postgres_schema_and_stats`; whether the
+profile step added sampling for anything, or wrote at all, is not visible
+in the rows. Check before assuming the step's output is stored.
+
 The Scouting definition had run on that database twenty minutes earlier and
 its schema inventory was in the registry. The prerequisite resolver did not
 look. Design §19.5 ("a fresh Egeria answer satisfies the prerequisite
@@ -292,6 +310,8 @@ stored answer satisfies the prerequisite**.
 
 ### Fix
 
+- Default the definition run to the engine that can satisfy it, or make the
+  Prefect path do what the local loop does.
 - The resolver checks the registry for a prior result of the producing step
   on this slug within a freshness window (§5.1a) before declaring the
   prerequisite unmet; a hit satisfies it and is recorded as the input's
