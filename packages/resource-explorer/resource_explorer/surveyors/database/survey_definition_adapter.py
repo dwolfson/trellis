@@ -946,9 +946,99 @@ def _db_derived_field_reader(field: str):
             return {}
         if isinstance(data, dict):
             _attach_container_credential_scope(registry, slug, data)
+            _attach_coverage_status(field, data)
         return data
 
     return _read
+
+
+#: Below this fraction of tables actually measured (not merely "some table
+#: somewhere had a key captured" — see keys_captured_for_table's own
+#: docstring), the WHOLE analysis reports `not_established` rather than a
+#: technically-true-but-misleading `measured` built almost entirely from
+#: unmeasured tables. Live-found, `coco_pharma`, 2026-09-27: with 3 of 58
+#: tables key-captured, `db_relationship_graph` read "state measured ·
+#: verdict bag_of_tables" — a confident verdict over a database that was 95%
+#: unmeasured. 0.5 (a plain majority) is a coordinator-approved starting
+#: point, not a tuned constant; see docs/Backlog.md for the open question of
+#: whether it should be uniform across all seven or tuned per analysis.
+_COVERAGE_NOT_ESTABLISHED_THRESHOLD = 0.5
+
+
+def _attach_coverage_status(field: str, data: dict) -> None:
+    """Slice 21b follow-up (2026-09-27, live gate on `coco_pharma`): flip
+    `_status.state` to NOT_ESTABLISHED, with a reason and the actual counts,
+    when too little of the database was measured for this analysis's
+    `STATE_MEASURED` verdict to mean much — the exact "correct number, wrong
+    label" defect the owner's gate caught (the explanation text already said
+    "insufficient signal"/named 55 of 58 tables excluded; `_status.state`
+    still said `measured`).
+
+    Mutates `data` in place, in the SAME `_status` slot
+    `_attach_container_credential_scope` uses — `facts.py`'s `_state_for`
+    already prefers `value["_status"]["state"]` over its own generic
+    MEASURED/NOTHING_FOUND inference (see that function's own docstring:
+    "the surveyor knew more about its own run than this layer can infer"),
+    so this is the existing seam, not a new one. Only overwrites an ALREADY
+    STATE_MEASURED payload's `_status` — a genuinely NOT_MEASURED payload
+    (empty `{}`, normalized by this reader's own caller) never reaches here
+    at all, and a `_status` a container-credential-scope check already set
+    is left alone (that check runs first and is the more specific of the
+    two when both would apply).
+    """
+    if "_status" in data:
+        return
+    from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
+
+    if field == "db_relationship_graph":
+        measured = data.get("table_count")
+        unmeasured = data.get("unmeasured_table_count") or 0
+        if measured is None:
+            return
+        total = measured + unmeasured
+        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "thin_key_coverage",
+                "detail": (f"only {measured} of {total} tables have their own keys "
+                           f"captured — too little of the database was measured for "
+                           f"a relationship verdict to mean much"),
+            }
+    elif field == "db_classification":
+        # `classify_database` already computes its own "undecided" verdict
+        # (`kind: None, confidence: 0`) whenever the winning and runner-up
+        # scores are too close to call at the available coverage — that IS
+        # this analysis's own signal for "not established," more precise
+        # than re-deriving a coverage-percentage cutoff (the live defect's
+        # own case was exactly 50% coverage, kind None: a coverage threshold
+        # tuned to catch it would have to sit AT the boundary rather than
+        # below it, which a stray fraction of a percent either way would
+        # then miss).
+        if "kind" in data and data.get("kind") is None:
+            coverage = data.get("coverage")
+            pct = f"{int(coverage * 100)}%" if coverage is not None else "unknown"
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "undecided",
+                "detail": (f"the classification could not settle on a kind at "
+                           f"{pct} signal coverage — too close to call, or too "
+                           f"little signal to call at all"),
+            }
+    elif field == "grain_determination":
+        grains = data.get("grains") or []
+        if not grains:
+            return
+        from resource_explorer.registry import STATE_MEASURED
+        measured = sum(1 for g in grains if g.get("state") == STATE_MEASURED)
+        total = len(grains)
+        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "thin_key_coverage",
+                "detail": (f"only {measured} of {total} tables were actually "
+                           f"measured for a grain — too little of the database "
+                           f"was covered for this analysis to mean much"),
+            }
 
 
 def _attach_container_credential_scope(registry, slug: str, data: dict) -> None:
@@ -1413,6 +1503,17 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
     if not by_schema:
         return None
 
+    # Slice 21a follow-up (owner's gate, 2026-09-27): a schema the credential
+    # probe knows about (USAGE granted) but that genuinely has zero tables —
+    # `public` on `coco_pharma` — never appears in `database_tables` at all,
+    # so it was silently missing from a list the header's own `schema_total`
+    # says should have N members. Every schema `by_<by_schema>()` names gets
+    # a row here too, with `table_count: 0`, rather than only the ones that
+    # happened to produce a table row.
+    for name in states:
+        if name not in by_schema:
+            by_schema[name] = []
+
     data_rows: list[dict] = []
     empty_rows: list[dict] = []
     staging_rows: list[dict] = []
@@ -1447,7 +1548,16 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
                 "classification": "staging",
             })
             continue
-        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0:
+        # `row_total is None` (Slice 21a follow-up, owner's gate, 2026-09-27):
+        # a schema whose only tables have `row_count IS NULL` — never
+        # measured at all, no catalog-estimate fallback either — used to
+        # fall through to the "data" branch below, where `row_total or 0`
+        # silently displayed a genuine "not measured" as "0 row(s)"
+        # indistinguishable from a real measured empty. The owner's own
+        # ruling: "a schema whose every readable table has zero rows [or, as
+        # here, no row data at all] is class `empty`" — every readable table
+        # reporting nothing is exactly as uninformative as reporting zero.
+        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0 or row_total is None:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total or 0,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
@@ -1535,11 +1645,28 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
             est = " (est.)" if row["is_estimate"] else ""
             parts.append(f"{name} {count} table(s) · {row['row_total']:,} row(s){est}")
         elif row["classification"] == "empty":
-            parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
+            if count == 0:
+                parts.append(f"{name} — empty (no tables)")
+            else:
+                parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
         elif row["classification"] == "staging":
             parts.append(f"{name} {count} table(s) — staging (by name)")
         else:
-            parts.append(f"{name} {count} table(s) — {_SHORTFALL_LABELS[row['classification']]}")
+            # Owner's gate, 2026-09-27: a structure-only/no-access schema
+            # can still carry a real (catalog-estimated) row total — the
+            # catalog-only fallback reads `pg_class.reltuples` regardless of
+            # `SELECT` grants (see connection.py's own docstring) — and
+            # dropping it here erased size information "How big is this
+            # database" already counts (coco_ods/coco_sus's estimated rows
+            # are most of the database's total). Named only when present;
+            # a genuinely unmeasured shortfall schema still says nothing.
+            row_note = ""
+            if row["row_total"] is not None:
+                est = " (est.)" if row["is_estimate"] else ""
+                row_note = f" · ~{row['row_total']:,} row(s){est}"
+            parts.append(
+                f"{name} {count} table(s){row_note} — {_SHORTFALL_LABELS[row['classification']]}"
+            )
 
     label = "; ".join(parts)
     if system_count:
@@ -1962,6 +2089,17 @@ def _db_relationship_graph_container_headline(registry, slug: str) -> dict | Non
     cross_edge_count = aggregation.get("cross_container_edge_count")
     if cross_edge_count is not None:
         label += f" · {cross_edge_count} cross-schema reference(s)"
+
+    # Owner's own design rule, restated for the container reading: "never a
+    # rollup without its parts" also means never the parts without the
+    # rollup — a bare per-schema list with no lead-in sentence forced the
+    # reader to add up 8 lines themselves to learn what "Is there a data
+    # model here" actually measured across the whole database.
+    measured = value.get("table_count")
+    unmeasured = value.get("unmeasured_table_count") or 0
+    if measured is not None:
+        total = measured + unmeasured
+        label = f"Keys captured for {measured} of {total} tables — by schema: {label}"
     return {"label": label, "status": "info"}
 
 
@@ -2001,7 +2139,13 @@ def _grain_determination_container_headline(registry, slug: str) -> dict | None:
         rows = by_schema[name]
         determined = sum(1 for r in rows if r.get("grain_statement"))
         parts.append(f"{name}: {determined} of {len(rows)} table(s) grain-determined")
-    return {"label": "; ".join(parts), "status": "info"}
+    label = "; ".join(parts)
+
+    determined_total = value.get("determined_count")
+    total = value.get("table_count")
+    if determined_total is not None and total is not None:
+        label = f"{determined_total} of {total} table(s) grain-determined — by schema: {label}"
+    return {"label": label, "status": "info"}
 
 
 def _format_bytes(n: int) -> str:

@@ -236,6 +236,98 @@ the record.
 - `db_fingerprint`/`db_change_rates`/`schema_diff`/`grant_change` headline
   readers — not named in the coordinator's seven; still unheadlined.
 
+## Owner's gate follow-up round (2026-09-27)
+
+The owner's live gate on 8813/`coco_pharma` found five real defects, all
+fixed and re-verified live before this round's commit:
+
+1. **The data was stale.** The gate's stored `database_tables`/`database_
+   columns` rows predated the catalog-floor PK/FK fix (§1 above) — a survey
+   never re-ran against the new code. **A direct `DatabaseSurveyor.survey
+   (steps=["schema"])` call was run against `coco_pharma` from this session,
+   2026-09-27, ~12:20 UTC** (materialized via `database_rows_from_survey_
+   data` and written through `record_database_survey`/`write_detail_rows`,
+   using the database's own stored `surveyor` credential) — a real write to
+   the shared dev registry, disclosed here per the dev-writes ruling so the
+   "run just now" timestamp the owner sees has a known author. Before: 3
+   columns with a captured PK, 0 with an FK, across 58 catalog-only tables.
+   After: 24 columns with a PK, 13 with an FK, across 21 distinct tables (53
+   of 58 tables now have their own keys captured overall, up from ~3).
+2. **`_status.state` stayed `measured` under thin coverage — the exact
+   defect this slice exists to fix.** Root cause was worse than a missing
+   threshold: `facts.py`'s live-read branch (every database analysis is
+   `live_read=True`) hardcoded `state=MEASURED` whenever there was ANY
+   content, completely bypassing `_state_for`'s own `_status`-override
+   mechanism — so even a correctly-computed `_status={"state": "not_
+   established"}` was silently discarded before a Fact was ever built. Fixed
+   both: new `_attach_coverage_status` (survey_definition_adapter.py) sets
+   `_status` when `db_relationship_graph`/`grain_determination` have <50%
+   of tables with their own keys captured, or when `db_classification`'s own
+   "undecided" verdict (`kind is None` — more precise than a raw coverage
+   cutoff, since the owner's example was exactly 50% coverage) fires; AND
+   `facts.py`'s live-read branch now calls `_state_for(value, run)` instead
+   of hardcoding MEASURED, honoring `_status` overrides everywhere, not just
+   here. 4 new regression tests, plus live confirmation both ways: a
+   synthetic "3 of 58" fixture reports `not_established`; the CURRENT
+   (post-re-survey, 91% key-captured) `coco_pharma` data correctly stays
+   `measured`.
+3. **Resource-level headline "was" a per-schema dump — withdrawn on review.**
+   Direct backend verification showed resource-level output was always a
+   proper summary sentence, correctly distinct from the container/member
+   reading. The coordinator confirmed: "Is there a data model here" is
+   Level=container and "What is the grain" is Level=member in the question
+   catalog, so the per-schema line IS the right (only) reading for those
+   questions — not a bug. Landed instead: a one-sentence rollup now LEADS
+   the per-schema list on both container headlines ("Keys captured for 21 of
+   58 tables — by schema: coco_ods …" / "21 of 58 table(s) grain-determined
+   — by schema: …") — the design rule "never a rollup without its parts"
+   cuts both ways: never the parts without the rollup either.
+4. **Internal contradictions.** The remaining one: `grain_determination`'s
+   `keys_were_captured` was a whole-database BOOLEAN sitting beside the
+   container reading's per-schema `keys_not_captured` lines — "yes" next to
+   "coco_ods: not established (keys_not_captured)" read as two disagreeing
+   claims about the same fact, when they answered different questions (ANY
+   table vs THIS table). Renamed to `keys_captured_count` (an actual count),
+   removing the field name — not just the semantics — most tests are unaware
+   of it since nothing else referenced the old key. New regression test
+   confirms the boolean field is gone.
+5. **Evidence panel `grains` rendered as "gap gap gap gap gap gap and 52
+   more".** `measureHtml()`'s array branch looks for `name`/`summary` (or
+   `check_name`/`detail`/`label`); grain entries had none. Added `name`
+   (qualified table name) and `summary` (the grain statement or its own
+   explanation) to every entry in `determine_grain()`. 2 new regression
+   tests.
+
+Three Slice 21a per-schema follow-ups, also from the owner's gate on 8812
+(21a's own port), landed in this same round since 21b already re-gates the
+shared `_schema_inventory_container_rows`/`_schema_inventory_container_
+headline` functions:
+
+- **A zero-table schema the credential probe knows about (`public`,
+  USAGE granted) was silently missing** from the per-schema list — it has
+  no `database_tables` row to be grouped by. Every schema the probe names
+  now gets a row (`table_count: 0` when it has none), rendered `"public —
+  empty (no tables)"`.
+- **Structure-only/no-access schemas erased their own estimated row
+  totals.** `coco_ods`/`coco_sus` (structure-only, 23/30 tables) carry a
+  real catalog-estimated row total (`pg_class.reltuples`, unaffected by
+  `SELECT` grants) that the render function was dropping entirely. Now:
+  `"coco_ods 23 table(s) · ~113 row(s) (est.) — structure only"`.
+  `db_relationship_graph` and `db_classification` are unaffected — this
+  is `schema_inventory`'s own container reader.
+- **A schema whose only table has `row_count IS NULL` (never measured, no
+  catalog-estimate fallback) was misclassified as `data` with a fabricated
+  `0 row(s)`.** `eu_sales`/`target_sales`/`us_sales` each had exactly this
+  shape and rendered as "1 table(s) · 0 row(s)" with no `— empty` suffix —
+  indistinguishable from a genuinely measured empty. Now classified
+  `empty`, matching the owner's own ruling: "a schema whose every readable
+  table has zero rows [or no row data at all] is class `empty`." Ordering
+  (data by rows desc → empty → structure-only/no-access → system folded)
+  was already correct once these three stopped being misclassified as
+  `data`. 4 new regression tests
+  (`tests/test_schema_inventory_container_headline.py::
+  TestSlice21aFollowups`).
+
 ## Report
 
 Implementation complete, tested, live-gated (backend-verified; browser

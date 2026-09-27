@@ -1241,19 +1241,43 @@ def determine_grain(inputs: DerivedInputs) -> dict:
         _apply_time_grain(entry, table_name, date_columns, named_date_columns)
         grains.append(entry)
 
+    # Slice 21b follow-up (2026-09-27, live gate): the "numbers behind this"
+    # evidence panel's `measureHtml()` array branch (app.js) renders a list
+    # row's "name"/"summary" fields when present, falling back to
+    # `check_name`/`name`/`id` and `summary`/`detail`/`label` — none of
+    # which a grain entry has, so 58 of them rendered as a bare, repeated
+    # `label` value ("gap gap gap gap gap gap and 52 more") with no way to
+    # tell WHICH table each one was about. `name` is the qualified table
+    # name every entry already computes; `summary` is the entry's own
+    # explanation of ITS grain (or lack of one) — the same sentence
+    # `grain_statement`/`explanation` already carries, just under the key
+    # name the generic renderer looks for.
+    for g in grains:
+        g["name"] = g.get("qualified_name") or ""
+        g["summary"] = g.get("grain_statement") or g.get("explanation") or g.get("label") or ""
+
     determined = [g for g in grains if g.get("grain_statement")]
     timed = [g for g in grains if g.get("interval")]
     bases: dict[str, int] = {}
     for g in timed:
         basis = g.get("interval_basis") or ""
         bases[basis] = bases.get(basis, 0) + 1
+    # Slice 21a follow-up (owner's gate, 2026-09-27): a whole-database
+    # boolean read as a flat contradiction beside the per-schema container
+    # headline's own "keys_not_captured" lines for individual schools — "keys
+    # were captured: yes" next to "coco_ods: not established
+    # (keys_not_captured)" looked like two disagreeing claims about the same
+    # fact, when they were actually answering different questions (ANY
+    # table vs THIS table). A count, not a boolean, states what was actually
+    # true without needing the reader to reconcile scope themselves.
+    keys_captured_count = sum(1 for t in tables if inputs.keys_captured_for_table(_table_key(t)))
     return {
         "state": STATE_MEASURED,
         "grains": grains,
         "table_count": len(tables),
         "determined_count": len(determined),
         "undetermined_count": len(grains) - len(determined),
-        "keys_were_captured": keys_captured,
+        "keys_captured_count": keys_captured_count,
         # §16.3's time-grain extension, rolled up so `preliminary_fit` and the
         # results card can read it without walking every table. `timed_count`
         # is a count of tables with a NAMING-derived interval; a table missing
