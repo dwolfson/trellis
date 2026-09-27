@@ -596,19 +596,31 @@ def _activity_evidence(inputs: DerivedInputs) -> dict[str, float] | None:
 
 
 def _fingerprint_evidence(fingerprint: dict) -> dict[str, float] | None:
-    """Copy evidence from the fingerprint check's own best match."""
+    """Copy evidence from the fingerprint check's own best match.
+
+    `best_similarity is None` has TWO different causes, found conflated
+    live (`adventureworks`, 2026-09-27): `fingerprint_database()` measured
+    against real comparable databases and genuinely found no match above
+    the reportable floor (a real, negative finding — "no known database
+    resembles this one," that function's own words) sets `best_similarity`
+    to `None` in EXACTLY the same way as never having had a comparable
+    database to check against at all. Only the second case is "missing
+    data" (`None` here, sorted into `classify_database`'s own `missing`
+    list, reported as "No data for: fingerprint"); the first is a real,
+    zero-strength "copy" measurement — this family DID contribute, it
+    contributed "not a copy of anything on hand."
+    """
     if fingerprint.get("state") != STATE_MEASURED:
         return None
     if not fingerprint.get("comparable_databases"):
         return None
-    best = fingerprint.get("best_similarity")
-    if best is None:
-        return None
     evidence = {kind: 0.0 for kind in _ALL_KINDS}
-    # Ramp from the reportable floor to the copy threshold, so a 0.3 overlap
-    # is nearly no evidence and a 0.95 match is full evidence.
-    span = _COPY_JACCARD - _REPORTABLE_JACCARD
-    evidence[KIND_COPY] = _ramp(float(best) - _REPORTABLE_JACCARD, span)
+    best = fingerprint.get("best_similarity")
+    if best is not None:
+        # Ramp from the reportable floor to the copy threshold, so a 0.3
+        # overlap is nearly no evidence and a 0.95 match is full evidence.
+        span = _COPY_JACCARD - _REPORTABLE_JACCARD
+        evidence[KIND_COPY] = _ramp(float(best) - _REPORTABLE_JACCARD, span)
     return evidence
 
 
