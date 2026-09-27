@@ -163,3 +163,88 @@ after a fresh `Schema Inventory` run, to confirm:
 
 Whoever runs this: append the outcome here, one sentence per screen, per
 the coordinator brief's own gate convention.
+
+## Follow-up (2026-09-26): owner's live gate on this build found two more issues
+
+The double-line contradiction from (b) was confirmed gone and schema names
+render, but the owner's gate raised two further items, both on this same
+branch.
+
+### (c) Leading count is now "how many schemas EXIST", not "how many have tables"
+
+**Owner's ruling:** "we should say 8 schemas if there are, even if one has
+no tables." The headline's leading number used to be
+`len(schema_names)`/`schema_count` — schemas that produced at least one
+stored table row — which understates the real schema count whenever a
+schema exists but is empty (`public` on `coco_pharma`, noted as a caveat
+in (a) above but not actually fixed there).
+
+**Fix:** when the credential-capability probe's `schema_total` is
+available, it is now the leading number, with a separate "N with tables"
+clause carrying the named/counted schemas that actually have data:
+`"8 schema(s), 7 with tables (coco_ods, coco_sus, demo, demo_auth,
+eu_sales, target_sales, us_sales), 6 visible to this credential · 61
+table(s) (58 base, 3 view) · 479 column(s)."` (the visibility clause
+dropped its old "of 8" since 8 is now stated up front). When no probe has
+run at all, `schema_total` is absent and the wording falls back to
+`"7 schema(s) with tables (...)"` — explicitly labeled, so the reader
+knows it's a floor rather than the real total, per the owner's own
+fallback instruction.
+
+### (d) The `schema_total` key mismatch — a real, separate bug, not a display artifact
+
+The owner reported the visibility clause not rendering on the live page at
+all, even though the header's own "sees 6 of 8 schema(s)" banner showed
+it for the same database — i.e., two pieces of UI reading the same
+underlying probe disagreed with each other.
+
+**Root cause:** `_credential_capability_results` (which
+`_schema_inventory_headline` and `_credential_scope_status` both read)
+called `registry.get_latest_database_survey(slug)` — the SINGLE most
+recent stored survey row only. `databases.py`'s `_to_summary` (the
+header's own data source) instead loops over `registry.
+get_database_surveys(slug)` — every stored survey, newest first — with
+its own comment explaining why: "a plain schema/statistics-only run after
+the probe ran would otherwise silently hide a still-current capability
+reading." `_credential_capability_results` never had that same defense,
+so the moment the LATEST run for a database didn't include the
+`credential_capability` step (true for `coco_pharma` at gate time), it
+saw an empty blob while the header kept showing an older, still-valid
+reading.
+
+**Fix:** `_credential_capability_results` now searches every stored
+survey the same way `_to_summary` already does, returning the first
+(newest) one whose blob actually carries a `credential_capability` key.
+`test_credential_totals_from_an_older_survey_still_show_when_the_latest_run_omits_the_probe`
+(new, `test_schema_inventory_headline.py`) pins the exact failure shape:
+a fake registry with two stored surveys, only the older of which carries
+the probe.
+
+Not a display bug and not this document's own `_schema_inventory_headline`
+being wrong in isolation — every OTHER reader of
+`_credential_capability_results` (`_credential_scope_status`, the third
+fact-envelope state) was equally affected and is fixed by the same change.
+
+### Tests (follow-up)
+
+- `test_schema_inventory_headline.py`: existing credential-totals
+  assertions updated to the new wording (`"N visible to this credential"`,
+  no `"of M"`); new `test_leading_count_is_schema_total_not_schemas_with_tables`
+  pins (c); new `test_credential_totals_from_an_older_survey_still_show_when_the_latest_run_omits_the_probe`
+  pins (d). `_FakeRegistry` gained `get_database_surveys` alongside its
+  existing `get_latest_database_survey`, since the reader now calls the
+  former.
+- Full suite: 6459 passed, 103 skipped, 1 failed
+  (`test_egeria_live_smoke.py::TestTheByNameFallbackWorks::
+  test_a_cataloged_database_is_findable_by_name`) — pre-existing, hits the
+  live dev platform directly, and is unrelated to this branch:
+  `coco_pharma`'s Egeria linkage has been recorded `stale` since
+  2026-09-22 (a prior platform reset — `registry.get_egeria_linkage
+  ("database", slug)` shows a 404 from Egeria's own repository for the
+  stale GUID), so the by-name lookup correctly finds nothing; this
+  specific test's own skip condition is supposed to exclude exactly that
+  case but apparently doesn't catch it for the deployment's current set of
+  cataloged databases. Diagnosed while investigating a Slice 12 report of
+  the same underlying staleness (see `is_published` honouring linkage
+  status, tracked separately as `re/is-published-honours-linkage`, pulled
+  forward from slice 18).

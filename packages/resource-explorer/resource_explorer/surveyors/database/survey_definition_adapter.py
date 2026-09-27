@@ -1019,30 +1019,43 @@ def _operations_section_reader(section: str):
 
 
 def _credential_capability_results(registry, slug: str) -> dict:
-    """Results reader for `credential_capability`, read back from the latest
-    survey's stored `survey_data` blob — same "no dedicated detail table"
-    shape `_operations_section_reader` uses, but at the top level rather than
-    nested under "operations" (`DatabaseSurveyor.survey()` stores it as its
+    """Results reader for `credential_capability`, read back from the survey_data
+    blob of the most recent survey THAT CARRIES ONE — same "no dedicated detail
+    table" shape `_operations_section_reader` uses, but at the top level rather
+    than nested under "operations" (`DatabaseSurveyor.survey()` stores it as its
     own top-level `results["credential_capability"]` key).
+
+    Deliberately searches every stored survey (newest first), not just the
+    single latest row — `databases.py`'s `_to_summary` (the header's own "sees
+    N of M schema(s)" text) already does this, with its own comment explaining
+    why: "a plain schema/statistics-only run after the probe ran would
+    otherwise silently hide a still-current capability reading." This reader
+    used to read only `get_latest_database_survey` (the single newest row),
+    so the two disagreed the moment the latest run didn't include the probe —
+    found live 2026-09-26, `coco_pharma`: the header showed "sees 6 of 8
+    schema(s)" from an earlier run, while this reader (and therefore the
+    `schema_inventory` headline's visibility clause) saw nothing and rendered
+    no credential-visibility fraction at all for the exact same database.
     """
     import json as _json
 
-    get_latest = getattr(registry, "get_latest_database_survey", None)
-    if not callable(get_latest):
+    get_surveys = getattr(registry, "get_database_surveys", None)
+    if not callable(get_surveys):
         # A registry stub that answers query_detail_rows()/get() but not
         # this survey-blob read (test_fact_layer_resource_type_dispatch.py's
         # minimal stub is exactly this shape) has simply never been asked
         # about credential capability — "nothing to say" is the correct
         # degradation, the same one an absent probe produces.
         return {}
-    survey = get_latest(slug)
-    if not survey:
-        return {}
-    try:
-        survey_data = _json.loads(survey.get("survey_data") or "{}")
-    except (ValueError, TypeError):
-        return {}
-    return survey_data.get("credential_capability") or {}
+    for survey in get_surveys(slug) or []:
+        try:
+            survey_data = _json.loads(survey.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        cap = survey_data.get("credential_capability")
+        if cap:
+            return cap
+    return {}
 
 
 def _credential_scope_status(registry, slug: str) -> dict | None:
@@ -1285,12 +1298,27 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
     schema_names = sorted({
         t.get("schema_name") for t in value.get("tables") or [] if t.get("schema_name")
     })
-    if schema_names and len(schema_names) <= _SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT:
-        schema_part = f"{len(schema_names)} schema(s) ({', '.join(schema_names)})"
-    else:
-        schema_part = f"{value.get('schema_count', 0)} schema(s)"
+    named = bool(schema_names) and len(schema_names) <= _SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT
+    schema_count = value.get("schema_count", 0)
+
+    # Owner's ruling (2026-09-26): the leading number is how many schemas
+    # EXIST, not how many have tables — "we should say 8 schemas if there
+    # are, even if one has no tables." `schema_total` (the credential probe's
+    # database-wide denominator, the same source as the header's "sees N of
+    # M schema(s)") is that count; `schema_count`/`schema_names` describe
+    # only the schemas that produced a stored table row, which is a floor
+    # when no probe has run at all. Named in full either way — a schema
+    # named here has at least one table; one with none is invisible to the
+    # names list either way, and is exactly the "N with tables" the wording
+    # exists to distinguish.
     if schema_total:
-        schema_part += f", {schema_visible} of {schema_total} visible to this credential"
+        with_tables = f", {len(schema_names)} with tables ({', '.join(schema_names)})" if named \
+            else f", {schema_count} with tables"
+        schema_part = f"{schema_total} schema(s){with_tables}, {schema_visible} visible to this credential"
+    elif named:
+        schema_part = f"{len(schema_names)} schema(s) with tables ({', '.join(schema_names)})"
+    else:
+        schema_part = f"{schema_count} schema(s) with tables"
 
     kind_bits = []
     for count, label in (
