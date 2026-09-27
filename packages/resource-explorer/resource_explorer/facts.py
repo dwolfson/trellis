@@ -698,6 +698,92 @@ RESOURCE_STATE_SOURCES = {
 #: that answers gets stated, one that informs gets offered.
 EVIDENCE_ONLY = {"related_resources"}
 
+#: Owner's gate follow-up (2026-09-27): `_resource_state_fact` never set a
+#: `headline` at all — every resource-state-sourced question fell straight
+#: to `readEnvelope`'s rung-3 scalar fallback ("no written summary — the
+#: figures above are the raw measures"), the exact defect this whole area
+#: exists to close for analysis-backed facts, just never extended to these.
+#: `{subject: (value, state) -> str}` — a headline function per subject,
+#: not per resolver, since `survey_definitions` is shared by two resolvers
+#: with different value shapes (`_r_which_survey`'s `candidates` list vs
+#: `_r_survey_definition_exists`'s bare `authored`/`count`) and must handle
+#: both. Returning "" falls through to the scalar floor unchanged — the
+#: same "never fail to report a fact" contract `_headline_for` keeps.
+def _h_catalog_presence(value: dict, state: str) -> str:
+    siblings = value.get("siblings_in_group") or 0
+    group = value.get("group") or ""
+    if not group:
+        return "Registered, but not assigned to a group — no siblings to compare against."
+    if siblings:
+        return f"Registered in group {group!r}, alongside {siblings} other resource(s)."
+    return f"Registered in group {group!r}, with no other resources alongside it yet."
+
+
+def _h_related_resources(value: dict, state: str) -> str:
+    lang = value.get("primary_language") or ""
+    same_lang = value.get("same_language_count") or 0
+    same_group = value.get("same_group_count") or 0
+    if state == NOTHING_FOUND:
+        return "No candidate overlap found — no other resource shares its group or primary language."
+    parts = []
+    if same_group:
+        parts.append(f"{same_group} in the same group")
+    if same_lang:
+        parts.append(f"{same_lang} sharing its {lang or 'primary'} language")
+    return ("Candidate overlap only, not a judgement of replacement: "
+            + "; ".join(parts) + ".")
+
+
+def _h_survey_history(value: dict, state: str) -> str:
+    if state == NOTHING_FOUND:
+        return "Never surveyed at any tier."
+    return f"Last surveyed {value.get('last_surveyed_at', '')}."
+
+
+def _h_survey_definitions(value: dict, state: str) -> str:
+    if state == NOT_ESTABLISHED:
+        return value.get("detail") or "Egeria could not be reached, so this is not established."
+    if "candidates" in value:
+        count = value.get("count") or 0
+        if not count:
+            return "No Survey Definition is authored for this technology type."
+        names = ", ".join(value.get("candidates") or [])
+        return f"{count} Survey Definition(s) authored: {names}."
+    authored = value.get("authored")
+    count = value.get("count") or 0
+    tech = value.get("technology_type") or "this technology type"
+    return (f"{count} Survey Definition(s) authored for {tech}." if authored
+            else f"No Survey Definition is authored for {tech} — a catalog gap.")
+
+
+def _h_disposition(value: dict, state: str) -> str:
+    if state == NOTHING_FOUND:
+        return "No disposition recorded yet — undecided."
+    verdict = value.get("disposition") or ""
+    reason = value.get("reason") or ""
+    return f"{verdict.capitalize()}" + (f" — {reason}" if reason else ".")
+
+
+def _h_change_since_last_survey(value: dict, state: str) -> str:
+    if state == NOT_ESTABLISHED:
+        return "Nothing comparable yet — no prior survey to measure change against."
+    changed = value.get("changed_count") or 0
+    unchanged = value.get("unchanged_count") or 0
+    if not changed:
+        return f"Nothing has changed since the last survey ({unchanged} analysis(es) compared)."
+    names = ", ".join(c["analysis_id"] for c in (value.get("changed") or [])[:5])
+    return f"{changed} of {changed + unchanged} analysis(es) changed since the last survey: {names}."
+
+
+_RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
+    "catalog_presence": _h_catalog_presence,
+    "related_resources": _h_related_resources,
+    "survey_history": _h_survey_history,
+    "survey_definitions": _h_survey_definitions,
+    "disposition": _h_disposition,
+    "change_since_last_survey": _h_change_since_last_survey,
+}
+
 #: Kinds that ARE answerable, but not from analysis results — and not yet
 #: readable here. `direct` questions come from a field on the resource
 #: (Project.description and the like) and `chart` from a trend series. The
@@ -1334,12 +1420,27 @@ class FactLayer:
             log.debug("resource-state resolver failed for %s/%s: %s", slug, subject, exc)
             return Fact(subject, NOT_ESTABLISHED,
                         note=f"Could not be read ({type(exc).__name__}).")
+        headline = self._resource_state_headline(slug, subject, value, state)
         return Fact(
-            subject, state, value=value, provenance=PROVENANCE_MEASURED,
+            subject, state, value=value, headline=headline, provenance=PROVENANCE_MEASURED,
             evidence_only=subject in EVIDENCE_ONLY,
             note=("Nothing is recorded for this — a real absence, not an "
                   "unrun analysis." if state == NOTHING_FOUND else ""),
         )
+
+    @staticmethod
+    def _resource_state_headline(slug: str, subject: str, value: dict, state: str) -> str:
+        """The resource-state fact's own summary sentence, or "" — best
+        effort, mirroring `_headline_for`'s own "must never fail to report a
+        fact because the sentence could not be built" contract."""
+        headline_fn = _RESOURCE_STATE_HEADLINES.get(subject)
+        if headline_fn is None:
+            return ""
+        try:
+            return headline_fn(value, state) or ""
+        except Exception as exc:
+            log.debug("resource-state headline failed for %s/%s: %s", slug, subject, exc)
+            return ""
 
     def _last_run(self, slug: str) -> dict:
         """{analysis_id: {last_run_at, basis, partial}} — one query per resource.
