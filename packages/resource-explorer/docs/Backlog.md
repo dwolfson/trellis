@@ -8100,3 +8100,33 @@ if the triple still repeats, capture the actual `<div>` markup (not just
 the rendered text) from that block — that will show whether it's two
 sibling divs (a genuine double-render) or one div with doubled inner
 content (a string-building bug), which narrows where to look next.
+
+## `_store_results` clobbers a survey_data section a run didn't collect — three incidents, one root cause, not fixed yet
+
+Three separate incidents, same shape, found and patched one field at a
+time rather than at the root: `row_count`/`size_bytes` (enumeration-floor
+PR, 2026-09-26), and `operations`/`credential_capability` (Slice 12,
+#303, 2026-09-26 — a Survey Definition's `credential_capability` step
+wrote an empty `operations: {}` for its own run, clobbering the real
+operations data a `postgres_operations` step had written two rows
+earlier in the same definition run). Each was fixed by adding a
+preserve-prior-value fallback for that ONE field — a real fix each time,
+but the same whack-a-mole pattern will recur for the next field a survey
+step doesn't happen to touch.
+
+**The generic rule this is standing in for:** a survey row should write
+only the sections its OWN run's requested steps actually collected — not
+every key `_store_results` knows about, defaulting the ones this run
+didn't touch to an empty/zero value that then gets written as fact.
+Preserve-prior-per-field treats the symptom at each field independently;
+the real fix is one mechanism (e.g. `results.get(key, _SENTINEL)` skipped
+entirely from the write, or a `requested_sections` set passed alongside
+`results` so `_store_results` knows definitively what NOT to touch) that
+closes this for every current and future field at once, rather than
+requiring a fourth incident to notice the pattern again.
+
+Logged per the coordinator's ruling (Slice 12 review, 2026-09-26) as a
+candidate for slice 18/20 — not fixed here, since the reactive patches
+already in place are each individually correct and this is a design
+change to the writer's contract, not a live-visible bug in its own right
+right now.
