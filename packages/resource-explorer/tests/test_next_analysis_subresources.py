@@ -62,14 +62,20 @@ def _projects_py():
 
 
 class TestNoFifthTabIsAdded:
-    """The ruling's central point: nothing joins SUB_TABS."""
+    """The ruling's central point: sub-resources specifically does not join
+    SUB_TABS — see `test_no_sub_resources_tab_id_anywhere_in_sub_tabs`
+    below, the actual guard. Slice 22 (2026-09-27) added a genuinely new,
+    unrelated tab (`schema_inventory`, database-only — see `resourceTypes`
+    filtering in `subTabsHtml()`), so the exact count this test pins is
+    "the current canonical set," not "four forever"; the ruling this class
+    is named for was never about a hard cap on tab count."""
 
-    def test_sub_tabs_are_still_exactly_the_canonical_four(self):
+    def test_sub_tabs_are_the_current_canonical_set(self):
         app = _app()
         start = app.index("const SUB_TABS = [")
         end = app.index("];", start)
         block = app[start:end]
-        ids = ["questions", "survey", "by_analysis", "disposition"]
+        ids = ["questions", "survey", "by_analysis", "disposition", "schema_inventory"]
         for i in ids:
             assert f"id: '{i}'" in block
         assert block.count("id: '") == len(ids)

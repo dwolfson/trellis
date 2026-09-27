@@ -121,6 +121,7 @@ import {
   listAnalyses,
   listDatabases,
   listFilesystems,
+  getSchemaInventoryTree,
   listGroups,
   listInvestigationMembers,
   listInvestigations,
@@ -339,6 +340,10 @@ const SUB_TABS = [
   { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
   { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
   { id: 'disposition', label: 'Disposition', does: 'Set a verdict on this resource, its history, and the journal', built: true },
+  // Slice 22 — database-only: a repo/filesystem has no schema/table/column
+  // tree to show, so this tab is filtered out entirely for those types
+  // (subTabsHtml() below), not merely left unbuilt-looking for them.
+  { id: 'schema_inventory', label: 'Schema Inventory', does: 'Schemas, tables and columns, with row/byte estimates, keys and comments', built: true, resourceTypes: ['database'] },
 ];
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -3259,7 +3264,7 @@ export function bindResourceHeader() {
  */
 function subTabsHtml() {
   return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
-    ${SUB_TABS.map((t) => {
+    ${SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType)).map((t) => {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
@@ -3331,6 +3336,131 @@ export function bindSubTabs() {
  * one. Advocacy written to satisfy a required field is "useful library" on
  * two hundred assets. The empty state is visible instead.
  */
+/**
+ * Slice 22 — the Schemas → Tables → Columns tree for one database.
+ *
+ * One fetch, the whole tree (`getSchemaInventoryTree`) — the data is not
+ * paginated router-side, and classic UI's own schema/table/column panel
+ * already proved this is small enough to fetch in one call and toggle with
+ * plain DOM show/hide (no lazy per-node fetch needed, unlike `openMembers`'s
+ * two-level member rail).
+ *
+ * Interaction pattern borrowed from the sidebar's own group list (Backlog/
+ * `renderSidebar`): native `<details>`/`<summary>` for free expand/collapse
+ * semantics, all schemas collapsed by default (no `open` attribute), and a
+ * text filter that narrows by name across all three levels — a filtered-in
+ * leaf force-opens every `<details>` on its path to the root, exactly the
+ * "a match inside a collapsed schema must not stay hidden" rule that list
+ * already gets right.
+ */
+async function loadSchemaInventoryPane() {
+  const el = $('content');
+  if (state.resourceType !== 'database') {
+    el.innerHTML = deferredPaneHtml(
+      { label: 'Schema Inventory', does: 'Only databases have a schema tree to show' });
+    bindSubTabs();
+    return;
+  }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <input id="schema-tree-filter" type="text" placeholder="Filter schemas, tables, columns…"
+      class="mb-s3 w-full max-w-[40ch] rounded-sm border border-rule bg-transparent px-s2 py-[4px] text-caveat text-ink placeholder:text-ink-muted" />
+    <div id="schema-tree">Reading the schema tree…</div>`;
+  bindSubTabs();
+
+  let tree;
+  try {
+    tree = await getSchemaInventoryTree(slug);
+  } catch (err) {
+    if (slug !== state.selectedSlug) return;
+    $('schema-tree').innerHTML = `<div class="text-state-warn">Could not read the schema tree: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;
+  $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
+  $('schema-tree-filter')?.addEventListener('input', (e) => filterSchemaTree(e.target.value));
+}
+
+const _SCHEMA_SHORTFALL_LABELS = {
+  no_access: 'no access', structure_only: 'structure only', staging: 'staging (by name)',
+  empty: 'empty',
+};
+
+function schemaTreeHtml(schemas) {
+  if (!schemas.length) return `<div class="text-caveat text-ink-muted">No stored schema rows yet — run a survey first.</div>`;
+  const parts = schemas.map((s) => {
+    if (s.classification === 'system') {
+      return `<div class="mb-s1 text-caveat text-ink-muted" data-tree-node data-tree-text="system">
+        ${esc(String(s.system_count))} system schema(s) folded (pg_catalog, information_schema, pg_toast*, pg_temp*)</div>`;
+    }
+    const stamp = s.classification === 'data'
+      ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
+      : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+    const searchText = [s.schema, ...(s.tables || []).map((t) => t.name),
+      ...(s.tables || []).flatMap((t) => (t.columns || []).map((c) => c.name))].join(' ').toLowerCase();
+    return `<details class="mb-s2 border-b border-rule pb-s2" data-tree-node data-tree-text="${esc(searchText)}">
+      <summary class="cursor-pointer text-ink">
+        <span class="font-semibold">${esc(s.schema)}</span>
+        <span class="text-provenance text-ink-muted"> — ${esc(stamp)}</span>
+      </summary>
+      ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
+      <div class="ml-s3 mt-s2">${(s.tables || []).map(tableHtml).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
+    </details>`;
+  });
+  return parts.join('');
+}
+
+function tableHtml(t) {
+  const rowStamp = t.row_count == null
+    ? 'not measured'
+    : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
+  const byteStamp = t.size_bytes == null ? 'not measured' : fmtBytes(t.size_bytes);
+  const searchText = [t.name, ...(t.columns || []).map((c) => c.name)].join(' ').toLowerCase();
+  return `<details class="mb-s1" data-tree-node data-tree-text="${esc(searchText)}">
+    <summary class="cursor-pointer text-ink">
+      ${esc(t.name)}
+      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count} column(s)</span>
+    </summary>
+    <table class="ml-s3 mt-[4px] w-full max-w-[70ch] border-collapse text-caveat">
+      ${(t.columns || []).map((c) => `<tr class="border-b border-rule" data-tree-node data-tree-text="${esc(c.name.toLowerCase())}">
+        <td class="py-[3px] pr-s2 font-mono text-ink">${esc(c.name)}</td>
+        <td class="py-[3px] pr-s2 text-ink-muted">${esc(c.type)}</td>
+        <td class="py-[3px] pr-s2 text-ink-muted">${c.nullable === null ? 'nullable unknown' : (c.nullable ? 'nullable' : 'not null')}</td>
+        <td class="py-[3px] pr-s2 text-accent-ink">${esc(c.key_role || '')}</td>
+        <td class="py-[3px] text-ink-muted">${c.comment ? esc(c.comment) : 'comments not captured'}</td>
+      </tr>`).join('')}
+    </table>
+  </details>`;
+}
+
+/** Narrows the schema tree by name across all three levels — a matching
+ *  leaf (column, table, or schema name) force-opens every `<details>` on
+ *  its path to the root, so a match inside a collapsed schema is never
+ *  hidden; clearing the filter leaves every node exactly as it was (no
+ *  saved-collapse-state clobbering, unlike the sidebar's persistent one —
+ *  this tree has no cross-session collapse preference to protect). */
+function filterSchemaTree(raw) {
+  const q = raw.trim().toLowerCase();
+  const nodes = document.querySelectorAll('#schema-tree [data-tree-node]');
+  if (!q) {
+    nodes.forEach((n) => { n.style.display = ''; });
+    return;
+  }
+  nodes.forEach((n) => {
+    const match = (n.dataset.treeText || '').includes(q);
+    n.style.display = match ? '' : 'none';
+    if (match) {
+      let p = n.parentElement;
+      while (p) {
+        if (p.tagName === 'DETAILS') p.open = true;
+        p = p.parentElement;
+      }
+    }
+  });
+}
+
 async function loadDispositionPane() {
   const el = $('content');
   // Generalized 2026-09-22 (Backlog.md, "Disposition is NOT fixed here"):
@@ -5458,6 +5588,7 @@ async function loadPane() {
     return;
   }
 
+  if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
   if (state.subTab === 'survey') { await loadSurveyPane(); return; }
   // 'dashboard' is a retired tab id -- a bookmarked/shared URL from before
   // the stage-page round lands on its nearest surviving surface rather than

@@ -1533,19 +1533,21 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         is_estimate = any(t.get("state") == STATE_CATALOG_ESTIMATE for t in measured)
         scope_state = (states.get(name) or {}).get("state")
 
+        reason = (states.get(name) or {}).get("explanation") or ""
+
         if scope_state in (SCOPE_NOT_VISIBLE, SCOPE_STRUCTURE_ONLY):
             classification = "no_access" if scope_state == SCOPE_NOT_VISIBLE else "structure_only"
             shortfall_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": classification,
+                "classification": classification, "reason": reason,
             })
             continue
         if any(marker in name.lower() for marker in _STAGING_NAME_MARKERS):
             staging_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": "staging",
+                "classification": "staging", "reason": reason,
             })
             continue
         # `row_total is None` (Slice 21a follow-up, owner's gate, 2026-09-27):
@@ -1561,13 +1563,13 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total or 0,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": "empty",
+                "classification": "empty", "reason": reason,
             })
             continue
         data_rows.append({
             "schema": name, "table_count": table_count, "row_total": row_total or 0,
             "bytes_total": bytes_total, "is_estimate": is_estimate,
-            "classification": "data",
+            "classification": "data", "reason": reason,
         })
 
     data_rows.sort(key=lambda r: r["row_total"], reverse=True)
@@ -1578,10 +1580,103 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
     if system_names:
         rows.append({
             "schema": None, "table_count": None, "row_total": None,
-            "bytes_total": None, "is_estimate": False,
+            "bytes_total": None, "is_estimate": False, "reason": "",
             "classification": "system", "system_count": len(system_names),
         })
     return rows
+
+
+def schema_inventory_tree(registry, slug: str) -> dict | None:
+    """Slice 22 — the full Schemas → Tables → Columns tree for the /next
+    Schema Inventory view.
+
+    Built entirely from the structured `database_tables`/`database_columns`
+    detail rows plus `_schema_inventory_container_rows`'s own per-schema
+    classification (never from the `survey_data` blob the classic UI's
+    `renderDbSurveyReport` reads — that path is a different, older one this
+    view deliberately does not depend on, so it keeps working however the
+    classic page evolves).
+
+    Returns `None` when `_schema_inventory_container_rows` has nothing to
+    say (no `database_tables` rows at all — same "nothing to say" contract).
+    Otherwise `{"schemas": [...]}`, one entry per `_schema_inventory_
+    container_rows` row IN THE SAME ORDER (data by rows desc → empty →
+    staging → structure-only/no-access → system folded last) — the tree
+    view's schema ordering is this function's ordering, not re-derived.
+    A non-system schema row gains a `"tables"` list; the trailing system
+    row is passed through unchanged (folded, never expanded to tables).
+
+    Each table entry carries `row_count`/`row_count_state` (the raw stored
+    `state` — `catalog_estimate` marks an estimate, `measured` a real scan,
+    anything else "not measured" territory) and `size_bytes` (`None` when
+    never measured, rendered "not measured" by the frontend rather than a
+    false zero — the same discipline `_schema_inventory_container_rows`
+    itself already applies at the schema level).
+
+    Each column entry carries `key_role` ("PK", "FK", or "") computed from
+    the catalog-floor keys (Slice 21b's `pg_constraint` read, or the live
+    `information_schema` path — both write to the same `is_primary_key`/
+    `foreign_key_json` fields), `nullable` (`True`/`False`/`None` for
+    genuinely unknown — a catalog-only-fallback column has no source for
+    this at all, see `connection.py`'s own docstring), and `comment` (empty
+    string when none was captured — the frontend renders "comments not
+    captured" for that case, not a blank cell indistinguishable from "no
+    comment written").
+    """
+    rows = _schema_inventory_container_rows(registry, slug)
+    if rows is None:
+        return None
+
+    tables = registry.query_detail_rows("database_tables", slug)
+    columns = registry.query_detail_rows("database_columns", slug)
+
+    tables_by_schema: dict[str, list[dict]] = {}
+    for t in tables:
+        name = t.get("schema_name")
+        if name:
+            tables_by_schema.setdefault(name, []).append(t)
+
+    columns_by_table: dict[tuple, list[dict]] = {}
+    for c in columns:
+        key = (c.get("schema_name"), c.get("table_name"))
+        columns_by_table.setdefault(key, []).append(c)
+    for cols in columns_by_table.values():
+        cols.sort(key=lambda c: c.get("ordinal_position") or 0)
+
+    schema_nodes = []
+    for row in rows:
+        if row["classification"] == "system":
+            schema_nodes.append(dict(row))
+            continue
+        name = row["schema"]
+        table_nodes = []
+        for t in sorted(tables_by_schema.get(name, []), key=lambda t: t.get("table_name") or ""):
+            table_name = t.get("table_name")
+            col_nodes = []
+            for c in columns_by_table.get((name, table_name), []):
+                is_pk = bool(c.get("is_primary_key"))
+                fk = c.get("foreign_key_json")
+                is_nullable = c.get("is_nullable")
+                col_nodes.append({
+                    "name": c.get("column_name"),
+                    "type": c.get("base_type") or c.get("data_type") or "",
+                    "nullable": None if is_nullable is None else bool(is_nullable),
+                    "key_role": "PK" if is_pk else ("FK" if fk else ""),
+                    "foreign_key": fk if isinstance(fk, dict) else None,
+                    "comment": c.get("description") or "",
+                })
+            table_nodes.append({
+                "name": table_name,
+                "table_type": t.get("table_type") or "",
+                "row_count": t.get("row_count"),
+                "row_count_state": t.get("state") or "",
+                "size_bytes": t.get("size_bytes"),
+                "column_count": t.get("column_count") if t.get("column_count") is not None else len(col_nodes),
+                "columns": col_nodes,
+            })
+        schema_nodes.append({**row, "tables": table_nodes})
+
+    return {"schemas": schema_nodes}
 
 
 def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
