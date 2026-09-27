@@ -747,10 +747,12 @@ class PostgreSQLConnection(DatabaseConnection):
             catalog = self._catalog_table_summary(schema_name)
         except Exception:
             return
+        pk_lookup, fk_lookup = self._catalog_keys_for_schema(schema_name)
         for table_name, info in catalog.items():
             if table_name in tables:
                 continue
-            columns = self._catalog_columns_for_table(schema_name, table_name)
+            columns = self._catalog_columns_for_table(
+                schema_name, table_name, pk_lookup, fk_lookup)
             tables[table_name] = {
                 "name": table_name,
                 "type": info.get("table_type") or "",
@@ -798,19 +800,105 @@ class PostgreSQLConnection(DatabaseConnection):
             }
         return out
 
-    def _catalog_columns_for_table(self, schema_name: str, table_name: str) -> list[dict]:
+    def _catalog_keys_for_schema(self, schema_name: str) -> tuple[dict | None, dict | None]:
+        """`(pk_lookup, fk_lookup)` for the catalog-only fallback path, same
+        shape `_get_tables_for_schema()`'s own `pk_lookup`/`fk_lookup` use
+        (`{table_name: {column_name, ...}}` / `{(table_name, column_name):
+        {foreign_schema, foreign_table, foreign_column}}`) — but read from
+        `pg_constraint`/`pg_attribute` rather than `information_schema.
+        table_constraints`/`key_column_usage`, since those are the exact
+        privilege-filtered views this fallback exists because of.
+
+        `pg_constraint` is catalog metadata like `pg_class`/`pg_attribute`/
+        `pg_namespace` (see `_get_tables_for_schema()`'s own docstring) —
+        readable by any connected role regardless of `USAGE`/`SELECT`
+        grants, so a fallback table's PK/FK no longer needs to default to
+        `None`: unlike `is_nullable`/`column_default`/comments (which
+        genuinely have no catalog-only source), key membership is exactly
+        as available here as the table/column names already are. Composite
+        keys are matched position-by-position (`WITH ORDINALITY`) so a
+        multi-column FK pairs each local column with its correct referenced
+        column rather than a cross product.
+
+        Returns `None` (not `{}`) for either half when its own query
+        failed — an empty dict here would be indistinguishable from "the
+        query ran and genuinely found no keys," and a caller reading
+        `pk_lookup.get(table, set())` against a silently-failed empty dict
+        would report every column as confidently NOT a primary key: the
+        exact confident-wrong-answer shape `_catalog_columns_for_table`'s
+        own docstring already refuses for `is_nullable`/`default`.
+        """
+        pk_lookup: dict[str, set] | None = {}
+        try:
+            pk_query = """
+                SELECT c.relname AS table_name, a.attname AS column_name
+                FROM pg_constraint con
+                JOIN pg_class c ON c.oid = con.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN unnest(con.conkey) AS ck(attnum) ON true
+                JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ck.attnum
+                WHERE n.nspname = %s AND con.contype = 'p'
+            """
+            for r in self.execute_query(pk_query, (schema_name,)):
+                pk_lookup.setdefault(r["table_name"], set()).add(r["column_name"])
+        except Exception:
+            pk_lookup = None
+
+        fk_lookup: dict[tuple, dict] | None = {}
+        try:
+            fk_query = """
+                SELECT c.relname AS table_name, a.attname AS column_name,
+                       fn.nspname AS foreign_schema, fc.relname AS foreign_table,
+                       fa.attname AS foreign_column
+                FROM pg_constraint con
+                JOIN pg_class c ON c.oid = con.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_class fc ON fc.oid = con.confrelid
+                JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+                JOIN unnest(con.conkey) WITH ORDINALITY AS ck(attnum, ord) ON true
+                JOIN unnest(con.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = ck.ord
+                JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ck.attnum
+                JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = fk.attnum
+                WHERE n.nspname = %s AND con.contype = 'f'
+            """
+            for r in self.execute_query(fk_query, (schema_name,)):
+                fk_lookup[(r["table_name"], r["column_name"])] = {
+                    "foreign_schema": r["foreign_schema"],
+                    "foreign_table": r["foreign_table"],
+                    "foreign_column": r["foreign_column"],
+                }
+        except Exception:
+            fk_lookup = None
+
+        return pk_lookup, fk_lookup
+
+    def _catalog_columns_for_table(
+        self, schema_name: str, table_name: str,
+        pk_lookup: dict | None = None, fk_lookup: dict | None = None,
+    ) -> list[dict]:
         """Column names and Postgres type names from `pg_attribute`, for the
         catalog-only fallback path.
 
-        Deliberately does NOT attempt `is_nullable`, `column_default`,
-        primary/foreign-key detail or a comment for these columns — this
-        codebase's PK/FK/default/comment lookups all go through
-        `information_schema`/`obj_description()`/`col_description()`, which
-        are exactly the privilege-filtered paths this fallback exists
-        because of. Reporting `nullable`/`is_primary_key` as a guessed
-        `False` here would be a confident wrong answer of the same shape
-        this whole change exists to avoid, so those fields are left `None`/
-        absent rather than defaulted.
+        Deliberately does NOT attempt `is_nullable`, `column_default`, or a
+        comment for these columns — this codebase's default/comment lookups
+        go through `information_schema`/`col_description()`, which are
+        exactly the privilege-filtered paths this fallback exists because
+        of, and Postgres genuinely has no catalog-only source for them.
+        Reporting `nullable` as a guessed `False` here would be a confident
+        wrong answer of the same shape this whole change exists to avoid,
+        so that field stays `None`/absent rather than defaulted.
+
+        `is_primary_key`/`foreign_key` are the exception (fixed 2026-09-26,
+        Slice 21b — previously always `None`/absent here too): `pk_lookup`/
+        `fk_lookup`, from `_catalog_keys_for_schema()`'s catalog-only
+        `pg_constraint` read, are exactly as available in this path as the
+        column names themselves already are — see that function's own
+        docstring for why. A caller that omits them, or whose
+        `_catalog_keys_for_schema()` call itself failed (passed through here
+        as `None`, not `{}` — see that function's docstring), gets the
+        pre-fix `None`/absent behaviour rather than a confidently-wrong
+        `False`: `pk_lookup is None` is checked explicitly below rather than
+        folding a failed lookup into an empty one.
         """
         query = """
             SELECT a.attname AS column_name,
@@ -833,6 +921,8 @@ class PostgreSQLConnection(DatabaseConnection):
             if not name:
                 continue
             data_type = r.get("data_type") or ""
+            is_pk = None if pk_lookup is None else (name in pk_lookup.get(table_name, set()))
+            fk = None if fk_lookup is None else fk_lookup.get((table_name, name))
             columns.append({
                 "name": name,
                 "type": data_type,
@@ -841,8 +931,8 @@ class PostgreSQLConnection(DatabaseConnection):
                 "default": None,
                 "position": r.get("ordinal_position"),
                 "description": "",
-                "is_primary_key": None,
-                "foreign_key": None,
+                "is_primary_key": is_pk,
+                "foreign_key": fk,
                 "source": "catalog_fallback",
             })
         return columns

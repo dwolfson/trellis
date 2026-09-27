@@ -417,6 +417,32 @@ class TestRelationshipGraph:
         result = derive_relationship_graph(load_inputs(registry, "coco_ods"))
         assert result["table_count"] == 1
 
+    def test_a_table_with_uncaptured_keys_is_excluded_not_counted_isolated(self, registry):
+        """Slice 21b: a MIXED database — `a`'s keys were captured (a live
+        survey), `b`'s were not (catalog-only fallback, or a partial
+        credential) — used to have `keys_were_captured` (the database-wide
+        `any()`) read True from `a` alone, then silently count `b` as a
+        verified "isolated" table, identically to a table that genuinely
+        has no foreign key. `b` must be excluded from the graph entirely,
+        with its own count reported separately, not folded into
+        `isolated_tables`."""
+        tables = [_table("a"), _table("b")]
+        columns = [
+            _column("a", "x", pk=True),
+            _column("b", "y", keys_captured=False),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+        result = derive_relationship_graph(load_inputs(registry, "coco_ods"))
+        assert result["state"] == STATE_MEASURED
+        assert result["table_count"] == 1
+        assert result["unmeasured_table_count"] == 1
+        # `a` (measured, no FK, sole member of the measured set) is a real
+        # isolated finding; `b` (uncaptured) must never appear here at all —
+        # it was excluded, not verified isolated.
+        assert result["isolated_tables"] == ["public.a"]
+        assert "public.b" not in result["isolated_tables"]
+        assert "1 other table(s) excluded" in result["explanation"]
+
     def test_a_reference_to_an_uncovered_table_is_dangling_not_an_edge(self, registry):
         tables = [_table("a")]
         columns = [_column(
@@ -1023,6 +1049,171 @@ class TestPublishMapping:
             assert ann.analysis_step == "db_derived"
             assert ann.check_name, ann.summary
             assert ann.explanation, ann.summary
+
+
+class TestSlice21bHeadlines:
+    """Slice 21b: the seven `db_derived` analyses that had NO headline
+    reader before this (`db_classification`, `db_relationship_graph`,
+    `grain_determination`, `schema_conventions`, `subject_signals`,
+    `coverage_signals`, `preliminary_fit`) — found live, `coco_pharma`,
+    2026-09-26, that all seven rendered at best `_renders_text`'s generic
+    "ran; no summary reader" floor."""
+
+    def test_every_one_of_the_seven_has_a_registered_headline(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        for field in (
+            "db_classification", "db_relationship_graph", "grain_determination",
+            "schema_conventions", "subject_signals", "coverage_signals",
+            "preliminary_fit",
+        ):
+            assert field in DATABASE_ANALYSIS_HEADLINE_MAP
+
+    def test_a_measured_analysis_relays_its_own_explanation(self, registry):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        _normalised_schema(registry)
+        result = run_db_derived(registry, "coco_ods")
+        expected = result["derived"]["db_relationship_graph"]["explanation"]
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["db_relationship_graph"](registry, "coco_ods")
+        assert headline["label"] == expected
+        assert headline["status"] == "info"
+
+    def test_a_not_measured_analysis_relays_its_reason_not_silence(self, registry):
+        """The whole point: a not-yet-established analysis must render an
+        honest sentence, not nothing (which the pre-Slice-21b state was for
+        all seven) and not a confident-looking summary of nothing."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        tables = [_table("a"), _table("b")]
+        columns = [
+            _column("a", "x", keys_captured=False),
+            _column("b", "y", keys_captured=False),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns,
+               source=SOURCE_EGERIA)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["db_relationship_graph"](registry, "coco_ods")
+        assert headline is not None
+        assert headline["status"] == "warn"
+        assert "not established" in headline["label"] or "NOT established" in headline["label"]
+
+    def test_schema_conventions_headline_names_a_real_gap(self, registry):
+        """`check_conventions()`'s own `STATE_MEASURED` payload never sets a
+        top-level `explanation` (only each check's own) — the bespoke
+        `_schema_conventions_headline` (NOT the generic explanation-relay
+        factory) surfaces the first real gap found, found live gap:
+        without this, the resource-level headline fell through to just the
+        container rollup sentence with no whole-database content ahead of
+        it."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        tables = [_table("a"), _table("b")]
+        columns = [
+            _column("a", "x", pk=True),
+            _column("b", "y", pk=False),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["schema_conventions"](registry, "coco_ods")
+        assert headline is not None
+        assert "1 of 2 base tables declare no primary key" in headline["label"]
+
+    def test_schema_conventions_headline_states_a_clean_pass(self, registry):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        _normalised_schema(registry)
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["schema_conventions"](registry, "coco_ods")
+        assert headline is not None
+        assert "no gap found" in headline["label"]
+
+    def test_no_stored_rows_at_all_still_states_the_reason(self, registry):
+        """Even with zero stored rows, `classify_database` returns a real,
+        explained `STATE_NOT_MEASURED` payload (not a falsy one) — so the
+        headline correctly renders that reason as a `warn`-status sentence,
+        the same honest-absence floor every other reader in this module
+        gives, rather than a bare `None` that would look identical to "this
+        reader has nothing to say" for an analysis that in fact does."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_HEADLINE_MAP,
+        )
+        headline = DATABASE_ANALYSIS_HEADLINE_MAP["db_classification"](registry, "coco_ods")
+        assert headline is not None
+        assert headline["status"] == "warn"
+        assert "Not a finding" in headline["label"]
+
+    def _two_schema_database(self, registry):
+        """Two schemas in ONE stored snapshot — `write_detail_rows` replaces
+        a (slug, surveyed_at, source)'s whole table, so both schemas' rows
+        must be written together, not via two separate `_store()` calls at
+        the same `surveyed_at`."""
+        tables = [
+            _table("customer", schema="public"),
+            _table("orders", schema="public"),
+            _table("t1", schema="eu_sales"),
+        ]
+        columns = [
+            _column("customer", "customer_id", pk=True, schema="public"),
+            _column("orders", "order_id", pk=True, schema="public"),
+            _column("orders", "customer_id", schema="public",
+                    fk={"foreign_schema": "public", "foreign_table": "customer",
+                        "foreign_column": "customer_id"}),
+            _column("t1", "id", pk=True, schema="eu_sales"),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+
+    def test_relationship_graph_container_headline_names_each_schema(self, registry):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP,
+        )
+        self._two_schema_database(registry)
+        headline = DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP["db_relationship_graph"](
+            registry, "coco_ods")
+        assert headline is not None
+        assert "public:" in headline["label"]
+        assert "eu_sales:" in headline["label"]
+
+    def test_grain_determination_container_headline_groups_by_schema(self, registry):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP,
+        )
+        self._two_schema_database(registry)
+        headline = DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP["grain_determination"](
+            registry, "coco_ods")
+        assert headline is not None
+        assert "public:" in headline["label"]
+        assert "eu_sales:" in headline["label"]
+        assert "table(s) grain-determined" in headline["label"]
+
+    def test_a_measured_gap_is_not_counted_as_determined(self, registry):
+        """`determine_grain()`'s own `determined_count` definition is
+        `grain_statement` truthiness, NOT `state == STATE_MEASURED` — a
+        "gap" entry (profiled, and genuinely no candidate key) is measured
+        but has no grain statement. Found live, `coco_pharma`, 2026-09-26:
+        gating on state alone read a "gap" table as "determined", grossly
+        overcounting against the resource-level headline's own count for
+        the same database."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP,
+        )
+        tables = [_table("log_lines", rows=1_000_000)]
+        columns = [
+            _column("log_lines", "level", dtype="text"),
+            _column("log_lines", "message", dtype="text"),
+        ]
+        profiles = [
+            _profile("log_lines", "level", distinct=5),
+            _profile("log_lines", "message", distinct=40_000),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns,
+               profiles=profiles)
+        headline = DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP["grain_determination"](
+            registry, "coco_ods")
+        assert headline is not None
+        assert "public: 0 of 1 table(s) grain-determined" in headline["label"]
 
 
 class TestAdapterRegistration:
